@@ -35,13 +35,14 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string VersionInfo => $"{LiteratureApp.Core.BuildInfo.AppName} {LiteratureApp.Core.BuildInfo.Version} | Schema {LiteratureApp.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
     public IClipboardService Clipboard { get; }
     public IAppLogger Logger { get; }
+    public ZoteroShellViewModel Shell { get; }
     public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null)
     {
         Clipboard=clipboard??new AvaloniaClipboardService();
         Logger=logger??new SimpleFileLogger(AppRuntimeOptions.FromEnvironment().LogDirectory);
-        Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
+        Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
         OpenDatabaseCommand=new(async()=>{_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"Database ready: {RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));});
     }
     public async Task<AppServices> ServicesAsync() => _services ??= await AppServices.CreateAsync(RuntimeDatabasePath);

@@ -2,6 +2,7 @@ using LiteratureApp.Core.Bibliography;
 using LiteratureApp.Core.Credentials;
 using LiteratureApp.Core.Documents;
 using LiteratureApp.Core.Files;
+using LiteratureApp.Core.Import;
 using LiteratureApp.Core.Layout;
 using LiteratureApp.Core.Library;
 using LiteratureApp.Core.Results;
@@ -19,11 +20,14 @@ using LiteratureApp.Infrastructure.LibraryIdentity;
 using LiteratureApp.Infrastructure.Mcp;
 using LiteratureApp.Infrastructure.Migrations;
 using LiteratureApp.Infrastructure.Ocr;
+using LiteratureApp.Infrastructure.Ocr.MinerU;
 using LiteratureApp.Infrastructure.Rendering;
 using LiteratureApp.Infrastructure.Search;
 using LiteratureApp.Infrastructure.Snapshots;
+using LiteratureApp.Infrastructure.Workflows;
 using LiteratureApp.Mcp;
 using LiteratureApp.Ocr;
+using LiteratureApp.Ocr.MinerU;
 using LiteratureApp.Search;
 
 namespace LiteratureApp.UI;
@@ -67,6 +71,12 @@ public sealed class AppServices
         SnapshotImporter = new SnapshotImporter();
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
         Credentials = new CredentialStore(ConnectionFactory, Library, Clock);
+        PdfMetadata = new PdfMetadataReader();
+        PdfDiscovery = new PdfDiscoveryService();
+        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
+        PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock);
+        McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
+        FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, MinerUImporter, SearchUnits, SearchIndex, McpVerification);
     }
     public string RuntimeDatabasePath { get; }
     public SqliteConnectionFactory ConnectionFactory { get; }
@@ -96,6 +106,12 @@ public sealed class AppServices
     public ISnapshotImporter SnapshotImporter { get; }
     public ISnapshotBranchInspectionService BranchInspection { get; }
     public ICredentialStore Credentials { get; }
+    public IPdfMetadataReader PdfMetadata { get; }
+    public PdfDiscoveryService PdfDiscovery { get; }
+    public IMinerUResultImporter MinerUImporter { get; }
+    public PdfImportWorkflow PdfImport { get; }
+    public McpVerificationService McpVerification { get; }
+    public FirstRunWorkflow FirstRunWorkflow { get; }
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)
     {
         if (_ocrQueue is not null)

@@ -1,0 +1,69 @@
+<Window x:Class="LiteratureApp.UI.FirstRunWindow" xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="680" Height="520" Title="First-Run Setup" WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="*,Auto" Margin="20">
+    <ScrollViewer>
+      <StackPanel Spacing="12">
+        <TextBlock FontSize="18" FontWeight="Bold" Text="Welcome to LiteratureApp" />
+        <TextBlock Text="{Binding ProgressText}" TextWrapping="Wrap" />
+
+        <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="8">
+          <TextBlock Text="Create a library identity" FontWeight="SemiBold" />
+          <TextBox PlaceholderText="Library display name" Text="{Binding LibraryName}" />
+          <Button Content="Create Library" Command="{Binding CreateLibraryCommand}" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="8">
+          <TextBlock Text="Select a folder to scan for PDF files" FontWeight="SemiBold" />
+          <TextBox PlaceholderText="Scan root path" Text="{Binding ScanRoot}" />
+          <Button Content="Scan Folder" Command="{Binding ScanCommand}" />
+          <ListBox ItemsSource="{Binding PdfCandidates}" SelectedItem="{Binding SelectedPdf}" Height="200">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="{Binding FileName}" FontWeight="Bold" />
+                  <TextBlock Text="{Binding SizeDisplay}" />
+                  <TextBlock Text="{Binding ModifiedDisplay}" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowImportStep}" Spacing="8">
+          <TextBlock Text="Enter bibliography metadata" FontWeight="SemiBold" />
+          <TextBox PlaceholderText="Title (leave blank for filename)" Text="{Binding ItemTitle}" />
+          <TextBox PlaceholderText="Authors" Text="{Binding ItemAuthors}" />
+          <Button Content="Import PDF" Command="{Binding ImportCommand}" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowMinerUConfigStep}" Spacing="8">
+          <TextBlock Text="Configure MinerU OCR" FontWeight="SemiBold" />
+          <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUToken}" />
+          <Button Content="Run OCR Extraction and Index" Command="{Binding RunMinerUCommand}" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowExtractStep}" Spacing="8">
+          <TextBlock Text="OCR extraction in progress..." />
+          <ProgressBar IsIndeterminate="{Binding IsBusy}" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowIndexStep}" Spacing="8">
+          <TextBlock Text="Rebuilding search index..." />
+          <ProgressBar IsIndeterminate="True" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowVerifyStep}" Spacing="8">
+          <TextBlock Text="Verifying search..." />
+          <ProgressBar IsIndeterminate="True" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="8">
+          <TextBlock Text="Setup complete!" FontSize="16" FontWeight="Bold" />
+          <TextBlock Text="{Binding ProgressText}" TextWrapping="Wrap" />
+          <Button Content="Start Using LiteratureApp" Click="OnCompleteClick" />
+        </StackPanel>
+
+        <TextBlock Text="{Binding LastError}" Foreground="Red" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</Window>
