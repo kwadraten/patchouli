@@ -1,0 +1,9 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+*.user
+*.suo
+*.sqlite
+*.sqlite3
+*.db
