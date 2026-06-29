@@ -13,7 +13,6 @@ public sealed class FirstRunWorkflow
     private readonly ILibraryIdentityService _libraryIdentityService;
     private readonly PdfDiscoveryService _pdfDiscoveryService;
     private readonly PdfImportWorkflow _pdfImportWorkflow;
-    private readonly MinerUResultDownloader _minerUResultDownloader;
     private readonly IMinerUResultImporter _minerUResultImporter;
     private readonly ISearchUnitBuilder _searchUnitBuilder;
     private readonly ISearchIndexRebuilder _searchIndexRebuilder;
@@ -23,7 +22,6 @@ public sealed class FirstRunWorkflow
         ILibraryIdentityService libraryIdentityService,
         PdfDiscoveryService pdfDiscoveryService,
         PdfImportWorkflow pdfImportWorkflow,
-        MinerUResultDownloader minerUResultDownloader,
         IMinerUResultImporter minerUResultImporter,
         ISearchUnitBuilder searchUnitBuilder,
         ISearchIndexRebuilder searchIndexRebuilder,
@@ -32,7 +30,6 @@ public sealed class FirstRunWorkflow
         _libraryIdentityService = libraryIdentityService;
         _pdfDiscoveryService = pdfDiscoveryService;
         _pdfImportWorkflow = pdfImportWorkflow;
-        _minerUResultDownloader = minerUResultDownloader;
         _minerUResultImporter = minerUResultImporter;
         _searchUnitBuilder = searchUnitBuilder;
         _searchIndexRebuilder = searchIndexRebuilder;
