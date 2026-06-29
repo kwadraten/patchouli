@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\LiteratureApp.Core\LiteratureApp.Core.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.Infrastructure\LiteratureApp.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.Search\LiteratureApp.Search.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.Ocr\LiteratureApp.Ocr.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.Evidence\LiteratureApp.Evidence.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.Mcp\LiteratureApp.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.UI\LiteratureApp.UI.csproj" />
+    <ProjectReference Include="..\..\src\LiteratureApp.McpServer\LiteratureApp.McpServer.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>
