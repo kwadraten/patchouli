@@ -53,7 +53,7 @@ public sealed class AppServices
         var adapterRegistry = new OcrAdapterRegistry();
         adapterRegistry.RegisterAdapter(new MockOcrAdapter());
         adapterRegistry.RegisterAdapter(new LocalPlaceholderOcrAdapter(ModelPathValidator));
-        adapterRegistry.RegisterAdapter(new TesseractCliAdapter(new SystemProcessRunner()));
+        // TesseractCliAdapter is excluded from product startup; kept only for test use.
         OcrAdapters = adapterRegistry;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, new ExternalProcessPdfPageRenderer(new SystemProcessRunner()), Clock, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiteratureApp", "cache", "page-renders"));
         PageCoordinates = new PageCoordinateService(ConnectionFactory);

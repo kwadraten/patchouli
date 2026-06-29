@@ -121,7 +121,7 @@ public sealed class AlphaStabilizationTests
     {
         var path = TestPaths.FromRepositoryRoot("docs", "KNOWN_ISSUES_ALPHA.md");
         File.Exists(path).Should().BeTrue();
-        File.ReadAllText(path).Should().Contain("PDF rendering").And.Contain("Tesseract OCR").And.Contain("plaintext trust model").And.Contain("MCP currently provides a read-only service layer").And.Contain("FTS is a rebuildable local cache");
+        File.ReadAllText(path).Should().Contain("PDF rendering").And.Contain("plaintext trust model").And.Contain("MCP currently provides a read-only service layer").And.Contain("FTS is a rebuildable local cache");
     }
 
     [Fact]
