@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\LiteratureApp.Core\LiteratureApp.Core.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Infrastructure\LiteratureApp.Infrastructure.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Search\LiteratureApp.Search.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Ocr\LiteratureApp.Ocr.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Evidence\LiteratureApp.Evidence.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Mcp\LiteratureApp.Mcp.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+  </ItemGroup>
+</Project>
