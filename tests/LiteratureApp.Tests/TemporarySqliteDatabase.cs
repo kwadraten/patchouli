@@ -1,4 +1,5 @@
 using LiteratureApp.Infrastructure.Database;
+using Microsoft.Data.Sqlite;
 
 namespace LiteratureApp.Tests;
 
@@ -24,9 +25,14 @@ internal sealed class TemporarySqliteDatabase : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        SqliteConnection.ClearAllPools();
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
         if (File.Exists(Path))
         {
-            File.Delete(Path);
+            try { File.Delete(Path); }
+            catch { }
         }
 
         return ValueTask.CompletedTask;

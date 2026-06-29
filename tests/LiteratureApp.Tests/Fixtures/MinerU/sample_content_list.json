@@ -1,0 +1,43 @@
+{
+  "pages": [
+    {
+      "page_num": 1,
+      "width": 595,
+      "height": 842,
+      "blocks": [
+        {
+          "type": "title",
+          "bbox": [50, 50, 545, 100],
+          "text": "Sample Document Title"
+        },
+        {
+          "type": "text",
+          "bbox": [50, 120, 545, 200],
+          "text": "This is the first paragraph of the sample document."
+        },
+        {
+          "type": "table",
+          "bbox": [50, 220, 545, 320],
+          "text": "| Col1 | Col2 |\n| --- | --- |\n| A | B |"
+        }
+      ]
+    },
+    {
+      "page_num": 2,
+      "width": 595,
+      "height": 842,
+      "blocks": [
+        {
+          "type": "text",
+          "bbox": [50, 50, 545, 150],
+          "text": "Second page content continues here."
+        },
+        {
+          "type": "formula",
+          "bbox": [50, 170, 545, 220],
+          "latex": "E = mc^2"
+        }
+      ]
+    }
+  ]
+}

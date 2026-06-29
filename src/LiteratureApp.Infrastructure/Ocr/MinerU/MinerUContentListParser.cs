@@ -1,22 +1,23 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace LiteratureApp.Infrastructure.Ocr.MinerU;
 
 internal sealed record MinerUContentListPage(
-    int PageNum,
-    double Width,
-    double Height,
-    IReadOnlyList<MinerUContentBlock> Blocks);
+    [property: JsonPropertyName("page_num")] int PageNum,
+    [property: JsonPropertyName("width")] double Width,
+    [property: JsonPropertyName("height")] double Height,
+    [property: JsonPropertyName("blocks")] IReadOnlyList<MinerUContentBlock> Blocks);
 
 internal sealed record MinerUContentBlock(
-    string Type,
-    double[]? Bbox,
-    string? Text,
-    string? LaTex,
-    double? Confidence);
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("bbox")] double[]? Bbox,
+    [property: JsonPropertyName("text")] string? Text,
+    [property: JsonPropertyName("latex")] string? LaTex,
+    [property: JsonPropertyName("confidence")] double? Confidence);
 
 internal sealed record MinerUContentListDocument(
-    IReadOnlyList<MinerUContentListPage> Pages);
+    [property: JsonPropertyName("pages")] IReadOnlyList<MinerUContentListPage> Pages);
 
 internal sealed class MinerUContentListParser
 {
