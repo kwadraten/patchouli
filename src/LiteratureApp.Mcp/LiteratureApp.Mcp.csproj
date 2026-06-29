@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\LiteratureApp.Core\LiteratureApp.Core.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Search\LiteratureApp.Search.csproj" />
+    <ProjectReference Include="..\LiteratureApp.Evidence\LiteratureApp.Evidence.csproj" />
+  </ItemGroup>
+</Project>
