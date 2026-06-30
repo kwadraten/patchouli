@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using LiteratureApp.Core.Results;
 using LiteratureApp.Ocr.MinerU;
 
@@ -9,6 +11,11 @@ namespace LiteratureApp.Infrastructure.Ocr.MinerU;
 
 public sealed class MinerUClient : IMinerUClient, IDisposable
 {
+    private static readonly Regex UrlPattern = new(@"https?://\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex BearerPattern = new(@"Bearer\s+[^\s,;]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex WindowsPathPattern = new(@"[A-Za-z]:\\[^\s]+", RegexOptions.Compiled);
+    private static readonly Regex WhitespacePattern = new(@"\s+", RegexOptions.Compiled);
+
     private readonly HttpClient _httpClient;
     private readonly MinerUOptions _options;
     private readonly bool _ownsClient;
@@ -54,14 +61,24 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             if (!response.IsSuccessStatusCode)
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
-                    $"Failed to request upload URLs: {response.StatusCode}");
+                    await ReadHttpErrorMessageAsync(response, cancellationToken, _options.Token));
 
             var result = await response.Content.ReadFromJsonAsync<MinerUBatchUrlResponse>(cancellationToken: cancellationToken);
 
-            if (result is null || result.Data is null || result.Code != 0)
+            if (result is null)
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
-                    SanitizeErrorMessage(result?.Message ?? "Invalid response from MinerU API."));
+                    "Invalid response from MinerU API.");
+
+            if (!IsSuccessCode(result.Code))
+                return Result<MinerUUploadBatch>.Failure(
+                    MinerUProviderStatus.UploadUrlFailed,
+                    SanitizeErrorMessage(FormatProviderFailure(result.Code, result.ProviderMessage), _options.Token));
+
+            if (result.Data is null || string.IsNullOrWhiteSpace(result.Data.BatchId))
+                return Result<MinerUUploadBatch>.Failure(
+                    MinerUProviderStatus.UploadUrlFailed,
+                    "MinerU API did not return a batch ID.");
 
             var uploadUrls = MapUploadUrls(files, result.Data);
             if (uploadUrls.Count == 0)
@@ -78,13 +95,13 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         {
             return Result<MinerUUploadBatch>.Failure(
                 MinerUProviderStatus.UploadUrlFailed,
-                SanitizeErrorMessage($"Network error: {ex.Message}"));
+                SanitizeErrorMessage($"Network error: {ex.Message}", _options.Token));
         }
         catch (JsonException ex)
         {
             return Result<MinerUUploadBatch>.Failure(
                 MinerUProviderStatus.UploadUrlFailed,
-                SanitizeErrorMessage($"Response parsing error: {ex.Message}"));
+                SanitizeErrorMessage($"Response parsing error: {ex.Message}", _options.Token));
         }
     }
 
@@ -104,18 +121,18 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             return response.IsSuccessStatusCode
                 ? Result.Success()
                 : Result.Failure(MinerUProviderStatus.UploadFailed,
-                    SanitizeErrorMessage($"Upload failed: {response.StatusCode}"));
+                    SanitizeErrorMessage($"Upload failed: {response.StatusCode}", _options.Token));
         }
         catch (OperationCanceledException) { throw; }
         catch (HttpRequestException ex)
         {
             return Result.Failure(MinerUProviderStatus.UploadFailed,
-                SanitizeErrorMessage($"Upload network error: {ex.Message}"));
+                SanitizeErrorMessage($"Upload network error: {ex.Message}", _options.Token));
         }
         catch (IOException ex)
         {
             return Result.Failure(MinerUProviderStatus.UploadFailed,
-                SanitizeErrorMessage($"File read error: {ex.Message}"));
+                SanitizeErrorMessage($"File read error: {ex.Message}", _options.Token));
         }
     }
 
@@ -132,29 +149,37 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             if (!response.IsSuccessStatusCode)
                 return Result<MinerUPollResult>.Failure(
                     MinerUProviderStatus.Failed,
-                    SanitizeErrorMessage($"Poll failed: {response.StatusCode}"));
+                    await ReadHttpErrorMessageAsync(response, cancellationToken, _options.Token));
 
             var result = await response.Content.ReadFromJsonAsync<MinerUPollResponse>(cancellationToken: cancellationToken);
 
-            if (result is null || result.Data is null)
+            if (result is null)
                 return Result<MinerUPollResult>.Failure(
                     MinerUProviderStatus.Failed,
-                    SanitizeErrorMessage("Invalid poll response from MinerU API."));
+                    "Invalid poll response from MinerU API.");
 
-            var status = MapStatus(result.Data.Status);
-            return Result<MinerUPollResult>.Success(new MinerUPollResult(
-                result.Data.BatchId, status, result.Data.FullZipUrl, result.Data.ErrorMessage));
+            if (!IsSuccessCode(result.Code))
+                return Result<MinerUPollResult>.Failure(
+                    MinerUProviderStatus.Failed,
+                    SanitizeErrorMessage(FormatProviderFailure(result.Code, result.ProviderMessage), _options.Token));
+
+            if (result.Data is null)
+                return Result<MinerUPollResult>.Failure(
+                    MinerUProviderStatus.Failed,
+                    "MinerU API did not return extraction data.");
+
+            return Result<MinerUPollResult>.Success(MapPollResult(batchId, result.Data));
         }
         catch (OperationCanceledException) { throw; }
         catch (HttpRequestException ex)
         {
             return Result<MinerUPollResult>.Failure(MinerUProviderStatus.Failed,
-                SanitizeErrorMessage($"Poll network error: {ex.Message}"));
+                SanitizeErrorMessage($"Poll network error: {ex.Message}", _options.Token));
         }
         catch (JsonException ex)
         {
             return Result<MinerUPollResult>.Failure(MinerUProviderStatus.Failed,
-                SanitizeErrorMessage($"Poll response parsing error: {ex.Message}"));
+                SanitizeErrorMessage($"Poll response parsing error: {ex.Message}", _options.Token));
         }
     }
 
@@ -187,7 +212,7 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             if (status == MinerUProviderStatus.Failed)
                 return Result<MinerUDownloadedResult>.Failure(
                     MinerUProviderStatus.Failed,
-                    SanitizeErrorMessage(poll.Value.ErrorMessage ?? "MinerU extraction failed."));
+                    SanitizeErrorMessage(poll.Value.ErrorMessage ?? "MinerU extraction failed.", _options.Token));
 
             if (DateTimeOffset.UtcNow > timeoutAt)
                 return Result<MinerUDownloadedResult>.Failure(
@@ -214,7 +239,7 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             if (!response.IsSuccessStatusCode)
                 return Result<MinerUDownloadedResult>.Failure(
                     MinerUProviderStatus.Failed,
-                    SanitizeErrorMessage($"Download failed: {response.StatusCode}"));
+                    SanitizeErrorMessage($"Download failed: {response.StatusCode}", _options.Token));
 
             await using var sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken);
             await using var destStream = File.Create(zipPath);
@@ -227,12 +252,12 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         catch (HttpRequestException ex)
         {
             return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.Failed,
-                SanitizeErrorMessage($"Download network error: {ex.Message}"));
+                SanitizeErrorMessage($"Download network error: {ex.Message}", _options.Token));
         }
         catch (IOException ex)
         {
             return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.Failed,
-                SanitizeErrorMessage($"File write error: {ex.Message}"));
+                SanitizeErrorMessage($"File write error: {ex.Message}", _options.Token));
         }
     }
 
@@ -240,8 +265,13 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
     {
         var request = new HttpRequestMessage(method, $"{_options.BaseUrl.TrimEnd('/')}{path}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.Token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
         if (body is not null)
-            request.Content = JsonContent.Create(body);
+        {
+            var json = JsonSerializer.Serialize(body);
+            request.Content = new StringContent(json, Encoding.UTF8);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        }
         return request;
     }
 
@@ -264,7 +294,28 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         return [];
     }
 
-    private static string MapStatus(string mineruStatus) => mineruStatus switch
+    private static MinerUPollResult MapPollResult(string requestedBatchId, MinerUPollData data)
+    {
+        var batchId = string.IsNullOrWhiteSpace(data.BatchId) ? requestedBatchId : data.BatchId;
+        var item = data.ExtractResult?
+            .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.State))
+            ?? data.ExtractResult?.FirstOrDefault();
+
+        if (item is not null)
+            return new MinerUPollResult(
+                batchId,
+                MapStatus(item.State),
+                item.FullZipUrl,
+                string.IsNullOrWhiteSpace(item.ErrorMessage) ? null : item.ErrorMessage);
+
+        return new MinerUPollResult(
+            batchId,
+            MapStatus(data.State ?? data.Status),
+            data.FullZipUrl,
+            string.IsNullOrWhiteSpace(data.ErrorMessage) ? null : data.ErrorMessage);
+    }
+
+    private static string MapStatus(string? mineruStatus) => mineruStatus switch
     {
         "waiting-file" => MinerUProviderStatus.WaitingFile,
         "pending" => MinerUProviderStatus.Pending,
@@ -275,11 +326,105 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         _ => MinerUProviderStatus.Failed
     };
 
-    private static string SanitizeErrorMessage(string message)
+    private static bool IsSuccessCode(JsonElement code)
+    {
+        if (code.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+            return false;
+
+        return code.ValueKind switch
+        {
+            JsonValueKind.Number => code.TryGetInt32(out var number) && number == 0,
+            JsonValueKind.String => string.Equals(code.GetString(), "0", StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+    }
+
+    private static string FormatProviderFailure(JsonElement code, string? message)
+    {
+        var codeText = FormatProviderCode(code);
+        if (string.IsNullOrWhiteSpace(message))
+            return codeText is null ? "MinerU API returned an error." : $"MinerU API error {codeText}.";
+
+        return codeText is null
+            ? $"MinerU API error: {message}"
+            : $"MinerU API error {codeText}: {message}";
+    }
+
+    private static string? FormatProviderCode(JsonElement code)
+    {
+        return code.ValueKind switch
+        {
+            JsonValueKind.Number => code.GetRawText(),
+            JsonValueKind.String => code.GetString(),
+            _ => null
+        };
+    }
+
+    private static async Task<string> ReadHttpErrorMessageAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken,
+        string? token)
+    {
+        var providerMessage = await TryReadProviderMessageAsync(response, cancellationToken);
+        var message = string.IsNullOrWhiteSpace(providerMessage)
+            ? $"MinerU API request failed: {response.StatusCode}."
+            : $"MinerU API request failed: {response.StatusCode}. {providerMessage}";
+
+        return SanitizeErrorMessage(message, token);
+    }
+
+    private static async Task<string?> TryReadProviderMessageAsync(
+        HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(body))
+                return null;
+
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+                return null;
+
+            var code = root.TryGetProperty("code", out var codeElement)
+                ? FormatProviderCode(codeElement)
+                : null;
+            var message = root.TryGetProperty("msg", out var msgElement)
+                ? msgElement.GetString()
+                : root.TryGetProperty("message", out var messageElement)
+                    ? messageElement.GetString()
+                    : null;
+
+            if (string.IsNullOrWhiteSpace(code))
+                return message;
+
+            return string.IsNullOrWhiteSpace(message)
+                ? $"MinerU API error {code}."
+                : $"MinerU API error {code}: {message}";
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string SanitizeErrorMessage(string message, string? token = null)
     {
         if (string.IsNullOrWhiteSpace(message))
             return "An unknown error occurred.";
-        return "MinerU operation failed. Check configuration and try again.";
+
+        var sanitized = message;
+        if (!string.IsNullOrWhiteSpace(token))
+            sanitized = sanitized.Replace(token, "[redacted]", StringComparison.Ordinal);
+
+        sanitized = BearerPattern.Replace(sanitized, "Bearer [redacted]");
+        sanitized = UrlPattern.Replace(sanitized, "[redacted-url]");
+        sanitized = WindowsPathPattern.Replace(sanitized, "[redacted-path]");
+        sanitized = WhitespacePattern.Replace(sanitized, " ").Trim();
+
+        return sanitized.Length <= 500 ? sanitized : sanitized[..500];
     }
 
     public void Dispose()

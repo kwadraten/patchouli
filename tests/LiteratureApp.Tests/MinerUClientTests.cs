@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FluentAssertions;
 using LiteratureApp.Core.Results;
 using LiteratureApp.Infrastructure.Ocr.MinerU;
@@ -93,11 +94,15 @@ public sealed class MinerUClientTests
         var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
 
         result.IsSuccess.Should().BeTrue();
-        body.Should().Contain("\"model_version\":\"vlm\"");
-        body.Should().Contain("\"enable_table\":true");
-        body.Should().Contain("\"enable_formula\":true");
-        body.Should().Contain("\"is_ocr\":true");
-        body.Should().Contain("\"name\":\"a.pdf\"");
+        var json = JsonNode.Parse(body!)!.AsObject();
+        json["model_version"]!.GetValue<string>().Should().Be("vlm");
+        json["language"]!.GetValue<string>().Should().Be("ch");
+        json["enable_table"]!.GetValue<bool>().Should().BeTrue();
+        json["enable_formula"]!.GetValue<bool>().Should().BeTrue();
+        var file = json["files"]!.AsArray().Single()!.AsObject();
+        file["name"]!.GetValue<string>().Should().Be("a.pdf");
+        file["data_id"]!.GetValue<string>().Should().Be("a.pdf");
+        file["is_ocr"]!.GetValue<bool>().Should().BeTrue();
     }
 
     [Fact]
@@ -123,6 +128,87 @@ public sealed class MinerUClientTests
             result.IsSuccess.Should().BeTrue();
             result.Value.Status.Should().Be(expected);
         }
+    }
+
+    [Fact]
+    public async Task WaitForCompletionAndDownload_accepts_official_batch_extract_result_shape()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        try
+        {
+            var handler = new FakeHttpMessageHandler(request =>
+            {
+                if (request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/b1")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                        {
+                          "code": 0,
+                          "data": {
+                            "batch_id": "b1",
+                            "extract_result": [
+                              {
+                                "file_name": "a.pdf",
+                                "state": "done",
+                                "err_msg": "",
+                                "full_zip_url": "https://cdn.example.test/result.zip"
+                              }
+                            ]
+                          },
+                          "msg": "ok"
+                        }
+                        """)
+                    };
+                }
+
+                if (request.RequestUri!.Host == "cdn.example.test")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent([1, 2, 3])
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            var options = new MinerUOptions
+            {
+                Token = "t",
+                BaseUrl = "https://mineru.example.test",
+                PollingIntervalMs = 1
+            };
+            using var client = new MinerUClient(new HttpClient(handler), options);
+
+            var result = await client.WaitForCompletionAndDownloadAsync("b1", tempDir);
+
+            result.IsSuccess.Should().BeTrue();
+            File.ReadAllBytes(result.Value.ZipPath).Should().Equal([1, 2, 3]);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+                Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RequestUploadUrls_reports_official_api_error_without_leaking_secrets()
+    {
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"code":"A0202","msg":"invalid token https://mineru.net/private"}""")
+        });
+        var options = new MinerUOptions { Token = "super-secret-token" };
+        using var client = new MinerUClient(new HttpClient(handler), options);
+
+        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorMessage.Should().Contain("A0202");
+        result.ErrorMessage.Should().Contain("invalid token");
+        result.ErrorMessage.Should().NotContain("super-secret-token");
+        result.ErrorMessage.Should().NotContain("https://mineru.net/private");
     }
 
     [Fact]
