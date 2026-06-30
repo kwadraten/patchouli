@@ -8,6 +8,48 @@ using Patchouli.Mcp;
 
 namespace Patchouli.McpServer;
 
+public sealed record McpServerOptions(string DatabasePath, int Port)
+{
+    public const int DefaultPort = 4536;
+
+    public static McpServerOptionsParseResult Parse(string[] args)
+    {
+        var dbIndex = Array.IndexOf(args, "--db");
+        if (dbIndex < 0 || dbIndex == args.Length - 1 || string.IsNullOrWhiteSpace(args[dbIndex + 1]))
+        {
+            return McpServerOptionsParseResult.Failure("Missing --db.");
+        }
+
+        var port = DefaultPort;
+        var portIndex = Array.IndexOf(args, "--port");
+        if (portIndex >= 0)
+        {
+            if (portIndex == args.Length - 1 || !int.TryParse(args[portIndex + 1], out port) || port is < 1 or > 65535)
+            {
+                return McpServerOptionsParseResult.Failure("Invalid --port.");
+            }
+        }
+
+        return McpServerOptionsParseResult.Success(new McpServerOptions(args[dbIndex + 1], port));
+    }
+}
+
+public sealed class McpServerOptionsParseResult
+{
+    private McpServerOptionsParseResult(McpServerOptions? value, string? error)
+    {
+        Value = value!;
+        Error = error;
+    }
+
+    public bool IsFailure => Error is not null;
+    public McpServerOptions Value { get; }
+    public string? Error { get; }
+
+    public static McpServerOptionsParseResult Success(McpServerOptions value) => new(value, null);
+    public static McpServerOptionsParseResult Failure(string error) => new(null, error);
+}
+
 public static class McpOutputSanitizer
 {
     private static readonly Regex Path = new(@"(?:file://\S+|[A-Za-z]:[\\/][^\s\""']+|/[^\s\""']+)", RegexOptions.Compiled);

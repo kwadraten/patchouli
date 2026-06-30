@@ -1,6 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../Patchouli.Core/Patchouli.Core.csproj" />
     <ProjectReference Include="../Patchouli.Infrastructure/Patchouli.Infrastructure.csproj" />
     <ProjectReference Include="../Patchouli.Search/Patchouli.Search.csproj" />
