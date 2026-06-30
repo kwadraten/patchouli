@@ -15,7 +15,7 @@
 
 ## 2. 解决方案
 
-构建一个类似 Zotero / Calibre / DEVONthink 的个人文献管理器，并增加可编程增强层：
+构建一个个人文献管理器，并增加可编程增强层：
 
 - **题录管理**：以题录（Item/Work）为学术引用身份，支持基础元数据、可扩展标识符、标签、集合和自定义字段。
 - **文件管理**：PDF/图像不入库，由用户自己的目录和云盘管理；程序通过哈希值、已知位置和搜索目录重新定位。
@@ -201,10 +201,94 @@ v1 中的对象策略：
 - 不同的引用身份必须是不同的题录：版本、翻译、卷册（当引用不同时）、预印本与正式版（如果元数据不同）。
 - 相同的引用身份可以有多个文档实例：不同扫描件、OCR PDF、拆分 PDF、缺页补充材料。
 - 默认搜索仅针对主要文档实例；高级搜索可以包含备选、部分、已弃用的实例或特定文档实例。
-- 第一版题录元数据字段：
-  - item_id、item_type、title、subtitle、creators、date、publication_title、publisher、place、volume、issue、pages、language、abstract、tags、collections、custom_fields。
-- 标识符是可扩展的，包含 scheme/value/note 以及内置的常见方案 DOI、ISBN、ISSN、URL、archive_id、call_number、jpno、ndlbibid。
-- CSL 渲染、参考文献导出、引用键工作流、规范控制、创作者消歧、多语言标题和详细的版本/历史字段是重要的待办事项。
+- 题录元数据字段命名与 CSL 变量（CSL variable）对齐，以便与 CSL 样式处理引擎和 citeproc 工具链互操作。存储策略遵循以下原则：
+
+  | 原则 | 策略 |
+  |---|---|
+  | 高频、查询常用、排序常用 | 单列 |
+  | 结构化变量（name-list、日期） | 独立表 |
+  | 低频 CSL 变量 | `extra_csl` JSON |
+  | 除 URL 外的标识符 | `identifiers` JSON/map |
+  | 可派生变量 | 不落库 |
+  | 运行时变量 | 交给 CSL processor |
+
+  第一版核心字段及分组如下：
+
+  **1. 条目核心字段（单列）**
+
+  | 字段 | CSL 对应 | 说明 |
+  |---|---|---|
+  | `id` | `id` | 内部主键，可导出为 citeproc JSON id |
+  | `type` | `type` | book、article-journal、chapter、thesis、report、webpage 等 |
+  | `citation_key` | `citation-key` | 供 Markdown、Typst、LaTeX、外部引用的稳定引用键 |
+  | `language` | `language` | 多语种大小写转换、排序、locale 判断 |
+  | `title` | `title` | 主标题 |
+  | `title_short` | `title-short` | 可选，短标题需人工指定 |
+  | `container_title` | `container-title` | 期刊名、论文集名、书章所在书名 |
+  | `container_title_short` | `container-title-short` | 可选，期刊缩写 |
+  | `collection_title` | `collection-title` | 丛书名、系列名 |
+  | `publisher` | `publisher` | 出版社、发布机构 |
+  | `publisher_place` | `publisher-place` | 出版地，人文学科常用 |
+  | `edition` | `edition` | 版次 |
+  | `volume` | `volume` | 卷 |
+  | `issue` | `issue` | 期 |
+  | `page` | `page` | 页码范围；`page-first` 由此派生 |
+  | `genre` | `genre` | 学位论文类型、报告类型、文献体裁 |
+  | `number` | `number` | 报告号、标准号、专利号等（非 DOI/ISBN） |
+  | `chapter_number` | `chapter-number` | 可选，章节号 |
+  | `version` | `version` | 可选，软件/数据集/在线资源版本 |
+  | `status` | `status` | 可选，forthcoming、in press 等 |
+  | `note` | `note` | 用户备注、注释 |
+  | `abstract` | — | 扩展用于检索，不参与引用输出 |
+  | `keyword` | — | 扩展用于检索和分类 |
+
+  **2. 标识符字段：统一 map**
+
+  不为每个标识符建固定列，以 `scheme → value` map 存储：
+
+  ```json
+  {
+    "DOI": "10.1234/example",
+    "ISBN": "9780000000000",
+    "ISSN": "1234-5678",
+    "PMID": "12345678",
+    "PMCID": "PMC1234567",
+    "arXiv": "2401.00001",
+    "JSTOR": "123456"
+  }
+  ```
+
+  - 内置常见 scheme：DOI、ISBN、ISSN、PMID、PMCID、arXiv、JSTOR、URL、archive_id、call_number、jpno、ndlbibid。
+  - URL 因其访问日期、快照、死链检查等逻辑特殊，可单独表或 map 内附 metadata。
+  - 导出为 citeproc JSON 时将 map 展开为顶层属性即可。
+
+  **3. 人名字段：结构化 name-list**
+
+  第一版支持的角色：
+
+  | 角色 | CSL 变量 |
+  |---|---|
+  | 作者 | `author` |
+  | 编者 | `editor` |
+  | 译者 | `translator` |
+  | 容器作者 | `container-author` |
+
+  - `author` 等不是字符串，而是 `name-list`，每个 name 包含 `family`、`given`、`literal`、`suffix`、`particles` 等子字段。
+  - 不将作者平铺为 `author_name`、`editor_name` 等字符串列。
+
+  **4. 日期字段：结构化日期**
+
+  第一版支持的 date role：
+
+  | 角色 | CSL 变量 |
+  |---|---|
+  | 出版日期 | `issued` |
+  | 访问日期 | `accessed` |
+  | 原始出版日期 | `original-date` |
+
+  - 不拆分为 `issued_year`、`issued_month`、`issued_day` 等独立列。
+  - 遵循 citeproc JSON date-parts 模型，支持 season、circa、literal 等。
+- CSL 渲染、参考文献导出、规范控制、创作者消歧、多语言标题和详细的版本/历史字段是重要的待办事项。
 
 ### 6.8 OCR/HTR 预设、模型与提供程序配置
 
@@ -469,12 +553,12 @@ OCR 采纳事务边界：
 
 ### 7.1 模块结构
 
-- **LiteratureApp.UI**：原生 Avalonia 桌面 UI。
-- **LiteratureApp.Core**：领域模型和应用程序契约。
-- **LiteratureApp.Infrastructure**：SQLite、迁移、快照、文件解析、凭据、OCR 编排和具体服务实现。
-- **LiteratureApp.Search**：搜索单元生成、SQLite FTS5 提供程序、查询重写、搜索配置文件和脏索引重建。
-- **LiteratureApp.Ocr**：OCR/HTR 预设、预设版本、适配器、队列契约、重试、暂存和候选采纳。
-- **LiteratureApp.Mcp**：只读纯文本 MCP DTO 和服务接口。
+- **Patchouli.UI**：原生 Avalonia 桌面 UI。
+- **Patchouli.Core**：领域模型和应用程序契约。
+- **Patchouli.Infrastructure**：SQLite、迁移、快照、文件解析、凭据、OCR 编排和具体服务实现。
+- **Patchouli.Search**：搜索单元生成、SQLite FTS5 提供程序、查询重写、搜索配置文件和脏索引重建。
+- **Patchouli.Ocr**：OCR/HTR 预设、预设版本、适配器、队列契约、重试、暂存和候选采纳。
+- **Patchouli.Mcp**：只读纯文本 MCP DTO 和服务接口。
 
 ### 7.2 架构决策记录
 

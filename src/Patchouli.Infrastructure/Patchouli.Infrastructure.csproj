@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\Patchouli.Evidence\Patchouli.Evidence.csproj" />
+    <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
+    <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
+    <ProjectReference Include="..\Patchouli.Search\Patchouli.Search.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+        <_Parameter1>Patchouli.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="migrations\*.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

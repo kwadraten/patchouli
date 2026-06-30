@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
+    <ProjectReference Include="..\Patchouli.Search\Patchouli.Search.csproj" />
+    <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
+    <ProjectReference Include="..\Patchouli.Evidence\Patchouli.Evidence.csproj" />
+    <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+  </ItemGroup>
+</Project>
