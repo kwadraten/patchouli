@@ -9,6 +9,8 @@
   <ItemGroup>
     <PackageReference Include="Dapper" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="MuPDF.NET" />
+    <PackageReference Include="PDF4LLM" />
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
         <_Parameter1>Patchouli.Tests</_Parameter1>
     </AssemblyAttribute>

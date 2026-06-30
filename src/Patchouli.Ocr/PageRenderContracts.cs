@@ -59,10 +59,21 @@ public sealed record PageRenderResult(
     bool IsFromCache);
 
 public sealed record PdfPageRenderOutput(int WidthPixels, int HeightPixels, int Rotation, string CoordinateBasis, double BasisWidth, double BasisHeight, string RendererBasisVersion);
+public sealed record PdfPageRasterOutput(byte[] PngBytes, int WidthPixels, int HeightPixels, int Rotation, string CoordinateBasis, double BasisWidth, double BasisHeight, string RendererBasisVersion);
 
 public interface IPdfPageRenderer
 {
     Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath, int dpi, CancellationToken cancellationToken = default);
+}
+
+public interface IPdfPageMemoryRenderer
+{
+    Task<PdfPageRasterOutput> RenderPageToPngBytesAsync(string pdfPath, int pageIndex, int dpi, CancellationToken cancellationToken = default);
+}
+
+public interface IPdfPageRendererIdentity
+{
+    string GetRendererBasisVersion(int dpi);
 }
 
 public sealed record PdfRendererAvailability(string RendererName, bool IsAvailable, string Message);

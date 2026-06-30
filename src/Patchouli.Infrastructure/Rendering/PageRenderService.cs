@@ -41,17 +41,18 @@ public sealed class PageRenderService : IPageRenderService
             var assetId = request.FileAssetId?.ToString() ?? await connection.ExecuteScalarAsync<string?>("select file_asset_id from document_instances where document_instance_id=@Id;", new { Id = request.DocumentInstanceId.ToString() });
             if (assetId is null) return Result<PageRenderResult>.Failure(AppErrorCodes.NotFound, "Document instance has no source file asset.");
             var fileAssetId = FileAssetId.Parse(assetId);
+            var rendererBasisVersion = GetRendererBasisVersion(request.Dpi);
             var recordedStatus = await connection.ExecuteScalarAsync<string?>("select status from file_assets where file_asset_id=@Id;", new { Id = assetId });
-            if (recordedStatus == FileAssetStatus.Conflict) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.Conflict, request, page, "Source file conflict requires user confirmation before rendering."));
+            if (recordedStatus == FileAssetStatus.Conflict) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.Conflict, request, page, rendererBasisVersion, "Source file conflict requires user confirmation before rendering."));
             var resolution = await _fileResolution.ResolveFileAsync(fileAssetId, ResolveFilePurpose.RenderPage, cancellationToken);
             if (resolution.IsFailure) return Result<PageRenderResult>.Failure(resolution.ErrorCode!, resolution.ErrorMessage!);
-            if (resolution.Value.Status == FileAssetStatus.Changed) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.SourceChanged, request, page, "source_changed: rendering is blocked because existing bbox values may be bbox_basis_stale."));
-            if (resolution.Value.Status == FileAssetStatus.Conflict) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.Conflict, request, page, "Source file conflict requires user confirmation before rendering."));
-            if (resolution.Value.Status != FileAssetStatus.Available || string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath)) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.SourceMissing, request, page, resolution.Value.Warning ?? "Source file is unavailable."));
-            if (!string.Equals(Path.GetExtension(resolution.Value.ResolvedPath), ".pdf", StringComparison.OrdinalIgnoreCase)) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.UnsupportedFile, request, page, "Page rendering MVP supports PDF file assets only."));
+            if (resolution.Value.Status == FileAssetStatus.Changed) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.SourceChanged, request, page, rendererBasisVersion, "source_changed: rendering is blocked because existing bbox values may be bbox_basis_stale."));
+            if (resolution.Value.Status == FileAssetStatus.Conflict) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.Conflict, request, page, rendererBasisVersion, "Source file conflict requires user confirmation before rendering."));
+            if (resolution.Value.Status != FileAssetStatus.Available || string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath)) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.SourceMissing, request, page, rendererBasisVersion, resolution.Value.Warning ?? "Source file is unavailable."));
+            if (!string.Equals(Path.GetExtension(resolution.Value.ResolvedPath), ".pdf", StringComparison.OrdinalIgnoreCase)) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.UnsupportedFile, request, page, rendererBasisVersion, "Page rendering MVP supports PDF file assets only."));
 
             var sourceHash = await Sha256Async(resolution.Value.ResolvedPath, cancellationToken);
-            var key = new PageRenderCacheKey(library.Value.LibraryId, request.DocumentInstanceId, request.PageId, fileAssetId, page.PageIndex, request.Dpi, "fake-pdf-renderer-v1", sourceHash);
+            var key = new PageRenderCacheKey(library.Value.LibraryId, request.DocumentInstanceId, request.PageId, fileAssetId, page.PageIndex, request.Dpi, rendererBasisVersion, sourceHash);
             var path = CachePath(key);
             if (!request.ForceRerender && File.Exists(path)) return Result<PageRenderResult>.Success(new(PageRenderStatus.FromCache, request.PageId, request.DocumentInstanceId, path, 1200, 1600, request.Dpi, page.Rotation, CoordinateBasis.NormalizedPage, key.RendererBasisVersion, FileAssetStatus.Available, sourceHash, null, true));
 
@@ -61,10 +62,10 @@ public sealed class PageRenderService : IPageRenderService
                 await connection.ExecuteAsync("update pages set width=@Width,height=@Height,rotation=@Rotation,coordinate_basis=@Basis,basis_width=@BasisWidth,basis_height=@BasisHeight,renderer_basis_version=@Renderer,source_file_hash=@Hash,updated_at=@Updated where page_id=@PageId;", new { Width = (double?)output.WidthPixels, Height = (double?)output.HeightPixels, output.Rotation, Basis = output.CoordinateBasis, BasisWidth = output.BasisWidth, BasisHeight = output.BasisHeight, Renderer = output.RendererBasisVersion, Hash = sourceHash, Updated = _clock.UtcNow.ToUniversalTime().ToString("O"), PageId = request.PageId.ToString() });
                 return Result<PageRenderResult>.Success(new(PageRenderStatus.Rendered, request.PageId, request.DocumentInstanceId, path, output.WidthPixels, output.HeightPixels, request.Dpi, output.Rotation, output.CoordinateBasis, output.RendererBasisVersion, FileAssetStatus.Available, sourceHash, null, false));
             }
-            catch (PdfRendererUnavailableException ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RendererUnavailable, request, page, ex.Message)); }
-            catch (PdfRendererTimeoutException ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RendererTimeout, request, page, ex.Message)); }
+            catch (PdfRendererUnavailableException ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RendererUnavailable, request, page, rendererBasisVersion, ex.Message)); }
+            catch (PdfRendererTimeoutException ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RendererTimeout, request, page, rendererBasisVersion, ex.Message)); }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RenderFailed, request, page, $"PDF render failed: {ex.Message}")); }
+            catch (Exception ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RenderFailed, request, page, rendererBasisVersion, $"PDF render failed: {ex.Message}")); }
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Result<PageRenderResult>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
@@ -100,12 +101,13 @@ public sealed class PageRenderService : IPageRenderService
             ? availability.CheckAvailabilityAsync(cancellationToken)
             : Task.FromResult(new PdfRendererAvailability(_renderer.GetType().Name, true, "Renderer is configured."));
 
+    private string GetRendererBasisVersion(int dpi) => _renderer is IPdfPageRendererIdentity identity ? identity.GetRendererBasisVersion(dpi) : _renderer.GetType().Name;
     private string CachePath(PageRenderCacheKey key)
     {
         var token = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key.LibraryId}|{key.DocumentInstanceId}|{key.PageId}|{key.FileAssetId}|{key.PageIndex}|{key.Dpi}|{key.RendererBasisVersion}|{key.SourceFileHash}"))).ToLowerInvariant();
         return Path.Combine(_cacheRoot, key.DocumentInstanceId.ToString(), $"{token}.png");
     }
     private static async Task<string> Sha256Async(string path, CancellationToken cancellationToken) { await using var stream = File.OpenRead(path); return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant(); }
-    private static PageRenderResult SourceState(string status, PageRenderRequest request, PageRow page, string warning) => new(status, request.PageId, request.DocumentInstanceId, null, 0, 0, request.Dpi, page.Rotation, CoordinateBasis.NormalizedPage, "fake-pdf-renderer-v1", status == PageRenderStatus.SourceChanged ? FileAssetStatus.Changed : FileAssetStatus.Missing, null, warning, false);
+    private static PageRenderResult SourceState(string status, PageRenderRequest request, PageRow page, string rendererBasisVersion, string warning) => new(status, request.PageId, request.DocumentInstanceId, null, 0, 0, request.Dpi, page.Rotation, CoordinateBasis.NormalizedPage, rendererBasisVersion, status == PageRenderStatus.SourceChanged ? FileAssetStatus.Changed : FileAssetStatus.Missing, null, warning, false);
     private sealed class PageRow { public string PageId { get; set; } = ""; public string DocumentInstanceId { get; set; } = ""; public int PageIndex { get; set; } public int Rotation { get; set; } }
 }
