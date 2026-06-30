@@ -123,7 +123,7 @@ public sealed class OcrAdapterReadinessTests
     public void Product_ocr_boundary_is_documented_in_agent_prd()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md"))
-            .Should().Contain("OCR Preset").And.Contain("MCP cannot read provider secrets");
+            .Should().Contain("OCR Preset").And.Contain("MCP 无法读取提供程序密钥");
     }
 
     [Fact]
