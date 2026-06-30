@@ -12,6 +12,11 @@ The bibliographic identity that a researcher cites, such as a book, article, edi
 User-facing Chinese term: 题录. It has the same product meaning as citation: the citable bibliographic record, not the PDF file itself.
 _Avoid_: Book, PDF, file, attachment
 
+**Tag**:
+A user-editable label attached to an Item for organization and filtering. Tags originate from the `keyword` field in metadata sources (e.g. CSL JSON, BibTeX), but are an extension that allows arbitrary user editing — they are not tied to the original metadata keyword after import. The Item model stores tags as a JSON string array in `tags_json`; `keyword` is NOT stored independently. When importing literature metadata, the `keyword` field should be ingested into tags rather than kept as a separate field.
+User-facing Chinese term: 标签.
+_Avoid_: Keyword, subject, category
+
 **FileAsset**:
 The identity and verification record for an original user-owned file, independent of where that file currently lives.
 _Avoid_: PDF, attachment, path

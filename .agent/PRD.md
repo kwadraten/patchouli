@@ -240,7 +240,7 @@ v1 中的对象策略：
   | `status` | `status` | 可选，forthcoming、in press 等 |
   | `note` | `note` | 用户备注、注释 |
   | `abstract` | — | 扩展用于检索，不参与引用输出 |
-  | `keyword` | — | 扩展用于检索和分类 |
+  | `tags` | — | 用户自定义标签，JSON 字符串数组。导入文献元数据时，`keyword` 字段的值并入此处；不独立存储 `keyword`。支持全文搜索与过滤 |
 
   **2. 标识符字段：统一 map**
 
