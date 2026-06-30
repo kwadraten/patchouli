@@ -110,7 +110,7 @@ public sealed partial class MainWindow : Window
     {
         if (_viewModel.Shell.SelectedItem is not null)
         {
-            _viewModel.Shell.IsReadingMode = true;
+            _viewModel.Shell.SwitchToReadingModeCommand.Execute(null);
         }
     }
 

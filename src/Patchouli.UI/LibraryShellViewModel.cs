@@ -51,13 +51,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
         return Task.CompletedTask;
     }
 
-    public Task SwitchToReadingModeAsync()
+    public async Task SwitchToReadingModeAsync()
     {
         if (SelectedItem is not null)
         {
             IsReadingMode = true;
+            await _main.PdfPreview.LoadSelectedItemAsync(SelectedItem);
         }
-        return Task.CompletedTask;
     }
 
     public string LibraryName { get; set; } = "我的书库";
@@ -115,6 +115,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(ShowDeveloperTools));
         return Task.CompletedTask;
     }
+    public void NotifyMinerUTokenChanged()
+    {
+        Raise(nameof(MinerUToken));
+        Raise(nameof(MinerUTokenInput));
+    }
 
     public async Task RefreshItemsAsync()
     {
@@ -132,6 +137,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 coalesce(i.date, '') as Year,
                 coalesce(i.publication_title, '') as PublicationTitle,
                 d.document_instance_id as DocumentInstanceId,
+                f.file_asset_id as FileAssetId,
                 coalesce(d.status, 'unknown') as DocumentStatus,
                 coalesce(f.file_name, '') as FileName,
                 coalesce(f.original_path, '') as SourcePath,
@@ -157,6 +163,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 row.Year,
                 row.PublicationTitle,
                 row.DocumentInstanceId,
+                row.FileAssetId,
                 row.FileName,
                 row.SourcePath,
                 row.PageCount,
@@ -187,10 +194,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public async Task RunOcrForItemAsync(LibraryItemViewModel item)
     {
         SelectedItem = item;
-        if (string.IsNullOrWhiteSpace(MinerUToken))
+        var token = await ResolveMinerUTokenAsync();
+        if (string.IsNullOrWhiteSpace(token))
         {
             _pendingOcrItem = item;
-            MinerUTokenInput = MinerUToken;
+            MinerUTokenInput = token;
             ShowMinerUTokenPrompt = true;
             item.OcrStatus = "需要 MinerU API token。粘贴 token 后可继续 OCR。";
             _main.Report("运行 OCR 前需要 MinerU API token。");
@@ -224,7 +232,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 : services.CreateFirstRunWorkflow(MinerUClientFactory);
 
             var state = await workflow.RunMinerUExtractionAsync(
-                new MinerUConfiguration(MinerUToken, null, null, true, true, true),
+                _main.CreateMinerUConfiguration(token),
                 item.SourcePath,
                 Path.Combine(Path.GetTempPath(), "Patchouli", "mineru-cache"),
                 item.DocumentInstanceId);
@@ -241,6 +249,18 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
     }
 
+    private async Task<string> ResolveMinerUTokenAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(MinerUToken))
+            return MinerUToken.Trim();
+
+        var persisted = await _main.GetPersistedMinerUTokenAsync();
+        MinerUToken = persisted;
+        MinerUTokenInput = persisted;
+        NotifyMinerUTokenChanged();
+        return persisted;
+    }
+
     public async Task SubmitMinerUTokenAsync()
     {
         if (string.IsNullOrWhiteSpace(MinerUTokenInput))
@@ -249,8 +269,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        MinerUToken = MinerUTokenInput.Trim();
+        var token = MinerUTokenInput.Trim();
+        var persisted = await _main.SaveMinerUTokenAsync(token);
+        if (!persisted) return;
+
+        MinerUToken = token;
+        MinerUTokenInput = token;
         ShowMinerUTokenPrompt = false;
+        NotifyMinerUTokenChanged();
         Raise(nameof(ShowMinerUTokenPrompt));
 
         if (_pendingOcrItem is { } item)
@@ -329,6 +355,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     {
         SelectedItem = null;
         IsReadingMode = false;
+        _main.PdfPreview.Clear();
         return Task.CompletedTask;
     }
 
@@ -354,6 +381,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         public string Year { get; set; } = "";
         public string PublicationTitle { get; set; } = "";
         public string? DocumentInstanceId { get; set; }
+        public string? FileAssetId { get; set; }
         public string DocumentStatus { get; set; } = "";
         public string FileName { get; set; } = "";
         public string SourcePath { get; set; } = "";
@@ -396,6 +424,7 @@ public sealed class LibraryItemViewModel : ViewModelBase
         string year,
         string publicationTitle,
         string? documentInstanceId,
+        string? fileAssetId,
         string fileName,
         string sourcePath,
         int pageCount,
@@ -411,6 +440,7 @@ public sealed class LibraryItemViewModel : ViewModelBase
         Year = year;
         PublicationTitle = publicationTitle;
         DocumentInstanceId = documentInstanceId;
+        FileAssetId = fileAssetId;
         FileName = fileName;
         SourcePath = sourcePath;
         PageCount = pageCount;
@@ -428,6 +458,7 @@ public sealed class LibraryItemViewModel : ViewModelBase
     public string Year { get; }
     public string PublicationTitle { get; }
     public string? DocumentInstanceId { get; }
+    public string? FileAssetId { get; }
     public string FileName { get; }
     public string SourcePath { get; }
     public int PageCount { get; }

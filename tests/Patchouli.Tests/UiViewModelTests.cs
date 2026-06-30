@@ -1,5 +1,9 @@
 using System.IO.Compression;
+using Avalonia;
+using Avalonia.Headless;
+using Dapper;
 using FluentAssertions;
+using Patchouli.Core.Credentials;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
 using Patchouli.Mcp;
@@ -10,6 +14,12 @@ namespace Patchouli.Tests;
 
 public sealed class UiViewModelTests
 {
+    static UiViewModelTests()
+    {
+        AppBuilder.Configure<Application>()
+            .UseHeadless(new AvaloniaHeadlessPlatformOptions())
+            .SetupWithoutStarting();
+    }
     [Fact]
     public async Task LibraryViewModel_CreateLibrary_updates_current_library()
     {
@@ -275,14 +285,22 @@ public sealed class UiViewModelTests
 
             vm.IsLibraryVisible.Should().BeTrue();
             vm.Shell.Items.Should().ContainSingle();
-            vm.Shell.MinerUClientFactory = _ => new FakeMinerUClient(zipPath);
-            vm.Shell.MinerUToken = "token";
+            var services = await vm.ServicesAsync();
+            await using (var connection = services.ConnectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync();
+                (await connection.ExecuteScalarAsync<string>("select secret_value from provider_credentials where provider_id=@Provider;", new { Provider = ProviderIds.MinerU })).Should().Be("token");
+            }
+            string? tokenUsed = null;
+            vm.Shell.MinerUClientFactory = config => { tokenUsed = config.Token; return new FakeMinerUClient(zipPath); };
+            vm.Shell.MinerUToken = "";
+            vm.Shell.MinerUTokenInput = "";
 
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
+            tokenUsed.Should().Be("token");
             vm.Status.Should().Contain("MCP verification passed");
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
-            var services = await vm.ServicesAsync();
             var search = await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
             search.IsSuccess.Should().BeTrue(search.ErrorMessage);
             search.Value.Results.SelectMany(r => r.MatchedUnits).Should().Contain(u => u.Text.Contains("ui selected item mineru searchable text"));
@@ -383,6 +401,36 @@ public sealed class UiViewModelTests
         }
     }
 
+    [Fact]
+    public async Task Shell_reading_mode_renders_pdf_preview_in_memory()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-preview-{Guid.NewGuid():N}")).FullName;
+        var path = Path.Combine(root, "preview.sqlite");
+        var pdf = Path.Combine(root, "preview.pdf");
+        try
+        {
+            await File.WriteAllTextAsync(pdf, CreateMinimalPdf());
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
+            import.Success.Should().BeTrue(import.ErrorMessage);
+            await vm.Shell.RefreshItemsAsync();
+
+            await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
+
+            vm.Shell.ShowPdfReader.Should().BeTrue();
+            vm.PdfPreview.Image.Should().NotBeNull(vm.PdfPreview.Status);
+            vm.PdfPreview.Status.Should().Contain("mupdf-net-dpi120");
+            Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
     private sealed class FakeClipboard : IClipboardService
     {
         public string? Text { get; private set; }
@@ -405,6 +453,29 @@ public sealed class UiViewModelTests
         using var writer = new StreamWriter(entry.Open());
         writer.Write(contentListJson);
         return zipPath;
+    }
+
+    private static string CreateMinimalPdf()
+    {
+        var objects = new[]
+        {
+            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+            "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
+            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Resources << >> >>\nendobj\n"
+        };
+        var builder = new System.Text.StringBuilder("%PDF-1.4\n");
+        var offsets = new List<int>();
+        foreach (var item in objects)
+        {
+            offsets.Add(System.Text.Encoding.ASCII.GetByteCount(builder.ToString()));
+            builder.Append(item);
+        }
+
+        var xref = System.Text.Encoding.ASCII.GetByteCount(builder.ToString());
+        builder.Append("xref\n0 4\n0000000000 65535 f \n");
+        foreach (var offset in offsets) builder.Append(offset.ToString("D10")).Append(" 00000 n \n");
+        builder.Append("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n").Append(xref).Append("\n%%EOF\n");
+        return builder.ToString();
     }
 
     private sealed class FakeMinerUClient : IMinerUClient

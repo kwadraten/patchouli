@@ -3,9 +3,11 @@ using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Avalonia.Media;
+using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Snapshots;
@@ -35,7 +37,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     private McpHttpServer? _mcpServer;
     private readonly bool _autoStartMcpServer;
     private readonly int _mcpPort;
-    private string _runtimeDatabasePath = AppRuntimeOptions.FromEnvironment().RuntimeDatabasePath;
+    private readonly PatchouliAppSettings _settings;
+    private string _runtimeDatabasePath;
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath=value; Raise(); } }
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
@@ -52,21 +55,22 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
-    public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
+    public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public PdfPreviewViewModel PdfPreview { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort)
     {
+        _settings=PatchouliAppSettings.Load();
+        _runtimeDatabasePath=_settings.Runtime.RuntimeDatabasePath;
         _autoStartMcpServer=autoStartMcpServer;
         _mcpPort=mcpPort;
         McpEndpoint=$"http://localhost:{mcpPort}";
         Clipboard=clipboard??new AvaloniaClipboardService();
-        Logger=logger??new SimpleFileLogger(AppRuntimeOptions.FromEnvironment().LogDirectory);
-        Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
-        var minerUToken = Environment.GetEnvironmentVariable("MINERU_TOKEN")?.Trim() ?? "";
-        Shell.MinerUToken=minerUToken;
-        Shell.MinerUTokenInput=minerUToken;
-        OpenDatabaseCommand=new(async()=>{await StopMcpServerAsync("正在切换运行数据库。");_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));if(_autoStartMcpServer)await StartMcpServerAsync(_services);});
+        Logger=logger??new SimpleFileLogger(_settings.Runtime.LogDirectory);
+        PdfPreview=new(this); Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
+        Shell.MinerUToken=_settings.MinerU.Token;
+        Shell.MinerUTokenInput=_settings.MinerU.Token;
+        OpenDatabaseCommand=new(async()=>{await StopMcpServerAsync("正在切换运行数据库。");_services=await AppServices.CreateAsync(RuntimeDatabasePath,_settings); await LoadPersistedMinerUTokenAsync(); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));if(_autoStartMcpServer)await StartMcpServerAsync(_services);});
         FirstRun=CreateFirstRunViewModel();
         CompleteFirstRunCommand=new(CompleteFirstRunAsync);
     }
@@ -74,7 +78,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (_services is not null) return _services;
 
-        _services = await AppServices.CreateAsync(RuntimeDatabasePath);
+        _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
+        await LoadPersistedMinerUTokenAsync();
         if (_autoStartMcpServer)
         {
             await StartMcpServerAsync(_services);
@@ -167,11 +172,37 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task CompleteFirstRunAsync()
     {
         await FirstRun.FinishSetupCommand.ExecuteAsync();
-        Shell.MinerUToken=FirstRun.MinerUToken;
-        Shell.MinerUTokenInput=FirstRun.MinerUToken;
         if (!FirstRun.IsComplete) return;
+        var persisted = await SaveMinerUTokenAsync(FirstRun.MinerUToken);
+        if (!persisted) return;
+        Shell.MinerUToken=FirstRun.MinerUToken.Trim();
+        Shell.MinerUTokenInput=FirstRun.MinerUToken.Trim();
         Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
         await HideInlineFirstRunAsync();
+    }
+    public MinerUConfiguration CreateMinerUConfiguration(string token) => _settings.MinerU.ToConfiguration(token);
+    public async Task<string> GetPersistedMinerUTokenAsync()
+    {
+        var services = await ServicesAsync();
+        var secret = await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU);
+        return secret.IsSuccess ? secret.Value : "";
+    }
+    public async Task<bool> SaveMinerUTokenAsync(string token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        var services = await ServicesAsync();
+        var saved = await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token", token.Trim());
+        if (saved.IsFailure) { Report(saved.ErrorMessage ?? "无法保存 MinerU API token。"); return false; }
+        return true;
+    }
+    private async Task LoadPersistedMinerUTokenAsync()
+    {
+        var token = await GetPersistedMinerUTokenAsync();
+        if (string.IsNullOrWhiteSpace(token)) token = _settings.MinerU.Token;
+        Shell.MinerUToken=token;
+        Shell.MinerUTokenInput=token;
+        FirstRun.MinerUToken=token;
+        Shell.NotifyMinerUTokenChanged();
     }
     public void RaiseShellSelectionChanged() => Raise(nameof(ShowSelectedDocumentTab));
     public async Task LogOperationAsync(string operation, string message)

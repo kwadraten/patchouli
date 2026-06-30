@@ -35,9 +35,10 @@ namespace Patchouli.UI;
 public sealed class AppServices
 {
     private IOcrQueueScheduler? _ocrQueue;
-    private AppServices(string runtimeDatabasePath)
+    private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings)
     {
         RuntimeDatabasePath = runtimeDatabasePath;
+        Settings = settings;
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = new SystemClock();
         MigrationRunner = new MigrationRunner(ConnectionFactory, Path.Combine(AppContext.BaseDirectory, "migrations"));
@@ -55,7 +56,9 @@ public sealed class AppServices
         adapterRegistry.RegisterAdapter(new LocalPlaceholderOcrAdapter(ModelPathValidator));
 
         OcrAdapters = adapterRegistry;
-        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, new ExternalProcessPdfPageRenderer(new SystemProcessRunner()), Clock, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Patchouli", "cache", "page-renders"));
+        var pdfRenderer = new MuPdfNetPdfPageRenderer();
+        PdfPreviewRenderer = pdfRenderer;
+        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Patchouli", "cache", "page-renders"));
         PageCoordinates = new PageCoordinateService(ConnectionFactory);
         var searchUnitBuilder = new SearchUnitBuilder(ConnectionFactory, Clock);
         SearchUnits = searchUnitBuilder;
@@ -79,6 +82,7 @@ public sealed class AppServices
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, MinerUImporter, SearchUnits, SearchIndex, McpVerification);
     }
     public string RuntimeDatabasePath { get; }
+    public PatchouliAppSettings Settings { get; }
     public SqliteConnectionFactory ConnectionFactory { get; }
     public IClock Clock { get; }
     public MigrationRunner MigrationRunner { get; }
@@ -93,6 +97,7 @@ public sealed class AppServices
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public IPageRenderService PageRenders { get; }
+    public IPdfPageMemoryRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
     public IOcrRunCoordinator Ocr { get; }
     public ISearchUnitBuilder SearchUnits { get; }
@@ -131,12 +136,13 @@ public sealed class AppServices
         _ocrQueue = new OcrQueueScheduler(library.Value.LibraryId, Clock, executor);
         return Result<IOcrQueueScheduler>.Success(_ocrQueue);
     }
-    public static async Task<AppServices> CreateAsync(string path)
+    public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        var logger = new SimpleFileLogger(AppRuntimeOptions.FromEnvironment().LogDirectory);
+        settings ??= PatchouliAppSettings.Load();
+        var logger = new SimpleFileLogger(settings.Runtime.LogDirectory);
         try { await logger.LogAsync("startup", $"Opening runtime database {path}"); } catch { }
-        var services = new AppServices(path);
+        var services = new AppServices(path, settings);
         await services.MigrationRunner.RunAsync();
         try { await logger.LogAsync("migration", "Pending migrations completed."); } catch { }
         return services;

@@ -111,7 +111,7 @@ public sealed class AlphaStabilizationTests
     [Fact]
     public void Runtime_options_keep_database_out_of_default_sync_root()
     {
-        var options = AppRuntimeOptions.FromEnvironment();
+        var options = AppRuntimeOptions.FromAppSettings();
         Path.GetFullPath(options.RuntimeDatabasePath).Should().NotStartWith(Path.GetFullPath(options.DefaultSyncRoot));
     }
 

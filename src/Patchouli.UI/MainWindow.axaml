@@ -359,27 +359,27 @@
                   <Separator Width="1" Height="16" Background="{DynamicResource OutlineVariantBrush}" VerticalAlignment="Center" Margin="4,0" />
 
                   <!-- Page navigation -->
-                  <Button Background="Transparent" BorderThickness="0" Padding="6">
+                  <Button Background="Transparent" BorderThickness="0" Padding="6" Command="{Binding PdfPreview.PreviousPageCommand}">
                     <PathIcon Data="{StaticResource IconChevronLeft}" Width="14" Height="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </Button>
-                  <TextBox Text="1" Width="36" Height="24" FontSize="12" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0" />
-                  <TextBlock Text="/ 12" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" Margin="4,0" />
-                  <Button Background="Transparent" BorderThickness="0" Padding="6">
+                  <TextBox Text="{Binding PdfPreview.PageNumberText}" Width="36" Height="24" FontSize="12" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0" IsReadOnly="True" />
+                  <TextBlock Text="{Binding PdfPreview.PageTotalText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" Margin="4,0" />
+                  <Button Background="Transparent" BorderThickness="0" Padding="6" Command="{Binding PdfPreview.NextPageCommand}">
                     <PathIcon Data="{StaticResource IconChevronRight}" Width="14" Height="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </Button>
                 </StackPanel>
 
                 <!-- Zoom Controls -->
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-                  <Button Background="Transparent" BorderThickness="0" Padding="6">
+                  <Button Background="Transparent" BorderThickness="0" Padding="6" Command="{Binding PdfPreview.ZoomOutCommand}">
                     <TextBlock Text="-" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                   </Button>
-                  <TextBlock Text="100%" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" Margin="4,0" />
-                  <Button Background="Transparent" BorderThickness="0" Padding="6">
+                  <TextBlock Text="{Binding PdfPreview.ZoomText}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" Margin="4,0" />
+                  <Button Background="Transparent" BorderThickness="0" Padding="6" Command="{Binding PdfPreview.ZoomInCommand}">
                     <TextBlock Text="+" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                   </Button>
                   <Separator Width="1" Height="16" Background="{DynamicResource OutlineVariantBrush}" VerticalAlignment="Center" Margin="8,0" />
-                  <Button Background="Transparent" BorderThickness="0" Padding="6">
+                  <Button Background="Transparent" BorderThickness="0" Padding="6" Command="{Binding PdfPreview.ReloadCommand}">
                     <PathIcon Data="{StaticResource IconRefresh}" Width="14" Height="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </Button>
                 </StackPanel>
@@ -399,15 +399,19 @@
             <!-- PDF Viewer Canvas -->
             <Border Grid.Row="1" Background="{DynamicResource SurfaceContainerHighestBrush}" Padding="20">
               <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-                <!-- PDF Page representation with shadow -->
-                <Border Width="620" Height="800" Background="#FFFFFF" BorderThickness="1" BorderBrush="#CAC4D5" CornerRadius="4" BoxShadow="0 4 16 #22000000" HorizontalAlignment="Center" VerticalAlignment="Top">
-                  <Grid>
-                    <!-- Temporary loading/placeholder info -->
-                    <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Border Background="#FFFFFF" BorderThickness="1" BorderBrush="#CAC4D5" CornerRadius="4" BoxShadow="0 4 16 #22000000" HorizontalAlignment="Center" VerticalAlignment="Top">
+                  <Grid MinWidth="360" MinHeight="480">
+                    <Image Source="{Binding PdfPreview.Image}" Width="{Binding PdfPreview.DisplayWidth}" Stretch="Uniform" IsVisible="{Binding PdfPreview.HasImage}" />
+                    <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding PdfPreview.HasNoImage}">
                       <PathIcon Data="{StaticResource IconFolderOpen}" Width="32" Height="32" Foreground="{DynamicResource PrimaryBrush}" />
+                      <TextBlock Text="PDF 预览" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
                       <TextBlock Text="{Binding Shell.SelectedItem.Title}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" Width="400" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
-                      <TextBlock Text="[ MuPDF.NET 渲染集成开发中 ]" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" HorizontalAlignment="Center" />
+                      <TextBlock Text="{Binding PdfPreview.Status}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" Width="420" TextAlignment="Center" />
+                      <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding PdfPreview.IsBusy}" />
                     </StackPanel>
+                    <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" IsVisible="{Binding PdfPreview.HasImage}">
+                      <TextBlock Text="{Binding PdfPreview.Status}" FontSize="11" Foreground="#5F5A66" />
+                    </Border>
                   </Grid>
                 </Border>
               </ScrollViewer>
