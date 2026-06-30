@@ -112,6 +112,8 @@ public sealed class AppServices
     public PdfImportWorkflow PdfImport { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
+    public FirstRunWorkflow CreateFirstRunWorkflow(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory) =>
+        new(Library, PdfDiscovery, PdfImport, MinerUImporter, SearchUnits, SearchIndex, McpVerification, minerUClientFactory);
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)
     {
         if (_ocrQueue is not null)

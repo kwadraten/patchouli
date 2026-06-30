@@ -17,7 +17,7 @@
 
 构建一个类似 Zotero / Calibre / DEVONthink 的个人文献管理器，并增加可编程增强层：
 
-- 题录管理：以 item/work 为学术引用身份，支持基础元数据、可扩展 identifiers、标签、collection 和自定义字段。
+- 题录管理：以题录（Item/Work）为学术引用身份，支持基础元数据、可扩展 identifiers、标签、collection 和自定义字段。
 - 文件管理：PDF/图像不入库，由用户自己的目录和云盘管理；程序通过 hash、known locations 和搜索目录重新定位。
 - 同步：运行库与发布快照分离；发布快照由 SQLite shards + manifest 组成，可通过 Google Drive、OneDrive、Syncthing、NAS 等同步。
 - OCR/HTR：用户手动选择 OCR Preset，可按 document/page/bbox 运行，支持云端或本地模型。
@@ -194,14 +194,14 @@ Object strategy in v1:
 
 ### 6.7 Item Metadata and Bibliographic Model
 
-- Core model has three layers: item/work, file_asset, document_instance.
-- item/work is the citation identity.
+- Core model has three layers: 题录 (Item/Work), file_asset, document_instance.
+- 题录 (Item/Work) is the citation identity.
 - file_asset is file identity, location, and verification.
-- document_instance is a concrete PDF/scan manifestation under an item and owns page/OCR/layout/search/vector artifacts.
-- Different citation identities must be different items: editions, translations, volumes when citation differs, preprint vs official if metadata differs.
+- document_instance is a concrete PDF/scan manifestation under a 题录 (Item) and owns page/OCR/layout/search/vector artifacts.
+- Different citation identities must be different 题录 (Items): editions, translations, volumes when citation differs, preprint vs official if metadata differs.
 - Same citation identity can have multiple document instances: different scans, OCR PDFs, split PDFs, missing-page supplements.
 - Default search targets primary document_instance only; advanced search can include alternates, partials, deprecated instances, or a specific document instance.
-- First version item metadata fields:
+- First version 题录 metadata fields:
   - item_id, item_type, title, subtitle, creators, date, publication_title, publisher, place, volume, issue, pages, language, abstract, tags, collections, custom_fields.
 - identifiers are extensible with scheme/value/note and built-in common schemes DOI, ISBN, ISSN, URL, archive_id, call_number, jpno, ndlbibid.
 - CSL rendering, bibliography export, citekey workflows, authority control, creator disambiguation, multilingual titles, and detailed edition/history fields are important TODOs.
@@ -465,54 +465,33 @@ The example payload is illustrative; real payload length may be longer depending
 
 ## 7. Implementation Decisions
 
+Implementation rationale lives in `.agent/adr/`; this PRD remains the product contract.
+
 ### 7.1 Module Shape
 
-- LiteratureApp.UI: native Avalonia 12 desktop UI.
-- LiteratureApp.Core: domain models, library identity, item metadata, document instances, OCR revisions, layout tree, evidence refs.
-- LiteratureApp.Infrastructure: SQLite shards, Dapper/manual SQL, file watcher, snapshot publish/import, file resolution, provider config, credential store.
-- LiteratureApp.Search: search unit generation, SQLite FTS5 provider, query rewriting, Search Profiles, dirty index rebuild.
-- LiteratureApp.Ocr: OCR/HTR presets, preset versions, adapters, model/path validation, queue, retry, staging/candidate adoption.
-- LiteratureApp.Mcp: read-only text-only MCP tools and evidence resolution.
+- LiteratureApp.UI: native Avalonia desktop UI.
+- LiteratureApp.Core: domain models and application contracts.
+- LiteratureApp.Infrastructure: SQLite, migrations, snapshots, file resolution, credentials, OCR orchestration, and concrete service implementations.
+- LiteratureApp.Search: search unit generation, SQLite FTS5 provider, query rewriting, Search Profiles, and dirty index rebuild.
+- LiteratureApp.Ocr: OCR/HTR presets, preset versions, adapters, queue contracts, retry, staging, and candidate adoption.
+- LiteratureApp.Mcp: read-only text-only MCP DTOs and service surface.
 
-### 7.2 Deep Modules
+### 7.2 Architecture Decision Records
 
-- LibraryIdentityService: library_id creation, rename-safe identity, branch/library mismatch detection.
-- SnapshotPublisher: active DB checkpoint, shard selection, content-addressed manifest generation, current pointer update.
-- SnapshotImporter: manifest validation, branch detection, staging import, branch action orchestration.
-- CredentialStore: plaintext synced credential store, sensitive_mutable shard handling, emergency purge/revoke.
-- FileResolutionService: known locations, root availability, quick/full hash matching, conflict/changed/missing status.
-- OcrRunCoordinator: run lifecycle, staging, cancellation rollback, completed_with_errors, retry runs, serialized adoption.
-- OcrQueueScheduler: concurrency limits, priority + aging, pause/resume, transient retry.
-- LayoutTreeService: tree mutation, bbox overlap validation, text_policy resolution, table modeling.
-- PageCoordinateService: per-page coordinate basis, upright normalization, source_changed/bbox_basis_stale warnings.
-- SearchUnitBuilder: index_policy traversal, unit identity preservation, supersedes links, plain text generation.
-- EvidenceReferenceService: evidence_ref_id encode/decode, pinned/current/compare resolution, successor chain handling.
-- SearchService: query rewriting, FTS execution, page aggregation, pagination, index status handling.
-- McpReadApi: text-only tool surface, field filtering, no path/secrets/actions.
-
-### 7.3 Storage Technology
-
-- SQLite is primary database.
-- Multiple SQLite shards form one logical library.
-- Dapper + handwritten SQL are preferred over EF Core.
-- Local FTS index is rebuildable and not synced.
-- search_unit metadata is persisted and synced.
-
-### 7.4 Technology Rationale
-
-- .NET is preferred because it offers mature desktop packaging, strong SQLite access, stable Windows integration, and practical cross-platform support.
-- Native Avalonia 12 is preferred for now because the app is desktop-first and needs native-feeling long-running workflows, file dialogs, keyboard-heavy UI, and local background workers.
-- F# is preferred where it improves domain modeling, immutable state transitions, parsers, discriminated unions, and evidence/status handling.
-- C# may be used where library ergonomics, UI bindings, interop, or ecosystem support make it lower risk.
-- Dapper/manual SQL is preferred because shard layout, migrations, FTS, and append/revision semantics need explicit control.
-- Tauri/Rust and Electron/TypeScript remain plausible alternatives, but v1 optimizes for desktop app velocity and .NET ecosystem coherence.
-
-### 7.5 Security and Trust Boundaries
-
-- Provider secrets are stored in synced plaintext credential storage by first-version decision, but not in immutable historical data shards.
-- User is responsible for trusting devices, sync service, and sync folder access control.
-- MCP cannot expose secrets, provider config, local paths, file URLs, cache paths, or images.
-- There is no first-version library-level encryption or master password.
+- `.agent/adr/0001-keep-runtime-database-out-of-sync-roots.md`
+- `.agent/adr/0002-use-content-addressed-sqlite-snapshot-shards.md`
+- `.agent/adr/0003-keep-original-files-outside-the-database.md`
+- `.agent/adr/0004-use-path-independent-library-identity.md`
+- `.agent/adr/0005-separate-item-fileasset-and-documentinstance.md`
+- `.agent/adr/0006-version-ocr-presets-for-provenance.md`
+- `.agent/adr/0007-stage-ocr-before-current-adoption.md`
+- `.agent/adr/0008-use-layout-tree-as-source-for-search-units.md`
+- `.agent/adr/0009-make-evidence-refs-stable-and-pinned-by-default.md`
+- `.agent/adr/0010-keep-mcp-read-only-and-text-only.md`
+- `.agent/adr/0011-create-branches-on-snapshot-divergence.md`
+- `.agent/adr/0012-use-dapper-and-manual-sql.md`
+- `.agent/adr/0013-use-dotnet-and-avalonia-for-the-desktop-app.md`
+- `.agent/adr/0014-use-mineru-as-first-product-ocr-provider.md`
 
 ## 8. Sizing Assumptions and Performance Targets
 

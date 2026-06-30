@@ -54,7 +54,7 @@ internal sealed class MinerULayoutNodeMapper
         double pageWidth,
         double pageHeight)
     {
-        var (nodeType, textPolicy, text) = MapTypeAndText(block, pageWidth, pageHeight);
+        var (nodeType, textPolicy, text) = MapTypeAndText(block);
 
         if (nodeType is null)
             return null;
@@ -84,7 +84,7 @@ internal sealed class MinerULayoutNodeMapper
     }
 
     private static (string? NodeType, string TextPolicy, string? Text) MapTypeAndText(
-        MinerUContentBlock block, double pageWidth, double pageHeight)
+        MinerUContentBlock block)
     {
         var blockType = block.Type?.ToLowerInvariant() ?? "";
         var text = block.Text;
@@ -95,9 +95,10 @@ internal sealed class MinerULayoutNodeMapper
             "text" or "paragraph" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),
             "title" or "heading" => (LayoutNodeType.Heading, TextPolicy.Own, text),
             "table" => (LayoutNodeType.Table, TextPolicy.Own, text ?? latex),
-            "formula" when !string.IsNullOrWhiteSpace(latex) => (LayoutNodeType.Paragraph, TextPolicy.Own, latex),
-            "formula" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),
-            "image" or "figure" => (LayoutNodeType.Custom, TextPolicy.None, null),
+            "formula" or "equation" when !string.IsNullOrWhiteSpace(latex) => (LayoutNodeType.Paragraph, TextPolicy.Own, latex),
+            "formula" or "equation" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),
+            "image" or "figure" when string.IsNullOrWhiteSpace(text) => (null, TextPolicy.None, null),
+            "image" or "figure" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),
             "page_header" or "header" => (LayoutNodeType.Header, TextPolicy.Own, text),
             "page_footer" or "footer" => (LayoutNodeType.Footer, TextPolicy.Own, text),
             "page_number" => (LayoutNodeType.PageNumber, TextPolicy.Own, text),

@@ -275,9 +275,19 @@ public sealed class LocalImageOcrAdapterTests
         JsonSerializer.Serialize((await c.Mcp.GetDocumentStatusAsync(c.DocumentInstanceId)).Value).Should().NotContain(c.ImagePath);
     }
 
-    [Fact] public void README_states_pdf_ocr_not_implemented() => File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("PDF OCR");
-    [Fact] public void KnownIssues_mentions_tesseract_language_data() => File.ReadAllText(TestPaths.FromRepositoryRoot("docs", "KNOWN_ISSUES_ALPHA.md")).Should().Contain("language data");
-    [Fact] public void No_cloud_ocr_or_credential_ui_added() => File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("cloud OCR").And.Contain("credential management UI");
+    [Fact]
+    public void Product_startup_does_not_register_legacy_local_image_adapter()
+    {
+        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "LiteratureApp.UI", "AppServices.cs"))
+            .Should().NotContain("RegisterAdapter(new TesseractCliAdapter");
+    }
+
+    [Fact]
+    public void First_run_ui_mentions_mineru_not_legacy_local_ocr()
+    {
+        var ui = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "LiteratureApp.UI", "MainWindow.axaml"));
+        ui.Should().Contain("MinerU").And.NotContain("Tesseract");
+    }
 
     private static TesseractCliAdapter Adapter() => new(new FakeProcessRunner());
     private static OcrPresetVersion Version(string? executablePath = null, string parameters = "{}") => new(OcrPresetVersionId.New(), OcrPresetId.New(), OcrEngineIds.TesseractCli, OcrModelIds.TesseractDefault, executablePath, parameters, false, DateTimeOffset.UtcNow);

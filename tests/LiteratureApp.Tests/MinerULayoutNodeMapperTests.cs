@@ -83,4 +83,27 @@ public sealed class MinerULayoutNodeMapperTests
         bbox.Value.Width.Should().BeApproximately(0.5, 0.01);
         bbox.Value.Height.Should().BeApproximately(0.5, 0.01);
     }
+
+    [Fact]
+    public void MapDocument_skips_images_without_text()
+    {
+        var doc = new MinerUContentListDocument([
+            new MinerUContentListPage(1, 1000, 1000, [
+                new MinerUContentBlock("image", [0, 0, 1000, 1000], null, null, null),
+                new MinerUContentBlock("text", [0, 0, 1000, 100], "Visible", null, null)
+            ])
+        ]);
+        var docId = new DocumentInstanceId(Guid.NewGuid());
+        var revId = new LayoutRevisionId(Guid.NewGuid());
+        var pages = new[]
+        {
+            new LiteratureApp.Core.Layout.Page(PageId.New(), docId, 0, null, null, null, 0, "normalized", null, null, "test", null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+        };
+
+        var mapper = new MinerULayoutNodeMapper();
+        var nodes = mapper.MapDocument(doc, docId, revId, pages);
+
+        nodes.Should().ContainSingle();
+        nodes[0].OwnText.Should().Be("Visible");
+    }
 }

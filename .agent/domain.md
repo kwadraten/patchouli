@@ -16,7 +16,7 @@ Before exploring, read these when they exist:
 
 - `.agent/CONTEXT.md` for project domain language and glossary.
 - `.agent/adr/` for architectural decision records relevant to the area being changed.
-- `.agent/PRD.md` and `.agent/draft.md` when product intent, scope, or roadmap context matters.
+- `.agent/PRD.md` when product intent, scope, or roadmap context matters.
 
 If `.agent/CONTEXT.md` or `.agent/adr/` do not exist yet, proceed silently. Do not suggest creating them upfront unless the current task is explicitly about domain modeling, architecture documentation, or recording a decision.
 
@@ -28,7 +28,6 @@ If `.agent/CONTEXT.md` or `.agent/adr/` do not exist yet, proceed silently. Do n
 ├── .agent/
 │   ├── CONTEXT.md
 │   ├── PRD.md
-│   ├── draft.md
 │   ├── domain.md
 │   ├── issue-tracker.md
 │   ├── triage-labels.md

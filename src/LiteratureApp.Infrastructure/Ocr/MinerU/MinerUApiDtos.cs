@@ -3,11 +3,16 @@ using System.Text.Json.Serialization;
 namespace LiteratureApp.Infrastructure.Ocr.MinerU;
 
 internal sealed record MinerUBatchUrlRequest(
-    [property: JsonPropertyName("files")] IReadOnlyList<MinerUBatchUrlFile> Files);
+    [property: JsonPropertyName("files")] IReadOnlyList<MinerUBatchUrlFile> Files,
+    [property: JsonPropertyName("model_version")] string ModelVersion,
+    [property: JsonPropertyName("language")] string Language,
+    [property: JsonPropertyName("enable_table")] bool EnableTable,
+    [property: JsonPropertyName("enable_formula")] bool EnableFormula);
 
 internal sealed record MinerUBatchUrlFile(
-    [property: JsonPropertyName("filename")] string FileName,
-    [property: JsonPropertyName("file_size")] long FileSize);
+    [property: JsonPropertyName("name")] string FileName,
+    [property: JsonPropertyName("is_ocr")] bool IsOcr,
+    [property: JsonPropertyName("data_id")] string DataId);
 
 internal sealed record MinerUBatchUrlResponse(
     [property: JsonPropertyName("data")] MinerUBatchUrlData? Data,
@@ -16,7 +21,8 @@ internal sealed record MinerUBatchUrlResponse(
 
 internal sealed record MinerUBatchUrlData(
     [property: JsonPropertyName("batch_id")] string BatchId,
-    [property: JsonPropertyName("files")] IReadOnlyList<MinerUFileUrlItem> Files);
+    [property: JsonPropertyName("file_urls")] IReadOnlyList<string>? FileUrls,
+    [property: JsonPropertyName("files")] IReadOnlyList<MinerUFileUrlItem>? Files);
 
 internal sealed record MinerUFileUrlItem(
     [property: JsonPropertyName("filename")] string FileName,

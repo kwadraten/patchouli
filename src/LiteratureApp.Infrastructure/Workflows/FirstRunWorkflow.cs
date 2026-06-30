@@ -17,6 +17,7 @@ public sealed class FirstRunWorkflow
     private readonly ISearchUnitBuilder _searchUnitBuilder;
     private readonly ISearchIndexRebuilder _searchIndexRebuilder;
     private readonly McpVerificationService _mcpVerificationService;
+    private readonly Func<MinerUConfiguration, IMinerUClient> _minerUClientFactory;
 
     public FirstRunWorkflow(
         ILibraryIdentityService libraryIdentityService,
@@ -25,7 +26,8 @@ public sealed class FirstRunWorkflow
         IMinerUResultImporter minerUResultImporter,
         ISearchUnitBuilder searchUnitBuilder,
         ISearchIndexRebuilder searchIndexRebuilder,
-        McpVerificationService mcpVerificationService)
+        McpVerificationService mcpVerificationService,
+        Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null)
     {
         _libraryIdentityService = libraryIdentityService;
         _pdfDiscoveryService = pdfDiscoveryService;
@@ -34,6 +36,7 @@ public sealed class FirstRunWorkflow
         _searchUnitBuilder = searchUnitBuilder;
         _searchIndexRebuilder = searchIndexRebuilder;
         _mcpVerificationService = mcpVerificationService;
+        _minerUClientFactory = minerUClientFactory ?? CreateMinerUClient;
     }
 
     public async Task<FirstRunWorkflowState> CreateLibraryAsync(
@@ -58,7 +61,7 @@ public sealed class FirstRunWorkflow
                 null, null, null, null, "No PDF files found.", false);
 
         return new FirstRunWorkflowState(FirstRunStep.Import,
-            $"Found {result.TotalCount} PDF candidate(s). Select one to import.",
+            $"Found {result.TotalCount} PDF candidate(s). Importing discovered files as library items.",
             null, null, null, null, null, null, false);
     }
 
@@ -84,40 +87,55 @@ public sealed class FirstRunWorkflow
         string documentInstanceId,
         CancellationToken cancellationToken = default)
     {
-        var options = new MinerUOptions
+        if (string.IsNullOrWhiteSpace(config.Token))
+            return RequireMinerUTokenState(pdfPath, documentInstanceId);
+
+        var client = _minerUClientFactory(config);
+        try
         {
-            Token = config.Token,
-            BaseUrl = config.BaseUrl ?? "https://mineru.net",
-            ModelVersion = config.ModelVersion ?? "vlm",
-            IsOcr = config.IsOcr,
-            EnableTable = config.EnableTable,
-            EnableFormula = config.EnableFormula
-        };
+            var downloader = new MinerUResultDownloader(client);
 
-        using var client = new MinerUClient(options);
-        var downloader = new MinerUResultDownloader(client);
+            var downloadResult = await downloader.UploadAndExtractAsync(
+                pdfPath, cacheDirectory, cancellationToken);
 
-        var downloadResult = await downloader.UploadAndExtractAsync(
-            pdfPath, cacheDirectory, cancellationToken);
+            if (downloadResult.IsFailure)
+                return new FirstRunWorkflowState(FirstRunStep.Extract,
+                    downloadResult.ErrorMessage ?? "MinerU extraction failed.",
+                    pdfPath, null, null, null, documentInstanceId, downloadResult.ErrorMessage, false);
 
-        if (downloadResult.IsFailure)
-            return new FirstRunWorkflowState(FirstRunStep.Extract,
-                downloadResult.ErrorMessage ?? "MinerU extraction failed.",
-                pdfPath, null, null, null, documentInstanceId, downloadResult.ErrorMessage, false);
+            var importRequest = new MinerUImportRequest(
+                downloadResult.Value.ZipPath, documentInstanceId, null);
 
-        var importRequest = new MinerUImportRequest(
-            downloadResult.Value.ZipPath, documentInstanceId, null);
+            var importResult = await _minerUResultImporter.ImportResultZipAsync(importRequest, cancellationToken);
+            if (importResult.IsFailure)
+                return new FirstRunWorkflowState(FirstRunStep.Extract,
+                    importResult.ErrorMessage ?? "Failed to import MinerU results.",
+                    pdfPath, null, null, null, documentInstanceId, importResult.ErrorMessage, false);
+        }
+        finally
+        {
+            if (client is IDisposable disposable)
+                disposable.Dispose();
+        }
 
-        var importResult = await _minerUResultImporter.ImportResultZipAsync(importRequest, cancellationToken);
-        if (importResult.IsFailure)
-            return new FirstRunWorkflowState(FirstRunStep.Extract,
-                importResult.ErrorMessage ?? "Failed to import MinerU results.",
-                pdfPath, null, null, null, documentInstanceId, importResult.ErrorMessage, false);
+        var indexState = await RebuildSearchIndexAsync(documentInstanceId, cancellationToken);
+        if (!string.IsNullOrWhiteSpace(indexState.LastError))
+            return indexState;
 
-        return new FirstRunWorkflowState(FirstRunStep.Index,
-            "MinerU extraction complete. Rebuilding search index...",
-            pdfPath, null, null, null, documentInstanceId, null, false);
+        return await VerifyMcpSearchAsync(documentInstanceId, cancellationToken: cancellationToken);
     }
+
+    private static FirstRunWorkflowState RequireMinerUTokenState(string? pdfPath, string? documentInstanceId) =>
+        new(
+            FirstRunStep.MinerUConfig,
+            "Enter a MinerU API token before running OCR extraction.",
+            pdfPath,
+            null,
+            null,
+            null,
+            documentInstanceId,
+            "MinerU API token is required before OCR extraction can start.",
+            false);
 
     public async Task<FirstRunWorkflowState> RebuildSearchIndexAsync(
         string documentInstanceIdStr, CancellationToken cancellationToken = default)
@@ -161,5 +179,20 @@ public sealed class FirstRunWorkflow
                 ? $"MCP verification passed. Found {verified.MatchedUnitCount} searchable unit(s)."
                 : "MCP verification: document indexed but search returned no results.",
             null, null, null, null, documentInstanceIdStr, null, true);
+    }
+
+    private static IMinerUClient CreateMinerUClient(MinerUConfiguration config)
+    {
+        var options = new MinerUOptions
+        {
+            Token = config.Token,
+            BaseUrl = config.BaseUrl ?? "https://mineru.net",
+            ModelVersion = config.ModelVersion ?? "vlm",
+            IsOcr = config.IsOcr,
+            EnableTable = config.EnableTable,
+            EnableFormula = config.EnableFormula
+        };
+
+        return new MinerUClient(options);
     }
 }

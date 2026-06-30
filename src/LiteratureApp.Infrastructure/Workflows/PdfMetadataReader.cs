@@ -1,13 +1,34 @@
 using LiteratureApp.Core.Import;
+using LiteratureApp.Ocr;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace LiteratureApp.Infrastructure.Workflows;
 
 public sealed class PdfMetadataReader : IPdfMetadataReader
 {
-    public Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
+    private readonly IProcessRunner _processRunner;
+    private readonly string _pdfInfoExecutable;
+
+    public PdfMetadataReader()
+        : this(new SystemProcessRunner(), "pdfinfo")
+    {
+    }
+
+    public PdfMetadataReader(IProcessRunner processRunner, string pdfInfoExecutable = "pdfinfo")
+    {
+        _processRunner = processRunner;
+        _pdfInfoExecutable = pdfInfoExecutable;
+    }
+
+    public async Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(pdfPath))
-            return Task.FromResult<int?>(null);
+            return null;
+
+        var pdfInfoCount = await TryReadWithPdfInfoAsync(pdfPath, cancellationToken);
+        if (pdfInfoCount is > 0)
+            return pdfInfoCount;
 
         try
         {
@@ -19,34 +40,51 @@ public sealed class PdfMetadataReader : IPdfMetadataReader
             var header = System.Text.Encoding.ASCII.GetString(buffer, 0, bytesRead);
 
             if (!header.StartsWith("%PDF-", StringComparison.OrdinalIgnoreCase))
-                return Task.FromResult<int?>(null);
+                return null;
 
-            // Search for /Type /Page (not /Pages) to count page objects
             stream.Position = 0;
-            var fullContent = System.Text.Encoding.ASCII.GetString(reader.ReadBytes((int)Math.Min(stream.Length, 1024 * 1024)));
+            var fullContent = Encoding.Latin1.GetString(reader.ReadBytes((int)Math.Min(stream.Length, int.MaxValue)));
+            var pageObjectCount = Regex.Matches(fullContent, @"/Type\s*/Page(?!s)\b").Count;
 
-            var count = CountOccurrences(fullContent, "/Type /Page\n")
-                      + CountOccurrences(fullContent, "/Type /Page\r")
-                      + CountOccurrences(fullContent, "/Type/Page\n")
-                      + CountOccurrences(fullContent, "/Type/Page\r");
+            if (pageObjectCount > 0)
+                return pageObjectCount;
 
-            return Task.FromResult<int?>(count > 0 ? count : null);
+            var countMatches = Regex.Matches(fullContent, @"/Count\s+(\d+)");
+            return countMatches
+                .Select(m => int.TryParse(m.Groups[1].Value, out var count) ? count : 0)
+                .Where(count => count > 0)
+                .DefaultIfEmpty()
+                .Max() is var maxCount and > 0 ? maxCount : null;
         }
         catch
         {
-            return Task.FromResult<int?>(null);
+            return null;
         }
     }
 
-    private static int CountOccurrences(string text, string pattern)
+    private async Task<int?> TryReadWithPdfInfoAsync(string pdfPath, CancellationToken cancellationToken)
     {
-        var count = 0;
-        var index = 0;
-        while ((index = text.IndexOf(pattern, index, StringComparison.Ordinal)) >= 0)
+        try
         {
-            count++;
-            index += pattern.Length;
+            var result = await _processRunner.RunAsync(
+                new ProcessRunRequest(_pdfInfoExecutable, [pdfPath], Timeout: TimeSpan.FromSeconds(15)),
+                cancellationToken);
+
+            if (result.ExitCode != 0 || result.TimedOut)
+                return null;
+
+            foreach (var line in result.StandardOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                var match = Regex.Match(line, @"^\s*Pages:\s*(\d+)\s*$", RegexOptions.IgnoreCase);
+                if (match.Success && int.TryParse(match.Groups[1].Value, out var pages) && pages > 0)
+                    return pages;
+            }
         }
-        return count;
+        catch
+        {
+            return null;
+        }
+
+        return null;
     }
 }

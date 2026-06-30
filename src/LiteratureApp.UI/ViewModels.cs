@@ -8,6 +8,7 @@ using LiteratureApp.Core.Ids;
 using LiteratureApp.Core.Layout;
 using LiteratureApp.Evidence;
 using LiteratureApp.Infrastructure.Snapshots;
+using LiteratureApp.Infrastructure.Workflows;
 using LiteratureApp.Mcp;
 using LiteratureApp.Ocr;
 using LiteratureApp.Search;
@@ -31,22 +32,70 @@ public sealed class MainWindowViewModel : ViewModelBase
     private AppServices? _services;
     private string _runtimeDatabasePath = AppRuntimeOptions.FromEnvironment().RuntimeDatabasePath;
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath=value; Raise(); } }
-    public string Status { get; set; } = "Choose a runtime database path, then create or open a library.";
+    public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
     public string VersionInfo => $"{LiteratureApp.Core.BuildInfo.AppName} {LiteratureApp.Core.BuildInfo.Version} | Schema {LiteratureApp.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
+    public string StatusBarVersion => $"{LiteratureApp.Core.BuildInfo.AppName} {LiteratureApp.Core.BuildInfo.Version} | Schema {LiteratureApp.Core.BuildInfo.SchemaVersion}";
     public IClipboardService Clipboard { get; }
     public IAppLogger Logger { get; }
     public ZoteroShellViewModel Shell { get; }
+    public FirstRunViewModel FirstRun { get; private set; }
+    public bool IsFirstRunVisible { get; set; }
+    public bool IsLibraryVisible => !IsFirstRunVisible;
+    public bool IsSearchEnabled => !IsFirstRunVisible;
+    public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
     public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
+    public AsyncCommand CompleteFirstRunCommand { get; }
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null)
     {
         Clipboard=clipboard??new AvaloniaClipboardService();
         Logger=logger??new SimpleFileLogger(AppRuntimeOptions.FromEnvironment().LogDirectory);
         Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
-        OpenDatabaseCommand=new(async()=>{_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"Database ready: {RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));});
+        OpenDatabaseCommand=new(async()=>{_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));});
+        FirstRun=CreateFirstRunViewModel();
+        CompleteFirstRunCommand=new(CompleteFirstRunAsync);
     }
     public async Task<AppServices> ServicesAsync() => _services ??= await AppServices.CreateAsync(RuntimeDatabasePath);
     public void Report(string message) { Status=message; Raise(nameof(Status)); }
+    public Task ShowInlineFirstRunAsync()
+    {
+        FirstRun=CreateFirstRunViewModel();
+        FirstRun.DatabasePath=RuntimeDatabasePath;
+        IsFirstRunVisible=true;
+        Raise(nameof(FirstRun));
+        Raise(nameof(IsFirstRunVisible));
+        Raise(nameof(IsLibraryVisible));
+        Raise(nameof(IsSearchEnabled));
+        Raise(nameof(ShowSelectedDocumentTab));
+        return Task.CompletedTask;
+    }
+    public async Task HideInlineFirstRunAsync()
+    {
+        IsFirstRunVisible=false;
+        Raise(nameof(IsFirstRunVisible));
+        Raise(nameof(IsLibraryVisible));
+        Raise(nameof(IsSearchEnabled));
+        Raise(nameof(ShowSelectedDocumentTab));
+        await Shell.RefreshItemsAsync();
+    }
+    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath };
+    private async Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)> OpenFirstRunDatabaseAsync(string path)
+    {
+        RuntimeDatabasePath=path;
+        await OpenDatabaseCommand.ExecuteAsync();
+        var services=await ServicesAsync();
+        return (services.FirstRunWorkflow, services.PdfDiscovery);
+    }
+    private async Task CompleteFirstRunAsync()
+    {
+        await FirstRun.FinishSetupCommand.ExecuteAsync();
+        Shell.MinerUToken=FirstRun.MinerUToken;
+        Shell.MinerUTokenInput=FirstRun.MinerUToken;
+        if (!FirstRun.IsComplete) return;
+        Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
+        await HideInlineFirstRunAsync();
+    }
+    public void RaiseShellSelectionChanged() => Raise(nameof(ShowSelectedDocumentTab));
     public async Task LogOperationAsync(string operation, string message)
     {
         try { await Logger.LogAsync(operation, message); }

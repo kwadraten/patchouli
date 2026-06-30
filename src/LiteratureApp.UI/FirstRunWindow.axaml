@@ -2,8 +2,17 @@
   <Grid RowDefinitions="*,Auto" Margin="20">
     <ScrollViewer>
       <StackPanel Spacing="12">
-        <TextBlock FontSize="18" FontWeight="Bold" Text="Welcome to LiteratureApp" />
+        <TextBlock FontSize="18" FontWeight="Bold" Text="Welcome to Patchouli" />
         <TextBlock Text="{Binding ProgressText}" TextWrapping="Wrap" />
+
+        <StackPanel IsVisible="{Binding ShowInitStep}" Spacing="8">
+          <TextBlock Text="Open a runtime database" FontWeight="SemiBold" />
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox PlaceholderText="Runtime database path" Text="{Binding DatabasePath}" />
+            <Button Grid.Column="1" Content="Browse" Click="OnBrowseDatabaseClick" />
+          </Grid>
+          <Button Content="Open Database" Command="{Binding OpenDatabaseCommand}" />
+        </StackPanel>
 
         <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="8">
           <TextBlock Text="Create a library identity" FontWeight="SemiBold" />
@@ -13,7 +22,10 @@
 
         <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="8">
           <TextBlock Text="Select a folder to scan for PDF files" FontWeight="SemiBold" />
-          <TextBox PlaceholderText="Scan root path" Text="{Binding ScanRoot}" />
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox PlaceholderText="Scan root path" Text="{Binding ScanRoot}" />
+            <Button Grid.Column="1" Content="Browse" Click="OnBrowseScanRootClick" />
+          </Grid>
           <Button Content="Scan Folder" Command="{Binding ScanCommand}" />
           <ListBox ItemsSource="{Binding PdfCandidates}" SelectedItem="{Binding SelectedPdf}" Height="200">
             <ListBox.ItemTemplate>
@@ -37,8 +49,10 @@
 
         <StackPanel IsVisible="{Binding ShowMinerUConfigStep}" Spacing="8">
           <TextBlock Text="Configure MinerU OCR" FontWeight="SemiBold" />
-          <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUToken}" />
-          <Button Content="Run OCR Extraction and Index" Command="{Binding RunMinerUCommand}" />
+          <TextBlock Text="Get a MinerU API token from https://mineru.net/apiManage/token, then paste it here." TextWrapping="Wrap" />
+          <Button Content="Get MinerU API Token" Click="OnOpenMinerUTokenPageClick" HorizontalAlignment="Left" />
+          <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUToken}" PasswordChar="*" />
+          <Button Content="Finish Setup" Command="{Binding FinishSetupCommand}" />
         </StackPanel>
 
         <StackPanel IsVisible="{Binding ShowExtractStep}" Spacing="8">
@@ -59,7 +73,7 @@
         <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="8">
           <TextBlock Text="Setup complete!" FontSize="16" FontWeight="Bold" />
           <TextBlock Text="{Binding ProgressText}" TextWrapping="Wrap" />
-          <Button Content="Start Using LiteratureApp" Click="OnCompleteClick" />
+          <Button Content="Start Using Patchouli" Click="OnCompleteClick" />
         </StackPanel>
 
         <TextBlock Text="{Binding LastError}" Foreground="Red" TextWrapping="Wrap" IsVisible="{Binding HasError}" />

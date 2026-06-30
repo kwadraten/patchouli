@@ -34,7 +34,7 @@ public sealed class MinerUClientTests
             authHeader = request.Headers.Authorization?.ToString();
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("""{"code":0,"data":{"batch_id":"b1","files":[]}}""")
+                Content = new StringContent("""{"code":0,"data":{"batch_id":"b1","file_urls":["https://upload.example.com/a.pdf"]}}""")
             };
         });
         var options = new MinerUOptions { Token = "secret-token" };
@@ -72,6 +72,32 @@ public sealed class MinerUClientTests
         }
 
         method.Should().Be(HttpMethod.Put);
+        contentType.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RequestUploadUrls_sends_precise_api_options()
+    {
+        string? body = null;
+        var handler = new FakeHttpMessageHandler(request =>
+        {
+            body = request.Content!.ReadAsStringAsync().Result;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"code":0,"data":{"batch_id":"b1","file_urls":["https://upload.example.com/a.pdf"]}}""")
+            };
+        });
+        var options = new MinerUOptions { Token = "t", ModelVersion = "vlm", Language = "ch", IsOcr = true, EnableTable = true, EnableFormula = true };
+        using var client = new MinerUClient(new HttpClient(handler), options);
+
+        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
+
+        result.IsSuccess.Should().BeTrue();
+        body.Should().Contain("\"model_version\":\"vlm\"");
+        body.Should().Contain("\"enable_table\":true");
+        body.Should().Contain("\"enable_formula\":true");
+        body.Should().Contain("\"is_ocr\":true");
+        body.Should().Contain("\"name\":\"a.pdf\"");
     }
 
     [Fact]

@@ -1,35 +1,259 @@
-<Window x:Class="LiteratureApp.UI.MainWindow" xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="1180" Height="780" MinWidth="900" MinHeight="620" Title="LiteratureApp">
-  <Grid ColumnDefinitions="200,*,Auto" RowDefinitions="*,Auto" Margin="0">
-    <Border BorderBrush="#E0E0E0" BorderThickness="0,0,1,0">
-      <StackPanel DataContext="{Binding Shell}" Spacing="4" Margin="12">
-        <TextBlock Text="{Binding LibraryName}" FontSize="16" FontWeight="Bold" Margin="0,0,0,8" />
-        <TextBlock Text="My Library" FontWeight="SemiBold" />
-        <TextBlock Text="Recent Items" FontWeight="SemiBold" Margin="0,12,0,4" />
-        <ItemsControl ItemsSource="{Binding RecentItems}" />
-        <TextBlock Text="Recent Documents" FontWeight="SemiBold" Margin="0,12,0,4" />
-        <ItemsControl ItemsSource="{Binding RecentDocuments}" />
-        <Button Content="Developer Tools" Margin="0,24,0,0" Command="{Binding ToggleDeveloperToolsCommand}" />
-      </StackPanel>
+<Window x:Class="LiteratureApp.UI.MainWindow" xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Width="1280" Height="820" MinWidth="1040" MinHeight="680" Title="Patchouli" Background="#FBF9F8">
+  <Grid RowDefinitions="30,42,*,28">
+    <Border Background="#FBF9F8" BorderBrush="#E2E2E5" BorderThickness="0,0,0,1">
+      <Grid ColumnDefinitions="Auto,*,Auto" Margin="10,0">
+        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+          <TextBlock Text="文件" FontSize="13" Foreground="#484553" Margin="6,0" />
+          <TextBlock Text="编辑" FontSize="13" Foreground="#484553" Margin="6,0" />
+          <TextBlock Text="视图" FontSize="13" Foreground="#484553" Margin="6,0" />
+          <TextBlock Text="工具" FontSize="13" Foreground="#484553" Margin="6,0" />
+          <TextBlock Text="帮助" FontSize="13" Foreground="#484553" Margin="6,0" />
+        </StackPanel>
+        <TextBox Grid.Column="1" Width="260" HorizontalAlignment="Right" VerticalAlignment="Center" Height="24" FontSize="12" PlaceholderText="搜索文献库..." IsEnabled="{Binding IsSearchEnabled}" />
+        <Button Grid.Column="2" Content="+ 新建题录" Height="26" Margin="10,0,0,0" Background="#6E56CF" Foreground="#FFFFFF" />
+      </Grid>
     </Border>
-    <TabControl Grid.Column="1" Margin="12,0">
-      <TabItem Header="Library">
-        <ScrollViewer><StackPanel DataContext="{Binding Library}" Spacing="8">
-          <TextBox PlaceholderText="Display name" Text="{Binding DisplayName}"/>
-          <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="Create Library" Command="{Binding CreateCommand}"/><Button Content="Refresh" Command="{Binding RefreshCommand}"/></StackPanel>
-          <TextBox AcceptsReturn="True" Height="180" Text="{Binding Details}"/>
-        </StackPanel></ScrollViewer>
-      </TabItem>
-      <TabItem Header="Items">
-        <ScrollViewer><StackPanel DataContext="{Binding Bibliography}" Spacing="8">
-          <TextBox PlaceholderText="Item type" Text="{Binding ItemType}"/><TextBox PlaceholderText="Title" Text="{Binding Title}"/>
-          <Button Content="Create Item" Command="{Binding CreateItemCommand}"/>
-          <TextBox AcceptsReturn="True" Height="360" Text="{Binding Output}"/>
-        </StackPanel></ScrollViewer>
-      </TabItem>
-    </TabControl>
-    <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Spacing="2" Margin="12,0,12,6">
-      <TextBlock Text="{Binding Status}" TextWrapping="Wrap" FontSize="12" />
-      <TextBlock FontSize="11" Text="{Binding VersionInfo}" TextWrapping="Wrap" />
-    </StackPanel>
+
+    <Border Grid.Row="1" Background="#F5F3F3" BorderBrush="#E2E2E5" BorderThickness="0,0,0,1">
+      <Grid ColumnDefinitions="260,*,340">
+        <StackPanel Orientation="Horizontal" Spacing="0" Margin="12,0,0,0" VerticalAlignment="Stretch">
+          <Border Background="#FFFFFF" BorderBrush="#6E56CF" BorderThickness="0,0,0,2" Padding="14,0" IsVisible="{Binding IsLibraryVisible}">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <TextBlock Text="▣" FontSize="12" Foreground="#553BB5" />
+              <TextBlock Text="我的库" FontSize="13" FontWeight="SemiBold" Foreground="#553BB5" />
+            </StackPanel>
+          </Border>
+          <Border Background="#FFFFFF" BorderBrush="#6E56CF" BorderThickness="0,0,0,2" Padding="14,0" IsVisible="{Binding IsFirstRunVisible}">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <TextBlock Text="▣" FontSize="12" Foreground="#553BB5" />
+              <TextBlock Text="初始化向导" FontSize="13" FontWeight="SemiBold" Foreground="#553BB5" />
+              <TextBlock Text="进行中，完成前不可关闭" FontSize="11" Foreground="#797584" />
+            </StackPanel>
+          </Border>
+          <Border Background="#F5F3F3" BorderBrush="#E2E2E5" BorderThickness="0,0,0,1" Padding="14,0" IsVisible="{Binding ShowSelectedDocumentTab}">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <TextBlock Text="□" FontSize="12" Foreground="#484553" />
+              <TextBlock Text="{Binding Shell.SelectedItem.Title}" Width="320" FontSize="13" Foreground="#484553" TextTrimming="CharacterEllipsis" />
+              <Button Content="×" Width="24" Height="24" Padding="0" Command="{Binding Shell.CloseDocumentTabCommand}" />
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2" ColumnDefinitions="260,*,340">
+      <Border Background="#F5F3F3" BorderBrush="#E2E2E5" BorderThickness="0,0,1,0">
+        <Grid RowDefinitions="*,Auto" Margin="0,10,0,0">
+          <StackPanel Spacing="4">
+            <StackPanel IsVisible="{Binding IsLibraryVisible}">
+              <TextBlock Text="Patchouli" FontSize="24" FontWeight="SemiBold" Foreground="#1B1C1C" Margin="16,8,16,10" />
+              <Border Background="#F4F2FF" BorderBrush="#6E56CF" BorderThickness="2,0,0,0" Padding="14,8" Margin="0,0,0,6">
+                <TextBlock Text="我的书库" FontSize="14" FontWeight="SemiBold" Foreground="#553BB5" />
+              </Border>
+              <TextBlock Text="本地资料库" FontSize="11" FontWeight="SemiBold" Foreground="#484553" Margin="16,12,16,4" />
+              <TextBlock Text="{Binding RuntimeDatabasePath}" FontSize="12" Foreground="#646464" Margin="28,3,16,3" TextTrimming="CharacterEllipsis" />
+              <TextBlock Text="PDF 扫描根路径" FontSize="11" FontWeight="SemiBold" Foreground="#484553" Margin="16,14,16,4" />
+              <TextBlock Text="Documents/PDFs" FontSize="12" Foreground="#646464" Margin="28,3,16,3" />
+              <Button Content="最近项目" FontSize="13" Foreground="#484553" Background="Transparent" HorizontalContentAlignment="Left" Margin="16,16,16,4" Command="{Binding Shell.ShowRecentItemsCommand}" />
+              <TextBlock Text="标签" FontSize="11" FontWeight="SemiBold" Foreground="#484553" Margin="16,16,16,4" />
+              <WrapPanel Margin="16,0,16,0">
+                <Border Background="#9C87FF" Padding="8,2" Margin="0,0,6,6"><TextBlock Text="AI" FontSize="11" Foreground="#320F90" FontWeight="SemiBold" /></Border>
+                <Border Background="#E4E2E2" Padding="8,2" Margin="0,0,6,6"><TextBlock Text="机器学习" FontSize="11" Foreground="#484553" /></Border>
+                <Border Background="#E4E2E2" Padding="8,2" Margin="0,0,6,6"><TextBlock Text="研究方法" FontSize="11" Foreground="#484553" /></Border>
+              </WrapPanel>
+            </StackPanel>
+
+            <StackPanel IsVisible="{Binding IsFirstRunVisible}">
+              <TextBlock Text="初始化向导" FontSize="14" FontWeight="SemiBold" Foreground="#553BB5" Margin="16,8,16,2" />
+              <TextBlock Text="Initial Configuration" FontSize="11" Foreground="#646464" Margin="16,0,16,12" />
+              <Border Background="#F4F2FF" BorderBrush="#6E56CF" BorderThickness="2,0,0,0" Padding="14,8">
+                <TextBlock Text="数据库 (Database)" FontSize="12" Foreground="#553BB5" />
+              </Border>
+              <TextBlock Text="库名称 (Library Name)" FontSize="12" Foreground="#484553" Margin="30,10,16,0" />
+              <TextBlock Text="PDF 目录 (Directory)" FontSize="12" Foreground="#484553" Margin="30,10,16,0" />
+              <TextBlock Text="MinerU 配置" FontSize="12" Foreground="#484553" Margin="30,10,16,0" />
+            </StackPanel>
+          </StackPanel>
+
+          <Button Grid.Row="1" Content="Developer Tools" Margin="16,8,16,14" Command="{Binding Shell.ToggleDeveloperToolsCommand}" />
+        </Grid>
+      </Border>
+
+      <Grid Grid.Column="1" Grid.ColumnSpan="2" Background="#FFFFFF" IsVisible="{Binding IsFirstRunVisible}">
+        <Grid DataContext="{Binding FirstRun}" Background="#FFFFFF">
+          <Grid ColumnDefinitions="120,*" Margin="32,42">
+            <Border Grid.Column="1" BorderBrush="#E2E2E5" BorderThickness="1" Background="#FFFFFF" Padding="32" MaxWidth="760" HorizontalAlignment="Left">
+              <StackPanel Spacing="18">
+                <TextBlock Text="{Binding ProgressText}" FontSize="13" Foreground="#484553" TextWrapping="Wrap" />
+
+                <StackPanel IsVisible="{Binding ShowInitStep}" Spacing="14">
+                  <TextBlock Text="选择新建或已有数据库目录" FontSize="24" FontWeight="SemiBold" Foreground="#1B1C1C" />
+                  <TextBlock Text="选择 Patchouli 运行库位置。后续扫描到的 PDF 会直接建立为题录。" FontSize="13" Foreground="#484553" />
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBox Text="{Binding DatabasePath}" PlaceholderText="Runtime database path" />
+                    <Button Grid.Column="1" Content="浏览" Click="OnBrowseDatabaseClick" />
+                  </Grid>
+                  <Button Content="下一步" Command="{Binding OpenDatabaseCommand}" Width="120" Background="#6E56CF" Foreground="#FFFFFF" />
+                </StackPanel>
+
+                <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="14">
+                  <TextBlock Text="命名您的资料库" FontSize="24" FontWeight="SemiBold" Foreground="#1B1C1C" />
+                  <TextBox Text="{Binding LibraryName}" PlaceholderText="Library name" />
+                  <Button Content="创建资料库" Command="{Binding CreateLibraryCommand}" Width="140" Background="#6E56CF" Foreground="#FFFFFF" />
+                </StackPanel>
+
+                <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="14">
+                  <TextBlock Text="选择 PDF 扫描根路径" FontSize="24" FontWeight="SemiBold" Foreground="#1B1C1C" />
+                  <TextBlock Text="确认目录后，扫描到的所有 PDF 会直接导入为题录。题录信息可稍后在文献列表中右键编辑。" FontSize="13" Foreground="#484553" TextWrapping="Wrap" />
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBox Text="{Binding ScanRoot}" PlaceholderText="PDF directory" />
+                    <Button Grid.Column="1" Content="选择文件夹" Click="OnBrowseScanRootClick" />
+                  </Grid>
+                  <Button Content="确认目录并导入" Command="{Binding ScanCommand}" Width="160" Background="#6E56CF" Foreground="#FFFFFF" />
+                </StackPanel>
+
+                <StackPanel IsVisible="{Binding ShowMinerUConfigStep}" Spacing="14">
+                  <TextBlock Text="MinerU Token" FontSize="24" FontWeight="SemiBold" Foreground="#1B1C1C" />
+                  <TextBlock Text="连接 MinerU 账户以启用高精度 OCR。完成初始化后，请在文献列表中右键选择单个题录进行识别。" FontSize="13" Foreground="#484553" TextWrapping="Wrap" />
+                  <TextBlock Text="Token 获取地址：https://mineru.net/apiManage/token" FontSize="12" Foreground="#553BB5" TextWrapping="Wrap" />
+                  <TextBox Text="{Binding MinerUToken}" PlaceholderText="在这里输入您的 Token..." PasswordChar="*" />
+                  <Button Content="完成并进入" Command="{Binding $parent[Window].DataContext.CompleteFirstRunCommand}" Width="140" Background="#6E56CF" Foreground="#FFFFFF" />
+                </StackPanel>
+
+                <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="14">
+                  <TextBlock Text="初始化完成" FontSize="24" FontWeight="SemiBold" Foreground="#1B1C1C" />
+                  <TextBlock Text="{Binding ProgressText}" FontSize="13" Foreground="#484553" TextWrapping="Wrap" />
+                  <Button Content="进入书库" Command="{Binding $parent[Window].DataContext.CompleteFirstRunCommand}" Width="120" Background="#6E56CF" Foreground="#FFFFFF" />
+                </StackPanel>
+
+                <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" />
+                <TextBlock Text="{Binding LastError}" Foreground="#BA1A1A" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+              </StackPanel>
+            </Border>
+          </Grid>
+        </Grid>
+      </Grid>
+
+      <Grid Grid.Column="1" Background="#FFFFFF" IsVisible="{Binding IsLibraryVisible}">
+        <Grid RowDefinitions="44,*" IsVisible="{Binding IsLibraryVisible}">
+          <Border BorderBrush="#E2E2E5" BorderThickness="0,0,0,1" Padding="14,0">
+            <Grid ColumnDefinitions="32,*,200,80,150" ColumnSpacing="12" VerticalAlignment="Center">
+              <TextBlock Grid.Column="1" Text="标题" FontSize="12" FontWeight="SemiBold" Foreground="#484553" />
+              <TextBlock Grid.Column="2" Text="作者" FontSize="12" FontWeight="SemiBold" Foreground="#484553" />
+              <TextBlock Grid.Column="3" Text="年份" FontSize="12" FontWeight="SemiBold" Foreground="#484553" HorizontalAlignment="Center" />
+              <TextBlock Grid.Column="4" Text="期刊" FontSize="12" FontWeight="SemiBold" Foreground="#484553" />
+            </Grid>
+          </Border>
+
+          <ListBox Grid.Row="1" ItemsSource="{Binding Shell.Items}" SelectedItem="{Binding Shell.SelectedItem}" BorderThickness="0" Background="#FFFFFF">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Border BorderBrush="#E2E2E5" BorderThickness="0,0,0,1" Padding="14,8">
+                  <Border.ContextMenu>
+                    <ContextMenu>
+                      <MenuItem Header="编辑题录信息" Command="{Binding EditMetadataCommand}" />
+                      <MenuItem Header="运行 MinerU OCR" Command="{Binding RunOcrCommand}" />
+                    </ContextMenu>
+                  </Border.ContextMenu>
+                  <Grid ColumnDefinitions="32,*,200,80,150" ColumnSpacing="12">
+                    <TextBlock Text="PDF" FontSize="11" FontWeight="SemiBold" Foreground="#553BB5" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Spacing="2">
+                      <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" Foreground="#1B1C1C" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Text="{Binding FileName}" FontSize="11" Foreground="#646464" TextTrimming="CharacterEllipsis" />
+                    </StackPanel>
+                    <TextBlock Grid.Column="2" Text="{Binding Authors}" FontSize="12" Foreground="#484553" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Grid.Column="3" Text="{Binding Year}" FontSize="12" Foreground="#484553" VerticalAlignment="Center" HorizontalAlignment="Center" />
+                    <TextBlock Grid.Column="4" Text="{Binding PublicationTitle}" FontSize="12" Foreground="#484553" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                  </Grid>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+
+        <TabControl Margin="8" VerticalAlignment="Bottom" IsVisible="{Binding Shell.ShowDeveloperTools}">
+          <TabItem Header="Library">
+            <ScrollViewer><StackPanel DataContext="{Binding Library}" Spacing="8">
+              <TextBox PlaceholderText="Display name" Text="{Binding DisplayName}"/>
+              <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="Create Library" Command="{Binding CreateCommand}"/><Button Content="Refresh" Command="{Binding RefreshCommand}"/></StackPanel>
+              <TextBox AcceptsReturn="True" Height="180" Text="{Binding Details}"/>
+            </StackPanel></ScrollViewer>
+          </TabItem>
+        </TabControl>
+      </Grid>
+
+      <Border Grid.Column="2" Background="#F5F3F3" BorderBrush="#E2E2E5" BorderThickness="1,0,0,0" IsVisible="{Binding IsLibraryVisible}">
+        <Grid DataContext="{Binding Shell}" RowDefinitions="40,*">
+          <Border BorderBrush="#E2E2E5" BorderThickness="0,0,0,1">
+            <TextBlock Text="详情" FontSize="12" FontWeight="SemiBold" Foreground="#553BB5" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <ScrollViewer Grid.Row="1">
+            <StackPanel Margin="18" Spacing="14">
+              <TextBlock Text="{Binding InspectorTitle}" FontSize="18" FontWeight="SemiBold" Foreground="#1B1C1C" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding InspectorSubtitle}" FontSize="12" Foreground="#646464" TextWrapping="Wrap" />
+
+              <StackPanel IsVisible="{Binding NoSelectedItem}" Spacing="6">
+                <TextBlock Text="未选择题录" FontSize="14" FontWeight="SemiBold" />
+                <TextBlock Text="选择一个已导入题录以查看 OCR/索引状态。" FontSize="13" Foreground="#484553" TextWrapping="Wrap" />
+              </StackPanel>
+
+              <StackPanel IsVisible="{Binding HasSelectedItem}" Spacing="10">
+                <Border Height="150" Background="#E4E2E2" BorderBrush="#CAC4D5" BorderThickness="1">
+                  <TextBlock Text="PDF 预览" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#646464" />
+                </Border>
+                <TextBlock Text="{Binding SelectedItem.Authors}" FontSize="13" Foreground="#484553" TextWrapping="Wrap" />
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                  <StackPanel>
+                    <TextBlock Text="年份" FontSize="10" FontWeight="SemiBold" Foreground="#484553" />
+                    <TextBlock Text="{Binding SelectedItem.Year}" FontSize="13" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="1">
+                    <TextBlock Text="类型" FontSize="10" FontWeight="SemiBold" Foreground="#484553" />
+                    <TextBlock Text="{Binding SelectedItem.ItemType}" FontSize="13" />
+                  </StackPanel>
+                </Grid>
+                <TextBlock Text="OCR 与全文索引" FontSize="10" FontWeight="SemiBold" Foreground="#484553" />
+                <TextBlock Text="{Binding InspectorStatus}" FontSize="13" TextWrapping="Wrap" />
+
+                <Border BorderBrush="#CBBEFF" BorderThickness="1" Background="#F4F2FF" Padding="10" IsVisible="{Binding ShowMinerUTokenPrompt}">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="MinerU API Token" FontSize="12" FontWeight="SemiBold" Foreground="#553BB5" />
+                    <TextBlock Text="请前往 https://mineru.net/apiManage/token 获取 token，然后粘贴到这里继续 OCR。" TextWrapping="Wrap" FontSize="12" />
+                    <Button Content="获取 MinerU API Token" Click="OnOpenMinerUTokenPageClick" HorizontalAlignment="Left" />
+                    <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUTokenInput}" PasswordChar="*" />
+                    <Button Content="继续 OCR" Command="{Binding SubmitMinerUTokenCommand}" HorizontalAlignment="Left" />
+                  </StackPanel>
+                </Border>
+
+                <Border BorderBrush="#CAC4D5" BorderThickness="1" Background="#FFFFFF" Padding="10" IsVisible="{Binding ShowMetadataEditor}">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="编辑题录信息" FontSize="12" FontWeight="SemiBold" Foreground="#553BB5" />
+                    <TextBox PlaceholderText="标题" Text="{Binding EditTitle}" />
+                    <TextBox PlaceholderText="作者" Text="{Binding EditAuthors}" />
+                    <TextBox PlaceholderText="年份" Text="{Binding EditYear}" />
+                    <TextBox PlaceholderText="期刊/出处" Text="{Binding EditPublicationTitle}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Button Content="保存" Command="{Binding SaveMetadataCommand}" Background="#6E56CF" Foreground="#FFFFFF" />
+                      <Button Content="取消" Command="{Binding CancelMetadataEditCommand}" />
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
+
+                <TextBlock Text="附件" FontSize="10" FontWeight="SemiBold" Foreground="#484553" />
+                <Border Background="#E9E8E7" BorderBrush="#CAC4D5" BorderThickness="1" Padding="8">
+                  <TextBlock Text="{Binding SelectedItem.FileName}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                </Border>
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="3" Background="#303031" Padding="10,0">
+      <Grid ColumnDefinitions="*">
+        <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center" Foreground="#F2F0F0" />
+      </Grid>
+    </Border>
   </Grid>
 </Window>

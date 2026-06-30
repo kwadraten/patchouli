@@ -86,8 +86,8 @@ public sealed class RealPdfRendererTests
         finally { if (File.Exists(pdf)) File.Delete(pdf); if (File.Exists(output)) File.Delete(output); }
     }
 
-    [Fact] public void README_documents_real_renderer_choice() => File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("pdftoppm").And.Contain("Poppler");
-    [Fact] public void README_states_not_pdf_viewer() => File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("PDF viewer");
+    [Fact] public void Production_services_wire_external_pdf_renderer() => File.ReadAllText(TestPaths.FromRepositoryRoot("src", "LiteratureApp.UI", "AppServices.cs")).Should().Contain("ExternalProcessPdfPageRenderer");
+    [Fact] public void Product_shell_uses_literature_manager_preview_not_full_pdf_viewer() => File.ReadAllText(TestPaths.FromRepositoryRoot("src", "LiteratureApp.UI", "MainWindow.axaml")).Should().Contain("PDF 预览");
 
     private sealed class PdfProcessRunner : IProcessRunner
     {

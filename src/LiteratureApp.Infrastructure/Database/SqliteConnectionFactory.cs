@@ -23,7 +23,8 @@ public sealed class SqliteConnectionFactory
             DataSource = _databasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = SqliteCacheMode.Shared,
-            ForeignKeys = true
+            ForeignKeys = true,
+            Pooling = false
         };
 
         return new SqliteConnection(builder.ToString());

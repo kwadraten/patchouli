@@ -6,15 +6,13 @@ namespace LiteratureApp.Tests;
 public sealed class AlphaStabilizationTests
 {
     [Fact]
-    public void README_commands_match_existing_paths()
+    public void Smoke_script_commands_match_existing_paths()
     {
-        var readme = File.ReadAllText(TestPaths.FromRepositoryRoot("README.md"));
-        readme.Should().Contain("dotnet restore LiteratureApp.sln")
+        var script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "alpha-smoke-test.sh"));
+        script.Should().Contain("dotnet restore LiteratureApp.sln")
             .And.Contain("dotnet build LiteratureApp.sln --no-restore")
             .And.Contain("dotnet test LiteratureApp.sln --no-build")
-            .And.Contain("dotnet run --project src/LiteratureApp.UI/LiteratureApp.UI.csproj")
-            .And.Contain("scripts/alpha-smoke-test.sh")
-            .And.Contain("dotnet publish src/LiteratureApp.UI/LiteratureApp.UI.csproj -c Release -r osx-arm64 --self-contained false");
+            .And.Contain("dotnet list LiteratureApp.sln package --vulnerable --include-transitive");
         File.Exists(TestPaths.FromRepositoryRoot("LiteratureApp.sln")).Should().BeTrue();
         File.Exists(TestPaths.FromRepositoryRoot("src", "LiteratureApp.UI", "LiteratureApp.UI.csproj")).Should().BeTrue();
     }
@@ -111,23 +109,26 @@ public sealed class AlphaStabilizationTests
     }
 
     [Fact]
-    public void PublishOutputPath_documented_in_README()
+    public void Runtime_options_keep_database_out_of_default_sync_root()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("bin/Release/net10.0/osx-arm64/publish/");
+        var options = AppRuntimeOptions.FromEnvironment();
+        Path.GetFullPath(options.RuntimeDatabasePath).Should().NotStartWith(Path.GetFullPath(options.DefaultSyncRoot));
     }
 
     [Fact]
-    public void KnownIssuesAlpha_exists_and_lists_major_limitations()
+    public void Agent_domain_doc_records_single_context_layout()
     {
-        var path = TestPaths.FromRepositoryRoot("docs", "KNOWN_ISSUES_ALPHA.md");
+        var path = TestPaths.FromRepositoryRoot(".agent", "domain.md");
         File.Exists(path).Should().BeTrue();
-        File.ReadAllText(path).Should().Contain("PDF rendering").And.Contain("plaintext trust model").And.Contain("MCP currently provides a read-only service layer").And.Contain("FTS is a rebuildable local cache");
+        File.ReadAllText(path).Should().Contain("single-context domain-doc layout").And.Contain(".agent/PRD.md");
     }
 
     [Fact]
-    public void README_links_known_issues()
+    public void Root_markdown_entrypoint_is_limited_to_agent_instructions()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("docs/KNOWN_ISSUES_ALPHA.md");
+        File.Exists(TestPaths.FromRepositoryRoot("AGENTS.md")).Should().BeTrue();
+        File.Exists(TestPaths.FromRepositoryRoot("README.md")).Should().BeFalse();
+        Directory.Exists(TestPaths.FromRepositoryRoot("docs")).Should().BeFalse();
     }
 
     private sealed class NoopClipboard : IClipboardService { public Task SetTextAsync(string text) => Task.CompletedTask; }

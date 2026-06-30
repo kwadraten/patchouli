@@ -97,7 +97,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
     public static async Task CheckpointAsync(string databasePath)
     {
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
+        await using var connection = new SqliteConnection(BuildConnectionString(databasePath, SqliteOpenMode.ReadWriteCreate));
         await connection.OpenAsync();
         await connection.ExecuteAsync("pragma wal_checkpoint(full);");
     }
@@ -105,8 +105,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
     public static async Task BackupDatabaseAsync(string sourcePath, string targetPath)
     {
         if (File.Exists(targetPath)) File.Delete(targetPath);
-        await using var source = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = sourcePath, Mode = SqliteOpenMode.ReadOnly }.ToString());
-        await using var target = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = targetPath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
+        await using var source = new SqliteConnection(BuildConnectionString(sourcePath, SqliteOpenMode.ReadOnly));
+        await using var target = new SqliteConnection(BuildConnectionString(targetPath, SqliteOpenMode.ReadWriteCreate));
         await source.OpenAsync();
         await target.OpenAsync();
         source.BackupDatabase(target);
@@ -114,7 +114,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
     public static async Task ClearLocalFtsCacheAsync(string shardPath)
     {
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = shardPath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
+        await using var connection = new SqliteConnection(BuildConnectionString(shardPath, SqliteOpenMode.ReadWriteCreate));
         await connection.OpenAsync();
         var exists = await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'search_units_fts';");
         if (exists > 0)
@@ -125,7 +125,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
     public static async Task RedactCredentialsAsync(string shardPath)
     {
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = shardPath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
+        await using var connection = new SqliteConnection(BuildConnectionString(shardPath, SqliteOpenMode.ReadWriteCreate));
         await connection.OpenAsync();
         var exists = await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'provider_credentials';");
         if (exists > 0) await connection.ExecuteAsync("update provider_credentials set secret_value = '[redacted]';");
@@ -133,7 +133,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
     public static async Task RedactLocalFileLocationsAsync(string shardPath)
     {
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = shardPath, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
+        await using var connection = new SqliteConnection(BuildConnectionString(shardPath, SqliteOpenMode.ReadWriteCreate));
         await connection.OpenAsync();
         if (await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'file_assets';") > 0)
             await connection.ExecuteAsync("update file_assets set original_path = '[redacted]';");
@@ -148,29 +148,40 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
     private static async Task<SnapshotShard?> CreateCredentialShardAsync(string runtimePath, string syncRoot, string snapshotId)
     {
-        await using var source = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = runtimePath, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        await using var source = new SqliteConnection(BuildConnectionString(runtimePath, SqliteOpenMode.ReadOnly));
         await source.OpenAsync();
         var exists = await source.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'provider_credentials';");
         if (exists == 0) return null;
         var shardId = $"credentials_{snapshotId}"; var name = $"{shardId}.sqlite"; var path = Path.Combine(syncRoot, "shards", name);
         if (File.Exists(path)) File.Delete(path);
-        await using var target = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadWriteCreate }.ToString());
-        await target.OpenAsync();
-        await target.ExecuteAsync("create table provider_credentials (credential_id text primary key, library_id text, provider_id text, display_name text, secret_value text, status text, created_at text, updated_at text); create table provider_credential_bindings (binding_id text primary key, credential_id text, preset_id text null, provider_id text, status text, created_at text, updated_at text);");
-        var creds = await source.QueryAsync<CredentialShardRow>("select credential_id as CredentialId,library_id as LibraryId,provider_id as ProviderId,display_name as DisplayName,secret_value as SecretValue,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credentials;");
-        foreach (var row in creds) await target.ExecuteAsync("insert into provider_credentials values (@CredentialId,@LibraryId,@ProviderId,@DisplayName,@SecretValue,@Status,@CreatedAt,@UpdatedAt);", row);
-        var bindings = await source.QueryAsync<BindingShardRow>("select binding_id as BindingId,credential_id as CredentialId,preset_id as PresetId,provider_id as ProviderId,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credential_bindings;");
-        foreach (var row in bindings) await target.ExecuteAsync("insert into provider_credential_bindings values (@BindingId,@CredentialId,@PresetId,@ProviderId,@Status,@CreatedAt,@UpdatedAt);", row);
+        await using (var target = new SqliteConnection(BuildConnectionString(path, SqliteOpenMode.ReadWriteCreate)))
+        {
+            await target.OpenAsync();
+            await target.ExecuteAsync("create table provider_credentials (credential_id text primary key, library_id text, provider_id text, display_name text, secret_value text, status text, created_at text, updated_at text); create table provider_credential_bindings (binding_id text primary key, credential_id text, preset_id text null, provider_id text, status text, created_at text, updated_at text);");
+            var creds = await source.QueryAsync<CredentialShardRow>("select credential_id as CredentialId,library_id as LibraryId,provider_id as ProviderId,display_name as DisplayName,secret_value as SecretValue,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credentials;");
+            foreach (var row in creds) await target.ExecuteAsync("insert into provider_credentials values (@CredentialId,@LibraryId,@ProviderId,@DisplayName,@SecretValue,@Status,@CreatedAt,@UpdatedAt);", row);
+            var bindings = await source.QueryAsync<BindingShardRow>("select binding_id as BindingId,credential_id as CredentialId,preset_id as PresetId,provider_id as ProviderId,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credential_bindings;");
+            foreach (var row in bindings) await target.ExecuteAsync("insert into provider_credential_bindings values (@BindingId,@CredentialId,@PresetId,@ProviderId,@Status,@CreatedAt,@UpdatedAt);", row);
+        }
         return new SnapshotShard(shardId, Path.Combine("shards", name), new FileInfo(path).Length, await Sha256FileAsync(path), "sensitive_mutable", false);
     }
 
     public static async Task<string> ReadLibraryIdAsync(string databasePath)
     {
-        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = databasePath, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        await using var connection = new SqliteConnection(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly));
         await connection.OpenAsync();
         return await connection.ExecuteScalarAsync<string>("select library_id from library_metadata limit 1;")
                ?? throw new InvalidOperationException("Runtime database has no library metadata.");
     }
+
+    private static string BuildConnectionString(string databasePath, SqliteOpenMode mode) =>
+        new SqliteConnectionStringBuilder
+        {
+            DataSource = databasePath,
+            Mode = mode,
+            ForeignKeys = true,
+            Pooling = false
+        }.ToString();
 
     public static bool IsPathInside(string childPath, string parentPath)
     {

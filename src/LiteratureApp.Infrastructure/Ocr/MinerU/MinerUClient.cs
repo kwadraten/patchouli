@@ -42,7 +42,11 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         try
         {
             var body = new MinerUBatchUrlRequest(
-                files.Select(f => new MinerUBatchUrlFile(f.FileName, f.FileSize)).ToArray());
+                files.Select(f => new MinerUBatchUrlFile(f.FileName, _options.IsOcr, f.FileName)).ToArray(),
+                _options.ModelVersion,
+                _options.Language,
+                _options.EnableTable,
+                _options.EnableFormula);
 
             var request = CreateRequest(HttpMethod.Post, "/api/v4/file-urls/batch", body);
             using var response = await _httpClient.SendAsync(request, cancellationToken);
@@ -59,9 +63,13 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
                     MinerUProviderStatus.UploadUrlFailed,
                     SanitizeErrorMessage(result?.Message ?? "Invalid response from MinerU API."));
 
-            var batch = new MinerUUploadBatch(
-                result.Data.BatchId,
-                result.Data.Files.Select(f => new MinerUFileUploadUrl(f.FileName, f.UploadUrl, f.FileId)).ToArray());
+            var uploadUrls = MapUploadUrls(files, result.Data);
+            if (uploadUrls.Count == 0)
+                return Result<MinerUUploadBatch>.Failure(
+                    MinerUProviderStatus.UploadUrlFailed,
+                    "MinerU API did not return upload URLs.");
+
+            var batch = new MinerUUploadBatch(result.Data.BatchId, uploadUrls);
 
             return Result<MinerUUploadBatch>.Success(batch);
         }
@@ -235,6 +243,25 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         if (body is not null)
             request.Content = JsonContent.Create(body);
         return request;
+    }
+
+    private static IReadOnlyList<MinerUFileUploadUrl> MapUploadUrls(
+        IReadOnlyList<MinerUUploadRequest> requests,
+        MinerUBatchUrlData data)
+    {
+        if (data.FileUrls is { Count: > 0 })
+        {
+            return data.FileUrls.Select((url, index) =>
+            {
+                var file = requests[Math.Min(index, requests.Count - 1)];
+                return new MinerUFileUploadUrl(file.FileName, url, file.FileName);
+            }).ToArray();
+        }
+
+        if (data.Files is { Count: > 0 })
+            return data.Files.Select(f => new MinerUFileUploadUrl(f.FileName, f.UploadUrl, f.FileId)).ToArray();
+
+        return [];
     }
 
     private static string MapStatus(string mineruStatus) => mineruStatus switch

@@ -119,8 +119,19 @@ public sealed class OcrAdapterReadinessTests
         JsonSerializer.Serialize(result.Value).Should().NotContain(modelPath);
     }
 
-    [Fact] public void README_states_paddle_and_cloud_ocr_not_implemented() => File.ReadAllText(TestPaths.FromRepositoryRoot("README.md")).Should().Contain("PaddleOCR and cloud OCR are not connected");
-    [Fact] public void KnownIssues_mentions_non_tesseract_ocr_not_implemented() => File.ReadAllText(TestPaths.FromRepositoryRoot("docs", "KNOWN_ISSUES_ALPHA.md")).Should().Contain("PaddleOCR, other HTR engines, and cloud providers are not connected");
+    [Fact]
+    public void Product_ocr_boundary_is_documented_in_agent_prd()
+    {
+        File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md"))
+            .Should().Contain("OCR Preset").And.Contain("MCP cannot read provider secrets");
+    }
+
+    [Fact]
+    public void Product_startup_registers_mineru_workflow_components()
+    {
+        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "LiteratureApp.UI", "AppServices.cs"))
+            .Should().Contain("MinerUResultImporter").And.Contain("FirstRunWorkflow");
+    }
     [Fact] public void No_new_migration_created_in_step_14A() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName).Should().NotContain(name => name!.Contains("14", StringComparison.OrdinalIgnoreCase));
 
     private static OcrAdapterRegistry CreateRegistry()
