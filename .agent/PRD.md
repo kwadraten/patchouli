@@ -1,482 +1,482 @@
 # 文献管理程序 PRD v1.1
 
-## 1. Problem Statement
+## 1. 问题陈述
 
 研究者需要一个个人文献管理器，用来管理题录、PDF/扫描本、OCR/HTR 文本、版面结构、全文检索结果和可复现证据引用。现有工具通常在以下方面不足：
 
 - 文件同步、数据库同步和本地运行库容易混在一起，网盘同步可能损坏运行数据库。
 - PDF 路径变化后，题录、OCR、索引和原文定位之间容易断裂。
 - OCR/HTR 管线难以针对多语言、古籍、手稿、竖排、多栏、边注等材料做细粒度配置。
-- OCR 结果很难持续修正，并且修正后的文本、bbox、layout、索引和外部引用缺少统一 revision 机制。
-- 搜索结果往往只返回文本片段，缺少页级、bbox、revision 和来源证据。
+- OCR 结果很难持续修正，并且修正后的文本、bbox、layout、索引和外部引用缺少统一修订机制。
+- 搜索结果往往只返回文本片段，缺少页级、bbox、修订版本和来源证据。
 - 外部 agent 需要通过 MCP 检索和读取证据，但不应该获得写权限、本机路径、密钥或执行 OCR 的能力。
 
 目标是开发一个桌面优先、个人使用、可同步、可修正、可检索、可被外部工具读取证据的文献管理程序。
 
-## 2. Solution
+## 2. 解决方案
 
 构建一个类似 Zotero / Calibre / DEVONthink 的个人文献管理器，并增加可编程增强层：
 
-- 题录管理：以题录（Item/Work）为学术引用身份，支持基础元数据、可扩展 identifiers、标签、collection 和自定义字段。
-- 文件管理：PDF/图像不入库，由用户自己的目录和云盘管理；程序通过 hash、known locations 和搜索目录重新定位。
-- 同步：运行库与发布快照分离；发布快照由 SQLite shards + manifest 组成，可通过 Google Drive、OneDrive、Syncthing、NAS 等同步。
-- OCR/HTR：用户手动选择 OCR Preset，可按 document/page/bbox 运行，支持云端或本地模型。
-- Layout / bbox：OCR 输出进入可重组 layout tree；用户可以持续修正文字、bbox、reading order 和节点结构。
-- 检索：全文检索以 SQLite FTS5 为第一版 provider；search units 持久化为可重建派生表，本地 FTS index 可重建。
-- Evidence：搜索和 MCP 返回稳定 evidence_ref，支持 pinned/current/compare 解析和长期可复制的 evref 字符串。
-- MCP：第一版只提供检索与证据读取，不提供写入、OCR 触发、本机路径、provider 密钥或原文打开。
+- **题录管理**：以题录（Item/Work）为学术引用身份，支持基础元数据、可扩展标识符、标签、集合和自定义字段。
+- **文件管理**：PDF/图像不入库，由用户自己的目录和云盘管理；程序通过哈希值、已知位置和搜索目录重新定位。
+- **同步**：运行库与发布快照分离；发布快照由 SQLite 分片 + 清单文件组成，可通过 Google Drive、OneDrive、Syncthing、NAS 等同步。
+- **OCR/HTR**：用户手动选择 OCR 预设，可按文档/页面/bbox 运行，支持云端或本地模型。
+- **布局 / bbox**：OCR 输出进入可重组布局树；用户可以持续修正文字、bbox、阅读顺序和节点结构。
+- **检索**：全文检索以 SQLite FTS5 为第一版提供程序；搜索单元持久化为可重建派生表，本地 FTS 索引可重建。
+- **证据**：搜索和 MCP 返回稳定的证据引用（evidence_ref），支持 pinned/current/compare 解析和长期可复制的 evref 字符串。
+- **MCP**：第一版只提供检索与证据读取，不提供写入、OCR 触发、本机路径、提供程序密钥或原文打开。
 
-## 3. Goals
+## 3. 目标
 
-- 建立可靠的个人书库数据模型：library、item、file_asset、document_instance、page、layout_node、search_unit、revision。
+- 建立可靠的个人书库数据模型：库（library）、题录（item）、文件资产（file_asset）、文档实例（document_instance）、页面（page）、布局节点（layout_node）、搜索单元（search_unit）、修订版本（revision）。
 - 支持数据库快照通过常见同步服务同步，不依赖程序自带文件同步。
 - 支持 PDF/图像文件路径变化后的快速定位与深度修复扫描。
-- 支持多语言 OCR/HTR Preset、preset version、retry run、候选结果和局部采用。
-- 支持用户持续修正 OCR 文本、bbox 和 layout tree。
-- 支持页级全文检索、query rewriting、Search Profile 和 carrying stable evidence references 的 search results。
-- 提供 text-only MCP，面向外部 agent 返回可验证文本证据。
-- 第一版优先保证证据一致性、revision 可追踪、同步安全和大库可扩展。
+- 支持多语言 OCR/HTR 预设、预设版本、重试运行、候选结果和局部采用。
+- 支持用户持续修正 OCR 文本、bbox 和布局树。
+- 支持页级全文检索、查询重写、搜索配置文件和携带稳定证据引用的搜索结果。
+- 提供纯文本 MCP，面向外部 agent 返回可验证文本证据。
+- 第一版优先保证证据一致性、修订版本可追踪、同步安全和大库可扩展。
 
-## 4. Non-Goals and V1 Exclusions
+## 4. 非目标与 V1 排除项
 
-以下能力不属于第一版范围。部分能力可以作为 v2/v3/backlog 继续讨论。
+以下能力不属于第一版范围。部分能力可以作为 v2/v3/待办事项继续讨论。
 
-| Category | V1 Exclusion | Later Track |
+| 类别 | V1 排除项 | 后续跟踪 |
 |---|---|---|
-| Collaboration | 团队功能、多人权限、审计日志、机构级后台管理 | v3 |
-| File sync | 程序自带 PDF/图像文件同步、托管文件目录 | backlog |
-| Search fallback | search index unavailable 时的 SQL LIKE / linear scan fallback | backlog |
-| OCR automation | 自动推荐 OCR Preset、自动云成本确认策略 | backlog |
-| Citation | CSL citation rendering、bibliography export、Copy Page Citation | v2 |
-| Layout | 独立 reading-order view、多 parent layout graph、bbox-level candidate adoption | v2/v3 |
-| Table model | 完整表格语义、公式、复杂样式、嵌套表格模型 | v2 |
-| Query ranking | query rewrite 权重排序、语义混合排序 | v2 |
-| MCP actions | MCP 写入、OCR 触发、bbox 编辑、metadata 更新、删除操作 | not planned for v1 |
-| MCP media/path | MCP 返回图片、缓存路径、本机路径、file URL | not planned |
-| Encryption | 库级加密、master password、per-device credential unwrap | v2+ |
-| Model provenance | 完整模型 fingerprint / reproducibility bundle | backlog |
+| 协作 | 团队功能、多人权限、审计日志、机构级后台管理 | v3 |
+| 文件同步 | 程序自带 PDF/图像文件同步、托管文件目录 | 待办事项 |
+| 搜索降级 | 搜索索引不可用时的 SQL LIKE / 线性扫描降级 | 待办事项 |
+| OCR 自动化 | 自动推荐 OCR 预设、自动云成本确认策略 | 待办事项 |
+| 引文 | CSL 引文渲染、参考文献导出、复制页面引文 | v2 |
+| 布局 | 独立阅读顺序视图、多父节点布局图、bbox 级候选采用 | v2/v3 |
+| 表格模型 | 完整表格语义、公式、复杂样式、嵌套表格模型 | v2 |
+| 查询排序 | 查询重写权重排序、语义混合排序 | v2 |
+| MCP 操作 | MCP 写入、OCR 触发、bbox 编辑、元数据更新、删除操作 | v1 不计划 |
+| MCP 媒体/路径 | MCP 返回图片、缓存路径、本机路径、文件 URL | 不计划 |
+| 加密 | 库级加密、主密码、每设备凭据解封 | v2+ |
+| 模型溯源 | 完整模型指纹/可复现性包 | 待办事项 |
 
-## 5. User Stories
+## 5. 用户故事
 
-1. As a researcher, I want to manage my personal literature library, so that I can organize books, papers, scans, and metadata in one place.
-2. As a researcher, I want the database to sync through Google Drive or similar services, so that I can use the same library across devices.
-3. As a researcher, I want PDFs to remain in my own folder structure, so that the app does not take over my file organization.
-4. As a researcher, I want the app to find moved PDFs by hash and search roots, so that metadata and OCR remain useful after file moves.
-5. As a researcher, I want missing PDFs not to delete or hide metadata, OCR, and search results, so that my library remains usable offline.
-6. As a researcher, I want item metadata with extensible identifiers, so that I can store DOI, ISBN, JPNO, NDLBibID, call numbers, and custom catalog IDs.
-7. As a researcher, I want multiple document instances under one item, so that scans, OCR PDFs, partial files, and supplements can belong to the same cited work.
-8. As a researcher, I want different editions, translations, volumes, and preprints to be separate items when citation identity differs, so that references stay accurate.
-9. As a researcher, I want manually selected OCR/HTR presets, so that I can choose the right model for manuscripts, classical Japanese texts, or modern PDFs.
-10. As a researcher, I want risky OCR results to remain candidates until I adopt them, so that low-confidence runs do not pollute search and evidence.
-11. As a researcher, I want successful pages from partially failed OCR runs to be preserved, so that a few bad pages do not discard a large run.
-12. As a researcher, I want to correct OCR text, layout, bbox, and reading order, so that search and citations point to better evidence over time.
-13. As a researcher, I want page-level search results with matched text and evidence refs, so that I can verify claims in source context.
-14. As a researcher, I want search to support historical spelling, variant characters, OCR confusions, and dictionaries, so that multilingual or historical material is findable.
-15. As a researcher, I want stale or partial index status surfaced, so that I know when search results may be incomplete.
-16. As an external agent, I want MCP search_library to return evidence refs and matched units, so that I can cite evidence.
-17. As an external agent, I want get_search_result_context to return nearby units with their own evidence refs, so that I can cite context independently.
-18. As an external agent, I want get_page_text to return plain text by default, so that I can request page context cheaply.
-19. As an external agent, I want get_page_blocks to return structured text and bbox only when requested, so that I can validate layout when needed.
-20. As an external agent, I want MCP to be text-only, so that it does not expose local images, file paths, or caches.
-21. As an external agent, I want evidence refs to be pinned by default, so that citations do not drift after OCR corrections.
-22. As a researcher, I want to copy Evidence Markdown from search results and blocks, so that I can paste reproducible citations into notes.
-23. As a researcher, I want normal item-level citation generation later, so that bibliographies and CSL styles can be added after the core evidence system is stable.
+1. 作为一名研究者，我希望管理我的个人文献库，以便在一个地方组织书籍、论文、扫描件和元数据。
+2. 作为一名研究者，我希望数据库可以通过 Google Drive 或类似服务同步，以便在多台设备上使用同一个文献库。
+3. 作为一名研究者，我希望 PDF 保留在我自己的文件夹结构中，以便程序不会接管我的文件组织。
+4. 作为一名研究者，我希望程序能够通过哈希值和搜索根目录找到已移动的 PDF，以便文件移动后元数据和 OCR 仍然可用。
+5. 作为一名研究者，我希望缺失的 PDF 不会删除或隐藏元数据、OCR 和搜索结果，以便我的文献库在离线时仍然可用。
+6. 作为一名研究者，我希望题录元数据带有可扩展标识符，以便我可以存储 DOI、ISBN、JPNO、NDLBibID、索书号和自定义目录 ID。
+7. 作为一名研究者，我希望一个题录下有多个文档实例，以便扫描件、OCR PDF、部分文件和补充材料可以属于同一个被引作品。
+8. 作为一名研究者，我希望不同版本、翻译、卷册和预印本在引用身份不同时作为不同的题录，以便引用保持准确。
+9. 作为一名研究者，我希望手动选择 OCR/HTR 预设，以便为手稿、古典日语文本或现代 PDF 选择合适的模型。
+10. 作为一名研究者，我希望风险较高的 OCR 结果在我采纳之前保持候选状态，以便低置信度的运行不会污染搜索和证据。
+11. 作为一名研究者，我希望部分失败的 OCR 运行中成功的页面被保留，以便少数坏页面不会丢弃整个大型运行。
+12. 作为一名研究者，我希望能够修正 OCR 文本、布局、bbox 和阅读顺序，以便搜索和引文随着时间的推移指向更好的证据。
+13. 作为一名研究者，我希望搜索返回页级结果，带有匹配文本和证据引用，以便我能在源上下文中验证主张。
+14. 作为一名研究者，我希望搜索支持历史拼写、异体字、OCR 混淆和词典，以便多语言或历史材料可以被检索到。
+15. 作为一名研究者，我希望过时或部分索引状态能够被显示，以便我知道搜索结果何时可能不完整。
+16. 作为外部 agent，我希望 MCP search_library 返回证据引用和匹配单元，以便我能够引用证据。
+17. 作为外部 agent，我希望 get_search_result_context 返回附近的单元及其自己的证据引用，以便我能够独立引用上下文。
+18. 作为外部 agent，我希望 get_page_text 默认返回纯文本，以便我可以低成本地请求页面上下文。
+19. 作为外部 agent，我希望 get_page_blocks 仅在请求时返回结构化文本和 bbox，以便在需要时验证布局。
+20. 作为外部 agent，我希望 MCP 只返回纯文本，以便不暴露本地图像、文件路径或缓存。
+21. 作为外部 agent，我希望证据引用默认是 pinned，以便 OCR 修正后引用不会漂移。
+22. 作为一名研究者，我希望从搜索结果和块中复制证据 Markdown，以便我可以将可复制的引文粘贴到笔记中。
+23. 作为一名研究者，我希望稍后实现正常的题录级引文生成，以便在核心证据系统稳定后添加参考文献和 CSL 样式。
 
-## 6. Functional Requirements
+## 6. 功能需求
 
-### 6.1 Product Scope
+### 6.1 产品范围
 
-- The app is a personal desktop literature manager with programmable enhancements.
-- Team workflows, shared permissions, audit logs, and institutional administration are out of scope.
-- Desktop app is primary; .NET ecosystem is preferred, with F# preferred where practical.
-- UI stack: native Avalonia 12 for now.
+- 应用程序是一个个人桌面文献管理器，具有可编程增强功能。
+- 团队工作流、共享权限、审计日志和机构管理不在范围内。
+- 桌面应用程序是主要的；优先选择 .NET 生态系统，在实际可行的情况下优先选择 F#。
+- UI 栈：目前使用原生 Avalonia 12。
 
-### 6.2 Library Identity and Multiplicity
+### 6.2 库标识与多重性
 
-- A library is the top-level durable boundary for metadata, document instances, OCR/layout/search artifacts, evidence refs, snapshots, and MCP resolution.
-- v1 supports one active library open at a time in the desktop app.
-- v1 data model must still support multiple libraries on disk, each with a distinct `library_id`.
-- `library_id` is generated once at library creation and must be stable for the lifetime of that library.
-- `library_id` is not derived from path, device name, sync root, or user account.
-- Library display name can be renamed without changing `library_id`.
-- A library can be moved to another folder or sync service without changing `library_id`.
-- v1 does not support automatic library merge or split.
-- Cross-library evidence resolution is not allowed in v1. If an evidence_ref belongs to another library, resolution returns `library_mismatch`.
-- Snapshot is per-library. A snapshot manifest cannot contain objects from multiple libraries.
-- `device_id` identifies a writer device inside one library; it is not part of citation identity.
+- 库是元数据、文档实例、OCR/布局/搜索制品、证据引用、快照和 MCP 解析的顶层持久边界。
+- v1 在桌面应用程序中一次只支持打开一个活动库。
+- v1 数据模型仍必须支持磁盘上的多个库，每个库有唯一的 `library_id`。
+- `library_id` 在库创建时生成一次，并且在该库的整个生命周期中必须保持稳定。
+- `library_id` 不从路径、设备名称、同步根目录或用户账户派生。
+- 库显示名称可以在不更改 `library_id` 的情况下重命名。
+- 库可以移动到另一个文件夹或同步服务，而不更改 `library_id`。
+- v1 不支持自动库合并或拆分。
+- v1 不允许跨库证据解析。如果某个 evidence_ref 属于另一个库，解析返回 `library_mismatch`。
+- 快照是每个库独立的。一个快照清单不能包含来自多个库的对象。
+- `device_id` 标识一个库内的写入设备；它不是引用身份的一部分。
 
-### 6.3 Library Database and Snapshot Sync
+### 6.3 库数据库与快照同步
 
-- The database is the only truth source for metadata, OCR/HTR, layout, bbox, revisions, dirty queue, OCR runs, search unit metadata, and optional vectors.
-- PDF/image originals and large binary caches are not stored in the database.
-- Runtime database lives outside sync folders and may use WAL.
-- Published snapshot database is checkpointed into sync roots as SQLite shards plus manifests.
-- Shard target size is 512-768 MB, with hard maximum below 1 GB.
-- Shard sizing rationale:
-  - keep individual sync files below common cloud-client stress thresholds;
-  - reduce re-upload cost when active data changes;
-  - keep validation/hash and repair operations bounded;
-  - avoid large WAL/checkpoint stalls during snapshot publish.
-- Old large data shards should be mostly immutable; changes are written as new revision/delta data in active shards.
-- Snapshot identity must include library_id, device_id, snapshot_id, parent_snapshot_id, schema_version, shard list, shard hash, and logical generation.
-- Snapshot publish is atomic from the app perspective: write candidate manifest, verify shard hashes, then update current pointer.
-- Snapshot import never replaces the active runtime DB in place. It imports into a staging area and applies after validation.
+- 数据库是元数据、OCR/HTR、布局、bbox、修订版本、脏队列、OCR 运行、搜索单元元数据和可选向量的唯一真实来源。
+- PDF/图像原件和大二进制缓存不存储在数据库中。
+- 运行数据库位于同步文件夹之外，可以使用 WAL。
+- 发布的快照数据库以 SQLite 分片加清单文件的形式检查点到同步根目录中。
+- 分片目标大小为 512-768 MB，硬上限低于 1 GB。
+- 分片大小依据：
+  - 保持单个同步文件低于常见云客户端的压力阈值；
+  - 减少活动数据变化时的重新上传成本；
+  - 保持验证/哈希和修复操作在有限范围内；
+  - 避免快照发布期间出现大的 WAL/检查点停顿。
+- 旧的大数据分片应尽量不可变；变化作为新的修订版本/增量数据写入活动分片。
+- 快照标识必须包含 library_id、device_id、snapshot_id、parent_snapshot_id、schema_version、分片列表、分片哈希和逻辑代次。
+- 从应用程序角度看，快照发布是原子性的：写入候选清单，验证分片哈希，然后更新当前指针。
+- 快照导入不会就地替换活动运行数据库。它导入到一个临时区域，在验证后应用。
 
-### 6.4 Snapshot Conflict Resolution
+### 6.4 快照冲突解决
 
-- First version sync uses single-writer-by-convention, enforced by detection and warnings rather than hard distributed locking.
-- Each device writes `device_id`, last local generation, parent_snapshot_id, and publish timestamp.
-- On publish, if the sync root current snapshot is no longer the local parent, the app must not overwrite it.
-- That condition creates a snapshot branch.
-- v1 does not perform automatic object-level merge.
-- v1 branch actions:
-  - open as separate branch for inspection;
-  - import selected item/document_instance into current branch through explicit user action;
-  - discard local branch;
-  - keep branch as separate library copy.
-- v1 must not silently last-writer-win across branches.
+- 第一版同步使用单写入者约定，通过检测和警告而非硬分布式锁来强制执行。
+- 每个设备写入 `device_id`、最后本地代次、parent_snapshot_id 和发布时间戳。
+- 在发布时，如果同步根目录的当前快照不再是本地父快照，应用程序不得覆盖它。
+- 该条件创建一个快照分支。
+- v1 不执行自动对象级合并。
+- v1 分支操作：
+  - 作为独立分支打开以供检查；
+  - 通过显式用户操作将选中的题录/文档实例导入当前分支；
+  - 丢弃本地分支；
+  - 将分支保留为独立的库副本。
+- v1 不得在分支间静默执行最后写入者胜出。
 
-Object strategy in v1:
+v1 中的对象策略：
 
-| Object Type | Same-Branch Update | Cross-Branch Conflict |
+| 对象类型 | 同分支更新 | 跨分支冲突 |
 |---|---|---|
-| library metadata | latest committed change in branch | manual pick |
-| item metadata | revisioned update | manual import/pick |
-| file_asset location | local known_locations can be appended | manual pick if identity conflict |
-| document_instance | revisioned update | manual import/pick |
-| page metadata | derived from document_instance/file | forbidden automatic merge |
-| OCR run | append-only within branch | import only with owning document_instance |
-| OCR/layout revision | append-only/current pointer within branch | manual pick; no automatic pointer merge |
-| search_unit | derived/persisted within branch | rebuilt/imported with owning layout revision |
-| evidence_ref | resolves only within owning library/branch context | returns branch candidates when ambiguous |
-| provider credential | mutable credential store, latest in selected branch | manual pick/re-enter |
-| cache/index | local rebuildable | never merged |
+| 库元数据 | 分支中最新已提交变更 | 手动选择 |
+| 题录元数据 | 修订版本化更新 | 手动导入/选择 |
+| 文件资产位置 | 本地 known_locations 可追加 | 身份冲突时手动选择 |
+| 文档实例 | 修订版本化更新 | 手动导入/选择 |
+| 页面元数据 | 从文档实例/文件派生 | 禁止自动合并 |
+| OCR 运行 | 分支内仅追加 | 仅随所属文档实例导入 |
+| OCR/布局修订版本 | 分支内仅追加/当前指针 | 手动选择；无自动指针合并 |
+| 搜索单元 | 分支内派生/持久化 | 随所属布局修订版本重建/导入 |
+| 证据引用 | 仅在所属库/分支上下文中解析 | 歧义时返回分支候选项 |
+| 提供程序凭据 | 可变凭据存储，选中的分支中取最新 | 手动选择/重新输入 |
+| 缓存/索引 | 本地可重建 | 从不合并 |
 
-### 6.5 Credential Sync and Trust Boundary
+### 6.5 凭据同步与信任边界
 
-- Provider credentials are user-owned cloud/local provider keys and tokens used by OCR/HTR adapters.
-- By product decision, v1 may sync provider credentials across trusted user devices.
-- Credentials are stored plaintext from the app's perspective; v1 does not implement library-level encryption, master password, or per-device unwrap.
-- Credentials must not be written into immutable historical content-addressed data shards.
-- Credentials live in a mutable credential store/shard referenced by the latest manifest and marked `sensitive_mutable`.
-- Credential changes rewrite/rotate the mutable credential store instead of appending secrets to historical data shards.
-- Snapshot publish must keep ordinary immutable data shards and `sensitive_mutable` credential shards logically separate.
-- Emergency credential purge/revoke is a v1 requirement:
-  - delete provider credential rows from active runtime DB;
-  - rewrite the mutable credential store without the secret;
-  - update manifest references;
-  - mark affected OCR presets/providers as `credential_missing`.
-- The app can remove credential shards and manifest references under its managed sync root, but cannot erase cloud provider historical versions, external backups, or files copied by the user.
-- User is responsible for trusting devices, sync service, and sync folder access control.
-- MCP cannot read provider secrets or provider config details.
-- MCP only reports document evidence capability, not provider status.
+- 提供程序凭据是用户拥有的云/本地提供程序密钥和令牌，供 OCR/HTR 适配器使用。
+- 根据产品决策，v1 可以在受信任的用户设备间同步提供程序凭据。
+- 从应用程序角度看，凭据以明文存储；v1 不实现库级加密、主密码或每设备解封。
+- 凭据不得写入不可变的历史内容寻址数据分片。
+- 凭据存在于最新清单引用的可变凭据存储/分片中，并标记为 `sensitive_mutable`。
+- 凭据变更重写/轮换可变凭据存储，而不是将秘密追加到历史数据分片中。
+- 快照发布必须保持普通不可变数据分片和 `sensitive_mutable` 凭据分片在逻辑上分离。
+- 紧急凭据清除/撤销是 v1 需求：
+  - 从活动运行数据库中删除提供程序凭据行；
+  - 重写可变凭据存储，不包含该秘密；
+  - 更新清单引用；
+  - 将受影响的 OCR 预设/提供程序标记为 `credential_missing`。
+- 应用程序可以删除其管理的同步根目录下的凭据分片和清单引用，但无法擦除云提供程序的历史版本、外部备份或用户复制的文件。
+- 用户负责信任设备、同步服务和同步文件夹的访问控制。
+- MCP 无法读取提供程序密钥或提供程序配置详情。
+- MCP 仅报告文档证据能力，不报告提供程序状态。
 
-### 6.6 File Assets and File Resolution
+### 6.6 文件资产与文件解析
 
-- The app does not own a managed files directory.
-- Users configure file_search_roots and database_sync_roots separately.
-- PDF file absence does not imply literature absence.
-- File states: available, moved_candidate, missing, offline_root, conflict, changed.
-- File identity uses quick_hash and optional full BLAKE3; SHA-256 is not a core field.
-- Import stores path, name, size, mtime, quick hash, page count, and pdf trailer id if available.
-- Full BLAKE3 is computed later during idle background work.
-- Relocation first checks known_locations, then size + quick_hash, then full BLAKE3 if necessary.
-- Scanning modes:
-  - Light scan at startup.
-  - Incremental watcher-driven scan.
-  - User-triggered deep repair scan.
-- A unified File Resolution API must be used for opening originals, rendering pages, running OCR, and verifying hash.
-- `resolve_file(file_asset_id, purpose)` returns status, resolved_path, candidates, confidence, and required_action to trusted internal callers.
-- MCP never receives resolved_path.
-- conflict and changed do not auto-open; they require user confirmation.
-- If file_asset status becomes `changed`, dependent page rendering/OCR/bbox evidence remains available only as previously committed evidence and must be marked `source_changed`.
-- `source_changed` does not invalidate pinned evidence automatically, but current-mode consumers must receive a warning that bbox/page basis may no longer match the current source file.
+- 应用程序不拥有托管的文件目录。
+- 用户分别配置 file_search_roots 和 database_sync_roots。
+- PDF 文件缺失不意味着文献缺失。
+- 文件状态：available、moved_candidate、missing、offline_root、conflict、changed。
+- 文件标识使用快速哈希和可选的完整 BLAKE3；SHA-256 不是核心字段。
+- 导入存储路径、名称、大小、修改时间、快速哈希、页数，以及可能存在的 PDF trailer ID。
+- 完整 BLAKE3 在空闲后台工作中稍后计算。
+- 重新定位首先检查 known_locations，然后是大小 + 快速哈希，必要时再进行完整 BLAKE3。
+- 扫描模式：
+  - 启动时快速扫描。
+  - 增量式监控驱动扫描。
+  - 用户触发的深度修复扫描。
+- 必须使用统一的文件解析 API 来打开原件、渲染页面、运行 OCR 和验证哈希。
+- `resolve_file(file_asset_id, purpose)` 向可信的内部调用者返回状态、解析路径、候选项、置信度和所需操作。
+- MCP 从不接收解析路径。
+- conflict 和 changed 状态不自动打开；它们需要用户确认。
+- 如果 file_asset 状态变为 `changed`，依赖的页面渲染/OCR/bbox 证据仅作为先前已提交的证据可用，并且必须标记为 `source_changed`。
+- `source_changed` 不会自动使 pinned 证据失效，但 current 模式的消费者必须收到警告，提示 bbox/页面的基准可能不再与当前源文件匹配。
 
-### 6.7 Item Metadata and Bibliographic Model
+### 6.7 题录元数据与书目模型
 
-- Core model has three layers: 题录 (Item/Work), file_asset, document_instance.
-- 题录 (Item/Work) is the citation identity.
-- file_asset is file identity, location, and verification.
-- document_instance is a concrete PDF/scan manifestation under a 题录 (Item) and owns page/OCR/layout/search/vector artifacts.
-- Different citation identities must be different 题录 (Items): editions, translations, volumes when citation differs, preprint vs official if metadata differs.
-- Same citation identity can have multiple document instances: different scans, OCR PDFs, split PDFs, missing-page supplements.
-- Default search targets primary document_instance only; advanced search can include alternates, partials, deprecated instances, or a specific document instance.
-- First version 题录 metadata fields:
-  - item_id, item_type, title, subtitle, creators, date, publication_title, publisher, place, volume, issue, pages, language, abstract, tags, collections, custom_fields.
-- identifiers are extensible with scheme/value/note and built-in common schemes DOI, ISBN, ISSN, URL, archive_id, call_number, jpno, ndlbibid.
-- CSL rendering, bibliography export, citekey workflows, authority control, creator disambiguation, multilingual titles, and detailed edition/history fields are important TODOs.
+- 核心模型有三层：**题录（Item/Work）**、**file_asset**、**document_instance**。
+- **题录（Item/Work）** 是引用身份。
+- **file_asset** 是文件身份、位置和验证。
+- **document_instance** 是一个题录下的具体 PDF/扫描表现形态，拥有页面/OCR/布局/搜索/向量制品。
+- 不同的引用身份必须是不同的题录：版本、翻译、卷册（当引用不同时）、预印本与正式版（如果元数据不同）。
+- 相同的引用身份可以有多个文档实例：不同扫描件、OCR PDF、拆分 PDF、缺页补充材料。
+- 默认搜索仅针对主要文档实例；高级搜索可以包含备选、部分、已弃用的实例或特定文档实例。
+- 第一版题录元数据字段：
+  - item_id、item_type、title、subtitle、creators、date、publication_title、publisher、place、volume、issue、pages、language、abstract、tags、collections、custom_fields。
+- 标识符是可扩展的，包含 scheme/value/note 以及内置的常见方案 DOI、ISBN、ISSN、URL、archive_id、call_number、jpno、ndlbibid。
+- CSL 渲染、参考文献导出、引用键工作流、规范控制、创作者消歧、多语言标题和详细的版本/历史字段是重要的待办事项。
 
-### 6.8 OCR/HTR Presets, Models, and Provider Configuration
+### 6.8 OCR/HTR 预设、模型与提供程序配置
 
-- "OCR Preset" is the user-facing name for a reusable OCR/HTR configuration.
-- `ocr_preset` replaces the earlier "OCR Profile" term to avoid confusion with Search Profile.
-- Users choose OCR/HTR Presets manually; the system does not auto-recommend presets.
-- Preset scope priority:
-  - bbox override
-  - page override
-  - document default
-  - collection/tag batch assignment
-- Supported tasks:
-  - RunPresetOnDocument
-  - RunPresetOnPages
-  - RunPresetOnRegion
-- Preset versions are immutable for OCR provenance.
-- preset holds name, current_version_id, and archive state.
-- preset_version holds engine_id, model_id, model_path, parameters, apply_on_success, and created_at.
-- Changing engine/model/parameters/apply_on_success creates a new preset_version.
-- Changing name/description/tags can update preset in place.
-- ocr_run records preset_id, preset_version_id, engine_id, model_id, parameters_snapshot, source_revision_id, and output_revision_id.
-- model identity first version is model_id + model_path only.
-- model_path can be a local filesystem path or URL/endpoint/model page URL.
-- Stronger model hashing/fingerprinting is a TODO, not a v1 requirement.
-- Local model path missing/inaccessible blocks OCR and allows user rebind; rebinding creates a new preset_version.
-- Cloud provider auth/model/endpoint failures block OCR and do not auto-fallback.
+- "OCR Preset"（OCR 预设）是用户面向的可复用 OCR/HTR 配置的名称。
+- `ocr_preset` 替换了早期的"OCR Profile"术语，以避免与搜索配置文件混淆。
+- 用户手动选择 OCR/HTR 预设；系统不会自动推荐预设。
+- 预设作用域优先级：
+  - bbox 覆盖
+  - 页面覆盖
+  - 文档默认
+  - 集合/标签批量分配
+- 支持的任务：
+  - RunPresetOnDocument（在文档上运行预设）
+  - RunPresetOnPages（在页面上运行预设）
+  - RunPresetOnRegion（在区域上运行预设）
+- 预设版本对于 OCR 溯源是不可变的。
+- preset 包含名称、current_version_id 和归档状态。
+- preset_version 包含 engine_id、model_id、model_path、parameters、apply_on_success 和 created_at。
+- 更改引擎/模型/参数/apply_on_success 会创建一个新的 preset_version。
+- 更改名称/描述/标签可以就地更新 preset。
+- ocr_run 记录 preset_id、preset_version_id、engine_id、model_id、parameters_snapshot、source_revision_id 和 output_revision_id。
+- 第一版的模型标识仅为 model_id + model_path。
+- model_path 可以是本地文件系统路径或 URL/端点/模型页面 URL。
+- 更强的模型哈希/指纹识别是待办事项，不是 v1 需求。
+- 本地模型路径缺失/不可访问会阻止 OCR 并允许用户重新绑定；重新绑定会创建新的 preset_version。
+- 云提供程序认证/模型/端点故障会阻止 OCR，不会自动降级。
 
-### 6.9 OCR/HTR Run Lifecycle
+### 6.9 OCR/HTR 运行生命周期
 
-- OCR results are saved by page.
-- ocr_run states: pending, running, completed, completed_with_errors, failed, cancelled.
-- ocr_page_result states: pending, processing, succeeded, failed, skipped, cancelled.
-- Running OCR writes staging result; staging is previewable but does not enter current layout, full-text index, or MCP.
-- Cancelled OCR rolls back the whole run and deletes staging/temporary result for that run.
-- apply_on_success=true promotes staging to current OCR/layout revisions, marks related search_units dirty, and schedules local index rebuild.
-- apply_on_success=false promotes as candidate result; it is not searchable through default MCP until user adopts.
-- Candidate adoption supports whole run or selected pages; first version does not support bbox-level candidate adoption.
-- bbox coordinate conversion failure rejects the whole page: no text, layout, search_unit, index entry, or MCP exposure.
-- Partial page failures produce completed_with_errors; successful pages are retained.
-- Retry after source repair creates a new retry run with retry_of_run_id and retry_scope_pages; original run is not rewritten.
-- Retry run adoption follows its own recorded apply_on_success.
-- Automatic retry applies only to transient failures: network_timeout, temporary_provider_error, rate_limited, retryable quota_exceeded, worker_crashed.
-- Manual repair required for auth_failed, model_not_found, bad endpoint config, model_path missing/inaccessible, source_file missing/changed/conflict, bbox_coordinate_transform_failed, unsupported_file, invalid_page_box.
+- OCR 结果按页面保存。
+- ocr_run 状态：pending、running、completed、completed_with_errors、failed、cancelled。
+- ocr_page_result 状态：pending、processing、succeeded、failed、skipped、cancelled。
+- 运行 OCR 写入临时结果；临时结果可预览但不进入当前布局、全文索引或 MCP。
+- cancelled OCR 回滚整个运行并删除该运行的 staging/暂存结果。
+- apply_on_success=true 将临时结果提升为当前 OCR/布局修订版本，将相关 search_unit 标记为脏，并调度本地索引重建。
+- apply_on_success=false 将结果提升为候选结果；在用户采纳之前，它不能通过默认 MCP 检索。
+- 候选采纳支持整个运行或选定的页面；第一版不支持 bbox 级候选采纳。
+- bbox 坐标转换失败会拒绝整个页面：不产生文本、布局、search_unit、索引条目或 MCP 暴露。
+- 部分页面失败产生 completed_with_errors；成功页面被保留。
+- 源修复后重试会创建一个新的重试运行，包含 retry_of_run_id 和 retry_scope_pages；原始运行不被重写。
+- 重试运行的采纳遵循其自己记录的 apply_on_success。
+- 自动重试仅适用于瞬时故障：network_timeout、temporary_provider_error、rate_limited、retryable quota_exceeded、worker_crashed。
+- 以下情况需要手动修复：auth_failed、model_not_found、bad endpoint config、model_path missing/inaccessible、source_file missing/changed/conflict、bbox_coordinate_transform_failed、unsupported_file、invalid_page_box。
 
-OCR adoption transaction boundary:
+OCR 采纳事务边界：
 
-- Adoption is serialized per document_instance.
-- A document_instance can have multiple OCR runs in progress, but only one adoption transaction may update current OCR/layout pointers at a time.
-- The transaction must commit current OCR/layout revision pointers, search_unit regeneration or dirty marking, and evidence successor links together.
-- Local FTS rebuild happens after commit and is allowed to lag; search_index_status must become stale/partial until rebuild catches up.
-- search_library must only return search_units associated with committed layout/text revisions.
-- MCP read_mode=current must read from one committed revision set and must not mix old text with new bbox/layout in one response.
+- 采纳按 document_instance 序列化。
+- 一个 document_instance 可以有多个 OCR 运行正在进行，但一次只能有一个采纳事务更新当前的 OCR/布局指针。
+- 事务必须一起提交当前 OCR/布局修订版本指针、search_unit 重新生成或脏标记，以及证据后继链接。
+- 本地 FTS 重建在提交后进行，允许滞后；search_index_status 必须变为 stale/partial，直到重建赶上。
+- search_library 必须只返回与已提交布局/文本修订版本关联的 search_unit。
+- MCP read_mode=current 必须从一个已提交的修订版本集中读取，并且不得在一次响应中混合旧文本和新 bbox/布局。
 
-### 6.10 OCR/HTR Queue
+### 6.10 OCR/HTR 队列
 
-- Queue supports global, local, cloud, per-provider, per-engine, and per-preset concurrency limits.
-- Default recommendations:
-  - global_max_concurrent = min(4, max(2, logical_cpu_count / 4)).
-  - local_max_concurrent = 1 unless the local engine declares safe parallelism.
-  - cloud_max_concurrent = 2.
-  - per_provider_max_concurrent = 1 or provider-specific quota.
-- Queue supports priority + aging.
-- Priority order:
+- 队列支持全局、本地、云、按提供程序、按引擎和按预设的并发限制。
+- 默认建议：
+  - global_max_concurrent = min(4, max(2, logical_cpu_count / 4))。
+  - local_max_concurrent = 1，除非本地引擎声明了安全并行能力。
+  - cloud_max_concurrent = 2。
+  - per_provider_max_concurrent = 1 或提供程序特定的配额。
+- 队列支持优先级 + 老化。
+- 优先级顺序：
   - interactive_current_page
   - interactive_selected_pages
   - user_started_document
   - background_retry
   - batch_collection
   - maintenance
-- Queue supports pause scopes: global, local, cloud, provider, task.
-- First version does not support preset-level pause.
-- pause affects not-started tasks; cancel interrupts running tasks and follows OCR rollback rules.
-- Resume recalculates effective priority using priority + aging.
-- Cloud OCR/HTR has no cost/page/call estimate confirmation and no extra privacy/cost warning. UI can show provider type/name only.
+- 队列支持暂停范围：global、local、cloud、provider、task。
+- 第一版不支持预设级暂停。
+- 暂停影响尚未开始的任务；取消中断正在运行的任务并遵循 OCR 回滚规则。
+- 恢复使用优先级 + 老化重新计算有效优先级。
+- 云端 OCR/HTR 没有成本/页面/调用估算确认，也没有额外的隐私/成本警告。UI 只能显示提供程序类型/名称。
 
-### 6.11 OCR Revision, Reset, Hide, Tombstone, Purge
+### 6.11 OCR 修订版本、重置、隐藏、逻辑删除、清除
 
-- Original OCR/HTR outputs are immutable by default.
-- User corrections are saved as revisions/deltas.
-- current_revision pointer controls current view.
-- Reset levels:
-  - Unset Current OCR: remove current pointer; keep history.
-  - Hide OCR Run: hidden from current view/index/MCP; keep data.
-  - Tombstone OCR Data: hide from normal UI/index/MCP; keep tombstone for sync/reference handling.
-  - Purge OCR Data: physically delete OCR text/layout/vector as advanced maintenance.
+- 原始 OCR/HTR 输出默认不可变。
+- 用户修正保存为修订版本/增量。
+- current_revision 指针控制当前视图。
+- 重置级别：
+  - 取消设置当前 OCR：移除当前指针；保留历史。
+  - 隐藏 OCR 运行：从当前视图/索引/MCP 隐藏；保留数据。
+  - 逻辑删除 OCR 数据：从普通 UI/索引/MCP 隐藏；保留逻辑删除标记用于同步/引用处理。
+  - 清除 OCR 数据：物理删除 OCR 文本/布局/向量，作为高级维护操作。
 
-Cross-device semantics:
+跨设备语义：
 
-- Tombstone is a normal synced state and propagates through snapshots.
-- A tombstone hides the target from current UI/search/MCP on importing devices, while preserving enough identity to resolve old evidence refs as `tombstoned`.
-- Purge removes payload data where possible and leaves a minimal purge marker for evidence resolution.
-- Purge must not require rewriting immutable historical shards in v1. If historical shards still contain payload, the app must treat them as unreachable from current manifests after purge.
-- Full historical compaction is a TODO.
-- If device B still has a reference to purged data from an older branch, resolution in the selected current branch returns `purged` or branch candidates, not silent resurrection.
+- 逻辑删除是正常的同步状态，通过快照传播。
+- 逻辑删除在导入设备上隐藏目标以免出现在当前 UI/搜索/MCP 中，同时保留足够的身份以将旧证据引用解析为 `tombstoned`。
+- 清除在可能的情况下删除有效载荷数据，并留下一个最小清除标记用于证据解析。
+- 在 v1 中，清除不得要求重写不可变的历史分片。如果历史分片仍包含有效载荷，应用程序必须在清除后将其视为从当前清单不可达。
+- 完整的历史压缩是待办事项。
+- 如果设备 B 从较旧的分支中仍有对已清除数据的引用，则在选中的当前分支中解析返回 `purged` 或分支候选项，而不是静默复活。
 
-### 6.12 Layout Tree, Text, Tables, and BBox
+### 6.12 布局树、文本、表格和 BBox
 
-- First version uses a mutable tree hierarchy, not a separate reading-order view and not a multi-parent graph.
-- layout_node supports node_id, document_instance_id, page_id, parent_node_id, node_type, bbox, own_text, text_policy, reading_order, source, revision_id, confidence, ignored.
-- Supported operations: merge, split, move under new parent, change type, change reading_order, adjust bbox, create parent node from selection, detach, mark ignored/non-text.
-- Node types are semi-open: built-in standard types plus user-defined types mapped to base types.
-- Unknown custom node types imported from another device must be preserved, displayed as their base type, and not discarded.
-- text_policy:
+- 第一版使用可变树层次结构，而不是独立的阅读顺序视图，也不是多父节点图。
+- layout_node 支持 node_id、document_instance_id、page_id、parent_node_id、node_type、bbox、own_text、text_policy、reading_order、source、revision_id、confidence、ignored。
+- 支持的操作：合并、拆分、移动到新的父节点下、更改类型、更改 reading_order、调整 bbox、从选择创建父节点、分离、标记为忽略/非文本。
+- 节点类型是半开放的：内置标准类型加上映射到基类型的用户定义类型。
+- 从另一台设备导入的未知自定义节点类型必须被保留，以其基类型显示，不得丢弃。
+- text_policy：
   - own
   - aggregate_children
   - none
-- index_policy is type default + node override:
+- index_policy 是类型默认值 + 节点覆盖：
   - container
   - self
   - ignore
   - ignore_subtree
-- Ordinary bbox overlap is forbidden in current layout tree; ruby, warichu, annotations, marginalia, seals/stamps, and configured custom types may overlap.
-- OCR import/staging can temporarily contain overlap conflicts, but non-allowed overlaps must be resolved or skipped before adoption.
-- Local OCR on a selected bbox inserts/replaces nodes inside the single page current tree.
-- replace mode only replaces explicitly selected nodes in first version.
-- Canonical bbox uses normalized_page coordinates x/y/width/height in 0..1.
-- normalized_page is viewport-first: relative to the actual visible/rendered page box used by the app's page renderer for that committed page revision.
-- Fallback basis order is crop_box, media_box, then image_bounds.
-- Page coordinate basis, basis dimensions, page rotation, and renderer basis version must be recorded per page revision.
-- Canonical bbox is normalized to upright_view; source_bbox can retain raw engine coordinates.
-- If source file changes, existing bbox remains valid only relative to the recorded page basis, not automatically relative to the new source file.
-- Evidence and MCP responses must surface `source_changed` or `bbox_basis_stale` when current file verification no longer matches the recorded page basis.
-- MCP returns bbox only and does not generate natural-language location descriptions.
-- Tables are represented in layout tree using table/table_row/table_cell; no independent table model in first version.
-- table_cell may store row_index, col_index, row_span, col_span, is_header.
-- plain text output defaults to Markdown table when safe.
-- irregular tables degrade to a `[Table]` block or structured blocks on request; the app must not invent fake regular Markdown tables.
+- 普通 bbox 重叠在当前布局树中是被禁止的；ruby、warichu、注释、旁注、印章/戳记和已配置的自定义类型可以重叠。
+- OCR 导入/暂存可以临时包含重叠冲突，但非允许的重叠必须在采纳前解决或跳过。
+- 在选定的 bbox 上运行的本地 OCR 在单页当前树中插入/替换节点。
+- 替换模式在第一版中仅替换显式选中的节点。
+- 规范 bbox 使用 normalized_page 坐标 x/y/width/height，范围 0..1。
+- normalized_page 以视口为先：相对于应用程序的页面渲染器用于该已提交页面修订版本的实际可见/渲染页面框。
+- 降级基准顺序为 crop_box、media_box，然后是 image_bounds。
+- 每页修订版本必须记录页面坐标基准、基准尺寸、页面旋转和渲染器基准版本。
+- 规范 bbox 归一化为 upright_view；source_bbox 可以保留原始引擎坐标。
+- 如果源文件更改，现有 bbox 仅相对于记录的页面基准有效，而不是自动相对于新的源文件。
+- 当当前文件验证不再匹配记录的页面基准时，证据和 MCP 响应必须显示 `source_changed` 或 `bbox_basis_stale`。
+- MCP 返回 bbox，不生成自然语言位置描述。
+- 表格在布局树中使用 table/table_row/table_cell 表示；第一版没有独立的表格模型。
+- table_cell 可以存储 row_index、col_index、row_span、col_span、is_header。
+- 纯文本输出在安全时默认为 Markdown 表格。
+- 不规则表格降级为 `[Table]` 块或按需返回结构化块；应用程序不得编造虚假的规则 Markdown 表格。
 
-### 6.13 Page Text and Structured Blocks
+### 6.13 页面文本与结构化块
 
-- get_page_text defaults to layout-derived plain text.
-- Structure, bbox, OCR boundaries, and evidence refs are requested explicitly via structured format or get_page_blocks.
-- get_page_text/get_page_blocks support read_mode current, pinned, compare.
-- Page text plain rules:
-  - append page search_units by reading_order.
-  - single newline for continuous text.
-  - blank line between paragraphs/blocks/columns.
-  - exclude headers, footers, page numbers, ignored nodes by default.
-  - footnotes go after main text with `[Footnotes]`.
-  - marginalia/annotations are excluded unless include_annotations=true.
-  - table output is Markdown table when safe.
+- get_page_text 默认返回布局派生的纯文本。
+- 结构、bbox、OCR 边界和证据引用通过结构化格式或 get_page_blocks 显式请求。
+- get_page_text/get_page_blocks 支持 read_mode：current、pinned、compare。
+- 页面纯文本规则：
+  - 按 reading_order 追加页面 search_unit。
+  - 连续文本使用单个换行符。
+  - 段落/块/列之间使用空行。
+  - 默认排除页眉、页脚、页码、忽略的节点。
+  - 脚注放在正文之后，带有 `[Footnotes]` 标记。
+  - 旁注/注释被排除，除非 include_annotations=true。
+  - 表格输出在安全时使用 Markdown 表格。
 
-### 6.14 Search Units, Index, and Querying
+### 6.14 搜索单元、索引与查询
 
-- search_unit is a persisted derived table and included in snapshot; local FTS index is a rebuildable local cache and not synced.
-- search_unit fields include unit_id, document_instance_id, page_id, root_node_id, text_revision_id, bbox_revision_id, layout_revision_id, resolved_text, bbox_union, node_type, reading_order, status.
-- unit_id remains stable for text edits, bbox edits, node_type edits, reading_order edits, and small moves.
-- split/merge/replace/delete-recreate generates new unit_id and links with supersedes/superseded_by.
-- Full-text index is generated from layout tree/search_units.
-- SQLite FTS5 is first provider. SearchProvider abstraction allows later Lucene.NET/Tantivy.
-- CJK first version uses character n-gram; Latin text uses word tokens; mixed text uses mixed analyzer.
-- Canonical text remains original. Index text only applies minimal technical normalization: Unicode normalization, case folding, necessary whitespace handling, and Latin alphanumeric full/half width handling.
-- No default simplification/traditional conversion, old/new character conversion, variant replacement, historical kana normalization, or semantic synonym replacement in index text.
-- Query rewriting handles recall: variants, old/new forms, simplified/traditional, historical kana, OCR/HTR confusions, synonyms, regex rewrites, user dictionaries.
-- Search Profiles combine rewrite rules and command aliases.
-- Search Profile priority: explicit alias, current search box selection, global last-used, system default.
-- Rewrite plan is executed by default and viewable in results; advanced setting can preview before execution.
-- First version rewrite hits have equal weight.
-- Search results are grouped by page and matched units are deduplicated within page.
-- search_library returns cursor pagination with default page_size 20 and max 100.
-- It does not guarantee exact total_result_count; may return estimated_total.
-- estimated_total is an approximate FTS/provider estimate and must be labeled as estimated.
-- Each SearchPageResult returns default 5 matched_units and max 20; matched_units_has_more indicates truncation.
-- get_search_result_context returns default 2 preceding and 2 following sibling search_units; max 10 each side; no cross-page context.
-- get_search_result_context does not include whole page text; use get_page_text.
-- All context units include unit_id, evidence_ref, text, bbox, is_match, reading_order.
-- Search index rebuild is automatic and local/partial by default; manual rebuild selected document/collection/whole library is available for maintenance.
-- First sync/import schedules eager background index rebuild, but it must not block library open or metadata browsing.
-- Dirty scopes are rebuilt by document_instance priority:
-  - current/open documents;
-  - recently modified documents;
-  - user-pinned collections;
-  - remaining library.
-- search_library returns index_status current/stale/partial/unavailable.
-- stale/partial returns available results with affected_scopes_summary.
-- partial status must include at least pending_document_count and pending_unit_count; progress_percent should be returned when total scope is known.
-- unavailable returns empty results and reason; no SQL LIKE or linear scan fallback.
+- search_unit 是持久化的派生表，包含在快照中；本地 FTS 索引是可重建的本地缓存，不同步。
+- search_unit 字段包括 unit_id、document_instance_id、page_id、root_node_id、text_revision_id、bbox_revision_id、layout_revision_id、resolved_text、bbox_union、node_type、reading_order、status。
+- unit_id 在文本编辑、bbox 编辑、node_type 编辑、reading_order 编辑和小幅移动时保持稳定。
+- 拆分/合并/替换/删除-重建会生成新的 unit_id 并使用 supersedes/superseded_by 链接。
+- 全文索引从布局树/search_unit 生成。
+- SQLite FTS5 是第一个提供程序。SearchProvider 抽象允许以后使用 Lucene.NET/Tantivy。
+- CJK 第一版使用字符 n-gram；拉丁文本使用单词令牌；混合文本使用混合分析器。
+- 规范文本保持原样。索引文本仅应用最小的技术规范化：Unicode 规范化、大小写折叠、必要的空格处理和拉丁字母数字全角/半角处理。
+- 索引文本中没有默认的简体/繁体转换、新旧字形转换、异体替换、历史假名规范化或语义同义词替换。
+- 查询重写处理召回：变体、新旧形式、简体/繁体、历史假名、OCR/HTR 混淆、同义词、正则表达式重写、用户词典。
+- 搜索配置文件组合重写规则和命令别名。
+- 搜索配置文件优先级：显式别名、当前搜索框选择、全局上次使用、系统默认。
+- 重写计划默认执行，可在结果中查看；高级设置可以在执行前预览。
+- 第一版中重写命中具有相同权重。
+- 搜索结果按页面分组，匹配单元在页面内去重。
+- search_library 返回游标分页，默认 page_size 为 20，最大 100。
+- 不保证精确的 total_result_count；可以返回 estimated_total。
+- estimated_total 是近似 FTS/提供程序估算，必须标记为"估算值"。
+- 每个 SearchPageResult 默认返回 5 个 matched_unit，最多 20 个；matched_units_has_more 指示截断。
+- get_search_result_context 默认返回 2 个前驱和 2 个后继兄弟 search_unit；每侧最多 10 个；不支持跨页上下文。
+- get_search_result_context 不包含整个页面文本；请使用 get_page_text。
+- 所有上下文单元包括 unit_id、evidence_ref、text、bbox、is_match、reading_order。
+- 搜索索引重建是自动的，默认是本地的/部分的；手动重建选中文档/集合/整个库可用于维护。
+- 首次同步/导入会调度紧急后台索引重建，但不得阻塞库打开或元数据浏览。
+- 脏范围按 document_instance 优先级重建：
+  - 当前/打开的文档；
+  - 最近修改的文档；
+  - 用户固定的集合；
+  - 其余库。
+- search_library 返回 index_status：current、stale、partial、unavailable。
+- stale/partial 返回可用结果，附带 affected_scopes_summary。
+- partial 状态必须至少包含 pending_document_count 和 pending_unit_count；当总范围已知时应返回 progress_percent。
+- unavailable 返回空结果和原因；不使用 SQL LIKE 或线性扫描降级。
 
-### 6.15 Evidence References
+### 6.15 证据引用
 
-- search results and MCP return stable evidence_ref plus optional short-lived result_id for UI sessions.
-- EvidenceReference includes library_id, document_instance_id, page_id, unit_id, text_revision_id, bbox_revision_id, layout_revision_id, optional snapshot_id.
-- Default evidence resolution mode is pinned.
-- current follows unit_id to current/latest revision.
-- compare returns pinned and current with change flags.
-- evidence_ref_id is a long-term public parseable string: `evref:v1:<payload>`.
-- Payload should use compact binary or URL-safe base64 encoding. Exact encoding is implementation-defined but versioned.
-- v1 accepts long evref strings for durability; short local aliases are a TODO.
-- evidence_ref_id must not contain local path, provider secret, or unsynced local state.
-- Old evidence resolution returns explicit status:
+- 搜索结果和 MCP 返回稳定的 evidence_ref 以及可选的短生命周期 result_id（用于 UI 会话）。
+- EvidenceReference 包括 library_id、document_instance_id、page_id、unit_id、text_revision_id、bbox_revision_id、layout_revision_id、可选的 snapshot_id。
+- 默认证据解析模式为 pinned。
+- current 通过 unit_id 跟随到当前/最新修订版本。
+- compare 返回 pinned 和 current 及其变更标志。
+- evidence_ref_id 是长期公开可解析的字符串：`evref:v1:<payload>`。
+- 载荷应使用紧凑二进制或 URL 安全的 base64 编码。具体编码是实现定义的但带有版本号。
+- v1 接受长的 evref 字符串以保证持久性；短本地别名是待办事项。
+- evidence_ref_id 不得包含本地路径、提供程序密钥或未同步的本地状态。
+- 旧证据解析返回显式状态：
   - found_pinned
   - superseded
   - tombstoned
   - purged
   - not_found
   - library_mismatch
-- superseded returns successor_evidence_refs but does not auto-adopt.
-- current/compare follows successor chain to final current, with max depth and chain summary.
-- successor branch returns multiple_current_candidates and does not auto-select newest.
+- superseded 返回后继 evidence_ref 但不自动采纳。
+- current/compare 沿着后继链到达 final current，带有最大深度和链摘要。
+- 后继分支返回 multiple_current_candidates，不自动选择最新的。
 
-Example Evidence Markdown:
+示例证据 Markdown：
 
 ```markdown
 > 漢字文化圏における書誌記述は...
 
-Source: 『近代東亞書誌研究』, p. 42
-Evidence: evref:v1:full:Ab3Z4Q9r7K2mX8pV5nE1sT0uY6cD4fG2hJ9kL3mN8pQ
+来源：『近代東亞書誌研究』, p. 42
+证据：evref:v1:full:Ab3Z4Q9r7K2mX8pV5nE1sT0uY6cD4fG2hJ9kL3mN8pQ
 ```
 
-The example payload is illustrative; real payload length may be longer depending on ID encoding.
+示例载荷仅供说明；实际载荷长度可能因 ID 编码方式而异。
 
 ### 6.16 MCP API
 
-- First version MCP is read-only and text-only.
-- MCP tools:
-  - search_library
-  - get_item_metadata
-  - get_document_status
-  - get_page_text
-  - get_page_blocks
-  - get_search_result_context
-- MCP does not provide:
-  - run_ocr, edit_ocr, edit_bbox, reset_ocr, purge_ocr, update_metadata, delete_anything.
-  - resolved_path, local filesystem path, open_original, file:// URL.
-  - provider secrets or provider configuration details.
-  - cache images or image paths.
-- get_document_status returns has_ocr_text, has_current_layout, is_search_indexed, source_file_status.
-- source_file_status values exposed through MCP are limited to available, missing, offline_root, changed, conflict, unknown.
-- source_file_status intentionally exposes evidence usability, not local paths or root names.
-- has_ocr_text means current document has readable OCR/HTR text; it does not mean OCR can be run.
-- MCP never triggers OCR or index rebuild.
-- MCP search uses a two-step pattern: search_library for results, then get_search_result_context for evidence context.
+- 第一版 MCP 是只读且纯文本的。
+- MCP 工具：
+  - search_library（搜索库）
+  - get_item_metadata（获取题录元数据）
+  - get_document_status（获取文档状态）
+  - get_page_text（获取页面文本）
+  - get_page_blocks（获取页面块）
+  - get_search_result_context（获取搜索结果上下文）
+- MCP 不提供：
+  - run_ocr、edit_ocr、edit_bbox、reset_ocr、purge_ocr、update_metadata、delete_anything。
+  - resolved_path、本地文件系统路径、open_original、file:// URL。
+  - 提供程序密钥或提供程序配置详情。
+  - 缓存图像或图像路径。
+- get_document_status 返回 has_ocr_text、has_current_layout、is_search_indexed、source_file_status。
+- 通过 MCP 暴露的 source_file_status 值限于：available、missing、offline_root、changed、conflict、unknown。
+- source_file_status 有目的地暴露证据可用性，而不是本地路径或根目录名称。
+- has_ocr_text 表示当前文档具有可读的 OCR/HTR 文本；并不意味着可以运行 OCR。
+- MCP 从不触发 OCR 或索引重建。
+- MCP 搜索使用两步模式：先 search_library 获取结果，然后 get_search_result_context 获取证据上下文。
 
-### 6.17 UI Evidence Copy
+### 6.17 UI 证据复制
 
-- UI supports Copy Evidence Reference and Copy Evidence Markdown.
-- First version does not support Copy Page Citation or Copy Page Evidence Citation.
-- Evidence Markdown includes quoted pinned text, minimal Source, and Evidence evref.
-- Source is title + page_label/page_index.
-- Evidence Markdown default text must match the pinned evidence_ref.
-- Copy Current Evidence Markdown is an explicit operation if current revision is desired.
+- UI 支持复制证据引用和复制证据 Markdown。
+- 第一版不支持复制页面引文或复制页面证据引文。
+- 证据 Markdown 包含引用的 pinned 文本、最小来源和证据 evref。
+- 来源是标题 + page_label/page_index。
+- 证据 Markdown 默认文本必须与 pinned evidence_ref 匹配。
+- 如果需要 current 修订版本，复制 Current Evidence Markdown 是一个显式操作。
 
-### 6.18 Caches
+### 6.18 缓存
 
-- page_renders, thumbnails, OCR intermediate images, and overlays are local rebuildable caches.
-- They do not enter database shards, published snapshots, or sync.
-- DB can store cache metadata only.
-- If source file is missing/offline, UI may show old page render cache as stale_possible preview.
-- MCP never returns cached images or image paths.
+- 页面渲染、缩略图、OCR 中间图像和叠加层是本地可重建的缓存。
+- 它们不进入数据库分片、发布的快照或同步。
+- 数据库只能存储缓存元数据。
+- 如果源文件缺失/离线，UI 可能将旧的页面渲染缓存显示为 stale_possible 预览。
+- MCP 从不返回缓存的图像或图像路径。
 
-### 6.19 Vectors
+### 6.19 向量
 
-- Embeddings are optional enhancement.
-- Full-text search is core.
-- Vectors are not generated for the whole library by default.
-- Optional generation scopes include collection, tag, selected documents, language, or OCR preset output.
-- text_revision changes mark embeddings stale.
+- 嵌入是可选的增强功能。
+- 全文搜索是核心功能。
+- 默认不为整个库生成向量。
+- 可选的生成范围包括：集合、标签、选中文档、语言或 OCR 预设输出。
+- text_revision 变更会将嵌入标记为 stale。
 
-## 7. Implementation Decisions
+## 7. 实现决策
 
-Implementation rationale lives in `.agent/adr/`; this PRD remains the product contract.
+实现依据在 `.agent/adr/` 中；本 PRD 仍然是产品契约。
 
-### 7.1 Module Shape
+### 7.1 模块结构
 
-- LiteratureApp.UI: native Avalonia desktop UI.
-- LiteratureApp.Core: domain models and application contracts.
-- LiteratureApp.Infrastructure: SQLite, migrations, snapshots, file resolution, credentials, OCR orchestration, and concrete service implementations.
-- LiteratureApp.Search: search unit generation, SQLite FTS5 provider, query rewriting, Search Profiles, and dirty index rebuild.
-- LiteratureApp.Ocr: OCR/HTR presets, preset versions, adapters, queue contracts, retry, staging, and candidate adoption.
-- LiteratureApp.Mcp: read-only text-only MCP DTOs and service surface.
+- **LiteratureApp.UI**：原生 Avalonia 桌面 UI。
+- **LiteratureApp.Core**：领域模型和应用程序契约。
+- **LiteratureApp.Infrastructure**：SQLite、迁移、快照、文件解析、凭据、OCR 编排和具体服务实现。
+- **LiteratureApp.Search**：搜索单元生成、SQLite FTS5 提供程序、查询重写、搜索配置文件和脏索引重建。
+- **LiteratureApp.Ocr**：OCR/HTR 预设、预设版本、适配器、队列契约、重试、暂存和候选采纳。
+- **LiteratureApp.Mcp**：只读纯文本 MCP DTO 和服务接口。
 
-### 7.2 Architecture Decision Records
+### 7.2 架构决策记录
 
 - `.agent/adr/0001-keep-runtime-database-out-of-sync-roots.md`
 - `.agent/adr/0002-use-content-addressed-sqlite-snapshot-shards.md`
@@ -493,111 +493,111 @@ Implementation rationale lives in `.agent/adr/`; this PRD remains the product co
 - `.agent/adr/0013-use-dotnet-and-avalonia-for-the-desktop-app.md`
 - `.agent/adr/0014-use-mineru-as-first-product-ocr-provider.md`
 
-## 8. Sizing Assumptions and Performance Targets
+## 8. 规模假设与性能目标
 
-These are v1 design targets, not hard product limits.
+以下是 v1 设计目标，而非硬性产品限制。
 
-| Area | V1 Target |
+| 领域 | V1 目标 |
 |---|---|
-| Items | 50k items |
-| Document instances | 100k document instances |
-| Pages | 5M pages |
-| Runtime DB logical data | 20GB excluding original files and caches |
-| Snapshot shard size | target 512-768MB, hard maximum below 1GB |
-| Library open | metadata usable within 5s for warm local DB |
-| Search current index | p95 under 1s for common queries returning first page |
-| Search partial index | return available indexed results under same pagination rules |
-| get_page_text | p95 under 300ms for cached committed layout text |
-| get_page_blocks | p95 under 800ms for cached committed structured blocks |
-| Snapshot publish small delta | under 30s for ordinary metadata/OCR delta |
-| Snapshot import validation | streaming hash validation, progress visible for large libraries |
-| OCR queue UI responsiveness | queue operations reflected in UI within 500ms |
+| 题录 | 50k 条 |
+| 文档实例 | 100k 个 |
+| 页面 | 500 万页 |
+| 运行数据库逻辑数据 | 20GB（不包括原始文件和缓存） |
+| 快照分片大小 | 目标 512-768MB，硬上限低于 1GB |
+| 库打开 | 本地热数据库在 5 秒内可用元数据 |
+| 搜索当前索引 | 常见查询返回第一页的 p95 低于 1 秒 |
+| 搜索部分索引 | 在同一分页规则下返回可用的已索引结果 |
+| get_page_text | 已缓存已提交布局文本的 p95 低于 300ms |
+| get_page_blocks | 已缓存已提交结构化块的 p95 低于 800ms |
+| 快照发布小增量 | 普通元数据/OCR 增量低于 30 秒 |
+| 快照导入验证 | 流式哈希验证，大型库可见进度 |
+| OCR 队列 UI 响应性 | 队列操作在 500ms 内反映到 UI |
 
-## 9. Testing Decisions
+## 9. 测试决策
 
-- Tests should verify external behavior and durable invariants, not implementation details.
-- Snapshot tests should cover shard reuse, manifest correctness, current pointer updates, branch conflict preservation, and sensitive_mutable credential shard separation.
-- Library identity tests should cover creation, rename, move, cross-library evidence mismatch, and per-library snapshot boundaries.
-- File resolution tests should cover known path available, moved candidate, missing file, offline root, changed file, conflict, quick hash match, full BLAKE3 confirmation, and source_changed propagation.
-- Metadata tests should cover item/document_instance/file_asset relationships and extensible identifiers.
-- Credential tests should cover sync inclusion, no immutable shard inclusion, emergency purge/revoke, and MCP non-exposure.
-- OCR lifecycle tests should cover staging preview isolation, cancellation rollback, apply_on_success true/false, candidate adoption by page, completed_with_errors, retry run provenance, hard page rejection on bbox transform failure, and serialized adoption.
-- Queue tests should cover concurrency limits, priority ordering, aging, pause/resume scopes, cancel behavior, transient retry, and manual-fix-required failures.
-- Layout tests should cover text_policy resolution, index_policy traversal, bbox overlap constraints, tree mutation operations, custom type preservation, and table Markdown degradation.
-- Page coordinate tests should cover crop/media/image basis fallback, upright_view normalization, source_changed, and bbox_basis_stale warnings.
-- Search unit tests should cover stable unit identity through edits and new unit creation through split/merge/replace.
-- Search tests should cover query rewriting, Search Profile selection, page aggregation, matched unit truncation, pagination, stale/partial/unavailable index status, progress fields, and no linear fallback.
-- Evidence tests should cover evref encode/decode, pinned/current/compare, superseded successors, tombstone, purge, not_found, library_mismatch, branch candidates, and max chain depth.
-- MCP contract tests should verify no write tools, no OCR triggers, no provider secrets, no provider config, no local paths, no file URLs, no images, and correct text-only responses.
-- UI-focused tests should cover Evidence Markdown generation, pinned/current copy behavior, index rebuild status, branch warnings, credential_missing state, and no Copy Page Citation in first version.
+- 测试应验证外部行为和持久不变量，而非实现细节。
+- 快照测试应覆盖分片重用、清单正确性、当前指针更新、分支冲突保留和 sensitive_mutable 凭据分片分离。
+- 库标识测试应覆盖创建、重命名、移动、跨库证据不匹配和每库快照边界。
+- 文件解析测试应覆盖 known path available、moved_candidate、missing file、offline_root、changed file、conflict、quick hash match、完整 BLAKE3 确认和 source_changed 传播。
+- 元数据测试应覆盖题录/文档实例/文件资产关系以及可扩展标识符。
+- 凭据测试应覆盖同步包含性、不包含在不可变分片中、紧急清除/撤销和 MCP 不暴露。
+- OCR 生命周期测试应覆盖暂存预览隔离、取消回滚、apply_on_success true/false、按页面候选采纳、completed_with_errors、重试运行溯源、bbox 转换失败导致的硬页面拒绝以及序列化采纳。
+- 队列测试应覆盖并发限制、优先级排序、老化、暂停/恢复范围、取消行为、瞬时重试和需要手动修复的故障。
+- 布局测试应覆盖 text_policy 解析、index_policy 遍历、bbox 重叠约束、树形变更操作、自定义类型保留和表格 Markdown 降级。
+- 页面坐标测试应覆盖 crop/media/image 基准降级、upright_view 归一化、source_changed 和 bbox_basis_stale 警告。
+- 搜索单元测试应覆盖编辑时稳定的单元身份以及拆分/合并/替换时创建新单元。
+- 搜索测试应覆盖查询重写、搜索配置文件选择、页面聚合、匹配单元截断、分页、stale/partial/unavailable 索引状态、进度字段和无线性降级。
+- 证据测试应覆盖 evref 编码/解码、pinned/current/compare、superseded 后继、tombstone、purge、not_found、library_mismatch、分支候选项和最大链深度。
+- MCP 契约测试应验证没有写入工具、没有 OCR 触发器、没有提供程序密钥、没有提供程序配置、没有本地路径、没有文件 URL、没有图像以及正确的纯文本响应。
+- UI 聚焦测试应覆盖证据 Markdown 生成、pinned/current 复制行为、索引重建状态、分支警告、credential_missing 状态以及第一版中没有复制页面引文。
 
-## 10. Acceptance Criteria
+## 10. 验收标准
 
-| AC | Acceptance Criterion | Verification |
+| 编号 | 验收标准 | 验证方式 |
 |---|---|---|
-| AC1 | A user can create/import a personal library with stable library_id and rename/move it without changing identity. | Library identity tests |
-| AC2 | A user can add item metadata, attach document instances, and locate files through search roots. | Metadata + file resolution tests |
-| AC3 | Database sync can publish content-addressed SQLite data shard snapshots without syncing WAL/SHM runtime files. | Snapshot publish tests |
-| AC4 | Provider credentials can sync through the mutable credential store and are not written into immutable historical data shards. | Credential shard tests |
-| AC5 | Multi-writer snapshot divergence creates branches and never silently last-writer-wins. | Branch conflict tests |
-| AC6 | Missing or changed source files do not remove metadata, OCR, layout, search units, or evidence refs. | File state + evidence tests |
-| AC7 | Changed source files surface source_changed/bbox_basis_stale warnings where evidence depends on old page basis. | Page coordinate tests |
-| AC8 | OCR/HTR runs can be staged, cancelled, completed, failed by page, retried, and adopted according to preset version settings. | OCR lifecycle tests |
-| AC9 | OCR adoption commits current revisions, dirty search_units, and successor links atomically per document_instance. | Serialized adoption tests |
-| AC10 | Bad bbox coordinate conversion prevents that page from entering OCR/layout/search/MCP. | OCR hard-failure tests |
-| AC11 | Layout nodes can be corrected and produce search units without parent/child duplicate indexing. | Layout + search_unit tests |
-| AC12 | Search returns page-level results with evidence refs, matched unit truncation, cursor pagination, progress-aware index status, and no linear fallback when unavailable. | Search contract tests |
-| AC13 | MCP can search, read metadata/status/page text/page blocks/context, and cannot mutate library state or expose local paths/secrets/images. | MCP contract tests |
-| AC14 | Evidence refs are long-term parseable, pinned by default, and resolve old/superseded/tombstoned/purged references explicitly. | Evidence tests |
-| AC15 | UI can copy Evidence Reference and Evidence Markdown with pinned text and evref, but does not expose Copy Page Citation in v1. | UI tests |
+| AC1 | 用户可以创建/导入具有稳定 library_id 的个人库，并可以重命名/移动而不更改标识。 | 库标识测试 |
+| AC2 | 用户可以添加题录元数据，附加文档实例，并通过搜索根目录定位文件。 | 元数据 + 文件解析测试 |
+| AC3 | 数据库同步可以发布内容寻址的 SQLite 数据分片快照，而无需同步 WAL/SHM 运行时文件。 | 快照发布测试 |
+| AC4 | 提供程序凭据可以通过可变凭据存储同步，不会写入不可变的历史数据分片。 | 凭据分片测试 |
+| AC5 | 多写入者快照分歧创建分支，从不静默执行最后写入者胜出。 | 分支冲突测试 |
+| AC6 | 缺失或已变更的源文件不会移除元数据、OCR、布局、搜索单元或证据引用。 | 文件状态 + 证据测试 |
+| AC7 | 已变更的源文件在证据依赖于旧页面基准时显示 source_changed/bbox_basis_stale 警告。 | 页面坐标测试 |
+| AC8 | OCR/HTR 运行可以暂存、取消、按页面完成/失败、重试和根据预设版本设置采纳。 | OCR 生命周期测试 |
+| AC9 | OCR 采纳以每个 document_instance 为单位原子性地提交当前修订版本、脏 search_unit 和后继链接。 | 序列化采纳测试 |
+| AC10 | 坏的 bbox 坐标转换阻止该页面进入 OCR/布局/搜索/MCP。 | OCR 硬失败测试 |
+| AC11 | 布局节点可以被修正并产生搜索单元，而不会导致父子节点重复索引。 | 布局 + 搜索单元测试 |
+| AC12 | 搜索返回页级结果，带有证据引用、匹配单元截断、游标分页、感知进度的索引状态，以及在不可用时没有线性降级。 | 搜索契约测试 |
+| AC13 | MCP 可以搜索、读取元数据/状态/页面文本/页面块/上下文，并且不能改变库状态或暴露本地路径/密钥/图像。 | MCP 契约测试 |
+| AC14 | 证据引用是长期可解析的，默认为 pinned，并显式解析旧/superseded/tombstoned/purged 引用。 | 证据测试 |
+| AC15 | UI 可以复制证据引用和证据 Markdown（带 pinned 文本和 evref），但在 v1 中不暴露复制页面引文。 | UI 测试 |
 
-## 11. Important TODOs
+## 11. 重要待办事项
 
-### v2 Candidates
+### v2 候选
 
-- Item-level citation generation.
-- CSL style support.
-- Bibliography export.
-- Citekey / Better BibTeX-like workflow.
-- Full CSL field mapping.
-- Multilingual titles and transliterated titles.
-- Detailed edition/history fields.
-- Short local evidence aliases.
-- Region-level OCR merge/adopt.
-- Derived reading-order view.
-- Query rewrite weighting.
-- Lucene.NET / Tantivy SearchProvider evaluation.
+- 题录级引文生成。
+- CSL 样式支持。
+- 参考文献导出。
+- 引用键 / Better BibTeX 类似工作流。
+- 完整 CSL 字段映射。
+- 多语言标题和音译标题。
+- 详细的版本/历史字段。
+- 短本地证据别名。
+- 区域级 OCR 合并/采纳。
+- 派生的阅读顺序视图。
+- 查询重写加权。
+- Lucene.NET / Tantivy SearchProvider 评估。
 
-### v3 Candidates
+### v3 候选
 
-- Team/shared library workflows.
-- Authority control and creator disambiguation.
-- More sophisticated multi-writer sync merge.
-- Multi-parent layout graph.
-- Full table semantic model.
-- Vector / hybrid / semantic search as a first-class workflow.
-- Library-level encryption or per-device credential unwrap.
+- 团队/共享库工作流。
+- 规范控制和创作者消歧。
+- 更复杂的多写入者同步合并。
+- 多父节点布局图。
+- 完整表格语义模型。
+- 向量/混合/语义搜索作为一等工作流。
+- 库级加密或每设备凭据解封。
 
-### Backlog / Research
+### 待办事项/研究
 
-- MeCab / Sudachi / Jieba analyzers.
-- BBox overlap candidate replacement.
-- OCR data purge compaction.
-- Stronger model fingerprinting if reproducibility requirements increase.
-- Program-managed file sync.
-- Controlled small-scope substring fallback before FTS rebuild, if first-sync UX proves too rigid.
+- MeCab / Sudachi / Jieba 分析器。
+- BBox 重叠候选替换。
+- OCR 数据清除压缩。
+- 如果可复现性要求增加，进行更强的模型指纹识别。
+- 程序管理的文件同步。
+- 如果首次同步体验被证明过于严格，在 FTS 重建前提供受控的小范围子串降级。
 
-## 12. Versioning Philosophy
+## 12. 版本管理理念
 
-- v1 should be conservative: preserve evidence, expose ambiguity, and reject unsafe automation.
-- v1.1 PRD clarifies the development contract; it should not silently expand product scope.
-- v2 should focus on citation workflows, better search/ranking, and controlled evidence UX improvements.
-- v3 may revisit collaboration, automatic merging, stronger encryption, and institutional workflows.
-- Features that weaken evidence reproducibility must be opt-in and explicitly labeled.
+- v1 应保守：保护证据，暴露歧义，拒绝不安全的自动化。
+- v1.1 PRD 明确了开发契约；不应静默扩展产品范围。
+- v2 应关注引文工作流、更好的搜索/排序和受控的证据 UX 改进。
+- v3 可能重新审视协作、自动合并、更强的加密和机构工作流。
+- 削弱证据可复现性的功能必须是选择加入并显式标记。
 
-## 13. Further Notes
+## 13. 补充说明
 
-- The first version optimizes for personal use, evidence correctness, local-first storage, and explicit provenance.
-- The central product bet is that OCR/layout/search/evidence can be treated as a versioned, inspectable knowledge layer over user-owned files.
-- The app should prefer conservative failure behavior where evidence would otherwise become ambiguous.
-- The MCP surface should remain small, predictable, text-only, and safe for external agent use.
+- 第一版针对个人使用、证据正确性、本地优先存储和显式溯源进行优化。
+- 核心产品假设是：OCR/布局/搜索/证据可以被视为用户自有文件之上的一个版本化、可检查的知识层。
+- 应用程序应在可能导致证据变得模糊的情况下优先采用保守的失败行为。
+- MCP 接口应保持小巧、可预测、纯文本且对外部 agent 安全使用。
