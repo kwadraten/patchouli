@@ -180,7 +180,7 @@ public sealed class OcrQueueSchedulerTests
     [Fact] public async Task Executor_returns_page_failure_when_coordinator_run_result_is_success()
     {
         var coordinator = new PageFailureCoordinator(); var executor = new OcrQueueTaskExecutor(coordinator);
-        var result = await executor.ExecuteAsync(new OcrQueueTask(OcrQueueTaskId.New(), LibraryId.New(), coordinator.DocumentId, coordinator.PresetId, [coordinator.PageId], OcrQueueTaskKind.ImagePage, OcrEngineIds.TesseractCli, OcrAdapterKind.LocalProcess, null, OcrQueuePriority.UserStartedDocument, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Queued, 0, 3, null, null, null, null, "/tmp/input.png", null), default);
+        var result = await executor.ExecuteAsync(new OcrQueueTask(OcrQueueTaskId.New(), LibraryId.New(), coordinator.DocumentId, coordinator.PresetId, [coordinator.PageId], OcrQueueTaskKind.ImagePage, OcrEngineIds.Mock, OcrAdapterKind.Mock, null, OcrQueuePriority.UserStartedDocument, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Queued, 0, 3, null, null, null, null, "/tmp/input.png", null), default);
         result.Succeeded.Should().BeFalse(); result.ErrorCode.Should().Be("empty_ocr_output");
     }
 
@@ -228,7 +228,7 @@ public sealed class OcrQueueSchedulerTests
     private sealed class PageFailureCoordinator : IOcrRunCoordinator
     {
         public DocumentInstanceId DocumentId { get; } = DocumentInstanceId.New(); public OcrPresetId PresetId { get; } = OcrPresetId.New(); public PageId PageId { get; } = PageId.New(); private OcrRunId RunId { get; } = OcrRunId.New();
-        private Result<OcrRun> Run() => Result<OcrRun>.Success(new(RunId, DocumentId, PresetId, OcrPresetVersionId.New(), OcrEngineIds.TesseractCli, "model", "{}", null, null, null, OcrRunState.Failed, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+        private Result<OcrRun> Run() => Result<OcrRun>.Success(new(RunId, DocumentId, PresetId, OcrPresetVersionId.New(), OcrEngineIds.Mock, "model", "{}", null, null, null, OcrRunState.Failed, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d,OcrPresetId p,IReadOnlyList<PageId> pages,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d,OcrPresetId p,PageId page,string path,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d,OcrPresetId p,PageId page,int dpi=200,CancellationToken c=default)=>Task.FromResult(Run());
         public Task<Result<IReadOnlyList<OcrPageResult>>> ListPageResultsAsync(OcrRunId r,CancellationToken c=default)=>Task.FromResult(Result<IReadOnlyList<OcrPageResult>>.Success([new(OcrPageResultId.New(),RunId,PageId,OcrPageResultState.Failed,null,"empty_ocr_output","No text",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow)]));
         public Task<Result> CancelRunAsync(OcrRunId r,CancellationToken c=default)=>Task.FromResult(Result.Success()); public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId r,IReadOnlyList<PageId>? p=null,CancellationToken c=default)=>Task.FromResult(Result<OcrCandidateAdoption>.Failure("not_found","test")); public Task<Result<OcrRun>> GetRunAsync(OcrRunId r,CancellationToken c=default)=>Task.FromResult(Run());
