@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using LiteratureApp.Core.Configuration;
 
 namespace LiteratureApp.UI;
 
@@ -8,6 +9,7 @@ public sealed partial class App : Application
 {
     public override void Initialize()
     {
+        DotEnv.LoadNearest();
         AvaloniaXamlLoader.Load(this);
     }
 

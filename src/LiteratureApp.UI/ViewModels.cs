@@ -51,6 +51,9 @@ public sealed class MainWindowViewModel : ViewModelBase
         Clipboard=clipboard??new AvaloniaClipboardService();
         Logger=logger??new SimpleFileLogger(AppRuntimeOptions.FromEnvironment().LogDirectory);
         Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
+        var minerUToken = Environment.GetEnvironmentVariable("MINERU_TOKEN")?.Trim() ?? "";
+        Shell.MinerUToken=minerUToken;
+        Shell.MinerUTokenInput=minerUToken;
         OpenDatabaseCommand=new(async()=>{_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));});
         FirstRun=CreateFirstRunViewModel();
         CompleteFirstRunCommand=new(CompleteFirstRunAsync);
@@ -78,7 +81,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSelectedDocumentTab));
         await Shell.RefreshItemsAsync();
     }
-    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath };
+    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath, MinerUToken = Shell.MinerUToken };
     private async Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)> OpenFirstRunDatabaseAsync(string path)
     {
         RuntimeDatabasePath=path;
