@@ -10,6 +10,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private LibraryItemViewModel? _pendingOcrItem;
+    private bool _isReadingMode;
 
     public LibraryShellViewModel(MainWindowViewModel main)
     {
@@ -21,6 +22,42 @@ public sealed class LibraryShellViewModel : ViewModelBase
         CloseDocumentTabCommand = new AsyncCommand(CloseDocumentTabAsync);
         ShowRecentItemsCommand = new AsyncCommand(ShowRecentItemsAsync);
         ToggleDeveloperToolsCommand = new AsyncCommand(ToggleDeveloperTools);
+        SwitchToLibraryListCommand = new AsyncCommand(SwitchToLibraryListAsync);
+        SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
+    }
+
+    public bool IsReadingMode
+    {
+        get => _isReadingMode;
+        set
+        {
+            if (_isReadingMode == value) return;
+            _isReadingMode = value;
+            Raise();
+            Raise(nameof(ShowLibraryList));
+            Raise(nameof(ShowPdfReader));
+        }
+    }
+
+    public bool ShowLibraryList => !IsReadingMode;
+    public bool ShowPdfReader => IsReadingMode && SelectedItem is not null;
+
+    public AsyncCommand SwitchToLibraryListCommand { get; }
+    public AsyncCommand SwitchToReadingModeCommand { get; }
+
+    public Task SwitchToLibraryListAsync()
+    {
+        IsReadingMode = false;
+        return Task.CompletedTask;
+    }
+
+    public Task SwitchToReadingModeAsync()
+    {
+        if (SelectedItem is not null)
+        {
+            IsReadingMode = true;
+        }
+        return Task.CompletedTask;
     }
 
     public string LibraryName { get; set; } = "我的书库";
@@ -291,6 +328,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public Task CloseDocumentTabAsync()
     {
         SelectedItem = null;
+        IsReadingMode = false;
         return Task.CompletedTask;
     }
 

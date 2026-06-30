@@ -87,6 +87,32 @@ public sealed class FirstRunViewModel : ViewModelBase
     public bool ShowCompleteStep => _state.CurrentStep == FirstRunStep.Complete;
     public bool IsBusy { get; set; }
 
+    public int ProgressPercent
+    {
+        get
+        {
+            if (_state.CurrentStep == FirstRunStep.Database) return 25;
+            if (_state.CurrentStep == FirstRunStep.Library) return 50;
+            if (_state.CurrentStep == FirstRunStep.Scan) return 75;
+            if (_state.CurrentStep == FirstRunStep.MinerUConfig) return 90;
+            if (_state.CurrentStep == FirstRunStep.Complete) return 100;
+            return 0;
+        }
+    }
+
+    public string StepProgressText
+    {
+        get
+        {
+            if (_state.CurrentStep == FirstRunStep.Database) return "Step 1 of 4";
+            if (_state.CurrentStep == FirstRunStep.Library) return "Step 2 of 4";
+            if (_state.CurrentStep == FirstRunStep.Scan) return "Step 3 of 4";
+            if (_state.CurrentStep == FirstRunStep.MinerUConfig) return "Step 4 of 4";
+            if (_state.CurrentStep == FirstRunStep.Complete) return "Step 4 of 4";
+            return "Step 1 of 4";
+        }
+    }
+
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CreateLibraryCommand { get; }
     public AsyncCommand ScanCommand { get; }
@@ -300,5 +326,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         Raise(nameof(ShowIndexStep));
         Raise(nameof(ShowVerifyStep));
         Raise(nameof(ShowCompleteStep));
+        Raise(nameof(ProgressPercent));
+        Raise(nameof(StepProgressText));
     }
 }

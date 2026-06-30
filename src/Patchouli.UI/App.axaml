@@ -1,8 +1,59 @@
 <Application
     x:Class="Patchouli.UI.App"
     xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:husk="https://github.com/d3ara1n/Huskui.Avalonia">
   <Application.Styles>
     <FluentTheme />
+    <husk:HuskuiTheme />
   </Application.Styles>
+  <Application.Resources>
+    <!-- Academic Precision Color Palette -->
+    <Color x:Key="SurfaceColor">#FBF9F8</Color>
+    <Color x:Key="SurfaceContainerLowColor">#F5F3F3</Color>
+    <Color x:Key="SurfaceContainerColor">#EFEDED</Color>
+    <Color x:Key="SurfaceContainerHighColor">#E9E8E7</Color>
+    <Color x:Key="SurfaceContainerHighestColor">#E4E2E2</Color>
+    <Color x:Key="OnSurfaceColor">#1B1C1C</Color>
+    <Color x:Key="OnSurfaceVariantColor">#484553</Color>
+    <Color x:Key="PrimaryColor">#553BB5</Color>
+    <Color x:Key="PrimaryContainerColor">#6E56CF</Color>
+    <Color x:Key="TertiaryColor">#EFE8FF</Color>
+    <Color x:Key="InverseSurfaceColor">#303031</Color>
+    <Color x:Key="InverseOnSurfaceColor">#F2F0F0</Color>
+    <Color x:Key="OutlineVariantColor">#CAC4D5</Color>
+
+    <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}" />
+    <SolidColorBrush x:Key="SurfaceContainerLowestBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SurfaceContainerLowBrush" Color="{StaticResource SurfaceContainerLowColor}" />
+    <SolidColorBrush x:Key="SurfaceContainerBrush" Color="{StaticResource SurfaceContainerColor}" />
+    <SolidColorBrush x:Key="SurfaceContainerHighBrush" Color="{StaticResource SurfaceContainerHighColor}" />
+    <SolidColorBrush x:Key="SurfaceContainerHighestBrush" Color="{StaticResource SurfaceContainerHighestColor}" />
+    <SolidColorBrush x:Key="OnSurfaceBrush" Color="{StaticResource OnSurfaceColor}" />
+    <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="{StaticResource OnSurfaceVariantColor}" />
+    <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}" />
+    <SolidColorBrush x:Key="PrimaryContainerBrush" Color="{StaticResource PrimaryContainerColor}" />
+    <SolidColorBrush x:Key="TertiaryBrush" Color="{StaticResource TertiaryColor}" />
+    <SolidColorBrush x:Key="InverseSurfaceBrush" Color="{StaticResource InverseSurfaceColor}" />
+    <SolidColorBrush x:Key="InverseOnSurfaceBrush" Color="{StaticResource InverseOnSurfaceColor}" />
+    <SolidColorBrush x:Key="OutlineVariantBrush" Color="{StaticResource OutlineVariantColor}" />
+
+    <!-- Lucide Icon Geometries -->
+    <Geometry x:Key="IconFolder">M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z</Geometry>
+    <Geometry x:Key="IconFolderPlus">M12 10v6 M9 13h6 M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z</Geometry>
+    <Geometry x:Key="IconFolderOpen">m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4a2 2 0 0 1 1.62.8l.8 1.2</Geometry>
+    <Geometry x:Key="IconCloud">M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z</Geometry>
+    <Geometry x:Key="IconPrinter">M 6,9 L 6,2 L 18,2 L 18,9 M 6,18 H 4 A 2 2 0 0 1 2 16 V 11 A 2 2 0 0 1 4 9 H 20 A 2 2 0 0 1 22 11 V 16 A 2 2 0 0 1 20 18 H 18 M 8 14 H 16 A 2 2 0 0 1 18 16 V 20 A 2 2 0 0 1 16 22 H 8 A 2 2 0 0 1 6 20 V 16 A 2 2 0 0 1 8 14 Z</Geometry>
+    <Geometry x:Key="IconDownload">M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10 5 5 5-5 M12 15V3</Geometry>
+    <Geometry x:Key="IconMenu">M4 12h16 M4 6h16 M4 18h16</Geometry>
+    <Geometry x:Key="IconRefresh">M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5 M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16 M16 16h5v5</Geometry>
+    <Geometry x:Key="IconSearch">M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3</Geometry>
+    <Geometry x:Key="IconChevronLeft">m15 18-6-6 6-6</Geometry>
+    <Geometry x:Key="IconChevronRight">m9 18 6-6-6-6</Geometry>
+    <Geometry x:Key="IconPlus">M5 12h14 M12 5v14</Geometry>
+    <Geometry x:Key="IconX">M18 6 6 18 M6 6l12 12</Geometry>
+    <Geometry x:Key="IconDatabase">M 3,5 A 9,3 0 1 0 21,5 A 9,3 0 1 0 3,5 Z M 3,5 V 19 A 9,3 0 0 0 21,19 V 5 M 3,12 A 9,3 0 0 0 21,12</Geometry>
+    <Geometry x:Key="IconTrash">M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M10 11v6 M14 11v6</Geometry>
+    <Geometry x:Key="IconHistory">M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5 M12 7v5l4 2</Geometry>
+  </Application.Resources>
 </Application>

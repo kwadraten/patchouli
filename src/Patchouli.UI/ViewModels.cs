@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using Avalonia.Media;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -10,6 +11,7 @@ using Patchouli.Evidence;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
+using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Search;
 
@@ -30,9 +32,16 @@ public sealed class AsyncCommand : System.Windows.Input.ICommand
 public sealed class MainWindowViewModel : ViewModelBase
 {
     private AppServices? _services;
+    private McpHttpServer? _mcpServer;
+    private readonly bool _autoStartMcpServer;
+    private readonly int _mcpPort;
     private string _runtimeDatabasePath = AppRuntimeOptions.FromEnvironment().RuntimeDatabasePath;
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath=value; Raise(); } }
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
+    public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
+    public string McpStatusText { get; private set; } = "MCP: 未启动";
+    public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
+    public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
     public string VersionInfo => $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
     public string StatusBarVersion => $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion}";
     public IClipboardService Clipboard { get; }
@@ -46,19 +55,85 @@ public sealed class MainWindowViewModel : ViewModelBase
     public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
-    public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null)
+    public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort)
     {
+        _autoStartMcpServer=autoStartMcpServer;
+        _mcpPort=mcpPort;
+        McpEndpoint=$"http://localhost:{mcpPort}";
         Clipboard=clipboard??new AvaloniaClipboardService();
         Logger=logger??new SimpleFileLogger(AppRuntimeOptions.FromEnvironment().LogDirectory);
         Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
         var minerUToken = Environment.GetEnvironmentVariable("MINERU_TOKEN")?.Trim() ?? "";
         Shell.MinerUToken=minerUToken;
         Shell.MinerUTokenInput=minerUToken;
-        OpenDatabaseCommand=new(async()=>{_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));});
+        OpenDatabaseCommand=new(async()=>{await StopMcpServerAsync("正在切换运行数据库。");_services=await AppServices.CreateAsync(RuntimeDatabasePath); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));if(_autoStartMcpServer)await StartMcpServerAsync(_services);});
         FirstRun=CreateFirstRunViewModel();
         CompleteFirstRunCommand=new(CompleteFirstRunAsync);
     }
-    public async Task<AppServices> ServicesAsync() => _services ??= await AppServices.CreateAsync(RuntimeDatabasePath);
+    public async Task<AppServices> ServicesAsync()
+    {
+        if (_services is not null) return _services;
+
+        _services = await AppServices.CreateAsync(RuntimeDatabasePath);
+        if (_autoStartMcpServer)
+        {
+            await StartMcpServerAsync(_services);
+        }
+
+        return _services;
+    }
+    public async Task StartMcpServerAsync()
+    {
+        var services = await ServicesAsync();
+        await StartMcpServerAsync(services);
+    }
+    public async Task StopMcpServerAsync(string detail = "MCP HTTP 服务已停止。")
+    {
+        if (_mcpServer is not null)
+        {
+            await _mcpServer.DisposeAsync();
+            _mcpServer = null;
+        }
+
+        SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
+    }
+    private async Task StartMcpServerAsync(AppServices services)
+    {
+        if (_mcpServer?.IsRunning == true)
+        {
+            SetMcpStatus("MCP: 运行中", $"服务地址：{McpEndpoint}", Brushes.LimeGreen);
+            return;
+        }
+
+        await StopMcpServerAsync("MCP HTTP 服务正在启动。");
+        SetMcpStatus("MCP: 启动中", $"正在监听 {McpEndpoint}", Brushes.Goldenrod);
+        var server = new McpHttpServer(new McpProtocolHandler(services.Mcp, services.ConnectionFactory), _mcpPort);
+        try
+        {
+            await server.StartAsync();
+            _mcpServer = server;
+            McpEndpoint = server.Endpoint;
+            Raise(nameof(McpEndpoint));
+            SetMcpStatus("MCP: 运行中", $"服务地址：{server.Endpoint}", Brushes.LimeGreen);
+            await LogOperationAsync("mcp_http_start", $"MCP HTTP server listening on {server.Endpoint}");
+        }
+        catch (Exception ex)
+        {
+            await server.DisposeAsync();
+            var message = McpOutputSanitizer.Sanitize(ex.Message);
+            SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
+            await LogOperationAsync("mcp_http_start_failed", message);
+        }
+    }
+    private void SetMcpStatus(string text, string detail, IBrush brush)
+    {
+        McpStatusText = text;
+        McpStatusDetail = detail;
+        McpStatusBrush = brush;
+        Raise(nameof(McpStatusText));
+        Raise(nameof(McpStatusDetail));
+        Raise(nameof(McpStatusBrush));
+    }
     public void Report(string message) { Status=message; Raise(nameof(Status)); }
     public Task ShowInlineFirstRunAsync()
     {

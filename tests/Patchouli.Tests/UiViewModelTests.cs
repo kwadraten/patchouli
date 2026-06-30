@@ -72,6 +72,41 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void MainWindow_xaml_does_not_use_invalid_none_brush()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        xaml.Should().NotContain("Fill=\"None\"");
+        xaml.Should().NotContain("Stroke=\"None\"");
+        xaml.Should().NotContain("Background=\"None\"");
+        xaml.Should().NotContain("BorderBrush=\"None\"");
+        xaml.Should().NotContain("Foreground=\"None\"");
+    }
+
+    [Fact]
+    public async Task MainWindowViewModel_auto_starts_mcp_http_server_and_reports_status()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");
+        var port = GetFreeTcpPort();
+        var vm = new MainWindowViewModel(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port) { RuntimeDatabasePath = path };
+        try
+        {
+            await vm.ServicesAsync();
+
+            vm.McpEndpoint.Should().Be($"http://localhost:{port}");
+            vm.McpStatusText.Should().Be("MCP: 运行中");
+            vm.McpStatusDetail.Should().Contain(vm.McpEndpoint);
+            using var http = new HttpClient();
+            var health = await http.GetStringAsync($"{vm.McpEndpoint}/health");
+            health.Should().Contain("ok");
+        }
+        finally
+        {
+            await vm.StopMcpServerAsync();
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task QueueViewModel_enqueue_mock_adds_task_and_displays_runtime_only_warning()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
@@ -352,6 +387,14 @@ public sealed class UiViewModelTests
     {
         public string? Text { get; private set; }
         public Task SetTextAsync(string text) { Text = text; return Task.CompletedTask; }
+    }
+
+    private static int GetFreeTcpPort()
+    {
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
+        finally { listener.Stop(); }
     }
 
     private static string CreateMinerUZip(string contentListJson)
