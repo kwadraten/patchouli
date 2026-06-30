@@ -1,7 +1,3 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Hosting;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Evidence;
@@ -34,31 +30,10 @@ try
     var profiles = new SearchProfileService(db, library, clock);
     var api = new McpReadApi(db, new SqliteSearchService(db, profiles), new EvidenceReferenceService(db, clock));
     var handler = new McpProtocolHandler(api, db);
-
-    var builder = WebApplication.CreateSlimBuilder(args);
-    builder.WebHost.UseUrls($"http://localhost:{options.Value.Port}");
-    var app = builder.Build();
-
-    app.MapGet("/health", () => Results.Json(new { status = "ok" }));
-    app.MapPost("/", (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, handler, ct));
-    app.MapPost("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, handler, ct));
-
-    await app.RunAsync();
+    await using var server = new McpHttpServer(handler, options.Value.Port);
+    await server.RunAsync();
 }
 catch (Exception ex)
 {
     Console.Error.WriteLine(McpOutputSanitizer.Sanitize(ex.Message));
-}
-
-static async Task<IResult> HandleMcpRequestAsync(HttpContext context, McpProtocolHandler handler, CancellationToken cancellationToken)
-{
-    using var reader = new StreamReader(context.Request.Body);
-    var request = await reader.ReadToEndAsync(cancellationToken);
-    if (string.IsNullOrWhiteSpace(request))
-    {
-        return Results.BadRequest(new { error = "Request body is required." });
-    }
-
-    var response = await handler.HandleAsync(request, cancellationToken);
-    return Results.Text(response, "application/json");
 }
