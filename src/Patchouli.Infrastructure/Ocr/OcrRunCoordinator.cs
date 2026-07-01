@@ -33,6 +33,44 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _pageCoordinateService = pageCoordinateService;
     }
 
+    public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            var documentExists = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+
+            if (documentExists == 0)
+            {
+                return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "Document instance was not found.");
+            }
+
+            var pageIds = (await connection.QueryAsync<string>(
+                """
+                select page_id
+                from pages
+                where document_instance_id = @DocumentInstanceId
+                order by page_index, page_id;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() }))
+                .Select(PageId.Parse)
+                .ToArray();
+
+            if (pageIds.Length == 0)
+            {
+                return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "Document instance has no pages to OCR.");
+            }
+
+            return await RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+    }
+
     public async Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default)
     {
         if (pageIds.Count == 0) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "OCR page list cannot be empty.");
