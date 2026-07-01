@@ -39,12 +39,15 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
     public static PatchouliAppSettings Default() =>
         new(AppRuntimeOptions.Default(), MinerUAppSettings.Default());
 
+    public static string ResolvePath(string? settingsPath = null) =>
+        string.IsNullOrWhiteSpace(settingsPath)
+            ? AppSettingsLocator.FindNearest("appsettings.json") ?? Path.Combine(Environment.CurrentDirectory, "appsettings.json")
+            : settingsPath;
+
     public static PatchouliAppSettings Load(string? settingsPath = null)
     {
         var defaults = Default();
-        var path = string.IsNullOrWhiteSpace(settingsPath)
-            ? AppSettingsLocator.FindNearest("appsettings.json")
-            : settingsPath;
+        var path = ResolvePath(settingsPath);
 
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             return defaults;
@@ -68,6 +71,37 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
                 ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
                 ReadString(minerU, "Token", defaults.MinerU.Token).Trim()));
+    }
+
+    public void Save(string? settingsPath = null)
+    {
+        var path = ResolvePath(settingsPath);
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        var payload = new
+        {
+            Patchouli = new
+            {
+                Runtime.RuntimeDatabasePath,
+                Runtime.DefaultSyncRoot,
+                Runtime.DefaultStagingRoot,
+                Runtime.LogDirectory,
+                Runtime.UseMockOcrOnly
+            },
+            MinerU = new
+            {
+                MinerU.BaseUrl,
+                MinerU.ModelVersion,
+                MinerU.IsOcr,
+                MinerU.EnableTable,
+                MinerU.EnableFormula,
+                MinerU.Token
+            }
+        };
+
+        File.WriteAllText(path, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     private static JsonElement? GetSection(JsonElement root, string name) =>

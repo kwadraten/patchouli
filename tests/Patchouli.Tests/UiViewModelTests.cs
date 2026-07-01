@@ -212,28 +212,92 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Shell_run_ocr_without_token_reports_recoverable_error()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        var settingsPath = WriteSettingsFile("");
         try
         {
-            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Needs OCR", null, 1));
-            import.Success.Should().BeTrue(import.ErrorMessage);
-            await vm.Shell.RefreshItemsAsync();
+            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
+            var item = new LibraryItemViewModel(
+                "item-1",
+                "Needs OCR",
+                "book",
+                "",
+                "",
+                "",
+                "doc-1",
+                null,
+                "needs-ocr.pdf",
+                "D:/tmp/needs-ocr.pdf",
+                0,
+                0,
+                "not_indexed",
+                _ => Task.CompletedTask,
+                _ => Task.CompletedTask);
 
-            await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
+            await vm.Shell.RunOcrForItemAsync(item);
 
+            vm.Shell.SelectedItem.Should().Be(item);
             vm.Shell.SelectedItem!.OcrStatus.Should().Contain("token");
             vm.Shell.SelectedItem.OcrStatus.Should().Contain("设置");
+            vm.IsSettingsVisible.Should().BeTrue();
+            vm.Settings.SelectedSection.Should().Be("mineru");
             vm.Status.Should().Contain("MinerU API token");
         }
         finally
         {
-            if (File.Exists(pdf)) File.Delete(pdf);
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+        }
+    }
+
+    [Fact]
+    public async Task OpenDatabase_prefers_provider_credential_over_appsettings_token()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        var settingsPath = WriteSettingsFile("fallback-token");
+        try
+        {
+            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            var saved = await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token", "provider-token");
+            saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+
+            var reloaded = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            await reloaded.OpenDatabaseCommand.ExecuteAsync();
+
+            reloaded.Shell.MinerUToken.Should().Be("provider-token");
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Settings_save_mineru_token_updates_provider_credential_and_appsettings()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        var settingsPath = WriteSettingsFile("");
+        try
+        {
+            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            await vm.OpenSettingsAsync("mineru");
+            vm.Settings.MinerUTokenInput = "saved-token";
+
+            await vm.Settings.SaveMinerUSettingsCommand.ExecuteAsync();
+
+            var services = await vm.ServicesAsync();
+            (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should().Be("saved-token");
+            PatchouliAppSettings.Load(settingsPath).MinerU.Token.Should().Be("saved-token");
+            vm.Shell.MinerUToken.Should().Be("saved-token");
+            vm.Status.Should().Contain("已保存");
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
             if (File.Exists(path)) File.Delete(path);
         }
     }
@@ -484,6 +548,31 @@ public sealed class UiViewModelTests
         foreach (var offset in offsets) builder.Append(offset.ToString("D10")).Append(" 00000 n \n");
         builder.Append("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n").Append(xref).Append("\n%%EOF\n");
         return builder.ToString();
+    }
+
+    private static string WriteSettingsFile(string token)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"patchouli-appsettings-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, $$"""
+        {
+          "Patchouli": {
+            "RuntimeDatabasePath": "{{Path.Combine(Path.GetTempPath(), $"runtime-{Guid.NewGuid():N}.sqlite").Replace("\\", "/")}}",
+            "DefaultSyncRoot": "{{Path.Combine(Path.GetTempPath(), $"sync-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+            "DefaultStagingRoot": "{{Path.Combine(Path.GetTempPath(), $"staging-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+            "LogDirectory": "{{Path.Combine(Path.GetTempPath(), $"logs-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+            "UseMockOcrOnly": true
+          },
+          "MinerU": {
+            "BaseUrl": "https://mineru.example.test",
+            "ModelVersion": "vlm",
+            "IsOcr": true,
+            "EnableTable": true,
+            "EnableFormula": true,
+            "Token": "{{token}}"
+          }
+        }
+        """);
+        return path;
     }
 
     private sealed class FakeMinerUClient : IMinerUClient

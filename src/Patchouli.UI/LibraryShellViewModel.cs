@@ -183,6 +183,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (string.IsNullOrWhiteSpace(token))
         {
             item.OcrStatus = "需要 MinerU API token。请先在设置中完成配置后再重试 OCR。";
+            await _main.OpenSettingsAsync("mineru", "运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
             _main.Report("运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
             Raise(nameof(InspectorStatus));
             return;

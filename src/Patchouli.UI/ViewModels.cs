@@ -37,10 +37,13 @@ public sealed class MainWindowViewModel : ViewModelBase
     private McpHttpServer? _mcpServer;
     private readonly bool _autoStartMcpServer;
     private readonly int _mcpPort;
-    private readonly PatchouliAppSettings _settings;
+    private PatchouliAppSettings _settings;
+    private readonly string? _settingsPath;
     private string _runtimeDatabasePath;
     private bool _showInspectorPane = true;
-    public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath=value; Raise(); } }
+    private bool _isSettingsVisible;
+
+    public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); } }
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
@@ -48,19 +51,59 @@ public sealed class MainWindowViewModel : ViewModelBase
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
     public string VersionInfo => $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
     public string StatusBarVersion => $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion}";
+    public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
     public IClipboardService Clipboard { get; }
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
+    public SettingsViewModel Settings { get; }
     public FirstRunViewModel FirstRun { get; private set; }
     public bool IsFirstRunVisible { get; set; }
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
     public bool ShowInspectorPane { get => _showInspectorPane; set { if (_showInspectorPane == value) return; _showInspectorPane = value; Raise(); Raise(nameof(IsInspectorVisible)); } }
-    public bool IsInspectorVisible => IsLibraryVisible && ShowInspectorPane;
+    public bool IsSettingsVisible
+    {
+        get => _isSettingsVisible;
+        private set
+        {
+            if (_isSettingsVisible == value) return;
+            _isSettingsVisible = value;
+            Raise();
+            Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowSettingsWorkspace));
+            Raise(nameof(ShowSidebar));
+            Raise(nameof(IsInspectorVisible));
+            Raise(nameof(ShowSettingsTab));
+            Raise(nameof(IsLibraryTabActive));
+            Raise(nameof(IsReaderTabActive));
+        }
+    }
+
+    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible;
+    public bool ShowSettingsWorkspace => IsLibraryVisible && IsSettingsVisible;
+    public bool ShowSidebar => ShowWorkspaceShell && Shell.ShowLibraryList;
+    public bool IsInspectorVisible => ShowWorkspaceShell && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
-    public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public PdfPreviewViewModel PdfPreview { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
+    public bool ShowSettingsTab => ShowSettingsWorkspace;
+    public bool IsLibraryTabActive => ShowWorkspaceShell && Shell.ShowLibraryList;
+    public bool IsReaderTabActive => ShowWorkspaceShell && Shell.ShowPdfReader;
+    public LibraryViewModel Library { get; }
+    public BibliographyViewModel Bibliography { get; }
+    public FileDocumentViewModel FileDocument { get; }
+    public PageLayoutViewModel PageLayout { get; }
+    public MockOcrViewModel MockOcr { get; }
+    public OcrQueueViewModel OcrQueue { get; }
+    public PdfRenderViewModel PdfRender { get; }
+    public PdfPreviewViewModel PdfPreview { get; }
+    public SearchEvidenceViewModel SearchEvidence { get; }
+    public SearchProfileViewModel SearchProfiles { get; }
+    public McpPreviewViewModel McpPreview { get; }
+    public SnapshotViewModel Snapshot { get; }
+    public SnapshotBranchViewModel SnapshotBranch { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
+    public AsyncCommand ShowLibraryCommand { get; }
+    public AsyncCommand ShowReadingCommand { get; }
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand CreateItemMenuCommand { get; }
@@ -71,23 +114,52 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand ShowLicenseCommand { get; }
-    public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort)
+
+    public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort, string? settingsPath = null)
     {
-        _settings=PatchouliAppSettings.Load();
-        _runtimeDatabasePath=_settings.Runtime.RuntimeDatabasePath;
-        _autoStartMcpServer=autoStartMcpServer;
-        _mcpPort=mcpPort;
-        McpEndpoint=$"http://localhost:{mcpPort}";
-        Clipboard=clipboard??new AvaloniaClipboardService();
-        Logger=logger??new SimpleFileLogger(_settings.Runtime.LogDirectory);
-        PdfPreview=new(this); Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
-        Shell.MinerUToken=_settings.MinerU.Token;
-        OpenDatabaseCommand=new(async()=>{await StopMcpServerAsync("正在切换运行数据库。");_services=await AppServices.CreateAsync(RuntimeDatabasePath,_settings); await LoadPersistedMinerUTokenAsync(); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));if(_autoStartMcpServer)await StartMcpServerAsync(_services);});
-        FirstRun=CreateFirstRunViewModel();
-        CompleteFirstRunCommand=new(CompleteFirstRunAsync);
-        OpenSettingsCommand = new(() => ShowPlaceholderAsync("设置页面将在后续任务中接入。"));
+        _settingsPath = settingsPath;
+        _settings = PatchouliAppSettings.Load(settingsPath);
+        _runtimeDatabasePath = _settings.Runtime.RuntimeDatabasePath;
+        _autoStartMcpServer = autoStartMcpServer;
+        _mcpPort = mcpPort;
+        McpEndpoint = $"http://localhost:{mcpPort}";
+        Clipboard = clipboard ?? new AvaloniaClipboardService();
+        Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
+        PdfPreview = new(this);
+        Shell = new(this);
+        Settings = new(this);
+        Library = new(this);
+        Bibliography = new(this);
+        FileDocument = new(this);
+        PageLayout = new(this);
+        MockOcr = new(this);
+        OcrQueue = new(this);
+        PdfRender = new(this);
+        SearchEvidence = new(this);
+        SearchProfiles = new(this);
+        McpPreview = new(this);
+        Snapshot = new(this);
+        SnapshotBranch = new(this);
+        Shell.MinerUToken = _settings.MinerU.Token;
+        Settings.SyncFromCurrentSettings(_settings.MinerU.Token);
+        OpenDatabaseCommand = new(async () =>
+        {
+            await StopMcpServerAsync("正在切换运行数据库。");
+            _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
+            await LoadPersistedMinerUTokenAsync();
+            Status = $"数据库已就绪：{RuntimeDatabasePath}";
+            Raise(nameof(Status));
+            Raise(nameof(VersionInfo));
+            Raise(nameof(StatusBarVersion));
+            if (_autoStartMcpServer) await StartMcpServerAsync(_services);
+        });
+        FirstRun = CreateFirstRunViewModel();
+        CompleteFirstRunCommand = new(CompleteFirstRunAsync);
+        ShowLibraryCommand = new(ShowLibraryAsync);
+        ShowReadingCommand = new(ShowReadingAsync);
+        OpenSettingsCommand = new(() => OpenSettingsAsync("mineru"));
         OpenOcrQueueCommand = new(() => ShowPlaceholderAsync("OCR 队列页面将在后续任务中接入。"));
-        CreateItemMenuCommand = new(async () => { await Shell.SwitchToLibraryListAsync(); await ShowPlaceholderAsync("新建题录标签页将在后续任务中接入。"); });
+        CreateItemMenuCommand = new(async () => { await ShowLibraryAsync(); await ShowPlaceholderAsync("新建题录标签页将在后续任务中接入。"); });
         EditSelectedItemCommand = new(EditSelectedItemAsync);
         RunSelectedItemOcrCommand = new(RunSelectedItemOcrAsync);
         RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
@@ -96,6 +168,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         ShowAboutCommand = new(() => ShowPlaceholderAsync(StatusBarVersion));
         ShowLicenseCommand = new(() => ShowPlaceholderAsync("许可证页面将在后续任务中接入。"));
     }
+
     public async Task<AppServices> ServicesAsync()
     {
         if (_services is not null) return _services;
@@ -109,11 +182,13 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         return _services;
     }
+
     public async Task StartMcpServerAsync()
     {
         var services = await ServicesAsync();
         await StartMcpServerAsync(services);
     }
+
     public async Task StopMcpServerAsync(string detail = "MCP HTTP 服务已停止。")
     {
         if (_mcpServer is not null)
@@ -124,6 +199,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
     }
+
     private async Task StartMcpServerAsync(AppServices services)
     {
         if (_mcpServer?.IsRunning == true)
@@ -152,6 +228,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             await LogOperationAsync("mcp_http_start_failed", message);
         }
     }
+
     private void SetMcpStatus(string text, string detail, IBrush brush)
     {
         McpStatusText = text;
@@ -161,55 +238,69 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(McpStatusDetail));
         Raise(nameof(McpStatusBrush));
     }
-    public void Report(string message) { Status=message; Raise(nameof(Status)); }
+
+    public void Report(string message) { Status = message; Raise(nameof(Status)); }
+
     public Task ShowInlineFirstRunAsync()
     {
-        FirstRun=CreateFirstRunViewModel();
-        FirstRun.DatabasePath=RuntimeDatabasePath;
-        IsFirstRunVisible=true;
+        FirstRun = CreateFirstRunViewModel();
+        FirstRun.DatabasePath = RuntimeDatabasePath;
+        IsFirstRunVisible = true;
         Raise(nameof(FirstRun));
         Raise(nameof(IsFirstRunVisible));
         Raise(nameof(IsLibraryVisible));
         Raise(nameof(IsSearchEnabled));
+        Raise(nameof(ShowWorkspaceShell));
+        Raise(nameof(ShowSettingsWorkspace));
+        Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
         return Task.CompletedTask;
     }
+
     public async Task HideInlineFirstRunAsync()
     {
-        IsFirstRunVisible=false;
+        IsFirstRunVisible = false;
         Raise(nameof(IsFirstRunVisible));
         Raise(nameof(IsLibraryVisible));
         Raise(nameof(IsSearchEnabled));
+        Raise(nameof(ShowWorkspaceShell));
+        Raise(nameof(ShowSettingsWorkspace));
+        Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
         await Shell.RefreshItemsAsync();
     }
+
     private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath, MinerUToken = Shell.MinerUToken };
+
     private async Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)> OpenFirstRunDatabaseAsync(string path)
     {
-        RuntimeDatabasePath=path;
+        RuntimeDatabasePath = path;
         await OpenDatabaseCommand.ExecuteAsync();
-        var services=await ServicesAsync();
+        var services = await ServicesAsync();
         return (services.FirstRunWorkflow, services.PdfDiscovery);
     }
+
     private async Task CompleteFirstRunAsync()
     {
         await FirstRun.FinishSetupCommand.ExecuteAsync();
         if (!FirstRun.IsComplete) return;
-        var persisted = await SaveMinerUTokenAsync(FirstRun.MinerUToken);
+        var persisted = await SaveMinerUTokenSettingsAsync(FirstRun.MinerUToken);
         if (!persisted) return;
-        Shell.MinerUToken=FirstRun.MinerUToken.Trim();
         Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
         await HideInlineFirstRunAsync();
     }
+
     public MinerUConfiguration CreateMinerUConfiguration(string token) => _settings.MinerU.ToConfiguration(token);
+
     public async Task<string> GetPersistedMinerUTokenAsync()
     {
         var services = await ServicesAsync();
         var secret = await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU);
         return secret.IsSuccess ? secret.Value : "";
     }
+
     public async Task<bool> SaveMinerUTokenAsync(string token)
     {
         if (string.IsNullOrWhiteSpace(token)) return false;
@@ -218,28 +309,86 @@ public sealed class MainWindowViewModel : ViewModelBase
         if (saved.IsFailure) { Report(saved.ErrorMessage ?? "无法保存 MinerU API token。"); return false; }
         return true;
     }
+
+    public async Task<bool> SaveMinerUTokenSettingsAsync(string token)
+    {
+        var trimmed = token.Trim();
+        var persisted = await SaveMinerUTokenAsync(trimmed);
+        if (!persisted) return false;
+
+        _settings = _settings with { MinerU = _settings.MinerU with { Token = trimmed } };
+        _settings.Save(_settingsPath);
+        Shell.MinerUToken = trimmed;
+        FirstRun.MinerUToken = trimmed;
+        Settings.SyncFromCurrentSettings(trimmed);
+        Shell.NotifyMinerUTokenChanged();
+        Report("MinerU 凭据已保存。");
+        return true;
+    }
+
     private async Task LoadPersistedMinerUTokenAsync()
     {
         var token = await GetPersistedMinerUTokenAsync();
         if (string.IsNullOrWhiteSpace(token)) token = _settings.MinerU.Token;
-        Shell.MinerUToken=token;
-        FirstRun.MinerUToken=token;
+        Shell.MinerUToken = token;
+        FirstRun.MinerUToken = token;
+        Settings.SyncFromCurrentSettings(token);
         Shell.NotifyMinerUTokenChanged();
     }
-    public void RaiseShellSelectionChanged() => Raise(nameof(ShowSelectedDocumentTab));
+
+    public void RaiseShellSelectionChanged()
+    {
+        Raise(nameof(ShowSelectedDocumentTab));
+        Raise(nameof(ShowSidebar));
+        Raise(nameof(IsInspectorVisible));
+        Raise(nameof(IsLibraryTabActive));
+        Raise(nameof(IsReaderTabActive));
+    }
+
     public async Task LogOperationAsync(string operation, string message)
     {
         try { await Logger.LogAsync(operation, message); }
-        catch { /* Logging is diagnostic only; a file-system failure must not block the UI. */ }
+        catch { }
     }
+
+    public Task OpenSettingsAsync(string section, string? statusMessage = null)
+    {
+        IsSettingsVisible = true;
+        Shell.IsReadingMode = false;
+        Settings.FocusMinerU(statusMessage);
+        RaiseShellSelectionChanged();
+        return Task.CompletedTask;
+    }
+
     private Task ShowPlaceholderAsync(string message)
     {
         Report(message);
         return Task.CompletedTask;
     }
 
+    private async Task ShowLibraryAsync()
+    {
+        IsSettingsVisible = false;
+        await Shell.SwitchToLibraryListAsync();
+        RaiseShellSelectionChanged();
+    }
+
+    private async Task ShowReadingAsync()
+    {
+        if (Shell.SelectedItem is null)
+        {
+            Report("请先选择一个题录。");
+            return;
+        }
+
+        IsSettingsVisible = false;
+        await Shell.SwitchToReadingModeAsync();
+        RaiseShellSelectionChanged();
+    }
+
     private async Task EditSelectedItemAsync()
     {
+        await ShowLibraryAsync();
         if (Shell.SelectedItem is null)
         {
             Report("请先选择一个题录。");
@@ -251,6 +400,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task RunSelectedItemOcrAsync()
     {
+        IsSettingsVisible = false;
         if (Shell.SelectedItem is null)
         {
             Report("请先选择一个题录。");

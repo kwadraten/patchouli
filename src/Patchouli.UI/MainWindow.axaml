@@ -76,8 +76,8 @@
         <!-- Tabs List -->
         <StackPanel Orientation="Horizontal" Spacing="0" Margin="12,0,0,0" VerticalAlignment="Stretch">
           <!-- "我的库" Tab -->
-          <Border Classes="tab" Classes.active="{Binding Shell.ShowLibraryList}" Padding="16,0" VerticalAlignment="Stretch">
-            <Button Command="{Binding Shell.SwitchToLibraryListCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+          <Border Classes="tab" Classes.active="{Binding IsLibraryTabActive}" Padding="16,0" VerticalAlignment="Stretch">
+            <Button Command="{Binding ShowLibraryCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
               <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                 <PathIcon Data="{StaticResource IconDatabase}" Width="12" Height="12" Foreground="{DynamicResource PrimaryBrush}" />
                 <TextBlock Text="我的库" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
@@ -86,9 +86,9 @@
           </Border>
 
           <!-- "阅读: [Title]" Tab -->
-          <Border Classes="tab" Classes.active="{Binding Shell.ShowPdfReader}" Padding="16,0" IsVisible="{Binding ShowSelectedDocumentTab}" VerticalAlignment="Stretch">
+          <Border Classes="tab" Classes.active="{Binding IsReaderTabActive}" Padding="16,0" IsVisible="{Binding ShowSelectedDocumentTab}" VerticalAlignment="Stretch">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <Button Command="{Binding Shell.SwitchToReadingModeCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+              <Button Command="{Binding ShowReadingCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                   <PathIcon Data="{StaticResource IconFolderOpen}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="{Binding Shell.SelectedItem.Title, StringFormat='阅读: \{0\}'}" Width="320" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
@@ -96,6 +96,15 @@
               </Button>
               <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding Shell.CloseDocumentTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
+          </Border>
+
+          <Border Classes="tab" Classes.active="{Binding IsSettingsVisible}" Padding="16,0" IsVisible="{Binding ShowSettingsTab}" VerticalAlignment="Stretch">
+            <Button Command="{Binding OpenSettingsCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+              <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <PathIcon Data="{StaticResource IconMenu}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="设置" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
+            </Button>
           </Border>
 
           <!-- "+" Tab Button -->
@@ -110,7 +119,7 @@
     <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto">
 
       <!-- Column 0: Sidebar (Width 260 when visible) -->
-      <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0" IsVisible="{Binding Shell.ShowLibraryList}">
+      <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0" IsVisible="{Binding ShowSidebar}">
         <Grid>
           <!-- 1. Library Sidebar (Visible when library is visible) -->
           <Border Background="{DynamicResource SurfaceContainerLowBrush}" IsVisible="{Binding IsLibraryVisible}">
@@ -310,7 +319,7 @@
         </Grid>
 
         <!-- 2. Library View (Main central columns: Table List vs PDF Reader) -->
-        <Grid IsVisible="{Binding IsLibraryVisible}">
+        <Grid IsVisible="{Binding ShowWorkspaceShell}">
           <!-- 2A. Library Table List (Visible when not reading) -->
           <Grid RowDefinitions="44,*" IsVisible="{Binding Shell.ShowLibraryList}">
             <!-- Header -->
@@ -430,6 +439,28 @@
               </ScrollViewer>
             </Border>
           </Grid>
+        </Grid>
+
+        <Grid IsVisible="{Binding ShowSettingsWorkspace}" DataContext="{Binding Settings}">
+          <ScrollViewer>
+            <StackPanel Margin="32" Spacing="20" MaxWidth="720">
+              <StackPanel Spacing="6">
+                <TextBlock Text="设置" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+              </StackPanel>
+
+              <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18" IsVisible="{Binding ShowMinerUSection}">
+                <StackPanel Spacing="12">
+                  <TextBlock Text="MinerU OCR" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+                  <TextBlock Text="OCR 运行优先读取 ProviderCredential；这里保存时会同时同步 appsettings 里的回退 token。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" HorizontalAlignment="Left" />
+                  <TextBox Text="{Binding MinerUTokenInput}" PlaceholderText="输入 MinerU API Token" PasswordChar="*" Height="36" VerticalContentAlignment="Center" />
+                  <TextBlock Text="{Binding SettingsFilePath}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <Button Content="保存 MinerU 凭据" Command="{Binding SaveMinerUSettingsCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" HorizontalAlignment="Left" Padding="20,0" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
         </Grid>
       </Grid>
 
