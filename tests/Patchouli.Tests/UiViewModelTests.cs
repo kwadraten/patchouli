@@ -102,6 +102,15 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void MainWindow_xaml_wires_toolbar_search_and_results_workspace()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        xaml.Should().Contain("RunToolbarSearchCommand");
+        xaml.Should().Contain("搜索结果");
+        xaml.Should().Contain("SearchEvidence.Query");
+    }
+
+    [Fact]
     public async Task MainWindowViewModel_auto_starts_mcp_http_server_and_reports_status()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");

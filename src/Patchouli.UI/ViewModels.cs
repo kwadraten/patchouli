@@ -42,6 +42,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private string _runtimeDatabasePath;
     private bool _showInspectorPane = true;
     private bool _isSettingsVisible;
+    private bool _isSearchVisible;
 
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); } }
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
@@ -78,13 +79,32 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise(nameof(IsReaderTabActive));
         }
     }
+    public bool IsSearchVisible
+    {
+        get => _isSearchVisible;
+        private set
+        {
+            if (_isSearchVisible == value) return;
+            _isSearchVisible = value;
+            Raise();
+            Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowSearchWorkspace));
+            Raise(nameof(ShowSidebar));
+            Raise(nameof(IsInspectorVisible));
+            Raise(nameof(ShowSearchTab));
+            Raise(nameof(IsLibraryTabActive));
+            Raise(nameof(IsReaderTabActive));
+        }
+    }
 
-    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible;
+    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible && !IsSearchVisible;
     public bool ShowSettingsWorkspace => IsLibraryVisible && IsSettingsVisible;
+    public bool ShowSearchWorkspace => IsLibraryVisible && IsSearchVisible;
     public bool ShowSidebar => ShowWorkspaceShell && Shell.ShowLibraryList;
     public bool IsInspectorVisible => ShowWorkspaceShell && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
     public bool ShowSettingsTab => ShowSettingsWorkspace;
+    public bool ShowSearchTab => ShowSearchWorkspace;
     public bool IsLibraryTabActive => ShowWorkspaceShell && Shell.ShowLibraryList;
     public bool IsReaderTabActive => ShowWorkspaceShell && Shell.ShowPdfReader;
     public LibraryViewModel Library { get; }
@@ -104,6 +124,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand CompleteFirstRunCommand { get; }
     public AsyncCommand ShowLibraryCommand { get; }
     public AsyncCommand ShowReadingCommand { get; }
+    public AsyncCommand RunToolbarSearchCommand { get; }
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand CreateItemMenuCommand { get; }
@@ -157,6 +178,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         CompleteFirstRunCommand = new(CompleteFirstRunAsync);
         ShowLibraryCommand = new(ShowLibraryAsync);
         ShowReadingCommand = new(ShowReadingAsync);
+        RunToolbarSearchCommand = new(RunToolbarSearchAsync);
         OpenSettingsCommand = new(() => OpenSettingsAsync("mineru"));
         OpenOcrQueueCommand = new(() => ShowPlaceholderAsync("OCR 队列页面将在后续任务中接入。"));
         CreateItemMenuCommand = new(async () => { await ShowLibraryAsync(); await ShowPlaceholderAsync("新建题录标签页将在后续任务中接入。"); });
@@ -252,6 +274,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsSearchEnabled));
         Raise(nameof(ShowWorkspaceShell));
         Raise(nameof(ShowSettingsWorkspace));
+        Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -266,6 +289,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsSearchEnabled));
         Raise(nameof(ShowWorkspaceShell));
         Raise(nameof(ShowSettingsWorkspace));
+        Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -354,6 +378,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public Task OpenSettingsAsync(string section, string? statusMessage = null)
     {
         IsSettingsVisible = true;
+        IsSearchVisible = false;
         Shell.IsReadingMode = false;
         Settings.FocusMinerU(statusMessage);
         RaiseShellSelectionChanged();
@@ -369,6 +394,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task ShowLibraryAsync()
     {
         IsSettingsVisible = false;
+        IsSearchVisible = false;
         await Shell.SwitchToLibraryListAsync();
         RaiseShellSelectionChanged();
     }
@@ -382,8 +408,16 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         IsSettingsVisible = false;
+        IsSearchVisible = false;
         await Shell.SwitchToReadingModeAsync();
         RaiseShellSelectionChanged();
+    }
+
+    private async Task RunToolbarSearchAsync()
+    {
+        IsSettingsVisible = false;
+        IsSearchVisible = true;
+        await SearchEvidence.SearchCommand.ExecuteAsync();
     }
 
     private async Task EditSelectedItemAsync()
@@ -438,8 +472,176 @@ public sealed class MockOcrViewModel : ViewModelBase
 }
 public sealed class SearchEvidenceViewModel : ViewModelBase
 {
-    private readonly MainWindowViewModel _main; public string DocumentInstanceId{get;set;}="";public string Query{get;set;}="";public string UnitId{get;set;}="";public string EvidenceRef{get;set;}="";public string Markdown{get;set;}="";public string Output{get;set;}="";public ObservableCollection<string> SearchUnits{get;}=new();public AsyncCommand RebuildCommand{get;}public AsyncCommand SearchCommand{get;}public AsyncCommand CreateEvidenceCommand{get;}public AsyncCommand MarkdownCommand{get;}public AsyncCommand CopyMarkdownCommand{get;}
-    public SearchEvidenceViewModel(MainWindowViewModel m){_main=m;RebuildCommand=new(async()=>{var s=await _main.ServicesAsync();var a=await s.SearchUnits.RebuildForDocumentInstanceAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));var b=await s.SearchIndex.RebuildFtsForDocumentInstanceAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));Output=a.IsSuccess&&b.IsSuccess?"Search units and FTS rebuilt.":$"ERROR {a.ErrorCode??b.ErrorCode}";Raise(nameof(Output));await _main.LogOperationAsync("rebuild_search_fts", Output);});SearchCommand=new(async()=>{var r=await (await _main.ServicesAsync()).Search.SearchLibraryAsync(new SearchRequest(Query));if(r.IsSuccess){SearchUnits.Clear();foreach(var u in r.Value.Results.SelectMany(x=>x.MatchedUnits)){SearchUnits.Add($"{u.UnitId} | {u.Text}");}if(r.Value.Results.SelectMany(x=>x.MatchedUnits).FirstOrDefault() is { } first){UnitId=first.UnitId.ToString();Raise(nameof(UnitId));}}Output=r.IsSuccess?JsonSerializer.Serialize(r.Value,new JsonSerializerOptions{WriteIndented=true}):$"ERROR {r.ErrorCode}: {r.ErrorMessage}";Raise(nameof(Output));});CreateEvidenceCommand=new(async()=>{var r=await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(Patchouli.Core.Ids.SearchUnitId.Parse(UnitId));Output=r.IsSuccess?r.Value.EvidenceRefId:$"ERROR {r.ErrorCode}: {r.ErrorMessage}";if(r.IsSuccess){EvidenceRef=r.Value.EvidenceRefId;var markdown=await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);if(markdown.IsSuccess)Markdown=markdown.Value.Markdown;}Raise(nameof(Output));Raise(nameof(EvidenceRef));Raise(nameof(Markdown));await _main.LogOperationAsync("create_evidence_ref", Output);});MarkdownCommand=new(async()=>{var r=await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);Markdown=r.IsSuccess?r.Value.Markdown:"";Output=r.IsSuccess?Markdown:$"ERROR {r.ErrorCode}: {r.ErrorMessage}";Raise(nameof(Markdown));Raise(nameof(Output));});CopyMarkdownCommand=new(async()=>{if(string.IsNullOrWhiteSpace(Markdown)){Output="ERROR validation_failed: Generate Evidence Markdown first.";}else{try{await _main.Clipboard.SetTextAsync(Markdown);Output="Copied Evidence Markdown";}catch(Exception ex){Output=$"ERROR clipboard_unavailable: {ex.Message}";}}Raise(nameof(Output));await _main.LogOperationAsync("copy_evidence_markdown", Output);});}
+    private readonly MainWindowViewModel _main;
+    public string DocumentInstanceId { get; set; } = "";
+    public string Query { get; set; } = "";
+    public string UnitId { get; set; } = "";
+    public string EvidenceRef { get; set; } = "";
+    public string Markdown { get; set; } = "";
+    public string Output { get; set; } = "";
+    public string IndexStatus { get; private set; } = "";
+    public string AffectedScopesSummary { get; private set; } = "";
+    public string EstimatedTotalText { get; private set; } = "";
+    public ObservableCollection<string> SearchUnits { get; } = new();
+    public ObservableCollection<SearchPageResultViewModel> Results { get; } = new();
+    public bool HasResults => Results.Count > 0;
+    public bool HasNoResults => !HasResults && !string.IsNullOrWhiteSpace(Query);
+    public AsyncCommand RebuildCommand { get; }
+    public AsyncCommand SearchCommand { get; }
+    public AsyncCommand CreateEvidenceCommand { get; }
+    public AsyncCommand MarkdownCommand { get; }
+    public AsyncCommand CopyMarkdownCommand { get; }
+
+    public SearchEvidenceViewModel(MainWindowViewModel m)
+    {
+        _main = m;
+        RebuildCommand = new(async () =>
+        {
+            var s = await _main.ServicesAsync();
+            var a = await s.SearchUnits.RebuildForDocumentInstanceAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
+            var b = await s.SearchIndex.RebuildFtsForDocumentInstanceAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
+            Output = a.IsSuccess && b.IsSuccess ? "Search units and FTS rebuilt." : $"ERROR {a.ErrorCode ?? b.ErrorCode}";
+            Raise(nameof(Output));
+            await _main.LogOperationAsync("rebuild_search_fts", Output);
+        });
+        SearchCommand = new(SearchAsync);
+        CreateEvidenceCommand = new(async () =>
+        {
+            var r = await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(Patchouli.Core.Ids.SearchUnitId.Parse(UnitId));
+            Output = r.IsSuccess ? r.Value.EvidenceRefId : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
+            if (r.IsSuccess)
+            {
+                EvidenceRef = r.Value.EvidenceRefId;
+                var markdown = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
+                if (markdown.IsSuccess) Markdown = markdown.Value.Markdown;
+            }
+            Raise(nameof(Output));
+            Raise(nameof(EvidenceRef));
+            Raise(nameof(Markdown));
+            await _main.LogOperationAsync("create_evidence_ref", Output);
+        });
+        MarkdownCommand = new(async () =>
+        {
+            var r = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
+            Markdown = r.IsSuccess ? r.Value.Markdown : "";
+            Output = r.IsSuccess ? Markdown : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
+            Raise(nameof(Markdown));
+            Raise(nameof(Output));
+        });
+        CopyMarkdownCommand = new(async () =>
+        {
+            if (string.IsNullOrWhiteSpace(Markdown))
+            {
+                Output = "ERROR validation_failed: Generate Evidence Markdown first.";
+            }
+            else
+            {
+                try
+                {
+                    await _main.Clipboard.SetTextAsync(Markdown);
+                    Output = "Copied Evidence Markdown";
+                }
+                catch (Exception ex)
+                {
+                    Output = $"ERROR clipboard_unavailable: {ex.Message}";
+                }
+            }
+            Raise(nameof(Output));
+            await _main.LogOperationAsync("copy_evidence_markdown", Output);
+        });
+    }
+
+    private async Task SearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Query))
+        {
+            Results.Clear();
+            SearchUnits.Clear();
+            IndexStatus = "";
+            AffectedScopesSummary = "";
+            EstimatedTotalText = "";
+            Output = "";
+            Raise(nameof(IndexStatus));
+            Raise(nameof(AffectedScopesSummary));
+            Raise(nameof(EstimatedTotalText));
+            Raise(nameof(Results));
+            Raise(nameof(HasResults));
+            Raise(nameof(HasNoResults));
+            Raise(nameof(Output));
+            _main.Report("请输入搜索词。");
+            return;
+        }
+
+        var services = await _main.ServicesAsync();
+        var r = await services.Search.SearchLibraryAsync(new SearchRequest(Query));
+        Results.Clear();
+        SearchUnits.Clear();
+
+        if (r.IsSuccess)
+        {
+            var firstMatchedUnit = default(string);
+            var firstEvidenceRef = default(string);
+            foreach (var page in r.Value.Results)
+            {
+                var matchedUnits = new List<SearchMatchedUnitViewModel>();
+                foreach (var unit in page.MatchedUnits)
+                {
+                    SearchUnits.Add($"{unit.UnitId} | {unit.Text}");
+                    var evidence = await services.Evidence.CreateFromSearchUnitAsync(unit.UnitId);
+                    var evidenceRef = evidence.IsSuccess ? evidence.Value.EvidenceRefId : null;
+                    matchedUnits.Add(new SearchMatchedUnitViewModel(
+                        unit.UnitId.ToString(),
+                        unit.Text,
+                        unit.NodeType,
+                        unit.ReadingOrder,
+                        unit.IsMatch,
+                        evidenceRef));
+                    firstMatchedUnit ??= unit.UnitId.ToString();
+                    firstEvidenceRef ??= evidenceRef;
+                }
+
+                Results.Add(new SearchPageResultViewModel(
+                    page.ItemTitle,
+                    page.DocumentInstanceId.ToString(),
+                    page.PageId.ToString(),
+                    page.PageLabel,
+                    page.PageIndex,
+                    page.IndexStatus,
+                    page.MatchedUnitsHasMore,
+                    matchedUnits));
+            }
+
+            UnitId = firstMatchedUnit ?? "";
+            EvidenceRef = firstEvidenceRef ?? "";
+            IndexStatus = r.Value.IndexStatus;
+            AffectedScopesSummary = r.Value.AffectedScopesSummary ?? "";
+            EstimatedTotalText = r.Value.EstimatedTotal?.ToString() ?? $"{r.Value.Results.Count} 页";
+            Output = JsonSerializer.Serialize(r.Value, new JsonSerializerOptions { WriteIndented = true });
+            _main.Report(r.Value.Results.Count > 0
+                ? $"搜索完成：{r.Value.Results.Count} 页命中，index status={IndexStatus}。"
+                : $"搜索完成：没有命中结果，index status={IndexStatus}。");
+        }
+        else
+        {
+            UnitId = "";
+            EvidenceRef = "";
+            IndexStatus = "";
+            AffectedScopesSummary = "";
+            EstimatedTotalText = "";
+            Output = $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
+            _main.Report(Output);
+        }
+
+        Raise(nameof(UnitId));
+        Raise(nameof(EvidenceRef));
+        Raise(nameof(IndexStatus));
+        Raise(nameof(AffectedScopesSummary));
+        Raise(nameof(EstimatedTotalText));
+        Raise(nameof(Results));
+        Raise(nameof(HasResults));
+        Raise(nameof(HasNoResults));
+        Raise(nameof(Output));
+    }
 }
 public sealed class McpPreviewViewModel : ViewModelBase
 {

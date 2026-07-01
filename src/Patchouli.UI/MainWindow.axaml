@@ -62,11 +62,14 @@
             <MenuItem Header="许可证" Command="{Binding ShowLicenseCommand}" />
           </MenuItem>
         </Menu>
-        <TextBox Grid.Column="1" Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..." IsEnabled="{Binding IsSearchEnabled}" VerticalContentAlignment="Center">
-          <TextBox.InnerLeftContent>
-            <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
-          </TextBox.InnerLeftContent>
-        </TextBox>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <TextBox Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..." IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}" VerticalContentAlignment="Center">
+            <TextBox.InnerLeftContent>
+              <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
+            </TextBox.InnerLeftContent>
+          </TextBox>
+          <Button Content="搜索" Command="{Binding RunToolbarSearchCommand}" Height="24" MinWidth="52" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+        </StackPanel>
       </Grid>
     </Border>
 
@@ -96,6 +99,15 @@
               </Button>
               <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding Shell.CloseDocumentTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
+          </Border>
+
+          <Border Classes="tab" Classes.active="{Binding IsSearchVisible}" Padding="16,0" IsVisible="{Binding ShowSearchTab}" VerticalAlignment="Stretch">
+            <Button Command="{Binding RunToolbarSearchCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+              <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="搜索" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
+            </Button>
           </Border>
 
           <Border Classes="tab" Classes.active="{Binding IsSettingsVisible}" Padding="16,0" IsVisible="{Binding ShowSettingsTab}" VerticalAlignment="Stretch">
@@ -459,6 +471,62 @@
                   <Button Content="保存 MinerU 凭据" Command="{Binding SaveMinerUSettingsCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" HorizontalAlignment="Left" Padding="20,0" />
                 </StackPanel>
               </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </Grid>
+
+        <Grid IsVisible="{Binding ShowSearchWorkspace}" DataContext="{Binding SearchEvidence}">
+          <ScrollViewer>
+            <StackPanel Margin="32" Spacing="18">
+              <StackPanel Spacing="6">
+                <TextBlock Text="搜索结果" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+                <TextBlock Text="{Binding Query, StringFormat='查询：\{0\}'}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
+
+              <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+                <StackPanel Spacing="8">
+                  <TextBlock Text="{Binding IndexStatus, StringFormat='index status: \{0\}'}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+                  <TextBlock Text="{Binding AffectedScopesSummary}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" IsVisible="{Binding AffectedScopesSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  <TextBlock Text="{Binding EstimatedTotalText, StringFormat='命中页数：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Border>
+
+              <TextBlock Text="没有命中结果。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding HasNoResults}" />
+
+              <ItemsControl ItemsSource="{Binding Results}" IsVisible="{Binding HasResults}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,12">
+                      <StackPanel Spacing="10">
+                        <StackPanel Spacing="4">
+                          <TextBlock Text="{Binding ItemTitle}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                          <TextBlock Text="{Binding PageLabel, StringFormat='页面：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <TextBlock Text="{Binding IndexStatus, StringFormat='index status: \{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        </StackPanel>
+
+                        <ItemsControl ItemsSource="{Binding MatchedUnits}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                                <StackPanel Spacing="6">
+                                  <TextBlock Text="{Binding Text}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                                  <WrapPanel ItemHeight="20">
+                                    <TextBlock Text="{Binding NodeType, StringFormat='类型：\{0\}'}" Margin="0,0,12,0" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                    <TextBlock Text="{Binding ReadingOrder, StringFormat='阅读顺序：\{0\}'}" Margin="0,0,12,0" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                    <TextBlock Text="{Binding EvidenceRef, StringFormat='EvidenceRef：\{0\}'}" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" IsVisible="{Binding HasEvidenceRef}" />
+                                  </WrapPanel>
+                                </StackPanel>
+                              </Border>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBlock Text="该页还有更多 matched units 未展开。" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding MatchedUnitsHasMore}" />
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
             </StackPanel>
           </ScrollViewer>
         </Grid>
