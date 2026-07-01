@@ -26,8 +26,97 @@ public sealed class BibliographicCoreTests
         item.IsSuccess.Should().BeTrue();
         item.Value.LibraryId.Should().Be(context.LibraryId);
         item.Value.Title.Should().Be("Local Gazetteer");
+        item.Value.CitationKey.Should().StartWith("local-gazetteer-");
         item.Value.CreatorsJson.Should().Be("[]");
         item.Value.CustomFieldsJson.Should().Be("{}");
+    }
+
+    [Fact]
+    public async Task UpdateItem_updates_core_metadata_and_preserves_citation_key()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        var created = await context.ItemService.CreateItemAsync("book", "Old Title");
+
+        var updated = await context.ItemService.UpdateItemAsync(
+            created.Value.ItemId,
+            new UpdateItemRequest(
+                "article",
+                "New Title",
+                Subtitle: "Sub",
+                TitleShort: "Short",
+                CreatorsJson: """[{"name":"Ada Lovelace"}]""",
+                Date: "1843",
+                PublicationTitle: "Scientific Memoirs",
+                ContainerTitleShort: "Sci. Mem.",
+                CollectionTitle: "Collected Papers",
+                Publisher: "Taylor",
+                Place: "London",
+                Edition: "2",
+                Genre: "Essay",
+                Number: "42",
+                ChapterNumber: "7",
+                Volume: "3",
+                Version: "revised",
+                Issue: "1",
+                Pages: "10-20",
+                Language: "en",
+                Status: "published",
+                Note: "Important note",
+                AbstractText: "Abstract text",
+                TagsJson: """["history"]""",
+                CollectionsJson: """["featured"]""",
+                CustomFieldsJson: """{"callNumber":"QA"}"""));
+
+        updated.IsSuccess.Should().BeTrue();
+        updated.Value.ItemType.Should().Be("article");
+        updated.Value.Title.Should().Be("New Title");
+        updated.Value.TitleShort.Should().Be("Short");
+        updated.Value.ContainerTitleShort.Should().Be("Sci. Mem.");
+        updated.Value.CollectionTitle.Should().Be("Collected Papers");
+        updated.Value.Edition.Should().Be("2");
+        updated.Value.Genre.Should().Be("Essay");
+        updated.Value.Number.Should().Be("42");
+        updated.Value.ChapterNumber.Should().Be("7");
+        updated.Value.Version.Should().Be("revised");
+        updated.Value.Status.Should().Be("published");
+        updated.Value.Note.Should().Be("Important note");
+        updated.Value.CitationKey.Should().Be(created.Value.CitationKey);
+    }
+
+    [Fact]
+    public async Task DeleteItem_soft_deletes_item_and_excludes_it_from_queries()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        var item = await context.ItemService.CreateItemAsync("book", "Disposable");
+
+        var deleted = await context.ItemService.DeleteItemAsync(item.Value.ItemId);
+        var fetched = await context.ItemService.GetItemAsync(item.Value.ItemId);
+        var listed = await context.ItemService.ListItemsAsync(new ListItemsRequest());
+
+        deleted.IsSuccess.Should().BeTrue();
+        fetched.ErrorCode.Should().Be(AppErrorCodes.NotFound);
+        listed.Value.Items.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ListItems_supports_filters_and_cursor_pagination()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        await context.ItemService.CreateItemAsync("book", "Atlas");
+        await context.ItemService.CreateItemAsync("article", "Beacon");
+        await context.ItemService.CreateItemAsync("book", "Chronicle");
+
+        var firstPage = await context.ItemService.ListItemsAsync(new ListItemsRequest(ItemType: "book", PageSize: 1));
+        var secondPage = await context.ItemService.ListItemsAsync(new ListItemsRequest(ItemType: "book", PageSize: 1, Cursor: firstPage.Value.NextCursor));
+        var filtered = await context.ItemService.ListItemsAsync(new ListItemsRequest(Query: "Bea"));
+
+        firstPage.IsSuccess.Should().BeTrue();
+        firstPage.Value.Items.Should().HaveCount(1);
+        firstPage.Value.NextCursor.Should().NotBeNullOrWhiteSpace();
+        secondPage.Value.Items.Should().HaveCount(1);
+        secondPage.Value.Items.Single().ItemId.Should().NotBe(firstPage.Value.Items.Single().ItemId);
+        filtered.Value.Items.Should().ContainSingle();
+        filtered.Value.Items.Single().Title.Should().Be("Beacon");
     }
 
     [Fact]
@@ -341,6 +430,23 @@ public sealed class BibliographicCoreTests
             """);
 
         tableCount.Should().Be(4);
+
+        var columns = (await connection.QueryAsync<string>("select name from pragma_table_info('items');")).ToArray();
+        columns.Should().Contain(new[]
+        {
+            "citation_key",
+            "title_short",
+            "container_title_short",
+            "collection_title",
+            "edition",
+            "genre",
+            "number",
+            "chapter_number",
+            "version",
+            "status",
+            "note",
+            "deleted_at"
+        });
     }
 
     [Fact]

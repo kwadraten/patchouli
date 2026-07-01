@@ -83,11 +83,14 @@ public sealed class McpReadApi : IMcpReadApi
             await connection.OpenAsync(cancellationToken);
             var item = await connection.QuerySingleOrDefaultAsync<ItemRow>(
                 """
-                select item_id as ItemId, item_type as ItemType, title as Title, subtitle as Subtitle, creators_json as CreatorsJson,
-                       date as Date, publication_title as PublicationTitle, publisher as Publisher, place as Place, volume as Volume,
-                       issue as Issue, pages as Pages, language as Language, abstract as Abstract, tags_json as TagsJson,
+                select item_id as ItemId, item_type as ItemType, citation_key as CitationKey, title as Title, subtitle as Subtitle,
+                       title_short as TitleShort, creators_json as CreatorsJson, date as Date, publication_title as PublicationTitle,
+                       container_title_short as ContainerTitleShort, collection_title as CollectionTitle, publisher as Publisher,
+                       place as Place, edition as Edition, genre as Genre, number as Number, chapter_number as ChapterNumber,
+                       volume as Volume, version as Version, issue as Issue, pages as Pages, language as Language, status as Status,
+                       note as Note, abstract as Abstract, tags_json as TagsJson,
                        collections_json as CollectionsJson, custom_fields_json as CustomFieldsJson
-                from items where item_id = @ItemId;
+                from items where item_id = @ItemId and deleted_at is null;
                 """,
                 new { ItemId = itemId.ToString() });
             if (item is null) return Result<McpItemMetadataResponse>.Failure(AppErrorCodes.NotFound, "Item was not found.");
@@ -319,22 +322,33 @@ public sealed class McpReadApi : IMcpReadApi
     {
         public string ItemId { get; set; } = "";
         public string ItemType { get; set; } = "";
+        public string CitationKey { get; set; } = "";
         public string Title { get; set; } = "";
         public string? Subtitle { get; set; }
+        public string? TitleShort { get; set; }
         public string CreatorsJson { get; set; } = "";
         public string? Date { get; set; }
         public string? PublicationTitle { get; set; }
+        public string? ContainerTitleShort { get; set; }
+        public string? CollectionTitle { get; set; }
         public string? Publisher { get; set; }
         public string? Place { get; set; }
+        public string? Edition { get; set; }
+        public string? Genre { get; set; }
+        public string? Number { get; set; }
+        public string? ChapterNumber { get; set; }
         public string? Volume { get; set; }
+        public string? Version { get; set; }
         public string? Issue { get; set; }
         public string? Pages { get; set; }
         public string? Language { get; set; }
+        public string? Status { get; set; }
+        public string? Note { get; set; }
         public string? Abstract { get; set; }
         public string TagsJson { get; set; } = "";
         public string CollectionsJson { get; set; } = "";
         public string CustomFieldsJson { get; set; } = "";
         public McpItemMetadataResponse ToResponse(IReadOnlyList<McpItemIdentifier> identifiers)
-            => new(Core.Ids.ItemId.Parse(ItemId), ItemType, Title, Subtitle, CreatorsJson, Date, PublicationTitle, Publisher, Place, Volume, Issue, Pages, Language, Abstract, TagsJson, CollectionsJson, CustomFieldsJson, identifiers);
+            => new(Core.Ids.ItemId.Parse(ItemId), ItemType, CitationKey, Title, Subtitle, TitleShort, CreatorsJson, Date, PublicationTitle, ContainerTitleShort, CollectionTitle, Publisher, Place, Edition, Genre, Number, ChapterNumber, Volume, Version, Issue, Pages, Language, Status, Note, Abstract, TagsJson, CollectionsJson, CustomFieldsJson, identifiers);
     }
 }
