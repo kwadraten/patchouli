@@ -159,6 +159,89 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
+    public async Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default)
+    {
+        var bboxValidation = regionBBox.Validate();
+        if (bboxValidation.IsFailure)
+        {
+            return Result<OcrRun>.Failure(bboxValidation.ErrorCode!, bboxValidation.ErrorMessage!);
+        }
+
+        if (_adapterRegistry is null)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "No OCR adapter registry is configured.");
+        }
+
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            var page = await connection.QuerySingleOrDefaultAsync<PageRow>(
+                "select page_id as PageId, document_instance_id as DocumentInstanceId, page_index as PageIndex, page_label as PageLabel, width as Width, height as Height, rotation as Rotation, coordinate_basis as CoordinateBasis, basis_width as BasisWidth, basis_height as BasisHeight, renderer_basis_version as RendererBasisVersion, source_file_hash as SourceFileHash, created_at as CreatedAt, updated_at as UpdatedAt from pages where page_id = @Id;",
+                new { Id = pageId.ToString() });
+            if (page is null) return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "OCR page was not found.");
+            if (page.DocumentInstanceId != documentInstanceId.ToString()) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "OCR page must belong to the document instance.");
+
+            var version = await OcrPresetService.GetCurrentVersionAsync(connection, presetId);
+            if (version is null) return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "Active OCR preset/version was not found.");
+            if (version.EngineId == OcrEngineIds.Mock) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "Region OCR requires a real OCR adapter.");
+
+            var adapter = _adapterRegistry.GetAdapter(version.EngineId);
+            if (adapter is null) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, $"OCR adapter '{version.EngineId}' is not registered.");
+
+            var environment = await adapter.CheckEnvironmentAsync(version, cancellationToken);
+            if (!environment.IsReady) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, $"OCR environment is not ready: {environment.Status}. {environment.Message}");
+
+            var input = new OcrInputDescriptor(pageId, documentInstanceId, OcrInputKinds.RegionImage, null, null, regionBBox, "available", null);
+            var inputValidation = await adapter.ValidateInputAsync(input, cancellationToken);
+            if (inputValidation.IsFailure) return Result<OcrRun>.Failure(inputValidation.ErrorCode!, inputValidation.ErrorMessage!);
+            var presetValidation = await adapter.ValidatePresetAsync(version, cancellationToken);
+            if (presetValidation.IsFailure) return Result<OcrRun>.Failure(presetValidation.ErrorCode!, presetValidation.ErrorMessage!);
+
+            var currentRevisionId = await connection.ExecuteScalarAsync<string?>("select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;", new { Id = documentInstanceId.ToString() });
+            var now = _clock.UtcNow.ToUniversalTime();
+            var runId = OcrRunId.New();
+            var stagingRevisionId = LayoutRevisionId.New();
+            await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
+            {
+                await connection.ExecuteAsync("insert into layout_revisions (layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at) values (@RevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt);", new { RevisionId = stagingRevisionId.ToString(), DocumentInstanceId = documentInstanceId.ToString(), ParentRevisionId = currentRevisionId, Source = LayoutRevisionSource.OcrStaging, CreatedAt = F(now) }, transaction);
+                await InsertRunAsync(connection, transaction, runId, documentInstanceId, presetId, version, currentRevisionId, stagingRevisionId, OcrRunState.Running, now);
+                await InsertPageResultAsync(connection, transaction, OcrPageResultId.New(), runId, pageId, OcrPageResultState.Processing, null, null, null, now);
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            var pageResult = await adapter.RunPageAsync(input, version, cancellationToken);
+            var engineResult = pageResult.IsSuccess ? pageResult.Value : new OcrEnginePageResult(pageId, false, null, null, pageResult.ErrorCode, pageResult.ErrorMessage);
+            NormalizedBBox? normalizedBBox = regionBBox;
+            if (engineResult.Succeeded && engineResult.BBox is not null)
+            {
+                var normalized = await NormalizeBBoxAsync(pageId, engineResult, cancellationToken);
+                if (normalized.IsFailure) engineResult = new OcrEnginePageResult(pageId, false, null, null, OcrFailureCode.BBoxCoordinateTransformFailed, normalized.ErrorMessage);
+                else normalizedBBox = normalized.Value;
+            }
+
+            var succeeded = engineResult.Succeeded;
+            await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
+            {
+                if (succeeded)
+                {
+                    await connection.ExecuteAsync("insert into layout_nodes (node_id, document_instance_id, page_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, revision_id, confidence, ignored) values (@NodeId, @DocumentInstanceId, @PageId, @NodeType, @X, @Y, @W, @H, @Text, @TextPolicy, @Order, @Source, @RevisionId, null, 0);", new { NodeId = LayoutNodeId.New().ToString(), DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString(), NodeType = LayoutNodeType.Paragraph, X = normalizedBBox!.Value.X, Y = normalizedBBox.Value.Y, W = normalizedBBox.Value.Width, H = normalizedBBox.Value.Height, Text = engineResult.Text, TextPolicy = TextPolicy.Own, Order = page.PageIndex, Source = LayoutNodeSource.Ocr, RevisionId = stagingRevisionId.ToString() }, transaction);
+                    await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Succeeded, stagingRevisionId, null, null, _clock.UtcNow);
+                }
+                else
+                {
+                    await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Failed, null, engineResult.ErrorCode, engineResult.ErrorMessage, _clock.UtcNow);
+                }
+                await connection.ExecuteAsync("update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;", new { State = succeeded ? OcrRunState.Completed : OcrRunState.Failed, UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() }, transaction);
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            return await GetRunAsync(runId, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+    }
+
     public async Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(imagePath)) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "A local image path is required for image OCR.");

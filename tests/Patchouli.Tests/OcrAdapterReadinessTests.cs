@@ -110,6 +110,34 @@ public sealed class OcrAdapterReadinessTests
     }
 
     [Fact]
+    public async Task RunPresetOnRegion_supported_adapter_creates_candidate_without_touching_current_search()
+    {
+        var adapter = new FakeRegionAdapter();
+        await using var c = await OcrReadinessContext.CreateAsync(engineId: FakeRegionAdapter.EngineIdValue, adapter: adapter, applyOnSuccess: true);
+
+        var result = await c.Coordinator.RunPresetOnRegionAsync(c.DocumentInstanceId, c.PresetId, c.PageId, new NormalizedBBox(0.2, 0.2, 0.3, 0.3));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.OutputRevisionId.Should().NotBeNull();
+        adapter.LastInput.Should().NotBeNull();
+        adapter.LastInput!.InputKind.Should().Be(OcrInputKinds.RegionImage);
+        adapter.LastInput.RegionBBox.Should().Be(new NormalizedBBox(0.2, 0.2, 0.3, 0.3));
+        (await c.GetCurrentRevisionIdAsync()).Should().Be(c.InitialCurrentRevisionId);
+        (await c.CountAsync("search_units")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task RunPresetOnRegion_rejects_out_of_bounds_bbox_without_creating_run()
+    {
+        await using var c = await OcrReadinessContext.CreateAsync(engineId: FakeRegionAdapter.EngineIdValue, adapter: new FakeRegionAdapter());
+
+        var result = await c.Coordinator.RunPresetOnRegionAsync(c.DocumentInstanceId, c.PresetId, c.PageId, new NormalizedBBox(0.9, 0.9, 0.2, 0.2));
+
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        (await c.CountAsync("ocr_runs")).Should().Be(0);
+    }
+
+    [Fact]
     public async Task MCP_does_not_expose_model_path_after_rebind()
     {
         await using var c = await OcrReadinessContext.CreateAsync();
@@ -134,18 +162,19 @@ public sealed class OcrAdapterReadinessTests
     }
     [Fact] public void No_new_migration_created_in_step_14A() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName).Should().NotContain(name => name!.Contains("14", StringComparison.OrdinalIgnoreCase));
 
-    private static OcrAdapterRegistry CreateRegistry()
+    private static OcrAdapterRegistry CreateRegistry(IRealOcrAdapter? extraAdapter = null)
     {
         var registry = new OcrAdapterRegistry();
         registry.RegisterAdapter(new MockOcrAdapter());
         registry.RegisterAdapter(new LocalPlaceholderOcrAdapter(new OcrModelPathValidator()));
+        if (extraAdapter is not null) registry.RegisterAdapter(extraAdapter);
         return registry;
     }
 
     private sealed class OcrReadinessContext : IAsyncDisposable
     {
-        private OcrReadinessContext(TemporarySqliteDatabase database, OcrPresetService presets, OcrRunCoordinator coordinator, McpReadApi mcp, OcrPresetId presetId, DocumentInstanceId documentInstanceId, PageId pageId)
-        { Database = database; Presets = presets; Coordinator = coordinator; Mcp = mcp; PresetId = presetId; DocumentInstanceId = documentInstanceId; PageId = pageId; }
+        private OcrReadinessContext(TemporarySqliteDatabase database, OcrPresetService presets, OcrRunCoordinator coordinator, McpReadApi mcp, OcrPresetId presetId, DocumentInstanceId documentInstanceId, PageId pageId, LayoutRevisionId initialCurrentRevisionId)
+        { Database = database; Presets = presets; Coordinator = coordinator; Mcp = mcp; PresetId = presetId; DocumentInstanceId = documentInstanceId; PageId = pageId; InitialCurrentRevisionId = initialCurrentRevisionId; }
         public TemporarySqliteDatabase Database { get; }
         public OcrPresetService Presets { get; }
         public OcrRunCoordinator Coordinator { get; }
@@ -153,8 +182,9 @@ public sealed class OcrAdapterReadinessTests
         public OcrPresetId PresetId { get; }
         public DocumentInstanceId DocumentInstanceId { get; }
         public PageId PageId { get; }
+        public LayoutRevisionId InitialCurrentRevisionId { get; }
 
-        public static async Task<OcrReadinessContext> CreateAsync(string engineId = OcrEngineIds.Mock, string? modelPath = null)
+        public static async Task<OcrReadinessContext> CreateAsync(string engineId = OcrEngineIds.Mock, string? modelPath = null, IRealOcrAdapter? adapter = null, bool applyOnSuccess = false)
         {
             var database = TemporarySqliteDatabase.Create();
             var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
@@ -163,15 +193,50 @@ public sealed class OcrAdapterReadinessTests
             var item = await new ItemService(database.ConnectionFactory, library, clock).CreateItemAsync("book", "OCR readiness item");
             var document = await new DocumentInstanceService(database.ConnectionFactory, clock).AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
             var page = await new PageService(database.ConnectionFactory, clock).CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test", null);
+            var layout = new LayoutTreeService(database.ConnectionFactory, clock);
+            var currentRevision = await layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId, LayoutRevisionSource.Manual, makeCurrent: true);
             var presets = new OcrPresetService(database.ConnectionFactory, library, clock);
-            var preset = await presets.CreatePresetAsync("Readiness", null, engineId, "model", modelPath, "{}", false);
-            var registry = CreateRegistry();
+            var preset = await presets.CreatePresetAsync("Readiness", null, engineId, "model", modelPath, "{}", applyOnSuccess);
+            var registry = CreateRegistry(adapter);
             var coordinator = new OcrRunCoordinator(database.ConnectionFactory, clock, new MockOcrEngine(), adapterRegistry: registry);
             var search = new SqliteSearchService(database.ConnectionFactory);
             var evidence = new EvidenceReferenceService(database.ConnectionFactory, clock);
-            return new OcrReadinessContext(database, presets, coordinator, new McpReadApi(database.ConnectionFactory, search, evidence), preset.Value.PresetId, document.Value.DocumentInstanceId, page.Value.PageId);
+            return new OcrReadinessContext(database, presets, coordinator, new McpReadApi(database.ConnectionFactory, search, evidence), preset.Value.PresetId, document.Value.DocumentInstanceId, page.Value.PageId, currentRevision.Value.LayoutRevisionId);
+        }
+
+        public async Task<LayoutRevisionId?> GetCurrentRevisionIdAsync()
+        {
+            await using var connection = Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            var id = await connection.ExecuteScalarAsync<string?>("select layout_revision_id from layout_revisions where document_instance_id = @DocumentInstanceId and is_current = 1 limit 1;", new { DocumentInstanceId = DocumentInstanceId.ToString() });
+            return id is null ? null : LayoutRevisionId.Parse(id);
+        }
+
+        public async Task<int> CountAsync(string table)
+        {
+            await using var connection = Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            return await connection.ExecuteScalarAsync<int>($"select count(1) from {table};");
         }
 
         public ValueTask DisposeAsync() => Database.DisposeAsync();
+    }
+
+    private sealed class FakeRegionAdapter : IRealOcrAdapter
+    {
+        public const string EngineIdValue = "fake_region";
+        public string EngineId => EngineIdValue;
+        public string DisplayName => "Fake Region Adapter";
+        public string Kind => OcrAdapterKind.LocalProcess;
+        public OcrInputDescriptor? LastInput { get; private set; }
+        public OcrEngineCapability GetCapability() => new(EngineId, DisplayName, false, false, false, false, true, false, false, false, false, [OcrInputKinds.RegionImage], "Test adapter for region OCR.");
+        public Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) => Task.FromResult(new OcrEnvironmentCheckResult(EngineId, presetVersion.ModelId, presetVersion.ModelPath, OcrEnvironmentStatus.Ready, true, "ready", OcrRequiredAction.None, []));
+        public Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
+        public Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default) => Task.FromResult(input.InputKind == OcrInputKinds.RegionImage && input.RegionBBox is not null ? Result.Success() : Result.Failure(AppErrorCodes.ValidationFailed, "region bbox required"));
+        public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default)
+        {
+            LastInput = input;
+            return Task.FromResult(Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(input.PageId, true, "region text", input.RegionBBox, null, null)));
+        }
     }
 }

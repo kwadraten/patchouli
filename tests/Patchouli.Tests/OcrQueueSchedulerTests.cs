@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Ocr;
@@ -219,6 +220,7 @@ public sealed class OcrQueueSchedulerTests
         private Task<Result<OcrRun>> Fail(string call, CancellationToken token) { Calls.Add(call); Token = token; return Task.FromResult(Result<OcrRun>.Failure("not_found", "test")); }
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId d, OcrPresetId p, CancellationToken c = default) => Fail("document", c);
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p, IReadOnlyList<PageId> pages, CancellationToken c = default) => Fail("mock", c);
+        public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page, NormalizedBBox bbox, CancellationToken c = default) => Fail("region", c);
         public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page, string path, CancellationToken c = default) => Fail("image", c);
         public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page, int dpi = 200, CancellationToken c = default) => Fail("rendered", c);
         public Task<Result> CancelRunAsync(OcrRunId r, CancellationToken c = default) => Task.FromResult(Result.Success());
@@ -231,7 +233,7 @@ public sealed class OcrQueueSchedulerTests
         public DocumentInstanceId DocumentId { get; } = DocumentInstanceId.New(); public OcrPresetId PresetId { get; } = OcrPresetId.New(); public PageId PageId { get; } = PageId.New(); private OcrRunId RunId { get; } = OcrRunId.New();
         private Result<OcrRun> Run() => Result<OcrRun>.Success(new(RunId, DocumentId, PresetId, OcrPresetVersionId.New(), OcrEngineIds.Mock, "model", "{}", null, null, null, OcrRunState.Failed, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId d, OcrPresetId p, CancellationToken c = default) => Task.FromResult(Run());
-        public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d,OcrPresetId p,IReadOnlyList<PageId> pages,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d,OcrPresetId p,PageId page,string path,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d,OcrPresetId p,PageId page,int dpi=200,CancellationToken c=default)=>Task.FromResult(Run());
+        public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d,OcrPresetId p,IReadOnlyList<PageId> pages,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId d,OcrPresetId p,PageId page,NormalizedBBox bbox,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d,OcrPresetId p,PageId page,string path,CancellationToken c=default)=>Task.FromResult(Run()); public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId d,OcrPresetId p,PageId page,int dpi=200,CancellationToken c=default)=>Task.FromResult(Run());
         public Task<Result<IReadOnlyList<OcrPageResult>>> ListPageResultsAsync(OcrRunId r,CancellationToken c=default)=>Task.FromResult(Result<IReadOnlyList<OcrPageResult>>.Success([new(OcrPageResultId.New(),RunId,PageId,OcrPageResultState.Failed,null,"empty_ocr_output","No text",DateTimeOffset.UtcNow,DateTimeOffset.UtcNow)]));
         public Task<Result> CancelRunAsync(OcrRunId r,CancellationToken c=default)=>Task.FromResult(Result.Success()); public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId r,IReadOnlyList<PageId>? p=null,CancellationToken c=default)=>Task.FromResult(Result<OcrCandidateAdoption>.Failure("not_found","test")); public Task<Result<OcrRun>> GetRunAsync(OcrRunId r,CancellationToken c=default)=>Task.FromResult(Run());
     }
