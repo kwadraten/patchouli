@@ -9,6 +9,7 @@ using Patchouli.Infrastructure.Database;
 using Patchouli.Mcp;
 using Patchouli.Search;
 using Patchouli.Ocr;
+using System.Text.Json;
 
 namespace Patchouli.Infrastructure.Mcp;
 
@@ -170,26 +171,44 @@ public sealed class McpReadApi : IMcpReadApi
             if (revisionId is null) return Result<McpPageBlocksResponse>.Failure(AppErrorCodes.NotFound, "Current layout revision was not found.");
             var rows = await connection.QueryAsync<NodeRow>(
                 """
-                select node_id as NodeId, node_type as NodeType, own_text as Text, reading_order as ReadingOrder,
+                select n.node_id as NodeId, n.node_type as NodeType, n.own_text as Text, n.reading_order as ReadingOrder,
+                       su.unit_id as SearchUnitId,
                        bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight
-                from layout_nodes
-                where page_id = @PageId and revision_id = @RevisionId and ignored = 0
-                  and node_type not in ('header','footer','page_number')
-                  and (@IncludeAnnotations = 1 or node_type not in ('annotation','marginalia'))
-                  and text_policy <> 'none'
-                order by reading_order, node_id;
+                from layout_nodes n
+                left join search_units su on su.root_node_id = n.node_id and su.status = 'current' and su.layout_revision_id = @RevisionId
+                where n.page_id = @PageId and n.revision_id = @RevisionId and n.ignored = 0
+                  and n.node_type not in ('header','footer','page_number')
+                  and (@IncludeAnnotations = 1 or n.node_type not in ('annotation','marginalia'))
+                  and n.text_policy <> 'none'
+                order by n.reading_order, n.node_id;
                 """,
                 new { PageId = request.PageId.ToString(), RevisionId = revisionId, IncludeAnnotations = request.IncludeAnnotations ? 1 : 0 });
-            var blocks = rows.Select(row => new McpPageBlock(
-                LayoutNodeId.Parse(row.NodeId),
-                row.NodeType,
-                row.Text ?? "",
-                row.ReadingOrder,
-                null,
-                request.IncludeBbox && row.BBoxX is not null && row.BBoxY is not null && row.BBoxWidth is not null && row.BBoxHeight is not null
-                    ? new NormalizedBBox(row.BBoxX.Value, row.BBoxY.Value, row.BBoxWidth.Value, row.BBoxHeight.Value)
-                    : null)).ToArray();
-            var warnings = _coordinates is null ? Array.Empty<string>() : (await _coordinates.DetectBBoxWarningsAsync(request.PageId, cancellationToken: cancellationToken)).ToArray();
+            var warnings = new List<string>();
+            if (_coordinates is not null)
+            {
+                warnings.AddRange(await _coordinates.DetectBBoxWarningsAsync(request.PageId, cancellationToken: cancellationToken));
+            }
+            var blocks = new List<McpPageBlock>();
+            foreach (var row in rows)
+            {
+                string? evidenceRef = null;
+                if (!string.IsNullOrWhiteSpace(row.SearchUnitId))
+                {
+                    var created = await _evidenceService.CreateFromSearchUnitAsync(SearchUnitId.Parse(row.SearchUnitId), cancellationToken);
+                    if (created.IsSuccess) evidenceRef = created.Value.EvidenceRefId;
+                    else warnings.Add($"Evidence ref unavailable for unit {row.SearchUnitId}: {created.ErrorCode}");
+                }
+
+                blocks.Add(new McpPageBlock(
+                    LayoutNodeId.Parse(row.NodeId),
+                    row.NodeType,
+                    row.Text ?? "",
+                    row.ReadingOrder,
+                    evidenceRef,
+                    request.IncludeBbox && row.BBoxX is not null && row.BBoxY is not null && row.BBoxWidth is not null && row.BBoxHeight is not null
+                        ? new NormalizedBBox(row.BBoxX.Value, row.BBoxY.Value, row.BBoxWidth.Value, row.BBoxHeight.Value)
+                        : null));
+            }
             return Result<McpPageBlocksResponse>.Success(new McpPageBlocksResponse(request.PageId, meta.PageLabel, meta.PageIndex, blocks, request.ReadMode, warnings));
         }
         catch (OperationCanceledException) { throw; }
@@ -200,6 +219,12 @@ public sealed class McpReadApi : IMcpReadApi
     {
         var context = await _searchService.GetSearchResultContextAsync(request.SearchUnitId, request.Before, request.After, cancellationToken);
         if (context.IsFailure) return Result<McpSearchContextResponse>.Failure(context.ErrorCode!, context.ErrorMessage!);
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var bboxMap = (await connection.QueryAsync<UnitBBoxRow>(
+            "select unit_id as UnitId, bbox_union_json as BboxUnionJson from search_units where unit_id in @UnitIds;",
+            new { UnitIds = context.Value.Select(unit => unit.UnitId.ToString()).ToArray() }))
+            .ToDictionary(row => row.UnitId, row => ParseNormalizedBBox(row.BboxUnionJson), StringComparer.Ordinal);
         var units = new List<McpContextUnit>();
         foreach (var unit in context.Value)
         {
@@ -209,7 +234,7 @@ public sealed class McpReadApi : IMcpReadApi
                 var created = await _evidenceService.CreateFromSearchUnitAsync(unit.UnitId, cancellationToken);
                 if (created.IsSuccess) evidenceRef = created.Value.EvidenceRefId;
             }
-            units.Add(new McpContextUnit(unit.UnitId, evidenceRef, unit.Text, null, unit.IsMatch, unit.ReadingOrder, unit.PageId, unit.LayoutRevisionId));
+            units.Add(new McpContextUnit(unit.UnitId, evidenceRef, unit.Text, bboxMap.GetValueOrDefault(unit.UnitId.ToString()), unit.IsMatch, unit.ReadingOrder, unit.PageId, unit.LayoutRevisionId));
         }
         var warning = _coordinates is null ? null : string.Join("; ", (await Task.WhenAll(units.Select(async unit => await _coordinates.DetectBBoxWarningsAsync(unit.PageId, cancellationToken: cancellationToken)))).SelectMany(x => x).Distinct());
         return Result<McpSearchContextResponse>.Success(new McpSearchContextResponse(units, string.IsNullOrWhiteSpace(warning) ? null : warning));
@@ -310,10 +335,17 @@ public sealed class McpReadApi : IMcpReadApi
         public string NodeType { get; set; } = "";
         public string? Text { get; set; }
         public int ReadingOrder { get; set; }
+        public string? SearchUnitId { get; set; }
         public double? BBoxX { get; set; }
         public double? BBoxY { get; set; }
         public double? BBoxWidth { get; set; }
         public double? BBoxHeight { get; set; }
+    }
+
+    private sealed class UnitBBoxRow
+    {
+        public string UnitId { get; set; } = "";
+        public string? BboxUnionJson { get; set; }
     }
 
     private sealed class IdentifierRow { public string Scheme { get; set; } = ""; public string Value { get; set; } = ""; public string? Note { get; set; } }
@@ -350,5 +382,22 @@ public sealed class McpReadApi : IMcpReadApi
         public string CustomFieldsJson { get; set; } = "";
         public McpItemMetadataResponse ToResponse(IReadOnlyList<McpItemIdentifier> identifiers)
             => new(Core.Ids.ItemId.Parse(ItemId), ItemType, CitationKey, Title, Subtitle, TitleShort, CreatorsJson, Date, PublicationTitle, ContainerTitleShort, CollectionTitle, Publisher, Place, Edition, Genre, Number, ChapterNumber, Volume, Version, Issue, Pages, Language, Status, Note, Abstract, TagsJson, CollectionsJson, CustomFieldsJson, identifiers);
+    }
+
+    private static NormalizedBBox? ParseNormalizedBBox(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<NormalizedBBox>(json);
+        }
+        catch
+        {
+            return null;
+        }
     }
 }
