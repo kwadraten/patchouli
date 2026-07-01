@@ -9,19 +9,16 @@ namespace Patchouli.UI;
 public sealed class LibraryShellViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private LibraryItemViewModel? _pendingOcrItem;
     private bool _isReadingMode;
 
     public LibraryShellViewModel(MainWindowViewModel main)
     {
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshItemsAsync);
-        SubmitMinerUTokenCommand = new AsyncCommand(SubmitMinerUTokenAsync);
         SaveMetadataCommand = new AsyncCommand(SaveMetadataAsync);
         CancelMetadataEditCommand = new AsyncCommand(CancelMetadataEditAsync);
         CloseDocumentTabCommand = new AsyncCommand(CloseDocumentTabAsync);
         ShowRecentItemsCommand = new AsyncCommand(ShowRecentItemsAsync);
-        ToggleDeveloperToolsCommand = new AsyncCommand(ToggleDeveloperTools);
         SwitchToLibraryListCommand = new AsyncCommand(SwitchToLibraryListAsync);
         SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
     }
@@ -65,10 +62,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public ObservableCollection<string> RecentDocuments { get; } = new();
     public ObservableCollection<LibraryItemViewModel> Items { get; } = new();
     public string StatusText => _main.Status;
-    public bool ShowDeveloperTools { get; set; }
     public string MinerUToken { get; set; } = "";
-    public string MinerUTokenInput { get; set; } = "";
-    public bool ShowMinerUTokenPrompt { get; set; }
     public bool ShowMetadataEditor { get; set; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactory { get; set; }
     public string EditTitle { get; set; } = "";
@@ -102,23 +96,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public string InspectorStatus => SelectedItem?.OcrStatus ?? "未选择文档";
     public string InspectorPath => SelectedItem?.SourcePath ?? "";
     public AsyncCommand RefreshCommand { get; }
-    public AsyncCommand SubmitMinerUTokenCommand { get; }
     public AsyncCommand SaveMetadataCommand { get; }
     public AsyncCommand CancelMetadataEditCommand { get; }
     public AsyncCommand CloseDocumentTabCommand { get; }
     public AsyncCommand ShowRecentItemsCommand { get; }
-    public AsyncCommand ToggleDeveloperToolsCommand { get; }
 
-    public Task ToggleDeveloperTools()
-    {
-        ShowDeveloperTools = !ShowDeveloperTools;
-        Raise(nameof(ShowDeveloperTools));
-        return Task.CompletedTask;
-    }
     public void NotifyMinerUTokenChanged()
     {
         Raise(nameof(MinerUToken));
-        Raise(nameof(MinerUTokenInput));
     }
 
     public async Task RefreshItemsAsync()
@@ -197,20 +182,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
         var token = await ResolveMinerUTokenAsync();
         if (string.IsNullOrWhiteSpace(token))
         {
-            _pendingOcrItem = item;
-            MinerUTokenInput = token;
-            ShowMinerUTokenPrompt = true;
-            item.OcrStatus = "需要 MinerU API token。粘贴 token 后可继续 OCR。";
-            _main.Report("运行 OCR 前需要 MinerU API token。");
-            Raise(nameof(MinerUTokenInput));
-            Raise(nameof(ShowMinerUTokenPrompt));
+            item.OcrStatus = "需要 MinerU API token。请先在设置中完成配置后再重试 OCR。";
+            _main.Report("运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
             Raise(nameof(InspectorStatus));
             return;
         }
-
-        _pendingOcrItem = null;
-        ShowMinerUTokenPrompt = false;
-        Raise(nameof(ShowMinerUTokenPrompt));
 
         if (string.IsNullOrWhiteSpace(item.DocumentInstanceId) || string.IsNullOrWhiteSpace(item.SourcePath))
         {
@@ -256,31 +232,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
         var persisted = await _main.GetPersistedMinerUTokenAsync();
         MinerUToken = persisted;
-        MinerUTokenInput = persisted;
         NotifyMinerUTokenChanged();
         return persisted;
-    }
-
-    public async Task SubmitMinerUTokenAsync()
-    {
-        if (string.IsNullOrWhiteSpace(MinerUTokenInput))
-        {
-            _main.Report("请先粘贴 MinerU API token，然后继续 OCR。");
-            return;
-        }
-
-        var token = MinerUTokenInput.Trim();
-        var persisted = await _main.SaveMinerUTokenAsync(token);
-        if (!persisted) return;
-
-        MinerUToken = token;
-        MinerUTokenInput = token;
-        ShowMinerUTokenPrompt = false;
-        NotifyMinerUTokenChanged();
-        Raise(nameof(ShowMinerUTokenPrompt));
-
-        if (_pendingOcrItem is { } item)
-            await RunOcrForItemAsync(item);
     }
 
     public Task EditMetadataForItemAsync(LibraryItemViewModel item)

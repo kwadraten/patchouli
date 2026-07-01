@@ -41,13 +41,27 @@
     <!-- Row 0: Top Menu & Search -->
     <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
-        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-          <TextBlock Text="文件" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="8,0" VerticalAlignment="Center" />
-          <TextBlock Text="编辑" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="8,0" VerticalAlignment="Center" />
-          <TextBlock Text="视图" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="8,0" VerticalAlignment="Center" />
-          <TextBlock Text="工具" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="8,0" VerticalAlignment="Center" />
-          <TextBlock Text="帮助" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="8,0" VerticalAlignment="Center" />
-        </StackPanel>
+        <Menu VerticalAlignment="Center" Background="Transparent">
+          <MenuItem Header="文件">
+            <MenuItem Header="设置" Command="{Binding OpenSettingsCommand}" />
+            <MenuItem Header="OCR 队列" Command="{Binding OpenOcrQueueCommand}" />
+          </MenuItem>
+          <MenuItem Header="编辑">
+            <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
+            <MenuItem Header="编辑题录" Command="{Binding EditSelectedItemCommand}" />
+            <MenuItem Header="运行 MinerU OCR" Command="{Binding RunSelectedItemOcrCommand}" />
+            <Separator />
+            <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
+            <MenuItem Header="导出证据 Markdown" Command="{Binding ExportEvidenceMarkdownCommand}" />
+          </MenuItem>
+          <MenuItem Header="视图">
+            <MenuItem Header="切换详情面板" Command="{Binding ToggleInspectorPaneCommand}" />
+          </MenuItem>
+          <MenuItem Header="帮助">
+            <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
+            <MenuItem Header="许可证" Command="{Binding ShowLicenseCommand}" />
+          </MenuItem>
+        </Menu>
         <TextBox Grid.Column="1" Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..." IsEnabled="{Binding IsSearchEnabled}" VerticalContentAlignment="Center">
           <TextBox.InnerLeftContent>
             <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
@@ -163,7 +177,6 @@
                   </StackPanel>
                 </StackPanel>
               </ScrollViewer>
-              <Button Grid.Row="1" Content="Developer Tools" Margin="16,8,16,14" Background="{DynamicResource SurfaceContainerHighestBrush}" Command="{Binding Shell.ToggleDeveloperToolsCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
             </Grid>
           </Border>
 
@@ -421,7 +434,7 @@
       </Grid>
 
       <!-- Column 2: Details Inspector (Width 340 when visible) -->
-      <Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0" IsVisible="{Binding IsLibraryVisible}">
+      <Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0" IsVisible="{Binding IsInspectorVisible}">
         <!-- Visible when not reading mode -->
         <Grid DataContext="{Binding Shell}" RowDefinitions="40,*" IsVisible="{Binding ShowLibraryList}">
           <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Background="{DynamicResource SurfaceContainerLowBrush}">
@@ -470,17 +483,6 @@
                       <TextBlock Grid.Row="5" Grid.Column="0" Text="关联文件" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                       <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedItem.FileName}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                     </Grid>
-                  </Border>
-
-                  <!-- MinerU Token Configuration Inline Popup -->
-                  <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" Background="{DynamicResource TertiaryBrush}" CornerRadius="4" Padding="12" IsVisible="{Binding ShowMinerUTokenPrompt}">
-                    <StackPanel Spacing="10">
-                      <TextBlock Text="MinerU API Token" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-                      <TextBlock Text="请前往 mineru.net 获取 token，然后粘贴到这里继续 OCR。" TextWrapping="Wrap" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                      <Button Content="打开获取页面" Click="OnOpenMinerUTokenPageClick" HorizontalAlignment="Left" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" />
-                      <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUTokenInput}" PasswordChar="*" Height="30" VerticalContentAlignment="Center" />
-                      <Button Content="继续 OCR" Command="{Binding SubmitMinerUTokenCommand}" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Height="30" />
-                    </StackPanel>
                   </Border>
 
                   <!-- Metadata Editor Inline Popup -->

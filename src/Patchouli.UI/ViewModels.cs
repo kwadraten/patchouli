@@ -39,6 +39,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private readonly int _mcpPort;
     private readonly PatchouliAppSettings _settings;
     private string _runtimeDatabasePath;
+    private bool _showInspectorPane = true;
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath=value; Raise(); } }
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
@@ -54,10 +55,22 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsFirstRunVisible { get; set; }
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
+    public bool ShowInspectorPane { get => _showInspectorPane; set { if (_showInspectorPane == value) return; _showInspectorPane = value; Raise(); Raise(nameof(IsInspectorVisible)); } }
+    public bool IsInspectorVisible => IsLibraryVisible && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
     public LibraryViewModel Library { get; } public BibliographyViewModel Bibliography { get; } public FileDocumentViewModel FileDocument { get; } public PageLayoutViewModel PageLayout { get; } public MockOcrViewModel MockOcr { get; } public OcrQueueViewModel OcrQueue { get; } public PdfRenderViewModel PdfRender { get; } public PdfPreviewViewModel PdfPreview { get; } public SearchEvidenceViewModel SearchEvidence { get; } public SearchProfileViewModel SearchProfiles { get; } public McpPreviewViewModel McpPreview { get; } public SnapshotViewModel Snapshot { get; } public SnapshotBranchViewModel SnapshotBranch { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
+    public AsyncCommand OpenSettingsCommand { get; }
+    public AsyncCommand OpenOcrQueueCommand { get; }
+    public AsyncCommand CreateItemMenuCommand { get; }
+    public AsyncCommand EditSelectedItemCommand { get; }
+    public AsyncCommand RunSelectedItemOcrCommand { get; }
+    public AsyncCommand RebuildSearchIndexCommand { get; }
+    public AsyncCommand ExportEvidenceMarkdownCommand { get; }
+    public AsyncCommand ToggleInspectorPaneCommand { get; }
+    public AsyncCommand ShowAboutCommand { get; }
+    public AsyncCommand ShowLicenseCommand { get; }
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort)
     {
         _settings=PatchouliAppSettings.Load();
@@ -69,10 +82,19 @@ public sealed class MainWindowViewModel : ViewModelBase
         Logger=logger??new SimpleFileLogger(_settings.Runtime.LogDirectory);
         PdfPreview=new(this); Shell=new(this); Library=new(this); Bibliography=new(this); FileDocument=new(this); PageLayout=new(this); MockOcr=new(this); OcrQueue=new(this); PdfRender=new(this); SearchEvidence=new(this); SearchProfiles=new(this); McpPreview=new(this); Snapshot=new(this); SnapshotBranch=new(this);
         Shell.MinerUToken=_settings.MinerU.Token;
-        Shell.MinerUTokenInput=_settings.MinerU.Token;
         OpenDatabaseCommand=new(async()=>{await StopMcpServerAsync("正在切换运行数据库。");_services=await AppServices.CreateAsync(RuntimeDatabasePath,_settings); await LoadPersistedMinerUTokenAsync(); Status=$"数据库已就绪：{RuntimeDatabasePath}";Raise(nameof(Status));Raise(nameof(VersionInfo));Raise(nameof(StatusBarVersion));if(_autoStartMcpServer)await StartMcpServerAsync(_services);});
         FirstRun=CreateFirstRunViewModel();
         CompleteFirstRunCommand=new(CompleteFirstRunAsync);
+        OpenSettingsCommand = new(() => ShowPlaceholderAsync("设置页面将在后续任务中接入。"));
+        OpenOcrQueueCommand = new(() => ShowPlaceholderAsync("OCR 队列页面将在后续任务中接入。"));
+        CreateItemMenuCommand = new(async () => { await Shell.SwitchToLibraryListAsync(); await ShowPlaceholderAsync("新建题录标签页将在后续任务中接入。"); });
+        EditSelectedItemCommand = new(EditSelectedItemAsync);
+        RunSelectedItemOcrCommand = new(RunSelectedItemOcrAsync);
+        RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
+        ExportEvidenceMarkdownCommand = new(() => ShowPlaceholderAsync("证据 Markdown 导出入口将在后续任务中接入。"));
+        ToggleInspectorPaneCommand = new(() => { ShowInspectorPane = !ShowInspectorPane; return Task.CompletedTask; });
+        ShowAboutCommand = new(() => ShowPlaceholderAsync(StatusBarVersion));
+        ShowLicenseCommand = new(() => ShowPlaceholderAsync("许可证页面将在后续任务中接入。"));
     }
     public async Task<AppServices> ServicesAsync()
     {
@@ -149,6 +171,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsFirstRunVisible));
         Raise(nameof(IsLibraryVisible));
         Raise(nameof(IsSearchEnabled));
+        Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
         return Task.CompletedTask;
     }
@@ -158,6 +181,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsFirstRunVisible));
         Raise(nameof(IsLibraryVisible));
         Raise(nameof(IsSearchEnabled));
+        Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
         await Shell.RefreshItemsAsync();
     }
@@ -176,7 +200,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         var persisted = await SaveMinerUTokenAsync(FirstRun.MinerUToken);
         if (!persisted) return;
         Shell.MinerUToken=FirstRun.MinerUToken.Trim();
-        Shell.MinerUTokenInput=FirstRun.MinerUToken.Trim();
         Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
         await HideInlineFirstRunAsync();
     }
@@ -200,7 +223,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         var token = await GetPersistedMinerUTokenAsync();
         if (string.IsNullOrWhiteSpace(token)) token = _settings.MinerU.Token;
         Shell.MinerUToken=token;
-        Shell.MinerUTokenInput=token;
         FirstRun.MinerUToken=token;
         Shell.NotifyMinerUTokenChanged();
     }
@@ -209,6 +231,33 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         try { await Logger.LogAsync(operation, message); }
         catch { /* Logging is diagnostic only; a file-system failure must not block the UI. */ }
+    }
+    private Task ShowPlaceholderAsync(string message)
+    {
+        Report(message);
+        return Task.CompletedTask;
+    }
+
+    private async Task EditSelectedItemAsync()
+    {
+        if (Shell.SelectedItem is null)
+        {
+            Report("请先选择一个题录。");
+            return;
+        }
+
+        await Shell.SelectedItem.EditMetadataCommand.ExecuteAsync();
+    }
+
+    private async Task RunSelectedItemOcrAsync()
+    {
+        if (Shell.SelectedItem is null)
+        {
+            Report("请先选择一个题录。");
+            return;
+        }
+
+        await Shell.SelectedItem.RunOcrCommand.ExecuteAsync();
     }
 }
 public sealed class LibraryViewModel : ViewModelBase

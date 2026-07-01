@@ -93,6 +93,15 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void MainWindow_xaml_uses_menu_shell_without_legacy_developer_tools_or_token_prompt()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        xaml.Should().Contain("<Menu");
+        xaml.Should().NotContain("Developer Tools");
+        xaml.Should().NotContain("ShowMinerUTokenPrompt");
+    }
+
+    [Fact]
     public async Task MainWindowViewModel_auto_starts_mcp_http_server_and_reports_status()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");
@@ -219,7 +228,7 @@ public sealed class UiViewModelTests
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
             vm.Shell.SelectedItem!.OcrStatus.Should().Contain("token");
-            vm.Shell.ShowMinerUTokenPrompt.Should().BeTrue();
+            vm.Shell.SelectedItem.OcrStatus.Should().Contain("设置");
             vm.Status.Should().Contain("MinerU API token");
         }
         finally
@@ -294,7 +303,6 @@ public sealed class UiViewModelTests
             string? tokenUsed = null;
             vm.Shell.MinerUClientFactory = config => { tokenUsed = config.Token; return new FakeMinerUClient(zipPath); };
             vm.Shell.MinerUToken = "";
-            vm.Shell.MinerUTokenInput = "";
 
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
