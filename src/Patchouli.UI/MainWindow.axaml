@@ -2,6 +2,7 @@
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:views="using:Patchouli.UI.Views"
+        xmlns:lucide="using:Patchouli.Lucide.Avalonia"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
         Title="Patchouli" Background="{DynamicResource SurfaceBrush}">
 
@@ -86,7 +87,7 @@
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <TextBox Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..." IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}" VerticalContentAlignment="Center">
             <TextBox.InnerLeftContent>
-              <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
+              <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
             </TextBox.InnerLeftContent>
           </TextBox>
           <Button Content="搜索" Command="{Binding RunToolbarSearchCommand}" Height="24" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="8,0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
@@ -99,7 +100,7 @@
         <StackPanel Orientation="Horizontal" Spacing="0" Margin="12,0,0,0" VerticalAlignment="Stretch">
           <Border Classes="tab" Classes.active="{Binding IsFirstRunVisible}" Padding="16,0" IsVisible="{Binding IsFirstRunVisible}" VerticalAlignment="Stretch">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <PathIcon Data="{StaticResource IconDatabase}" Width="12" Height="12" Foreground="{DynamicResource PrimaryBrush}" />
+              <lucide:Lucide Icon="Database" Width="12" Height="12" StrokeBrush="{DynamicResource PrimaryBrush}" />
               <TextBlock Text="初始化向导" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
             </StackPanel>
           </Border>
@@ -107,7 +108,7 @@
           <Border Classes="tab" Classes.active="{Binding IsLibraryTabActive}" IsVisible="{Binding IsLibraryVisible}" VerticalAlignment="Stretch">
             <Button Classes="TabButton" Padding="16,0" Command="{Binding ShowLibraryCommand}">
               <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                <PathIcon Data="{StaticResource IconDatabase}" Width="12" Height="12" Foreground="{DynamicResource PrimaryBrush}" />
+                <lucide:Lucide Icon="Database" Width="12" Height="12" StrokeBrush="{DynamicResource PrimaryBrush}" />
                 <TextBlock Text="{Binding LibraryTabTitle}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
               </StackPanel>
             </Button>
@@ -117,12 +118,12 @@
             <Grid>
               <Button Classes="TabButton" Command="{Binding ShowReadingCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <PathIcon Data="{StaticResource IconFolderOpen}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="FolderOpen" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="{Binding PdfTabTitle}" Width="300" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>
-              <Button Classes="TabCloseButton" Command="{Binding ClosePdfReaderTabCommand}">
-                <PathIcon Data="{StaticResource IconX}" Width="12" Height="12" />
+              <Button Classes="TabCloseButton" Command="{Binding ClosePdfWorkspaceTabCommand}">
+                <lucide:Lucide Icon="X" Width="12" Height="12" />
               </Button>
             </Grid>
           </Border>
@@ -131,12 +132,12 @@
             <Grid>
               <Button Classes="TabButton" Command="{Binding ActivateSearchTabCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="搜索结果" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>
               <Button Classes="TabCloseButton" Command="{Binding CloseSearchTabCommand}">
-                <PathIcon Data="{StaticResource IconX}" Width="12" Height="12" />
+                <lucide:Lucide Icon="X" Width="12" Height="12" />
               </Button>
             </Grid>
           </Border>
@@ -145,12 +146,12 @@
             <Grid>
               <Button Classes="TabButton" Command="{Binding ActivateSettingsTabCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <PathIcon Data="{StaticResource IconMenu}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="Menu" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="设置" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>
               <Button Classes="TabCloseButton" Command="{Binding CloseSettingsTabCommand}">
-                <PathIcon Data="{StaticResource IconX}" Width="12" Height="12" />
+                <lucide:Lucide Icon="X" Width="12" Height="12" />
               </Button>
             </Grid>
           </Border>
@@ -159,12 +160,12 @@
             <Grid>
               <Button Classes="TabButton" Command="{Binding ActivateOcrQueueTabCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <PathIcon Data="{StaticResource IconRefresh}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="RefreshCw" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="OCR 队列" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>
               <Button Classes="TabCloseButton" Command="{Binding CloseOcrQueueTabCommand}">
-                <PathIcon Data="{StaticResource IconX}" Width="12" Height="12" />
+                <lucide:Lucide Icon="X" Width="12" Height="12" />
               </Button>
             </Grid>
           </Border>
@@ -173,18 +174,18 @@
             <Grid>
               <Button Classes="TabButton" Command="{Binding OpenItemEditorCommand}">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <PathIcon Data="{StaticResource IconPlus}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="Plus" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="{Binding ItemEditor.Header}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                 </StackPanel>
               </Button>
               <Button Classes="TabCloseButton" Command="{Binding CloseItemEditorTabCommand}">
-                <PathIcon Data="{StaticResource IconX}" Width="12" Height="12" />
+                <lucide:Lucide Icon="X" Width="12" Height="12" />
               </Button>
             </Grid>
           </Border>
 
           <Button Background="Transparent" BorderThickness="0" Padding="6" VerticalAlignment="Center" Margin="8,0" Command="{Binding CreateItemMenuCommand}">
-            <PathIcon Data="{StaticResource IconPlus}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <lucide:Lucide Icon="Plus" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
           </Button>
         </StackPanel>
       </ScrollViewer>
@@ -193,7 +194,7 @@
     <Grid Grid.Row="2" Background="{DynamicResource SurfaceBrush}">
       <views:FirstRunPage IsVisible="{Binding IsFirstRunVisible}" />
       <views:LibraryPage IsVisible="{Binding ShowLibraryPage}" />
-      <views:PdfReaderPage IsVisible="{Binding ShowPdfReaderPage}" />
+      <views:PdfWorkspacePage IsVisible="{Binding ShowPdfWorkspacePage}" />
       <views:ItemEditorPage IsVisible="{Binding ShowItemEditorWorkspace}" />
       <views:SettingsPage IsVisible="{Binding ShowSettingsWorkspace}" />
       <views:SearchResultsPage IsVisible="{Binding ShowSearchWorkspace}" />
@@ -258,7 +259,7 @@
                         </TextBox.Styles>
                       </TextBox>
                       <Button Grid.Column="1" Width="26" Height="26" Padding="0" Background="#3E3E3E" Click="OnCopyMcpAddressClick">
-                        <PathIcon Data="{StaticResource IconCopy}" Width="12" Height="12" Foreground="#FFFFFF" />
+                        <lucide:Lucide Icon="Copy" Width="12" Height="12" StrokeBrush="#FFFFFF" />
                       </Button>
                     </Grid>
                   </StackPanel>

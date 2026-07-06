@@ -37,7 +37,7 @@ public sealed class AsyncCommand : System.Windows.Input.ICommand
 public enum WorkspaceTabKind
 {
     Library,
-    PdfReader,
+    PdfWorkspace,
     Settings,
     SearchResults,
     OcrQueue,
@@ -55,7 +55,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private string _runtimeDatabasePath;
     private bool _showInspectorPane = true;
     private WorkspaceTabKind _activeTab = WorkspaceTabKind.Library;
-    private bool _isPdfReaderTabOpen;
+    private bool _isPdfWorkspaceTabOpen;
     private bool _isSettingsTabOpen;
     private bool _isSearchTabOpen;
     private bool _isOcrQueueTabOpen;
@@ -90,22 +90,22 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsSearchVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.SearchResults;
     public bool IsOcrQueueVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.OcrQueue;
     public bool IsItemEditorVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.ItemEditor;
-    public bool ShowWorkspaceShell => ShowLibraryPage || ShowPdfReaderPage;
+    public bool ShowWorkspaceShell => ShowLibraryPage || ShowPdfWorkspacePage;
     public bool ShowLibraryPage => IsLibraryVisible && _activeTab == WorkspaceTabKind.Library && Shell.ShowLibraryList;
-    public bool ShowPdfReaderPage => IsLibraryVisible && _activeTab == WorkspaceTabKind.PdfReader && Shell.ShowPdfReader;
+    public bool ShowPdfWorkspacePage => IsLibraryVisible && _activeTab == WorkspaceTabKind.PdfWorkspace && Shell.ShowPdfWorkspace;
     public bool ShowSettingsWorkspace => IsLibraryVisible && IsSettingsVisible;
     public bool ShowSearchWorkspace => IsLibraryVisible && IsSearchVisible;
     public bool ShowOcrQueueWorkspace => IsLibraryVisible && IsOcrQueueVisible;
     public bool ShowItemEditorWorkspace => IsLibraryVisible && IsItemEditorVisible;
     public bool ShowSidebar => ShowLibraryPage;
     public bool IsInspectorVisible => ShowLibraryPage && ShowInspectorPane;
-    public bool ShowSelectedDocumentTab => IsLibraryVisible && _isPdfReaderTabOpen;
+    public bool ShowSelectedDocumentTab => IsLibraryVisible && _isPdfWorkspaceTabOpen;
     public bool ShowSettingsTab => IsLibraryVisible && _isSettingsTabOpen;
     public bool ShowSearchTab => IsLibraryVisible && _isSearchTabOpen;
     public bool ShowOcrQueueTab => IsLibraryVisible && _isOcrQueueTabOpen;
     public bool ShowItemEditorTab => IsLibraryVisible && _isItemEditorTabOpen;
     public bool IsLibraryTabActive => IsLibraryVisible && _activeTab == WorkspaceTabKind.Library;
-    public bool IsReaderTabActive => IsLibraryVisible && _activeTab == WorkspaceTabKind.PdfReader;
+    public bool IsReaderTabActive => IsLibraryVisible && _activeTab == WorkspaceTabKind.PdfWorkspace;
     public bool IsOcrQueueTabActive => ShowOcrQueueWorkspace;
     public bool IsItemEditorTabActive => ShowItemEditorWorkspace;
     public string LibraryTabTitle => string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName;
@@ -119,7 +119,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public MockOcrViewModel MockOcr { get; }
     public OcrQueueViewModel OcrQueue { get; }
     public PdfRenderViewModel PdfRender { get; }
-    public PdfPreviewViewModel PdfPreview { get; }
+    public PdfWorkspaceViewModel PdfWorkspace { get; }
     public SearchEvidenceViewModel SearchEvidence { get; }
     public SearchProfileViewModel SearchProfiles { get; }
     public ItemEditorViewModel ItemEditor { get; }
@@ -140,7 +140,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand OpenItemEditorCommand { get; }
     public AsyncCommand EditSelectedItemCommand { get; }
     public AsyncCommand RunSelectedItemOcrCommand { get; }
-    public AsyncCommand ClosePdfReaderTabCommand { get; }
+    public AsyncCommand ClosePdfWorkspaceTabCommand { get; }
     public AsyncCommand CloseSettingsTabCommand { get; }
     public AsyncCommand CloseSearchTabCommand { get; }
     public AsyncCommand CloseOcrQueueTabCommand { get; }
@@ -161,7 +161,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         McpEndpoint = $"http://localhost:{mcpPort}";
         Clipboard = clipboard ?? new AvaloniaClipboardService();
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
-        PdfPreview = new(this);
+        PdfWorkspace = new(this);
         Shell = new(this);
         Settings = new(this);
         Library = new(this);
@@ -205,7 +205,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         OpenItemEditorCommand = new(OpenItemEditorTabAsync);
         EditSelectedItemCommand = new(EditSelectedItemAsync);
         RunSelectedItemOcrCommand = new(RunSelectedItemOcrAsync);
-        ClosePdfReaderTabCommand = new(ClosePdfReaderTabAsync);
+        ClosePdfWorkspaceTabCommand = new(ClosePdfWorkspaceTabAsync);
         CloseSettingsTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.Settings));
         CloseSearchTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
@@ -340,7 +340,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsSearchEnabled));
         Raise(nameof(ShowWorkspaceShell));
         Raise(nameof(ShowLibraryPage));
-        Raise(nameof(ShowPdfReaderPage));
+        Raise(nameof(ShowPdfWorkspacePage));
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
@@ -364,7 +364,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsSearchEnabled));
         Raise(nameof(ShowWorkspaceShell));
         Raise(nameof(ShowLibraryPage));
-        Raise(nameof(ShowPdfReaderPage));
+        Raise(nameof(ShowPdfWorkspacePage));
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
@@ -459,7 +459,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSelectedDocumentTab));
         Raise(nameof(PdfTabTitle));
         Raise(nameof(ShowLibraryPage));
-        Raise(nameof(ShowPdfReaderPage));
+        Raise(nameof(ShowPdfWorkspacePage));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(IsLibraryTabActive));
@@ -520,8 +520,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        _isPdfReaderTabOpen = true;
-        await ActivateTabAsync(WorkspaceTabKind.PdfReader);
+        _isPdfWorkspaceTabOpen = true;
+        await ActivateTabAsync(WorkspaceTabKind.PdfWorkspace);
     }
 
     private async Task RunToolbarSearchAsync()
@@ -581,7 +581,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             WorkspaceTabKind.SearchResults => _isSearchTabOpen,
             WorkspaceTabKind.OcrQueue => _isOcrQueueTabOpen,
             WorkspaceTabKind.ItemEditor => _isItemEditorTabOpen,
-            WorkspaceTabKind.PdfReader => _isPdfReaderTabOpen,
+            WorkspaceTabKind.PdfWorkspace => _isPdfWorkspaceTabOpen,
             WorkspaceTabKind.Library => true,
             _ => false
         };
@@ -592,7 +592,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task ActivateTabAsync(WorkspaceTabKind tab)
     {
         _activeTab = tab;
-        if (tab == WorkspaceTabKind.PdfReader)
+        if (tab == WorkspaceTabKind.PdfWorkspace)
         {
             await Shell.SwitchToReadingModeAsync();
         }
@@ -628,12 +628,12 @@ public sealed class MainWindowViewModel : ViewModelBase
             RaiseWorkspaceStateChanged();
     }
 
-    private async Task ClosePdfReaderTabAsync()
+    private async Task ClosePdfWorkspaceTabAsync()
     {
-        _isPdfReaderTabOpen = false;
+        _isPdfWorkspaceTabOpen = false;
         Shell.IsReadingMode = false;
-        PdfPreview.Clear();
-        if (_activeTab == WorkspaceTabKind.PdfReader)
+        PdfWorkspace.Clear();
+        if (_activeTab == WorkspaceTabKind.PdfWorkspace)
             await ActivateTabAsync(WorkspaceTabKind.Library);
         else
             RaiseWorkspaceStateChanged();
@@ -645,7 +645,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         {
             nameof(ActiveTab), nameof(IsSettingsVisible), nameof(IsSearchVisible), nameof(IsOcrQueueVisible),
             nameof(IsItemEditorVisible), nameof(ShowWorkspaceShell), nameof(ShowLibraryPage),
-            nameof(ShowPdfReaderPage), nameof(ShowSettingsWorkspace), nameof(ShowSearchWorkspace),
+            nameof(ShowPdfWorkspacePage), nameof(ShowSettingsWorkspace), nameof(ShowSearchWorkspace),
             nameof(ShowOcrQueueWorkspace), nameof(ShowItemEditorWorkspace), nameof(ShowSidebar),
             nameof(IsInspectorVisible), nameof(ShowSelectedDocumentTab), nameof(ShowSettingsTab),
             nameof(ShowSearchTab), nameof(ShowOcrQueueTab), nameof(ShowItemEditorTab),

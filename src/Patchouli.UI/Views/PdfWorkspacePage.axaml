@@ -1,0 +1,196 @@
+<UserControl x:Class="Patchouli.UI.Views.PdfWorkspacePage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia">
+  <UserControl.Styles>
+    <Style Selector="Button.ToolbarButton">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="6" />
+    </Style>
+    <Style Selector="ToggleButton.ToolbarToggle">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="6" />
+    </Style>
+    <Style Selector="ToggleButton.ToolbarToggle:checked">
+      <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+    </Style>
+    <Style Selector="Border.BBox">
+      <Setter Property="BorderThickness" Value="2" />
+      <Setter Property="Background" Value="#22FFFFFF" />
+    </Style>
+    <Style Selector="Border.BBox.selected">
+      <Setter Property="BorderThickness" Value="4" />
+      <Setter Property="Background" Value="#44FFFFFF" />
+    </Style>
+  </UserControl.Styles>
+<Grid RowDefinitions="44,*">
+  <!-- Toolbar -->
+  <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="12,0" Background="{DynamicResource SurfaceContainerLowBrush}">
+    <Grid ColumnDefinitions="Auto,*,Auto">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <!-- Page navigation -->
+        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.PreviousPageCommand}">
+          <lucide:Lucide Icon="ChevronLeft" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+        </Button>
+        <TextBox Text="{Binding PdfWorkspace.PageNumberText}" Width="36" Height="24" FontSize="12" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0" IsReadOnly="True" />
+        <TextBlock Text="{Binding PdfWorkspace.PageTotalText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" Margin="4,0" />
+        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.NextPageCommand}">
+          <lucide:Lucide Icon="ChevronRight" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+        </Button>
+      </StackPanel>
+
+      <!-- Zoom and Tools Controls -->
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.ZoomOutCommand}">
+          <TextBlock Text="-" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+        </Button>
+        <TextBlock Text="{Binding PdfWorkspace.ZoomText}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" Margin="4,0" />
+        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.ZoomInCommand}">
+          <TextBlock Text="+" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+        </Button>
+        
+        <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="8,0"/>
+        
+        <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding !PdfWorkspace.IsDrawToolActive}" Command="{Binding PdfWorkspace.SelectToolCommand}" ToolTip.Tip="点选工具">
+            <lucide:Lucide Icon="MousePointer2" Width="16" Height="16" Margin="0,-2,0,0"/>
+        </ToggleButton>
+        <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding PdfWorkspace.IsDrawToolActive}" Command="{Binding PdfWorkspace.DrawToolCommand}" ToolTip.Tip="框选工具">
+            <lucide:Lucide Icon="SquareDashed" Width="16" Height="16" Margin="0,-2,0,0"/>
+        </ToggleButton>
+      </StackPanel>
+      
+      <!-- Edit Mode Controls -->
+      <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+          <Button Command="{Binding PdfWorkspace.EnterEditModeCommand}" IsVisible="{Binding !PdfWorkspace.IsEditMode}" Background="Transparent">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                  <lucide:Lucide Icon="Pencil" Width="14" Height="14" />
+                  <TextBlock Text="编辑版面" FontSize="12" />
+              </StackPanel>
+          </Button>
+          <Button Command="{Binding PdfWorkspace.SaveAndExitCommand}" IsVisible="{Binding PdfWorkspace.IsEditMode}" Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                  <lucide:Lucide Icon="Save" Width="14" Height="14" />
+                  <TextBlock Text="保存并退出" FontSize="12" />
+              </StackPanel>
+          </Button>
+          <Button Command="{Binding PdfWorkspace.CancelEditModeCommand}" IsVisible="{Binding PdfWorkspace.IsEditMode}" Background="Transparent" Foreground="{DynamicResource ErrorBrush}">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                  <lucide:Lucide Icon="X" Width="14" Height="14" />
+                  <TextBlock Text="放弃更改" FontSize="12" />
+              </StackPanel>
+          </Button>
+          
+          <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0"/>
+          
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding PdfWorkspace.IsSidebarOpen}" ToolTip.Tip="切换侧边栏">
+              <lucide:Lucide Icon="List" Width="14" Height="14" />
+          </ToggleButton>
+      </StackPanel>
+    </Grid>
+  </Border>
+
+  <!-- Split View -->
+  <Grid Grid.Row="1">
+    <Grid.ColumnDefinitions>
+      <ColumnDefinition Width="*" />
+      <ColumnDefinition Width="Auto" />
+      <ColumnDefinition Width="400" MinWidth="200" MaxWidth="800">
+         <ColumnDefinition.SharedSizeGroup>SidebarGroup</ColumnDefinition.SharedSizeGroup>
+      </ColumnDefinition>
+    </Grid.ColumnDefinitions>
+    
+    <!-- Left: PDF Viewer Canvas -->
+    <Border Background="{DynamicResource SurfaceContainerHighestBrush}">
+      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <LayoutTransformControl HorizontalAlignment="Center" VerticalAlignment="Top" Margin="20">
+          <LayoutTransformControl.LayoutTransform>
+            <ScaleTransform ScaleX="{Binding PdfWorkspace.Zoom}" ScaleY="{Binding PdfWorkspace.Zoom}" />
+          </LayoutTransformControl.LayoutTransform>
+          <Border Background="#FFFFFF" BorderThickness="1" BorderBrush="#CAC4D5" CornerRadius="4" BoxShadow="0 4 16 #22000000">
+            <Grid MinWidth="360" MinHeight="480">
+              <Image Source="{Binding PdfWorkspace.Image}" Width="{Binding PdfWorkspace.ActualWidthPixels}" Height="{Binding PdfWorkspace.ActualHeightPixels}" Stretch="None" IsVisible="{Binding PdfWorkspace.HasImage}" />
+              
+              <ItemsControl ItemsSource="{Binding PdfWorkspace.BoundingBoxes}" Width="{Binding PdfWorkspace.ActualWidthPixels}" Height="{Binding PdfWorkspace.ActualHeightPixels}" IsVisible="{Binding PdfWorkspace.HasImage}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <Canvas />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Classes="BBox"
+                            Classes.selected="{Binding IsSelected}"
+                            BorderBrush="{Binding BoxColor}" 
+                            Canvas.Left="{Binding Left}" 
+                            Canvas.Top="{Binding Top}" 
+                            Width="{Binding Width}" 
+                            Height="{Binding Height}"
+                            Cursor="Hand"
+                            PointerPressed="OnBBoxPointerPressed">
+                      
+                      <!-- Popup Toolbar -->
+                      <Popup IsOpen="{Binding IsSelected}" Placement="RightEdgeAlignedTop" IsLightDismissEnabled="False">
+                        <Border Background="{DynamicResource SurfaceBrush}" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="4" Padding="4" BoxShadow="0 2 8 #11000000" IsVisible="{Binding Workspace.IsEditMode}">
+                          <StackPanel Orientation="Horizontal" Spacing="4">
+                             <Button Command="{Binding IgnoreCommand}" Background="Transparent" Foreground="{DynamicResource ErrorBrush}" Padding="8,4">
+                               <StackPanel Orientation="Horizontal" Spacing="4">
+                                  <lucide:Lucide Icon="Trash2" Width="14" Height="14" />
+                                  <TextBlock Text="忽略" FontSize="12" />
+                               </StackPanel>
+                             </Button>
+                          </StackPanel>
+                        </Border>
+                      </Popup>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+
+              <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding PdfWorkspace.HasNoImage}">
+                <lucide:Lucide Icon="FolderOpen" Width="32" Height="32" StrokeBrush="{DynamicResource PrimaryBrush}" />
+                <TextBlock Text="工作台预览" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
+                <TextBlock Text="{Binding Shell.SelectedItem.Title}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" Width="400" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
+                <TextBlock Text="{Binding PdfWorkspace.Status}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" Width="420" TextAlignment="Center" />
+                <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding PdfWorkspace.IsBusy}" />
+              </StackPanel>
+              
+              <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" IsVisible="{Binding PdfWorkspace.HasImage}">
+                <TextBlock Text="{Binding PdfWorkspace.Status}" FontSize="11" Foreground="#5F5A66" />
+              </Border>
+            </Grid>
+          </Border>
+        </LayoutTransformControl>
+      </ScrollViewer>
+    </Border>
+
+    <!-- Splitter -->
+    <GridSplitter Grid.Column="1" Width="4" Background="{DynamicResource OutlineVariantBrush}" IsVisible="{Binding PdfWorkspace.IsSidebarOpen}" />
+
+    <!-- Right: Sidebar Viewer/Editor -->
+    <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding PdfWorkspace.IsSidebarOpen}">
+      <ScrollViewer>
+        <ItemsControl ItemsSource="{Binding PdfWorkspace.BoundingBoxes}" Margin="16">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+               <Border Margin="0,0,0,12" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="6" Padding="12">
+                  <StackPanel Spacing="8">
+                     <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Border Background="{Binding BoxColor}" CornerRadius="4" Padding="6,2">
+                           <TextBlock Text="{Binding NodeType}" FontSize="11" Foreground="#FFFFFF" FontWeight="Bold" />
+                        </Border>
+                     </StackPanel>
+                     
+                     <TextBox Text="{Binding Text}" IsReadOnly="{Binding !Workspace.IsEditMode}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60" BorderThickness="0" Background="Transparent" />
+                  </StackPanel>
+               </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+    </Border>
+    
+  </Grid>
+</Grid>
+</UserControl>

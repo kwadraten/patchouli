@@ -6,16 +6,23 @@ using Patchouli.Ocr;
 
 namespace Patchouli.UI;
 
-public sealed class PdfPreviewViewModel : ViewModelBase
+public sealed class PdfWorkspaceViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private LibraryItemViewModel? _item;
     private int _pageIndex;
     private int _pageCount;
     private int _widthPixels;
+    private int _heightPixels;
     private int _renderGeneration;
+    private bool _isEditMode;
+    private bool _isSidebarOpen;
+    private bool _isDrawToolActive;
+    private PdfBBoxViewModel? _selectedBox;
+    private string? _currentRevisionId;
+    private string? _draftRevisionId;
 
-    public PdfPreviewViewModel(MainWindowViewModel main)
+    public PdfWorkspaceViewModel(MainWindowViewModel main)
     {
         _main = main;
         PreviousPageCommand = new AsyncCommand(PreviousPageAsync);
@@ -23,23 +30,60 @@ public sealed class PdfPreviewViewModel : ViewModelBase
         ReloadCommand = new AsyncCommand(ReloadAsync);
         ZoomInCommand = new AsyncCommand(() => { SetZoom(Zoom + 0.1); return Task.CompletedTask; });
         ZoomOutCommand = new AsyncCommand(() => { SetZoom(Zoom - 0.1); return Task.CompletedTask; });
+        
+        EnterEditModeCommand = new AsyncCommand(EnterEditModeAsync);
+        SaveAndExitCommand = new AsyncCommand(SaveAndExitAsync);
+        CancelEditModeCommand = new AsyncCommand(CancelEditModeAsync);
+        SelectToolCommand = new AsyncCommand(() => { IsDrawToolActive = false; return Task.CompletedTask; });
+        DrawToolCommand = new AsyncCommand(() => { IsDrawToolActive = true; return Task.CompletedTask; });
     }
 
     public Bitmap? Image { get; private set; }
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
     public bool IsBusy { get; private set; }
-    public string Status { get; private set; } = "选择题录后可预览 PDF。";
+    public string Status { get; set; } = "选择题录后可预览 PDF。";
     public string PageNumberText => _pageCount == 0 ? "-" : (_pageIndex + 1).ToString();
     public string PageTotalText => _pageCount == 0 ? "/ -" : $"/ {_pageCount}";
     public string ZoomText => $"{Math.Round(Zoom * 100):0}%";
     public double Zoom { get; private set; } = 1.0;
-    public double DisplayWidth => _widthPixels <= 0 ? 620 : Math.Clamp(_widthPixels * Zoom, 240, 4000);
+    public double ActualWidthPixels => _widthPixels;
+    public double ActualHeightPixels => _heightPixels;
+
+    public bool IsEditMode { get => _isEditMode; private set { if (_isEditMode == value) return; _isEditMode = value; Raise(); } }
+    public bool IsSidebarOpen { get => _isSidebarOpen; set { if (_isSidebarOpen == value) return; _isSidebarOpen = value; Raise(); } }
+    public bool IsDrawToolActive { get => _isDrawToolActive; private set { if (_isDrawToolActive == value) return; _isDrawToolActive = value; Raise(); } }
+    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes { get; } = new();
+    
+    public PdfBBoxViewModel? SelectedBox
+    {
+        get => _selectedBox;
+        set
+        {
+            if (_selectedBox == value) return;
+            if (_selectedBox != null) _selectedBox.IsSelected = false;
+            _selectedBox = value;
+            if (_selectedBox != null) _selectedBox.IsSelected = true;
+            Raise();
+        }
+    }
+
     public AsyncCommand PreviousPageCommand { get; }
     public AsyncCommand NextPageCommand { get; }
     public AsyncCommand ReloadCommand { get; }
     public AsyncCommand ZoomInCommand { get; }
     public AsyncCommand ZoomOutCommand { get; }
+    public AsyncCommand EnterEditModeCommand { get; }
+    public AsyncCommand SaveAndExitCommand { get; }
+    public AsyncCommand CancelEditModeCommand { get; }
+    public AsyncCommand SelectToolCommand { get; }
+    public AsyncCommand DrawToolCommand { get; }
+
+    public void RemoveBBox(PdfBBoxViewModel bbox)
+    {
+        BoundingBoxes.Remove(bbox);
+        if (SelectedBox == bbox) SelectedBox = null;
+    }
 
     public async Task LoadSelectedItemAsync(LibraryItemViewModel? item)
     {
@@ -57,7 +101,15 @@ public sealed class PdfPreviewViewModel : ViewModelBase
         _pageIndex = 0;
         _pageCount = 0;
         _widthPixels = 0;
+        _heightPixels = 0;
         _renderGeneration++;
+        IsEditMode = false;
+        IsSidebarOpen = false;
+        IsDrawToolActive = false;
+        BoundingBoxes.Clear();
+        SelectedBox = null;
+        _currentRevisionId = null;
+        _draftRevisionId = null;
         Status = "选择题录后可预览 PDF。";
         RaiseAll();
     }
@@ -83,7 +135,6 @@ public sealed class PdfPreviewViewModel : ViewModelBase
         Zoom = Math.Clamp(value, 0.25, 4.0);
         Raise(nameof(Zoom));
         Raise(nameof(ZoomText));
-        Raise(nameof(DisplayWidth));
     }
 
     private async Task RenderCurrentPageAsync()
@@ -162,6 +213,24 @@ public sealed class PdfPreviewViewModel : ViewModelBase
             await using var stream = new MemoryStream(raster.PngBytes);
             Image = new Bitmap(stream);
             _widthPixels = raster.WidthPixels;
+            _heightPixels = raster.HeightPixels;
+            
+            BoundingBoxes.Clear();
+            SelectedBox = null;
+            if (_isEditMode && _draftRevisionId != null)
+            {
+                await LoadNodesAsync(page.PageId, LayoutRevisionId.Parse(_draftRevisionId));
+            }
+            else
+            {
+                var rev = await services.Layout.GetCurrentRevisionAsync(documentInstanceId);
+                if (rev.IsSuccess)
+                {
+                    _currentRevisionId = rev.Value.LayoutRevisionId.ToString();
+                    await LoadNodesAsync(page.PageId, rev.Value.LayoutRevisionId);
+                }
+            }
+
             Status = $"{_item.Title} · Page {_pageIndex + 1}/{_pageCount} · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
         }
         catch (Exception ex)
@@ -191,6 +260,65 @@ public sealed class PdfPreviewViewModel : ViewModelBase
         return string.IsNullOrWhiteSpace(id) ? null : FileAssetId.Parse(id);
     }
 
+    private async Task LoadNodesAsync(PageId pageId, LayoutRevisionId revisionId)
+    {
+        var services = await _main.ServicesAsync();
+        var nodesResult = await services.Layout.ListNodesForPageAsync(pageId, revisionId);
+        if (nodesResult.IsSuccess)
+        {
+            foreach (var node in nodesResult.Value)
+            {
+                if (node.Ignored && !_isEditMode) continue;
+                BoundingBoxes.Add(new PdfBBoxViewModel(_main, this, node, _widthPixels, _heightPixels));
+            }
+        }
+    }
+
+    private async Task EnterEditModeAsync()
+    {
+        if (_item is null) return;
+        var services = await _main.ServicesAsync();
+        var docId = DocumentInstanceId.Parse(_item.DocumentInstanceId);
+        var rev = await services.Layout.CreateLayoutRevisionAsync(docId, "ui_manual_edit", false);
+        if (rev.IsSuccess)
+        {
+            _draftRevisionId = rev.Value.LayoutRevisionId.ToString();
+            IsEditMode = true;
+            IsSidebarOpen = true;
+            IsDrawToolActive = false;
+            await ReloadAsync();
+        }
+        else
+        {
+            Status = $"无法进入编辑模式：{rev.ErrorMessage}";
+        }
+    }
+
+    private async Task SaveAndExitAsync()
+    {
+        if (_item is null || _draftRevisionId is null) return;
+        var services = await _main.ServicesAsync();
+        var docId = DocumentInstanceId.Parse(_item.DocumentInstanceId);
+        var res = await services.Layout.SetCurrentRevisionAsync(docId, LayoutRevisionId.Parse(_draftRevisionId));
+        if (res.IsSuccess)
+        {
+            IsEditMode = false;
+            _draftRevisionId = null;
+            await ReloadAsync();
+        }
+        else
+        {
+            Status = $"保存失败：{res.ErrorMessage}";
+        }
+    }
+
+    private async Task CancelEditModeAsync()
+    {
+        IsEditMode = false;
+        _draftRevisionId = null;
+        await ReloadAsync();
+    }
+
     private void RaiseAll()
     {
         Raise(nameof(Image));
@@ -200,6 +328,7 @@ public sealed class PdfPreviewViewModel : ViewModelBase
         Raise(nameof(Status));
         Raise(nameof(PageNumberText));
         Raise(nameof(PageTotalText));
-        Raise(nameof(DisplayWidth));
+        Raise(nameof(ActualWidthPixels));
+        Raise(nameof(ActualHeightPixels));
     }
 }

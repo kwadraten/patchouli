@@ -32,13 +32,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
             _isReadingMode = value;
             Raise();
             Raise(nameof(ShowLibraryList));
-            Raise(nameof(ShowPdfReader));
+            Raise(nameof(ShowPdfWorkspace));
             _main.RaiseShellSelectionChanged();
         }
     }
 
     public bool ShowLibraryList => !IsReadingMode;
-    public bool ShowPdfReader => IsReadingMode && SelectedItem is not null;
+    public bool ShowPdfWorkspace => IsReadingMode && SelectedItem is not null;
 
     public AsyncCommand SwitchToLibraryListCommand { get; }
     public AsyncCommand SwitchToReadingModeCommand { get; }
@@ -54,7 +54,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (SelectedItem is not null)
         {
             IsReadingMode = true;
-            await _main.PdfPreview.LoadSelectedItemAsync(SelectedItem);
+            await _main.PdfWorkspace.LoadSelectedItemAsync(SelectedItem);
         }
     }
 
