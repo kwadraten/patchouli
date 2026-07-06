@@ -46,6 +46,7 @@
           </MenuItem>
           <MenuItem Header="编辑">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
+            <MenuItem Header="查看 PDF" Command="{Binding ShowReadingCommand}" />
             <MenuItem Header="编辑题录" Command="{Binding EditSelectedItemCommand}" />
             <MenuItem Header="运行 MinerU OCR" Command="{Binding RunSelectedItemOcrCommand}" />
             <Separator />
@@ -95,46 +96,46 @@
               <Button Command="{Binding ShowReadingCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                   <PathIcon Data="{StaticResource IconFolderOpen}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding Shell.SelectedItem.FileName}" Width="300" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding PdfTabTitle}" Width="300" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
                 </StackPanel>
               </Button>
-              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding Shell.CloseDocumentTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding ClosePdfReaderTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
           </Border>
 
           <Border Classes="tab" Classes.active="{Binding IsSearchVisible}" Padding="16,0" IsVisible="{Binding ShowSearchTab}" VerticalAlignment="Stretch">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <Button Command="{Binding RunToolbarSearchCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+              <Button Command="{Binding ActivateSearchTabCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                   <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="搜索结果" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Button>
-              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding ShowLibraryCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding CloseSearchTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
           </Border>
 
           <Border Classes="tab" Classes.active="{Binding IsSettingsVisible}" Padding="16,0" IsVisible="{Binding ShowSettingsTab}" VerticalAlignment="Stretch">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <Button Command="{Binding OpenSettingsCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+              <Button Command="{Binding ActivateSettingsTabCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                   <PathIcon Data="{StaticResource IconMenu}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="设置" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Button>
-              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding ShowLibraryCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding CloseSettingsTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
           </Border>
 
           <Border Classes="tab" Classes.active="{Binding IsOcrQueueTabActive}" Padding="16,0" IsVisible="{Binding ShowOcrQueueTab}" VerticalAlignment="Stretch">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <Button Command="{Binding OpenOcrQueueCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
+              <Button Command="{Binding ActivateOcrQueueTabCommand}" Background="Transparent" BorderThickness="0" Padding="0" VerticalAlignment="Stretch">
                 <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                   <PathIcon Data="{StaticResource IconRefresh}" Width="12" Height="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Text="OCR 队列" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Button>
-              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding ShowLibraryCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding CloseOcrQueueTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
           </Border>
 
@@ -146,7 +147,7 @@
                   <TextBlock Text="{Binding ItemEditor.Header}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Button>
-              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding ShowLibraryCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+              <Button Content="×" Width="20" Height="20" Padding="0" FontSize="10" Command="{Binding CloseItemEditorTabCommand}" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </StackPanel>
           </Border>
 

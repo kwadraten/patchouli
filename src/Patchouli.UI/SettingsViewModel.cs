@@ -20,9 +20,8 @@ public sealed class SettingsViewModel : ViewModelBase
         StopMcpCommand = new AsyncCommand(StopMcpAsync);
     }
 
-    public string SelectedSection { get; private set; } = "mineru";
     public string MinerUTokenInput { get; set; } = "";
-    public string Status { get; private set; } = "在这里管理 MinerU OCR 凭据。";
+    public string Status { get; private set; } = "在这里管理 OCR 预设与 ProviderCredential。";
     public string SettingsFilePath => _main.SettingsFilePath;
     public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
     public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
@@ -30,18 +29,20 @@ public sealed class SettingsViewModel : ViewModelBase
     public string McpStatusText => _main.McpStatusText;
     public string OcrConcurrencySummary { get; private set; } = "OCR 队列第一版使用本机单任务 tick 执行。";
     public string FileSearchRootInput { get; set; } = "";
-    public string OcrPresetName { get; set; } = "Local OCR";
-    public string OcrPresetDescription { get; set; } = "";
-    public string OcrPresetEngineId { get; set; } = OcrEngineIds.LocalPlaceholder;
-    public string OcrPresetModelId { get; set; } = OcrModelIds.MockBasic;
-    public string OcrPresetParametersJson { get; set; } = "{}";
+    public string OcrPresetName { get; set; } = "MinerU OCR";
+    public string OcrPresetDescription { get; set; } = "当前首选的云端 OCR/版面解析预设。";
+    public string OcrPresetEngineId { get; set; } = OcrEngineIds.MinerU;
+    public string OcrPresetModelId { get; set; } = OcrModelIds.MinerUDefault;
+    public string OcrPresetParametersJson { get; set; } = "{\"provider\":\"mineru\"}";
     public bool OcrPresetApplyOnSuccess { get; set; } = true;
     public string SearchProfileName { get; set; } = "";
     public string SearchProfileDescription { get; set; } = "";
     public ObservableCollection<string> FileSearchRoots { get; } = new();
     public ObservableCollection<string> OcrPresets { get; } = new();
     public ObservableCollection<string> SearchProfiles { get; } = new();
-    public bool ShowMinerUSection => SelectedSection == "mineru";
+    public string PreferredOcrProviderName => "MinerU";
+    public string PreferredOcrProviderType => "云端 OCR/版面解析";
+    public string MinerUCredentialStatus => string.IsNullOrWhiteSpace(MinerUTokenInput) ? "未配置 ProviderCredential" : "已配置 ProviderCredential";
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SaveMinerUSettingsCommand { get; }
     public AsyncCommand AddFileSearchRootCommand { get; }
@@ -52,18 +53,17 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public void FocusMinerU(string? status = null)
     {
-        SelectedSection = "mineru";
         if (!string.IsNullOrWhiteSpace(status))
             Status = status;
-        Raise(nameof(SelectedSection));
-        Raise(nameof(ShowMinerUSection));
         Raise(nameof(Status));
+        Raise(nameof(MinerUCredentialStatus));
     }
 
     public void SyncFromCurrentSettings(string token)
     {
         MinerUTokenInput = token;
         Raise(nameof(MinerUTokenInput));
+        Raise(nameof(MinerUCredentialStatus));
         Raise(nameof(SettingsFilePath));
     }
 
@@ -147,9 +147,10 @@ public sealed class SettingsViewModel : ViewModelBase
 
         var saved = await _main.SaveMinerUTokenSettingsAsync(MinerUTokenInput);
         Status = saved
-            ? "MinerU 凭据已保存到 ProviderCredential 和 appsettings。"
+            ? "MinerU ProviderCredential 已保存；该凭据可供 MinerU OCR 预设使用。"
             : "MinerU 凭据保存失败。";
         Raise(nameof(Status));
+        Raise(nameof(MinerUCredentialStatus));
     }
 
     private async Task AddFileSearchRootAsync()
@@ -226,7 +227,8 @@ public sealed class SettingsViewModel : ViewModelBase
             nameof(OcrPresetDescription), nameof(OcrPresetEngineId), nameof(OcrPresetModelId),
             nameof(OcrPresetParametersJson), nameof(OcrPresetApplyOnSuccess), nameof(SearchProfileName),
             nameof(SearchProfileDescription), nameof(FileSearchRoots), nameof(OcrPresets), nameof(SearchProfiles),
-            nameof(SettingsFilePath)
+            nameof(SettingsFilePath), nameof(PreferredOcrProviderName), nameof(PreferredOcrProviderType),
+            nameof(MinerUCredentialStatus), nameof(MinerUTokenInput)
         })
         {
             Raise(property);

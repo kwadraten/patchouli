@@ -349,7 +349,8 @@ public sealed class UiViewModelTests
             vm.Shell.SelectedItem!.OcrStatus.Should().Contain("token");
             vm.Shell.SelectedItem.OcrStatus.Should().Contain("设置");
             vm.IsSettingsVisible.Should().BeTrue();
-            vm.Settings.SelectedSection.Should().Be("mineru");
+            vm.ShowSettingsTab.Should().BeTrue();
+            vm.Settings.MinerUCredentialStatus.Should().Contain("未配置");
             vm.Status.Should().Contain("MinerU API token");
         }
         finally
@@ -496,7 +497,7 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
-    public async Task Shell_edit_metadata_updates_selected_item_after_context_action()
+    public async Task Shell_edit_metadata_context_action_opens_item_editor_tab()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
         var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
@@ -507,17 +508,21 @@ public sealed class UiViewModelTests
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, null, null, 1));
+            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Editable Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
 
             await vm.Shell.Items.Single().EditMetadataCommand.ExecuteAsync();
-            vm.Shell.ShowMetadataEditor.Should().BeTrue();
-            vm.Shell.EditTitle = "Edited Title";
-            vm.Shell.EditAuthors = "Chen, Li";
-            vm.Shell.EditYear = "2026";
-            vm.Shell.EditPublicationTitle = "Journal of Patchouli";
-            await vm.Shell.SaveMetadataCommand.ExecuteAsync();
+            vm.ShowItemEditorTab.Should().BeTrue();
+            vm.IsItemEditorVisible.Should().BeTrue();
+            vm.ItemEditor.Title.Should().Be("Editable Item");
+            vm.ItemEditor.HasItem.Should().BeTrue();
+
+            vm.ItemEditor.Title = "Edited Title";
+            vm.ItemEditor.Authors = "Chen, Li";
+            vm.ItemEditor.IssuedDate = "2026";
+            vm.ItemEditor.PublicationTitle = "Journal of Patchouli";
+            await vm.ItemEditor.SaveCommand.ExecuteAsync();
 
             vm.Shell.Items.Single().Title.Should().Be("Edited Title");
             vm.Shell.Items.Single().Authors.Should().Be("Chen, Li");
@@ -568,7 +573,7 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
-    public async Task Shell_close_document_tab_clears_selected_item()
+    public async Task MainWindow_close_pdf_tab_keeps_library_selection()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
         var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
@@ -583,11 +588,60 @@ public sealed class UiViewModelTests
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
 
-            vm.ShowSelectedDocumentTab.Should().BeTrue();
-            await vm.Shell.CloseDocumentTabCommand.ExecuteAsync();
-
-            vm.Shell.SelectedItem.Should().BeNull();
             vm.ShowSelectedDocumentTab.Should().BeFalse();
+            vm.Shell.SelectedItem.Should().NotBeNull();
+            await vm.ShowReadingCommand.ExecuteAsync();
+            vm.ShowSelectedDocumentTab.Should().BeTrue();
+            await vm.ClosePdfReaderTabCommand.ExecuteAsync();
+
+            vm.Shell.SelectedItem.Should().NotBeNull();
+            vm.ShowSelectedDocumentTab.Should().BeFalse();
+            vm.IsLibraryTabActive.Should().BeTrue();
+        }
+        finally
+        {
+            if (File.Exists(pdf)) File.Delete(pdf);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task MainWindow_tabs_persist_across_switches_until_closed()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        try
+        {
+            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
+            import.Success.Should().BeTrue(import.ErrorMessage);
+            await vm.Shell.RefreshItemsAsync();
+
+            vm.IsLibraryTabActive.Should().BeTrue();
+            vm.ShowSelectedDocumentTab.Should().BeFalse();
+            vm.ShowSettingsTab.Should().BeFalse();
+
+            await vm.ShowReadingCommand.ExecuteAsync();
+            vm.ShowSelectedDocumentTab.Should().BeTrue();
+            vm.IsReaderTabActive.Should().BeTrue();
+
+            await vm.OpenSettingsAsync("mineru");
+            vm.ShowSelectedDocumentTab.Should().BeTrue();
+            vm.ShowSettingsTab.Should().BeTrue();
+            vm.IsSettingsVisible.Should().BeTrue();
+
+            await vm.ShowReadingCommand.ExecuteAsync();
+            vm.IsReaderTabActive.Should().BeTrue();
+            vm.ShowSettingsTab.Should().BeTrue();
+
+            await vm.CloseSettingsTabCommand.ExecuteAsync();
+            vm.ShowSettingsTab.Should().BeFalse();
+            vm.ShowSelectedDocumentTab.Should().BeTrue();
+            vm.IsReaderTabActive.Should().BeTrue();
         }
         finally
         {

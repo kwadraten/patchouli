@@ -96,6 +96,7 @@
         <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="16,8" Background="Transparent">
           <Border.ContextMenu>
             <ContextMenu>
+              <MenuItem Header="查看 PDF" Command="{Binding ViewPdfCommand}" />
               <MenuItem Header="编辑题录信息" Command="{Binding EditMetadataCommand}" />
               <MenuItem Header="运行 MinerU OCR" Command="{Binding RunOcrCommand}" />
             </ContextMenu>
@@ -169,24 +170,6 @@
                 <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedItem.FileName}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
               </Grid>
             </Border>
-
-            <!-- Metadata Editor Inline Popup -->
-            <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" Background="{DynamicResource SurfaceContainerLowestBrush}" CornerRadius="4" Padding="12" IsVisible="{Binding ShowMetadataEditor}">
-              <StackPanel Spacing="10">
-                <TextBlock Text="编辑题录信息" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-                <TextBox PlaceholderText="标题" Text="{Binding EditTitle}" Height="30" VerticalContentAlignment="Center" />
-                <TextBox PlaceholderText="作者" Text="{Binding EditAuthors}" Height="30" VerticalContentAlignment="Center" />
-                <TextBox PlaceholderText="年份" Text="{Binding EditYear}" Height="30" VerticalContentAlignment="Center" />
-                <TextBox PlaceholderText="期刊/出处" Text="{Binding EditPublicationTitle}" Height="30" VerticalContentAlignment="Center" />
-                <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                  <Button Content="保存" Command="{Binding SaveMetadataCommand}" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Height="30" />
-                  <Button Content="取消" Command="{Binding CancelMetadataEditCommand}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Height="30" />
-                </Grid>
-              </StackPanel>
-            </Border>
-
-            <!-- Giant Edit Metadata Button -->
-            <Button Content="编辑元数据" Command="{Binding SelectedItem.EditMetadataCommand}" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Height="36" CornerRadius="4" Margin="0,10,0,0" />
           </StackPanel>
         </StackPanel>
       </ScrollViewer>

@@ -1,7 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using Dapper;
-using Patchouli.Core.Bibliography;
 using Patchouli.Core.Import;
 using Patchouli.Ocr.MinerU;
 
@@ -16,9 +15,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
     {
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshItemsAsync);
-        SaveMetadataCommand = new AsyncCommand(SaveMetadataAsync);
-        CancelMetadataEditCommand = new AsyncCommand(CancelMetadataEditAsync);
-        CloseDocumentTabCommand = new AsyncCommand(CloseDocumentTabAsync);
         ShowRecentItemsCommand = new AsyncCommand(ShowRecentItemsAsync);
         SwitchToLibraryListCommand = new AsyncCommand(SwitchToLibraryListAsync);
         SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
@@ -65,12 +61,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public ObservableCollection<LibraryItemViewModel> Items { get; } = new();
     public string StatusText => _main.Status;
     public string MinerUToken { get; set; } = "";
-    public bool ShowMetadataEditor { get; set; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactory { get; set; }
-    public string EditTitle { get; set; } = "";
-    public string EditAuthors { get; set; } = "";
-    public string EditYear { get; set; } = "";
-    public string EditPublicationTitle { get; set; } = "";
     public bool IsBusy { get; set; }
     private LibraryItemViewModel? _selectedItem;
     public LibraryItemViewModel? SelectedItem
@@ -98,9 +89,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public string InspectorStatus => SelectedItem?.OcrStatus ?? "未选择文档";
     public string InspectorPath => SelectedItem?.SourcePath ?? "";
     public AsyncCommand RefreshCommand { get; }
-    public AsyncCommand SaveMetadataCommand { get; }
-    public AsyncCommand CancelMetadataEditCommand { get; }
-    public AsyncCommand CloseDocumentTabCommand { get; }
     public AsyncCommand ShowRecentItemsCommand { get; }
 
     public void NotifyMinerUTokenChanged()
@@ -179,7 +167,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 row.SearchUnitCount,
                 row.IndexStatus,
                 RunOcrForItemAsync,
-                EditMetadataForItemAsync);
+                EditMetadataForItemAsync,
+                ViewPdfForItemAsync);
             Items.Add(item);
             RecentItems.Add(row.Title);
             if (!string.IsNullOrWhiteSpace(row.FileName))
@@ -267,68 +256,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public Task EditMetadataForItemAsync(LibraryItemViewModel item)
     {
         SelectedItem = item;
-        EditTitle = item.Title;
-        EditAuthors = item.Authors;
-        EditYear = item.Year;
-        EditPublicationTitle = item.PublicationTitle;
-        ShowMetadataEditor = true;
-        Raise(nameof(EditTitle));
-        Raise(nameof(EditAuthors));
-        Raise(nameof(EditYear));
-        Raise(nameof(EditPublicationTitle));
-        Raise(nameof(ShowMetadataEditor));
-        return Task.CompletedTask;
+        return _main.EditSelectedItemCommand.ExecuteAsync();
     }
 
-    public async Task SaveMetadataAsync()
+    public Task ViewPdfForItemAsync(LibraryItemViewModel item)
     {
-        if (SelectedItem is null) return;
-        var title = string.IsNullOrWhiteSpace(EditTitle) ? SelectedItem.FileName : EditTitle.Trim();
-        var authors = EditAuthors.Trim();
-        var year = string.IsNullOrWhiteSpace(EditYear) ? null : EditYear.Trim();
-        var publicationTitle = string.IsNullOrWhiteSpace(EditPublicationTitle) ? null : EditPublicationTitle.Trim();
-        var services = await _main.ServicesAsync();
-        var updated = await services.Items.UpdateItemAsync(
-            Patchouli.Core.Ids.ItemId.Parse(SelectedItem.ItemId),
-            new UpdateItemRequest(
-                SelectedItem.ItemType,
-                title,
-                PublicationTitle: publicationTitle,
-                Date: year,
-                Creators: string.IsNullOrWhiteSpace(authors)
-                    ? Array.Empty<ItemCreatorInput>()
-                    : authors.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Select(name => new ItemCreatorInput(ItemCreatorRoles.Author, Literal: name))
-                        .ToArray(),
-                Dates: string.IsNullOrWhiteSpace(year)
-                    ? Array.Empty<ItemDateInput>()
-                    : new[] { new ItemDateInput(ItemDateRoles.Issued, Literal: year) }));
-
-        if (updated.IsFailure)
-        {
-            _main.Report(updated.ErrorMessage ?? "题录信息更新失败。");
-            return;
-        }
-
-        ShowMetadataEditor = false;
-        Raise(nameof(ShowMetadataEditor));
-        _main.Report($"题录信息已更新：{title}");
-        await RefreshItemsAsync();
-    }
-
-    public Task CancelMetadataEditAsync()
-    {
-        ShowMetadataEditor = false;
-        Raise(nameof(ShowMetadataEditor));
-        return Task.CompletedTask;
-    }
-
-    public Task CloseDocumentTabAsync()
-    {
-        SelectedItem = null;
-        IsReadingMode = false;
-        _main.PdfPreview.Clear();
-        return Task.CompletedTask;
+        SelectedItem = item;
+        return _main.ShowReadingCommand.ExecuteAsync();
     }
 
     public async Task ShowRecentItemsAsync()
@@ -402,7 +336,8 @@ public sealed class LibraryItemViewModel : ViewModelBase
         int searchUnitCount,
         string indexStatus,
         Func<LibraryItemViewModel, Task> runOcr,
-        Func<LibraryItemViewModel, Task> editMetadata)
+        Func<LibraryItemViewModel, Task> editMetadata,
+        Func<LibraryItemViewModel, Task>? viewPdf = null)
     {
         ItemId = itemId;
         Title = title;
@@ -420,6 +355,7 @@ public sealed class LibraryItemViewModel : ViewModelBase
         _ocrStatus = searchUnitCount > 0 ? $"已索引（{searchUnitCount} 个单元，{indexStatus}）" : $"未索引（{indexStatus}）";
         RunOcrCommand = new AsyncCommand(() => runOcr(this));
         EditMetadataCommand = new AsyncCommand(() => editMetadata(this));
+        ViewPdfCommand = new AsyncCommand(() => (viewPdf ?? editMetadata)(this));
     }
 
     public string ItemId { get; }
@@ -438,6 +374,7 @@ public sealed class LibraryItemViewModel : ViewModelBase
     public string PageCountDisplay => PageCount <= 0 ? "-" : PageCount.ToString();
     public AsyncCommand RunOcrCommand { get; }
     public AsyncCommand EditMetadataCommand { get; }
+    public AsyncCommand ViewPdfCommand { get; }
 
     public string OcrStatus
     {
