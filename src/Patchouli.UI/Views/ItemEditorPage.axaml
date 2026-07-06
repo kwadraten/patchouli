@@ -1,6 +1,7 @@
 <UserControl x:Class="Patchouli.UI.Views.ItemEditorPage"
              xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:Patchouli.UI.Controls">
 <Grid DataContext="{Binding ItemEditor}">
   <ScrollViewer>
     <StackPanel Margin="32" Spacing="18" MaxWidth="980">
@@ -69,7 +70,7 @@
           <StackPanel Spacing="10">
             <TextBlock Text="关联文件" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-              <TextBox Text="{Binding FilePath}" PlaceholderText="FileAsset 路径" Height="32" VerticalContentAlignment="Center" />
+              <controls:PathPickerTextBox Path="{Binding FilePath}" PickerMode="OpenFile" DialogTitle="选择文件" PlaceholderText="FileAsset 路径" />
               <Button Grid.Column="1" Content="注册" Command="{Binding RegisterFileCommand}" Height="32" />
             </Grid>
             <ItemsControl ItemsSource="{Binding LinkedFiles}">

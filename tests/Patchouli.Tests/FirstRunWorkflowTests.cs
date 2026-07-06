@@ -70,7 +70,7 @@ public sealed class FirstRunWorkflowTests
 
             state.IsComplete.Should().BeTrue(state.LastError);
             state.CurrentStep.Should().Be(FirstRunStep.Complete);
-            state.ProgressText.Should().Contain("MCP verification passed");
+            state.ProgressText.Should().Contain("MCP 验证通过");
             fakeClient.Uploaded.Should().BeTrue();
         }
         finally
@@ -178,7 +178,7 @@ public sealed class FirstRunWorkflowTests
 
             state.IsComplete.Should().BeTrue(state.LastError);
             state.CurrentStep.Should().Be(FirstRunStep.Complete);
-            state.ProgressText.Should().Contain("MCP verification passed");
+            state.ProgressText.Should().Contain("MCP 验证通过");
             uploaded.Should().BeTrue();
         }
         finally

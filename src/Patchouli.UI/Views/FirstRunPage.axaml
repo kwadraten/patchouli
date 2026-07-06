@@ -1,6 +1,7 @@
 <UserControl x:Class="Patchouli.UI.Views.FirstRunPage"
              xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:Patchouli.UI.Controls">
   <Grid ColumnDefinitions="260,*" Background="{DynamicResource SurfaceBrush}">
 <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
 <!-- 2. FirstRun Sidebar (Visible when first run is active) -->
@@ -56,31 +57,16 @@
           <TextBlock Text="设置 Patchouli 存储其核心参考数据库文件的位置。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </StackPanel>
 
-        <!-- Cards Grid -->
-        <Grid ColumnDefinitions="*,*" ColumnSpacing="16" Height="160">
-          <!-- Card 1: Create New -->
-          <Button Click="OnCreateNewDatabaseClick" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8">
-            <StackPanel Spacing="8" Margin="16" HorizontalAlignment="Left" VerticalAlignment="Center">
-              <Path Data="{StaticResource IconFolderPlus}" Width="24" Height="24" Stroke="{DynamicResource PrimaryBrush}" StrokeThickness="2" Fill="{x:Null}" />
-              <TextBlock Text="创建新数据库" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-              <TextBlock Text="从头开始建立新的库结构。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-            </StackPanel>
-          </Button>
-          <!-- Card 2: Import Existing -->
-          <Button Grid.Column="1" Click="OnBrowseExistingDatabaseClick" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8">
-            <StackPanel Spacing="8" Margin="16" HorizontalAlignment="Left" VerticalAlignment="Center">
-              <Path Data="{StaticResource IconFolderOpen}" Width="24" Height="24" Stroke="{DynamicResource PrimaryBrush}" StrokeThickness="2" Fill="{x:Null}" />
-              <TextBlock Text="导入已有" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-              <TextBlock Text="连接到现有的 Patchouli 数据库。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-            </StackPanel>
-          </Button>
-        </Grid>
+        <StackPanel Spacing="16">
+          <RadioButton Content="创建新数据库" IsChecked="{Binding !IsImportMode}" GroupName="DbMode" />
+          <RadioButton Content="导入已有数据库" IsChecked="{Binding IsImportMode}" GroupName="DbMode" />
+        </StackPanel>
 
-        <StackPanel Spacing="8" IsVisible="{Binding DatabasePath, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
-          <TextBlock Text="已选路径：" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <StackPanel Spacing="8">
+          <TextBlock Text="选择路径：" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-            <TextBox Text="{Binding DatabasePath}" FontSize="12" Height="32" VerticalContentAlignment="Center" IsReadOnly="True" />
-            <Button Grid.Column="1" Content="下一步" Command="{Binding OpenDatabaseCommand}" Height="32" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+            <controls:PathPickerTextBox Path="{Binding DatabasePath}" PickerMode="{Binding DatabasePickerMode}" DialogTitle="选择数据库位置" FileFilterName="SQLite database" FileFilterPatterns="*.sqlite,*.db" PlaceholderText="数据库路径" />
+            <Button Grid.Column="1" Content="下一步" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Command="{Binding OpenDatabaseCommand}" Height="32" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
           </Grid>
         </StackPanel>
       </StackPanel>
@@ -89,18 +75,15 @@
       <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="命名您的资料库" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
         <TextBox Text="{Binding LibraryName}" PlaceholderText="输入资料库名称" Height="36" VerticalContentAlignment="Center" />
-        <Button Content="创建资料库" Command="{Binding CreateLibraryCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="20,0" />
+        <Button Content="创建资料库" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Command="{Binding CreateLibraryCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="20,0" />
       </StackPanel>
 
       <!-- Step 3: PDF Directory -->
       <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="选择 PDF 扫描根路径" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
         <TextBlock Text="确认目录后，扫描到的所有 PDF 会直接导入为题录。题录信息可稍后在文献列表中右键编辑。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-          <TextBox Text="{Binding ScanRoot}" PlaceholderText="PDF directory" Height="36" VerticalContentAlignment="Center" />
-          <Button Grid.Column="1" Content="选择文件夹" Click="OnBrowseScanRootClick" Height="36" />
-        </Grid>
-        <Button Content="确认目录并导入" Command="{Binding ScanCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="24,0" />
+        <controls:PathPickerTextBox Path="{Binding ScanRoot}" PickerMode="Folder" DialogTitle="选择 PDF 扫描根目录" PlaceholderText="PDF directory" />
+        <Button Content="确认目录并导入" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Command="{Binding ScanCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="24,0" />
       </StackPanel>
 
       <!-- Step 4: MinerU Config -->
@@ -109,21 +92,20 @@
         <TextBlock Text="连接 MinerU 账户以启用高精度 OCR。完成初始化后，请在文献列表中右键选择单个题录进行识别。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
         <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" HorizontalAlignment="Left" />
         <TextBox Text="{Binding MinerUToken}" PlaceholderText="在这里输入您的 Token..." PasswordChar="*" Height="36" VerticalContentAlignment="Center" />
-        <Button Content="完成并进入" Command="{Binding $parent[Window].DataContext.CompleteFirstRunCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="24,0" />
+        <Button Content="完成并进入" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Command="{Binding $parent[Window].DataContext.CompleteFirstRunCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="24,0" />
       </StackPanel>
 
       <!-- Step 5: Complete -->
       <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="初始化完成" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
         <TextBlock Text="{Binding ProgressText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-        <Button Content="进入书库" Command="{Binding $parent[Window].DataContext.CompleteFirstRunCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="24,0" />
+        <Button Content="进入书库" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Command="{Binding $parent[Window].DataContext.CompleteFirstRunCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="24,0" />
       </StackPanel>
     </Grid>
 
     <!-- Busy / Error status -->
     <StackPanel Grid.Row="2" Spacing="8">
       <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" Height="4" />
-      <TextBlock Text="{Binding LastError}" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" IsVisible="{Binding HasError}" />
     </StackPanel>
   </Grid>
 </Grid>

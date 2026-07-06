@@ -6,35 +6,10 @@
     <FluentTheme />
   </Application.Styles>
   <Application.Resources>
-    <!-- Academic Precision Color Palette -->
-    <Color x:Key="SurfaceColor">#FBF9F8</Color>
-    <Color x:Key="SurfaceContainerLowColor">#F5F3F3</Color>
-    <Color x:Key="SurfaceContainerColor">#EFEDED</Color>
-    <Color x:Key="SurfaceContainerHighColor">#E9E8E7</Color>
-    <Color x:Key="SurfaceContainerHighestColor">#E4E2E2</Color>
-    <Color x:Key="OnSurfaceColor">#1B1C1C</Color>
-    <Color x:Key="OnSurfaceVariantColor">#484553</Color>
-    <Color x:Key="PrimaryColor">#553BB5</Color>
-    <Color x:Key="PrimaryContainerColor">#6E56CF</Color>
-    <Color x:Key="TertiaryColor">#EFE8FF</Color>
-    <Color x:Key="InverseSurfaceColor">#303031</Color>
-    <Color x:Key="InverseOnSurfaceColor">#F2F0F0</Color>
-    <Color x:Key="OutlineVariantColor">#CAC4D5</Color>
-
-    <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}" />
-    <SolidColorBrush x:Key="SurfaceContainerLowestBrush" Color="#FFFFFF" />
-    <SolidColorBrush x:Key="SurfaceContainerLowBrush" Color="{StaticResource SurfaceContainerLowColor}" />
-    <SolidColorBrush x:Key="SurfaceContainerBrush" Color="{StaticResource SurfaceContainerColor}" />
-    <SolidColorBrush x:Key="SurfaceContainerHighBrush" Color="{StaticResource SurfaceContainerHighColor}" />
-    <SolidColorBrush x:Key="SurfaceContainerHighestBrush" Color="{StaticResource SurfaceContainerHighestColor}" />
-    <SolidColorBrush x:Key="OnSurfaceBrush" Color="{StaticResource OnSurfaceColor}" />
-    <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="{StaticResource OnSurfaceVariantColor}" />
-    <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}" />
-    <SolidColorBrush x:Key="PrimaryContainerBrush" Color="{StaticResource PrimaryContainerColor}" />
-    <SolidColorBrush x:Key="TertiaryBrush" Color="{StaticResource TertiaryColor}" />
-    <SolidColorBrush x:Key="InverseSurfaceBrush" Color="{StaticResource InverseSurfaceColor}" />
-    <SolidColorBrush x:Key="InverseOnSurfaceBrush" Color="{StaticResource InverseOnSurfaceColor}" />
-    <SolidColorBrush x:Key="OutlineVariantBrush" Color="{StaticResource OutlineVariantColor}" />
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://Patchouli.UI/Themes/AcademicPrecision.axaml" />
+      </ResourceDictionary.MergedDictionaries>
 
     <!-- Material Icon Geometries (Filled) -->
     <Geometry x:Key="IconFolder">M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z</Geometry>
@@ -52,6 +27,8 @@
     <Geometry x:Key="IconX">M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z</Geometry>
     <Geometry x:Key="IconDatabase">M12 3C7.58 3 4 4.79 4 7s3.58 4 8 4 8-1.79 8-4-3.58-4-8-4M4 9v2c0 2.21 3.58 4 8 4s8-1.79 8-4V9c0 2.21-3.58 4-8 4s-8-1.79-8-4m0 4v2c0 2.21 3.58 4 8 4s8-1.79 8-4v-2c0 2.21-3.58 4-8 4s-8-1.79-8-4z</Geometry>
     <Geometry x:Key="IconTrash">M15 4V3H9v1H4v2h1v13c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V6h1V4h-5zm2 15H7V6h10v13z M9 8h2v9H9V8zm4 0h2v9h-2V8z</Geometry>
-    <Geometry x:Key="IconHistory">M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z</Geometry>
+      <Geometry x:Key="IconHistory">M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z</Geometry>
+      <Geometry x:Key="IconCopy">M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z</Geometry>
+    </ResourceDictionary>
   </Application.Resources>
 </Application>

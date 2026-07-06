@@ -9,6 +9,31 @@ public sealed class FirstRunViewModel : ViewModelBase
     private FirstRunWorkflow? _workflow;
     private PdfDiscoveryService? _discovery;
     private readonly Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>>? _openDatabase;
+    public Action<string>? OnError { get; set; }
+    private FirstRunWorkflowState State
+    {
+        get => _state;
+        set
+        {
+            var newState = value;
+            if (!string.IsNullOrWhiteSpace(newState.LastError))
+            {
+                OnError?.Invoke(newState.LastError);
+                newState = new FirstRunWorkflowState(
+                    newState.CurrentStep,
+                    _state.ProgressText,
+                    newState.SelectedPdfPath,
+                    newState.CreatedLibraryId,
+                    newState.CreatedItemId,
+                    newState.CreatedFileAssetId,
+                    newState.CreatedDocumentInstanceId,
+                    newState.LastError,
+                    newState.IsComplete);
+            }
+            _state = newState;
+        }
+    }
+
     private FirstRunWorkflowState _state;
 
     public FirstRunViewModel(FirstRunWorkflow workflow, PdfDiscoveryService discovery)
@@ -42,8 +67,25 @@ public sealed class FirstRunViewModel : ViewModelBase
     public bool IsComplete => _state.IsComplete;
     public bool HasError => !string.IsNullOrWhiteSpace(_state.LastError);
 
-    private string _databasePath = "";
-    public string DatabasePath
+    private string? _databasePath = "";
+    private bool _isImportMode;
+    public bool IsImportMode
+    {
+        get => _isImportMode;
+        set
+        {
+            if (_isImportMode != value)
+            {
+                _isImportMode = value;
+                Raise(nameof(IsImportMode));
+                Raise(nameof(DatabasePickerMode));
+            }
+        }
+    }
+
+    public Controls.PathPickerMode DatabasePickerMode => _isImportMode ? Controls.PathPickerMode.OpenFile : Controls.PathPickerMode.SaveFile;
+
+    public string? DatabasePath
     {
         get => _databasePath;
         set
@@ -123,17 +165,48 @@ public sealed class FirstRunViewModel : ViewModelBase
     public async Task OpenDatabaseAsync()
     {
         if (_openDatabase is null || string.IsNullOrWhiteSpace(DatabasePath)) return;
+
+        if (IsImportMode)
+        {
+            if (!System.IO.File.Exists(DatabasePath) || new System.IO.FileInfo(DatabasePath).Length == 0)
+            {
+                State = new FirstRunWorkflowState(FirstRunStep.Database, "所选数据库文件不存在或为空。", null, null, null, null, null, "所选数据库文件不存在或为空。", false);
+                RaiseAll();
+                return;
+            }
+            try
+            {
+                using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={DatabasePath}");
+                await conn.OpenAsync();
+                
+                var libName = await Dapper.SqlMapper.ExecuteScalarAsync<string>(conn, "select display_name from library_identity limit 1");
+                if (string.IsNullOrWhiteSpace(libName)) throw new Exception("缺少 library_identity 表数据。");
+                
+                var pathCount = await Dapper.SqlMapper.ExecuteScalarAsync<int>(conn, "select count(1) from file_search_roots");
+                if (pathCount == 0) throw new Exception("缺少 file_search_roots 记录。");
+                
+                var presetCount = await Dapper.SqlMapper.ExecuteScalarAsync<int>(conn, "select count(1) from ocr_presets");
+                if (presetCount == 0) throw new Exception("缺少 ocr_presets 记录。");
+            }
+            catch (Exception ex)
+            {
+                State = new FirstRunWorkflowState(FirstRunStep.Database, "无效的 Patchouli 数据库格式。", null, null, null, null, null, $"验证失败：{ex.Message}", false);
+                RaiseAll();
+                return;
+            }
+        }
+
         IsBusy = true; Raise(nameof(IsBusy));
         try
         {
             var opened = await _openDatabase(DatabasePath);
             _workflow = opened.Workflow;
             _discovery = opened.Discovery;
-            _state = new FirstRunWorkflowState(FirstRunStep.Library, "Database ready. Create a library identity.", null, null, null, null, null, null, false);
+            State = new FirstRunWorkflowState(FirstRunStep.Library, "数据库已就绪。请创建资料库身份。", null, null, null, null, null, null, false);
         }
         catch (Exception ex)
         {
-            _state = new FirstRunWorkflowState(FirstRunStep.Database, "Could not open database.", null, null, null, null, null, ex.Message, false);
+            State = new FirstRunWorkflowState(FirstRunStep.Database, "无法打开数据库。", null, null, null, null, null, ex.Message, false);
         }
         finally { IsBusy = false; Raise(nameof(IsBusy)); }
         RaiseAll();
@@ -146,7 +219,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         IsBusy = true; Raise(nameof(IsBusy));
         try
         {
-            _state = await _workflow.CreateLibraryAsync(LibraryName);
+            State = await _workflow.CreateLibraryAsync(LibraryName);
         }
         finally { IsBusy = false; Raise(nameof(IsBusy)); }
         RaiseAll();
@@ -160,7 +233,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         try
         {
             var libraryId = _state.CreatedLibraryId;
-            _state = await _workflow.ScanDirectoryAsync(ScanRoot);
+            State = await _workflow.ScanDirectoryAsync(ScanRoot);
             var scanResult = await _discovery.ScanDirectoryAsync(ScanRoot);
             PdfCandidates.Clear();
             foreach (var c in scanResult.Candidates)
@@ -178,7 +251,7 @@ public sealed class FirstRunViewModel : ViewModelBase
             foreach (var candidate in scanResult.Candidates)
             {
                 var importState = await _workflow.ImportPdfAsync(
-                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
+                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount ?? 1),
                     cancellationToken: default);
 
                 if (string.IsNullOrWhiteSpace(importState.LastError))
@@ -193,7 +266,7 @@ public sealed class FirstRunViewModel : ViewModelBase
                 }
             }
 
-            _state = ImportedPdfCount > 0
+            State = ImportedPdfCount > 0
                 ? new FirstRunWorkflowState(
                     FirstRunStep.MinerUConfig,
                     FailedImportCount == 0
@@ -208,13 +281,13 @@ public sealed class FirstRunViewModel : ViewModelBase
                     false)
                 : new FirstRunWorkflowState(
                     FirstRunStep.Scan,
-                    "PDF files were found, but none could be imported.",
-                    null,
-                    libraryId,
+                    "扫描到了 PDF 文件，但没有任何文件成功导入。",
                     null,
                     null,
                     null,
-                    "No scanned PDF could be imported.",
+                    null,
+                    null,
+                    "没有任何 PDF 文件被成功导入。",
                     false);
 
             Raise(nameof(ImportedPdfCount));
@@ -232,7 +305,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         try
         {
             var request = new PdfImportRequest(SelectedPdf.Path, ItemTitle, ItemAuthors, null);
-            _state = await _workflow.ImportPdfAsync(request);
+            State = await _workflow.ImportPdfAsync(request);
         }
         finally { IsBusy = false; Raise(nameof(IsBusy)); }
         RaiseAll();
@@ -242,7 +315,7 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         if (string.IsNullOrWhiteSpace(MinerUToken))
         {
-            _state = new FirstRunWorkflowState(
+            State = new FirstRunWorkflowState(
                 FirstRunStep.MinerUConfig,
                 "运行 OCR 前请输入 MinerU API token。",
                 _state.SelectedPdfPath,
@@ -263,7 +336,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         {
             var cacheDir = Path.Combine(Path.GetTempPath(), "Patchouli", "mineru-cache");
             var config = new MinerUConfiguration(MinerUToken, null, null, true, true, true);
-            _state = await _workflow.RunMinerUExtractionAsync(
+            State = await _workflow.RunMinerUExtractionAsync(
                 config, SelectedPdf?.Path ?? "", cacheDir, _state.CreatedDocumentInstanceId);
         }
         finally { IsBusy = false; Raise(nameof(IsBusy)); }
@@ -274,7 +347,7 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         if (string.IsNullOrWhiteSpace(MinerUToken))
         {
-            _state = new FirstRunWorkflowState(
+            State = new FirstRunWorkflowState(
                 FirstRunStep.MinerUConfig,
                 "完成初始化前请输入 MinerU API token。",
                 _state.SelectedPdfPath,
@@ -288,7 +361,7 @@ public sealed class FirstRunViewModel : ViewModelBase
             return Task.CompletedTask;
         }
 
-        _state = new FirstRunWorkflowState(
+        State = new FirstRunWorkflowState(
             FirstRunStep.Complete,
             "初始化完成。请在文献列表中选择一个已导入题录，并从右键菜单运行 MinerU OCR。",
             _state.SelectedPdfPath,
@@ -304,7 +377,7 @@ public sealed class FirstRunViewModel : ViewModelBase
 
     private void SetWorkflowMissingError()
     {
-        _state = new FirstRunWorkflowState(FirstRunStep.Database, "Open a runtime database first.", null, null, null, null, null, "Open a runtime database first.", false);
+        State = new FirstRunWorkflowState(FirstRunStep.Database, "请先打开一个运行时数据库。", null, null, null, null, null, "请先打开一个运行时数据库。", false);
         RaiseAll();
     }
 

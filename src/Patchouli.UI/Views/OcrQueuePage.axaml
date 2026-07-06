@@ -1,6 +1,7 @@
 <UserControl x:Class="Patchouli.UI.Views.OcrQueuePage"
              xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:controls="using:Patchouli.UI.Controls">
   <Grid DataContext="{Binding OcrQueue}">
     <ScrollViewer>
       <StackPanel Margin="32" Spacing="18" MaxWidth="980">
@@ -25,7 +26,7 @@
             <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding Priority}" PlaceholderText="Priority" Height="32" VerticalContentAlignment="Center" />
             <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding PageIds}" PlaceholderText="PageIds, 逗号分隔" Height="32" VerticalContentAlignment="Center" />
             <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PageId}" PlaceholderText="PageId" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding ImagePath}" PlaceholderText="ImagePath" Height="32" VerticalContentAlignment="Center" />
+            <controls:PathPickerTextBox Grid.Row="2" Grid.Column="2" Path="{Binding ImagePath}" PickerMode="OpenFile" DialogTitle="选择图片" PlaceholderText="ImagePath" />
             <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="8">
               <Button Content="Mock Pages" Command="{Binding EnqueueMockCommand}" Height="32" />
               <Button Content="Image Page" Command="{Binding EnqueueImageCommand}" Height="32" />

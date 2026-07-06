@@ -482,7 +482,7 @@ public sealed class UiViewModelTests
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
             tokenUsed.Should().Be("token");
-            vm.Status.Should().Contain("MCP verification passed");
+            vm.Status.Should().Contain("MCP 验证通过");
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
             var search = await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
             search.IsSuccess.Should().BeTrue(search.ErrorMessage);

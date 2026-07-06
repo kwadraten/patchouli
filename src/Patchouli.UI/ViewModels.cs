@@ -67,6 +67,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool HasFileSearchRoots => FileSearchRoots.Count > 0;
     public bool NoFileSearchRoots => !HasFileSearchRoots;
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
+    public bool StatusIsError { get; set; }
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
@@ -325,7 +326,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(McpStatusBrush));
     }
 
-    public void Report(string message) { Status = message; Raise(nameof(Status)); }
+    public void Report(string message) { Status = message; StatusIsError = false; Raise(nameof(Status)); Raise(nameof(StatusIsError)); }
+    public void ReportError(string message) { Status = message; StatusIsError = true; Raise(nameof(Status)); Raise(nameof(StatusIsError)); }
 
     public Task ShowInlineFirstRunAsync()
     {
@@ -378,7 +380,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         await Shell.RefreshItemsAsync();
     }
 
-    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath, MinerUToken = Shell.MinerUToken };
+    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath, MinerUToken = Shell.MinerUToken, OnError = ReportError };
 
     private async Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)> OpenFirstRunDatabaseAsync(string path)
     {

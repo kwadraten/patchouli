@@ -202,7 +202,21 @@
 
     <Border Grid.Row="3" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">
       <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center" Foreground="{DynamicResource InverseOnSurfaceBrush}" />
+        <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center">
+          <TextBlock.Styles>
+            <Style Selector="TextBlock">
+              <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
+            </Style>
+            <Style Selector="TextBlock.error">
+              <Setter Property="Foreground" Value="#ffdad6" />
+            </Style>
+          </TextBlock.Styles>
+          <Classes.error>
+            <MultiBinding Converter="{x:Static BoolConverters.Or}">
+              <Binding Path="StatusIsError" />
+            </MultiBinding>
+          </Classes.error>
+        </TextBlock>
         <Button Grid.Column="1" Background="Transparent" BorderThickness="0" Padding="6,2" VerticalAlignment="Center">
           <Button.Styles>
             <Style Selector="FlyoutPresenter">
@@ -244,7 +258,7 @@
                         </TextBox.Styles>
                       </TextBox>
                       <Button Grid.Column="1" Width="26" Height="26" Padding="0" Background="#3E3E3E" Click="OnCopyMcpAddressClick">
-                        <PathIcon Data="{StaticResource IconSearch}" Width="12" Height="12" Foreground="#FFFFFF" />
+                        <PathIcon Data="{StaticResource IconCopy}" Width="12" Height="12" Foreground="#FFFFFF" />
                       </Button>
                     </Grid>
                   </StackPanel>

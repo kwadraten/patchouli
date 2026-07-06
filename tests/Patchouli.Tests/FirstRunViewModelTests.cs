@@ -38,7 +38,7 @@ public sealed class FirstRunViewModelTests
 
         viewModel.CurrentStep.Should().Be("database");
         viewModel.HasError.Should().BeTrue();
-        viewModel.LastError.Should().Contain("database");
+        viewModel.LastError.Should().Contain("数据库");
     }
 
     [Fact]

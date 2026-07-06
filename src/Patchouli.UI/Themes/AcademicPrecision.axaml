@@ -1,0 +1,37 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <!-- Academic Precision Color Palette (Radix Violet Base) -->
+  <Color x:Key="SurfaceColor">#FBF9F8</Color>
+  <Color x:Key="SurfaceContainerLowColor">#F5F3F3</Color>
+  <Color x:Key="SurfaceContainerColor">#EFEDED</Color>
+  <Color x:Key="SurfaceContainerHighColor">#E9E8E7</Color>
+  <Color x:Key="SurfaceContainerHighestColor">#E4E2E2</Color>
+  <Color x:Key="OnSurfaceColor">#1B1C1C</Color>
+  <Color x:Key="OnSurfaceVariantColor">#484553</Color>
+  <Color x:Key="PrimaryColor">#553BB5</Color>
+  <Color x:Key="PrimaryContainerColor">#6E56CF</Color>
+  <Color x:Key="TertiaryColor">#EFE8FF</Color>
+  <Color x:Key="InverseSurfaceColor">#303031</Color>
+  <Color x:Key="InverseOnSurfaceColor">#F2F0F0</Color>
+  <Color x:Key="OutlineVariantColor">#CAC4D5</Color>
+  <Color x:Key="ErrorColor">#BA1A1A</Color>
+  <Color x:Key="ErrorContainerColor">#FFDAD6</Color>
+
+  <!-- SolidColorBrushes -->
+  <SolidColorBrush x:Key="SurfaceBrush" Color="{StaticResource SurfaceColor}" />
+  <SolidColorBrush x:Key="SurfaceContainerLowestBrush" Color="#FFFFFF" />
+  <SolidColorBrush x:Key="SurfaceContainerLowBrush" Color="{StaticResource SurfaceContainerLowColor}" />
+  <SolidColorBrush x:Key="SurfaceContainerBrush" Color="{StaticResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="SurfaceContainerHighBrush" Color="{StaticResource SurfaceContainerHighColor}" />
+  <SolidColorBrush x:Key="SurfaceContainerHighestBrush" Color="{StaticResource SurfaceContainerHighestColor}" />
+  <SolidColorBrush x:Key="OnSurfaceBrush" Color="{StaticResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="{StaticResource OnSurfaceVariantColor}" />
+  <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}" />
+  <SolidColorBrush x:Key="PrimaryContainerBrush" Color="{StaticResource PrimaryContainerColor}" />
+  <SolidColorBrush x:Key="TertiaryBrush" Color="{StaticResource TertiaryColor}" />
+  <SolidColorBrush x:Key="InverseSurfaceBrush" Color="{StaticResource InverseSurfaceColor}" />
+  <SolidColorBrush x:Key="InverseOnSurfaceBrush" Color="{StaticResource InverseOnSurfaceColor}" />
+  <SolidColorBrush x:Key="OutlineVariantBrush" Color="{StaticResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="ErrorBrush" Color="{StaticResource ErrorColor}" />
+  <SolidColorBrush x:Key="ErrorContainerBrush" Color="{StaticResource ErrorContainerColor}" />
+</ResourceDictionary>
