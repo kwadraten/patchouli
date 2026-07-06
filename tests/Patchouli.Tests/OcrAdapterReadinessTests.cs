@@ -1,23 +1,30 @@
+using System.IO.Compression;
 using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
+using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
+using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
+using Patchouli.Ocr.MinerU;
 using Patchouli.Search;
 
 namespace Patchouli.Tests;
@@ -110,6 +117,50 @@ public sealed class OcrAdapterReadinessTests
     }
 
     [Fact]
+    public async Task RunPresetOnDocument_mineru_preset_imports_document_through_ocr_lifecycle()
+    {
+        var pdfPath = Path.Combine(Path.GetTempPath(), $"mineru-preset-{Guid.NewGuid():N}.pdf");
+        File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
+        var zipPath = CreateMinerUZip("""
+        [
+          { "type": "text", "page_idx": 0, "text": "mineru preset page one", "bbox": [0, 0, 1000, 100] },
+          { "type": "text", "page_idx": 1, "text": "mineru preset page two", "bbox": [0, 100, 1000, 200] }
+        ]
+        """);
+        string? tokenUsed = null;
+        var zipBytes = await File.ReadAllBytesAsync(zipPath);
+
+        try
+        {
+            await using var c = await OcrReadinessContext.CreateAsync(
+                engineId: OcrEngineIds.MinerU,
+                sourcePdfPath: pdfPath,
+                pageCount: 2,
+                minerUClientFactory: config =>
+                {
+                    tokenUsed = config.Token;
+                    return CreateProtocolMinerUClient(config, zipBytes);
+                });
+            await c.SaveMinerUCredentialAsync("preset-token");
+
+            var result = await c.Coordinator.RunPresetOnDocumentAsync(c.DocumentInstanceId, c.PresetId);
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.EngineId.Should().Be(OcrEngineIds.MinerU);
+            result.Value.State.Should().Be(OcrRunState.Completed);
+            result.Value.OutputRevisionId.Should().NotBeNull();
+            tokenUsed.Should().Be("preset-token");
+            (await c.CountAsync("ocr_page_results")).Should().Be(2);
+            (await c.CountAsync("layout_nodes")).Should().Be(2);
+        }
+        finally
+        {
+            File.Delete(pdfPath);
+            File.Delete(zipPath);
+        }
+    }
+
+    [Fact]
     public async Task RunPresetOnRegion_supported_adapter_creates_candidate_without_touching_current_search()
     {
         var adapter = new FakeRegionAdapter();
@@ -158,7 +209,7 @@ public sealed class OcrAdapterReadinessTests
     public void Product_startup_registers_mineru_workflow_components()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs"))
-            .Should().Contain("MinerUResultImporter").And.Contain("FirstRunWorkflow");
+            .Should().Contain("MinerUResultImporter").And.Contain("MinerUOcrAdapter");
     }
     [Fact] public void No_new_migration_created_in_step_14A() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName).Should().NotContain(name => name!.Contains("14", StringComparison.OrdinalIgnoreCase));
 
@@ -167,6 +218,7 @@ public sealed class OcrAdapterReadinessTests
         var registry = new OcrAdapterRegistry();
         registry.RegisterAdapter(new MockOcrAdapter());
         registry.RegisterAdapter(new LocalPlaceholderOcrAdapter(new OcrModelPathValidator()));
+        registry.RegisterAdapter(new MinerUOcrAdapter());
         if (extraAdapter is not null) registry.RegisterAdapter(extraAdapter);
         return registry;
     }
@@ -184,24 +236,43 @@ public sealed class OcrAdapterReadinessTests
         public PageId PageId { get; }
         public LayoutRevisionId InitialCurrentRevisionId { get; }
 
-        public static async Task<OcrReadinessContext> CreateAsync(string engineId = OcrEngineIds.Mock, string? modelPath = null, IRealOcrAdapter? adapter = null, bool applyOnSuccess = false)
+        public static async Task<OcrReadinessContext> CreateAsync(string engineId = OcrEngineIds.Mock, string? modelPath = null, IRealOcrAdapter? adapter = null, bool applyOnSuccess = false, string? sourcePdfPath = null, int pageCount = 1, Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null)
         {
             var database = TemporarySqliteDatabase.Create();
             var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
             await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
             var library = new LibraryIdentityService(database.ConnectionFactory, clock); await library.CreateLibraryAsync("OCR readiness");
             var item = await new ItemService(database.ConnectionFactory, library, clock).CreateItemAsync("book", "OCR readiness item");
-            var document = await new DocumentInstanceService(database.ConnectionFactory, clock).AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
-            var page = await new PageService(database.ConnectionFactory, clock).CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test", null);
+            FileAssetId? fileAssetId = null;
+            if (!string.IsNullOrWhiteSpace(sourcePdfPath))
+                fileAssetId = (await new FileAssetService(database.ConnectionFactory, library, clock).RegisterFileAsync(sourcePdfPath)).Value.FileAssetId;
+            var document = await new DocumentInstanceService(database.ConnectionFactory, clock).AttachDocumentInstanceAsync(item.Value.ItemId, fileAssetId, DocumentInstanceType.PrimaryScan);
+            PageId? firstPageId = null;
+            for (var i = 0; i < pageCount; i++)
+            {
+                var page = await new PageService(database.ConnectionFactory, clock).CreatePageAsync(document.Value.DocumentInstanceId, i, (i + 1).ToString(), null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test", null);
+                firstPageId ??= page.Value.PageId;
+            }
             var layout = new LayoutTreeService(database.ConnectionFactory, clock);
             var currentRevision = await layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId, LayoutRevisionSource.Manual, makeCurrent: true);
             var presets = new OcrPresetService(database.ConnectionFactory, library, clock);
             var preset = await presets.CreatePresetAsync("Readiness", null, engineId, "model", modelPath, "{}", applyOnSuccess);
             var registry = CreateRegistry(adapter);
-            var coordinator = new OcrRunCoordinator(database.ConnectionFactory, clock, new MockOcrEngine(), adapterRegistry: registry);
+            var coordinator = new OcrRunCoordinator(database.ConnectionFactory, clock, new MockOcrEngine(), adapterRegistry: registry, minerUResultImporter: new MinerUResultImporter(database.ConnectionFactory, clock), minerUClientFactory: minerUClientFactory);
             var search = new SqliteSearchService(database.ConnectionFactory);
             var evidence = new EvidenceReferenceService(database.ConnectionFactory, clock);
-            return new OcrReadinessContext(database, presets, coordinator, new McpReadApi(database.ConnectionFactory, search, evidence), preset.Value.PresetId, document.Value.DocumentInstanceId, page.Value.PageId, currentRevision.Value.LayoutRevisionId);
+            return new OcrReadinessContext(database, presets, coordinator, new McpReadApi(database.ConnectionFactory, search, evidence), preset.Value.PresetId, document.Value.DocumentInstanceId, firstPageId!.Value, currentRevision.Value.LayoutRevisionId);
+        }
+
+        public async Task SaveMinerUCredentialAsync(string token)
+        {
+            await using var connection = Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            var libraryId = await connection.ExecuteScalarAsync<string>("select library_id from library_metadata limit 1;");
+            var now = DateTimeOffset.Parse("2026-06-20T00:00:00Z").ToString("O");
+            await connection.ExecuteAsync(
+                "insert into provider_credentials (credential_id, library_id, provider_id, display_name, secret_value, status, created_at, updated_at) values (@Id, @LibraryId, @Provider, 'MinerU', @Secret, 'active', @Now, @Now);",
+                new { Id = CredentialId.New().ToString(), LibraryId = libraryId, Provider = ProviderIds.MinerU, Secret = token, Now = now });
         }
 
         public async Task<LayoutRevisionId?> GetCurrentRevisionIdAsync()
@@ -238,5 +309,63 @@ public sealed class OcrAdapterReadinessTests
             LastInput = input;
             return Task.FromResult(Result<OcrEnginePageResult>.Success(new OcrEnginePageResult(input.PageId, true, "region text", input.RegionBBox, null, null)));
         }
+    }
+
+    private static string CreateMinerUZip(string contentListJson)
+    {
+        var zipPath = Path.Combine(Path.GetTempPath(), $"mineru-preset-{Guid.NewGuid():N}.zip");
+        using var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+        var entry = archive.CreateEntry("sample_content_list.json");
+        using var writer = new StreamWriter(entry.Open());
+        writer.Write(contentListJson);
+        return zipPath;
+    }
+
+    private static IMinerUClient CreateProtocolMinerUClient(MinerUConfiguration config, byte[] zipBytes)
+    {
+        return new MinerUClient(
+            new HttpClient(new MinerUProtocolHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/v4/file-urls/batch")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"code":0,"data":{"batch_id":"batch-1","file_urls":["https://upload.example.test/file"]},"msg":"ok"}""")
+                    };
+
+                if (request.Method == HttpMethod.Put && request.RequestUri!.Host == "upload.example.test")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+
+                if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/batch-1")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                        {"code":0,"data":{"batch_id":"batch-1","extract_result":[{"file_name":"sample.pdf","state":"done","err_msg":"","full_zip_url":"https://cdn.example.test/result.zip"}]},"msg":"ok"}
+                        """)
+                    };
+
+                if (request.Method == HttpMethod.Get && request.RequestUri!.Host == "cdn.example.test")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(zipBytes) };
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+            })),
+            new MinerUOptions
+            {
+                Token = config.Token,
+                BaseUrl = "https://mineru.example.test",
+                ModelVersion = config.ModelVersion ?? "vlm",
+                IsOcr = config.IsOcr,
+                EnableTable = config.EnableTable,
+                EnableFormula = config.EnableFormula,
+                PollingIntervalMs = 1,
+                PollingTimeoutSeconds = 5
+            });
+    }
+
+    private sealed class MinerUProtocolHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+        public MinerUProtocolHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(_handler(request));
     }
 }

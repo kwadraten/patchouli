@@ -5,7 +5,7 @@ using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Import;
-using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Mcp;
 using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
@@ -122,7 +122,7 @@ public sealed class UiViewModelTests
         var pdf = Path.Combine(root, "source.pdf");
         try
         {
-            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = database };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -299,7 +299,7 @@ public sealed class UiViewModelTests
         var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
-            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -420,8 +420,8 @@ public sealed class UiViewModelTests
         var scanRoot = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-first-run-scan-{Guid.NewGuid():N}")).FullName;
         try
         {
-            await File.WriteAllTextAsync(Path.Combine(scanRoot, "alpha.pdf"), "%PDF-1.4");
-            await File.WriteAllTextAsync(Path.Combine(scanRoot, "beta.pdf"), "%PDF-1.4");
+            TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
+            TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
@@ -456,7 +456,7 @@ public sealed class UiViewModelTests
 
         try
         {
-            await File.WriteAllTextAsync(Path.Combine(scanRoot, "selected.pdf"), "%PDF-1.4");
+            TestFixtures.CopyRealThreePagePdfTo(scanRoot, "selected.pdf");
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
@@ -475,14 +475,19 @@ public sealed class UiViewModelTests
                 await connection.OpenAsync();
                 (await connection.ExecuteScalarAsync<string>("select secret_value from provider_credentials where provider_id=@Provider;", new { Provider = ProviderIds.MinerU })).Should().Be("token");
             }
+            var zipBytes = await File.ReadAllBytesAsync(zipPath);
             string? tokenUsed = null;
-            vm.Shell.MinerUClientFactory = config => { tokenUsed = config.Token; return new FakeMinerUClient(zipPath); };
+            vm.Shell.MinerUClientFactory = config =>
+            {
+                tokenUsed = config.Token;
+                return CreateProtocolMinerUClient(config, zipBytes);
+            };
             vm.Shell.MinerUToken = "";
 
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
             tokenUsed.Should().Be("token");
-            vm.Status.Should().Contain("MCP 验证通过");
+            vm.Status.Should().Contain("OCR 完成");
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
             var search = await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
             search.IsSuccess.Should().BeTrue(search.ErrorMessage);
@@ -503,7 +508,7 @@ public sealed class UiViewModelTests
         var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
-            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -579,7 +584,7 @@ public sealed class UiViewModelTests
         var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
-            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -612,7 +617,7 @@ public sealed class UiViewModelTests
         var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
-            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -658,7 +663,7 @@ public sealed class UiViewModelTests
         var pdf = Path.Combine(root, "preview.pdf");
         try
         {
-            await File.WriteAllTextAsync(pdf, CreateMinimalPdf());
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -707,29 +712,6 @@ public sealed class UiViewModelTests
         return zipPath;
     }
 
-    private static string CreateMinimalPdf()
-    {
-        var objects = new[]
-        {
-            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-            "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Resources << >> >>\nendobj\n"
-        };
-        var builder = new System.Text.StringBuilder("%PDF-1.4\n");
-        var offsets = new List<int>();
-        foreach (var item in objects)
-        {
-            offsets.Add(System.Text.Encoding.ASCII.GetByteCount(builder.ToString()));
-            builder.Append(item);
-        }
-
-        var xref = System.Text.Encoding.ASCII.GetByteCount(builder.ToString());
-        builder.Append("xref\n0 4\n0000000000 65535 f \n");
-        foreach (var offset in offsets) builder.Append(offset.ToString("D10")).Append(" 00000 n \n");
-        builder.Append("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n").Append(xref).Append("\n%%EOF\n");
-        return builder.ToString();
-    }
-
     private static string WriteSettingsFile(string token)
     {
         var path = Path.Combine(Path.GetTempPath(), $"patchouli-appsettings-{Guid.NewGuid():N}.json");
@@ -755,17 +737,51 @@ public sealed class UiViewModelTests
         return path;
     }
 
-    private sealed class FakeMinerUClient : IMinerUClient
+    private static IMinerUClient CreateProtocolMinerUClient(MinerUConfiguration config, byte[] zipBytes)
     {
-        private readonly string _zipPath;
-        public FakeMinerUClient(string zipPath) => _zipPath = zipPath;
-        public bool IsConfigured => true;
-        public Task<Result<MinerUUploadBatch>> RequestUploadUrlsAsync(IReadOnlyList<MinerUUploadRequest> files, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<MinerUUploadBatch>.Success(new MinerUUploadBatch("batch-ui", [new MinerUFileUploadUrl(files[0].FileName, "https://upload.example.test/file", "file-ui")])));
-        public Task<Result> UploadFileAsync(string uploadUrl, string localPath, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
-        public Task<Result<MinerUPollResult>> PollExtractResultAsync(string batchId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<MinerUPollResult>.Success(new MinerUPollResult(batchId, MinerUProviderStatus.Done, "https://download.example.test/result.zip", null)));
-        public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(string batchId, string downloadDirectory, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result<MinerUDownloadedResult>.Success(new MinerUDownloadedResult(batchId, _zipPath, MinerUProviderStatus.Done)));
+        return new MinerUClient(
+            new HttpClient(new MinerUProtocolHandler(request =>
+            {
+                if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/v4/file-urls/batch")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""{"code":0,"data":{"batch_id":"batch-ui","file_urls":["https://upload.example.test/file"]},"msg":"ok"}""")
+                    };
+
+                if (request.Method == HttpMethod.Put && request.RequestUri!.Host == "upload.example.test")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+
+                if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/batch-ui")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                        {"code":0,"data":{"batch_id":"batch-ui","extract_result":[{"file_name":"selected.pdf","state":"done","err_msg":"","full_zip_url":"https://cdn.example.test/result.zip"}]},"msg":"ok"}
+                        """)
+                    };
+
+                if (request.Method == HttpMethod.Get && request.RequestUri!.Host == "cdn.example.test")
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(zipBytes) };
+
+                return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+            })),
+            new MinerUOptions
+            {
+                Token = config.Token,
+                BaseUrl = "https://mineru.example.test",
+                ModelVersion = config.ModelVersion ?? "vlm",
+                IsOcr = config.IsOcr,
+                EnableTable = config.EnableTable,
+                EnableFormula = config.EnableFormula,
+                PollingIntervalMs = 1,
+                PollingTimeoutSeconds = 5
+            });
+    }
+
+    private sealed class MinerUProtocolHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
+        public MinerUProtocolHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(_handler(request));
     }
 }

@@ -54,6 +54,7 @@ public sealed class AppServices
         var adapterRegistry = new OcrAdapterRegistry();
         adapterRegistry.RegisterAdapter(new MockOcrAdapter());
         adapterRegistry.RegisterAdapter(new LocalPlaceholderOcrAdapter(ModelPathValidator));
+        adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
 
         OcrAdapters = adapterRegistry;
         var pdfRenderer = new MuPdfNetPdfPageRenderer();
@@ -68,7 +69,8 @@ public sealed class AppServices
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
-        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, adapterRegistry, PageRenders, PageCoordinates);
+        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
+        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter();
@@ -76,10 +78,9 @@ public sealed class AppServices
         Credentials = new CredentialStore(ConnectionFactory, Library, Clock);
         PdfMetadata = new PdfMetadataReader();
         PdfDiscovery = new PdfDiscoveryService();
-        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
         PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
-        FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, MinerUImporter, SearchUnits, SearchIndex, McpVerification);
+        FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport);
     }
     public string RuntimeDatabasePath { get; }
     public PatchouliAppSettings Settings { get; }
@@ -117,8 +118,17 @@ public sealed class AppServices
     public PdfImportWorkflow PdfImport { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
-    public FirstRunWorkflow CreateFirstRunWorkflow(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory) =>
-        new(Library, PdfDiscovery, PdfImport, MinerUImporter, SearchUnits, SearchIndex, McpVerification, minerUClientFactory);
+    public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory) =>
+        new OcrRunCoordinator(
+            ConnectionFactory,
+            Clock,
+            new MockOcrEngine(),
+            new SearchUnitBuilder(ConnectionFactory, Clock),
+            OcrAdapters,
+            PageRenders,
+            PageCoordinates,
+            MinerUImporter,
+            minerUClientFactory);
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)
     {
         if (_ocrQueue is not null)

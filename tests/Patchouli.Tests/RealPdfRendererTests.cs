@@ -54,7 +54,7 @@ public sealed class RealPdfRendererTests
 
         try
         {
-            await File.WriteAllTextAsync(pdf, CreateMinimalPdf());
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
             var renderer = new MuPdfNetPdfPageRenderer();
 
             var result = await renderer.RenderPageToPngAsync(pdf, 0, output, 100);
@@ -89,28 +89,5 @@ public sealed class RealPdfRendererTests
         content.Should().NotContain("pdftoppm");
         content.Should().NotContain("pdfinfo");
         content.Should().NotContain("Poppler");
-    }
-
-    private static string CreateMinimalPdf()
-    {
-        var objects = new[]
-        {
-            "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-            "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
-            "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Resources << >> >>\nendobj\n"
-        };
-        var builder = new System.Text.StringBuilder("%PDF-1.4\n");
-        var offsets = new List<int>();
-        foreach (var item in objects)
-        {
-            offsets.Add(System.Text.Encoding.ASCII.GetByteCount(builder.ToString()));
-            builder.Append(item);
-        }
-
-        var xref = System.Text.Encoding.ASCII.GetByteCount(builder.ToString());
-        builder.Append("xref\n0 4\n0000000000 65535 f \n");
-        foreach (var offset in offsets) builder.Append(offset.ToString("D10")).Append(" 00000 n \n");
-        builder.Append("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n").Append(xref).Append("\n%%EOF\n");
-        return builder.ToString();
     }
 }

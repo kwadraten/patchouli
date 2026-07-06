@@ -15,32 +15,35 @@ namespace Patchouli.Tests;
 
 public sealed class PdfImportWorkflowTests
 {
-    private const string RealPdfPath =
-        @"C:\Users\squaresum\WPSDrive\615704893\WPS云盘\扫描或下载的内容（不区分时段）\在村兰学.pdf";
-
     [Fact]
-    public async Task ImportPdf_imports_real_user_pdf_and_creates_pages()
+    public async Task ImportPdf_imports_real_fixture_pdf_and_creates_all_pages()
     {
-        if (!File.Exists(RealPdfPath))
-            return;
-
         await using var context = await CreateContextAsync();
         var workflow = context.CreateWorkflow(new PdfMetadataReader());
+        var pdf = Path.Combine(Path.GetTempPath(), $"pdf-import-{Guid.NewGuid():N}.pdf");
+        File.Copy(TestFixtures.RealThreePagePdf, pdf);
 
-        var result = await workflow.ImportPdfAsync(new PdfImportRequest(
-            RealPdfPath, "在村兰学", "测试作者", null));
+        try
+        {
+            var result = await workflow.ImportPdfAsync(new PdfImportRequest(
+                pdf, "Real Fixture", "测试作者", null));
 
-        result.Success.Should().BeTrue(result.ErrorMessage);
-        result.CreatedItemId.Should().NotBeNullOrWhiteSpace();
-        result.CreatedFileAssetId.Should().NotBeNullOrWhiteSpace();
-        result.CreatedDocumentInstanceId.Should().NotBeNullOrWhiteSpace();
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            result.CreatedItemId.Should().NotBeNullOrWhiteSpace();
+            result.CreatedFileAssetId.Should().NotBeNullOrWhiteSpace();
+            result.CreatedDocumentInstanceId.Should().NotBeNullOrWhiteSpace();
 
-        await using var connection = context.Database.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        var pageCount = await connection.ExecuteScalarAsync<int>(
-            "select count(1) from pages where document_instance_id = @Id;",
-            new { Id = result.CreatedDocumentInstanceId });
-        pageCount.Should().BeGreaterThan(1);
+            await using var connection = context.Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            var pageCount = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from pages where document_instance_id = @Id;",
+                new { Id = result.CreatedDocumentInstanceId });
+            pageCount.Should().Be(3);
+        }
+        finally
+        {
+            File.Delete(pdf);
+        }
     }
 
     [Fact]
@@ -49,7 +52,7 @@ public sealed class PdfImportWorkflowTests
         await using var context = await CreateContextAsync();
         var workflow = context.CreateWorkflow(new MissingPdfMetadataReader());
         var pdf = Path.Combine(Path.GetTempPath(), $"pdf-{Guid.NewGuid():N}.pdf");
-        await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+        File.Copy(TestFixtures.RealThreePagePdf, pdf);
 
         try
         {

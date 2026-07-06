@@ -80,3 +80,18 @@ public sealed class LocalPlaceholderOcrAdapter : IRealOcrAdapter
     public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default)
         => Task.FromResult(Result<OcrEnginePageResult>.Failure(AppErrorCodes.UnsupportedOperation, "Real OCR adapters are not implemented in this Alpha."));
 }
+
+public sealed class MinerUOcrAdapter : IRealOcrAdapter
+{
+    public string EngineId => OcrEngineIds.MinerU;
+    public string DisplayName => "MinerU OCR";
+    public string Kind => OcrAdapterKind.CloudApi;
+    public OcrEngineCapability GetCapability() => new(EngineId, DisplayName, false, true, false, true, false, true, true, true, false, [OcrInputKinds.PdfPage], "Runs as a document-level OCR preset and imports MinerU result zips into Patchouli layout revisions.");
+    public Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) =>
+        Task.FromResult(new OcrEnvironmentCheckResult(EngineId, presetVersion.ModelId, presetVersion.ModelPath, OcrEnvironmentStatus.Ready, true, "MinerU preset is ready; the API token is checked when the run starts.", OcrRequiredAction.None, []));
+    public Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) => Task.FromResult(Result.Success());
+    public Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default) =>
+        Task.FromResult(input.InputKind == OcrInputKinds.PdfPage ? Result.Success() : Result.Failure(AppErrorCodes.ValidationFailed, "MinerU OCR expects direct PDF input."));
+    public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<OcrEnginePageResult>.Failure(AppErrorCodes.UnsupportedOperation, "MinerU OCR runs through RunPresetOnDocumentAsync."));
+}

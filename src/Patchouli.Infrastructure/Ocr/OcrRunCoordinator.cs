@@ -1,12 +1,16 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using Dapper;
+using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Ocr;
+using Patchouli.Ocr.MinerU;
 using Patchouli.Search;
 
 namespace Patchouli.Infrastructure.Ocr;
@@ -21,8 +25,11 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly IOcrAdapterRegistry? _adapterRegistry;
     private readonly IPageRenderService? _pageRenderService;
     private readonly IPageCoordinateService? _pageCoordinateService;
+    private readonly IMinerUResultImporter? _minerUResultImporter;
+    private readonly Func<MinerUConfiguration, IMinerUClient>? _minerUClientFactory;
+    private readonly string _minerUCacheRoot;
 
-    public OcrRunCoordinator(SqliteConnectionFactory connectionFactory, IClock clock, IOcrEngine? engine = null, ISearchDirtyMarker? searchDirtyMarker = null, IOcrAdapterRegistry? adapterRegistry = null, IPageRenderService? pageRenderService = null, IPageCoordinateService? pageCoordinateService = null)
+    public OcrRunCoordinator(SqliteConnectionFactory connectionFactory, IClock clock, IOcrEngine? engine = null, ISearchDirtyMarker? searchDirtyMarker = null, IOcrAdapterRegistry? adapterRegistry = null, IPageRenderService? pageRenderService = null, IPageCoordinateService? pageCoordinateService = null, IMinerUResultImporter? minerUResultImporter = null, Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null, string? minerUCacheRoot = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
@@ -31,6 +38,9 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _adapterRegistry = adapterRegistry;
         _pageRenderService = pageRenderService;
         _pageCoordinateService = pageCoordinateService;
+        _minerUResultImporter = minerUResultImporter;
+        _minerUClientFactory = minerUClientFactory;
+        _minerUCacheRoot = minerUCacheRoot ?? Path.Combine(Path.GetTempPath(), "Patchouli", "mineru-cache");
     }
 
     public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, CancellationToken cancellationToken = default)
@@ -65,11 +75,155 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "Document instance has no pages to OCR.");
             }
 
+            var version = await OcrPresetService.GetCurrentVersionAsync(connection, presetId);
+            if (version is null) return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "Active OCR preset/version was not found.");
+            if (version.EngineId == OcrEngineIds.MinerU)
+                return await RunMinerUPresetOnDocumentAsync(documentInstanceId, presetId, version, pageIds, cancellationToken);
+
             return await RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
+
+    private async Task<Result<OcrRun>> RunMinerUPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, OcrPresetVersion version, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            var sourcePath = await connection.ExecuteScalarAsync<string?>(
+                """
+                select fa.original_path
+                from document_instances di
+                join file_assets fa on fa.file_asset_id = di.file_asset_id
+                where di.document_instance_id = @DocumentInstanceId
+                limit 1;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+                return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "MinerU OCR requires an available source PDF path.");
+
+            var token = await connection.ExecuteScalarAsync<string?>(
+                """
+                select pc.secret_value
+                from provider_credentials pc
+                join library_metadata lm on lm.library_id = pc.library_id
+                where pc.provider_id = @Provider
+                  and pc.status = 'active'
+                  and length(trim(pc.secret_value)) > 0
+                order by pc.updated_at desc
+                limit 1;
+                """,
+                new { Provider = ProviderIds.MinerU });
+            if (string.IsNullOrWhiteSpace(token))
+                return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "MinerU API token is not configured.");
+
+            var currentRevisionId = await connection.ExecuteScalarAsync<string?>(
+                "select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;",
+                new { Id = documentInstanceId.ToString() });
+            var now = _clock.UtcNow.ToUniversalTime();
+            var runId = OcrRunId.New();
+
+            await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
+            {
+                await InsertRunAsync(connection, transaction, runId, documentInstanceId, presetId, version, currentRevisionId, null, OcrRunState.Running, now);
+                foreach (var pageId in pageIds.Distinct())
+                    await InsertPageResultAsync(connection, transaction, OcrPageResultId.New(), runId, pageId, OcrPageResultState.Processing, null, null, null, now);
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            var config = CreateMinerUConfiguration(version, token);
+            var client = (_minerUClientFactory ?? CreateDefaultMinerUClient)(config);
+            var download = await new MinerUResultDownloader(client).UploadAndExtractAsync(sourcePath, _minerUCacheRoot, cancellationToken);
+            if (download.IsFailure)
+                return await FailMinerURunAsync(connection, runId, pageIds, download.ErrorCode!, download.ErrorMessage!, cancellationToken);
+
+            var importer = _minerUResultImporter ?? new MinerUResultImporter(_connectionFactory, _clock);
+            var import = await importer.ImportResultZipAsync(new MinerUImportRequest(download.Value.ZipPath, documentInstanceId.ToString(), null), cancellationToken);
+            if (import.IsFailure)
+                return await FailMinerURunAsync(connection, runId, pageIds, import.ErrorCode!, import.ErrorMessage!, cancellationToken);
+            if (string.IsNullOrWhiteSpace(import.Value.LayoutRevisionId))
+                return await FailMinerURunAsync(connection, runId, pageIds, AppErrorCodes.InvalidState, "MinerU import did not produce a layout revision.", cancellationToken);
+
+            var outputRevisionId = LayoutRevisionId.Parse(import.Value.LayoutRevisionId);
+            await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
+            {
+                foreach (var pageId in pageIds.Distinct())
+                    await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Succeeded, outputRevisionId, null, null, _clock.UtcNow);
+                await connection.ExecuteAsync(
+                    "update ocr_runs set state = @State, output_revision_id = @OutputRevisionId, updated_at = @UpdatedAt where ocr_run_id = @RunId;",
+                    new { State = OcrRunState.Completed, OutputRevisionId = outputRevisionId.ToString(), UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() },
+                    transaction);
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            if (_searchDirtyMarker is not null)
+                await _searchDirtyMarker.MarkDocumentInstanceDirtyAsync(documentInstanceId, cancellationToken);
+
+            return await GetRunAsync(runId, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"MinerU OCR failed: {ex.Message}"); }
+    }
+
+    private async Task<Result<OcrRun>> FailMinerURunAsync(Microsoft.Data.Sqlite.SqliteConnection connection, OcrRunId runId, IReadOnlyList<PageId> pageIds, string errorCode, string errorMessage, CancellationToken cancellationToken)
+    {
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var pageId in pageIds.Distinct())
+            await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Failed, null, errorCode, errorMessage, _clock.UtcNow);
+        await connection.ExecuteAsync(
+            "update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;",
+            new { State = OcrRunState.Failed, UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() },
+            transaction);
+        await transaction.CommitAsync(cancellationToken);
+        return Result<OcrRun>.Failure(errorCode, errorMessage);
+    }
+
+    private static MinerUConfiguration CreateMinerUConfiguration(OcrPresetVersion version, string token)
+    {
+        string? baseUrl = null;
+        string? modelVersion = version.ModelId == OcrModelIds.MinerUDefault ? null : version.ModelId;
+        var isOcr = true;
+        var enableTable = true;
+        var enableFormula = true;
+
+        if (!string.IsNullOrWhiteSpace(version.ModelPath) && Uri.TryCreate(version.ModelPath, UriKind.Absolute, out var endpoint) && (endpoint.Scheme == Uri.UriSchemeHttp || endpoint.Scheme == Uri.UriSchemeHttps))
+            baseUrl = version.ModelPath;
+
+        try
+        {
+            using var json = JsonDocument.Parse(string.IsNullOrWhiteSpace(version.ParametersJson) ? "{}" : version.ParametersJson);
+            var root = json.RootElement;
+            if (root.TryGetProperty("baseUrl", out var baseUrlElement) && baseUrlElement.ValueKind == JsonValueKind.String)
+                baseUrl = baseUrlElement.GetString();
+            if (root.TryGetProperty("modelVersion", out var modelElement) && modelElement.ValueKind == JsonValueKind.String)
+                modelVersion = modelElement.GetString();
+            if (root.TryGetProperty("isOcr", out var isOcrElement) && isOcrElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                isOcr = isOcrElement.GetBoolean();
+            if (root.TryGetProperty("enableTable", out var tableElement) && tableElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                enableTable = tableElement.GetBoolean();
+            if (root.TryGetProperty("enableFormula", out var formulaElement) && formulaElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                enableFormula = formulaElement.GetBoolean();
+        }
+        catch (JsonException)
+        {
+        }
+
+        return new MinerUConfiguration(token, baseUrl, modelVersion, isOcr, enableTable, enableFormula);
+    }
+
+    private static IMinerUClient CreateDefaultMinerUClient(MinerUConfiguration config) =>
+        new MinerUClient(new MinerUOptions
+        {
+            Token = config.Token,
+            BaseUrl = string.IsNullOrWhiteSpace(config.BaseUrl) ? "https://mineru.net" : config.BaseUrl,
+            ModelVersion = string.IsNullOrWhiteSpace(config.ModelVersion) ? "vlm" : config.ModelVersion,
+            IsOcr = config.IsOcr,
+            EnableTable = config.EnableTable,
+            EnableFormula = config.EnableFormula
+        });
 
     public async Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default)
     {

@@ -11,8 +11,8 @@ public sealed class PdfDiscoveryServiceTests
         var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"pdfscan-{Guid.NewGuid():N}")).FullName;
         try
         {
-            File.WriteAllText(Path.Combine(dir, "doc1.pdf"), "%PDF-1.4");
-            File.WriteAllText(Path.Combine(dir, "doc2.pdf"), "%PDF-1.4");
+            TestFixtures.CopyRealThreePagePdfTo(dir, "doc1.pdf");
+            TestFixtures.CopyRealThreePagePdfTo(dir, "doc2.pdf");
             File.WriteAllText(Path.Combine(dir, "readme.txt"), "not a pdf");
 
             var service = new PdfDiscoveryService();
@@ -35,9 +35,9 @@ public sealed class PdfDiscoveryServiceTests
         {
             Directory.CreateDirectory(Path.Combine(dir, "bin"));
             Directory.CreateDirectory(Path.Combine(dir, "obj"));
-            File.WriteAllText(Path.Combine(dir, "valid.pdf"), "%PDF");
-            File.WriteAllText(Path.Combine(dir, "bin", "output.pdf"), "%PDF");
-            File.WriteAllText(Path.Combine(dir, "obj", "temp.pdf"), "%PDF");
+            TestFixtures.CopyRealThreePagePdfTo(dir, "valid.pdf");
+            TestFixtures.CopyRealThreePagePdfTo(Path.Combine(dir, "bin"), "output.pdf");
+            TestFixtures.CopyRealThreePagePdfTo(Path.Combine(dir, "obj"), "temp.pdf");
 
             var service = new PdfDiscoveryService();
             var result = await service.ScanDirectoryAsync(dir);

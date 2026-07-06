@@ -1,7 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using Dapper;
+using Patchouli.Core.Credentials;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.UI;
@@ -217,17 +220,30 @@ public sealed class LibraryShellViewModel : ViewModelBase
         try
         {
             var services = await _main.ServicesAsync();
-            var workflow = MinerUClientFactory is null
-                ? services.FirstRunWorkflow
-                : services.CreateFirstRunWorkflow(MinerUClientFactory);
+            await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token", token);
+            var presetId = await EnsureMinerUPresetAsync(services);
+            var documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
+            var coordinator = MinerUClientFactory is null
+                ? services.Ocr
+                : services.CreateOcrRunCoordinator(MinerUClientFactory);
 
-            var state = await workflow.RunMinerUExtractionAsync(
-                _main.CreateMinerUConfiguration(token),
-                item.SourcePath,
-                Path.Combine(Path.GetTempPath(), "Patchouli", "mineru-cache"),
-                item.DocumentInstanceId);
+            var run = await coordinator.RunPresetOnDocumentAsync(documentInstanceId, presetId);
+            if (run.IsFailure)
+            {
+                item.OcrStatus = run.ErrorMessage ?? "OCR 运行失败。";
+                _main.Report(item.OcrStatus);
+                Raise(nameof(InspectorStatus));
+                return;
+            }
 
-            item.OcrStatus = state.LastError ?? state.ProgressText;
+            var units = await services.SearchUnits.RebuildForDocumentInstanceAsync(documentInstanceId);
+            var index = units.IsSuccess
+                ? await services.SearchIndex.RebuildFtsForDocumentInstanceAsync(documentInstanceId)
+                : units;
+
+            item.OcrStatus = index.IsSuccess
+                ? "OCR 完成，搜索索引已更新。"
+                : index.ErrorMessage ?? "OCR 完成，但搜索索引更新失败。";
             _main.Report(item.OcrStatus);
             await RefreshItemsAsync();
         }
@@ -251,6 +267,38 @@ public sealed class LibraryShellViewModel : ViewModelBase
         MinerUToken = persisted;
         NotifyMinerUTokenChanged();
         return persisted;
+    }
+
+    private static async Task<OcrPresetId> EnsureMinerUPresetAsync(AppServices services)
+    {
+        await using var connection = services.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        var existing = await connection.ExecuteScalarAsync<string?>(
+            """
+            select p.preset_id
+            from ocr_presets p
+            join ocr_preset_versions v on v.preset_version_id = p.current_version_id
+            where p.archived = 0
+              and v.engine_id = @EngineId
+            order by p.updated_at desc
+            limit 1;
+            """,
+            new { EngineId = OcrEngineIds.MinerU });
+        if (!string.IsNullOrWhiteSpace(existing))
+            return OcrPresetId.Parse(existing);
+
+        var created = await services.OcrPresets.CreatePresetAsync(
+            "MinerU OCR",
+            "MinerU document OCR preset",
+            OcrEngineIds.MinerU,
+            OcrModelIds.MinerUDefault,
+            null,
+            """{"isOcr":true,"enableTable":true,"enableFormula":true}""",
+            true);
+        if (created.IsFailure)
+            throw new InvalidOperationException(created.ErrorMessage);
+
+        return created.Value.PresetId;
     }
 
     public Task EditMetadataForItemAsync(LibraryItemViewModel item)
