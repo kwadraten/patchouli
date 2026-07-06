@@ -1,6 +1,7 @@
 <UserControl x:Class="Patchouli.UI.Views.LibraryPage"
              xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia">
   <UserControl.Styles>
     <Style Selector="TextBlock.ListHeader">
       <Setter Property="FontSize" Value="12" />
@@ -31,7 +32,7 @@
               <!-- 我的书库 (Selected/Plank style) -->
               <Border Background="{DynamicResource TertiaryBrush}" BorderBrush="{DynamicResource PrimaryBrush}" BorderThickness="3,0,0,0" Padding="16,8">
                 <StackPanel Orientation="Horizontal" Spacing="10">
-                  <PathIcon Data="{StaticResource IconDatabase}" Width="13" Height="13" Foreground="{DynamicResource PrimaryBrush}" />
+                  <lucide:Lucide Icon="Database" Width="13" Height="13" StrokeBrush="{DynamicResource PrimaryBrush}" />
                   <TextBlock Text="我的书库" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
                 </StackPanel>
               </Border>
@@ -44,7 +45,7 @@
               <TextBlock Classes="SidebarSectionHeader" Text="数据库路径" />
               <StackPanel Spacing="6">
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                  <PathIcon Data="{StaticResource IconFolder}" Width="13" Height="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="Folder" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Grid.Column="1" Text="{Binding RuntimeDatabasePath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RuntimeDatabasePath}" />
                 </Grid>
               </StackPanel>
@@ -55,7 +56,7 @@
               <TextBlock Classes="SidebarSectionHeader" Text="同步根目录" />
               <StackPanel Spacing="6">
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                  <PathIcon Data="{StaticResource IconCloud}" Width="13" Height="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <lucide:Lucide Icon="Cloud" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBlock Grid.Column="1" Text="{Binding DefaultSyncRootPath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding DefaultSyncRootPath}" />
                 </Grid>
               </StackPanel>
@@ -69,7 +70,7 @@
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="0,0,0,8">
-                      <PathIcon Data="{StaticResource IconFolder}" Width="13" Height="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <lucide:Lucide Icon="Folder" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                       <StackPanel Grid.Column="1" Spacing="2">
                         <TextBlock Text="{Binding RootPath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
                         <WrapPanel>
