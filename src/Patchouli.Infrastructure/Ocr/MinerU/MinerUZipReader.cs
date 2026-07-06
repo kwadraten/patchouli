@@ -19,7 +19,7 @@ internal sealed class MinerUZipReader : IDisposable
     public string? ReadFileContent(string fileNamePattern)
     {
         var entry = _archive.Entries.FirstOrDefault(e =>
-            e.Name.Contains(fileNamePattern, StringComparison.OrdinalIgnoreCase));
+            e.Name.EndsWith(fileNamePattern, StringComparison.OrdinalIgnoreCase));
         if (entry is null)
             return null;
 
@@ -30,7 +30,7 @@ internal sealed class MinerUZipReader : IDisposable
     public bool HasFile(string fileNamePattern)
     {
         return _archive.Entries.Any(e =>
-            e.Name.Contains(fileNamePattern, StringComparison.OrdinalIgnoreCase));
+            e.Name.EndsWith(fileNamePattern, StringComparison.OrdinalIgnoreCase));
     }
 
     public IReadOnlyList<string> GetFileNames()

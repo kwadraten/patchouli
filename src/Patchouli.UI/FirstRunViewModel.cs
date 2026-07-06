@@ -178,7 +178,7 @@ public sealed class FirstRunViewModel : ViewModelBase
             foreach (var candidate in scanResult.Candidates)
             {
                 var importState = await _workflow.ImportPdfAsync(
-                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount ?? 1),
+                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
                     cancellationToken: default);
 
                 if (string.IsNullOrWhiteSpace(importState.LastError))
