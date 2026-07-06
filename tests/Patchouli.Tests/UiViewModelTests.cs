@@ -102,6 +102,50 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void MainWindow_xaml_sidebar_uses_real_path_bindings()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        xaml.Should().Contain("DefaultSyncRootPath");
+        xaml.Should().Contain("FileSearchRoots");
+        xaml.Should().NotContain("/Documents/Papers");
+        xaml.Should().NotContain("/Downloads/Scan");
+        xaml.Should().NotContain("WPS Drive");
+        xaml.Should().NotContain("最近更改");
+        xaml.Should().NotContain("回收站");
+    }
+
+    [Fact]
+    public async Task MainWindowViewModel_refreshes_sidebar_file_search_roots()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-search-root-{Guid.NewGuid():N}")).FullName;
+        var database = Path.Combine(root, "ui.sqlite");
+        var pdf = Path.Combine(root, "source.pdf");
+        try
+        {
+            await File.WriteAllTextAsync(pdf, "%PDF-1.4");
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = database };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            await services.FileResolution.AddSearchRootAsync(root);
+            await services.Files.RegisterFileAsync(pdf);
+
+            await vm.RefreshSidebarPathsAsync();
+
+            vm.FileSearchRoots.Should().ContainSingle();
+            vm.FileSearchRoots.Single().RootPath.Should().Be(Path.GetFullPath(root));
+            vm.FileSearchRoots.Single().FileCount.Should().Be(1);
+            vm.FileSearchRoots.Single().AvailabilityText.Should().Be("可用");
+            vm.HasFileSearchRoots.Should().BeTrue();
+            vm.NoFileSearchRoots.Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void MainWindow_xaml_wires_toolbar_search_and_results_workspace()
     {
         var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));

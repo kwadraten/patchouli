@@ -3,12 +3,14 @@ using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Avalonia.Media;
+using Dapper;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
@@ -44,7 +46,11 @@ public sealed class MainWindowViewModel : ViewModelBase
     private bool _isSettingsVisible;
     private bool _isSearchVisible;
 
-    public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); } }
+    public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); Raise(nameof(VersionInfo)); } }
+    public string DefaultSyncRootPath => _settings.Runtime.DefaultSyncRoot;
+    public ObservableCollection<SidebarFileSearchRootViewModel> FileSearchRoots { get; } = new();
+    public bool HasFileSearchRoots => FileSearchRoots.Count > 0;
+    public bool NoFileSearchRoots => !HasFileSearchRoots;
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
@@ -168,6 +174,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             await StopMcpServerAsync("正在切换运行数据库。");
             _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
             await LoadPersistedMinerUTokenAsync();
+            await RefreshSidebarPathsAsync();
             Status = $"数据库已就绪：{RuntimeDatabasePath}";
             Raise(nameof(Status));
             Raise(nameof(VersionInfo));
@@ -203,6 +210,45 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         return _services;
+    }
+
+    public async Task RefreshSidebarPathsAsync()
+    {
+        FileSearchRoots.Clear();
+
+        try
+        {
+            var services = await ServicesAsync();
+            var roots = await services.FileResolution.ListSearchRootsAsync();
+            if (roots.IsSuccess)
+            {
+                await using var connection = services.ConnectionFactory.CreateConnection();
+                await connection.OpenAsync();
+
+                var filePaths = (await connection.QueryAsync<string>(
+                    "select original_path from file_assets;")).ToArray();
+
+                foreach (var root in roots.Value)
+                {
+                    var fileCount = filePaths.Count(path => IsPathUnderRoot(path, root.RootPath));
+
+                    FileSearchRoots.Add(new SidebarFileSearchRootViewModel(
+                        root.RootPath,
+                        root.IsAvailable,
+                        root.UpdatedAt,
+                        fileCount));
+                }
+            }
+        }
+        catch
+        {
+            FileSearchRoots.Clear();
+        }
+
+        Raise(nameof(FileSearchRoots));
+        Raise(nameof(HasFileSearchRoots));
+        Raise(nameof(NoFileSearchRoots));
+        Raise(nameof(DefaultSyncRootPath));
     }
 
     public async Task StartMcpServerAsync()
@@ -313,6 +359,16 @@ public sealed class MainWindowViewModel : ViewModelBase
         var persisted = await SaveMinerUTokenSettingsAsync(FirstRun.MinerUToken);
         if (!persisted) return;
         Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
+        if (!string.IsNullOrWhiteSpace(FirstRun.ScanRoot))
+        {
+            var services = await ServicesAsync();
+            var addedRoot = await services.FileResolution.AddSearchRootAsync(FirstRun.ScanRoot);
+            if (addedRoot.IsFailure && addedRoot.ErrorCode != AppErrorCodes.InvalidState)
+            {
+                Report(addedRoot.ErrorMessage ?? "无法登记 FileSearchRoot。");
+            }
+        }
+        await RefreshSidebarPathsAsync();
         await HideInlineFirstRunAsync();
     }
 
@@ -443,6 +499,32 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         await Shell.SelectedItem.RunOcrCommand.ExecuteAsync();
     }
+
+    private static bool IsPathUnderRoot(string path, string rootPath)
+    {
+        var fullPath = Path.GetFullPath(path);
+        var fullRoot = EnsureTrailingDirectorySeparator(rootPath);
+        return string.Equals(fullPath, Path.GetFullPath(rootPath), StringComparison.OrdinalIgnoreCase)
+            || fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string EnsureTrailingDirectorySeparator(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        return fullPath.EndsWith(Path.DirectorySeparatorChar)
+            ? fullPath
+            : fullPath + Path.DirectorySeparatorChar;
+    }
+}
+public sealed record SidebarFileSearchRootViewModel(
+    string RootPath,
+    bool IsAvailable,
+    DateTimeOffset UpdatedAt,
+    int FileCount)
+{
+    public string AvailabilityText => IsAvailable ? "可用" : "离线";
+    public string UpdatedAtText => UpdatedAt.ToLocalTime().ToString("g");
+    public string FileCountText => $"{FileCount} 个文件";
 }
 public sealed class LibraryViewModel : ViewModelBase
 {
