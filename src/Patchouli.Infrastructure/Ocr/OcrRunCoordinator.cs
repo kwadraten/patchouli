@@ -354,6 +354,130 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
+    public async Task<Result> UnsetCurrentOcrAsync(DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            var documentExists = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+
+            if (documentExists == 0)
+            {
+                return Result.Failure(AppErrorCodes.NotFound, "Document instance was not found.");
+            }
+
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            var unsetCount = await connection.ExecuteAsync(
+                """
+                update layout_revisions
+                set is_current = 0
+                where document_instance_id = @DocumentInstanceId
+                  and is_current = 1
+                  and source in (@OcrStaging, @OcrAdopted, @Import);
+                """,
+                new
+                {
+                    DocumentInstanceId = documentInstanceId.ToString(),
+                    OcrStaging = LayoutRevisionSource.OcrStaging,
+                    OcrAdopted = LayoutRevisionSource.OcrAdopted,
+                    Import = LayoutRevisionSource.Import
+                },
+                transaction);
+            if (unsetCount > 0)
+            {
+                await MarkCurrentSearchUnitsDeletedAsync(connection, transaction, documentInstanceId);
+            }
+            await transaction.CommitAsync(cancellationToken);
+
+            if (_searchDirtyMarker is not null)
+            {
+                await _searchDirtyMarker.MarkDocumentInstanceDirtyAsync(documentInstanceId, cancellationToken);
+            }
+
+            return Result.Success();
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+    }
+
+    public async Task<Result> HideOcrRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            var row = await connection.QuerySingleOrDefaultAsync<RunVisibilityRow>(
+                """
+                select document_instance_id as DocumentInstanceId, output_revision_id as OutputRevisionId, hidden as Hidden
+                from ocr_runs
+                where ocr_run_id = @RunId;
+                """,
+                new { RunId = runId.ToString() });
+
+            if (row is null)
+            {
+                return Result.Failure(AppErrorCodes.NotFound, "OCR run was not found.");
+            }
+
+            if (row.Hidden != 0)
+            {
+                return Result.Success();
+            }
+
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await connection.ExecuteAsync(
+                """
+                update ocr_runs
+                set hidden = 1,
+                    updated_at = @UpdatedAt
+                where ocr_run_id = @RunId;
+                """,
+                new
+                {
+                    RunId = runId.ToString(),
+                    UpdatedAt = F(_clock.UtcNow)
+                },
+                transaction);
+
+            if (!string.IsNullOrWhiteSpace(row.OutputRevisionId))
+            {
+                var unsetCount = await connection.ExecuteAsync(
+                    """
+                    update layout_revisions
+                    set is_current = 0
+                    where layout_revision_id = @RevisionId
+                      and document_instance_id = @DocumentInstanceId
+                      and is_current = 1;
+                    """,
+                    new
+                    {
+                        RevisionId = row.OutputRevisionId,
+                        DocumentInstanceId = row.DocumentInstanceId
+                    },
+                    transaction);
+                if (unsetCount > 0)
+                {
+                    await MarkCurrentSearchUnitsDeletedAsync(connection, transaction, DocumentInstanceId.Parse(row.DocumentInstanceId));
+                }
+            }
+            await transaction.CommitAsync(cancellationToken);
+
+            if (_searchDirtyMarker is not null)
+            {
+                await _searchDirtyMarker.MarkDocumentInstanceDirtyAsync(DocumentInstanceId.Parse(row.DocumentInstanceId), cancellationToken);
+            }
+
+            return Result.Success();
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+    }
+
     public async Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId, IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
     {
         var run = await GetRunAsync(runId, cancellationToken);
@@ -411,7 +535,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         {
             await using var connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await connection.QuerySingleOrDefaultAsync<RunRow>("select ocr_run_id as OcrRunId, document_instance_id as DocumentInstanceId, preset_id as PresetId, preset_version_id as PresetVersionId, engine_id as EngineId, model_id as ModelId, parameters_snapshot_json as ParametersSnapshotJson, source_revision_id as SourceRevisionId, output_revision_id as OutputRevisionId, retry_of_run_id as RetryOfRunId, state as State, created_at as CreatedAt, updated_at as UpdatedAt from ocr_runs where ocr_run_id = @RunId;", new { RunId = runId.ToString() });
+            var row = await connection.QuerySingleOrDefaultAsync<RunRow>("select ocr_run_id as OcrRunId, document_instance_id as DocumentInstanceId, preset_id as PresetId, preset_version_id as PresetVersionId, engine_id as EngineId, model_id as ModelId, parameters_snapshot_json as ParametersSnapshotJson, source_revision_id as SourceRevisionId, output_revision_id as OutputRevisionId, retry_of_run_id as RetryOfRunId, state as State, created_at as CreatedAt, updated_at as UpdatedAt from ocr_runs where ocr_run_id = @RunId and hidden = 0;", new { RunId = runId.ToString() });
             return row is null ? Result<OcrRun>.Failure(AppErrorCodes.NotFound, "OCR run was not found.") : Result<OcrRun>.Success(row.ToRun());
         }
         catch (OperationCanceledException) { throw; }
@@ -472,5 +596,24 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
 
     private sealed class PageRow { public string PageId { get; set; } = ""; public string DocumentInstanceId { get; set; } = ""; public int PageIndex { get; set; } public string? PageLabel { get; set; } public double? Width { get; set; } public double? Height { get; set; } public int Rotation { get; set; } public string CoordinateBasis { get; set; } = ""; public double? BasisWidth { get; set; } public double? BasisHeight { get; set; } public string RendererBasisVersion { get; set; } = ""; public string? SourceFileHash { get; set; } public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = ""; public Core.Layout.Page ToPage() => new(Core.Ids.PageId.Parse(PageId), Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), PageIndex, PageLabel, Width, Height, Rotation, CoordinateBasis, BasisWidth, BasisHeight, RendererBasisVersion, SourceFileHash, DateTimeOffset.Parse(CreatedAt), DateTimeOffset.Parse(UpdatedAt)); }
     private sealed class RunRow { public string OcrRunId { get; set; } = ""; public string DocumentInstanceId { get; set; } = ""; public string PresetId { get; set; } = ""; public string PresetVersionId { get; set; } = ""; public string EngineId { get; set; } = ""; public string ModelId { get; set; } = ""; public string ParametersSnapshotJson { get; set; } = ""; public string? SourceRevisionId { get; set; } public string? OutputRevisionId { get; set; } public string? RetryOfRunId { get; set; } public string State { get; set; } = ""; public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = ""; public OcrRun ToRun() => new(Core.Ids.OcrRunId.Parse(OcrRunId), Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), OcrPresetId.Parse(PresetId), OcrPresetVersionId.Parse(PresetVersionId), EngineId, ModelId, ParametersSnapshotJson, SourceRevisionId is null ? null : LayoutRevisionId.Parse(SourceRevisionId), OutputRevisionId is null ? null : LayoutRevisionId.Parse(OutputRevisionId), RetryOfRunId is null ? null : Core.Ids.OcrRunId.Parse(RetryOfRunId), State, DateTimeOffset.Parse(CreatedAt), DateTimeOffset.Parse(UpdatedAt)); }
+    private Task MarkCurrentSearchUnitsDeletedAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Data.Common.DbTransaction transaction, DocumentInstanceId documentInstanceId)
+        => connection.ExecuteAsync(
+            """
+            update search_units
+            set status = @Deleted,
+                updated_at = @UpdatedAt
+            where document_instance_id = @DocumentInstanceId
+              and status = @Current;
+            """,
+            new
+            {
+                Deleted = SearchUnitStatus.Deleted,
+                Current = SearchUnitStatus.Current,
+                UpdatedAt = F(_clock.UtcNow),
+                DocumentInstanceId = documentInstanceId.ToString()
+            },
+            transaction);
+
+    private sealed class RunVisibilityRow { public string DocumentInstanceId { get; set; } = ""; public string? OutputRevisionId { get; set; } public int Hidden { get; set; } }
     private sealed class PageResultRow { public string ResultId { get; set; } = ""; public string OcrRunId { get; set; } = ""; public string PageId { get; set; } = ""; public string State { get; set; } = ""; public string? StagingLayoutRevisionId { get; set; } public string? ErrorCode { get; set; } public string? ErrorMessage { get; set; } public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = ""; public OcrPageResult ToResult() => new(OcrPageResultId.Parse(ResultId), Core.Ids.OcrRunId.Parse(OcrRunId), Core.Ids.PageId.Parse(PageId), State, StagingLayoutRevisionId is null ? null : LayoutRevisionId.Parse(StagingLayoutRevisionId), ErrorCode, ErrorMessage, DateTimeOffset.Parse(CreatedAt), DateTimeOffset.Parse(UpdatedAt)); }
 }

@@ -130,6 +130,7 @@
 | 3.1/3.4 Item 基础字段与服务 CRUD | 已实现 | `items` 已扩展 CSL 核心字段和 `deleted_at`；`ItemMetadata`、`IItemService`、`ItemService` 已覆盖 create/update/delete/list，`BibliographicCoreTests` 覆盖 citation_key 自动生成、更新、软删除、分页列表。 |
 | 2.1 文档级 OCR | 已实现 | `IOcrRunCoordinator.RunPresetOnDocumentAsync` 已列出 DocumentInstance 下全部页面并复用页面级 OCR；`OcrLifecycleTests` 覆盖全页面运行和无页面不创建空 run。 |
 | 2.2 区域级 OCR | 已实现 | `IOcrRunCoordinator.RunPresetOnRegionAsync` 已验证 `NormalizedBBox` 并通过 region adapter 生成 staging/candidate；`OcrAdapterReadinessTests` 覆盖有效区域和越界区域不创建 run。 |
+| 2.3 OCR 当前修订重置与隐藏 | 已实现 | `IOcrRunCoordinator` 已提供 `UnsetCurrentOcrAsync` 和 `HideOcrRunAsync`；`ocr_runs.hidden` 迁移已落库；hide/unset 会清理 current OCR revision、current SearchUnit 并标记 search dirty；测试覆盖默认搜索/MCP 不返回和旧 pinned EvidenceRef 行为。 |
 | 2.6 OCR 自动重试与手动修复分类执行 | 已实现 | `OcrQueueScheduler` 已调用 `IOcrRetryPolicy.Classify`、`ShouldRetry`、`GetNextDelay`，并会将手动修复类错误标记为 `Blocked`。`OcrQueueSchedulerTests` 已覆盖瞬时重试、手动修复阻塞和 timeout 行为。 |
 | 3.5 标识符存储模型 | 无需修改 | 当前 `item_identifiers` 表优于 PRD 中的 JSON map：可索引、可唯一约束、可扩展。应在 PRD 或 ADR 中记录该设计差异，而不是改回 JSON map。 |
 | 4.1 MCP bbox/evidence 小缺口 | 已实现 | `get_search_result_context` 已从 `bbox_union_json` 解析 `NormalizedBBox`；`get_page_blocks` current 模式已对可映射 SearchUnit 的块生成 EvidenceRef；`McpReadApiTests` 覆盖 bbox、EvidenceRef 和无路径泄露边界。 |
@@ -156,7 +157,7 @@
 | CA-03 | 结构化 dates | ready-for-agent | CA-01 done | 新增 `item_dates`；支持 `issued`、`accessed`、`original-date`；旧 `date` 仅作 issued 显示回退。 |
 | CA-04 | 文档级 OCR | done | 无 | 已完成 `RunPresetOnDocumentAsync`；列出 DocumentInstance 下所有 Page 后复用 `RunPresetOnPagesAsync`；无页面不创建空 run。 |
 | CA-05 | 区域级 OCR | done | 无 | 已完成 `RunPresetOnRegionAsync`；验证 `NormalizedBBox`；v1 生成 staging/candidate，不做 bbox 级替换采纳。 |
-| CA-06 | OCR unset/hide | ready-for-agent | CA-04 done | 增加 current OCR 重置和 hide run 服务；新增 `ocr_runs.hidden`；更新 search dirty、普通 UI 和 MCP 可见性。 |
+| CA-06 | OCR unset/hide | done | CA-04 done | 已增加 current OCR 重置和 hide run 服务；新增 `ocr_runs.hidden`；hide/unset 清理 current SearchUnit、标记 search dirty，默认搜索/MCP 不返回隐藏 OCR 内容。 |
 | CA-07 | MCP bbox/evidence 小缺口 | done | 无 | 已补 `get_search_result_context` bbox；current `get_page_blocks` 对 SearchUnit 块生成 EvidenceRef；不得暴露路径、secret、图片。 |
 | CA-08 | 菜单栏与 Developer Tools 清理 | done | 无 | 已用 Avalonia `Menu` 替代装饰性 TextBlock；删除 Developer Tools 按钮；移除 inline MinerU token prompt 的 UI 壳。 |
 | CA-09 | MinerU credential flow | done | CA-08 done | 右键 OCR 从 `ProviderCredential` 优先读取 token，回退 appsettings；缺失时打开设置页 MinerU 区域。 |
@@ -181,9 +182,8 @@
 
 1. CA-02 结构化 creators。
 2. CA-03 结构化 dates。
-3. CA-06 OCR unset/hide。
-4. CA-11 编辑题录标签页第一版。
-5. CA-14 设置标签页第一版。
+3. CA-11 编辑题录标签页第一版。
+4. CA-14 设置标签页第一版。
 
 已完成并不再排入主线：
 
@@ -196,6 +196,7 @@
 7. CA-10 搜索 UI 第一版。
 8. CA-12 OCR 队列标签页。
 9. CA-13 证据 Markdown 导出。
+10. CA-06 OCR unset/hide。
 
 ---
 
@@ -257,14 +258,12 @@
 ### 4.2.3 OCR 当前修订重置与隐藏
 
 - **PRD 引用**：6.11。
-- **当前状态**：未实现。数据库已有 `layout_revisions.is_current`，但无服务层封装；`ocr_runs` 无 hidden 标记。
-- **建议实现**：
-  - 新增 `IOcrRevisionService`，或扩展 `IOcrRunCoordinator`：
-    - `UnsetCurrentOcrAsync(DocumentInstanceId)`。
-    - `HideOcrRunAsync(OcrRunId)`。
-  - 为 `ocr_runs` 增加 `hidden` 列。
-  - SearchUnit / FTS dirty 范围需要跟随当前修订变化。
-  - MCP 和普通 UI 默认过滤 hidden run。
+- **当前状态**：已实现。`IOcrRunCoordinator` 已扩展 `UnsetCurrentOcrAsync(DocumentInstanceId)` 与 `HideOcrRunAsync(OcrRunId)`；`ocr_runs.hidden` 已通过迁移加入。
+- **实现说明**：
+  - `UnsetCurrentOcrAsync` 会清空当前 OCR/import layout revision，清理该 DocumentInstance 的 current SearchUnit，并标记 search dirty。
+  - `HideOcrRunAsync` 会标记 run hidden；若该 run 的输出 revision 正在 current，也会清空 current、清理 current SearchUnit 并标记 search dirty。
+  - `GetRunAsync` 默认过滤 hidden run；搜索/MCP 默认通过 current SearchUnit 过滤隐藏后的 OCR 内容。
+  - 旧 pinned EvidenceRef 继续按 pinned 内容解析；tombstone/purge 语义仍留给 CA-15/CA-16。
 - **优先级**：高。
 - **建议切片**：单独 PR，因为它会影响搜索和 MCP 可见性。
 
@@ -612,13 +611,13 @@
 
 ### CA-06：OCR unset/hide
 
-状态：`ready-for-agent`，依赖 CA-04 done。
+状态：`done`，依赖 CA-04 done。
 
 - migration：`ocr_runs.hidden`。
 - 服务：unset current、hide run。
-- search dirty 标记。
-- MCP/UI 默认过滤 hidden。
-- 测试：隐藏后搜索/MCP 不返回；旧 EvidenceRef 行为明确。
+- search dirty 标记与 current SearchUnit 清理。
+- MCP/UI 默认过滤 hidden/current-cleared 内容。
+- 测试：隐藏后搜索/MCP 不返回；旧 pinned EvidenceRef 继续可解析。
 
 ### CA-07：MCP bbox/evidence 小缺口
 
@@ -699,10 +698,10 @@
 
 | 优先级 | 条目 |
 |---|---|
-| 高 | 4.2.1 文档级 OCR；4.2.3 OCR 当前修订重置与隐藏；4.3.1 CSL 核心字段；4.3.2 结构化名称；4.3.4 `IItemService` CRUD/List；4.4.1 菜单栏；4.4.2 搜索管道；4.4.3 侧边栏路径真实化；4.4.4 编辑题录标签页；4.4.8 证据 Markdown 导出；4.4.11 Developer Tools 迁移；4.4.12 设置标签页；4.4.13 MinerU 右键触发流程 |
+| 高 | 4.2.1 文档级 OCR；4.3.1 CSL 核心字段；4.3.2 结构化名称；4.3.4 `IItemService` CRUD/List；4.4.1 菜单栏；4.4.2 搜索管道；4.4.3 侧边栏路径真实化；4.4.4 编辑题录标签页；4.4.8 证据 Markdown 导出；4.4.11 Developer Tools 迁移；4.4.12 设置标签页；4.4.13 MinerU 右键触发流程 |
 | 中 | 4.2.2 区域 OCR；4.2.4 OCR 逻辑删除；4.3.3 结构化日期；4.4.5 OCR 队列管理；4.4.9 批量操作 |
 | 低 | 4.1.1 上下文 BBox；4.1.2 current blocks EvidenceRef；4.2.5 OCR 清除；4.2.6 skipped 状态；4.4.6 收藏 UI；4.4.7 自定义字段 UI；4.4.10 设计系统细节 |
-| 已实现/无需修改 | 2.6 OCR 自动重试；3.5 标识符存储模型 |
+| 已实现/无需修改 | 2.3 OCR 当前修订重置与隐藏；2.6 OCR 自动重试；3.5 标识符存储模型 |
 
 ---
 
@@ -742,6 +741,7 @@ hide、tombstone、purge 三者语义不同：
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 2.3 | 2026-07-06 | 完成 CA-06 OCR unset/hide；新增 hidden run 迁移、服务方法、search dirty/current SearchUnit 清理和默认搜索/MCP 可见性测试。 |
 | 2.2 | 2026-07-06 | 完成 CA-12 OCR 队列标签页与 CA-13 证据 Markdown 导出入口；更新下一批 ready-for-agent 列表。 |
 | 2.1 | 2026-07-06 | 同步已完成的 CA-01、CA-04、CA-05、CA-07、CA-08、CA-09、CA-10；完成 4.4.3 侧边栏路径真实化；刷新下一批 ready-for-agent 列表。 |
 | 2.0 | 2026-07-01 | 将原缺口清单重写为已复核缺口与执行计划；修正 OCR 自动重试状态；按依赖关系重排实施顺序；新增 PR 拆分和关键风险。 |
