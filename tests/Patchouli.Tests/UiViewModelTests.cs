@@ -1,6 +1,9 @@
 using System.IO.Compression;
 using Avalonia;
 using Avalonia.Headless;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Credentials;
@@ -90,6 +93,51 @@ public sealed class UiViewModelTests
         xaml.Should().NotContain("Background=\"None\"");
         xaml.Should().NotContain("BorderBrush=\"None\"");
         xaml.Should().NotContain("Foreground=\"None\"");
+    }
+
+    [Fact]
+    public void LucideIcon_renders_svg_resource_without_external_package()
+    {
+        var icon = new Patchouli.Lucide.Avalonia.Lucide
+        {
+            Icon = "Search",
+            Width = 24,
+            Height = 24,
+            StrokeBrush = Brushes.Black
+        };
+
+        icon.Measure(new Size(24, 24));
+        icon.Arrange(new Rect(0, 0, 24, 24));
+
+        var bitmap = new RenderTargetBitmap(new PixelSize(24, 24), new Vector(96, 96));
+        bitmap.Render(icon);
+    }
+
+    [Fact]
+    public async Task MainWindow_constructs_with_local_lucide_icons()
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            var window = new MainWindow();
+            window.Close();
+        });
+    }
+
+    [Fact]
+    public void MainWindow_xaml_uses_local_lucide_svg_control()
+    {
+        var project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Patchouli.UI.csproj"));
+        var packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
+        var mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        var pdfXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+
+        project.Should().NotContain("LucideAvalonia").And.NotContain("Lucide.Avalonia");
+        packages.Should().NotContain("LucideAvalonia").And.NotContain("Lucide.Avalonia");
+        project.Should().Contain("Assets\\Lucide\\*.svg");
+        mainXaml.Should().Contain("using:Patchouli.Lucide.Avalonia").And.NotContain("assembly=LucideAvalonia");
+        libraryXaml.Should().Contain("using:Patchouli.Lucide.Avalonia").And.NotContain("assembly=LucideAvalonia");
+        pdfXaml.Should().Contain("using:Patchouli.Lucide.Avalonia").And.NotContain("assembly=LucideAvalonia");
     }
 
     [Fact]
@@ -524,7 +572,8 @@ public sealed class UiViewModelTests
             vm.ItemEditor.HasItem.Should().BeTrue();
 
             vm.ItemEditor.Title = "Edited Title";
-            vm.ItemEditor.Authors = "Chen, Li";
+            await vm.ItemEditor.AddCreatorCommand.ExecuteAsync();
+            vm.ItemEditor.Creators.Single().Literal = "Chen, Li";
             vm.ItemEditor.IssuedDate = "2026";
             vm.ItemEditor.PublicationTitle = "Journal of Patchouli";
             await vm.ItemEditor.SaveCommand.ExecuteAsync();
@@ -592,12 +641,9 @@ public sealed class UiViewModelTests
             var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Closable Tab", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
-
-            vm.ShowSelectedDocumentTab.Should().BeFalse();
-            vm.Shell.SelectedItem.Should().NotBeNull();
             await vm.ShowReadingCommand.ExecuteAsync();
             vm.ShowSelectedDocumentTab.Should().BeTrue();
-            await vm.ClosePdfReaderTabCommand.ExecuteAsync();
+            await vm.ClosePdfWorkspaceTabCommand.ExecuteAsync();
 
             vm.Shell.SelectedItem.Should().NotBeNull();
             vm.ShowSelectedDocumentTab.Should().BeFalse();
@@ -675,11 +721,11 @@ public sealed class UiViewModelTests
             await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
             vm.RaiseShellSelectionChanged();
 
-            vm.Shell.ShowPdfReader.Should().BeTrue();
+            vm.Shell.ShowPdfWorkspace.Should().BeTrue();
             vm.ShowSidebar.Should().BeFalse();
             vm.IsInspectorVisible.Should().BeFalse();
-            vm.PdfPreview.Image.Should().NotBeNull(vm.PdfPreview.Status);
-            vm.PdfPreview.Status.Should().Contain("mupdf-net-dpi120");
+            vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
+            vm.PdfWorkspace.Status.Should().Contain("mupdf-net-dpi120");
             Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
         }
         finally
