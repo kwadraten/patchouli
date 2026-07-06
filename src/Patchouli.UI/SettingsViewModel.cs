@@ -67,8 +67,24 @@ public sealed class SettingsViewModel : ViewModelBase
         Raise(nameof(SettingsFilePath));
     }
 
+    public void ClearServiceBackedState()
+    {
+        FileSearchRoots.Clear();
+        OcrPresets.Clear();
+        SearchProfiles.Clear();
+        RaiseAll();
+    }
+
     public async Task RefreshAsync()
     {
+        if (!_main.HasOpenRuntimeDatabase)
+        {
+            ClearServiceBackedState();
+            Status = "请先打开运行数据库，再刷新数据库相关设置。";
+            Raise(nameof(Status));
+            return;
+        }
+
         try
         {
             var services = await _main.ServicesAsync();

@@ -54,7 +54,20 @@ public sealed class PdfPageRenderingTests
     [Fact] public async Task PdfRenderTimeout_does_not_create_current_search_evidence() { await using var c=await Context.CreateAsync(apply:true); c.Renderer.ThrowTimeout=true; var r=await c.Coordinator.RunPresetOnRenderedPdfPageAsync(c.DocumentInstanceId,c.PresetId,c.PageId); r.ErrorCode.Should().Be(OcrFailureCode.RendererTimeout); (await c.CurrentRevisionAsync()).Should().BeNull(); (await c.CountAsync("search_units")).Should().Be(0); EvidenceReferenceCodec.Encode(new EvidenceReference(c.LibraryId,c.DocumentInstanceId,c.PageId,SearchUnitId.New(),"text","bbox",LayoutRevisionId.New(),null)).Value.Should().NotContain(c.PdfPath); }
     [Fact] public void Agent_prd_keeps_render_cache_out_of_mcp_and_snapshots() => File.ReadAllText(TestPaths.FromRepositoryRoot(".agent","PRD.md")).Should().Contain("MCP never returns cached images or image paths").And.Contain("page_renders");
     [Fact] public void Product_ui_uses_pdf_preview_placeholder_not_legacy_batch_ocr_copy() => File.ReadAllText(TestPaths.FromRepositoryRoot("src","Patchouli.UI","MainWindow.axaml")).Should().Contain("PDF 预览").And.NotContain("batch PDF OCR");
-    [Fact] public void No_new_business_schema_unless_reported() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory,"*.sql").Select(Path.GetFileName).Should().NotContain(n=>n!.Contains("010_",StringComparison.Ordinal));
+    [Fact] public void No_new_business_schema_unless_reported() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory,"*.sql").Select(Path.GetFileName).OrderBy(n=>n).Should().Equal(
+        "0001_create_schema_migrations.sql",
+        "002_create_library_metadata.sql",
+        "003_create_bibliographic_core.sql",
+        "004_create_file_resolution.sql",
+        "005_create_pages_and_layout.sql",
+        "006_create_ocr_lifecycle.sql",
+        "007_create_search_units_and_fts.sql",
+        "008_create_evidence_refs.sql",
+        "009_create_provider_credentials.sql",
+        "010_expand_item_metadata.sql",
+        "011_create_search_profiles.sql",
+        "012_hide_ocr_runs.sql",
+        "013_create_structured_item_names_and_dates.sql");
 
     private sealed class Context : IAsyncDisposable
     {

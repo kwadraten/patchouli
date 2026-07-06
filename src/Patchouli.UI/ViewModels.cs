@@ -61,6 +61,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string VersionInfo => $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
     public string StatusBarVersion => $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion}";
     public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
+    public bool HasOpenRuntimeDatabase => _services is not null;
     public IClipboardService Clipboard { get; }
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
@@ -501,7 +502,14 @@ public sealed class MainWindowViewModel : ViewModelBase
         IsItemEditorVisible = false;
         Shell.IsReadingMode = false;
         Settings.FocusMinerU(statusMessage);
-        await Settings.RefreshAsync();
+        if (HasOpenRuntimeDatabase)
+        {
+            await Settings.RefreshAsync();
+        }
+        else
+        {
+            Settings.ClearServiceBackedState();
+        }
         RaiseShellSelectionChanged();
     }
 

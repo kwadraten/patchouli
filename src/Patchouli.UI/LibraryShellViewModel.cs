@@ -246,6 +246,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (!string.IsNullOrWhiteSpace(MinerUToken))
             return MinerUToken.Trim();
 
+        if (!_main.HasOpenRuntimeDatabase)
+            return "";
+
         var persisted = await _main.GetPersistedMinerUTokenAsync();
         MinerUToken = persisted;
         NotifyMinerUTokenChanged();
