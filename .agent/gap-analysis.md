@@ -137,6 +137,8 @@
 | 4.4.2 搜索 UI 第一版 | 已实现 | 顶部搜索框已调用 `ISearchService.SearchLibraryAsync`，搜索结果工作区展示页级结果、matched units、EvidenceRef、index status 和 affected scopes summary；`UiViewModelTests` 覆盖入口。 |
 | 4.4.3 侧边栏路径真实化 | 已实现 | 侧边栏显示真实 `RuntimeDatabasePath`、配置的同步根目录和数据库中的 FileSearchRoot；移除最近更改、回收站、WPS Drive、`/Documents/Papers`、`/Downloads/Scan` 等无数据源占位。 |
 | 4.4.13 MinerU OCR 右键触发流程 | 已实现 | 右键/菜单运行 OCR 已优先读取 ProviderCredential，回退 appsettings；缺 token 时打开设置页 MinerU 区域；设置保存同时更新 ProviderCredential 和 appsettings。 |
+| 4.4.5 OCR 队列管理标签页 | 已实现 | 文件菜单已打开真实 OCR 队列标签页；页面展示状态摘要、任务列表、启动/停止/tick、暂停/恢复和取消任务入口；复用现有队列后端。 |
+| 4.4.8 证据 Markdown 导出 | 已实现 | 编辑菜单和搜索结果 matched unit 右键菜单已提供导出入口；使用保存文件选择器；导出内容通过当前 pinned EvidenceRef 调用 `CreateMarkdownAsync` 生成。 |
 
 ### 3.2 Coding Agent Backlog
 
@@ -160,8 +162,8 @@
 | CA-09 | MinerU credential flow | done | CA-08 done | 右键 OCR 从 `ProviderCredential` 优先读取 token，回退 appsettings；缺失时打开设置页 MinerU 区域。 |
 | CA-10 | 搜索 UI 第一版 | done | CA-07 done | 搜索框调用 `ISearchService`；展示页级结果、matched units、EvidenceRef、index status。 |
 | CA-11 | 编辑题录标签页第一版 | ready-for-agent | CA-01 done | 新建/编辑共用表单；覆盖元数据、标签、标识符、关联文件注册；不暴露开发者手动 attach/resolve 入口。 |
-| CA-12 | OCR 队列标签页 | ready-for-agent | CA-08 done | 文件菜单打开 OCR 队列页；显示状态、任务列表、暂停/恢复/取消；复用现有队列后端。 |
-| CA-13 | 证据 Markdown 导出 | ready-for-agent | CA-07 done, CA-08 done | 右键和编辑菜单导出 pinned Evidence Markdown；使用 file picker；导出内容必须与 pinned EvidenceRef 匹配。 |
+| CA-12 | OCR 队列标签页 | done | CA-08 done | 文件菜单打开 OCR 队列页；显示状态、任务列表、暂停/恢复/取消；复用现有队列后端。自动刷新配置后置。 |
+| CA-13 | 证据 Markdown 导出 | done | CA-07 done, CA-08 done | 右键和编辑菜单导出 pinned Evidence Markdown；使用 file picker；导出内容与 pinned EvidenceRef 匹配。 |
 | CA-14 | 设置标签页第一版 | ready-for-agent | CA-08 done | 第一批只做库信息、路径、MinerU、OCR 预设、搜索配置、MCP；快照/缓存/许可证后置。当前仅 MinerU 区域部分完成。 |
 | CA-15 | OCR 逻辑删除 | defer | CA-06 | tombstone 是同步传播语义，需同时处理搜索、MCP、EvidenceRef、快照。 |
 | CA-16 | OCR 数据清除 | defer | CA-15 | purge 是高级维护操作，需保留最小 marker 并让 EvidenceRef 返回 `purged`。 |
@@ -181,9 +183,7 @@
 2. CA-03 结构化 dates。
 3. CA-06 OCR unset/hide。
 4. CA-11 编辑题录标签页第一版。
-5. CA-12 OCR 队列标签页。
-6. CA-13 证据 Markdown 导出。
-7. CA-14 设置标签页第一版。
+5. CA-14 设置标签页第一版。
 
 已完成并不再排入主线：
 
@@ -194,6 +194,8 @@
 5. CA-08 菜单栏与 Developer Tools 清理。
 6. CA-09 MinerU credential flow。
 7. CA-10 搜索 UI 第一版。
+8. CA-12 OCR 队列标签页。
+9. CA-13 证据 Markdown 导出。
 
 ---
 
@@ -448,14 +450,10 @@
 ### 4.4.5 OCR 队列管理标签页
 
 - **PRD 引用**：6.10。
-- **当前状态**：后端较完整，ViewModel 存在，缺少 AXAML 视图。
+- **当前状态**：已实现。文件菜单打开真实 OCR 队列标签页，展示队列状态、任务列表、启动/停止/tick、暂停/恢复和取消任务入口。
 - **建议实现**：
-  - 文件 -> OCR 队列 打开标签页。
-  - 显示 queued/running/succeeded/failed/cancelled/blocked。
-  - 展示并发限制和暂停范围。
-  - 支持暂停/恢复、取消任务。
-  - 自动刷新可配置。
-- **优先级**：中。
+  - 自动刷新配置可作为后续易用性增强，不阻塞当前第一版。
+- **优先级**：done。
 
 ### 4.4.6 收藏管理 UI
 
@@ -479,14 +477,10 @@
 ### 4.4.8 证据 Markdown 导出
 
 - **PRD 引用**：6.17，用户故事 22。
-- **当前状态**：后端已有 Evidence Markdown 生成能力；普通 UI 不可用。
+- **当前状态**：已实现。编辑菜单和搜索结果 matched unit 右键菜单提供导出入口，使用保存文件选择器，内容从当前 pinned EvidenceRef 调用 `CreateMarkdownAsync` 生成。
 - **建议实现**：
-  - 将“复制 Markdown”改为“导出 Markdown”。
-  - 右键菜单和编辑菜单提供导出入口。
-  - 使用 file picker 选择目标文件。
-  - 内容来自 pinned EvidenceRef 的文本、来源、evref。
   - 阅读工具栏可增加“导出当前页证据 Markdown”，但需先明确当前页 EvidenceRef 的生成规则。
-- **优先级**：高。
+- **优先级**：done（菜单和右键导出）；defer（阅读工具栏当前页导出）。
 
 ### 4.4.9 批量操作
 
@@ -572,7 +566,7 @@
 
 ### CA-01：Item 基础字段与服务 CRUD
 
-状态：`ready-for-agent`。
+状态：`done`。
 
 - migration：扩展 `items`。
 - `ItemMetadata` 添加字段。
@@ -582,7 +576,7 @@
 
 ### CA-02：结构化 creators
 
-状态：`blocked`，依赖 CA-01。
+状态：`ready-for-agent`，依赖 CA-01 done。
 
 - migration：`item_creators`。
 - Core model：creator role/name value object。
@@ -592,7 +586,7 @@
 
 ### CA-03：结构化 dates
 
-状态：`blocked`，依赖 CA-01。
+状态：`ready-for-agent`，依赖 CA-01 done。
 
 - migration：`item_dates`。
 - Core model：date role/date-parts。
@@ -601,7 +595,7 @@
 
 ### CA-04：文档级 OCR
 
-状态：`ready-for-agent`。
+状态：`done`。
 
 - `RunPresetOnDocumentAsync`。
 - 复用 `RunPresetOnPagesAsync`。
@@ -609,7 +603,7 @@
 
 ### CA-05：区域级 OCR
 
-状态：`ready-for-agent`。
+状态：`done`。
 
 - `RunPresetOnRegionAsync`。
 - bbox 验证。
@@ -618,7 +612,7 @@
 
 ### CA-06：OCR unset/hide
 
-状态：`blocked`，依赖 CA-04。
+状态：`ready-for-agent`，依赖 CA-04 done。
 
 - migration：`ocr_runs.hidden`。
 - 服务：unset current、hide run。
@@ -628,7 +622,7 @@
 
 ### CA-07：MCP bbox/evidence 小缺口
 
-状态：`ready-for-agent`。
+状态：`done`。
 
 - context unit bbox。
 - current page blocks EvidenceRef。
@@ -636,7 +630,7 @@
 
 ### CA-08：菜单栏与 Developer Tools 清理
 
-状态：`ready-for-agent`。
+状态：`done`。
 
 - 真 Avalonia Menu。
 - 删除 Developer Tools 按钮。
@@ -645,7 +639,7 @@
 
 ### CA-09：MinerU credential flow
 
-状态：`blocked`，依赖 CA-08。
+状态：`done`。
 
 - 右键 OCR 从 ProviderCredential/appsettings 读取 token。
 - 缺失 token 时打开设置页。
@@ -654,7 +648,7 @@
 
 ### CA-10：搜索 UI 第一版
 
-状态：`blocked`，依赖 CA-07。
+状态：`done`。
 
 - 搜索框 command。
 - 搜索结果列表。
@@ -663,7 +657,7 @@
 
 ### CA-11：编辑题录标签页第一版
 
-状态：`blocked`，依赖 CA-01。
+状态：`ready-for-agent`，依赖 CA-01 done。
 
 - 元数据。
 - 标签。
@@ -673,16 +667,16 @@
 
 ### CA-12：OCR 队列标签页
 
-状态：`blocked`，依赖 CA-08。
+状态：`done`。
 
 - 队列状态。
 - 任务列表。
 - 暂停/恢复/取消。
-- 自动刷新。
+- 自动刷新配置后置。
 
 ### CA-13：证据 Markdown 导出
 
-状态：`blocked`，依赖 CA-07、CA-08。
+状态：`done`。
 
 - 右键和菜单入口。
 - file picker。
@@ -691,7 +685,7 @@
 
 ### CA-14：设置标签页第一版
 
-状态：`blocked`，依赖 CA-08。
+状态：`ready-for-agent`，依赖 CA-08 done。
 
 - 库信息、运行时数据库路径、同步根目录、FileSearchRoot。
 - MinerU OCR、OCR 通用并发、OCR 预设管理。
@@ -748,5 +742,6 @@ hide、tombstone、purge 三者语义不同：
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 2.2 | 2026-07-06 | 完成 CA-12 OCR 队列标签页与 CA-13 证据 Markdown 导出入口；更新下一批 ready-for-agent 列表。 |
 | 2.1 | 2026-07-06 | 同步已完成的 CA-01、CA-04、CA-05、CA-07、CA-08、CA-09、CA-10；完成 4.4.3 侧边栏路径真实化；刷新下一批 ready-for-agent 列表。 |
 | 2.0 | 2026-07-01 | 将原缺口清单重写为已复核缺口与执行计划；修正 OCR 自动重试状态；按依赖关系重排实施顺序；新增 PR 拆分和关键风险。 |

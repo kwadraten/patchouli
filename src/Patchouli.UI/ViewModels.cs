@@ -45,6 +45,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private bool _showInspectorPane = true;
     private bool _isSettingsVisible;
     private bool _isSearchVisible;
+    private bool _isOcrQueueVisible;
 
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); Raise(nameof(VersionInfo)); } }
     public string DefaultSyncRootPath => _settings.Runtime.DefaultSyncRoot;
@@ -83,6 +84,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise(nameof(ShowSettingsTab));
             Raise(nameof(IsLibraryTabActive));
             Raise(nameof(IsReaderTabActive));
+            Raise(nameof(IsOcrQueueTabActive));
         }
     }
     public bool IsSearchVisible
@@ -100,19 +102,41 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise(nameof(ShowSearchTab));
             Raise(nameof(IsLibraryTabActive));
             Raise(nameof(IsReaderTabActive));
+            Raise(nameof(IsOcrQueueTabActive));
+        }
+    }
+    public bool IsOcrQueueVisible
+    {
+        get => _isOcrQueueVisible;
+        private set
+        {
+            if (_isOcrQueueVisible == value) return;
+            _isOcrQueueVisible = value;
+            Raise();
+            Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowOcrQueueWorkspace));
+            Raise(nameof(ShowSidebar));
+            Raise(nameof(IsInspectorVisible));
+            Raise(nameof(ShowOcrQueueTab));
+            Raise(nameof(IsLibraryTabActive));
+            Raise(nameof(IsReaderTabActive));
+            Raise(nameof(IsOcrQueueTabActive));
         }
     }
 
-    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible && !IsSearchVisible;
+    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible && !IsSearchVisible && !IsOcrQueueVisible;
     public bool ShowSettingsWorkspace => IsLibraryVisible && IsSettingsVisible;
     public bool ShowSearchWorkspace => IsLibraryVisible && IsSearchVisible;
+    public bool ShowOcrQueueWorkspace => IsLibraryVisible && IsOcrQueueVisible;
     public bool ShowSidebar => ShowWorkspaceShell && Shell.ShowLibraryList;
     public bool IsInspectorVisible => ShowWorkspaceShell && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
     public bool ShowSettingsTab => ShowSettingsWorkspace;
     public bool ShowSearchTab => ShowSearchWorkspace;
+    public bool ShowOcrQueueTab => ShowOcrQueueWorkspace;
     public bool IsLibraryTabActive => ShowWorkspaceShell && Shell.ShowLibraryList;
     public bool IsReaderTabActive => ShowWorkspaceShell && Shell.ShowPdfReader;
+    public bool IsOcrQueueTabActive => ShowOcrQueueWorkspace;
     public LibraryViewModel Library { get; }
     public BibliographyViewModel Bibliography { get; }
     public FileDocumentViewModel FileDocument { get; }
@@ -187,12 +211,12 @@ public sealed class MainWindowViewModel : ViewModelBase
         ShowReadingCommand = new(ShowReadingAsync);
         RunToolbarSearchCommand = new(RunToolbarSearchAsync);
         OpenSettingsCommand = new(() => OpenSettingsAsync("mineru"));
-        OpenOcrQueueCommand = new(() => ShowPlaceholderAsync("OCR 队列页面将在后续任务中接入。"));
+        OpenOcrQueueCommand = new(OpenOcrQueueAsync);
         CreateItemMenuCommand = new(async () => { await ShowLibraryAsync(); await ShowPlaceholderAsync("新建题录标签页将在后续任务中接入。"); });
         EditSelectedItemCommand = new(EditSelectedItemAsync);
         RunSelectedItemOcrCommand = new(RunSelectedItemOcrAsync);
         RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
-        ExportEvidenceMarkdownCommand = new(() => ShowPlaceholderAsync("证据 Markdown 导出入口将在后续任务中接入。"));
+        ExportEvidenceMarkdownCommand = new(() => ExportEvidenceMarkdownToFileAsync(null));
         ToggleInspectorPaneCommand = new(() => { ShowInspectorPane = !ShowInspectorPane; return Task.CompletedTask; });
         ShowAboutCommand = new(() => ShowPlaceholderAsync(StatusBarVersion));
         ShowLicenseCommand = new(() => ShowPlaceholderAsync("许可证页面将在后续任务中接入。"));
@@ -321,6 +345,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowWorkspaceShell));
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
+        Raise(nameof(ShowOcrQueueWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -336,6 +361,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowWorkspaceShell));
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
+        Raise(nameof(ShowOcrQueueWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -435,10 +461,21 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         IsSettingsVisible = true;
         IsSearchVisible = false;
+        IsOcrQueueVisible = false;
         Shell.IsReadingMode = false;
         Settings.FocusMinerU(statusMessage);
         RaiseShellSelectionChanged();
         return Task.CompletedTask;
+    }
+
+    private async Task OpenOcrQueueAsync()
+    {
+        IsSettingsVisible = false;
+        IsSearchVisible = false;
+        IsOcrQueueVisible = true;
+        Shell.IsReadingMode = false;
+        await OcrQueue.RefreshAsync();
+        RaiseShellSelectionChanged();
     }
 
     private Task ShowPlaceholderAsync(string message)
@@ -451,6 +488,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         IsSettingsVisible = false;
         IsSearchVisible = false;
+        IsOcrQueueVisible = false;
         await Shell.SwitchToLibraryListAsync();
         RaiseShellSelectionChanged();
     }
@@ -465,6 +503,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         IsSettingsVisible = false;
         IsSearchVisible = false;
+        IsOcrQueueVisible = false;
         await Shell.SwitchToReadingModeAsync();
         RaiseShellSelectionChanged();
     }
@@ -473,6 +512,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         IsSettingsVisible = false;
         IsSearchVisible = true;
+        IsOcrQueueVisible = false;
         await SearchEvidence.SearchCommand.ExecuteAsync();
     }
 
@@ -491,6 +531,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task RunSelectedItemOcrAsync()
     {
         IsSettingsVisible = false;
+        IsOcrQueueVisible = false;
         if (Shell.SelectedItem is null)
         {
             Report("请先选择一个题录。");
@@ -498,6 +539,49 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         await Shell.SelectedItem.RunOcrCommand.ExecuteAsync();
+    }
+
+    public async Task ExportEvidenceMarkdownToFileAsync(string? targetPath)
+    {
+        if (string.IsNullOrWhiteSpace(SearchEvidence.EvidenceRef))
+        {
+            Report("请先选择一个可导出的 EvidenceRef。");
+            SearchEvidence.Output = "ERROR validation_failed: EvidenceRef is required.";
+            SearchEvidence.RaiseOutput();
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            Report("请选择 Evidence Markdown 导出路径。");
+            SearchEvidence.Output = "ERROR validation_failed: Export path is required.";
+            SearchEvidence.RaiseOutput();
+            return;
+        }
+
+        var markdown = await (await ServicesAsync()).Evidence.CreateMarkdownAsync(SearchEvidence.EvidenceRef);
+        if (markdown.IsFailure)
+        {
+            var message = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";
+            SearchEvidence.Output = message;
+            SearchEvidence.RaiseOutput();
+            Report(message);
+            return;
+        }
+
+        var directory = Path.GetDirectoryName(Path.GetFullPath(targetPath));
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        await File.WriteAllTextAsync(targetPath, markdown.Value.Markdown);
+        SearchEvidence.Markdown = markdown.Value.Markdown;
+        SearchEvidence.Output = $"Exported Evidence Markdown: {targetPath}";
+        SearchEvidence.RaiseMarkdown();
+        SearchEvidence.RaiseOutput();
+        Report(SearchEvidence.Output);
+        await LogOperationAsync("export_evidence_markdown", SearchEvidence.Output);
     }
 
     private static bool IsPathUnderRoot(string path, string rootPath)
@@ -632,6 +716,9 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             await _main.LogOperationAsync("copy_evidence_markdown", Output);
         });
     }
+
+    public void RaiseMarkdown() => Raise(nameof(Markdown));
+    public void RaiseOutput() => Raise(nameof(Output));
 
     private async Task SearchAsync()
     {

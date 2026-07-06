@@ -155,6 +155,41 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void MainWindow_xaml_wires_ocr_queue_workspace()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        xaml.Should().Contain("ShowOcrQueueWorkspace");
+        xaml.Should().Contain("OpenOcrQueueCommand");
+        xaml.Should().Contain("StartCommand");
+        xaml.Should().Contain("PauseGlobalCommand");
+        xaml.Should().Contain("CancelCommand");
+        xaml.Should().NotContain("OCR 队列页面将在后续任务中接入");
+    }
+
+    [Fact]
+    public void MainWindow_xaml_wires_evidence_markdown_export_picker()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml.cs"));
+        xaml.Should().Contain("OnExportEvidenceMarkdownClick");
+        xaml.Should().Contain("OnExportSearchUnitEvidenceMarkdownClick");
+        xaml.Should().Contain("<ContextMenu>");
+        codeBehind.Should().Contain("SaveFilePickerAsync");
+        codeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
+    }
+
+    [Fact]
+    public async Task ExportEvidenceMarkdownCommand_without_evidence_ref_reports_validation_error()
+    {
+        var vm = new MainWindowViewModel(new FakeClipboard());
+
+        await vm.ExportEvidenceMarkdownCommand.ExecuteAsync();
+
+        vm.SearchEvidence.Output.Should().Contain("validation_failed");
+        vm.Status.Should().Contain("EvidenceRef");
+    }
+
+    [Fact]
     public async Task MainWindowViewModel_auto_starts_mcp_http_server_and_reports_status()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");

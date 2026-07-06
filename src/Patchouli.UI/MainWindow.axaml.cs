@@ -127,6 +127,44 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async void OnExportEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        await ExportEvidenceMarkdownWithPickerAsync();
+    }
+
+    private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
+            string.IsNullOrWhiteSpace(unit.EvidenceRef))
+        {
+            _viewModel.Report("请选择一个可导出的 EvidenceRef。");
+            return;
+        }
+
+        _viewModel.SearchEvidence.EvidenceRef = unit.EvidenceRef;
+        await ExportEvidenceMarkdownWithPickerAsync();
+    }
+
+    private async Task ExportEvidenceMarkdownWithPickerAsync()
+    {
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = "Export Evidence Markdown",
+            SuggestedFileName = "evidence.md",
+            DefaultExtension = "md",
+            FileTypeChoices =
+            [
+                new FilePickerFileType("Markdown") { Patterns = ["*.md"] },
+                FilePickerFileTypes.All
+            ]
+        });
+
+        if (file?.Path.LocalPath is { Length: > 0 } path)
+        {
+            await _viewModel.ExportEvidenceMarkdownToFileAsync(path);
+        }
+    }
+
     protected override async void OnClosed(EventArgs e)
     {
         await _viewModel.StopMcpServerAsync();
