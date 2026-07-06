@@ -6,6 +6,43 @@ using Patchouli.Core.Ids;
 
 namespace Patchouli.UI;
 
+public sealed class CreatorItemViewModel : ViewModelBase
+{
+    private string _role = ItemCreatorRoles.Author;
+    private string _literal = "";
+
+    public string Role
+    {
+        get => _role;
+        set { _role = value; Raise(); }
+    }
+
+    public string Literal
+    {
+        get => _literal;
+        set { _literal = value; Raise(); }
+    }
+
+    public IReadOnlyList<string> AvailableRoles { get; } = new[]
+    {
+        ItemCreatorRoles.Author,
+        ItemCreatorRoles.Editor,
+        ItemCreatorRoles.Translator,
+        "container-author"
+    };
+
+    public AsyncCommand RemoveCommand { get; }
+
+    public CreatorItemViewModel(Action<CreatorItemViewModel> onRemove)
+    {
+        RemoveCommand = new AsyncCommand(() =>
+        {
+            onRemove(this);
+            return Task.CompletedTask;
+        });
+    }
+}
+
 public sealed class ItemEditorViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
@@ -16,18 +53,29 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _main = main;
         NewCommand = new AsyncCommand(NewAsync);
         SaveCommand = new AsyncCommand(SaveAsync);
+        AddCreatorCommand = new AsyncCommand(AddCreatorAsync);
         AddIdentifierCommand = new AsyncCommand(AddIdentifierAsync);
         RegisterFileCommand = new AsyncCommand(RegisterFileAsync);
     }
 
     public string Header => _itemId is null ? "新建题录" : "编辑题录";
     public string ItemIdText => _itemId?.ToString() ?? "";
-    public string ItemType { get; set; } = "book";
+    
+    private string _itemType = "book";
+    public string ItemType 
+    { 
+        get => _itemType; 
+        set { _itemType = value; Raise(); } 
+    }
+
+    public IReadOnlyList<string> AvailableItemTypes { get; } = new[]
+    {
+        "book", "article-journal", "chapter", "thesis", "report", "webpage", 
+        "dataset", "manuscript", "patent", "standard", "interview"
+    };
+
     public string Title { get; set; } = "";
     public string Subtitle { get; set; } = "";
-    public string Authors { get; set; } = "";
-    public string Editors { get; set; } = "";
-    public string Translators { get; set; } = "";
     public string IssuedDate { get; set; } = "";
     public string AccessedDate { get; set; } = "";
     public string OriginalDate { get; set; } = "";
@@ -40,16 +88,35 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public string Language { get; set; } = "";
     public string AbstractText { get; set; } = "";
     public string TagsText { get; set; } = "";
-    public string IdentifierScheme { get; set; } = "DOI";
+
+    // Identifier specific bindings
+    private string _identifierScheme = "DOI";
+    public string IdentifierScheme
+    {
+        get => _identifierScheme;
+        set { _identifierScheme = value; Raise(); }
+    }
     public string IdentifierValue { get; set; } = "";
     public string IdentifierNote { get; set; } = "";
+    
+    public IReadOnlyList<string> AvailableIdentifierSchemes { get; } = new[]
+    {
+        "DOI", "ISBN", "ISSN", "PMID", "PMCID", "arXiv", "JSTOR", "URL", 
+        "archive_id", "call_number", "jpno", "ndlbibid", "custom"
+    };
+
     public string FilePath { get; set; } = "";
     public string Status { get; private set; } = "填写题录信息后保存。";
+    
+    public ObservableCollection<CreatorItemViewModel> Creators { get; } = new();
     public ObservableCollection<string> Identifiers { get; } = new();
     public ObservableCollection<string> LinkedFiles { get; } = new();
+    
     public bool HasItem => _itemId is not null;
+    
     public AsyncCommand NewCommand { get; }
     public AsyncCommand SaveCommand { get; }
+    public AsyncCommand AddCreatorCommand { get; }
     public AsyncCommand AddIdentifierCommand { get; }
     public AsyncCommand RegisterFileCommand { get; }
 
@@ -59,9 +126,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         ItemType = "book";
         Title = "";
         Subtitle = "";
-        Authors = "";
-        Editors = "";
-        Translators = "";
+        Creators.Clear();
         IssuedDate = "";
         AccessedDate = "";
         OriginalDate = "";
@@ -102,9 +167,17 @@ public sealed class ItemEditorViewModel : ViewModelBase
         ItemType = item.Value.ItemType;
         Title = item.Value.Title;
         Subtitle = item.Value.Subtitle ?? "";
-        Authors = FormatCreators(item.Value.Creators, ItemCreatorRoles.Author);
-        Editors = FormatCreators(item.Value.Creators, ItemCreatorRoles.Editor);
-        Translators = FormatCreators(item.Value.Creators, ItemCreatorRoles.Translator);
+        
+        Creators.Clear();
+        foreach (var creator in item.Value.Creators)
+        {
+            Creators.Add(new CreatorItemViewModel(RemoveCreator)
+            {
+                Role = creator.Role,
+                Literal = creator.DisplayName
+            });
+        }
+
         IssuedDate = FormatDate(item.Value.Dates, ItemDateRoles.Issued, item.Value.Date);
         AccessedDate = FormatDate(item.Value.Dates, ItemDateRoles.Accessed, null);
         OriginalDate = FormatDate(item.Value.Dates, ItemDateRoles.OriginalDate, null);
@@ -118,6 +191,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         AbstractText = item.Value.Abstract ?? "";
         TagsText = FormatTags(item.Value.TagsJson);
         Status = $"正在编辑：{item.Value.Title}";
+        
         await RefreshIdentifiersAsync();
         await RefreshLinkedFilesAsync();
         RaiseAll();
@@ -134,7 +208,12 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
 
         var services = await _main.ServicesAsync();
-        var creators = BuildCreators();
+        
+        var creators = Creators
+            .Select(c => new ItemCreatorInput(c.Role, Literal: NullIfWhiteSpace(c.Literal)))
+            .Where(c => c.Literal != null)
+            .ToList();
+            
         var dates = BuildDates();
         if (_itemId is null)
         {
@@ -199,6 +278,17 @@ public sealed class ItemEditorViewModel : ViewModelBase
         await _main.Shell.RefreshItemsAsync();
     }
 
+    private Task AddCreatorAsync()
+    {
+        Creators.Add(new CreatorItemViewModel(RemoveCreator));
+        return Task.CompletedTask;
+    }
+
+    private void RemoveCreator(CreatorItemViewModel creator)
+    {
+        Creators.Remove(creator);
+    }
+
     private async Task AddIdentifierAsync()
     {
         if (_itemId is null)
@@ -214,6 +304,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             IdentifierScheme,
             IdentifierValue,
             IdentifierNote);
+            
         Status = result.IsSuccess ? "标识符已添加。" : result.ErrorMessage ?? "标识符添加失败。";
         IdentifierValue = "";
         IdentifierNote = "";
@@ -308,14 +399,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
 
-    private IReadOnlyList<ItemCreatorInput> BuildCreators()
-    {
-        return SplitNames(Authors).Select(name => new ItemCreatorInput(ItemCreatorRoles.Author, Literal: name))
-            .Concat(SplitNames(Editors).Select(name => new ItemCreatorInput(ItemCreatorRoles.Editor, Literal: name)))
-            .Concat(SplitNames(Translators).Select(name => new ItemCreatorInput(ItemCreatorRoles.Translator, Literal: name)))
-            .ToArray();
-    }
-
     private IReadOnlyList<ItemDateInput> BuildDates()
     {
         return new[]
@@ -341,9 +424,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         value.Split(new[] { ';', ',', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(part => !string.IsNullOrWhiteSpace(part));
 
-    private static string FormatCreators(IEnumerable<ItemCreator> creators, string role) =>
-        string.Join("; ", creators.Where(creator => creator.Role == role).Select(creator => creator.DisplayName));
-
     private static string FormatDate(IEnumerable<ItemDate> dates, string role, string? fallback)
     {
         var date = dates.FirstOrDefault(candidate => candidate.Role == role);
@@ -368,8 +448,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
     {
         foreach (var property in new[]
         {
-            nameof(Header), nameof(ItemIdText), nameof(ItemType), nameof(Title), nameof(Subtitle), nameof(Authors),
-            nameof(Editors), nameof(Translators), nameof(IssuedDate), nameof(AccessedDate), nameof(OriginalDate),
+            nameof(Header), nameof(ItemIdText), nameof(ItemType), nameof(Title), nameof(Subtitle),
+            nameof(IssuedDate), nameof(AccessedDate), nameof(OriginalDate),
             nameof(PublicationTitle), nameof(Publisher), nameof(Place), nameof(Volume), nameof(Issue), nameof(Pages),
             nameof(Language), nameof(AbstractText), nameof(TagsText), nameof(IdentifierScheme), nameof(IdentifierValue),
             nameof(IdentifierNote), nameof(FilePath), nameof(Status), nameof(Identifiers), nameof(LinkedFiles), nameof(HasItem)

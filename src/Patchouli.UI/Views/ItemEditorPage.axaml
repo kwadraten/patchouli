@@ -1,90 +1,136 @@
 <UserControl x:Class="Patchouli.UI.Views.ItemEditorPage"
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:controls="using:Patchouli.UI.Controls">
-<Grid DataContext="{Binding ItemEditor}">
-  <ScrollViewer>
-    <StackPanel Margin="32" Spacing="18" MaxWidth="980">
-      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+             xmlns:controls="using:Patchouli.UI.Controls"
+             xmlns:local="using:Patchouli.UI">
+<Grid DataContext="{Binding ItemEditor}" RowDefinitions="Auto,*">
+    <Grid Margin="32,32,32,16" ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <StackPanel Spacing="6">
-          <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-          <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+            <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
-          <Button Content="新建" Command="{Binding NewCommand}" Height="32" />
-          <Button Content="保存" Command="{Binding SaveCommand}" Height="32" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+            <Button Content="新建" Command="{Binding NewCommand}" Height="32" />
+            <Button Content="保存" Command="{Binding SaveCommand}" Height="32" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
         </StackPanel>
-      </Grid>
-
-      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-        <Grid ColumnDefinitions="*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
-          <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="元数据" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-          <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding Title}" PlaceholderText="标题" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Subtitle}" PlaceholderText="副标题" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding ItemType}" PlaceholderText="题录类型" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PublicationTitle}" PlaceholderText="期刊/出处" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="3" Grid.Column="0" Text="{Binding Authors}" PlaceholderText="作者；用逗号或分号分隔" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Editors}" PlaceholderText="编辑；用逗号或分号分隔" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="4" Grid.Column="0" Text="{Binding Translators}" PlaceholderText="译者；用逗号或分号分隔" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding IssuedDate}" PlaceholderText="issued" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="5" Grid.Column="0" Text="{Binding AccessedDate}" PlaceholderText="accessed" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding OriginalDate}" PlaceholderText="original-date" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="6" Grid.Column="0" Text="{Binding TagsText}" PlaceholderText="标签；用逗号分隔" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding Language}" PlaceholderText="语言" Height="32" VerticalContentAlignment="Center" />
-        </Grid>
-      </Border>
-
-      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-        <Grid ColumnDefinitions="*,*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
-          <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Text="出版信息" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-          <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding Publisher}" PlaceholderText="出版社" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Place}" PlaceholderText="地点" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding Pages}" PlaceholderText="页码" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding Volume}" PlaceholderText="卷" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Issue}" PlaceholderText="期" Height="32" VerticalContentAlignment="Center" />
-          <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding AbstractText}" PlaceholderText="摘要" Height="32" VerticalContentAlignment="Center" />
-        </Grid>
-      </Border>
-
-      <Grid ColumnDefinitions="*,*" ColumnSpacing="14">
+    </Grid>
+    
+    <Grid Grid.Row="1" Margin="32,0,32,32" ColumnDefinitions="1*,2*" ColumnSpacing="24">
+        <!-- Left Pane: Core Meta & Creators -->
         <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-          <StackPanel Spacing="10">
-            <TextBlock Text="标识符" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <Grid ColumnDefinitions="120,*,140,Auto" ColumnSpacing="8">
-              <TextBox Grid.Column="0" Text="{Binding IdentifierScheme}" PlaceholderText="scheme" Height="32" VerticalContentAlignment="Center" />
-              <TextBox Grid.Column="1" Text="{Binding IdentifierValue}" PlaceholderText="value" Height="32" VerticalContentAlignment="Center" />
-              <TextBox Grid.Column="2" Text="{Binding IdentifierNote}" PlaceholderText="note" Height="32" VerticalContentAlignment="Center" />
-              <Button Grid.Column="3" Content="添加" Command="{Binding AddIdentifierCommand}" Height="32" />
-            </Grid>
-            <ItemsControl ItemsSource="{Binding Identifiers}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                  <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </StackPanel>
+            <StackPanel Spacing="16">
+                <ComboBox ItemsSource="{Binding AvailableItemTypes}" SelectedItem="{Binding ItemType}" HorizontalAlignment="Stretch" Height="32" />
+                <TextBox Text="{Binding Title}" PlaceholderText="标题 (Title)" FontSize="16" FontWeight="Medium" Height="40" VerticalContentAlignment="Center" />
+                <TextBox Text="{Binding Subtitle}" PlaceholderText="副标题 (Subtitle)" Height="32" VerticalContentAlignment="Center" />
+                
+                <Grid ColumnDefinitions="*,Auto" Margin="0,8,0,0">
+                    <TextBlock Text="作者与责任者" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="添加" Command="{Binding AddCreatorCommand}" Height="28" Padding="12,0" />
+                </Grid>
+                
+                <ScrollViewer MaxHeight="300">
+                    <ItemsControl ItemsSource="{Binding Creators}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="{x:Type local:CreatorItemViewModel}">
+                                <Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="8" Margin="0,0,0,8">
+                                    <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableRoles}" SelectedItem="{Binding Role}" HorizontalAlignment="Stretch" Height="32" />
+                                    <TextBox Grid.Column="1" Text="{Binding Literal}" PlaceholderText="姓名 (Literal)" Height="32" VerticalContentAlignment="Center" />
+                                    <Button Grid.Column="2" Content="X" Command="{Binding RemoveCommand}" Height="32" Width="32" HorizontalContentAlignment="Center" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </StackPanel>
         </Border>
-
-        <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-          <StackPanel Spacing="10">
-            <TextBlock Text="关联文件" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-              <controls:PathPickerTextBox Path="{Binding FilePath}" PickerMode="OpenFile" DialogTitle="选择文件" PlaceholderText="FileAsset 路径" />
-              <Button Grid.Column="1" Content="注册" Command="{Binding RegisterFileCommand}" Height="32" />
-            </Grid>
-            <ItemsControl ItemsSource="{Binding LinkedFiles}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate>
-                  <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </StackPanel>
-        </Border>
-      </Grid>
-    </StackPanel>
-  </ScrollViewer>
+        
+        <!-- Right Pane: Tabs for the rest -->
+        <TabControl Grid.Column="1">
+            <TabItem Header="出版与时间">
+                <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,8,0,0">
+                    <StackPanel Spacing="16">
+                        <Grid ColumnDefinitions="*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="12">
+                            <TextBox Grid.Row="0" Grid.Column="0" Text="{Binding PublicationTitle}" PlaceholderText="出版物/期刊名 (Container Title)" Height="32" VerticalContentAlignment="Center" />
+                            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Publisher}" PlaceholderText="出版社 (Publisher)" Height="32" VerticalContentAlignment="Center" />
+                            
+                            <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding Place}" PlaceholderText="出版地 (Place)" Height="32" VerticalContentAlignment="Center" />
+                            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Volume}" PlaceholderText="卷 (Volume)" Height="32" VerticalContentAlignment="Center" />
+                            
+                            <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding Issue}" PlaceholderText="期 (Issue)" Height="32" VerticalContentAlignment="Center" />
+                            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Pages}" PlaceholderText="页码 (Pages)" Height="32" VerticalContentAlignment="Center" />
+                            
+                            <TextBox Grid.Row="3" Grid.Column="0" Text="{Binding Language}" PlaceholderText="语言 (Language)" Height="32" VerticalContentAlignment="Center" />
+                        </Grid>
+                        
+                        <Separator Background="{DynamicResource OutlineVariantBrush}" Margin="0,4" />
+                        
+                        <Grid ColumnDefinitions="*,*,*" ColumnSpacing="14">
+                            <TextBox Grid.Column="0" Text="{Binding IssuedDate}" PlaceholderText="出版日期 (Issued)" Height="32" VerticalContentAlignment="Center" />
+                            <TextBox Grid.Column="1" Text="{Binding AccessedDate}" PlaceholderText="访问日期 (Accessed)" Height="32" VerticalContentAlignment="Center" />
+                            <TextBox Grid.Column="2" Text="{Binding OriginalDate}" PlaceholderText="原版日期 (Original)" Height="32" VerticalContentAlignment="Center" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </TabItem>
+            
+            <TabItem Header="摘要与备注">
+                <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,8,0,0">
+                    <StackPanel Spacing="16">
+                        <TextBox Text="{Binding TagsText}" PlaceholderText="标签；用逗号分隔 (Tags)" Height="32" VerticalContentAlignment="Center" />
+                        <TextBox Text="{Binding AbstractText}" PlaceholderText="摘要 (Abstract)" Height="120" AcceptsReturn="True" TextWrapping="Wrap" />
+                    </StackPanel>
+                </Border>
+            </TabItem>
+            
+            <TabItem Header="标识符">
+                <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,8,0,0">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="已添加的标识符" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+                        <ScrollViewer MaxHeight="150">
+                            <ItemsControl ItemsSource="{Binding Identifiers}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" Margin="0,0,0,6" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                        
+                        <Separator Background="{DynamicResource OutlineVariantBrush}" Margin="0,4" />
+                        
+                        <TextBlock Text="新增标识符" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" Margin="0,4,0,0" />
+                        <Grid ColumnDefinitions="120,*,140,Auto" ColumnSpacing="8">
+                            <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableIdentifierSchemes}" SelectedItem="{Binding IdentifierScheme}" HorizontalAlignment="Stretch" Height="32" />
+                            <TextBox Grid.Column="1" Text="{Binding IdentifierValue}" PlaceholderText="value" Height="32" VerticalContentAlignment="Center" />
+                            <TextBox Grid.Column="2" Text="{Binding IdentifierNote}" PlaceholderText="note" Height="32" VerticalContentAlignment="Center" />
+                            <Button Grid.Column="3" Content="添加" Command="{Binding AddIdentifierCommand}" Height="32" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </TabItem>
+            
+            <TabItem Header="关联文件">
+                <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,8,0,0">
+                    <StackPanel Spacing="12">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <controls:PathPickerTextBox Path="{Binding FilePath}" PickerMode="OpenFile" DialogTitle="选择文件" PlaceholderText="FileAsset 路径" />
+                            <Button Grid.Column="1" Content="注册新文件" Command="{Binding RegisterFileCommand}" Height="32" />
+                        </Grid>
+                        
+                        <TextBlock Text="已挂载的 DocumentInstance" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" Margin="0,8,0,4" />
+                        <ScrollViewer MaxHeight="150">
+                            <ItemsControl ItemsSource="{Binding LinkedFiles}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" Margin="0,0,0,6" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </StackPanel>
+                </Border>
+            </TabItem>
+        </TabControl>
+    </Grid>
 </Grid>
-
 </UserControl>
