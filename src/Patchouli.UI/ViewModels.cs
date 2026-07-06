@@ -156,7 +156,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool ShowOcrQueueWorkspace => IsLibraryVisible && IsOcrQueueVisible;
     public bool ShowItemEditorWorkspace => IsLibraryVisible && IsItemEditorVisible;
     public bool ShowSidebar => ShowWorkspaceShell && Shell.ShowLibraryList;
-    public bool IsInspectorVisible => ShowWorkspaceShell && ShowInspectorPane;
+    public bool IsInspectorVisible => ShowWorkspaceShell && Shell.ShowLibraryList && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
     public bool ShowSettingsTab => ShowSettingsWorkspace;
     public bool ShowSearchTab => ShowSearchWorkspace;

@@ -4,6 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Application.Styles>
     <FluentTheme />
+    <DockSimpleTheme />
   </Application.Styles>
   <Application.Resources>
     <!-- Academic Precision Color Palette -->

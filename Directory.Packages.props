@@ -7,6 +7,9 @@
     <PackageVersion Include="Avalonia" Version="12.0.4" />
     <PackageVersion Include="Avalonia.Headless" Version="12.0.4" />
     <PackageVersion Include="Avalonia.Desktop" Version="12.0.4" />
+    <PackageVersion Include="Dock.Avalonia" Version="12.0.0.2" />
+    <PackageVersion Include="Dock.Avalonia.Themes.Simple" Version="12.0.0.2" />
+    <PackageVersion Include="Dock.Model.Avalonia" Version="12.0.0.2" />
     <PackageVersion Include="Dapper" Version="2.1.66" />
     <PackageVersion Include="FluentAssertions" Version="8.8.0" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="12.0.4" />

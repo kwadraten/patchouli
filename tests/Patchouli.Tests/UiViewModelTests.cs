@@ -158,7 +158,7 @@ public sealed class UiViewModelTests
     public void MainWindow_xaml_wires_ocr_queue_workspace()
     {
         var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        xaml.Should().Contain("ShowOcrQueueWorkspace");
+        xaml.Should().Contain("OcrQueueDocument");
         xaml.Should().Contain("OpenOcrQueueCommand");
         xaml.Should().Contain("StartCommand");
         xaml.Should().Contain("PauseGlobalCommand");
@@ -182,7 +182,7 @@ public sealed class UiViewModelTests
     public void MainWindow_xaml_wires_item_editor_and_settings_sections()
     {
         var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        xaml.Should().Contain("ShowItemEditorWorkspace");
+        xaml.Should().Contain("ItemEditorDocument");
         xaml.Should().Contain("ItemEditor.Header");
         xaml.Should().Contain("AddIdentifierCommand");
         xaml.Should().Contain("RegisterFileCommand");
@@ -547,6 +547,19 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void Reader_mode_hides_library_sidebars()
+    {
+        var vm = new MainWindowViewModel(new FakeClipboard());
+
+        vm.Shell.IsReadingMode = true;
+        vm.RaiseShellSelectionChanged();
+
+        vm.Shell.ShowLibraryList.Should().BeFalse();
+        vm.ShowSidebar.Should().BeFalse();
+        vm.IsInspectorVisible.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Shell_close_document_tab_clears_selected_item()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
@@ -593,8 +606,11 @@ public sealed class UiViewModelTests
             await vm.Shell.RefreshItemsAsync();
 
             await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
+            vm.RaiseShellSelectionChanged();
 
             vm.Shell.ShowPdfReader.Should().BeTrue();
+            vm.ShowSidebar.Should().BeFalse();
+            vm.IsInspectorVisible.Should().BeFalse();
             vm.PdfPreview.Image.Should().NotBeNull(vm.PdfPreview.Status);
             vm.PdfPreview.Status.Should().Contain("mupdf-net-dpi120");
             Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();

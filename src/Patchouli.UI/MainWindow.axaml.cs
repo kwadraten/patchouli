@@ -1,4 +1,8 @@
+using System.ComponentModel;
+using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Threading;
+using Dock.Model.Core;
 using Avalonia.Platform.Storage;
 
 namespace Patchouli.UI;
@@ -6,12 +10,16 @@ namespace Patchouli.UI;
 public sealed partial class MainWindow : Window
 {
     private readonly MainWindowViewModel _viewModel;
+    private bool _isSynchronizingDockSelection;
 
     public MainWindow()
     {
         _viewModel = new MainWindowViewModel(autoStartMcpServer: true);
         DataContext = _viewModel;
         InitializeComponent();
+        MainDocumentsPane.PropertyChanged += OnMainDocumentsPanePropertyChanged;
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
+        SetActiveDockDocumentFromViewModel();
     }
 
     public async Task ShowFirstRunIfNeededAsync()
@@ -106,11 +114,99 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void OnListBoxDoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
+    private async void OnListBoxDoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
     {
         if (_viewModel.Shell.SelectedItem is not null)
         {
-            _viewModel.Shell.SwitchToReadingModeCommand.Execute(null);
+            await _viewModel.ShowReadingCommand.ExecuteAsync();
+            SetActiveDockDocument(ReaderDocument);
+        }
+    }
+
+    private async void OnMainDocumentsPanePropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
+    {
+        if (_isSynchronizingDockSelection || e.Property.Name != "ActiveDockable")
+        {
+            return;
+        }
+
+        await ActivateViewModelForDockDocumentAsync(MainDocumentsPane.ActiveDockable?.Id);
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is
+            nameof(MainWindowViewModel.IsSettingsVisible) or
+            nameof(MainWindowViewModel.IsSearchVisible) or
+            nameof(MainWindowViewModel.IsOcrQueueVisible) or
+            nameof(MainWindowViewModel.IsItemEditorVisible) or
+            nameof(MainWindowViewModel.IsLibraryVisible) or
+            nameof(MainWindowViewModel.IsReaderTabActive) or
+            nameof(MainWindowViewModel.IsLibraryTabActive))
+        {
+            Dispatcher.UIThread.Post(SetActiveDockDocumentFromViewModel);
+        }
+    }
+
+    private async Task ActivateViewModelForDockDocumentAsync(string? documentId)
+    {
+        switch (documentId)
+        {
+            case "LibraryDocument":
+                await _viewModel.ShowLibraryCommand.ExecuteAsync();
+                break;
+            case "ReaderDocument":
+                await _viewModel.ShowReadingCommand.ExecuteAsync();
+                break;
+            case "SettingsDocument":
+                await _viewModel.OpenSettingsCommand.ExecuteAsync();
+                break;
+            case "SearchDocument":
+                await _viewModel.RunToolbarSearchCommand.ExecuteAsync();
+                break;
+            case "OcrQueueDocument":
+                await _viewModel.OpenOcrQueueCommand.ExecuteAsync();
+                break;
+            case "ItemEditorDocument":
+                await _viewModel.OpenItemEditorCommand.ExecuteAsync();
+                break;
+        }
+
+        SetActiveDockDocumentFromViewModel();
+    }
+
+    private void SetActiveDockDocumentFromViewModel()
+    {
+        if (!_viewModel.IsLibraryVisible)
+        {
+            return;
+        }
+
+        var target = _viewModel.IsSettingsVisible ? SettingsDocument :
+            _viewModel.IsSearchVisible ? SearchDocument :
+            _viewModel.IsOcrQueueVisible ? OcrQueueDocument :
+            _viewModel.IsItemEditorVisible ? ItemEditorDocument :
+            _viewModel.Shell.ShowPdfReader ? ReaderDocument :
+            LibraryDocument;
+
+        SetActiveDockDocument(target);
+    }
+
+    private void SetActiveDockDocument(IDockable target)
+    {
+        if (ReferenceEquals(MainDocumentsPane.ActiveDockable, target))
+        {
+            return;
+        }
+
+        _isSynchronizingDockSelection = true;
+        try
+        {
+            MainDocumentsPane.ActiveDockable = target;
+        }
+        finally
+        {
+            _isSynchronizingDockSelection = false;
         }
     }
 
@@ -167,6 +263,8 @@ public sealed partial class MainWindow : Window
 
     protected override async void OnClosed(EventArgs e)
     {
+        MainDocumentsPane.PropertyChanged -= OnMainDocumentsPanePropertyChanged;
+        _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         await _viewModel.StopMcpServerAsync();
         base.OnClosed(e);
     }
