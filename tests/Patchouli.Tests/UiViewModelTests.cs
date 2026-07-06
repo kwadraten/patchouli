@@ -104,7 +104,7 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_sidebar_uses_real_path_bindings()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
         xaml.Should().Contain("DefaultSyncRootPath");
         xaml.Should().Contain("FileSearchRoots");
         xaml.Should().NotContain("/Documents/Papers");
@@ -148,48 +148,56 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_wires_toolbar_search_and_results_workspace()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        xaml.Should().Contain("RunToolbarSearchCommand");
-        xaml.Should().Contain("搜索结果");
-        xaml.Should().Contain("SearchEvidence.Query");
+        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var searchXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
+        shellXaml.Should().Contain("RunToolbarSearchCommand");
+        shellXaml.Should().Contain("SearchEvidence.Query");
+        searchXaml.Should().Contain("搜索结果");
     }
 
     [Fact]
     public void MainWindow_xaml_wires_ocr_queue_workspace()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        xaml.Should().Contain("OcrQueueDocument");
-        xaml.Should().Contain("OpenOcrQueueCommand");
-        xaml.Should().Contain("StartCommand");
-        xaml.Should().Contain("PauseGlobalCommand");
-        xaml.Should().Contain("CancelCommand");
-        xaml.Should().NotContain("OCR 队列页面将在后续任务中接入");
+        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var queueXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "OcrQueuePage.axaml"));
+        shellXaml.Should().Contain("OpenOcrQueueCommand");
+        shellXaml.Should().Contain("OcrQueuePage");
+        queueXaml.Should().Contain("StartCommand");
+        queueXaml.Should().Contain("PauseGlobalCommand");
+        queueXaml.Should().Contain("CancelCommand");
+        queueXaml.Should().NotContain("OCR 队列页面将在后续任务中接入");
     }
 
     [Fact]
     public void MainWindow_xaml_wires_evidence_markdown_export_picker()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var searchXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
         var codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml.cs"));
-        xaml.Should().Contain("OnExportEvidenceMarkdownClick");
-        xaml.Should().Contain("OnExportSearchUnitEvidenceMarkdownClick");
-        xaml.Should().Contain("<ContextMenu>");
+        var searchCodeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml.cs"));
+        shellXaml.Should().Contain("OnExportEvidenceMarkdownClick");
+        searchXaml.Should().Contain("OnExportSearchUnitEvidenceMarkdownClick");
+        searchXaml.Should().Contain("<ContextMenu>");
         codeBehind.Should().Contain("SaveFilePickerAsync");
         codeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
+        searchCodeBehind.Should().Contain("SaveFilePickerAsync");
+        searchCodeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
     }
 
     [Fact]
     public void MainWindow_xaml_wires_item_editor_and_settings_sections()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        xaml.Should().Contain("ItemEditorDocument");
-        xaml.Should().Contain("ItemEditor.Header");
-        xaml.Should().Contain("AddIdentifierCommand");
-        xaml.Should().Contain("RegisterFileCommand");
-        xaml.Should().Contain("FileSearchRoot");
-        xaml.Should().Contain("OCR 预设");
-        xaml.Should().Contain("搜索配置");
-        xaml.Should().Contain("MCP");
+        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
+        var settingsXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+        shellXaml.Should().Contain("ItemEditor.Header");
+        shellXaml.Should().Contain("ItemEditorPage");
+        editorXaml.Should().Contain("AddIdentifierCommand");
+        editorXaml.Should().Contain("RegisterFileCommand");
+        settingsXaml.Should().Contain("FileSearchRoot");
+        settingsXaml.Should().Contain("OCR 预设");
+        settingsXaml.Should().Contain("搜索配置");
+        settingsXaml.Should().Contain("MCP");
     }
 
     [Fact]

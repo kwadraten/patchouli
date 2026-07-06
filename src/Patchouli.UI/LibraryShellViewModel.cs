@@ -34,6 +34,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise();
             Raise(nameof(ShowLibraryList));
             Raise(nameof(ShowPdfReader));
+            _main.RaiseShellSelectionChanged();
         }
     }
 
@@ -110,6 +111,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public async Task RefreshItemsAsync()
     {
         var services = await _main.ServicesAsync();
+        var library = await services.Library.GetCurrentLibraryAsync();
+        if (library.IsSuccess && LibraryName != library.Value.DisplayName)
+        {
+            LibraryName = library.Value.DisplayName;
+            Raise(nameof(LibraryName));
+            _main.RaiseLibraryTitleChanged();
+        }
+
         await using var connection = services.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
 

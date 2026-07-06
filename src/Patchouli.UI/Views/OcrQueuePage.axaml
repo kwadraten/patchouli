@@ -1,0 +1,82 @@
+<UserControl x:Class="Patchouli.UI.Views.OcrQueuePage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Grid DataContext="{Binding OcrQueue}">
+    <ScrollViewer>
+      <StackPanel Margin="32" Spacing="18" MaxWidth="980">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+          <StackPanel Spacing="6">
+            <TextBlock Text="OCR 队列" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+            <TextBlock Text="{Binding StatusSummary}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+            <Button Content="刷新" Command="{Binding RefreshCommand}" Height="32" />
+            <Button Content="启动" Command="{Binding StartCommand}" Height="32" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+            <Button Content="停止" Command="{Binding StopCommand}" Height="32" />
+            <Button Content="Tick" Command="{Binding TickCommand}" Height="32" />
+          </StackPanel>
+        </Grid>
+
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+          <Grid ColumnDefinitions="*,*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="10">
+            <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Text="添加任务" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding DocumentInstanceId}" PlaceholderText="DocumentInstanceId" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding PresetId}" PlaceholderText="OCR PresetId" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding Priority}" PlaceholderText="Priority" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding PageIds}" PlaceholderText="PageIds, 逗号分隔" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PageId}" PlaceholderText="PageId" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding ImagePath}" PlaceholderText="ImagePath" Height="32" VerticalContentAlignment="Center" />
+            <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="8">
+              <Button Content="Mock Pages" Command="{Binding EnqueueMockCommand}" Height="32" />
+              <Button Content="Image Page" Command="{Binding EnqueueImageCommand}" Height="32" />
+              <TextBox Text="{Binding Dpi}" Width="72" Height="32" VerticalContentAlignment="Center" />
+              <Button Content="Rendered PDF" Command="{Binding EnqueueRenderedPdfCommand}" Height="32" />
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+            <StackPanel Spacing="10">
+              <TextBlock Text="暂停范围" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="8">
+                <TextBox Grid.Column="0" Text="{Binding PauseTarget}" PlaceholderText="ProviderId 或 TaskId" Height="32" VerticalContentAlignment="Center" />
+                <Button Grid.Column="1" Content="暂停全局" Command="{Binding PauseGlobalCommand}" Height="32" />
+                <Button Grid.Column="2" Content="恢复全局" Command="{Binding ResumeGlobalCommand}" Height="32" />
+                <Button Grid.Column="3" Content="暂停目标" Command="{Binding PauseProviderCommand}" Height="32" />
+                <Button Grid.Column="4" Content="恢复目标" Command="{Binding ResumeProviderCommand}" Height="32" />
+              </Grid>
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="暂停本机" Command="{Binding PauseLocalCommand}" Height="32" />
+                <Button Content="恢复本机" Command="{Binding ResumeLocalCommand}" Height="32" />
+                <Button Content="暂停任务" Command="{Binding PauseTaskCommand}" Height="32" />
+                <Button Content="恢复任务" Command="{Binding ResumeTaskCommand}" Height="32" />
+              </StackPanel>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="8" Width="300">
+              <TextBlock Text="取消任务" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+              <TextBox Text="{Binding TaskId}" PlaceholderText="TaskId" Height="32" VerticalContentAlignment="Center" />
+              <Button Content="取消" Command="{Binding CancelCommand}" Height="32" HorizontalAlignment="Left" />
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock Text="任务" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <ItemsControl ItemsSource="{Binding Tasks}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,8">
+                    <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Text="{Binding Output}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

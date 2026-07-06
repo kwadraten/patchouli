@@ -24,9 +24,6 @@
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
-    <PackageReference Include="Dock.Avalonia" />
-    <PackageReference Include="Dock.Avalonia.Themes.Simple" />
-    <PackageReference Include="Dock.Model.Avalonia" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />

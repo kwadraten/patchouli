@@ -1,0 +1,89 @@
+<UserControl x:Class="Patchouli.UI.Views.ItemEditorPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+<Grid DataContext="{Binding ItemEditor}">
+  <ScrollViewer>
+    <StackPanel Margin="32" Spacing="18" MaxWidth="980">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+        <StackPanel Spacing="6">
+          <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+          <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+          <Button Content="新建" Command="{Binding NewCommand}" Height="32" />
+          <Button Content="保存" Command="{Binding SaveCommand}" Height="32" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+        </StackPanel>
+      </Grid>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
+          <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="元数据" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding Title}" PlaceholderText="标题" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Subtitle}" PlaceholderText="副标题" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding ItemType}" PlaceholderText="题录类型" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PublicationTitle}" PlaceholderText="期刊/出处" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="3" Grid.Column="0" Text="{Binding Authors}" PlaceholderText="作者；用逗号或分号分隔" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="3" Grid.Column="1" Text="{Binding Editors}" PlaceholderText="编辑；用逗号或分号分隔" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="4" Grid.Column="0" Text="{Binding Translators}" PlaceholderText="译者；用逗号或分号分隔" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="4" Grid.Column="1" Text="{Binding IssuedDate}" PlaceholderText="issued" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="5" Grid.Column="0" Text="{Binding AccessedDate}" PlaceholderText="accessed" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="5" Grid.Column="1" Text="{Binding OriginalDate}" PlaceholderText="original-date" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="6" Grid.Column="0" Text="{Binding TagsText}" PlaceholderText="标签；用逗号分隔" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="6" Grid.Column="1" Text="{Binding Language}" PlaceholderText="语言" Height="32" VerticalContentAlignment="Center" />
+        </Grid>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+        <Grid ColumnDefinitions="*,*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto" RowSpacing="10">
+          <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Text="出版信息" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding Publisher}" PlaceholderText="出版社" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Place}" PlaceholderText="地点" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding Pages}" PlaceholderText="页码" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding Volume}" PlaceholderText="卷" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Issue}" PlaceholderText="期" Height="32" VerticalContentAlignment="Center" />
+          <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding AbstractText}" PlaceholderText="摘要" Height="32" VerticalContentAlignment="Center" />
+        </Grid>
+      </Border>
+
+      <Grid ColumnDefinitions="*,*" ColumnSpacing="14">
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock Text="标识符" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <Grid ColumnDefinitions="120,*,140,Auto" ColumnSpacing="8">
+              <TextBox Grid.Column="0" Text="{Binding IdentifierScheme}" PlaceholderText="scheme" Height="32" VerticalContentAlignment="Center" />
+              <TextBox Grid.Column="1" Text="{Binding IdentifierValue}" PlaceholderText="value" Height="32" VerticalContentAlignment="Center" />
+              <TextBox Grid.Column="2" Text="{Binding IdentifierNote}" PlaceholderText="note" Height="32" VerticalContentAlignment="Center" />
+              <Button Grid.Column="3" Content="添加" Command="{Binding AddIdentifierCommand}" Height="32" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding Identifiers}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock Text="关联文件" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Text="{Binding FilePath}" PlaceholderText="FileAsset 路径" Height="32" VerticalContentAlignment="Center" />
+              <Button Grid.Column="1" Content="注册" Command="{Binding RegisterFileCommand}" Height="32" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding LinkedFiles}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Border>
+      </Grid>
+    </StackPanel>
+  </ScrollViewer>
+</Grid>
+
+</UserControl>

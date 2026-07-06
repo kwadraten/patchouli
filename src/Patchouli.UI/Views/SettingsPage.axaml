@@ -1,0 +1,112 @@
+<UserControl x:Class="Patchouli.UI.Views.SettingsPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+<Grid DataContext="{Binding Settings}">
+  <ScrollViewer>
+    <StackPanel Margin="32" Spacing="20" MaxWidth="720">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+        <StackPanel Spacing="6">
+          <TextBlock Text="设置" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+          <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+        <Button Grid.Column="1" Content="刷新" Command="{Binding RefreshCommand}" Height="32" VerticalAlignment="Top" />
+      </Grid>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <StackPanel Spacing="10">
+          <TextBlock Text="库信息与路径" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBlock Text="{Binding RuntimeDatabasePath, StringFormat='运行数据库：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding DefaultSyncRootPath, StringFormat='同步根目录：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding SettingsFilePath, StringFormat='appsettings：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <StackPanel Spacing="10">
+          <TextBlock Text="FileSearchRoot" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox Text="{Binding FileSearchRootInput}" PlaceholderText="目录路径" Height="32" VerticalContentAlignment="Center" />
+            <Button Grid.Column="1" Content="添加" Command="{Binding AddFileSearchRootCommand}" Height="32" />
+          </Grid>
+          <ItemsControl ItemsSource="{Binding FileSearchRoots}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <StackPanel Spacing="10">
+          <TextBlock Text="OCR 通用配置" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBlock Text="{Binding OcrConcurrencySummary}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <StackPanel Spacing="10">
+          <TextBlock Text="OCR 预设" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+            <TextBox Grid.Row="0" Grid.Column="0" Text="{Binding OcrPresetName}" PlaceholderText="名称" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding OcrPresetEngineId}" PlaceholderText="EngineId" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="0" Grid.Column="2" Text="{Binding OcrPresetModelId}" PlaceholderText="ModelId" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding OcrPresetDescription}" PlaceholderText="描述" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding OcrPresetParametersJson}" PlaceholderText="参数 JSON" Height="32" VerticalContentAlignment="Center" />
+            <CheckBox Grid.Row="2" Grid.Column="0" Content="成功后应用" IsChecked="{Binding OcrPresetApplyOnSuccess}" VerticalAlignment="Center" />
+            <Button Grid.Row="2" Grid.Column="2" Content="创建预设" Command="{Binding CreateOcrPresetCommand}" Height="32" />
+          </Grid>
+          <ItemsControl ItemsSource="{Binding OcrPresets}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <StackPanel Spacing="10">
+          <TextBlock Text="搜索配置" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <Grid ColumnDefinitions="*,*,Auto" ColumnSpacing="8">
+            <TextBox Text="{Binding SearchProfileName}" PlaceholderText="SearchProfile 名称" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Column="1" Text="{Binding SearchProfileDescription}" PlaceholderText="描述" Height="32" VerticalContentAlignment="Center" />
+            <Button Grid.Column="2" Content="创建" Command="{Binding CreateSearchProfileCommand}" Height="32" />
+          </Grid>
+          <ItemsControl ItemsSource="{Binding SearchProfiles}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <StackPanel Spacing="10">
+          <TextBlock Text="MCP" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <TextBlock Text="{Binding McpStatusText, StringFormat='状态：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="启动 MCP" Command="{Binding StartMcpCommand}" Height="32" />
+            <Button Content="停止 MCP" Command="{Binding StopMcpCommand}" Height="32" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+
+      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18" IsVisible="{Binding ShowMinerUSection}">
+        <StackPanel Spacing="12">
+          <TextBlock Text="MinerU OCR" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBlock Text="OCR 运行优先读取 ProviderCredential；这里保存时会同时同步 appsettings 里的回退 token。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" HorizontalAlignment="Left" />
+          <TextBox Text="{Binding MinerUTokenInput}" PlaceholderText="输入 MinerU API Token" PasswordChar="*" Height="36" VerticalContentAlignment="Center" />
+          <Button Content="保存 MinerU 凭据" Command="{Binding SaveMinerUSettingsCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" HorizontalAlignment="Left" Padding="20,0" />
+        </StackPanel>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Grid>
+</UserControl>

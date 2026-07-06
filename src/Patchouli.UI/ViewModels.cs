@@ -80,6 +80,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             _isSettingsVisible = value;
             Raise();
             Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowLibraryPage));
+            Raise(nameof(ShowPdfReaderPage));
             Raise(nameof(ShowSettingsWorkspace));
             Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
@@ -100,6 +102,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             _isSearchVisible = value;
             Raise();
             Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowLibraryPage));
+            Raise(nameof(ShowPdfReaderPage));
             Raise(nameof(ShowSearchWorkspace));
             Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
@@ -120,6 +124,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             _isOcrQueueVisible = value;
             Raise();
             Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowLibraryPage));
+            Raise(nameof(ShowPdfReaderPage));
             Raise(nameof(ShowOcrQueueWorkspace));
             Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
@@ -140,6 +146,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             _isItemEditorVisible = value;
             Raise();
             Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowLibraryPage));
+            Raise(nameof(ShowPdfReaderPage));
             Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
             Raise(nameof(IsInspectorVisible));
@@ -152,6 +160,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     }
 
     public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible && !IsSearchVisible && !IsOcrQueueVisible && !IsItemEditorVisible;
+    public bool ShowLibraryPage => ShowWorkspaceShell && Shell.ShowLibraryList;
+    public bool ShowPdfReaderPage => ShowWorkspaceShell && Shell.ShowPdfReader;
     public bool ShowSettingsWorkspace => IsLibraryVisible && IsSettingsVisible;
     public bool ShowSearchWorkspace => IsLibraryVisible && IsSearchVisible;
     public bool ShowOcrQueueWorkspace => IsLibraryVisible && IsOcrQueueVisible;
@@ -167,6 +177,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsReaderTabActive => ShowWorkspaceShell && Shell.ShowPdfReader;
     public bool IsOcrQueueTabActive => ShowOcrQueueWorkspace;
     public bool IsItemEditorTabActive => ShowItemEditorWorkspace;
+    public string LibraryTabTitle => string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName;
     public LibraryViewModel Library { get; }
     public BibliographyViewModel Bibliography { get; }
     public FileDocumentViewModel FileDocument { get; }
@@ -377,6 +388,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsLibraryVisible));
         Raise(nameof(IsSearchEnabled));
         Raise(nameof(ShowWorkspaceShell));
+        Raise(nameof(ShowLibraryPage));
+        Raise(nameof(ShowPdfReaderPage));
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
@@ -384,6 +397,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
+        Raise(nameof(LibraryTabTitle));
         return Task.CompletedTask;
     }
 
@@ -394,6 +408,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsLibraryVisible));
         Raise(nameof(IsSearchEnabled));
         Raise(nameof(ShowWorkspaceShell));
+        Raise(nameof(ShowLibraryPage));
+        Raise(nameof(ShowPdfReaderPage));
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
@@ -401,6 +417,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
+        Raise(nameof(LibraryTabTitle));
         await Shell.RefreshItemsAsync();
     }
 
@@ -481,11 +498,18 @@ public sealed class MainWindowViewModel : ViewModelBase
     public void RaiseShellSelectionChanged()
     {
         Raise(nameof(ShowSelectedDocumentTab));
+        Raise(nameof(ShowLibraryPage));
+        Raise(nameof(ShowPdfReaderPage));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(IsLibraryTabActive));
         Raise(nameof(IsReaderTabActive));
         Raise(nameof(IsItemEditorTabActive));
+    }
+
+    public void RaiseLibraryTitleChanged()
+    {
+        Raise(nameof(LibraryTabTitle));
     }
 
     public async Task LogOperationAsync(string operation, string message)
