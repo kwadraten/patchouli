@@ -70,7 +70,7 @@
               <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" HorizontalAlignment="Left" />
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                 <TextBox Text="{Binding MinerUTokenInput}" PlaceholderText="输入 MinerU API Token" PasswordChar="*" Height="36" VerticalContentAlignment="Center" />
-                <Button Grid.Column="1" Content="保存凭据" Command="{Binding SaveMinerUSettingsCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="20,0" />
+                <Button Grid.Column="1" Content="保存凭据" Command="{Binding SaveMinerUSettingsCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="12,0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
               </Grid>
             </StackPanel>
           </Border>

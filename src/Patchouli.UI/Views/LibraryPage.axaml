@@ -1,6 +1,23 @@
 <UserControl x:Class="Patchouli.UI.Views.LibraryPage"
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <UserControl.Styles>
+    <Style Selector="TextBlock.ListHeader">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.SidebarSectionHeader">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    </Style>
+    <Style Selector="StackPanel.SidebarItemContainer">
+      <Setter Property="Spacing" Value="8" />
+      <Setter Property="Margin" Value="16,0" />
+    </Style>
+  </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*,Auto" Background="{DynamicResource SurfaceBrush}">
 <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0" IsVisible="{Binding ShowSidebar}">
   <Grid>
@@ -23,8 +40,8 @@
             <Separator Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="16,0" />
 
             <!-- 数据库路径 -->
-            <StackPanel Spacing="8" Margin="16,0">
-              <TextBlock Text="数据库路径" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <StackPanel Classes="SidebarItemContainer">
+              <TextBlock Classes="SidebarSectionHeader" Text="数据库路径" />
               <StackPanel Spacing="6">
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
                   <PathIcon Data="{StaticResource IconFolder}" Width="13" Height="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
@@ -34,8 +51,8 @@
             </StackPanel>
 
             <!-- 同步根目录 -->
-            <StackPanel Spacing="8" Margin="16,0">
-              <TextBlock Text="同步根目录" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <StackPanel Classes="SidebarItemContainer">
+              <TextBlock Classes="SidebarSectionHeader" Text="同步根目录" />
               <StackPanel Spacing="6">
                 <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
                   <PathIcon Data="{StaticResource IconCloud}" Width="13" Height="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
@@ -45,8 +62,8 @@
             </StackPanel>
 
             <!-- FileSearchRoot -->
-            <StackPanel Spacing="8" Margin="16,0">
-              <TextBlock Text="文件搜索根" FontSize="11" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <StackPanel Classes="SidebarItemContainer">
+              <TextBlock Classes="SidebarSectionHeader" Text="文件搜索根" />
               <TextBlock Text="暂无" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding NoFileSearchRoots}" />
               <ItemsControl ItemsSource="{Binding FileSearchRoots}" IsVisible="{Binding HasFileSearchRoots}">
                 <ItemsControl.ItemTemplate>
@@ -75,11 +92,12 @@
 <Grid Grid.Column="1" RowDefinitions="44,*">
   <!-- Header -->
   <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="16,0" Background="{DynamicResource SurfaceContainerLowestBrush}">
-    <Grid ColumnDefinitions="48,*,200,100,150" ColumnSpacing="12" VerticalAlignment="Center">
-      <TextBlock Grid.Column="1" Text="标题" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-      <TextBlock Grid.Column="2" Text="作者" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-      <TextBlock Grid.Column="3" Text="出版日期" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" HorizontalAlignment="Center" />
-      <TextBlock Grid.Column="4" Text="文献来源" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    <Grid ColumnDefinitions="100,60,120,*,150" ColumnSpacing="12" VerticalAlignment="Center" Height="32">
+      <TextBlock Grid.Column="0" Classes="ListHeader" Text="题录类型" />
+      <TextBlock Grid.Column="1" Classes="ListHeader" Text="年份" />
+      <TextBlock Grid.Column="2" Classes="ListHeader" Text="作者" />
+      <TextBlock Grid.Column="3" Classes="ListHeader" Text="标题" />
+      <TextBlock Grid.Column="4" Classes="ListHeader" Text="来源" />
     </Grid>
   </Border>
 
@@ -101,17 +119,11 @@
               <MenuItem Header="运行 MinerU OCR" Command="{Binding RunOcrCommand}" />
             </ContextMenu>
           </Border.ContextMenu>
-          <Grid ColumnDefinitions="48,*,200,100,150" ColumnSpacing="12">
-            <!-- PDF Icon Badge -->
-            <Border Width="28" Height="18" Background="{DynamicResource TertiaryBrush}" CornerRadius="3" HorizontalAlignment="Left" VerticalAlignment="Center">
-              <TextBlock Text="PDF" FontSize="9" FontWeight="Bold" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-            </Border>
-            <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
-              <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
-              <TextBlock Text="{Binding FileName}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
-            </StackPanel>
+          <Grid ColumnDefinitions="100,60,120,*,150" ColumnSpacing="12">
+            <TextBlock Grid.Column="0" Text="{Binding ItemType}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Column="1" Text="{Binding Year}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             <TextBlock Grid.Column="2" Text="{Binding Authors}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-            <TextBlock Grid.Column="3" Text="{Binding Year}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
+            <TextBlock Grid.Column="3" Text="{Binding Title}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
             <TextBlock Grid.Column="4" Text="{Binding PublicationTitle}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
           </Grid>
         </Border>
