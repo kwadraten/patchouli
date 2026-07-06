@@ -44,6 +44,22 @@ public sealed record McpMatchedUnit(
     bool IsMatch);
 
 public sealed record McpItemIdentifier(string Scheme, string Value, string? Note);
+public sealed record McpItemCreator(
+    string Role,
+    string? Family,
+    string? Given,
+    string? Literal,
+    string? Suffix,
+    string? Particles,
+    int SequenceIndex,
+    string DisplayName);
+
+public sealed record McpItemDate(
+    string Role,
+    string DatePartsJson,
+    bool Circa,
+    string? Season,
+    string? Literal);
 
 public sealed record McpItemMetadataResponse(
     ItemId ItemId,
@@ -74,6 +90,8 @@ public sealed record McpItemMetadataResponse(
     string TagsJson,
     string CollectionsJson,
     string CustomFieldsJson,
+    IReadOnlyList<McpItemCreator> Creators,
+    IReadOnlyList<McpItemDate> Dates,
     IReadOnlyList<McpItemIdentifier> Identifiers);
 
 public sealed record McpDocumentStatusResponse(

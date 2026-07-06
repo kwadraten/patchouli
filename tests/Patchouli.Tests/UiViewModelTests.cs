@@ -179,6 +179,20 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void MainWindow_xaml_wires_item_editor_and_settings_sections()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        xaml.Should().Contain("ShowItemEditorWorkspace");
+        xaml.Should().Contain("ItemEditor.Header");
+        xaml.Should().Contain("AddIdentifierCommand");
+        xaml.Should().Contain("RegisterFileCommand");
+        xaml.Should().Contain("FileSearchRoot");
+        xaml.Should().Contain("OCR 预设");
+        xaml.Should().Contain("搜索配置");
+        xaml.Should().Contain("MCP");
+    }
+
+    [Fact]
     public async Task ExportEvidenceMarkdownCommand_without_evidence_ref_reports_validation_error()
     {
         var vm = new MainWindowViewModel(new FakeClipboard());

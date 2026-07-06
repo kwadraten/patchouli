@@ -32,6 +32,8 @@ public interface IItemService
         string? tagsJson = null,
         string? collectionsJson = null,
         string? customFieldsJson = null,
+        IReadOnlyList<ItemCreatorInput>? creators = null,
+        IReadOnlyList<ItemDateInput>? dates = null,
         CancellationToken cancellationToken = default);
 
     Task<Result<ItemMetadata>> GetItemAsync(

@@ -98,7 +98,27 @@ public sealed class McpReadApi : IMcpReadApi
             var identifiers = (await connection.QueryAsync<IdentifierRow>(
                 "select scheme as Scheme, value as Value, note as Note from item_identifiers where item_id = @ItemId order by created_at, scheme, value;",
                 new { ItemId = itemId.ToString() })).Select(i => new McpItemIdentifier(i.Scheme, i.Value, i.Note)).ToArray();
-            return Result<McpItemMetadataResponse>.Success(item.ToResponse(identifiers));
+            var creators = (await connection.QueryAsync<CreatorRow>(
+                """
+                select role as Role, family as Family, given as Given, literal as Literal, suffix as Suffix,
+                       particles as Particles, sequence_index as SequenceIndex
+                from item_creators
+                where item_id = @ItemId
+                order by role, sequence_index, creator_id;
+                """,
+                new { ItemId = itemId.ToString() })).Select(c => c.ToCreator()).ToArray();
+            var dates = (await connection.QueryAsync<DateRow>(
+                """
+                select role as Role, date_parts_json as DatePartsJson, circa as Circa, season as Season, literal as Literal
+                from item_dates
+                where item_id = @ItemId
+                order by case role when 'issued' then 0 when 'accessed' then 1 else 2 end, role;
+                """,
+                new { ItemId = itemId.ToString() })).Select(d => d.ToDate()).ToArray();
+            return Result<McpItemMetadataResponse>.Success(item.ToResponse(
+                creators.Length == 0 ? LegacyCreators(item) : creators,
+                dates.Length == 0 ? LegacyDates(item) : dates,
+                identifiers));
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Result<McpItemMetadataResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
@@ -349,6 +369,26 @@ public sealed class McpReadApi : IMcpReadApi
     }
 
     private sealed class IdentifierRow { public string Scheme { get; set; } = ""; public string Value { get; set; } = ""; public string? Note { get; set; } }
+    private sealed class CreatorRow
+    {
+        public string Role { get; set; } = "";
+        public string? Family { get; set; }
+        public string? Given { get; set; }
+        public string? Literal { get; set; }
+        public string? Suffix { get; set; }
+        public string? Particles { get; set; }
+        public int SequenceIndex { get; set; }
+        public McpItemCreator ToCreator() => new(Role, Family, Given, Literal, Suffix, Particles, SequenceIndex, DisplayName(Family, Given, Literal, Suffix, Particles));
+    }
+    private sealed class DateRow
+    {
+        public string Role { get; set; } = "";
+        public string DatePartsJson { get; set; } = "[]";
+        public int Circa { get; set; }
+        public string? Season { get; set; }
+        public string? Literal { get; set; }
+        public McpItemDate ToDate() => new(Role, DatePartsJson, Circa != 0, Season, Literal);
+    }
 
     private sealed class ItemRow
     {
@@ -380,9 +420,78 @@ public sealed class McpReadApi : IMcpReadApi
         public string TagsJson { get; set; } = "";
         public string CollectionsJson { get; set; } = "";
         public string CustomFieldsJson { get; set; } = "";
-        public McpItemMetadataResponse ToResponse(IReadOnlyList<McpItemIdentifier> identifiers)
-            => new(Core.Ids.ItemId.Parse(ItemId), ItemType, CitationKey, Title, Subtitle, TitleShort, CreatorsJson, Date, PublicationTitle, ContainerTitleShort, CollectionTitle, Publisher, Place, Edition, Genre, Number, ChapterNumber, Volume, Version, Issue, Pages, Language, Status, Note, Abstract, TagsJson, CollectionsJson, CustomFieldsJson, identifiers);
+        public McpItemMetadataResponse ToResponse(
+            IReadOnlyList<McpItemCreator> creators,
+            IReadOnlyList<McpItemDate> dates,
+            IReadOnlyList<McpItemIdentifier> identifiers)
+            => new(Core.Ids.ItemId.Parse(ItemId), ItemType, CitationKey, Title, Subtitle, TitleShort, CreatorsJson, Date, PublicationTitle, ContainerTitleShort, CollectionTitle, Publisher, Place, Edition, Genre, Number, ChapterNumber, Volume, Version, Issue, Pages, Language, Status, Note, Abstract, TagsJson, CollectionsJson, CustomFieldsJson, creators, dates, identifiers);
     }
+
+    private static IReadOnlyList<McpItemCreator> LegacyCreators(ItemRow item)
+    {
+        if (string.IsNullOrWhiteSpace(item.CreatorsJson))
+        {
+            return Array.Empty<McpItemCreator>();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(item.CreatorsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<McpItemCreator>();
+            }
+
+            return document.RootElement.EnumerateArray()
+                .Select((element, index) =>
+                {
+                    var literal = ReadString(element, "literal")
+                        ?? ReadString(element, "Literal")
+                        ?? ReadString(element, "name")
+                        ?? ReadString(element, "Name");
+                    var family = ReadString(element, "family") ?? ReadString(element, "Family");
+                    var given = ReadString(element, "given") ?? ReadString(element, "Given");
+                    var role = ReadString(element, "role") ?? ReadString(element, "Role") ?? "author";
+                    var suffix = ReadString(element, "suffix") ?? ReadString(element, "Suffix");
+                    var particles = ReadString(element, "particles") ?? ReadString(element, "Particles");
+                    return new McpItemCreator(role, family, given, literal, suffix, particles, index, DisplayName(family, given, literal, suffix, particles));
+                })
+                .Where(creator => !string.IsNullOrWhiteSpace(creator.DisplayName))
+                .ToArray();
+        }
+        catch
+        {
+            return Array.Empty<McpItemCreator>();
+        }
+    }
+
+    private static IReadOnlyList<McpItemDate> LegacyDates(ItemRow item) =>
+        string.IsNullOrWhiteSpace(item.Date)
+            ? Array.Empty<McpItemDate>()
+            : new[] { new McpItemDate("issued", "[]", false, null, item.Date) };
+
+    private static string? ReadString(JsonElement element, string propertyName)
+    {
+        return element.ValueKind == JsonValueKind.Object
+            && element.TryGetProperty(propertyName, out var value)
+            && value.ValueKind == JsonValueKind.String
+            ? NullIfWhiteSpace(value.GetString())
+            : null;
+    }
+
+    private static string DisplayName(string? family, string? given, string? literal, string? suffix, string? particles)
+    {
+        if (!string.IsNullOrWhiteSpace(literal))
+        {
+            return literal.Trim();
+        }
+
+        return string.Join(" ", new[] { given, particles, family, suffix }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim()));
+    }
+
+    private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private static NormalizedBBox? ParseNormalizedBBox(string? json)
     {

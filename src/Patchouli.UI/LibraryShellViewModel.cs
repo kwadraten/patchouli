@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using Dapper;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Import;
 using Patchouli.Ocr.MinerU;
 
@@ -119,7 +120,20 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 i.title as Title,
                 i.item_type as ItemType,
                 i.creators_json as CreatorsJson,
-                coalesce(i.date, '') as Year,
+                coalesce(
+                    (select group_concat(
+                        case
+                            when length(trim(coalesce(c.literal, ''))) > 0 then c.literal
+                            else trim(coalesce(c.given, '') || ' ' || coalesce(c.particles, '') || ' ' || coalesce(c.family, '') || ' ' || coalesce(c.suffix, ''))
+                        end,
+                        ', '
+                    )
+                     from item_creators c
+                     where c.item_id = i.item_id and c.role = 'author'
+                     order by c.sequence_index),
+                    ''
+                ) as Authors,
+                coalesce((select d.literal from item_dates d where d.item_id = i.item_id and d.role = 'issued'), i.date, '') as Year,
                 coalesce(i.publication_title, '') as PublicationTitle,
                 d.document_instance_id as DocumentInstanceId,
                 f.file_asset_id as FileAssetId,
@@ -132,6 +146,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             from items i
             left join document_instances d on d.item_id = i.item_id and d.is_primary = 1
             left join file_assets f on f.file_asset_id = d.file_asset_id
+            where i.deleted_at is null
             order by i.created_at desc, i.title;
             """);
 
@@ -144,7 +159,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 row.ItemId,
                 row.Title,
                 row.ItemType,
-                FormatCreators(row.CreatorsJson),
+                string.IsNullOrWhiteSpace(row.Authors) ? FormatCreators(row.CreatorsJson) : row.Authors,
                 row.Year,
                 row.PublicationTitle,
                 row.DocumentInstanceId,
@@ -260,37 +275,28 @@ public sealed class LibraryShellViewModel : ViewModelBase
         var authors = EditAuthors.Trim();
         var year = string.IsNullOrWhiteSpace(EditYear) ? null : EditYear.Trim();
         var publicationTitle = string.IsNullOrWhiteSpace(EditPublicationTitle) ? null : EditPublicationTitle.Trim();
-        var creatorsJson = string.IsNullOrWhiteSpace(authors)
-            ? "[]"
-            : JsonSerializer.Serialize(new[] { new CreatorRow(authors) });
-
         var services = await _main.ServicesAsync();
-        await using var connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        await connection.ExecuteAsync(
-            """
-            update items
-            set title = @Title,
-                creators_json = @CreatorsJson,
-                date = @Year,
-                publication_title = @PublicationTitle,
-                updated_at = @UpdatedAt
-            where item_id = @ItemId;
+        var updated = await services.Items.UpdateItemAsync(
+            Patchouli.Core.Ids.ItemId.Parse(SelectedItem.ItemId),
+            new UpdateItemRequest(
+                SelectedItem.ItemType,
+                title,
+                PublicationTitle: publicationTitle,
+                Date: year,
+                Creators: string.IsNullOrWhiteSpace(authors)
+                    ? Array.Empty<ItemCreatorInput>()
+                    : authors.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(name => new ItemCreatorInput(ItemCreatorRoles.Author, Literal: name))
+                        .ToArray(),
+                Dates: string.IsNullOrWhiteSpace(year)
+                    ? Array.Empty<ItemDateInput>()
+                    : new[] { new ItemDateInput(ItemDateRoles.Issued, Literal: year) }));
 
-            update document_instances
-            set title = @Title,
-                updated_at = @UpdatedAt
-            where item_id = @ItemId and is_primary = 1;
-            """,
-            new
-            {
-                ItemId = SelectedItem.ItemId,
-                Title = title,
-                CreatorsJson = creatorsJson,
-                Year = year,
-                PublicationTitle = publicationTitle,
-                UpdatedAt = DateTimeOffset.UtcNow.ToString("O")
-            });
+        if (updated.IsFailure)
+        {
+            _main.Report(updated.ErrorMessage ?? "题录信息更新失败。");
+            return;
+        }
 
         ShowMetadataEditor = false;
         Raise(nameof(ShowMetadataEditor));
@@ -332,6 +338,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         public string Title { get; set; } = "";
         public string ItemType { get; set; } = "";
         public string CreatorsJson { get; set; } = "[]";
+        public string Authors { get; set; } = "";
         public string Year { get; set; } = "";
         public string PublicationTitle { get; set; } = "";
         public string? DocumentInstanceId { get; set; }
@@ -343,8 +350,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         public int SearchUnitCount { get; set; }
         public string IndexStatus { get; set; } = "";
     }
-
-    private sealed record CreatorRow(string Name);
 
     private static string FormatCreators(string creatorsJson)
     {

@@ -153,8 +153,8 @@
 | 编号 | 任务 | 状态 | 依赖 | 指导后续 agent 的边界 |
 |---|---|---|---|---|
 | CA-01 | Item 基础字段与服务 CRUD | done | 无 | 已完成扩展 `items`、`ItemMetadata`、`IItemService` 与 `ItemService`；覆盖 `citation_key` 自动生成、update/delete/list；带 migration 和服务测试。 |
-| CA-02 | 结构化 creators | ready-for-agent | CA-01 done | 新增 `item_creators`；新写入以结构化 name-list 为准；旧 `creators_json` 仅作兼容回退；更新列表显示和 MCP metadata。 |
-| CA-03 | 结构化 dates | ready-for-agent | CA-01 done | 新增 `item_dates`；支持 `issued`、`accessed`、`original-date`；旧 `date` 仅作 issued 显示回退。 |
+| CA-02 | 结构化 creators | done | CA-01 done | 已新增 `item_creators`、结构化 creator 模型和服务读写；新写入以结构化 name-list 为准；旧 `creators_json` 作为兼容回退；列表显示和 MCP metadata 已更新。 |
+| CA-03 | 结构化 dates | done | CA-01 done | 已新增 `item_dates`、结构化 date 模型和服务读写；支持 `issued`、`accessed`、`original-date`；旧 `date` 作为 issued 显示回退。 |
 | CA-04 | 文档级 OCR | done | 无 | 已完成 `RunPresetOnDocumentAsync`；列出 DocumentInstance 下所有 Page 后复用 `RunPresetOnPagesAsync`；无页面不创建空 run。 |
 | CA-05 | 区域级 OCR | done | 无 | 已完成 `RunPresetOnRegionAsync`；验证 `NormalizedBBox`；v1 生成 staging/candidate，不做 bbox 级替换采纳。 |
 | CA-06 | OCR unset/hide | done | CA-04 done | 已增加 current OCR 重置和 hide run 服务；新增 `ocr_runs.hidden`；hide/unset 清理 current SearchUnit、标记 search dirty，默认搜索/MCP 不返回隐藏 OCR 内容。 |
@@ -162,10 +162,10 @@
 | CA-08 | 菜单栏与 Developer Tools 清理 | done | 无 | 已用 Avalonia `Menu` 替代装饰性 TextBlock；删除 Developer Tools 按钮；移除 inline MinerU token prompt 的 UI 壳。 |
 | CA-09 | MinerU credential flow | done | CA-08 done | 右键 OCR 从 `ProviderCredential` 优先读取 token，回退 appsettings；缺失时打开设置页 MinerU 区域。 |
 | CA-10 | 搜索 UI 第一版 | done | CA-07 done | 搜索框调用 `ISearchService`；展示页级结果、matched units、EvidenceRef、index status。 |
-| CA-11 | 编辑题录标签页第一版 | ready-for-agent | CA-01 done | 新建/编辑共用表单；覆盖元数据、标签、标识符、关联文件注册；不暴露开发者手动 attach/resolve 入口。 |
+| CA-11 | 编辑题录标签页第一版 | done | CA-01 done | 已新增新建/编辑共用表单；覆盖元数据、标签、标识符、关联文件注册；普通入口不暴露开发者手动 attach/resolve。 |
 | CA-12 | OCR 队列标签页 | done | CA-08 done | 文件菜单打开 OCR 队列页；显示状态、任务列表、暂停/恢复/取消；复用现有队列后端。自动刷新配置后置。 |
 | CA-13 | 证据 Markdown 导出 | done | CA-07 done, CA-08 done | 右键和编辑菜单导出 pinned Evidence Markdown；使用 file picker；导出内容与 pinned EvidenceRef 匹配。 |
-| CA-14 | 设置标签页第一版 | ready-for-agent | CA-08 done | 第一批只做库信息、路径、MinerU、OCR 预设、搜索配置、MCP；快照/缓存/许可证后置。当前仅 MinerU 区域部分完成。 |
+| CA-14 | 设置标签页第一版 | done | CA-08 done | 已覆盖库信息、路径、MinerU、OCR 通用配置摘要、OCR 预设、搜索配置、MCP；快照/缓存/许可证后置。 |
 | CA-15 | OCR 逻辑删除 | defer | CA-06 | tombstone 是同步传播语义，需同时处理搜索、MCP、EvidenceRef、快照。 |
 | CA-16 | OCR 数据清除 | defer | CA-15 | purge 是高级维护操作，需保留最小 marker 并让 EvidenceRef 返回 `purged`。 |
 | CA-17 | skipped 页面状态 | defer | CA-04 CA-05 | 将源文件缺失、预设不适用、bbox 越界等路径标记 skipped，确保不污染 current/search/MCP。 |
@@ -180,23 +180,24 @@
 
 下一批可并行启动：
 
-1. CA-02 结构化 creators。
-2. CA-03 结构化 dates。
-3. CA-11 编辑题录标签页第一版。
-4. CA-14 设置标签页第一版。
+当前 ready-for-agent 队列已清空；后续主线需先从 defer 项中选择并重新复核依赖。
 
 已完成并不再排入主线：
 
 1. CA-01 Item 基础字段与服务 CRUD。
-2. CA-04 文档级 OCR。
-3. CA-05 区域级 OCR。
-4. CA-07 MCP bbox/evidence 小缺口。
-5. CA-08 菜单栏与 Developer Tools 清理。
-6. CA-09 MinerU credential flow。
-7. CA-10 搜索 UI 第一版。
-8. CA-12 OCR 队列标签页。
-9. CA-13 证据 Markdown 导出。
-10. CA-06 OCR unset/hide。
+2. CA-02 结构化 creators。
+3. CA-03 结构化 dates。
+4. CA-04 文档级 OCR。
+5. CA-05 区域级 OCR。
+6. CA-07 MCP bbox/evidence 小缺口。
+7. CA-08 菜单栏与 Developer Tools 清理。
+8. CA-09 MinerU credential flow。
+9. CA-10 搜索 UI 第一版。
+10. CA-11 编辑题录标签页第一版。
+11. CA-12 OCR 队列标签页。
+12. CA-13 证据 Markdown 导出。
+13. CA-14 设置标签页第一版。
+14. CA-06 OCR unset/hide。
 
 ---
 
@@ -333,7 +334,7 @@
 ### 4.3.2 结构化名称列表
 
 - **PRD 引用**：6.7。
-- **当前状态**：未实现。当前使用 `creators_json` 字符串列，没有角色和结构化 name-list。
+- **当前状态**：已实现。`item_creators` 已落库；`ItemMetadata`/`IItemService`/`ItemService` 支持结构化 name-list，旧 `creators_json` 作为兼容回退；列表显示和 MCP metadata 已优先使用结构化 creators。
 - **建议实现**：
   - 新建 `item_creators` 表：
     - `creator_id`
@@ -354,7 +355,7 @@
 ### 4.3.3 结构化日期
 
 - **PRD 引用**：6.7。
-- **当前状态**：未实现。当前只有单个 `date` 字符串。
+- **当前状态**：已实现。`item_dates` 已落库；支持 `issued`、`accessed`、`original-date`；旧 `date` 字符串作为 issued 显示回退。
 - **建议实现**：
   - 新建 `item_dates` 表：
     - `date_id`
@@ -435,7 +436,7 @@
 ### 4.4.4 编辑题录标签页
 
 - **PRD 引用**：6.7，用户故事 1、4、6。
-- **当前状态**：未完成。标签、标识符、关联文件等后端能力缺少普通用户 UI。
+- **当前状态**：已实现。已新增“编辑题录”工作区，新建/编辑共用表单覆盖元数据、标签、标识符和关联文件注册。
 - **建议实现**：
   - 与“我的库”“阅读”并列新增“编辑题录”标签页。
   - 元数据区域绑定 `IItemService`。
@@ -523,7 +524,7 @@
 ### 4.4.12 设置标签页
 
 - **PRD 引用**：6.2、6.3、6.5、6.6、6.8、6.14、6.15、6.19。
-- **当前状态**：未实现集中设置界面。
+- **当前状态**：已实现第一版集中设置界面。已覆盖库信息、运行时数据库路径、同步根目录、FileSearchRoot、MinerU OCR、OCR 通用配置摘要、OCR 预设、搜索配置和 MCP 控制；快照/缓存/许可证后置。
 - **建议分批实现**：
   - 第一批：
     - 库信息。
@@ -575,7 +576,7 @@
 
 ### CA-02：结构化 creators
 
-状态：`ready-for-agent`，依赖 CA-01 done。
+状态：`done`，依赖 CA-01 done。
 
 - migration：`item_creators`。
 - Core model：creator role/name value object。
@@ -585,7 +586,7 @@
 
 ### CA-03：结构化 dates
 
-状态：`ready-for-agent`，依赖 CA-01 done。
+状态：`done`，依赖 CA-01 done。
 
 - migration：`item_dates`。
 - Core model：date role/date-parts。
@@ -656,7 +657,7 @@
 
 ### CA-11：编辑题录标签页第一版
 
-状态：`ready-for-agent`，依赖 CA-01 done。
+状态：`done`，依赖 CA-01 done。
 
 - 元数据。
 - 标签。
@@ -684,7 +685,7 @@
 
 ### CA-14：设置标签页第一版
 
-状态：`ready-for-agent`，依赖 CA-08 done。
+状态：`done`，依赖 CA-08 done。
 
 - 库信息、运行时数据库路径、同步根目录、FileSearchRoot。
 - MinerU OCR、OCR 通用并发、OCR 预设管理。
@@ -741,6 +742,7 @@ hide、tombstone、purge 三者语义不同：
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| 2.4 | 2026-07-06 | 完成 CA-02、CA-03、CA-11、CA-14；新增结构化 creators/dates、编辑题录工作区和设置页第一版。 |
 | 2.3 | 2026-07-06 | 完成 CA-06 OCR unset/hide；新增 hidden run 迁移、服务方法、search dirty/current SearchUnit 清理和默认搜索/MCP 可见性测试。 |
 | 2.2 | 2026-07-06 | 完成 CA-12 OCR 队列标签页与 CA-13 证据 Markdown 导出入口；更新下一批 ready-for-agent 列表。 |
 | 2.1 | 2026-07-06 | 同步已完成的 CA-01、CA-04、CA-05、CA-07、CA-08、CA-09、CA-10；完成 4.4.3 侧边栏路径真实化；刷新下一批 ready-for-agent 列表。 |

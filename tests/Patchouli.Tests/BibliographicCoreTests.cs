@@ -84,6 +84,56 @@ public sealed class BibliographicCoreTests
     }
 
     [Fact]
+    public async Task CreateItem_writes_structured_creators_and_dates()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+
+        var created = await context.ItemService.CreateItemAsync(
+            "book",
+            "Structured Item",
+            creators: new[]
+            {
+                new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada"),
+                new ItemCreatorInput(ItemCreatorRoles.Editor, Literal: "Royal Society")
+            },
+            dates: new[]
+            {
+                new ItemDateInput(ItemDateRoles.Issued, """[[1843]]"""),
+                new ItemDateInput(ItemDateRoles.Accessed, """[[2026,7,6]]""")
+            });
+
+        created.IsSuccess.Should().BeTrue();
+        created.Value.Creators.Should().HaveCount(2);
+        created.Value.Creators[0].DisplayName.Should().Be("Ada Lovelace");
+        created.Value.Creators[1].Role.Should().Be(ItemCreatorRoles.Editor);
+        created.Value.Dates.Should().HaveCount(2);
+        created.Value.Dates.Single(date => date.Role == ItemDateRoles.Issued).DatePartsJson.Should().Be("""[[1843]]""");
+        created.Value.Date.Should().Be("1843");
+        created.Value.CreatorsJson.Should().Contain("Lovelace");
+    }
+
+    [Fact]
+    public async Task GetItem_uses_legacy_creator_and_date_fallback_when_structured_rows_are_absent()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        var created = await context.ItemService.CreateItemAsync(
+            "book",
+            "Legacy Item",
+            creatorsJson: """[{"name":"Legacy Author"}]""",
+            date: "1901");
+
+        await using var connection = context.Database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("delete from item_creators; delete from item_dates;");
+
+        var fetched = await context.ItemService.GetItemAsync(created.Value.ItemId);
+
+        fetched.Value.Creators.Single().DisplayName.Should().Be("Legacy Author");
+        fetched.Value.Dates.Single().Role.Should().Be(ItemDateRoles.Issued);
+        fetched.Value.Dates.Single().Literal.Should().Be("1901");
+    }
+
+    [Fact]
     public async Task DeleteItem_soft_deletes_item_and_excludes_it_from_queries()
     {
         await using var context = await BibliographicTestContext.CreateAsync();
@@ -426,10 +476,10 @@ public sealed class BibliographicCoreTests
             select count(1)
             from sqlite_master
             where type = 'table'
-              and name in ('items', 'item_identifiers', 'file_assets', 'document_instances');
+              and name in ('items', 'item_identifiers', 'file_assets', 'document_instances', 'item_creators', 'item_dates');
             """);
 
-        tableCount.Should().Be(4);
+        tableCount.Should().Be(6);
 
         var columns = (await connection.QueryAsync<string>("select name from pragma_table_info('items');")).ToArray();
         columns.Should().Contain(new[]

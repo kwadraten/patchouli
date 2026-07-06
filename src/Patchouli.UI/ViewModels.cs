@@ -46,6 +46,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private bool _isSettingsVisible;
     private bool _isSearchVisible;
     private bool _isOcrQueueVisible;
+    private bool _isItemEditorVisible;
 
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); Raise(nameof(VersionInfo)); } }
     public string DefaultSyncRootPath => _settings.Runtime.DefaultSyncRoot;
@@ -79,12 +80,14 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise();
             Raise(nameof(ShowWorkspaceShell));
             Raise(nameof(ShowSettingsWorkspace));
+            Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
             Raise(nameof(IsInspectorVisible));
             Raise(nameof(ShowSettingsTab));
             Raise(nameof(IsLibraryTabActive));
             Raise(nameof(IsReaderTabActive));
             Raise(nameof(IsOcrQueueTabActive));
+            Raise(nameof(IsItemEditorTabActive));
         }
     }
     public bool IsSearchVisible
@@ -97,12 +100,14 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise();
             Raise(nameof(ShowWorkspaceShell));
             Raise(nameof(ShowSearchWorkspace));
+            Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
             Raise(nameof(IsInspectorVisible));
             Raise(nameof(ShowSearchTab));
             Raise(nameof(IsLibraryTabActive));
             Raise(nameof(IsReaderTabActive));
             Raise(nameof(IsOcrQueueTabActive));
+            Raise(nameof(IsItemEditorTabActive));
         }
     }
     public bool IsOcrQueueVisible
@@ -115,28 +120,52 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise();
             Raise(nameof(ShowWorkspaceShell));
             Raise(nameof(ShowOcrQueueWorkspace));
+            Raise(nameof(ShowItemEditorWorkspace));
             Raise(nameof(ShowSidebar));
             Raise(nameof(IsInspectorVisible));
             Raise(nameof(ShowOcrQueueTab));
             Raise(nameof(IsLibraryTabActive));
             Raise(nameof(IsReaderTabActive));
             Raise(nameof(IsOcrQueueTabActive));
+            Raise(nameof(IsItemEditorTabActive));
+        }
+    }
+    public bool IsItemEditorVisible
+    {
+        get => _isItemEditorVisible;
+        private set
+        {
+            if (_isItemEditorVisible == value) return;
+            _isItemEditorVisible = value;
+            Raise();
+            Raise(nameof(ShowWorkspaceShell));
+            Raise(nameof(ShowItemEditorWorkspace));
+            Raise(nameof(ShowSidebar));
+            Raise(nameof(IsInspectorVisible));
+            Raise(nameof(ShowItemEditorTab));
+            Raise(nameof(IsLibraryTabActive));
+            Raise(nameof(IsReaderTabActive));
+            Raise(nameof(IsOcrQueueTabActive));
+            Raise(nameof(IsItemEditorTabActive));
         }
     }
 
-    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible && !IsSearchVisible && !IsOcrQueueVisible;
+    public bool ShowWorkspaceShell => IsLibraryVisible && !IsSettingsVisible && !IsSearchVisible && !IsOcrQueueVisible && !IsItemEditorVisible;
     public bool ShowSettingsWorkspace => IsLibraryVisible && IsSettingsVisible;
     public bool ShowSearchWorkspace => IsLibraryVisible && IsSearchVisible;
     public bool ShowOcrQueueWorkspace => IsLibraryVisible && IsOcrQueueVisible;
+    public bool ShowItemEditorWorkspace => IsLibraryVisible && IsItemEditorVisible;
     public bool ShowSidebar => ShowWorkspaceShell && Shell.ShowLibraryList;
     public bool IsInspectorVisible => ShowWorkspaceShell && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && Shell.SelectedItem is not null;
     public bool ShowSettingsTab => ShowSettingsWorkspace;
     public bool ShowSearchTab => ShowSearchWorkspace;
     public bool ShowOcrQueueTab => ShowOcrQueueWorkspace;
+    public bool ShowItemEditorTab => ShowItemEditorWorkspace;
     public bool IsLibraryTabActive => ShowWorkspaceShell && Shell.ShowLibraryList;
     public bool IsReaderTabActive => ShowWorkspaceShell && Shell.ShowPdfReader;
     public bool IsOcrQueueTabActive => ShowOcrQueueWorkspace;
+    public bool IsItemEditorTabActive => ShowItemEditorWorkspace;
     public LibraryViewModel Library { get; }
     public BibliographyViewModel Bibliography { get; }
     public FileDocumentViewModel FileDocument { get; }
@@ -147,6 +176,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public PdfPreviewViewModel PdfPreview { get; }
     public SearchEvidenceViewModel SearchEvidence { get; }
     public SearchProfileViewModel SearchProfiles { get; }
+    public ItemEditorViewModel ItemEditor { get; }
     public McpPreviewViewModel McpPreview { get; }
     public SnapshotViewModel Snapshot { get; }
     public SnapshotBranchViewModel SnapshotBranch { get; }
@@ -158,6 +188,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand CreateItemMenuCommand { get; }
+    public AsyncCommand OpenItemEditorCommand { get; }
     public AsyncCommand EditSelectedItemCommand { get; }
     public AsyncCommand RunSelectedItemOcrCommand { get; }
     public AsyncCommand RebuildSearchIndexCommand { get; }
@@ -188,6 +219,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         PdfRender = new(this);
         SearchEvidence = new(this);
         SearchProfiles = new(this);
+        ItemEditor = new(this);
         McpPreview = new(this);
         Snapshot = new(this);
         SnapshotBranch = new(this);
@@ -212,7 +244,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         RunToolbarSearchCommand = new(RunToolbarSearchAsync);
         OpenSettingsCommand = new(() => OpenSettingsAsync("mineru"));
         OpenOcrQueueCommand = new(OpenOcrQueueAsync);
-        CreateItemMenuCommand = new(async () => { await ShowLibraryAsync(); await ShowPlaceholderAsync("新建题录标签页将在后续任务中接入。"); });
+        CreateItemMenuCommand = new(OpenNewItemEditorAsync);
+        OpenItemEditorCommand = new(OpenItemEditorTabAsync);
         EditSelectedItemCommand = new(EditSelectedItemAsync);
         RunSelectedItemOcrCommand = new(RunSelectedItemOcrAsync);
         RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
@@ -346,6 +379,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
+        Raise(nameof(ShowItemEditorWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -362,6 +396,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSettingsWorkspace));
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
+        Raise(nameof(ShowItemEditorWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -449,6 +484,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(IsLibraryTabActive));
         Raise(nameof(IsReaderTabActive));
+        Raise(nameof(IsItemEditorTabActive));
     }
 
     public async Task LogOperationAsync(string operation, string message)
@@ -457,15 +493,16 @@ public sealed class MainWindowViewModel : ViewModelBase
         catch { }
     }
 
-    public Task OpenSettingsAsync(string section, string? statusMessage = null)
+    public async Task OpenSettingsAsync(string section, string? statusMessage = null)
     {
         IsSettingsVisible = true;
         IsSearchVisible = false;
         IsOcrQueueVisible = false;
+        IsItemEditorVisible = false;
         Shell.IsReadingMode = false;
         Settings.FocusMinerU(statusMessage);
+        await Settings.RefreshAsync();
         RaiseShellSelectionChanged();
-        return Task.CompletedTask;
     }
 
     private async Task OpenOcrQueueAsync()
@@ -473,6 +510,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         IsSettingsVisible = false;
         IsSearchVisible = false;
         IsOcrQueueVisible = true;
+        IsItemEditorVisible = false;
         Shell.IsReadingMode = false;
         await OcrQueue.RefreshAsync();
         RaiseShellSelectionChanged();
@@ -489,6 +527,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         IsSettingsVisible = false;
         IsSearchVisible = false;
         IsOcrQueueVisible = false;
+        IsItemEditorVisible = false;
         await Shell.SwitchToLibraryListAsync();
         RaiseShellSelectionChanged();
     }
@@ -504,6 +543,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         IsSettingsVisible = false;
         IsSearchVisible = false;
         IsOcrQueueVisible = false;
+        IsItemEditorVisible = false;
         await Shell.SwitchToReadingModeAsync();
         RaiseShellSelectionChanged();
     }
@@ -513,25 +553,54 @@ public sealed class MainWindowViewModel : ViewModelBase
         IsSettingsVisible = false;
         IsSearchVisible = true;
         IsOcrQueueVisible = false;
+        IsItemEditorVisible = false;
         await SearchEvidence.SearchCommand.ExecuteAsync();
+    }
+
+    private async Task OpenNewItemEditorAsync()
+    {
+        IsSettingsVisible = false;
+        IsSearchVisible = false;
+        IsOcrQueueVisible = false;
+        IsItemEditorVisible = true;
+        Shell.IsReadingMode = false;
+        await ItemEditor.NewAsync();
+        RaiseShellSelectionChanged();
     }
 
     private async Task EditSelectedItemAsync()
     {
-        await ShowLibraryAsync();
         if (Shell.SelectedItem is null)
         {
             Report("请先选择一个题录。");
             return;
         }
 
-        await Shell.SelectedItem.EditMetadataCommand.ExecuteAsync();
+        IsSettingsVisible = false;
+        IsSearchVisible = false;
+        IsOcrQueueVisible = false;
+        IsItemEditorVisible = true;
+        Shell.IsReadingMode = false;
+        await ItemEditor.LoadAsync(Shell.SelectedItem.ItemId);
+        RaiseShellSelectionChanged();
+    }
+
+    private Task OpenItemEditorTabAsync()
+    {
+        if (IsItemEditorVisible)
+        {
+            return Task.CompletedTask;
+        }
+
+        return EditSelectedItemAsync();
     }
 
     private async Task RunSelectedItemOcrAsync()
     {
         IsSettingsVisible = false;
+        IsSearchVisible = false;
         IsOcrQueueVisible = false;
+        IsItemEditorVisible = false;
         if (Shell.SelectedItem is null)
         {
             Report("请先选择一个题录。");

@@ -26,4 +26,6 @@ public sealed record UpdateItemRequest(
     string? AbstractText = null,
     string? TagsJson = null,
     string? CollectionsJson = null,
-    string? CustomFieldsJson = null);
+    string? CustomFieldsJson = null,
+    IReadOnlyList<ItemCreatorInput>? Creators = null,
+    IReadOnlyList<ItemDateInput>? Dates = null);

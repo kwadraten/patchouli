@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Dapper;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
@@ -54,6 +55,8 @@ public sealed class ItemService : IItemService
         string? tagsJson = null,
         string? collectionsJson = null,
         string? customFieldsJson = null,
+        IReadOnlyList<ItemCreatorInput>? creators = null,
+        IReadOnlyList<ItemDateInput>? dates = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(title))
@@ -76,6 +79,8 @@ public sealed class ItemService : IItemService
         {
             var now = _clock.UtcNow.ToUniversalTime();
             var itemId = ItemId.New();
+            var creatorInputs = creators ?? ParseCreatorInputs(creatorsJson);
+            var dateInputs = dates ?? ParseDateInputs(date);
             var item = new ItemMetadata(
                 itemId,
                 libraryResult.Value.LibraryId,
@@ -84,8 +89,10 @@ public sealed class ItemService : IItemService
                 title.Trim(),
                 NullIfWhiteSpace(subtitle),
                 NullIfWhiteSpace(titleShort),
-                DefaultJsonArray(creatorsJson),
-                NullIfWhiteSpace(date),
+                creators is null ? DefaultJsonArray(creatorsJson) : SerializeCreatorCache(creatorInputs),
+                Array.Empty<ItemCreator>(),
+                dates is null ? NullIfWhiteSpace(date) : DisplayIssuedDate(dateInputs),
+                Array.Empty<ItemDate>(),
                 NullIfWhiteSpace(publicationTitle),
                 NullIfWhiteSpace(containerTitleShort),
                 NullIfWhiteSpace(collectionTitle),
@@ -131,8 +138,10 @@ public sealed class ItemService : IItemService
                 ToParameters(item),
                 transaction);
 
+            await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, now);
+            await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, now);
             await transaction.CommitAsync(cancellationToken);
-            return Result<ItemMetadata>.Success(item);
+            return await GetItemAsync(itemId, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -152,9 +161,16 @@ public sealed class ItemService : IItemService
             await connection.OpenAsync(cancellationToken);
 
             var row = await QueryItemRowAsync(connection, itemId, cancellationToken);
-            return row is null
-                ? Result<ItemMetadata>.Failure(AppErrorCodes.NotFound, "Item was not found.")
-                : Result<ItemMetadata>.Success(row.ToMetadata());
+            if (row is null)
+            {
+                return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound, "Item was not found.");
+            }
+
+            var creators = await LoadCreatorsAsync(connection, new[] { itemId }, cancellationToken);
+            var dates = await LoadDatesAsync(connection, new[] { itemId }, cancellationToken);
+            return Result<ItemMetadata>.Success(row.ToMetadata(
+                creators.GetValueOrDefault(itemId) ?? LegacyCreators(row),
+                dates.GetValueOrDefault(itemId) ?? LegacyDates(row)));
         }
         catch (OperationCanceledException)
         {
@@ -194,6 +210,8 @@ public sealed class ItemService : IItemService
                 return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
+            var creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
+            var dateInputs = request.Dates ?? ParseDateInputs(request.Date);
             var updated = new ItemMetadata(
                 existing.ToItemId(),
                 existing.ToLibraryId(),
@@ -202,8 +220,10 @@ public sealed class ItemService : IItemService
                 request.Title.Trim(),
                 NullIfWhiteSpace(request.Subtitle),
                 NullIfWhiteSpace(request.TitleShort),
-                DefaultJsonArray(request.CreatorsJson),
-                NullIfWhiteSpace(request.Date),
+                request.Creators is null ? DefaultJsonArray(request.CreatorsJson) : SerializeCreatorCache(creatorInputs),
+                Array.Empty<ItemCreator>(),
+                request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
+                Array.Empty<ItemDate>(),
                 NullIfWhiteSpace(request.PublicationTitle),
                 NullIfWhiteSpace(request.ContainerTitleShort),
                 NullIfWhiteSpace(request.CollectionTitle),
@@ -262,8 +282,10 @@ public sealed class ItemService : IItemService
                 ToParameters(updated),
                 transaction);
 
+            await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, updated.UpdatedAt);
+            await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, updated.UpdatedAt);
             await transaction.CommitAsync(cancellationToken);
-            return Result<ItemMetadata>.Success(updated);
+            return await GetItemAsync(itemId, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -358,6 +380,12 @@ public sealed class ItemService : IItemService
                       or coalesce(subtitle, '') like @QueryPattern
                       or coalesce(citation_key, '') like @QueryPattern
                       or coalesce(publication_title, '') like @QueryPattern
+                      or exists (
+                          select 1
+                          from item_creators c
+                          where c.item_id = items.item_id
+                            and (coalesce(c.family, '') || ' ' || coalesce(c.given, '') || ' ' || coalesce(c.literal, '')) like @QueryPattern
+                      )
                   );
                 """,
                 parameters);
@@ -407,6 +435,12 @@ public sealed class ItemService : IItemService
                       or coalesce(subtitle, '') like @QueryPattern
                       or coalesce(citation_key, '') like @QueryPattern
                       or coalesce(publication_title, '') like @QueryPattern
+                      or exists (
+                          select 1
+                          from item_creators c
+                          where c.item_id = items.item_id
+                            and (coalesce(c.family, '') || ' ' || coalesce(c.given, '') || ' ' || coalesce(c.literal, '')) like @QueryPattern
+                      )
                   )
                   and (
                       @CursorCreatedAt is null
@@ -421,9 +455,14 @@ public sealed class ItemService : IItemService
             var hasMore = rows.Length > pageSize;
             var pageRows = hasMore ? rows[..pageSize] : rows;
             var nextCursor = hasMore ? CreateCursor(pageRows[^1]) : null;
+            var itemIds = pageRows.Select(row => row.ToItemId()).ToArray();
+            var creators = await LoadCreatorsAsync(connection, itemIds, cancellationToken);
+            var dates = await LoadDatesAsync(connection, itemIds, cancellationToken);
 
             return Result<ItemListPage>.Success(new ItemListPage(
-                pageRows.Select(row => row.ToMetadata()).ToArray(),
+                pageRows.Select(row => row.ToMetadata(
+                    creators.GetValueOrDefault(row.ToItemId()) ?? LegacyCreators(row),
+                    dates.GetValueOrDefault(row.ToItemId()) ?? LegacyDates(row))).ToArray(),
                 nextCursor,
                 totalCount));
         }
@@ -607,6 +646,165 @@ public sealed class ItemService : IItemService
         };
     }
 
+    private static async Task<Dictionary<ItemId, IReadOnlyList<ItemCreator>>> LoadCreatorsAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (itemIds.Count == 0)
+        {
+            return new Dictionary<ItemId, IReadOnlyList<ItemCreator>>();
+        }
+
+        var rows = await connection.QueryAsync<CreatorRow>(
+            """
+            select
+                creator_id as CreatorId,
+                item_id as ItemId,
+                role as Role,
+                family as Family,
+                given as Given,
+                literal as Literal,
+                suffix as Suffix,
+                particles as Particles,
+                sequence_index as SequenceIndex,
+                created_at as CreatedAt
+            from item_creators
+            where item_id in @ItemIds
+            order by item_id, role, sequence_index, creator_id;
+            """,
+            new { ItemIds = itemIds.Select(id => id.ToString()).ToArray() });
+
+        return rows
+            .GroupBy(row => ItemId.Parse(row.ItemId))
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemCreator>)group.Select(row => row.ToCreator()).ToArray());
+    }
+
+    private static async Task<Dictionary<ItemId, IReadOnlyList<ItemDate>>> LoadDatesAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (itemIds.Count == 0)
+        {
+            return new Dictionary<ItemId, IReadOnlyList<ItemDate>>();
+        }
+
+        var rows = await connection.QueryAsync<DateRow>(
+            """
+            select
+                date_id as DateId,
+                item_id as ItemId,
+                role as Role,
+                date_parts_json as DatePartsJson,
+                circa as Circa,
+                season as Season,
+                literal as Literal,
+                created_at as CreatedAt
+            from item_dates
+            where item_id in @ItemIds
+            order by item_id,
+                     case role when 'issued' then 0 when 'accessed' then 1 else 2 end,
+                     role;
+            """,
+            new { ItemIds = itemIds.Select(id => id.ToString()).ToArray() });
+
+        return rows
+            .GroupBy(row => ItemId.Parse(row.ItemId))
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemDate>)group.Select(row => row.ToDate()).ToArray());
+    }
+
+    private static async Task ReplaceCreatorsAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        ItemId itemId,
+        IReadOnlyList<ItemCreatorInput> creators,
+        DateTimeOffset now)
+    {
+        await connection.ExecuteAsync("delete from item_creators where item_id = @ItemId;", new { ItemId = itemId.ToString() }, transaction);
+
+        for (var index = 0; index < creators.Count; index++)
+        {
+            var creator = NormalizeCreator(creators[index]);
+            if (creator is null)
+            {
+                continue;
+            }
+
+            await connection.ExecuteAsync(
+                """
+                insert into item_creators (
+                    creator_id, item_id, role, family, given, literal, suffix, particles, sequence_index, created_at
+                )
+                values (
+                    @CreatorId, @ItemId, @Role, @Family, @Given, @Literal, @Suffix, @Particles, @SequenceIndex, @CreatedAt
+                );
+                """,
+                new
+                {
+                    CreatorId = Guid.NewGuid().ToString("D"),
+                    ItemId = itemId.ToString(),
+                    creator.Role,
+                    creator.Family,
+                    creator.Given,
+                    creator.Literal,
+                    creator.Suffix,
+                    creator.Particles,
+                    SequenceIndex = index,
+                    CreatedAt = FormatUtc(now)
+                },
+                transaction);
+        }
+    }
+
+    private static async Task ReplaceDatesAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        ItemId itemId,
+        IReadOnlyList<ItemDateInput> dates,
+        DateTimeOffset now)
+    {
+        await connection.ExecuteAsync("delete from item_dates where item_id = @ItemId;", new { ItemId = itemId.ToString() }, transaction);
+
+        foreach (var rawDate in dates)
+        {
+            var date = NormalizeDate(rawDate);
+            if (date is null)
+            {
+                continue;
+            }
+
+            await connection.ExecuteAsync(
+                """
+                insert into item_dates (
+                    date_id, item_id, role, date_parts_json, circa, season, literal, created_at
+                )
+                values (
+                    @DateId, @ItemId, @Role, @DatePartsJson, @Circa, @Season, @Literal, @CreatedAt
+                )
+                on conflict(item_id, role) do update set
+                    date_parts_json = excluded.date_parts_json,
+                    circa = excluded.circa,
+                    season = excluded.season,
+                    literal = excluded.literal;
+                """,
+                new
+                {
+                    DateId = Guid.NewGuid().ToString("D"),
+                    ItemId = itemId.ToString(),
+                    date.Role,
+                    date.DatePartsJson,
+                    Circa = date.Circa ? 1 : 0,
+                    date.Season,
+                    date.Literal,
+                    CreatedAt = FormatUtc(now)
+                },
+                transaction);
+        }
+    }
+
     private static async Task<ItemRow?> QueryItemRowAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         ItemId itemId,
@@ -722,6 +920,223 @@ public sealed class ItemService : IItemService
         return Result<T>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
     }
 
+    private static IReadOnlyList<ItemCreatorInput> ParseCreatorInputs(string? creatorsJson)
+    {
+        if (string.IsNullOrWhiteSpace(creatorsJson))
+        {
+            return Array.Empty<ItemCreatorInput>();
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(creatorsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<ItemCreatorInput>();
+            }
+
+            var creators = new List<ItemCreatorInput>();
+            foreach (var element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var role = ReadString(element, "role") ?? ReadString(element, "Role") ?? ItemCreatorRoles.Author;
+                var family = ReadString(element, "family") ?? ReadString(element, "Family");
+                var given = ReadString(element, "given") ?? ReadString(element, "Given");
+                var literal = ReadString(element, "literal")
+                    ?? ReadString(element, "Literal")
+                    ?? ReadString(element, "name")
+                    ?? ReadString(element, "Name");
+                var suffix = ReadString(element, "suffix") ?? ReadString(element, "Suffix");
+                var particles = ReadString(element, "particles") ?? ReadString(element, "Particles");
+                creators.Add(new ItemCreatorInput(role, family, given, literal, suffix, particles));
+            }
+
+            return creators;
+        }
+        catch
+        {
+            return Array.Empty<ItemCreatorInput>();
+        }
+    }
+
+    private static IReadOnlyList<ItemDateInput> ParseDateInputs(string? date)
+    {
+        var trimmed = NullIfWhiteSpace(date);
+        return trimmed is null
+            ? Array.Empty<ItemDateInput>()
+            : new[] { new ItemDateInput(ItemDateRoles.Issued, Literal: trimmed) };
+    }
+
+    private static ItemCreatorInput? NormalizeCreator(ItemCreatorInput creator)
+    {
+        var role = ItemCreatorRoles.Supported.Contains(creator.Role) ? creator.Role : ItemCreatorRoles.Author;
+        var family = NullIfWhiteSpace(creator.Family);
+        var given = NullIfWhiteSpace(creator.Given);
+        var literal = NullIfWhiteSpace(creator.Literal);
+        var suffix = NullIfWhiteSpace(creator.Suffix);
+        var particles = NullIfWhiteSpace(creator.Particles);
+        return family is null && given is null && literal is null
+            ? null
+            : new ItemCreatorInput(role, family, given, literal, suffix, particles);
+    }
+
+    private static ItemDateInput? NormalizeDate(ItemDateInput date)
+    {
+        if (!ItemDateRoles.Supported.Contains(date.Role))
+        {
+            return null;
+        }
+
+        var datePartsJson = string.IsNullOrWhiteSpace(date.DatePartsJson) ? "[]" : date.DatePartsJson.Trim();
+        if (!IsJsonArray(datePartsJson))
+        {
+            datePartsJson = "[]";
+        }
+
+        var literal = NullIfWhiteSpace(date.Literal);
+        var season = NullIfWhiteSpace(date.Season);
+        if (literal is null && season is null && datePartsJson == "[]")
+        {
+            return null;
+        }
+
+        return new ItemDateInput(date.Role, datePartsJson, date.Circa, season, literal);
+    }
+
+    private static IReadOnlyList<ItemCreator> LegacyCreators(ItemRow row)
+    {
+        return ParseCreatorInputs(row.CreatorsJson)
+            .Select((creator, index) => NormalizeCreator(creator) is { } normalized
+                ? new ItemCreator(
+                    string.Empty,
+                    row.ToItemId(),
+                    normalized.Role,
+                    normalized.Family,
+                    normalized.Given,
+                    normalized.Literal,
+                    normalized.Suffix,
+                    normalized.Particles,
+                    index,
+                    DateTimeOffset.Parse(row.UpdatedAt))
+                : null)
+            .Where(creator => creator is not null)
+            .Cast<ItemCreator>()
+            .ToArray();
+    }
+
+    private static IReadOnlyList<ItemDate> LegacyDates(ItemRow row)
+    {
+        var date = NullIfWhiteSpace(row.Date);
+        return date is null
+            ? Array.Empty<ItemDate>()
+            : new[]
+            {
+                new ItemDate(
+                    string.Empty,
+                    row.ToItemId(),
+                    ItemDateRoles.Issued,
+                    "[]",
+                    false,
+                    null,
+                    date,
+                    DateTimeOffset.Parse(row.UpdatedAt))
+            };
+    }
+
+    private static string SerializeCreatorCache(IReadOnlyList<ItemCreatorInput> creators)
+    {
+        var values = creators
+            .Select(NormalizeCreator)
+            .Where(creator => creator is not null)
+            .Select(creator => new
+            {
+                role = creator!.Role,
+                family = creator.Family,
+                given = creator.Given,
+                literal = creator.Literal,
+                suffix = creator.Suffix,
+                particles = creator.Particles,
+                name = DisplayCreator(creator)
+            })
+            .ToArray();
+
+        return JsonSerializer.Serialize(values);
+    }
+
+    private static string? DisplayIssuedDate(IReadOnlyList<ItemDateInput> dates)
+    {
+        var issued = dates
+            .Select(NormalizeDate)
+            .FirstOrDefault(date => date?.Role == ItemDateRoles.Issued);
+
+        if (issued is null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(issued.Literal))
+        {
+            return issued.Literal;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(issued.DatePartsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            var firstPart = document.RootElement[0];
+            if (firstPart.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            return string.Join("-", firstPart.EnumerateArray().Select(part => part.GetInt32().ToString("D2"))).TrimStart('0');
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string DisplayCreator(ItemCreatorInput creator)
+    {
+        if (!string.IsNullOrWhiteSpace(creator.Literal))
+        {
+            return creator.Literal.Trim();
+        }
+
+        return string.Join(" ", new[] { creator.Given, creator.Particles, creator.Family, creator.Suffix }
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim()));
+    }
+
+    private static string? ReadString(JsonElement element, string propertyName)
+    {
+        return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+            ? NullIfWhiteSpace(value.GetString())
+            : null;
+    }
+
+    private static bool IsJsonArray(string value)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(value);
+            return document.RootElement.ValueKind == JsonValueKind.Array;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private sealed class ItemRow
     {
         public string ItemId { get; set; } = string.Empty;
@@ -760,7 +1175,7 @@ public sealed class ItemService : IItemService
         public Patchouli.Core.Ids.ItemId ToItemId() => Patchouli.Core.Ids.ItemId.Parse(ItemId);
         public Patchouli.Core.Ids.LibraryId ToLibraryId() => Patchouli.Core.Ids.LibraryId.Parse(LibraryId);
 
-        public ItemMetadata ToMetadata()
+        public ItemMetadata ToMetadata(IReadOnlyList<ItemCreator> creators, IReadOnlyList<ItemDate> dates)
         {
             return new ItemMetadata(
                 Patchouli.Core.Ids.ItemId.Parse(ItemId),
@@ -771,7 +1186,9 @@ public sealed class ItemService : IItemService
                 Subtitle,
                 TitleShort,
                 CreatorsJson,
+                creators,
                 Date,
+                dates,
                 PublicationTitle,
                 ContainerTitleShort,
                 CollectionTitle,
@@ -795,6 +1212,54 @@ public sealed class ItemService : IItemService
                 DateTimeOffset.Parse(CreatedAt),
                 DateTimeOffset.Parse(UpdatedAt));
         }
+    }
+
+    private sealed class CreatorRow
+    {
+        public string CreatorId { get; set; } = string.Empty;
+        public string ItemId { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+        public string? Family { get; set; }
+        public string? Given { get; set; }
+        public string? Literal { get; set; }
+        public string? Suffix { get; set; }
+        public string? Particles { get; set; }
+        public int SequenceIndex { get; set; }
+        public string CreatedAt { get; set; } = string.Empty;
+
+        public ItemCreator ToCreator() => new(
+            CreatorId,
+            Patchouli.Core.Ids.ItemId.Parse(ItemId),
+            Role,
+            Family,
+            Given,
+            Literal,
+            Suffix,
+            Particles,
+            SequenceIndex,
+            DateTimeOffset.Parse(CreatedAt));
+    }
+
+    private sealed class DateRow
+    {
+        public string DateId { get; set; } = string.Empty;
+        public string ItemId { get; set; } = string.Empty;
+        public string Role { get; set; } = string.Empty;
+        public string DatePartsJson { get; set; } = "[]";
+        public int Circa { get; set; }
+        public string? Season { get; set; }
+        public string? Literal { get; set; }
+        public string CreatedAt { get; set; } = string.Empty;
+
+        public ItemDate ToDate() => new(
+            DateId,
+            Patchouli.Core.Ids.ItemId.Parse(ItemId),
+            Role,
+            DatePartsJson,
+            Circa != 0,
+            Season,
+            Literal,
+            DateTimeOffset.Parse(CreatedAt));
     }
 
     private sealed class IdentifierRow
