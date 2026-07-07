@@ -9,8 +9,8 @@
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>
         <ResourceInclude Source="avares://Patchouli.UI/Themes/AcademicPrecision.axaml" />
+        <ResourceInclude Source="avares://Patchouli.UI/Styles/TabStyles.axaml" />
       </ResourceDictionary.MergedDictionaries>
-
     </ResourceDictionary>
   </Application.Resources>
 </Application>

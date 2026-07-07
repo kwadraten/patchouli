@@ -2,9 +2,35 @@
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:views="using:Patchouli.UI.Views"
+        xmlns:local="using:Patchouli.UI"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
         Title="Patchouli" Background="{DynamicResource SurfaceBrush}">
+
+  <Window.DataTemplates>
+    <DataTemplate DataType="{x:Type local:LibraryShellViewModel}">
+      <views:LibraryPage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type local:PdfWorkspaceViewModel}">
+      <views:PdfWorkspacePage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type local:ItemEditorViewModel}">
+      <views:ItemEditorPage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type local:SettingsViewModel}">
+      <views:SettingsPage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type local:SearchEvidenceViewModel}">
+      <views:SearchResultsPage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type local:OcrQueueViewModel}">
+      <views:OcrQueuePage />
+    </DataTemplate>
+    <!-- About tab content is MainWindowViewModel -->
+    <DataTemplate DataType="{x:Type local:MainWindowViewModel}">
+      <views:AboutPage />
+    </DataTemplate>
+  </Window.DataTemplates>
 
   <Window.Styles>
     <Style Selector="Border.step">
@@ -25,41 +51,9 @@
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
-    <Style Selector="Border.tab">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0,0,0,1" />
-      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
-    </Style>
-    <Style Selector="Border.tab.active">
-      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
-      <Setter Property="BorderThickness" Value="0,0,0,2" />
-      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
-    </Style>
-
-    <Style Selector="Button.TabButton">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="16,0,36,0" />
-      <Setter Property="VerticalAlignment" Value="Stretch" />
-      <Setter Property="HorizontalAlignment" Value="Stretch" />
-    </Style>
-    
-    <Style Selector="Button.TabCloseButton">
-      <Setter Property="Width" Value="24" />
-      <Setter Property="Height" Value="24" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
-      <Setter Property="VerticalAlignment" Value="Center" />
-      <Setter Property="HorizontalAlignment" Value="Right" />
-      <Setter Property="Margin" Value="0,0,8,0" />
-      <Setter Property="HorizontalContentAlignment" Value="Center" />
-      <Setter Property="VerticalContentAlignment" Value="Center" />
-    </Style>
   </Window.Styles>
 
-  <Grid RowDefinitions="30,32,*,28">
+  <Grid RowDefinitions="30,*,28">
     <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
         <Menu VerticalAlignment="Center" Background="Transparent">
@@ -94,128 +88,35 @@
       </Grid>
     </Border>
 
-    <Border Grid.Row="1" Background="{DynamicResource SurfaceContainerLowBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
-      <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-        <StackPanel Orientation="Horizontal" Spacing="0" Margin="12,0,0,0" VerticalAlignment="Stretch">
-          <Border Classes="tab" Classes.active="{Binding IsFirstRunVisible}" Padding="16,0" IsVisible="{Binding IsFirstRunVisible}" VerticalAlignment="Stretch">
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <lucide:Lucide Icon="Database" Width="12" Height="12" StrokeBrush="{DynamicResource PrimaryBrush}" />
-              <TextBlock Text="初始化向导" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            </StackPanel>
-          </Border>
-
-          <Border Classes="tab" Classes.active="{Binding IsLibraryTabActive}" IsVisible="{Binding IsLibraryVisible}" VerticalAlignment="Stretch">
-            <Button Classes="TabButton" Padding="16,0" Command="{Binding ShowLibraryCommand}">
-              <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                <lucide:Lucide Icon="Database" Width="12" Height="12" StrokeBrush="{DynamicResource PrimaryBrush}" />
-                <TextBlock Text="{Binding LibraryTabTitle}" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" />
+    <Grid Grid.Row="1" Background="{DynamicResource SurfaceContainerLowestBrush}">
+      <TabControl ItemsSource="{Binding OpenTabs}" SelectedItem="{Binding ActiveTab}" Theme="{StaticResource {x:Type TabControl}}" Padding="0">
+        <TabControl.ItemTemplate>
+          <DataTemplate DataType="{x:Type local:WorkspaceTabViewModel}">
+            <Grid>
+              <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
+                <lucide:Lucide Icon="{Binding IconName}" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="{Binding Title}" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
               </StackPanel>
-            </Button>
-          </Border>
-
-          <Border Classes="tab" Classes.active="{Binding IsReaderTabActive}" IsVisible="{Binding ShowSelectedDocumentTab}" VerticalAlignment="Stretch">
-            <Grid>
-              <Button Classes="TabButton" Command="{Binding ShowReadingCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <lucide:Lucide Icon="FolderOpen" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding PdfTabTitle}" Width="300" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <Button Classes="TabCloseButton" Command="{Binding ClosePdfWorkspaceTabCommand}">
-                <lucide:Lucide Icon="X" Width="12" Height="12" />
+              <Button Command="{Binding CloseCommand}" IsVisible="{Binding IsClosable}"
+                      Width="24" Height="24" Padding="0" Background="Transparent" BorderThickness="0"
+                      HorizontalAlignment="Right" VerticalAlignment="Center" Margin="8,0,-8,0"
+                      HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
+                <lucide:Lucide Icon="X" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
               </Button>
             </Grid>
-          </Border>
+          </DataTemplate>
+        </TabControl.ItemTemplate>
+        <TabControl.ContentTemplate>
+          <DataTemplate DataType="{x:Type local:WorkspaceTabViewModel}">
+            <ContentControl Content="{Binding Content}" />
+          </DataTemplate>
+        </TabControl.ContentTemplate>
+      </TabControl>
 
-          <Border Classes="tab" Classes.active="{Binding IsSearchVisible}" IsVisible="{Binding ShowSearchTab}" VerticalAlignment="Stretch">
-            <Grid>
-              <Button Classes="TabButton" Command="{Binding ActivateSearchTabCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="搜索结果" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <Button Classes="TabCloseButton" Command="{Binding CloseSearchTabCommand}">
-                <lucide:Lucide Icon="X" Width="12" Height="12" />
-              </Button>
-            </Grid>
-          </Border>
-
-          <Border Classes="tab" Classes.active="{Binding IsSettingsVisible}" IsVisible="{Binding ShowSettingsTab}" VerticalAlignment="Stretch">
-            <Grid>
-              <Button Classes="TabButton" Command="{Binding ActivateSettingsTabCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <lucide:Lucide Icon="Menu" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="设置" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <Button Classes="TabCloseButton" Command="{Binding CloseSettingsTabCommand}">
-                <lucide:Lucide Icon="X" Width="12" Height="12" />
-              </Button>
-            </Grid>
-          </Border>
-
-          <Border Classes="tab" Classes.active="{Binding IsAboutTabActive}" IsVisible="{Binding ShowAboutTab}" VerticalAlignment="Stretch">
-            <Grid>
-              <Button Classes="TabButton" Command="{Binding ActivateAboutTabCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <lucide:Lucide Icon="Info" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="关于" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <Button Classes="TabCloseButton" Command="{Binding CloseAboutTabCommand}">
-                <lucide:Lucide Icon="X" Width="12" Height="12" />
-              </Button>
-            </Grid>
-          </Border>
-
-          <Border Classes="tab" Classes.active="{Binding IsOcrQueueTabActive}" IsVisible="{Binding ShowOcrQueueTab}" VerticalAlignment="Stretch">
-            <Grid>
-              <Button Classes="TabButton" Command="{Binding ActivateOcrQueueTabCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <lucide:Lucide Icon="RefreshCw" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="OCR 队列" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <Button Classes="TabCloseButton" Command="{Binding CloseOcrQueueTabCommand}">
-                <lucide:Lucide Icon="X" Width="12" Height="12" />
-              </Button>
-            </Grid>
-          </Border>
-
-          <Border Classes="tab" Classes.active="{Binding IsItemEditorTabActive}" IsVisible="{Binding ShowItemEditorTab}" VerticalAlignment="Stretch">
-            <Grid>
-              <Button Classes="TabButton" Command="{Binding OpenItemEditorCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                  <lucide:Lucide Icon="Plus" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding ItemEditor.Header}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                </StackPanel>
-              </Button>
-              <Button Classes="TabCloseButton" Command="{Binding CloseItemEditorTabCommand}">
-                <lucide:Lucide Icon="X" Width="12" Height="12" />
-              </Button>
-            </Grid>
-          </Border>
-
-          <Button Background="Transparent" BorderThickness="0" Padding="6" VerticalAlignment="Center" Margin="8,0" Command="{Binding CreateItemMenuCommand}">
-            <lucide:Lucide Icon="Plus" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-          </Button>
-        </StackPanel>
-      </ScrollViewer>
-    </Border>
-
-    <Grid Grid.Row="2" Background="{DynamicResource SurfaceBrush}">
-      <views:FirstRunPage IsVisible="{Binding IsFirstRunVisible}" />
-      <views:LibraryPage IsVisible="{Binding ShowLibraryPage}" />
-      <views:PdfWorkspacePage IsVisible="{Binding ShowPdfWorkspacePage}" />
-      <views:ItemEditorPage IsVisible="{Binding ShowItemEditorWorkspace}" />
-      <views:SettingsPage IsVisible="{Binding ShowSettingsWorkspace}" />
-      <views:SearchResultsPage IsVisible="{Binding ShowSearchWorkspace}" />
-      <views:OcrQueuePage IsVisible="{Binding ShowOcrQueueWorkspace}" />
-      <views:AboutPage IsVisible="{Binding ShowAboutWorkspace}" />
+      <views:FirstRunPage IsVisible="{Binding IsFirstRunVisible}" ZIndex="10" />
     </Grid>
 
-    <Border Grid.Row="3" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">
+    <Border Grid.Row="2" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">
       <Grid ColumnDefinitions="*,Auto">
         <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center">
           <TextBlock.Styles>

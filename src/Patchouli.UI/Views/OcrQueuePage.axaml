@@ -2,7 +2,7 @@
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="using:Patchouli.UI.Controls">
-  <Grid DataContext="{Binding OcrQueue}">
+  <Grid>
     <ScrollViewer>
       <StackPanel Margin="32" Spacing="18" MaxWidth="980">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">

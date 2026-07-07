@@ -3,7 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:local="using:Patchouli.UI">
-<Grid DataContext="{Binding ItemEditor}" RowDefinitions="Auto,*">
+<Grid RowDefinitions="Auto,*">
     <Grid Margin="32,32,32,16" ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <StackPanel Spacing="6">
             <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />

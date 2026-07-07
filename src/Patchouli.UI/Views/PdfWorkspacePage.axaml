@@ -31,51 +31,51 @@
     <Grid ColumnDefinitions="Auto,*,Auto">
       <StackPanel Orientation="Horizontal" Spacing="8">
         <!-- Page navigation -->
-        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.PreviousPageCommand}">
+        <Button Classes="ToolbarButton" Command="{Binding PreviousPageCommand}">
           <lucide:Lucide Icon="ChevronLeft" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
         </Button>
-        <TextBox Text="{Binding PdfWorkspace.PageNumberText}" Width="36" Height="24" FontSize="12" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0" IsReadOnly="True" />
-        <TextBlock Text="{Binding PdfWorkspace.PageTotalText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" Margin="4,0" />
-        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.NextPageCommand}">
+        <TextBox Text="{Binding PageNumberText}" Width="36" Height="24" FontSize="12" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0" IsReadOnly="True" />
+        <TextBlock Text="{Binding PageTotalText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" Margin="4,0" />
+        <Button Classes="ToolbarButton" Command="{Binding NextPageCommand}">
           <lucide:Lucide Icon="ChevronRight" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
         </Button>
       </StackPanel>
 
       <!-- Zoom and Tools Controls -->
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
-        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.ZoomOutCommand}">
+        <Button Classes="ToolbarButton" Command="{Binding ZoomOutCommand}">
           <TextBlock Text="-" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
         </Button>
-        <TextBlock Text="{Binding PdfWorkspace.ZoomText}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" Margin="4,0" />
-        <Button Classes="ToolbarButton" Command="{Binding PdfWorkspace.ZoomInCommand}">
+        <TextBlock Text="{Binding ZoomText}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" Margin="4,0" />
+        <Button Classes="ToolbarButton" Command="{Binding ZoomInCommand}">
           <TextBlock Text="+" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
         </Button>
         
         <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="8,0"/>
         
-        <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding !PdfWorkspace.IsDrawToolActive}" Command="{Binding PdfWorkspace.SelectToolCommand}" ToolTip.Tip="点选工具">
+        <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding !IsDrawToolActive}" Command="{Binding SelectToolCommand}" ToolTip.Tip="点选工具">
             <lucide:Lucide Icon="MousePointer2" Width="16" Height="16" Margin="0,-2,0,0"/>
         </ToggleButton>
-        <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding PdfWorkspace.IsDrawToolActive}" Command="{Binding PdfWorkspace.DrawToolCommand}" ToolTip.Tip="框选工具">
+        <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsDrawToolActive}" Command="{Binding DrawToolCommand}" ToolTip.Tip="框选工具">
             <lucide:Lucide Icon="SquareDashed" Width="16" Height="16" Margin="0,-2,0,0"/>
         </ToggleButton>
       </StackPanel>
       
       <!-- Edit Mode Controls -->
       <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-          <Button Command="{Binding PdfWorkspace.EnterEditModeCommand}" IsVisible="{Binding !PdfWorkspace.IsEditMode}" Background="Transparent">
+          <Button Command="{Binding EnterEditModeCommand}" IsVisible="{Binding !IsEditMode}" Background="Transparent">
               <StackPanel Orientation="Horizontal" Spacing="4">
                   <lucide:Lucide Icon="Pencil" Width="14" Height="14" />
                   <TextBlock Text="编辑版面" FontSize="12" />
               </StackPanel>
           </Button>
-          <Button Command="{Binding PdfWorkspace.SaveAndExitCommand}" IsVisible="{Binding PdfWorkspace.IsEditMode}" Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}">
+          <Button Command="{Binding SaveAndExitCommand}" IsVisible="{Binding IsEditMode}" Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}">
               <StackPanel Orientation="Horizontal" Spacing="4">
                   <lucide:Lucide Icon="Save" Width="14" Height="14" />
                   <TextBlock Text="保存并退出" FontSize="12" />
               </StackPanel>
           </Button>
-          <Button Command="{Binding PdfWorkspace.CancelEditModeCommand}" IsVisible="{Binding PdfWorkspace.IsEditMode}" Background="Transparent" Foreground="{DynamicResource ErrorBrush}">
+          <Button Command="{Binding CancelEditModeCommand}" IsVisible="{Binding IsEditMode}" Background="Transparent" Foreground="{DynamicResource ErrorBrush}">
               <StackPanel Orientation="Horizontal" Spacing="4">
                   <lucide:Lucide Icon="X" Width="14" Height="14" />
                   <TextBlock Text="放弃更改" FontSize="12" />
@@ -84,7 +84,7 @@
           
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0"/>
           
-          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding PdfWorkspace.IsSidebarOpen}" ToolTip.Tip="切换侧边栏">
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}" ToolTip.Tip="切换侧边栏">
               <lucide:Lucide Icon="List" Width="14" Height="14" />
           </ToggleButton>
       </StackPanel>
@@ -106,13 +106,13 @@
       <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
         <LayoutTransformControl HorizontalAlignment="Center" VerticalAlignment="Top" Margin="20">
           <LayoutTransformControl.LayoutTransform>
-            <ScaleTransform ScaleX="{Binding PdfWorkspace.Zoom}" ScaleY="{Binding PdfWorkspace.Zoom}" />
+            <ScaleTransform ScaleX="{Binding Zoom}" ScaleY="{Binding Zoom}" />
           </LayoutTransformControl.LayoutTransform>
           <Border Background="#FFFFFF" BorderThickness="1" BorderBrush="#CAC4D5" CornerRadius="4" BoxShadow="0 4 16 #22000000">
             <Grid MinWidth="360" MinHeight="480">
-              <Image Source="{Binding PdfWorkspace.Image}" Width="{Binding PdfWorkspace.ActualWidthPixels}" Height="{Binding PdfWorkspace.ActualHeightPixels}" Stretch="None" IsVisible="{Binding PdfWorkspace.HasImage}" />
+              <Image Source="{Binding Image}" Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}" Stretch="None" IsVisible="{Binding HasImage}" />
               
-              <ItemsControl ItemsSource="{Binding PdfWorkspace.BoundingBoxes}" Width="{Binding PdfWorkspace.ActualWidthPixels}" Height="{Binding PdfWorkspace.ActualHeightPixels}" IsVisible="{Binding PdfWorkspace.HasImage}">
+              <ItemsControl ItemsSource="{Binding BoundingBoxes}" Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
                 <ItemsControl.ItemContainerTheme>
                   <ControlTheme TargetType="ContentPresenter">
                     <Setter Property="Canvas.Left" Value="{Binding Left}" />
@@ -152,16 +152,16 @@
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
 
-              <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding PdfWorkspace.HasNoImage}">
+              <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding HasNoImage}">
                 <lucide:Lucide Icon="FolderOpen" Width="32" Height="32" StrokeBrush="{DynamicResource PrimaryBrush}" />
                 <TextBlock Text="工作台预览" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
-                <TextBlock Text="{Binding Shell.SelectedItem.Title}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" Width="400" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
-                <TextBlock Text="{Binding PdfWorkspace.Status}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" Width="420" TextAlignment="Center" />
-                <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding PdfWorkspace.IsBusy}" />
+                <TextBlock Text="{Binding $parent[Window].DataContext.Shell.SelectedItem.Title}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" Width="400" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
+                <TextBlock Text="{Binding Status}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" HorizontalAlignment="Center" TextWrapping="Wrap" Width="420" TextAlignment="Center" />
+                <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding IsBusy}" />
               </StackPanel>
               
-              <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" IsVisible="{Binding PdfWorkspace.HasImage}">
-                <TextBlock Text="{Binding PdfWorkspace.Status}" FontSize="11" Foreground="#5F5A66" />
+              <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10" IsVisible="{Binding HasImage}">
+                <TextBlock Text="{Binding Status}" FontSize="11" Foreground="#5F5A66" />
               </Border>
             </Grid>
           </Border>
@@ -170,12 +170,12 @@
     </Border>
 
     <!-- Splitter -->
-    <GridSplitter Grid.Column="1" Width="4" Background="{DynamicResource OutlineVariantBrush}" IsVisible="{Binding PdfWorkspace.IsSidebarOpen}" />
+    <GridSplitter Grid.Column="1" Width="4" Background="{DynamicResource OutlineVariantBrush}" IsVisible="{Binding IsSidebarOpen}" />
 
     <!-- Right: Sidebar Viewer/Editor -->
-    <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding PdfWorkspace.IsSidebarOpen}">
+    <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding IsSidebarOpen}">
       <ScrollViewer>
-        <ItemsControl ItemsSource="{Binding PdfWorkspace.BoundingBoxes}" Margin="16">
+        <ItemsControl ItemsSource="{Binding BoundingBoxes}" Margin="16">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
                <Border Margin="0,0,0,12" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="6" Padding="12">
