@@ -109,12 +109,45 @@ public sealed class MinerUResultDownloaderTests
         }
     }
 
+    [Fact]
+    public async Task UploadAndExtract_merges_split_content_list_v2_page_arrays()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-merge-v2-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        var pdfPath = Path.Combine(tempDir, "three-pages.pdf");
+        File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
+        var client = new CapturingMinerUClient { WriteContentListV2 = true };
+
+        try
+        {
+            var downloader = new MinerUResultDownloader(
+                client,
+                new MinerUUploadLimits(maxPagesPerFile: 1, maxBytesPerFile: 200 * 1024 * 1024));
+
+            var result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
+
+            result.IsSuccess.Should().BeTrue();
+            using var archive = System.IO.Compression.ZipFile.OpenRead(result.Value.ZipPath);
+            var entry = archive.Entries.Single(e => e.Name.EndsWith("_content_list_v2.json", StringComparison.OrdinalIgnoreCase));
+            using var reader = new StreamReader(entry.Open());
+            var pages = JsonNode.Parse(await reader.ReadToEndAsync())!.AsArray();
+            pages.Should().HaveCount(3);
+            pages.Select(page => page!.AsArray()[0]!["content"]!["paragraph_content"]![0]!["content"]!.GetValue<string>())
+                .Should().Equal("chunk 1", "chunk 2", "chunk 3");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+    }
+
     private sealed class CapturingMinerUClient : IMinerUClient
     {
         public MinerUUploadRequest? UploadRequest { get; private set; }
         public List<MinerUUploadRequest> UploadRequests { get; } = new();
         public List<string> UploadedLocalPaths { get; } = new();
         public bool WriteContentList { get; init; }
+        public bool WriteContentListV2 { get; init; }
         public bool IsConfigured => true;
 
         public Task<Result<MinerUUploadBatch>> RequestUploadUrlsAsync(
@@ -152,6 +185,14 @@ public sealed class MinerUResultDownloaderTests
                     var entry = archive.CreateEntry("sample_content_list.json");
                     using var writer = new StreamWriter(entry.Open());
                     writer.Write("""[{"type":"text","page_idx":0,"text":"chunk text","bbox":[0,0,100,100]}]""");
+                }
+                else if (WriteContentListV2)
+                {
+                    var entry = archive.CreateEntry("sample_content_list_v2.json");
+                    using var writer = new StreamWriter(entry.Open());
+                    writer.Write($$"""
+                    [[{"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"chunk {{UploadRequests.Count}}"}]},"bbox":[0,0,100,100]}]]
+                    """);
                 }
                 else
                 {

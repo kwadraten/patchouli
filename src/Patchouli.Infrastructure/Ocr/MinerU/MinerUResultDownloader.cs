@@ -212,6 +212,7 @@ public sealed class MinerUResultDownloader
             Directory.CreateDirectory(downloadDirectory);
             var mergedPath = Path.Combine(downloadDirectory, $"mineru-merged-{Guid.NewGuid():N}.zip");
             var contentItems = new JsonArray();
+            var contentListV2Pages = new JsonArray();
             var markdown = new StringBuilder();
 
             foreach (var (chunk, download) in downloads)
@@ -220,6 +221,10 @@ public sealed class MinerUResultDownloader
                 var contentListJson = reader.ReadFileContent("_content_list.json");
                 if (!string.IsNullOrWhiteSpace(contentListJson))
                     AppendShiftedContentItems(contentItems, contentListJson, chunk.StartPageIndex);
+
+                var contentListV2Json = reader.ReadFileContent("_content_list_v2.json");
+                if (!string.IsNullOrWhiteSpace(contentListV2Json))
+                    AppendContentListV2Pages(contentListV2Pages, contentListV2Json);
 
                 var md = reader.ReadFileContent("full.md");
                 if (!string.IsNullOrWhiteSpace(md))
@@ -235,6 +240,13 @@ public sealed class MinerUResultDownloader
                 var entry = archive.CreateEntry("merged_content_list.json");
                 using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
                 writer.Write(contentItems.ToJsonString());
+            }
+
+            if (contentListV2Pages.Count > 0)
+            {
+                var entry = archive.CreateEntry("merged_content_list_v2.json");
+                using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+                writer.Write(contentListV2Pages.ToJsonString());
             }
 
             if (markdown.Length > 0)
@@ -284,6 +296,17 @@ public sealed class MinerUResultDownloader
         }
     }
 
+    private static void AppendContentListV2Pages(JsonArray target, string contentListJson)
+    {
+        var root = JsonNode.Parse(contentListJson);
+        if (root is not JsonArray pages)
+            return;
+
+        foreach (var pageNode in pages)
+            if (pageNode is JsonArray page)
+                target.Add(CloneArray(page));
+    }
+
     private static JsonObject ShiftFlatItem(JsonObject source, int pageIndexOffset)
     {
         var clone = CloneObject(source);
@@ -295,6 +318,9 @@ public sealed class MinerUResultDownloader
 
     private static JsonObject CloneObject(JsonObject source)
         => JsonNode.Parse(source.ToJsonString())!.AsObject();
+
+    private static JsonArray CloneArray(JsonArray source)
+        => JsonNode.Parse(source.ToJsonString())!.AsArray();
 
     private static int? ReadInt(JsonObject source, string propertyName)
         => source.TryGetPropertyValue(propertyName, out var value) && value is not null && value.GetValueKind() == System.Text.Json.JsonValueKind.Number && value.GetValue<int>() is var number
