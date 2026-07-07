@@ -181,6 +181,32 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         return Result<OcrRun>.Failure(errorCode, errorMessage);
     }
 
+    private async Task<Result<OcrRun>> CreateSkippedSinglePageRunAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId, string errorCode, string? errorMessage, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            var pageDocumentId = await connection.ExecuteScalarAsync<string?>("select document_instance_id from pages where page_id = @PageId;", new { PageId = pageId.ToString() });
+            if (pageDocumentId is null) return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "OCR page was not found.");
+            if (!string.Equals(pageDocumentId, documentInstanceId.ToString(), StringComparison.OrdinalIgnoreCase))
+                return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "OCR page must belong to the document instance.");
+            var version = await OcrPresetService.GetCurrentVersionAsync(connection, presetId);
+            if (version is null) return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "Active OCR preset/version was not found.");
+
+            var currentRevisionId = await connection.ExecuteScalarAsync<string?>("select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;", new { Id = documentInstanceId.ToString() });
+            var now = _clock.UtcNow.ToUniversalTime();
+            var runId = OcrRunId.New();
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await InsertRunAsync(connection, transaction, runId, documentInstanceId, presetId, version, currentRevisionId, null, OcrRunState.CompletedWithErrors, now);
+            await InsertPageResultAsync(connection, transaction, OcrPageResultId.New(), runId, pageId, OcrPageResultState.Skipped, null, errorCode, errorMessage, now);
+            await transaction.CommitAsync(cancellationToken);
+            return await GetRunAsync(runId, cancellationToken);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+    }
+
     private static MinerUConfiguration CreateMinerUConfiguration(OcrPresetVersion version, string token)
     {
         string? baseUrl = null;
@@ -268,7 +294,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 await InsertPageResultAsync(connection, transaction, OcrPageResultId.New(), runId, pageId, OcrPageResultState.Processing, null, null, null, now);
             await transaction.CommitAsync(cancellationToken);
 
-            var success = 0; var failure = 0;
+            var success = 0; var failure = 0; var skipped = 0;
             foreach (var page in pages.OrderBy(p => p.PageIndex))
             {
                 var result = await _engine.RunPageAsync(page.ToPage(), version, cancellationToken);
@@ -288,13 +314,15 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 }
                 else
                 {
-                    await UpdatePageResultAsync(connection, pageTx, runId, PageId.Parse(page.PageId), OcrPageResultState.Failed, null, result.ErrorCode, result.ErrorMessage, _clock.UtcNow);
-                    failure++;
+                    var state = GetSkippedPageResultState(result.ErrorCode);
+                    await UpdatePageResultAsync(connection, pageTx, runId, PageId.Parse(page.PageId), state, null, result.ErrorCode, result.ErrorMessage, _clock.UtcNow);
+                    if (state == OcrPageResultState.Skipped) skipped++;
+                    else failure++;
                 }
                 await pageTx.CommitAsync(cancellationToken);
             }
 
-            var finalState = success > 0 && failure == 0 ? OcrRunState.Completed : success > 0 ? OcrRunState.CompletedWithErrors : OcrRunState.Failed;
+            var finalState = GetFinalRunState(success, failure, skipped);
             await connection.ExecuteAsync("update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;", new { State = finalState, UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() });
 
             if (version.ApplyOnSuccess && success > 0)
@@ -348,7 +376,10 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
 
             var input = new OcrInputDescriptor(pageId, documentInstanceId, OcrInputKinds.RegionImage, null, null, regionBBox, "available", null);
             var inputValidation = await adapter.ValidateInputAsync(input, cancellationToken);
-            if (inputValidation.IsFailure) return Result<OcrRun>.Failure(inputValidation.ErrorCode!, inputValidation.ErrorMessage!);
+            if (inputValidation.IsFailure)
+                return IsSkippedPageError(inputValidation.ErrorCode)
+                    ? await CreateSkippedSinglePageRunAsync(documentInstanceId, presetId, pageId, inputValidation.ErrorCode!, inputValidation.ErrorMessage, cancellationToken)
+                    : Result<OcrRun>.Failure(inputValidation.ErrorCode!, inputValidation.ErrorMessage!);
             var presetValidation = await adapter.ValidatePresetAsync(version, cancellationToken);
             if (presetValidation.IsFailure) return Result<OcrRun>.Failure(presetValidation.ErrorCode!, presetValidation.ErrorMessage!);
 
@@ -384,9 +415,9 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 }
                 else
                 {
-                    await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Failed, null, engineResult.ErrorCode, engineResult.ErrorMessage, _clock.UtcNow);
+                    await UpdatePageResultAsync(connection, transaction, runId, pageId, GetSkippedPageResultState(engineResult.ErrorCode), null, engineResult.ErrorCode, engineResult.ErrorMessage, _clock.UtcNow);
                 }
-                await connection.ExecuteAsync("update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;", new { State = succeeded ? OcrRunState.Completed : OcrRunState.Failed, UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() }, transaction);
+                await connection.ExecuteAsync("update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;", new { State = succeeded ? OcrRunState.Completed : GetFinalRunState(0, IsSkippedPageError(engineResult.ErrorCode) ? 0 : 1, IsSkippedPageError(engineResult.ErrorCode) ? 1 : 0), UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() }, transaction);
                 await transaction.CommitAsync(cancellationToken);
             }
 
@@ -421,7 +452,10 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             if (!environment.IsReady) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, $"OCR environment is not ready: {environment.Status}. {environment.Message}");
             var input = new OcrInputDescriptor(pageId, documentInstanceId, OcrInputKinds.ImageFile, imagePath, null, null, "available", null);
             var inputValidation = await adapter.ValidateInputAsync(input, cancellationToken);
-            if (inputValidation.IsFailure) return Result<OcrRun>.Failure(inputValidation.ErrorCode!, inputValidation.ErrorMessage!);
+            if (inputValidation.IsFailure)
+                return IsSkippedPageError(inputValidation.ErrorCode)
+                    ? await CreateSkippedSinglePageRunAsync(documentInstanceId, presetId, pageId, inputValidation.ErrorCode!, inputValidation.ErrorMessage, cancellationToken)
+                    : Result<OcrRun>.Failure(inputValidation.ErrorCode!, inputValidation.ErrorMessage!);
             var presetValidation = await adapter.ValidatePresetAsync(version, cancellationToken);
             if (presetValidation.IsFailure) return Result<OcrRun>.Failure(presetValidation.ErrorCode!, presetValidation.ErrorMessage!);
 
@@ -456,9 +490,9 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 }
                 else
                 {
-                    await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Failed, null, engineResult.ErrorCode, engineResult.ErrorMessage, _clock.UtcNow);
+                    await UpdatePageResultAsync(connection, transaction, runId, pageId, GetSkippedPageResultState(engineResult.ErrorCode), null, engineResult.ErrorCode, engineResult.ErrorMessage, _clock.UtcNow);
                 }
-                await connection.ExecuteAsync("update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;", new { State = succeeded ? OcrRunState.Completed : OcrRunState.Failed, UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() }, transaction);
+                await connection.ExecuteAsync("update ocr_runs set state = @State, updated_at = @UpdatedAt where ocr_run_id = @RunId;", new { State = succeeded ? OcrRunState.Completed : GetFinalRunState(0, IsSkippedPageError(engineResult.ErrorCode) ? 0 : 1, IsSkippedPageError(engineResult.ErrorCode) ? 1 : 0), UpdatedAt = F(_clock.UtcNow), RunId = runId.ToString() }, transaction);
                 await transaction.CommitAsync(cancellationToken);
             }
 
@@ -477,7 +511,10 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     {
         if (_pageRenderService is null) return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "No page render service is configured.");
         var input = await _pageRenderService.BuildOcrInputFromRenderedPageAsync(documentInstanceId, pageId, dpi, cancellationToken);
-        if (input.IsFailure) return Result<OcrRun>.Failure(input.ErrorCode!, input.ErrorMessage!);
+        if (input.IsFailure)
+            return IsSkippedPageError(input.ErrorCode)
+                ? await CreateSkippedSinglePageRunAsync(documentInstanceId, presetId, pageId, input.ErrorCode!, input.ErrorMessage, cancellationToken)
+                : Result<OcrRun>.Failure(input.ErrorCode!, input.ErrorMessage!);
         return await RunPresetOnImagePageAsync(documentInstanceId, presetId, pageId, input.Value.ImagePath!, cancellationToken);
     }
 
@@ -746,6 +783,22 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         var source = result.SourceBBox ?? new SourceBBox(result.BBox.Value.X, result.BBox.Value.Y, result.BBox.Value.Width, result.BBox.Value.Height, SourceBBoxCoordinateSystem.NormalizedPage);
         var converted = await _pageCoordinateService.ConvertToNormalizedPageAsync(pageId, source, cancellationToken);
         return converted.IsSuccess ? Result<NormalizedBBox?>.Success(converted.NormalizedBBox) : Result<NormalizedBBox?>.Failure(AppErrorCodes.ValidationFailed, converted.Message ?? converted.ErrorCode ?? "BBox conversion failed.");
+    }
+
+    private static string GetSkippedPageResultState(string? errorCode) => IsSkippedPageError(errorCode) ? OcrPageResultState.Skipped : OcrPageResultState.Failed;
+
+    private static bool IsSkippedPageError(string? errorCode)
+        => errorCode is OcrFailureCode.BBoxCoordinateTransformFailed
+            or OcrFailureCode.SourceFileMissing
+            or OcrFailureCode.SourceFileChanged
+            or OcrFailureCode.UnsupportedFile
+            or OcrFailureCode.ImageTooLargeForOcr;
+
+    private static string GetFinalRunState(int success, int failure, int skipped)
+    {
+        if (success > 0 && failure == 0 && skipped == 0) return OcrRunState.Completed;
+        if (success > 0 || skipped > 0) return OcrRunState.CompletedWithErrors;
+        return OcrRunState.Failed;
     }
 
     private sealed class PageRow { public string PageId { get; set; } = ""; public string DocumentInstanceId { get; set; } = ""; public int PageIndex { get; set; } public string? PageLabel { get; set; } public double? Width { get; set; } public double? Height { get; set; } public int Rotation { get; set; } public string CoordinateBasis { get; set; } = ""; public double? BasisWidth { get; set; } public double? BasisHeight { get; set; } public string RendererBasisVersion { get; set; } = ""; public string? SourceFileHash { get; set; } public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = ""; public Core.Layout.Page ToPage() => new(Core.Ids.PageId.Parse(PageId), Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), PageIndex, PageLabel, Width, Height, Rotation, CoordinateBasis, BasisWidth, BasisHeight, RendererBasisVersion, SourceFileHash, DateTimeOffset.Parse(CreatedAt), DateTimeOffset.Parse(UpdatedAt)); }

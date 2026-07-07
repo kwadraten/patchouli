@@ -86,11 +86,16 @@ public sealed class LocalImageOcrAdapterTests
     }
 
     [Fact]
-    public async Task RunPresetOnImagePage_missing_image_fails_without_layout_node()
+    public async Task RunPresetOnImagePage_missing_image_creates_skipped_page_result_without_layout_node()
     {
         await using var c = await ImageOcrContext.CreateAsync();
         var r = await c.Coordinator.RunPresetOnImagePageAsync(c.DocumentInstanceId, c.PresetId, c.PageId, "/missing/image.png");
-        r.IsFailure.Should().BeTrue(); (await c.LayoutNodeCountAsync()).Should().Be(0);
+        r.IsSuccess.Should().BeTrue();
+        r.Value.State.Should().Be(OcrRunState.CompletedWithErrors);
+        var page = (await c.Coordinator.ListPageResultsAsync(r.Value.OcrRunId)).Value.Single();
+        page.State.Should().Be(OcrPageResultState.Skipped);
+        page.ErrorCode.Should().Be(OcrFailureCode.SourceFileMissing);
+        (await c.LayoutNodeCountAsync()).Should().Be(0);
     }
 
     [Fact]

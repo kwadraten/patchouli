@@ -41,11 +41,11 @@ public sealed class TesseractCliAdapter : IRealOcrAdapter
     public Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default)
     {
         if (input.InputKind is not (OcrInputKinds.ImageFile or OcrInputKinds.PageImage))
-            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation, "Tesseract CLI MVP supports image_file or page_image only; PDF input is not supported."));
-        if (input.SourceFileStatus == "missing") return Task.FromResult(Result.Failure(AppErrorCodes.NotFound, OcrFailureCode.SourceFileMissing));
-        if (input.SourceFileStatus is "changed" or "conflict") return Task.FromResult(Result.Failure(AppErrorCodes.InvalidState, OcrFailureCode.SourceFileChanged));
+            return Task.FromResult(Result.Failure(OcrFailureCode.UnsupportedFile, "Tesseract CLI MVP supports image_file or page_image only; PDF input is not supported."));
+        if (input.SourceFileStatus == "missing") return Task.FromResult(Result.Failure(OcrFailureCode.SourceFileMissing, "OCR source image is missing."));
+        if (input.SourceFileStatus is "changed" or "conflict") return Task.FromResult(Result.Failure(OcrFailureCode.SourceFileChanged, "OCR source image has changed or is in conflict."));
         if (string.IsNullOrWhiteSpace(input.ImagePath) || !File.Exists(input.ImagePath))
-            return Task.FromResult(Result.Failure(AppErrorCodes.NotFound, OcrFailureCode.SourceFileMissing));
+            return Task.FromResult(Result.Failure(OcrFailureCode.SourceFileMissing, "OCR source image is missing."));
         return Task.FromResult(Result.Success());
     }
 

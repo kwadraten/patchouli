@@ -89,7 +89,14 @@ public sealed class PageRenderService : IPageRenderService
         if (rendered.IsFailure) return Result<OcrInputDescriptor>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
         if (rendered.Value.Status is not (PageRenderStatus.Rendered or PageRenderStatus.FromCache))
         {
-            var errorCode = rendered.Value.Status == PageRenderStatus.RendererTimeout ? OcrFailureCode.RendererTimeout : AppErrorCodes.ValidationFailed;
+            var errorCode = rendered.Value.Status switch
+            {
+                PageRenderStatus.SourceMissing => OcrFailureCode.SourceFileMissing,
+                PageRenderStatus.SourceChanged => OcrFailureCode.SourceFileChanged,
+                PageRenderStatus.UnsupportedFile => OcrFailureCode.UnsupportedFile,
+                PageRenderStatus.RendererTimeout => OcrFailureCode.RendererTimeout,
+                _ => AppErrorCodes.ValidationFailed
+            };
             return Result<OcrInputDescriptor>.Failure(errorCode, rendered.Value.Warning ?? $"Page render is not ready: {rendered.Value.Status}.");
         }
         return Result<OcrInputDescriptor>.Success(new OcrInputDescriptor(pageId, documentInstanceId, OcrInputKinds.PageImage, rendered.Value.CacheImagePath, null, null, rendered.Value.SourceFileStatus, rendered.Value.Warning));
