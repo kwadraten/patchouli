@@ -270,7 +270,7 @@ public sealed class UiViewModelTests
 
             vm.McpEndpoint.Should().Be($"http://localhost:{port}");
             vm.McpStatusText.Should().Be("MCP: 运行中");
-            vm.McpStatusDetail.Should().Contain(vm.McpEndpoint);
+            vm.McpStatusDetail.Should().Be("连接数: 0 / 0");
             using var http = new HttpClient();
             var health = await http.GetStringAsync($"{vm.McpEndpoint}/health");
             health.Should().Contain("ok");

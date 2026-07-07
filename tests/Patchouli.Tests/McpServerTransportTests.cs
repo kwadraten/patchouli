@@ -14,6 +14,7 @@ public sealed class McpServerTransportTests
     [Fact] public void Server_options_default_to_http_port_4536(){var options=McpServerOptions.Parse(["--db","runtime.sqlite"]);options.IsFailure.Should().BeFalse();options.Value.Port.Should().Be(4536);options.Value.DatabasePath.Should().Be("runtime.sqlite");}
     [Fact] public void Server_options_accept_custom_http_port(){var options=McpServerOptions.Parse(["--db","runtime.sqlite","--port","4540"]);options.IsFailure.Should().BeFalse();options.Value.Port.Should().Be(4540);}
     [Theory][InlineData("--port")][InlineData("0")][InlineData("65536")][InlineData("abc")] public void Server_options_reject_invalid_http_ports(string port){var args=port=="--port"?new[]{"--db","runtime.sqlite","--port"}:["--db","runtime.sqlite","--port",port];McpServerOptions.Parse(args).IsFailure.Should().BeTrue();}
+    [Fact] public async Task Http_server_counts_active_and_total_connections(){var path=Path.Combine(Path.GetTempPath(),Guid.NewGuid()+".sqlite");var port=GetFreeTcpPort();var server=new McpHttpServer(new McpProtocolHandler(new FakeApi(),new SqliteConnectionFactory(path)),port);try{await server.StartAsync();server.ActiveConnectionCount.Should().Be(0);server.TotalConnectionCount.Should().Be(0);using(var http=new HttpClient()){var health=await http.GetStringAsync($"{server.Endpoint}/health");health.Should().Contain("ok");server.ActiveConnectionCount.Should().BeGreaterThan(0);server.TotalConnectionCount.Should().BeGreaterThan(0);}await WaitForAsync(()=>server.ActiveConnectionCount==0);server.TotalConnectionCount.Should().BeGreaterThan(0);}finally{await server.DisposeAsync();if(File.Exists(path))File.Delete(path);}}
     [Fact] public void Mcp_interface_has_exactly_six_read_tools(){typeof(Patchouli.Mcp.IMcpReadApi).GetMethods().Select(x=>x.Name).Should().HaveCount(6).And.OnlyContain(x=>x.StartsWith("Get")||x=="SearchLibraryAsync");}
     [Fact] public void Mcp_interface_has_no_transport_write_or_branch_methods(){typeof(Patchouli.Mcp.IMcpReadApi).GetMethods().Select(x=>x.Name).Should().NotContain(x=>x.Contains("Import",StringComparison.OrdinalIgnoreCase)||x.Contains("Branch",StringComparison.OrdinalIgnoreCase)||x.Contains("Queue",StringComparison.OrdinalIgnoreCase)||x.Contains("Ocr",StringComparison.OrdinalIgnoreCase));}
     [Theory]
@@ -32,6 +33,25 @@ public sealed class McpServerTransportTests
     [Fact] public async Task Tools_call_delegates_search_item_document_and_context_arguments(){var db=TemporarySqliteDatabase.Create();try{var api=new FakeApi();var h=new McpProtocolHandler(api,db.ConnectionFactory);await h.HandleAsync("{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"search_library\",\"arguments\":{\"query\":\"needle\",\"limit\":7,\"cursor\":\"c\",\"profile_alias\":\"p\",\"include_evidence_refs\":false}}}");api.Search!.Query.Should().Be("needle");api.Search.PageSize.Should().Be(7);api.Search.Cursor.Should().Be("c");api.Search.IncludeEvidenceRefs.Should().BeFalse();var item=Patchouli.Core.Ids.ItemId.New();await h.HandleAsync($"{{\"id\":2,\"method\":\"tools/call\",\"params\":{{\"name\":\"get_item_metadata\",\"arguments\":{{\"item_id\":\"{item}\"}}}}}}");api.Item.Should().Be(item);var doc=Patchouli.Core.Ids.DocumentInstanceId.New();await h.HandleAsync($"{{\"id\":3,\"method\":\"tools/call\",\"params\":{{\"name\":\"get_document_status\",\"arguments\":{{\"document_instance_id\":\"{doc}\"}}}}}}");api.Document.Should().Be(doc);var unit=Patchouli.Core.Ids.SearchUnitId.New();await h.HandleAsync($"{{\"id\":4,\"method\":\"tools/call\",\"params\":{{\"name\":\"get_search_result_context\",\"arguments\":{{\"search_unit_id\":\"{unit}\"}}}}}}");api.Context!.SearchUnitId.Should().Be(unit);}finally{await db.DisposeAsync();}}
     [Fact] public async Task Tools_call_delegates_page_text_and_blocks_bbox_flag(){await using var db=TemporarySqliteDatabase.Create();await new MigrationRunner(db.ConnectionFactory,TestPaths.MigrationsDirectory).RunAsync();var doc=Patchouli.Core.Ids.DocumentInstanceId.New();var page=Patchouli.Core.Ids.PageId.New();await using(var c=db.ConnectionFactory.CreateConnection()){await c.OpenAsync();await c.ExecuteAsync("pragma foreign_keys=off;insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,3,0,'normalized_page','t','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",new{P=page.ToString(),D=doc.ToString()});}var api=new FakeApi();var h=new McpProtocolHandler(api,db.ConnectionFactory);await h.HandleAsync($"{{\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"get_page_text\",\"arguments\":{{\"document_instance_id\":\"{doc}\",\"page_number\":3,\"mode\":\"pinned\",\"evidence_ref\":\"evref:v1:x\"}}}}}}");api.Text!.PageId.Should().Be(page);api.Text.ReadMode.Should().Be("pinned");await h.HandleAsync($"{{\"id\":2,\"method\":\"tools/call\",\"params\":{{\"name\":\"get_page_blocks\",\"arguments\":{{\"document_instance_id\":\"{doc}\",\"page_number\":3,\"include_bbox\":true}}}}}}");api.Blocks!.PageId.Should().Be(page);api.Blocks.IncludeBbox.Should().BeTrue();}
     [Fact] public void Agent_prd_documents_http_read_only_mcp_boundaries(){var r=File.ReadAllText(TestPaths.FromRepositoryRoot(".agent","PRD.md"));r.Should().Contain("第一版 MCP 是只读且纯文本的").And.Contain("MCP 从不触发 OCR 或索引重建").And.Contain("提供程序密钥").And.Contain("缓存图像");}
+
+    private static int GetFreeTcpPort()
+    {
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
+        finally { listener.Stop(); }
+    }
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (!condition() && DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(25);
+        }
+
+        condition().Should().BeTrue();
+    }
 
     private sealed class FakeApi : Patchouli.Mcp.IMcpReadApi
     {

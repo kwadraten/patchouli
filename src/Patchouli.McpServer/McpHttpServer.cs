@@ -10,6 +10,8 @@ public sealed class McpHttpServer : IAsyncDisposable
 {
     private readonly McpProtocolHandler _handler;
     private readonly int _port;
+    private long _activeConnectionCount;
+    private long _totalConnectionCount;
     private WebApplication? _app;
 
     public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort)
@@ -21,6 +23,9 @@ public sealed class McpHttpServer : IAsyncDisposable
 
     public string Endpoint { get; }
     public bool IsRunning => _app is not null;
+    public long ActiveConnectionCount => Interlocked.Read(ref _activeConnectionCount);
+    public long TotalConnectionCount => Interlocked.Read(ref _totalConnectionCount);
+    public event EventHandler? ConnectionCountsChanged;
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
@@ -56,7 +61,27 @@ public sealed class McpHttpServer : IAsyncDisposable
     {
         var builder = WebApplication.CreateSlimBuilder(Array.Empty<string>());
         builder.Logging.ClearProviders();
-        builder.WebHost.UseUrls(Endpoint);
+        builder.WebHost.ConfigureKestrel(options =>
+        {
+            options.ListenLocalhost(_port, listenOptions =>
+            {
+                listenOptions.Use(next => async connection =>
+                {
+                    Interlocked.Increment(ref _activeConnectionCount);
+                    Interlocked.Increment(ref _totalConnectionCount);
+                    ConnectionCountsChanged?.Invoke(this, EventArgs.Empty);
+                    try
+                    {
+                        await next(connection);
+                    }
+                    finally
+                    {
+                        Interlocked.Decrement(ref _activeConnectionCount);
+                        ConnectionCountsChanged?.Invoke(this, EventArgs.Empty);
+                    }
+                });
+            });
+        });
 
         var app = builder.Build();
         app.MapGet("/health", () => Results.Json(new { status = "ok" }));
