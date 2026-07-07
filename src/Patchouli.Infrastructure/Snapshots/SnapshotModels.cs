@@ -63,7 +63,7 @@ public sealed record SnapshotShard(
     string ShardId,
     string FileName,
     long SizeBytes,
-    string Sha256,
+    string Blake3,
     string Kind,
     bool IsImmutable);
 

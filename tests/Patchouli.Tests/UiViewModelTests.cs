@@ -17,12 +17,6 @@ namespace Patchouli.Tests;
 
 public sealed class UiViewModelTests
 {
-    static UiViewModelTests()
-    {
-        AppBuilder.Configure<Application>()
-            .UseHeadless(new AvaloniaHeadlessPlatformOptions())
-            .SetupWithoutStarting();
-    }
     [Fact]
     public async Task LibraryViewModel_CreateLibrary_updates_current_library()
     {
@@ -98,29 +92,34 @@ public sealed class UiViewModelTests
     [Fact]
     public void LucideIcon_renders_svg_resource_without_external_package()
     {
-        var icon = new Patchouli.Lucide.Avalonia.Lucide
+        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        session.Dispatch(() =>
         {
-            Icon = "Search",
-            Width = 24,
-            Height = 24,
-            StrokeBrush = Brushes.Black
-        };
+            var icon = new Patchouli.Lucide.Avalonia.Lucide
+            {
+                Icon = "Search",
+                Width = 24,
+                Height = 24,
+                StrokeBrush = Brushes.Black
+            };
 
-        icon.Measure(new Size(24, 24));
-        icon.Arrange(new Rect(0, 0, 24, 24));
+            icon.Measure(new Size(24, 24));
+            icon.Arrange(new Rect(0, 0, 24, 24));
 
-        var bitmap = new RenderTargetBitmap(new PixelSize(24, 24), new Vector(96, 96));
-        bitmap.Render(icon);
+            var bitmap = new RenderTargetBitmap(new PixelSize(24, 24), new Vector(96, 96));
+            bitmap.Render(icon);
+        }, CancellationToken.None);
     }
 
     [Fact]
-    public async Task MainWindow_constructs_with_local_lucide_icons()
+    public void MainWindow_constructs_with_local_lucide_icons()
     {
-        await Dispatcher.UIThread.InvokeAsync(() =>
+        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        session.Dispatch(() =>
         {
             var window = new MainWindow();
             window.Close();
-        });
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -707,26 +706,31 @@ public sealed class UiViewModelTests
         var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-preview-{Guid.NewGuid():N}")).FullName;
         var path = Path.Combine(root, "preview.sqlite");
         var pdf = Path.Combine(root, "preview.pdf");
+        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
-            File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
-            import.Success.Should().BeTrue(import.ErrorMessage);
-            await vm.Shell.RefreshItemsAsync();
+            await session.Dispatch(async () =>
+            {
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
+                var services = await vm.ServicesAsync();
+                var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
+                import.Success.Should().BeTrue(import.ErrorMessage);
+                await vm.Shell.RefreshItemsAsync();
 
-            await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
-            vm.RaiseShellSelectionChanged();
+                await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
+                vm.RaiseShellSelectionChanged();
 
-            vm.Shell.ShowPdfWorkspace.Should().BeTrue();
-            vm.ShowSidebar.Should().BeFalse();
-            vm.IsInspectorVisible.Should().BeFalse();
-            vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
-            vm.PdfWorkspace.Status.Should().Contain("mupdf-net-dpi120");
-            Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
+                vm.Shell.ShowPdfWorkspace.Should().BeTrue();
+                vm.ShowSidebar.Should().BeFalse();
+                vm.IsInspectorVisible.Should().BeFalse();
+                vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
+                vm.PdfWorkspace.Status.Should().Contain("mupdf-net-dpi120");
+                Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
+                return true;
+            }, CancellationToken.None);
         }
         finally
         {

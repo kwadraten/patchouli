@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -8,6 +6,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Hashing;
 using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Rendering;
@@ -51,7 +50,7 @@ public sealed class PageRenderService : IPageRenderService
             if (resolution.Value.Status != FileAssetStatus.Available || string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath)) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.SourceMissing, request, page, rendererBasisVersion, resolution.Value.Warning ?? "Source file is unavailable."));
             if (!string.Equals(Path.GetExtension(resolution.Value.ResolvedPath), ".pdf", StringComparison.OrdinalIgnoreCase)) return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.UnsupportedFile, request, page, rendererBasisVersion, "Page rendering MVP supports PDF file assets only."));
 
-            var sourceHash = await Sha256Async(resolution.Value.ResolvedPath, cancellationToken);
+            var sourceHash = await Blake3Hash.ComputeFileAsync(resolution.Value.ResolvedPath, cancellationToken);
             var key = new PageRenderCacheKey(library.Value.LibraryId, request.DocumentInstanceId, request.PageId, fileAssetId, page.PageIndex, request.Dpi, rendererBasisVersion, sourceHash);
             var path = CachePath(key);
             if (!request.ForceRerender && File.Exists(path)) return Result<PageRenderResult>.Success(new(PageRenderStatus.FromCache, request.PageId, request.DocumentInstanceId, path, 1200, 1600, request.Dpi, page.Rotation, CoordinateBasis.NormalizedPage, key.RendererBasisVersion, FileAssetStatus.Available, sourceHash, null, true));
@@ -104,10 +103,9 @@ public sealed class PageRenderService : IPageRenderService
     private string GetRendererBasisVersion(int dpi) => _renderer is IPdfPageRendererIdentity identity ? identity.GetRendererBasisVersion(dpi) : _renderer.GetType().Name;
     private string CachePath(PageRenderCacheKey key)
     {
-        var token = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{key.LibraryId}|{key.DocumentInstanceId}|{key.PageId}|{key.FileAssetId}|{key.PageIndex}|{key.Dpi}|{key.RendererBasisVersion}|{key.SourceFileHash}"))).ToLowerInvariant();
+        var token = Blake3Hash.ComputeUtf8($"{key.LibraryId}|{key.DocumentInstanceId}|{key.PageId}|{key.FileAssetId}|{key.PageIndex}|{key.Dpi}|{key.RendererBasisVersion}|{key.SourceFileHash}");
         return Path.Combine(_cacheRoot, key.DocumentInstanceId.ToString(), $"{token}.png");
     }
-    private static async Task<string> Sha256Async(string path, CancellationToken cancellationToken) { await using var stream = File.OpenRead(path); return Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant(); }
     private static PageRenderResult SourceState(string status, PageRenderRequest request, PageRow page, string rendererBasisVersion, string warning) => new(status, request.PageId, request.DocumentInstanceId, null, 0, 0, request.Dpi, page.Rotation, CoordinateBasis.NormalizedPage, rendererBasisVersion, status == PageRenderStatus.SourceChanged ? FileAssetStatus.Changed : FileAssetStatus.Missing, null, warning, false);
     private sealed class PageRow { public string PageId { get; set; } = ""; public string DocumentInstanceId { get; set; } = ""; public int PageIndex { get; set; } public int Rotation { get; set; } }
 }

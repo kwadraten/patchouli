@@ -7,6 +7,7 @@
     <ProjectReference Include="..\Patchouli.Search\Patchouli.Search.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Blake3" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="MuPDF.NET" />

@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Hashing;
 using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Infrastructure.Ocr.MinerU;
@@ -22,7 +23,8 @@ public sealed class MinerUResultDownloader
         if (!fileInfo.Exists)
             return Result<MinerUDownloadedResult>.Failure("file_not_found", "PDF file was not found.");
 
-        var uploadRequest = new MinerUUploadRequest(pdfPath, fileInfo.Name, fileInfo.Length);
+        var dataId = await Blake3Hash.ComputeFileAsync(pdfPath, cancellationToken);
+        var uploadRequest = new MinerUUploadRequest(pdfPath, fileInfo.Name, fileInfo.Length, dataId);
 
         var urlResult = await _client.RequestUploadUrlsAsync(new[] { uploadRequest }, cancellationToken);
         if (urlResult.IsFailure)

@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using Dapper;
 using Patchouli.Core;
@@ -6,6 +5,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Hashing;
 using Microsoft.Data.Sqlite;
 
 namespace Patchouli.Infrastructure.Snapshots;
@@ -74,14 +74,14 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             await RedactCredentialsAsync(shardPath);
             await RedactLocalFileLocationsAsync(shardPath);
 
-            var shard = new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Sha256FileAsync(shardPath), "data", true);
+            var shard = new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), "data", true);
             if (!await VerifyShardAsync(syncRoot, shard))
             {
                 return Result<SnapshotPublishResult>.Failure(AppErrorCodes.DatabaseError, "Shard hash verification failed after publish.");
             }
 
             var credentialShard = await CreateCredentialShardAsync(runtimePath, syncRoot, snapshotId);
-            var manifest = new SnapshotManifest(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId, AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), new[] { shard }, credentialShard is null ? Array.Empty<SnapshotShard>() : new[] { credentialShard }, await Sha256FileAsync(runtimePath), request.Notes);
+            var manifest = new SnapshotManifest(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId, AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), new[] { shard }, credentialShard is null ? Array.Empty<SnapshotShard>() : new[] { credentialShard }, await Blake3FileAsync(runtimePath), request.Notes);
             var manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
             var pointer = new SnapshotCurrentPointer(snapshotId, Path.Combine("manifests", $"{snapshotId}.json"), libraryId, generation, _clock.UtcNow.ToUniversalTime());
@@ -163,7 +163,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             var bindings = await source.QueryAsync<BindingShardRow>("select binding_id as BindingId,credential_id as CredentialId,preset_id as PresetId,provider_id as ProviderId,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credential_bindings;");
             foreach (var row in bindings) await target.ExecuteAsync("insert into provider_credential_bindings values (@BindingId,@CredentialId,@PresetId,@ProviderId,@Status,@CreatedAt,@UpdatedAt);", row);
         }
-        return new SnapshotShard(shardId, Path.Combine("shards", name), new FileInfo(path).Length, await Sha256FileAsync(path), "sensitive_mutable", false);
+        return new SnapshotShard(shardId, Path.Combine("shards", name), new FileInfo(path).Length, await Blake3FileAsync(path), "sensitive_mutable", false);
     }
 
     public static async Task<string> ReadLibraryIdAsync(string databasePath)
@@ -193,13 +193,12 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
     public static async Task<bool> VerifyShardAsync(string syncRoot, SnapshotShard shard)
     {
         var path = Path.Combine(syncRoot, shard.FileName);
-        return File.Exists(path) && new FileInfo(path).Length == shard.SizeBytes && string.Equals(await Sha256FileAsync(path), shard.Sha256, StringComparison.OrdinalIgnoreCase);
+        return File.Exists(path) && new FileInfo(path).Length == shard.SizeBytes && string.Equals(await Blake3FileAsync(path), shard.Blake3, StringComparison.OrdinalIgnoreCase);
     }
 
-    public static async Task<string> Sha256FileAsync(string path)
+    public static Task<string> Blake3FileAsync(string path)
     {
-        await using var stream = File.OpenRead(path);
-        return Convert.ToHexString(await SHA256.HashDataAsync(stream)).ToLowerInvariant();
+        return Blake3Hash.ComputeFileAsync(path);
     }
 
     public static async Task<T?> ReadJsonAsync<T>(string path, CancellationToken cancellationToken)
@@ -248,7 +247,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 else
                 {
                     if (new FileInfo(path).Length != shard.SizeBytes) errors.Add($"Shard size mismatch: {shard.FileName}");
-                    if (!string.Equals(await SnapshotPublisher.Sha256FileAsync(path), shard.Sha256, StringComparison.OrdinalIgnoreCase)) errors.Add($"Shard hash mismatch: {shard.FileName}");
+                    if (!string.Equals(await SnapshotPublisher.Blake3FileAsync(path), shard.Blake3, StringComparison.OrdinalIgnoreCase)) errors.Add($"Shard hash mismatch: {shard.FileName}");
                 }
             }
             return Result<SnapshotValidationResult>.Success(new SnapshotValidationResult(errors.Count == 0, manifest, errors));

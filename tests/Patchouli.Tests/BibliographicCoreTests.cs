@@ -266,7 +266,8 @@ public sealed class BibliographicCoreTests
             asset.Value.SizeBytes.Should().Be(new FileInfo(filePath).Length);
             asset.Value.MtimeUtc.Should().NotBeNull();
             asset.Value.QuickHash.Should().NotBeNullOrWhiteSpace();
-            asset.Value.FullBlake3.Should().BeNull();
+            asset.Value.FullBlake3.Should().HaveLength(64);
+            asset.Value.FileAssetId.ToString().Should().Be(DerivedFileAssetId(asset.Value.FullBlake3!));
         }
         finally
         {
@@ -287,6 +288,37 @@ public sealed class BibliographicCoreTests
         asset.Value.SizeBytes.Should().Be(0);
         asset.Value.MtimeUtc.Should().BeNull();
         asset.Value.QuickHash.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RegisterFile_reuses_blake3_file_id_for_duplicate_content_and_tracks_location()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        var firstPath = await TemporaryFile.WriteAsync("same scanned pdf bytes");
+        var secondPath = await TemporaryFile.WriteAsync("same scanned pdf bytes");
+
+        try
+        {
+            var first = await context.FileAssetService.RegisterFileAsync(firstPath);
+            var second = await context.FileAssetService.RegisterFileAsync(secondPath);
+
+            first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+            second.IsSuccess.Should().BeTrue(second.ErrorMessage);
+            second.Value.FileAssetId.Should().Be(first.Value.FileAssetId);
+
+            await using var connection = context.Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            var locations = (await connection.QueryAsync<string>(
+                "select path from known_file_locations where file_asset_id = @FileAssetId order by path;",
+                new { FileAssetId = first.Value.FileAssetId.ToString() })).ToArray();
+
+            locations.Should().BeEquivalentTo(Path.GetFullPath(firstPath), Path.GetFullPath(secondPath));
+        }
+        finally
+        {
+            File.Delete(firstPath);
+            File.Delete(secondPath);
+        }
     }
 
     [Fact]
@@ -578,5 +610,10 @@ public sealed class BibliographicCoreTests
             await File.WriteAllTextAsync(path, content);
             return path;
         }
+    }
+
+    private static string DerivedFileAssetId(string fullBlake3)
+    {
+        return $"{fullBlake3[..8]}-{fullBlake3[8..12]}-{fullBlake3[12..16]}-{fullBlake3[16..20]}-{fullBlake3[20..32]}";
     }
 }

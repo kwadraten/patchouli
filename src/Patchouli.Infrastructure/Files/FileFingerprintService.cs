@@ -1,6 +1,6 @@
-using System.Security.Cryptography;
 using Patchouli.Core.Files;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Hashing;
 
 namespace Patchouli.Infrastructure.Files;
 
@@ -32,13 +32,15 @@ public sealed class FileFingerprintService : IFileFingerprintService
                 return Result<FileFingerprint>.Failure(quickHash.ErrorCode!, quickHash.ErrorMessage!);
             }
 
+            var fullBlake3 = await Blake3Hash.ComputeFileAsync(normalizedPath, cancellationToken);
+
             return Result<FileFingerprint>.Success(new FileFingerprint(
                 normalizedPath,
                 fileInfo.Name,
                 fileInfo.Length,
                 fileInfo.LastWriteTimeUtc,
                 quickHash.Value,
-                FullBlake3: null));
+                fullBlake3));
         }
         catch (OperationCanceledException)
         {
@@ -78,24 +80,23 @@ public sealed class FileFingerprintService : IFileFingerprintService
                 bufferSize: SampleSize,
                 useAsync: true);
 
-            using var sha256 = SHA256.Create();
-            TransformBlock(sha256, BitConverter.GetBytes(fileInfo.Length));
-            await HashWindowAsync(stream, sha256, 0, cancellationToken);
+            using var hasher = global::Blake3.Hasher.New();
+            hasher.Update(BitConverter.GetBytes(fileInfo.Length));
+            await HashWindowAsync(stream, hasher, 0, cancellationToken);
 
             if (fileInfo.Length > SampleSize)
             {
                 var middle = Math.Max(0, (fileInfo.Length / 2) - (SampleSize / 2));
-                await HashWindowAsync(stream, sha256, middle, cancellationToken);
+                await HashWindowAsync(stream, hasher, middle, cancellationToken);
             }
 
             if (fileInfo.Length > SampleSize * 2)
             {
                 var tail = Math.Max(0, fileInfo.Length - SampleSize);
-                await HashWindowAsync(stream, sha256, tail, cancellationToken);
+                await HashWindowAsync(stream, hasher, tail, cancellationToken);
             }
 
-            sha256.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
-            return Result<string>.Success(Convert.ToHexString(sha256.Hash!).ToLowerInvariant());
+            return Result<string>.Success(hasher.Finalize().ToString());
         }
         catch (OperationCanceledException)
         {
@@ -111,7 +112,7 @@ public sealed class FileFingerprintService : IFileFingerprintService
 
     private static async Task HashWindowAsync(
         FileStream stream,
-        HashAlgorithm hashAlgorithm,
+        global::Blake3.Hasher hasher,
         long offset,
         CancellationToken cancellationToken)
     {
@@ -120,12 +121,7 @@ public sealed class FileFingerprintService : IFileFingerprintService
         var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
         if (read > 0)
         {
-            hashAlgorithm.TransformBlock(buffer, 0, read, null, 0);
+            hasher.Update(buffer.AsSpan(0, read));
         }
-    }
-
-    private static void TransformBlock(HashAlgorithm hashAlgorithm, byte[] inputBuffer)
-    {
-        hashAlgorithm.TransformBlock(inputBuffer, 0, inputBuffer.Length, null, 0);
     }
 }

@@ -1,10 +1,10 @@
-using System.Security.Cryptography;
 using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Hashing;
 using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Coordinates;
@@ -34,7 +34,7 @@ public sealed class PageCoordinateService : IPageCoordinateService
     }
     public async Task<IReadOnlyList<string>> DetectBBoxWarningsAsync(PageId pageId,FileAssetId? fileAssetId=null,CancellationToken cancellationToken=default)
     {
-        try { await using var c=_connectionFactory.CreateConnection();await c.OpenAsync(cancellationToken);var row=await c.QuerySingleOrDefaultAsync<WarningRow>("select p.source_file_hash as SourceFileHash,fa.status as Status,fa.original_path as Path from pages p join document_instances d on d.document_instance_id=p.document_instance_id left join file_assets fa on fa.file_asset_id=d.file_asset_id where p.page_id=@Id",new{Id=pageId.ToString()});if(row is null)return [];var warnings=new List<string>();if(row.Status==FileAssetStatus.Changed){warnings.Add(BBoxWarning.SourceChanged);warnings.Add(BBoxWarning.BasisStale);}if(!string.IsNullOrWhiteSpace(row.SourceFileHash)&&!string.IsNullOrWhiteSpace(row.Path)&&File.Exists(row.Path)){await using var s=File.OpenRead(row.Path);var current=Convert.ToHexString(await SHA256.HashDataAsync(s,cancellationToken)).ToLowerInvariant();if(!string.Equals(current,row.SourceFileHash,StringComparison.OrdinalIgnoreCase)&&!warnings.Contains(BBoxWarning.BasisStale)){warnings.Add(BBoxWarning.BasisStale);}}return warnings;}
+        try { await using var c=_connectionFactory.CreateConnection();await c.OpenAsync(cancellationToken);var row=await c.QuerySingleOrDefaultAsync<WarningRow>("select p.source_file_hash as SourceFileHash,fa.status as Status,fa.original_path as Path from pages p join document_instances d on d.document_instance_id=p.document_instance_id left join file_assets fa on fa.file_asset_id=d.file_asset_id where p.page_id=@Id",new{Id=pageId.ToString()});if(row is null)return [];var warnings=new List<string>();if(row.Status==FileAssetStatus.Changed){warnings.Add(BBoxWarning.SourceChanged);warnings.Add(BBoxWarning.BasisStale);}if(!string.IsNullOrWhiteSpace(row.SourceFileHash)&&!string.IsNullOrWhiteSpace(row.Path)&&File.Exists(row.Path)){var current=await Blake3Hash.ComputeFileAsync(row.Path,cancellationToken);if(!string.Equals(current,row.SourceFileHash,StringComparison.OrdinalIgnoreCase)&&!warnings.Contains(BBoxWarning.BasisStale)){warnings.Add(BBoxWarning.BasisStale);}}return warnings;}
         catch{return [];}
     }
     private static bool ValidNumbers(SourceBBox b)=>double.IsFinite(b.X)&&double.IsFinite(b.Y)&&double.IsFinite(b.Width)&&double.IsFinite(b.Height)&&b.Width>0&&b.Height>0;

@@ -49,7 +49,7 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         try
         {
             var body = new MinerUBatchUrlRequest(
-                files.Select(f => new MinerUBatchUrlFile(f.FileName, _options.IsOcr, f.FileName)).ToArray(),
+                files.Select(f => new MinerUBatchUrlFile(f.FileName, _options.IsOcr, f.DataId)).ToArray(),
                 _options.ModelVersion,
                 _options.Language,
                 _options.EnableTable,
@@ -284,7 +284,7 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             return data.FileUrls.Select((url, index) =>
             {
                 var file = requests[Math.Min(index, requests.Count - 1)];
-                return new MinerUFileUploadUrl(file.FileName, url, file.FileName);
+                return new MinerUFileUploadUrl(file.FileName, url, file.DataId);
             }).ToArray();
         }
 

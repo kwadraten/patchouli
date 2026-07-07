@@ -59,14 +59,14 @@ public sealed class FileAssetService : IFileAssetService
             }
 
             var asset = new FileAsset(
-                FileAssetId.New(),
+                exists ? CreateFileAssetId(fingerprint!.Value.FullBlake3) : FileAssetId.New(),
                 libraryResult.Value.LibraryId,
                 normalizedPath,
                 fileInfo.Name,
                 exists ? fingerprint!.Value.SizeBytes : 0,
                 exists ? fingerprint!.Value.MtimeUtc : null,
                 exists ? fingerprint!.Value.QuickHash : null,
-                FullBlake3: null,
+                exists ? fingerprint!.Value.FullBlake3 : null,
                 PageCount: null,
                 PdfTrailerId: null,
                 exists ? FileAssetStatus.Available : FileAssetStatus.Missing,
@@ -76,6 +76,86 @@ public sealed class FileAssetService : IFileAssetService
             await using var connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            if (exists)
+            {
+                var existing = await connection.QuerySingleOrDefaultAsync<FileAssetRow>(
+                    """
+                    select
+                        file_asset_id as FileAssetId,
+                        library_id as LibraryId,
+                        original_path as OriginalPath,
+                        file_name as FileName,
+                        size_bytes as SizeBytes,
+                        mtime_utc as MtimeUtc,
+                        quick_hash as QuickHash,
+                        full_blake3 as FullBlake3,
+                        page_count as PageCount,
+                        pdf_trailer_id as PdfTrailerId,
+                        status as Status,
+                        created_at as CreatedAt,
+                        updated_at as UpdatedAt
+                    from file_assets
+                    where file_asset_id = @FileAssetId;
+                    """,
+                    new { FileAssetId = asset.FileAssetId.ToString() },
+                    transaction);
+
+                if (existing is not null)
+                {
+                    var existingAsset = existing.ToFileAsset();
+                    if (existingAsset.LibraryId != libraryResult.Value.LibraryId)
+                    {
+                        return Result<FileAsset>.Failure(
+                            AppErrorCodes.LibraryMismatch,
+                            "File content already exists in a different library.");
+                    }
+
+                    var updatedAsset = existingAsset with
+                    {
+                        SizeBytes = asset.SizeBytes,
+                        MtimeUtc = asset.MtimeUtc,
+                        QuickHash = asset.QuickHash,
+                        FullBlake3 = asset.FullBlake3,
+                        Status = FileAssetStatus.Available,
+                        UpdatedAt = now
+                    };
+
+                    await connection.ExecuteAsync(
+                        """
+                        update file_assets
+                        set size_bytes = @SizeBytes,
+                            mtime_utc = @MtimeUtc,
+                            quick_hash = @QuickHash,
+                            full_blake3 = @FullBlake3,
+                            status = @Status,
+                            updated_at = @UpdatedAt
+                        where file_asset_id = @FileAssetId;
+                        """,
+                        new
+                        {
+                            FileAssetId = updatedAsset.FileAssetId.ToString(),
+                            updatedAsset.SizeBytes,
+                            MtimeUtc = updatedAsset.MtimeUtc?.ToUniversalTime().ToString("O"),
+                            updatedAsset.QuickHash,
+                            updatedAsset.FullBlake3,
+                            updatedAsset.Status,
+                            UpdatedAt = updatedAsset.UpdatedAt.ToUniversalTime().ToString("O")
+                        },
+                        transaction);
+
+                    await UpsertKnownLocationAsync(
+                        connection,
+                        transaction,
+                        updatedAsset.FileAssetId,
+                        normalizedPath,
+                        FileAssetStatus.Available,
+                        now);
+
+                    await transaction.CommitAsync(cancellationToken);
+                    return Result<FileAsset>.Success(updatedAsset);
+                }
+            }
 
             await connection.ExecuteAsync(
                 """
@@ -179,6 +259,15 @@ public sealed class FileAssetService : IFileAssetService
             CreatedAt = asset.CreatedAt.ToUniversalTime().ToString("O"),
             UpdatedAt = asset.UpdatedAt.ToUniversalTime().ToString("O")
         };
+    }
+
+    private static FileAssetId CreateFileAssetId(string? fullBlake3)
+    {
+        if (string.IsNullOrWhiteSpace(fullBlake3) || fullBlake3.Length < 32)
+            return FileAssetId.New();
+
+        return FileAssetId.Parse(
+            $"{fullBlake3[..8]}-{fullBlake3[8..12]}-{fullBlake3[12..16]}-{fullBlake3[16..20]}-{fullBlake3[20..32]}");
     }
 
     private static Result<T> DatabaseFailure<T>(Exception exception)

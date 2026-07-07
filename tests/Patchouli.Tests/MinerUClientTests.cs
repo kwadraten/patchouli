@@ -41,7 +41,7 @@ public sealed class MinerUClientTests
         var options = new MinerUOptions { Token = "secret-token" };
         using var client = new MinerUClient(new HttpClient(handler), options);
 
-        await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
+        await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100, "blake3-a")]);
 
         authHeader.Should().Be("Bearer secret-token");
     }
@@ -91,7 +91,7 @@ public sealed class MinerUClientTests
         var options = new MinerUOptions { Token = "t", ModelVersion = "vlm", Language = "ch", IsOcr = true, EnableTable = true, EnableFormula = true };
         using var client = new MinerUClient(new HttpClient(handler), options);
 
-        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
+        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100, "blake3-a")]);
 
         result.IsSuccess.Should().BeTrue();
         var json = JsonNode.Parse(body!)!.AsObject();
@@ -101,7 +101,7 @@ public sealed class MinerUClientTests
         json["enable_formula"]!.GetValue<bool>().Should().BeTrue();
         var file = json["files"]!.AsArray().Single()!.AsObject();
         file["name"]!.GetValue<string>().Should().Be("a.pdf");
-        file["data_id"]!.GetValue<string>().Should().Be("a.pdf");
+        file["data_id"]!.GetValue<string>().Should().Be("blake3-a");
         file["is_ocr"]!.GetValue<bool>().Should().BeTrue();
     }
 
@@ -202,7 +202,7 @@ public sealed class MinerUClientTests
         var options = new MinerUOptions { Token = "super-secret-token" };
         using var client = new MinerUClient(new HttpClient(handler), options);
 
-        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
+        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100, "blake3-a")]);
 
         result.IsFailure.Should().BeTrue();
         result.ErrorMessage.Should().Contain("A0202");
@@ -218,7 +218,7 @@ public sealed class MinerUClientTests
         var options = new MinerUOptions { Token = "super-secret-token" };
         using var client = new MinerUClient(new HttpClient(handler), options);
 
-        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100)]);
+        var result = await client.RequestUploadUrlsAsync([new MinerUUploadRequest("/a.pdf", "a.pdf", 100, "blake3-a")]);
 
         result.IsFailure.Should().BeTrue();
         result.ErrorMessage.Should().NotContain("super-secret-token");

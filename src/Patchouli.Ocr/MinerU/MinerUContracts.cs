@@ -5,7 +5,8 @@ namespace Patchouli.Ocr.MinerU;
 public sealed record MinerUUploadRequest(
     string LocalPath,
     string FileName,
-    long FileSize);
+    long FileSize,
+    string DataId);
 
 public sealed record MinerUUploadBatch(
     string BatchId,
