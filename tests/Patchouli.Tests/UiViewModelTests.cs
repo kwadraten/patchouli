@@ -7,7 +7,9 @@ using Avalonia.Threading;
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
+using Patchouli.Core.Layout;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Mcp;
 using Patchouli.Ocr.MinerU;
@@ -57,6 +59,53 @@ public sealed class UiViewModelTests
         var vm = new MainWindowViewModel(new FakeClipboard());
         await vm.SearchEvidence.CopyMarkdownCommand.ExecuteAsync();
         vm.SearchEvidence.Output.Should().Contain("validation_failed");
+    }
+
+    [Fact]
+    public async Task CopyEvidenceRef_writes_ref_to_clipboard()
+    {
+        var clipboard = new FakeClipboard(); var vm = new MainWindowViewModel(clipboard);
+
+        await vm.SearchEvidence.CopyEvidenceRefAsync("evref:v1:test");
+
+        clipboard.Text.Should().Be("evref:v1:test");
+        vm.SearchEvidence.EvidenceRef.Should().Be("evref:v1:test");
+        vm.SearchEvidence.Output.Should().Be("Copied EvidenceRef");
+    }
+
+    [Fact]
+    public async Task CopySearchResultEvidenceMarkdown_generates_pinned_markdown_to_clipboard()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-evidence-copy-{Guid.NewGuid():N}.sqlite");
+        var clipboard = new FakeClipboard();
+        try
+        {
+            var vm = new MainWindowViewModel(clipboard) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            var item = await services.Items.CreateItemAsync("book", "UI Evidence Item");
+            var document = await services.Documents.AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
+            var page = await services.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
+            var revision = await services.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId, LayoutRevisionSource.Mock, makeCurrent: true);
+            await services.Layout.AddNodeAsync(revision.Value.LayoutRevisionId, page.Value.PageId, null, LayoutNodeType.Paragraph, null, "Pinned clipboard text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
+            await services.SearchUnits.RebuildForDocumentInstanceAsync(document.Value.DocumentInstanceId);
+
+            await using var connection = services.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            var unitId = await connection.ExecuteScalarAsync<string>("select unit_id from search_units where resolved_text = 'Pinned clipboard text';");
+            var evidence = await services.Evidence.CreateFromSearchUnitAsync(Patchouli.Core.Ids.SearchUnitId.Parse(unitId!));
+
+            await vm.SearchEvidence.CopyEvidenceMarkdownAsync(evidence.Value.EvidenceRefId);
+
+            clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And.Contain(evidence.Value.EvidenceRefId);
+            vm.SearchEvidence.Markdown.Should().Be(clipboard.Text);
+            vm.SearchEvidence.Output.Should().Be("Copied Evidence Markdown");
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
     }
 
     [Fact]
@@ -223,10 +272,14 @@ public sealed class UiViewModelTests
         var codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml.cs"));
         var searchCodeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml.cs"));
         shellXaml.Should().Contain("OnExportEvidenceMarkdownClick");
+        searchXaml.Should().Contain("OnCopySearchUnitEvidenceRefClick");
+        searchXaml.Should().Contain("OnCopySearchUnitEvidenceMarkdownClick");
         searchXaml.Should().Contain("OnExportSearchUnitEvidenceMarkdownClick");
         searchXaml.Should().Contain("<ContextMenu>");
         codeBehind.Should().Contain("SaveFilePickerAsync");
         codeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
+        searchCodeBehind.Should().Contain("CopyEvidenceRefAsync");
+        searchCodeBehind.Should().Contain("CopyEvidenceMarkdownAsync");
         searchCodeBehind.Should().Contain("SaveFilePickerAsync");
         searchCodeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
     }
@@ -237,7 +290,8 @@ public sealed class UiViewModelTests
         var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
         var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
         var settingsXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
-        shellXaml.Should().Contain("ItemEditor.Header");
+        shellXaml.Should().Contain("EditSelectedItemCommand");
+        shellXaml.Should().Contain("DataType=\"{x:Type local:ItemEditorViewModel}\"");
         shellXaml.Should().Contain("ItemEditorPage");
         editorXaml.Should().Contain("AddIdentifierCommand");
         editorXaml.Should().Contain("RegisterFileCommand");

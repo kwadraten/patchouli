@@ -185,7 +185,15 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
     public bool ShowInspectorPane { get => _showInspectorPane; set { if (_showInspectorPane == value) return; _showInspectorPane = value; Raise(); Raise(nameof(IsInspectorVisible)); } }
-    public bool IsInspectorVisible => ActiveTab?.Kind == WorkspaceTabKind.Library && ShowInspectorPane;
+    public bool ShowSidebar => ActiveTab?.Kind == WorkspaceTabKind.Library && Shell.ShowLibraryList;
+    public bool IsInspectorVisible => ActiveTab?.Kind == WorkspaceTabKind.Library && Shell.ShowLibraryList && ShowInspectorPane;
+    public bool ShowSelectedDocumentTab => OpenTabs.Any(t => t.Kind == WorkspaceTabKind.PdfWorkspace);
+    public bool ShowSettingsTab => OpenTabs.Any(t => t.Kind == WorkspaceTabKind.Settings);
+    public bool ShowItemEditorTab => OpenTabs.Any(t => t.Kind == WorkspaceTabKind.ItemEditor);
+    public bool IsLibraryTabActive => ActiveTab?.Kind == WorkspaceTabKind.Library;
+    public bool IsReaderTabActive => ActiveTab?.Kind == WorkspaceTabKind.PdfWorkspace;
+    public bool IsSettingsVisible => ActiveTab?.Kind == WorkspaceTabKind.Settings;
+    public bool IsItemEditorVisible => ActiveTab?.Kind == WorkspaceTabKind.ItemEditor;
     public string LibraryTabTitle => string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName;
     public string PdfTabTitle => string.IsNullOrWhiteSpace(Shell.SelectedItem?.FileName)
         ? Shell.SelectedItem?.Title ?? "PDF 阅读"
@@ -550,6 +558,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         var pdfTab = OpenTabs.FirstOrDefault(t => t.Kind == WorkspaceTabKind.PdfWorkspace);
         if (pdfTab != null) pdfTab.Title = PdfTabTitle;
+        RaiseWorkspaceStateChanged();
     }
 
     public void RaiseLibraryTitleChanged()
@@ -718,7 +727,15 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private void RaiseWorkspaceStateChanged()
     {
-        // No longer needed
+        Raise(nameof(ShowSidebar));
+        Raise(nameof(IsInspectorVisible));
+        Raise(nameof(ShowSelectedDocumentTab));
+        Raise(nameof(ShowSettingsTab));
+        Raise(nameof(ShowItemEditorTab));
+        Raise(nameof(IsLibraryTabActive));
+        Raise(nameof(IsReaderTabActive));
+        Raise(nameof(IsSettingsVisible));
+        Raise(nameof(IsItemEditorVisible));
     }
 
     public async Task ExportEvidenceMarkdownToFileAsync(string? targetPath)
@@ -1022,6 +1039,71 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             Raise(nameof(Output));
             await _main.LogOperationAsync("copy_evidence_markdown", Output);
         });
+    }
+
+    public async Task CopyEvidenceRefAsync(string? evidenceRef)
+    {
+        if (string.IsNullOrWhiteSpace(evidenceRef))
+        {
+            Output = "ERROR validation_failed: EvidenceRef is required.";
+            Raise(nameof(Output));
+            await _main.LogOperationAsync("copy_evidence_ref", Output);
+            return;
+        }
+
+        try
+        {
+            await _main.Clipboard.SetTextAsync(evidenceRef);
+            EvidenceRef = evidenceRef;
+            Output = "Copied EvidenceRef";
+            Raise(nameof(EvidenceRef));
+        }
+        catch (Exception ex)
+        {
+            Output = $"ERROR clipboard_unavailable: {ex.Message}";
+        }
+
+        Raise(nameof(Output));
+        await _main.LogOperationAsync("copy_evidence_ref", Output);
+    }
+
+    public async Task CopyEvidenceMarkdownAsync(string? evidenceRef)
+    {
+        if (string.IsNullOrWhiteSpace(evidenceRef))
+        {
+            Output = "ERROR validation_failed: EvidenceRef is required.";
+            Raise(nameof(Output));
+            await _main.LogOperationAsync("copy_search_result_evidence_markdown", Output);
+            return;
+        }
+
+        var markdown = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(evidenceRef);
+        if (markdown.IsFailure)
+        {
+            Output = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";
+            Raise(nameof(Output));
+            _main.Report(Output);
+            await _main.LogOperationAsync("copy_search_result_evidence_markdown", Output);
+            return;
+        }
+
+        try
+        {
+            await _main.Clipboard.SetTextAsync(markdown.Value.Markdown);
+            EvidenceRef = evidenceRef;
+            Markdown = markdown.Value.Markdown;
+            Output = "Copied Evidence Markdown";
+            Raise(nameof(EvidenceRef));
+            Raise(nameof(Markdown));
+            _main.Report("已复制 Evidence Markdown。");
+        }
+        catch (Exception ex)
+        {
+            Output = $"ERROR clipboard_unavailable: {ex.Message}";
+        }
+
+        Raise(nameof(Output));
+        await _main.LogOperationAsync("copy_search_result_evidence_markdown", Output);
     }
 
     public void RaiseMarkdown() => Raise(nameof(Markdown));

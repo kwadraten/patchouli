@@ -1,6 +1,18 @@
 <UserControl x:Class="Patchouli.UI.Views.SearchResultsPage"
              xmlns="https://github.com/avaloniaui"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia">
+<UserControl.Styles>
+  <Style Selector="Button.EvidenceAction">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+    <Setter Property="Padding" Value="5" />
+    <Setter Property="MinWidth" Value="28" />
+    <Setter Property="MinHeight" Value="28" />
+    <Setter Property="Width" Value="28" />
+    <Setter Property="Height" Value="28" />
+  </Style>
+</UserControl.Styles>
 <Grid>
   <ScrollViewer>
     <StackPanel Margin="32" Spacing="18">
@@ -36,16 +48,28 @@
                       <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
                         <Border.ContextMenu>
                           <ContextMenu>
+                            <MenuItem Header="复制 EvidenceRef" Click="OnCopySearchUnitEvidenceRefClick" IsEnabled="{Binding HasEvidenceRef}" />
+                            <MenuItem Header="复制 Evidence Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" IsEnabled="{Binding HasEvidenceRef}" />
                             <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" IsEnabled="{Binding HasEvidenceRef}" />
                           </ContextMenu>
                         </Border.ContextMenu>
                         <StackPanel Spacing="6">
-                          <TextBlock Text="{Binding Text}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-                          <WrapPanel ItemHeight="20">
-                            <TextBlock Text="{Binding NodeType, StringFormat='类型：\{0\}'}" Margin="0,0,12,0" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <TextBlock Text="{Binding ReadingOrder, StringFormat='阅读顺序：\{0\}'}" Margin="0,0,12,0" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <TextBlock Text="{Binding EvidenceRef, StringFormat='EvidenceRef：\{0\}'}" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" IsVisible="{Binding HasEvidenceRef}" />
-                          </WrapPanel>
+                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                            <TextBlock Text="{Binding Text}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasEvidenceRef}">
+                              <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceRefClick" ToolTip.Tip="复制 EvidenceRef">
+                                <lucide:Lucide Icon="Copy" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                              </Button>
+                              <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceMarkdownClick" ToolTip.Tip="复制 Evidence Markdown">
+                                <lucide:Lucide Icon="Copy" Width="14" Height="14" StrokeBrush="{DynamicResource PrimaryBrush}" />
+                              </Button>
+                            </StackPanel>
+                          </Grid>
+                          <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                            <TextBlock Text="{Binding NodeType, StringFormat='类型：\{0\}'}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            <TextBlock Grid.Column="1" Text="{Binding ReadingOrder, StringFormat='阅读顺序：\{0\}'}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            <TextBlock Grid.Column="2" Text="{Binding EvidenceRef, StringFormat='EvidenceRef：\{0\}'}" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" IsVisible="{Binding HasEvidenceRef}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding EvidenceRef}" />
+                          </Grid>
                         </StackPanel>
                       </Border>
                     </DataTemplate>

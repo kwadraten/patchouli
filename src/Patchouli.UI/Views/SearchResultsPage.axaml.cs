@@ -10,6 +10,28 @@ public sealed partial class SearchResultsPage : UserControl
         InitializeComponent();
     }
 
+    private async void OnCopySearchUnitEvidenceRefClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
+            TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
+        {
+            return;
+        }
+
+        await main.SearchEvidence.CopyEvidenceRefAsync(unit.EvidenceRef);
+    }
+
+    private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
+            TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
+        {
+            return;
+        }
+
+        await main.SearchEvidence.CopyEvidenceMarkdownAsync(unit.EvidenceRef);
+    }
+
     private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
