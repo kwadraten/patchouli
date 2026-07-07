@@ -261,6 +261,8 @@ public sealed class UiViewModelTests
         queueXaml.Should().Contain("StartCommand");
         queueXaml.Should().Contain("PauseGlobalCommand");
         queueXaml.Should().Contain("CancelCommand");
+        queueXaml.Should().Contain("TaskRows");
+        queueXaml.Should().Contain("HasTasks");
         queueXaml.Should().NotContain("OCR 队列页面将在后续任务中接入");
     }
 
@@ -351,6 +353,29 @@ public sealed class UiViewModelTests
             vm.OcrQueue.Output.Should().Contain("Queued mock OCR task");
             vm.OcrQueue.Tasks.Should().ContainSingle();
             vm.OcrQueue.Output.ToLowerInvariant().Should().NotContain("secret");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task QueueViewModel_refresh_shows_multiple_tasks_as_rows()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            var vm = new MainWindowViewModel { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync();
+            vm.OcrQueue.DocumentInstanceId = Patchouli.Core.Ids.DocumentInstanceId.New().ToString();
+            vm.OcrQueue.PresetId = Patchouli.Core.Ids.OcrPresetId.New().ToString();
+            vm.OcrQueue.PageIds = Patchouli.Core.Ids.PageId.New().ToString();
+            await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+            vm.OcrQueue.PageIds = Patchouli.Core.Ids.PageId.New().ToString();
+            await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
+
+            vm.OcrQueue.TaskRows.Should().HaveCount(2);
+            vm.OcrQueue.HasTasks.Should().BeTrue();
+            vm.OcrQueue.NoTasks.Should().BeFalse();
+            vm.OcrQueue.TaskRows.Should().OnlyContain(row => row.State == Patchouli.Ocr.OcrQueueTaskState.Queued);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

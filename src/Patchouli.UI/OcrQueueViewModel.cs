@@ -41,6 +41,9 @@ public sealed class OcrQueueViewModel : ViewModelBase
     public string Output { get; private set; } = "Queue is in-process only. Queue does not survive app restart. MCP cannot control OCR queue.";
     public string StatusSummary { get; private set; } = "";
     public ObservableCollection<string> Tasks { get; } = new();
+    public ObservableCollection<OcrQueueTaskViewModel> TaskRows { get; } = new();
+    public bool HasTasks => TaskRows.Count > 0;
+    public bool NoTasks => !HasTasks;
 
     public AsyncCommand EnqueueMockCommand { get; }
     public AsyncCommand EnqueueImageCommand { get; }
@@ -156,12 +159,17 @@ public sealed class OcrQueueViewModel : ViewModelBase
 
         StatusSummary = $"{(status.Value.IsRunning ? "running" : "stopped")}; queued={status.Value.Queued}, running={status.Value.Running}, succeeded={status.Value.Succeeded}, failed={status.Value.Failed}, cancelled={status.Value.Cancelled}, blocked={status.Value.Blocked}; pauses={string.Join(",", status.Value.PausedScopes)}";
         Tasks.Clear();
+        TaskRows.Clear();
         foreach (var task in tasks.Value)
         {
             Tasks.Add($"{task.TaskId} | {task.TaskKind} | {task.Priority} | {task.State} | {task.EngineId} | {task.ProviderId ?? "-"} | attempts={task.AttemptCount} | error={task.LastErrorCode ?? "-"} | after={task.ScheduledAfter?.ToString("O") ?? "-"}");
+            TaskRows.Add(new OcrQueueTaskViewModel(task));
         }
         Raise(nameof(StatusSummary));
         Raise(nameof(Tasks));
+        Raise(nameof(TaskRows));
+        Raise(nameof(HasTasks));
+        Raise(nameof(NoTasks));
         Raise(nameof(Output));
     }
 
@@ -199,4 +207,34 @@ public sealed class OcrQueueViewModel : ViewModelBase
         Raise(nameof(Output));
         return null;
     }
+}
+
+public sealed class OcrQueueTaskViewModel
+{
+    public OcrQueueTaskViewModel(OcrQueueTask task)
+    {
+        TaskId = task.TaskId.ToString();
+        ShortTaskId = TaskId.Length <= 8 ? TaskId : TaskId[..8];
+        Kind = task.TaskKind;
+        State = task.State;
+        Priority = task.Priority;
+        EngineId = task.EngineId;
+        ProviderId = task.ProviderId ?? "-";
+        PageCount = task.PageIds.Count;
+        AttemptText = $"{task.AttemptCount}/{task.MaxAttempts}";
+        LastError = string.IsNullOrWhiteSpace(task.LastErrorCode) ? "-" : task.LastErrorCode;
+        ScheduledAfterText = task.ScheduledAfter?.ToLocalTime().ToString("g") ?? "-";
+    }
+
+    public string TaskId { get; }
+    public string ShortTaskId { get; }
+    public string Kind { get; }
+    public string State { get; }
+    public string Priority { get; }
+    public string EngineId { get; }
+    public string ProviderId { get; }
+    public int PageCount { get; }
+    public string AttemptText { get; }
+    public string LastError { get; }
+    public string ScheduledAfterText { get; }
 }

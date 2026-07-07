@@ -65,15 +65,41 @@
         <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
           <StackPanel Spacing="10">
             <TextBlock Text="任务" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <ItemsControl ItemsSource="{Binding Tasks}">
+            <Grid ColumnDefinitions="90,140,100,150,80,100,90,*" ColumnSpacing="10" IsVisible="{Binding HasTasks}">
+              <TextBlock Text="Task" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="1" Text="状态" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="2" Text="页数" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="3" Text="优先级" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="4" Text="尝试" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="5" Text="引擎" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="6" Text="下次" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Grid.Column="7" Text="错误" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            </Grid>
+            <ItemsControl ItemsSource="{Binding TaskRows}" IsVisible="{Binding HasTasks}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
                   <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4" Padding="10" Margin="0,0,0,8">
-                    <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                    <Grid ColumnDefinitions="90,140,100,150,80,100,90,*" ColumnSpacing="10">
+                      <TextBlock Text="{Binding ShortTaskId}" ToolTip.Tip="{Binding TaskId}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+                      <StackPanel Grid.Column="1" Spacing="2">
+                        <TextBlock Text="{Binding State}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+                        <TextBlock Text="{Binding Kind}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
+                      </StackPanel>
+                      <TextBlock Grid.Column="2" Text="{Binding PageCount}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+                      <TextBlock Grid.Column="3" Text="{Binding Priority}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="4" Text="{Binding AttemptText}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+                      <StackPanel Grid.Column="5" Spacing="2">
+                        <TextBlock Text="{Binding EngineId}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Text="{Binding ProviderId}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
+                      </StackPanel>
+                      <TextBlock Grid.Column="6" Text="{Binding ScheduledAfterText}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="7" Text="{Binding LastError}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                    </Grid>
                   </Border>
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
+            <TextBlock Text="暂无 OCR 队列任务。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding NoTasks}" />
             <TextBlock Text="{Binding Output}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
