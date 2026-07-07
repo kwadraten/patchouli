@@ -42,7 +42,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
     public bool IsBusy { get; private set; }
-    public string Status { get; set; } = "选择题录后可预览 PDF。";
+    private string _status = "选择题录后可预览 PDF。";
+    public string Status { get => _status; set { if (_status == value) return; _status = value; Raise(); } }
     public string PageNumberText => _pageCount == 0 ? "-" : (_pageIndex + 1).ToString();
     public string PageTotalText => _pageCount == 0 ? "/ -" : $"/ {_pageCount}";
     public string ZoomText => $"{Math.Round(Zoom * 100):0}%";
@@ -51,7 +52,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public double ActualHeightPixels => _heightPixels;
 
     public bool IsEditMode { get => _isEditMode; private set { if (_isEditMode == value) return; _isEditMode = value; Raise(); } }
-    public bool IsSidebarOpen { get => _isSidebarOpen; set { if (_isSidebarOpen == value) return; _isSidebarOpen = value; Raise(); } }
+    public bool IsSidebarOpen { get => _isSidebarOpen; set { if (_isSidebarOpen == value) return; _isSidebarOpen = value; Raise(); Raise(nameof(SidebarMaxWidth)); Raise(nameof(SidebarMinWidth)); } }
+    public double SidebarMaxWidth => _isSidebarOpen ? 800.0 : 0.0;
+    public double SidebarMinWidth => _isSidebarOpen ? 200.0 : 0.0;
     public bool IsDrawToolActive { get => _isDrawToolActive; private set { if (_isDrawToolActive == value) return; _isDrawToolActive = value; Raise(); } }
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes { get; } = new();
     
@@ -279,7 +282,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         if (_item is null) return;
         var services = await _main.ServicesAsync();
         var docId = DocumentInstanceId.Parse(_item.DocumentInstanceId);
-        var rev = await services.Layout.CreateLayoutRevisionAsync(docId, "ui_manual_edit", false);
+        var rev = await services.Layout.CreateLayoutRevisionAsync(docId, Patchouli.Core.Layout.LayoutRevisionSource.Manual, false);
         if (rev.IsSuccess)
         {
             _draftRevisionId = rev.Value.LayoutRevisionId.ToString();

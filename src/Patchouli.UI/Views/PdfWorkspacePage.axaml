@@ -96,7 +96,7 @@
     <Grid.ColumnDefinitions>
       <ColumnDefinition Width="*" />
       <ColumnDefinition Width="Auto" />
-      <ColumnDefinition Width="400" MinWidth="200" MaxWidth="800">
+      <ColumnDefinition Width="400" MinWidth="{Binding SidebarMinWidth}" MaxWidth="{Binding SidebarMaxWidth}">
          <ColumnDefinition.SharedSizeGroup>SidebarGroup</ColumnDefinition.SharedSizeGroup>
       </ColumnDefinition>
     </Grid.ColumnDefinitions>
