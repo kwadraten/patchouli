@@ -693,15 +693,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             {
                 await connection.ExecuteAsync("insert into layout_revisions (layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at) values (@RevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt);",
                     new { RevisionId = adoptedRevisionId.ToString(), DocumentInstanceId = run.Value.DocumentInstanceId.ToString(), ParentRevisionId = run.Value.OutputRevisionId.Value.ToString(), Source = LayoutRevisionSource.OcrAdopted, CreatedAt = F(_clock.UtcNow) }, tx);
-                await connection.ExecuteAsync(
-                    """
-                    insert into layout_nodes (node_id, document_instance_id, page_id, parent_node_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, revision_id, confidence, ignored)
-                    select lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab',abs(random()) % 4 + 1,1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6))),
-                           document_instance_id, page_id, parent_node_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, @AdoptedRevisionId, confidence, ignored
-                    from layout_nodes
-                    where revision_id = @SourceRevisionId and page_id in @PageIds;
-                    """,
-                    new { AdoptedRevisionId = adoptedRevisionId.ToString(), SourceRevisionId = run.Value.OutputRevisionId.Value.ToString(), PageIds = selected.Select(p => p.ToString()).ToArray() }, tx);
+                await CopySelectedLayoutNodesAsync(connection, tx, run.Value.OutputRevisionId.Value, adoptedRevisionId, selected);
             }
             await SetCurrentRevisionAsync(connection, tx, run.Value.DocumentInstanceId, adoptedRevisionId);
             var adoption = new OcrCandidateAdoption(OcrCandidateAdoptionId.New(), runId, run.Value.DocumentInstanceId, adoptedRevisionId, JsonSerializer.Serialize(selected.Select(p => p.ToString())), _clock.UtcNow.ToUniversalTime());
@@ -776,6 +768,101 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     }
     private static string F(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
 
+    private static async Task CopySelectedLayoutNodesAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        LayoutRevisionId sourceRevisionId,
+        LayoutRevisionId adoptedRevisionId,
+        IReadOnlyList<PageId> selectedPages)
+    {
+        var sourceRows = (await connection.QueryAsync<CopyLayoutNodeRow>(
+            """
+            select node_id as NodeId, document_instance_id as DocumentInstanceId, page_id as PageId, parent_node_id as ParentNodeId,
+                   node_type as NodeType, bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight,
+                   own_text as OwnText, text_policy as TextPolicy, reading_order as ReadingOrder, source as Source,
+                   confidence as Confidence, ignored as Ignored,
+                   row_index as RowIndex, col_index as ColIndex, row_span as RowSpan, col_span as ColSpan, is_header as IsHeader
+            from layout_nodes
+            where revision_id = @SourceRevisionId
+              and page_id in @PageIds
+            order by page_id, reading_order, node_id;
+            """,
+            new
+            {
+                SourceRevisionId = sourceRevisionId.ToString(),
+                PageIds = selectedPages.Select(p => p.ToString()).ToArray()
+            },
+            transaction)).ToArray();
+
+        var idMap = sourceRows.ToDictionary(row => row.NodeId, _ => LayoutNodeId.New().ToString(), StringComparer.OrdinalIgnoreCase);
+        var remaining = new Queue<CopyLayoutNodeRow>(sourceRows);
+        var inserted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        while (remaining.Count > 0)
+        {
+            var progress = false;
+            var passCount = remaining.Count;
+            for (var i = 0; i < passCount; i++)
+            {
+                var row = remaining.Dequeue();
+                if (row.ParentNodeId is not null && idMap.ContainsKey(row.ParentNodeId) && !inserted.Contains(row.ParentNodeId))
+                {
+                    remaining.Enqueue(row);
+                    continue;
+                }
+
+                await connection.ExecuteAsync(
+                    """
+                    insert into layout_nodes (
+                        node_id, document_instance_id, page_id, parent_node_id, node_type,
+                        bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
+                        reading_order, source, revision_id, confidence, ignored,
+                        row_index, col_index, row_span, col_span, is_header
+                    )
+                    values (
+                        @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
+                        @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
+                        @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
+                        @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
+                    );
+                    """,
+                    new
+                    {
+                        NodeId = idMap[row.NodeId],
+                        row.DocumentInstanceId,
+                        row.PageId,
+                        ParentNodeId = row.ParentNodeId is not null && idMap.TryGetValue(row.ParentNodeId, out var mappedParentId) ? mappedParentId : null,
+                        row.NodeType,
+                        row.BBoxX,
+                        row.BBoxY,
+                        row.BBoxWidth,
+                        row.BBoxHeight,
+                        row.OwnText,
+                        row.TextPolicy,
+                        row.ReadingOrder,
+                        row.Source,
+                        RevisionId = adoptedRevisionId.ToString(),
+                        row.Confidence,
+                        row.Ignored,
+                        row.RowIndex,
+                        row.ColIndex,
+                        row.RowSpan,
+                        row.ColSpan,
+                        row.IsHeader
+                    },
+                    transaction);
+
+                inserted.Add(row.NodeId);
+                progress = true;
+            }
+
+            if (!progress)
+            {
+                throw new InvalidOperationException("Layout node parent cycle prevented OCR partial adoption.");
+            }
+        }
+    }
+
     private async Task<Result<NormalizedBBox?>> NormalizeBBoxAsync(PageId pageId, OcrEnginePageResult result, CancellationToken cancellationToken)
     {
         if (result.BBox is null) return Result<NormalizedBBox?>.Success(null);
@@ -823,4 +910,27 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
 
     private sealed class RunVisibilityRow { public string DocumentInstanceId { get; set; } = ""; public string? OutputRevisionId { get; set; } public int Hidden { get; set; } }
     private sealed class PageResultRow { public string ResultId { get; set; } = ""; public string OcrRunId { get; set; } = ""; public string PageId { get; set; } = ""; public string State { get; set; } = ""; public string? StagingLayoutRevisionId { get; set; } public string? ErrorCode { get; set; } public string? ErrorMessage { get; set; } public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = ""; public OcrPageResult ToResult() => new(OcrPageResultId.Parse(ResultId), Core.Ids.OcrRunId.Parse(OcrRunId), Core.Ids.PageId.Parse(PageId), State, StagingLayoutRevisionId is null ? null : LayoutRevisionId.Parse(StagingLayoutRevisionId), ErrorCode, ErrorMessage, DateTimeOffset.Parse(CreatedAt), DateTimeOffset.Parse(UpdatedAt)); }
+    private sealed class CopyLayoutNodeRow
+    {
+        public string NodeId { get; set; } = "";
+        public string DocumentInstanceId { get; set; } = "";
+        public string PageId { get; set; } = "";
+        public string? ParentNodeId { get; set; }
+        public string NodeType { get; set; } = "";
+        public double? BBoxX { get; set; }
+        public double? BBoxY { get; set; }
+        public double? BBoxWidth { get; set; }
+        public double? BBoxHeight { get; set; }
+        public string? OwnText { get; set; }
+        public string TextPolicy { get; set; } = "";
+        public int ReadingOrder { get; set; }
+        public string Source { get; set; } = "";
+        public double? Confidence { get; set; }
+        public int Ignored { get; set; }
+        public int? RowIndex { get; set; }
+        public int? ColIndex { get; set; }
+        public int? RowSpan { get; set; }
+        public int? ColSpan { get; set; }
+        public int IsHeader { get; set; }
+    }
 }

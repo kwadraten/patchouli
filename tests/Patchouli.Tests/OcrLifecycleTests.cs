@@ -48,6 +48,24 @@ public sealed class OcrLifecycleTests
     [Fact] public async Task AdoptCandidateRun_sets_current_revision() { await using var c = await OcrTestContext.CreateAsync(); var p = await c.CreatePresetAsync(); var r = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, [c.Pages[0].PageId]); var adoption = await c.Coordinator.AdoptCandidateRunAsync(r.Value.OcrRunId); var current = await c.LayoutTreeService.GetCurrentRevisionAsync(c.DocumentInstanceId); current.Value.LayoutRevisionId.Should().Be(adoption.Value.AdoptedRevisionId); }
     [Fact] public async Task Adopted_ocr_rebuild_links_evidence_successor_for_previous_current_revision() { await using var c = await OcrTestContext.CreateAsync(); var p = await c.CreatePresetAsync(); var first = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, [c.Pages[0].PageId]); await c.Coordinator.AdoptCandidateRunAsync(first.Value.OcrRunId); await c.RebuildSearchAsync(); var evidence = new EvidenceReferenceService(c.Database.ConnectionFactory, c.Clock); var oldRef = await evidence.CreateFromSearchUnitAsync(await c.CurrentSearchUnitIdAsync()); var second = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, [c.Pages[0].PageId]); await c.Coordinator.AdoptCandidateRunAsync(second.Value.OcrRunId); await c.RebuildSearchAsync(); var pinned = await evidence.ResolveAsync(oldRef.Value.EvidenceRefId); var current = await evidence.ResolveAsync(oldRef.Value.EvidenceRefId, EvidenceResolutionMode.Current); pinned.Value.Status.Should().Be(EvidenceResolutionStatus.Superseded); pinned.Value.SuccessorEvidenceRefs.Should().HaveCount(1); current.Value.Status.Should().Be(EvidenceResolutionStatus.FoundCurrent); (await c.CountCurrentSearchUnitsAsync()).Should().Be(1); }
     [Fact] public async Task AdoptCandidateRun_selected_pages_only_copies_selected_pages() { await using var c = await OcrTestContext.CreateAsync(); var p = await c.CreatePresetAsync(); var r = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, c.Pages.Select(x => x.PageId).ToArray()); var adoption = await c.Coordinator.AdoptCandidateRunAsync(r.Value.OcrRunId, [c.Pages[1].PageId]); (await c.PageIdsWithNodesAsync(adoption.Value.AdoptedRevisionId)).Should().Equal(c.Pages[1].PageId); }
+    [Fact]
+    public async Task AdoptCandidateRun_selected_pages_preserves_layout_tree_and_table_metadata()
+    {
+        await using var c = await OcrTestContext.CreateAsync();
+        var p = await c.CreatePresetAsync();
+        var r = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, c.Pages.Select(x => x.PageId).ToArray());
+        await c.AddTableHierarchyAsync(r.Value.OutputRevisionId!.Value, c.Pages[1].PageId);
+
+        var adoption = await c.Coordinator.AdoptCandidateRunAsync(r.Value.OcrRunId, [c.Pages[1].PageId]);
+
+        adoption.IsSuccess.Should().BeTrue();
+        (await c.CountOrphanParentRefsAsync(adoption.Value.AdoptedRevisionId)).Should().Be(0);
+        var cells = await c.TableCellsAsync(adoption.Value.AdoptedRevisionId);
+        cells.Select(c => c.OwnText).Should().Equal("Name", "Value", "Pages", "12");
+        cells.Where(c => c.RowIndex == 0).Should().OnlyContain(c => c.IsHeader == 1);
+        cells.Single(c => c.OwnText == "Pages").ColIndex.Should().Be(0);
+        (await c.CountCellsWithTableRowParentAsync(adoption.Value.AdoptedRevisionId)).Should().Be(4);
+    }
     [Fact] public async Task AdoptCandidateRun_rejects_failed_pages() { await using var c = await OcrTestContext.CreateAsync(); var p = await c.CreatePresetAsync(parameters: "{\"failPages\":[1]}"); var r = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, c.Pages.Select(x => x.PageId).ToArray()); var adoption = await c.Coordinator.AdoptCandidateRunAsync(r.Value.OcrRunId, [c.Pages[1].PageId]); adoption.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed); }
     [Fact] public async Task AdoptCandidateRun_records_candidate_adoption() { await using var c = await OcrTestContext.CreateAsync(); var p = await c.CreatePresetAsync(); var r = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, [c.Pages[0].PageId]); await c.Coordinator.AdoptCandidateRunAsync(r.Value.OcrRunId); (await c.CountAdoptionsAsync(r.Value.OcrRunId)).Should().Be(1); }
     [Fact] public async Task AdoptCandidateRun_rejects_failed_run() { await using var c = await OcrTestContext.CreateAsync(); var p = await c.CreatePresetAsync(parameters: "{\"failPages\":[0]}"); var r = await c.Coordinator.RunPresetOnPagesAsync(c.DocumentInstanceId, p.Value.PresetId, [c.Pages[0].PageId]); var adoption = await c.Coordinator.AdoptCandidateRunAsync(r.Value.OcrRunId); adoption.ErrorCode.Should().Be(AppErrorCodes.InvalidState); }
@@ -95,6 +113,49 @@ public sealed class OcrLifecycleTests
         public async Task<int> CountNodesAsync(LayoutRevisionId rev) { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from layout_nodes where revision_id = @Rev;", new { Rev = rev.ToString() }); }
         public async Task<int> CountRunsAsync() { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from ocr_runs;"); }
         public async Task<IReadOnlyList<PageId>> PageIdsWithNodesAsync(LayoutRevisionId rev) { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); var ids = await cn.QueryAsync<string>("select distinct page_id from layout_nodes where revision_id = @Rev order by page_id;", new { Rev = rev.ToString() }); return ids.Select(PageId.Parse).ToArray(); }
+        public async Task AddTableHierarchyAsync(LayoutRevisionId rev, PageId pageId)
+        {
+            await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync();
+            var table = LayoutNodeId.New().ToString(); var header = LayoutNodeId.New().ToString(); var body = LayoutNodeId.New().ToString();
+            var cells = new[]
+            {
+                new { Id = LayoutNodeId.New().ToString(), Parent = header, Text = "Name", Row = 0, Col = 0, Header = 1, Order = 12 },
+                new { Id = LayoutNodeId.New().ToString(), Parent = header, Text = "Value", Row = 0, Col = 1, Header = 1, Order = 13 },
+                new { Id = LayoutNodeId.New().ToString(), Parent = body, Text = "Pages", Row = 1, Col = 0, Header = 0, Order = 15 },
+                new { Id = LayoutNodeId.New().ToString(), Parent = body, Text = "12", Row = 1, Col = 1, Header = 0, Order = 16 }
+            };
+            await cn.ExecuteAsync(
+                """
+                insert into layout_nodes (node_id, document_instance_id, page_id, parent_node_id, node_type, own_text, text_policy, reading_order, source, revision_id, confidence, ignored)
+                values (@NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType, @OwnText, @TextPolicy, @ReadingOrder, @Source, @RevisionId, null, 0);
+                """,
+                new[]
+                {
+                    new { NodeId = table, DocumentInstanceId = DocumentInstanceId.ToString(), PageId = pageId.ToString(), ParentNodeId = (string?)null, NodeType = LayoutNodeType.Table, OwnText = (string?)null, TextPolicy = TextPolicy.AggregateChildren, ReadingOrder = 10, Source = LayoutNodeSource.Ocr, RevisionId = rev.ToString() },
+                    new { NodeId = header, DocumentInstanceId = DocumentInstanceId.ToString(), PageId = pageId.ToString(), ParentNodeId = (string?)table, NodeType = LayoutNodeType.TableRow, OwnText = (string?)null, TextPolicy = TextPolicy.AggregateChildren, ReadingOrder = 11, Source = LayoutNodeSource.Ocr, RevisionId = rev.ToString() },
+                    new { NodeId = body, DocumentInstanceId = DocumentInstanceId.ToString(), PageId = pageId.ToString(), ParentNodeId = (string?)table, NodeType = LayoutNodeType.TableRow, OwnText = (string?)null, TextPolicy = TextPolicy.AggregateChildren, ReadingOrder = 14, Source = LayoutNodeSource.Ocr, RevisionId = rev.ToString() }
+                });
+            foreach (var cell in cells)
+            {
+                await cn.ExecuteAsync(
+                    """
+                    insert into layout_nodes (
+                        node_id, document_instance_id, page_id, parent_node_id, node_type,
+                        own_text, text_policy, reading_order, source, revision_id, confidence, ignored,
+                        row_index, col_index, row_span, col_span, is_header
+                    )
+                    values (
+                        @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
+                        @OwnText, @TextPolicy, @ReadingOrder, @Source, @RevisionId, null, 0,
+                        @RowIndex, @ColIndex, 1, 1, @IsHeader
+                    );
+                    """,
+                    new { NodeId = cell.Id, DocumentInstanceId = DocumentInstanceId.ToString(), PageId = pageId.ToString(), ParentNodeId = cell.Parent, NodeType = LayoutNodeType.TableCell, OwnText = cell.Text, TextPolicy = TextPolicy.Own, ReadingOrder = cell.Order, Source = LayoutNodeSource.Ocr, RevisionId = rev.ToString(), RowIndex = cell.Row, ColIndex = cell.Col, IsHeader = cell.Header });
+            }
+        }
+        public async Task<int> CountOrphanParentRefsAsync(LayoutRevisionId rev) { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from layout_nodes child left join layout_nodes parent on parent.node_id = child.parent_node_id and parent.revision_id = child.revision_id where child.revision_id = @Rev and child.parent_node_id is not null and parent.node_id is null;", new { Rev = rev.ToString() }); }
+        public async Task<IReadOnlyList<TableCellRow>> TableCellsAsync(LayoutRevisionId rev) { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return (await cn.QueryAsync<TableCellRow>("select own_text as OwnText, row_index as RowIndex, col_index as ColIndex, row_span as RowSpan, col_span as ColSpan, is_header as IsHeader from layout_nodes where revision_id = @Rev and node_type = @NodeType order by row_index, col_index;", new { Rev = rev.ToString(), NodeType = LayoutNodeType.TableCell })).ToArray(); }
+        public async Task<int> CountCellsWithTableRowParentAsync(LayoutRevisionId rev) { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from layout_nodes cell join layout_nodes row on row.node_id = cell.parent_node_id and row.revision_id = cell.revision_id where cell.revision_id = @Rev and cell.node_type = @Cell and row.node_type = @Row;", new { Rev = rev.ToString(), Cell = LayoutNodeType.TableCell, Row = LayoutNodeType.TableRow }); }
         public async Task<int> CountAdoptionsAsync(OcrRunId run) { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from ocr_candidate_adoptions where ocr_run_id = @Run;", new { Run = run.ToString() }); }
         public async Task<int> CountAdoptionsTotalAsync() { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from ocr_candidate_adoptions;"); }
         public async Task<int> CountCurrentRevisionsAsync() { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<int>("select count(1) from layout_revisions where document_instance_id = @Doc and is_current = 1;", new { Doc = DocumentInstanceId.ToString() }); }
@@ -108,5 +169,15 @@ public sealed class OcrLifecycleTests
         public async Task<string?> SearchIndexStatusAsync() { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return await cn.ExecuteScalarAsync<string?>("select status from search_index_status where scope_type = 'document_instance' and scope_id = @Doc;", new { Doc = DocumentInstanceId.ToString() }); }
         public async Task<IReadOnlyList<string>> TableNamesAsync() { await using var cn = Database.ConnectionFactory.CreateConnection(); await cn.OpenAsync(); return (await cn.QueryAsync<string>("select name from sqlite_master where type='table';")).ToArray(); }
         public ValueTask DisposeAsync() => Database.DisposeAsync();
+    }
+
+    private sealed class TableCellRow
+    {
+        public string? OwnText { get; set; }
+        public int? RowIndex { get; set; }
+        public int? ColIndex { get; set; }
+        public int? RowSpan { get; set; }
+        public int? ColSpan { get; set; }
+        public int IsHeader { get; set; }
     }
 }
