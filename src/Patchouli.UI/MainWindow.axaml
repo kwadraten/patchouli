@@ -81,7 +81,6 @@
           </MenuItem>
           <MenuItem Header="帮助">
             <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
-            <MenuItem Header="许可证" Command="{Binding ShowLicenseCommand}" />
           </MenuItem>
         </Menu>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -156,6 +155,20 @@
             </Grid>
           </Border>
 
+          <Border Classes="tab" Classes.active="{Binding IsAboutTabActive}" IsVisible="{Binding ShowAboutTab}" VerticalAlignment="Stretch">
+            <Grid>
+              <Button Classes="TabButton" Command="{Binding ActivateAboutTabCommand}">
+                <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                  <lucide:Lucide Icon="Info" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="关于" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Classes="TabCloseButton" Command="{Binding CloseAboutTabCommand}">
+                <lucide:Lucide Icon="X" Width="12" Height="12" />
+              </Button>
+            </Grid>
+          </Border>
+
           <Border Classes="tab" Classes.active="{Binding IsOcrQueueTabActive}" IsVisible="{Binding ShowOcrQueueTab}" VerticalAlignment="Stretch">
             <Grid>
               <Button Classes="TabButton" Command="{Binding ActivateOcrQueueTabCommand}">
@@ -199,6 +212,7 @@
       <views:SettingsPage IsVisible="{Binding ShowSettingsWorkspace}" />
       <views:SearchResultsPage IsVisible="{Binding ShowSearchWorkspace}" />
       <views:OcrQueuePage IsVisible="{Binding ShowOcrQueueWorkspace}" />
+      <views:AboutPage IsVisible="{Binding ShowAboutWorkspace}" />
     </Grid>
 
     <Border Grid.Row="3" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">

@@ -41,7 +41,8 @@ public enum WorkspaceTabKind
     Settings,
     SearchResults,
     OcrQueue,
-    ItemEditor
+    ItemEditor,
+    About
 }
 
 public sealed class MainWindowViewModel : ViewModelBase
@@ -60,6 +61,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private bool _isSearchTabOpen;
     private bool _isOcrQueueTabOpen;
     private bool _isItemEditorTabOpen;
+    private bool _isAboutTabOpen;
 
     public string RuntimeDatabasePath { get => _runtimeDatabasePath; set { _runtimeDatabasePath = value; Raise(); Raise(nameof(VersionInfo)); } }
     public string DefaultSyncRootPath => _settings.Runtime.DefaultSyncRoot;
@@ -90,6 +92,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsSearchVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.SearchResults;
     public bool IsOcrQueueVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.OcrQueue;
     public bool IsItemEditorVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.ItemEditor;
+    public bool IsAboutVisible => IsLibraryVisible && _activeTab == WorkspaceTabKind.About;
     public bool ShowWorkspaceShell => ShowLibraryPage || ShowPdfWorkspacePage;
     public bool ShowLibraryPage => IsLibraryVisible && _activeTab == WorkspaceTabKind.Library && Shell.ShowLibraryList;
     public bool ShowPdfWorkspacePage => IsLibraryVisible && _activeTab == WorkspaceTabKind.PdfWorkspace && Shell.ShowPdfWorkspace;
@@ -97,6 +100,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool ShowSearchWorkspace => IsLibraryVisible && IsSearchVisible;
     public bool ShowOcrQueueWorkspace => IsLibraryVisible && IsOcrQueueVisible;
     public bool ShowItemEditorWorkspace => IsLibraryVisible && IsItemEditorVisible;
+    public bool ShowAboutWorkspace => IsLibraryVisible && IsAboutVisible;
     public bool ShowSidebar => ShowLibraryPage;
     public bool IsInspectorVisible => ShowLibraryPage && ShowInspectorPane;
     public bool ShowSelectedDocumentTab => IsLibraryVisible && _isPdfWorkspaceTabOpen;
@@ -104,10 +108,12 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool ShowSearchTab => IsLibraryVisible && _isSearchTabOpen;
     public bool ShowOcrQueueTab => IsLibraryVisible && _isOcrQueueTabOpen;
     public bool ShowItemEditorTab => IsLibraryVisible && _isItemEditorTabOpen;
+    public bool ShowAboutTab => IsLibraryVisible && _isAboutTabOpen;
     public bool IsLibraryTabActive => IsLibraryVisible && _activeTab == WorkspaceTabKind.Library;
     public bool IsReaderTabActive => IsLibraryVisible && _activeTab == WorkspaceTabKind.PdfWorkspace;
     public bool IsOcrQueueTabActive => ShowOcrQueueWorkspace;
     public bool IsItemEditorTabActive => ShowItemEditorWorkspace;
+    public bool IsAboutTabActive => ShowAboutWorkspace;
     public string LibraryTabTitle => string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName;
     public string PdfTabTitle => string.IsNullOrWhiteSpace(Shell.SelectedItem?.FileName)
         ? Shell.SelectedItem?.Title ?? "PDF 阅读"
@@ -136,6 +142,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand ActivateSettingsTabCommand { get; }
     public AsyncCommand ActivateSearchTabCommand { get; }
     public AsyncCommand ActivateOcrQueueTabCommand { get; }
+    public AsyncCommand ActivateAboutTabCommand { get; }
     public AsyncCommand CreateItemMenuCommand { get; }
     public AsyncCommand OpenItemEditorCommand { get; }
     public AsyncCommand EditSelectedItemCommand { get; }
@@ -145,11 +152,11 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand CloseSearchTabCommand { get; }
     public AsyncCommand CloseOcrQueueTabCommand { get; }
     public AsyncCommand CloseItemEditorTabCommand { get; }
+    public AsyncCommand CloseAboutTabCommand { get; }
     public AsyncCommand RebuildSearchIndexCommand { get; }
     public AsyncCommand ExportEvidenceMarkdownCommand { get; }
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
-    public AsyncCommand ShowLicenseCommand { get; }
 
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort, string? settingsPath = null)
     {
@@ -201,6 +208,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         ActivateSettingsTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.Settings));
         ActivateSearchTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.SearchResults));
         ActivateOcrQueueTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.OcrQueue));
+        ActivateAboutTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.About));
         CreateItemMenuCommand = new(OpenNewItemEditorAsync);
         OpenItemEditorCommand = new(OpenItemEditorTabAsync);
         EditSelectedItemCommand = new(EditSelectedItemAsync);
@@ -210,11 +218,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         CloseSearchTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
         CloseItemEditorTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.ItemEditor));
+        CloseAboutTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.About));
         RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
         ExportEvidenceMarkdownCommand = new(() => ExportEvidenceMarkdownToFileAsync(null));
         ToggleInspectorPaneCommand = new(() => { ShowInspectorPane = !ShowInspectorPane; return Task.CompletedTask; });
-        ShowAboutCommand = new(() => ShowPlaceholderAsync(StatusBarVersion));
-        ShowLicenseCommand = new(() => ShowPlaceholderAsync("许可证页面将在后续任务中接入。"));
+        ShowAboutCommand = new(OpenAboutAsync);
     }
 
     public async Task<AppServices> ServicesAsync()
@@ -280,6 +288,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (_mcpServer is not null)
         {
+            _mcpServer.ConnectionCountsChanged -= OnMcpConnectionCountsChanged;
             await _mcpServer.DisposeAsync();
             _mcpServer = null;
         }
@@ -291,24 +300,26 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (_mcpServer?.IsRunning == true)
         {
-            SetMcpStatus("MCP: 运行中", $"服务地址：{McpEndpoint}", Brushes.LimeGreen);
+            SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
             return;
         }
 
         await StopMcpServerAsync("MCP HTTP 服务正在启动。");
         SetMcpStatus("MCP: 启动中", $"正在监听 {McpEndpoint}", Brushes.Goldenrod);
         var server = new McpHttpServer(new McpProtocolHandler(services.Mcp, services.ConnectionFactory), _mcpPort);
+        server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
         {
             await server.StartAsync();
             _mcpServer = server;
             McpEndpoint = server.Endpoint;
             Raise(nameof(McpEndpoint));
-            SetMcpStatus("MCP: 运行中", $"服务地址：{server.Endpoint}", Brushes.LimeGreen);
+            SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
             await LogOperationAsync("mcp_http_start", $"MCP HTTP server listening on {server.Endpoint}");
         }
         catch (Exception ex)
         {
+            server.ConnectionCountsChanged -= OnMcpConnectionCountsChanged;
             await server.DisposeAsync();
             var message = McpOutputSanitizer.Sanitize(ex.Message);
             SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
@@ -324,6 +335,34 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(McpStatusText));
         Raise(nameof(McpStatusDetail));
         Raise(nameof(McpStatusBrush));
+    }
+
+    private string BuildMcpConnectionDetail()
+    {
+        var active = _mcpServer?.ActiveConnectionCount ?? 0;
+        var total = _mcpServer?.TotalConnectionCount ?? 0;
+        return $"连接数: {active} / {total}";
+    }
+
+    private void OnMcpConnectionCountsChanged(object? sender, EventArgs e)
+    {
+        if (!ReferenceEquals(sender, _mcpServer)) return;
+
+        void Update()
+        {
+            if (!ReferenceEquals(sender, _mcpServer) || _mcpServer?.IsRunning != true) return;
+            McpStatusDetail = BuildMcpConnectionDetail();
+            Raise(nameof(McpStatusDetail));
+        }
+
+        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
+        {
+            Update();
+        }
+        else
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
+        }
     }
 
     public void Report(string message) { Status = message; StatusIsError = false; Raise(nameof(Status)); Raise(nameof(StatusIsError)); }
@@ -369,6 +408,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSearchWorkspace));
         Raise(nameof(ShowOcrQueueWorkspace));
         Raise(nameof(ShowItemEditorWorkspace));
+        Raise(nameof(ShowAboutWorkspace));
         Raise(nameof(ShowSidebar));
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(ShowSelectedDocumentTab));
@@ -376,6 +416,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(ShowSearchTab));
         Raise(nameof(ShowOcrQueueTab));
         Raise(nameof(ShowItemEditorTab));
+        Raise(nameof(ShowAboutTab));
         Raise(nameof(LibraryTabTitle));
         await Shell.RefreshItemsAsync();
     }
@@ -494,6 +535,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         RaiseShellSelectionChanged();
     }
 
+    public async Task OpenAboutAsync()
+    {
+        _isAboutTabOpen = true;
+        await ActivateTabAsync(WorkspaceTabKind.About);
+        RaiseShellSelectionChanged();
+    }
+
     private async Task OpenOcrQueueAsync()
     {
         _isOcrQueueTabOpen = true;
@@ -582,6 +630,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             WorkspaceTabKind.OcrQueue => _isOcrQueueTabOpen,
             WorkspaceTabKind.ItemEditor => _isItemEditorTabOpen,
             WorkspaceTabKind.PdfWorkspace => _isPdfWorkspaceTabOpen,
+            WorkspaceTabKind.About => _isAboutTabOpen,
             WorkspaceTabKind.Library => true,
             _ => false
         };
@@ -620,12 +669,19 @@ public sealed class MainWindowViewModel : ViewModelBase
             case WorkspaceTabKind.ItemEditor:
                 _isItemEditorTabOpen = false;
                 break;
+            case WorkspaceTabKind.About:
+                _isAboutTabOpen = false;
+                break;
         }
 
         if (_activeTab == tab)
+        {
             await ActivateTabAsync(WorkspaceTabKind.Library);
+        }
         else
+        {
             RaiseWorkspaceStateChanged();
+        }
     }
 
     private async Task ClosePdfWorkspaceTabAsync()
@@ -644,13 +700,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         foreach (var property in new[]
         {
             nameof(ActiveTab), nameof(IsSettingsVisible), nameof(IsSearchVisible), nameof(IsOcrQueueVisible),
-            nameof(IsItemEditorVisible), nameof(ShowWorkspaceShell), nameof(ShowLibraryPage),
+            nameof(IsItemEditorVisible), nameof(IsAboutVisible), nameof(ShowWorkspaceShell), nameof(ShowLibraryPage),
             nameof(ShowPdfWorkspacePage), nameof(ShowSettingsWorkspace), nameof(ShowSearchWorkspace),
-            nameof(ShowOcrQueueWorkspace), nameof(ShowItemEditorWorkspace), nameof(ShowSidebar),
+            nameof(ShowOcrQueueWorkspace), nameof(ShowItemEditorWorkspace), nameof(ShowAboutWorkspace), nameof(ShowSidebar),
             nameof(IsInspectorVisible), nameof(ShowSelectedDocumentTab), nameof(ShowSettingsTab),
-            nameof(ShowSearchTab), nameof(ShowOcrQueueTab), nameof(ShowItemEditorTab),
+            nameof(ShowSearchTab), nameof(ShowOcrQueueTab), nameof(ShowItemEditorTab), nameof(ShowAboutTab),
             nameof(IsLibraryTabActive), nameof(IsReaderTabActive), nameof(IsOcrQueueTabActive),
-            nameof(IsItemEditorTabActive), nameof(PdfTabTitle)
+            nameof(IsItemEditorTabActive), nameof(IsAboutTabActive), nameof(PdfTabTitle)
         })
         {
             Raise(property);

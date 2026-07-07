@@ -1,0 +1,27 @@
+<UserControl x:Class="Patchouli.UI.Views.AboutPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Grid>
+    <ScrollViewer>
+      <StackPanel Margin="32" Spacing="20" MaxWidth="720">
+        <TextBlock Text="关于 Patchouli" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+          <StackPanel Spacing="10">
+            <TextBlock Text="{Binding VersionInfo, StringFormat='Patchouli \{0\}'}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBlock Text="Patchouli is an open-source literature manager." FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+          <StackPanel Spacing="10">
+            <TextBlock Text="许可证 (License)" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBlock Text="Patchouli 基于 MIT License 发布。" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Text="第三方组件许可证见源代码。本软件按“原样”提供，不提供任何形式的明示或暗示保证。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>
