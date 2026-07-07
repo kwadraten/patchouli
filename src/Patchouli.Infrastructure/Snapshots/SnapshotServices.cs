@@ -185,7 +185,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             var shardPath = Path.Combine(syncRoot, "shards", shardFile);
             await BackupDatabaseAsync(runtimePath, shardPath);
             await PrepareDataShardAsync(shardPath, null);
-            return [new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), "data", true)];
+            var shard = new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), "data", true);
+            return [await ReuseExistingImmutableShardAsync(syncRoot, shard)];
         }
 
         var shards = new List<SnapshotShard>();
@@ -202,7 +203,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 var shard = new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), $"data:{i + 1:D2}", true);
                 if (shard.SizeBytes <= targetShardSizeBytes)
                 {
-                    shards.Add(shard);
+                    shards.Add(await ReuseExistingImmutableShardAsync(syncRoot, shard));
                 }
                 else
                 {
@@ -233,7 +234,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             var tableShard = await CreatePreparedDataShardAsync(runtimePath, syncRoot, tableShardId, $"data:{groupOrdinal:D2}:{tableIndex + 1:D2}", [table], null);
             if (tableShard.SizeBytes <= targetShardSizeBytes || rowCount <= 1)
             {
-                shards.Add(tableShard);
+                shards.Add(await ReuseExistingImmutableShardAsync(syncRoot, tableShard));
                 addedAny = true;
                 continue;
             }
@@ -264,7 +265,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
             if (!needsMoreSplitting)
             {
-                shards.AddRange(created);
+                foreach (var shard in created)
+                    shards.Add(await ReuseExistingImmutableShardAsync(syncRoot, shard));
                 return;
             }
 
@@ -273,7 +275,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             var nextChunkCount = Math.Min(rowCount, chunkCount * 2);
             if (nextChunkCount == chunkCount)
             {
-                shards.AddRange(created);
+                foreach (var shard in created)
+                    shards.Add(await ReuseExistingImmutableShardAsync(syncRoot, shard));
                 return;
             }
             chunkCount = nextChunkCount;
@@ -287,6 +290,32 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         await BackupDatabaseAsync(runtimePath, shardPath);
         await PrepareDataShardAsync(shardPath, includedTables, rowRanges);
         return new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), kind, true);
+    }
+
+    private static async Task<SnapshotShard> ReuseExistingImmutableShardAsync(string syncRoot, SnapshotShard candidate)
+    {
+        var candidatePath = Path.GetFullPath(Path.Combine(syncRoot, candidate.FileName));
+        var shardDirectory = Path.Combine(syncRoot, "shards");
+        foreach (var existingPath in Directory.EnumerateFiles(shardDirectory, "*.sqlite", SearchOption.TopDirectoryOnly).OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            var fullExistingPath = Path.GetFullPath(existingPath);
+            if (Path.GetFileNameWithoutExtension(fullExistingPath).StartsWith("credentials_", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (string.Equals(fullExistingPath, candidatePath, StringComparison.OrdinalIgnoreCase))
+                continue;
+            var existing = new FileInfo(fullExistingPath);
+            if (existing.Length != candidate.SizeBytes)
+                continue;
+            var existingHash = await Blake3FileAsync(fullExistingPath);
+            if (!string.Equals(existingHash, candidate.Blake3, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            File.Delete(candidatePath);
+            var fileName = Path.Combine("shards", Path.GetFileName(fullExistingPath));
+            return candidate with { ShardId = Path.GetFileNameWithoutExtension(fullExistingPath), FileName = fileName };
+        }
+
+        return candidate;
     }
 
     private static async Task PrepareDataShardAsync(string shardPath, IReadOnlyCollection<string>? includedTables, IReadOnlyDictionary<string, RowIdRange>? rowRanges = null)
