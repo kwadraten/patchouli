@@ -4,7 +4,9 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Search;
 using Patchouli.Ocr;
+using Patchouli.Search;
 
 namespace Patchouli.Infrastructure.Evidence;
 
@@ -222,15 +224,96 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             await connection.OpenAsync(cancellationToken);
             var record = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
             if (record.IsFailure) return Result.Failure(record.ErrorCode!, record.ErrorMessage!);
-            await connection.ExecuteAsync(
-                pinnedText is null
-                    ? "update evidence_ref_records set status = @Status where evidence_record_id = @Id;"
-                    : "update evidence_ref_records set status = @Status, pinned_text = @PinnedText where evidence_record_id = @Id;",
-                new { Status = status, PinnedText = pinnedText, Id = record.Value.EvidenceRecordId });
+            var isPurge = status == EvidenceRecordStatus.Purged;
+            var isDeletionMarker = isPurge || status == EvidenceRecordStatus.Tombstoned;
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+            if (isPurge)
+            {
+                await connection.ExecuteAsync(
+                    "update evidence_ref_records set status = @Status, pinned_text = @PinnedText where unit_id = @UnitId;",
+                    new { Status = status, PinnedText = pinnedText, record.Value.UnitId },
+                    tx);
+            }
+            else if (isDeletionMarker)
+            {
+                await connection.ExecuteAsync(
+                    "update evidence_ref_records set status = @Status where unit_id = @UnitId and status <> @Purged;",
+                    new { Status = status, record.Value.UnitId, Purged = EvidenceRecordStatus.Purged },
+                    tx);
+            }
+            else
+            {
+                await connection.ExecuteAsync(
+                    pinnedText is null
+                        ? "update evidence_ref_records set status = @Status where evidence_record_id = @Id;"
+                        : "update evidence_ref_records set status = @Status, pinned_text = @PinnedText where evidence_record_id = @Id;",
+                    new { Status = status, PinnedText = pinnedText, Id = record.Value.EvidenceRecordId },
+                    tx);
+            }
+            if (isDeletionMarker)
+            {
+                await PropagateDeletionMarkerAsync(connection, tx, record.Value, isPurge, _clock.UtcNow.ToUniversalTime().ToString("O"));
+            }
+            await tx.CommitAsync(cancellationToken);
+            if (isDeletionMarker)
+            {
+                await MarkSearchStaleAsync(connection, record.Value, isPurge ? "Evidence purge changed OCR/layout/search payloads." : "Evidence tombstone hid OCR/layout/search payloads.", cancellationToken);
+            }
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+    }
+
+    private static async Task PropagateDeletionMarkerAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Data.Common.DbTransaction tx, RecordRow record, bool purge, string now)
+    {
+        await connection.ExecuteAsync(
+            """
+            update search_units
+            set status = @Status,
+                resolved_text = case when @Purge = 1 then @PurgedText else resolved_text end,
+                bbox_union_json = case when @Purge = 1 then null else bbox_union_json end,
+                updated_at = @UpdatedAt
+            where unit_id = @UnitId;
+            """,
+            new
+            {
+                Status = purge ? SearchUnitStatus.Deleted : SearchUnitStatus.Hidden,
+                Purge = purge ? 1 : 0,
+                PurgedText = "[purged]",
+                UpdatedAt = now,
+                record.UnitId
+            },
+            tx);
+        await connection.ExecuteAsync("delete from search_units_fts where unit_id = @UnitId;", new { record.UnitId }, tx);
+        await connection.ExecuteAsync(
+            """
+            with recursive affected(node_id) as (
+                select root_node_id from search_units where unit_id = @UnitId
+                union all
+                select n.node_id
+                from layout_nodes n
+                join affected a on n.parent_node_id = a.node_id
+            )
+            update layout_nodes
+            set ignored = 1,
+                own_text = case when @Purge = 1 then null else own_text end,
+                bbox_x = case when @Purge = 1 then null else bbox_x end,
+                bbox_y = case when @Purge = 1 then null else bbox_y end,
+                bbox_width = case when @Purge = 1 then null else bbox_width end,
+                bbox_height = case when @Purge = 1 then null else bbox_height end,
+                confidence = case when @Purge = 1 then null else confidence end
+            where node_id in (select node_id from affected);
+            """,
+            new { record.UnitId, Purge = purge ? 1 : 0 },
+            tx);
+    }
+
+    private static async Task MarkSearchStaleAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record, string reason, CancellationToken cancellationToken)
+    {
+        var affected = $"document_instance:{record.DocumentInstanceId}";
+        await SearchUnitBuilder.UpsertStatusAsync(connection, SearchIndexScopeType.DocumentInstance, record.DocumentInstanceId, SearchIndexStatusValue.Stale, 0, 0, affected, reason, cancellationToken);
+        await SearchUnitBuilder.UpsertStatusAsync(connection, SearchIndexScopeType.Library, record.LibraryId, SearchIndexStatusValue.Stale, 0, 0, affected, reason, cancellationToken);
     }
 
     private static async Task<EvidenceResolutionResult> ResolvePinnedAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record)
