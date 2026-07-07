@@ -1,0 +1,57 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    
+    <!-- Standard TextBoxes in forms -->
+    <Style Selector="TextBox.FormField">
+        <Setter Property="Height" Value="54" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="UseFloatingPlaceholder" Value="True" />
+    </Style>
+
+    <!-- Large Title TextBoxes in forms -->
+    <Style Selector="TextBox.FormTitle">
+        <Setter Property="Height" Value="64" />
+        <Setter Property="FontSize" Value="16" />
+        <Setter Property="FontWeight" Value="Medium" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="UseFloatingPlaceholder" Value="True" />
+    </Style>
+
+    <!-- Standard ComboBoxes in forms -->
+    <Style Selector="ComboBox.FormField">
+        <Setter Property="Height" Value="54" />
+        <Setter Property="HorizontalAlignment" Value="Stretch" />
+    </Style>
+
+    <!-- Buttons alongside form fields (e.g. Add, Remove) -->
+    <Style Selector="Button.FormFieldAction">
+        <Setter Property="Height" Value="54" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
+
+    <!-- Standard Actions Buttons -->
+    <Style Selector="Button.Standard">
+        <Setter Property="Height" Value="32" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
+
+    <!-- Primary Action Buttons (uses theme resources if available) -->
+    <Style Selector="Button.Primary">
+        <Setter Property="Height" Value="32" />
+        <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+    </Style>
+    
+    <Style Selector="Button.Primary.Large">
+        <Setter Property="Height" Value="36" />
+    </Style>
+
+    <Style Selector="Button.Primary.FormFieldAction">
+        <Setter Property="Height" Value="54" />
+    </Style>
+
+</Styles>

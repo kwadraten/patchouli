@@ -27,7 +27,7 @@
           <TextBlock Text="FileSearchRoot" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
             <controls:PathPickerTextBox Path="{Binding FileSearchRootInput}" PickerMode="Folder" DialogTitle="选择文件搜索根目录" PlaceholderText="目录路径" />
-            <Button Grid.Column="1" Content="添加" Command="{Binding AddFileSearchRootCommand}" Height="32" />
+            <Button Classes="FormFieldAction" Grid.Column="1" Content="添加" Command="{Binding AddFileSearchRootCommand}" Padding="16,0" />
           </Grid>
           <ItemsControl ItemsSource="{Binding FileSearchRoots}">
             <ItemsControl.ItemTemplate>
@@ -51,11 +51,11 @@
           <TextBlock Text="OCR 预设" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
           <TextBlock Text="OCR 预设记录 engine/model/parameters；云端 provider 凭据通过 ProviderCredential 保存，运行时缺失凭据会阻止 OCR。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
           <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
-            <TextBox Grid.Row="0" Grid.Column="0" Text="{Binding OcrPresetName}" PlaceholderText="名称" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding OcrPresetEngineId}" PlaceholderText="EngineId" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="0" Grid.Column="2" Text="{Binding OcrPresetModelId}" PlaceholderText="ModelId" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding OcrPresetDescription}" PlaceholderText="描述" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding OcrPresetParametersJson}" PlaceholderText="参数 JSON" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="0" Grid.Column="0" Text="{Binding OcrPresetName}" PlaceholderText="名称" Classes="FormField" />
+            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding OcrPresetEngineId}" PlaceholderText="EngineId" Classes="FormField" />
+            <TextBox Grid.Row="0" Grid.Column="2" Text="{Binding OcrPresetModelId}" PlaceholderText="ModelId" Classes="FormField" />
+            <TextBox Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Text="{Binding OcrPresetDescription}" PlaceholderText="描述" Classes="FormField" />
+            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding OcrPresetParametersJson}" PlaceholderText="参数 JSON" Classes="FormField" />
             <CheckBox Grid.Row="2" Grid.Column="0" Content="成功后应用" IsChecked="{Binding OcrPresetApplyOnSuccess}" VerticalAlignment="Center" />
             <Button Grid.Row="2" Grid.Column="2" Content="创建预设" Command="{Binding CreateOcrPresetCommand}" Height="32" />
           </Grid>
@@ -70,8 +70,8 @@
               </Grid>
               <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" HorizontalAlignment="Left" />
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                <TextBox Text="{Binding MinerUTokenInput}" PlaceholderText="输入 MinerU API Token" PasswordChar="*" Height="36" VerticalContentAlignment="Center" />
-                <Button Grid.Column="1" Content="保存凭据" Command="{Binding SaveMinerUSettingsCommand}" Height="36" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="12,0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+                <TextBox Text="{Binding MinerUTokenInput}" PlaceholderText="输入 MinerU API Token" PasswordChar="*" Classes="FormField" />
+                <Button Classes="Primary FormFieldAction" Grid.Column="1" Content="保存凭据" Command="{Binding SaveMinerUSettingsCommand}" Padding="16,0" />
               </Grid>
             </StackPanel>
           </Border>
@@ -89,9 +89,9 @@
         <StackPanel Spacing="10">
           <TextBlock Text="搜索配置" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
           <Grid ColumnDefinitions="*,*,Auto" ColumnSpacing="8">
-            <TextBox Text="{Binding SearchProfileName}" PlaceholderText="SearchProfile 名称" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Column="1" Text="{Binding SearchProfileDescription}" PlaceholderText="描述" Height="32" VerticalContentAlignment="Center" />
-            <Button Grid.Column="2" Content="创建" Command="{Binding CreateSearchProfileCommand}" Height="32" />
+            <TextBox Text="{Binding SearchProfileName}" PlaceholderText="SearchProfile 名称" Classes="FormField" />
+            <TextBox Grid.Column="1" Text="{Binding SearchProfileDescription}" PlaceholderText="描述" Classes="FormField" />
+            <Button Classes="FormFieldAction" Grid.Column="2" Content="创建" Command="{Binding CreateSearchProfileCommand}" Padding="16,0" />
           </Grid>
           <ItemsControl ItemsSource="{Binding SearchProfiles}">
             <ItemsControl.ItemTemplate>

@@ -8,23 +8,23 @@
         <StackPanel IsVisible="{Binding ShowInitStep}" Spacing="8">
           <TextBlock Text="Open a runtime database" FontWeight="SemiBold" />
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-            <TextBox PlaceholderText="Runtime database path" Text="{Binding DatabasePath}" />
-            <Button Grid.Column="1" Content="Browse" Click="OnBrowseDatabaseClick" />
+            <TextBox PlaceholderText="Runtime database path" Text="{Binding DatabasePath}" Classes="FormField" />
+            <Button Classes="FormFieldAction" Grid.Column="1" Content="Browse" Click="OnBrowseDatabaseClick" Padding="16,0" />
           </Grid>
           <Button Content="Open Database" Command="{Binding OpenDatabaseCommand}" />
         </StackPanel>
 
         <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="8">
           <TextBlock Text="Create a library identity" FontWeight="SemiBold" />
-          <TextBox PlaceholderText="Library display name" Text="{Binding LibraryName}" />
+          <TextBox PlaceholderText="Library display name" Text="{Binding LibraryName}" Classes="FormField" />
           <Button Content="Create Library" Command="{Binding CreateLibraryCommand}" />
         </StackPanel>
 
         <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="8">
           <TextBlock Text="Select a folder to scan for PDF files" FontWeight="SemiBold" />
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-            <TextBox PlaceholderText="Scan root path" Text="{Binding ScanRoot}" />
-            <Button Grid.Column="1" Content="Browse" Click="OnBrowseScanRootClick" />
+            <TextBox PlaceholderText="Scan root path" Text="{Binding ScanRoot}" Classes="FormField" />
+            <Button Classes="FormFieldAction" Grid.Column="1" Content="Browse" Click="OnBrowseScanRootClick" Padding="16,0" />
           </Grid>
           <Button Content="Scan Folder" Command="{Binding ScanCommand}" />
           <ListBox ItemsSource="{Binding PdfCandidates}" SelectedItem="{Binding SelectedPdf}" Height="200">
@@ -42,8 +42,8 @@
 
         <StackPanel IsVisible="{Binding ShowImportStep}" Spacing="8">
           <TextBlock Text="Enter bibliography metadata" FontWeight="SemiBold" />
-          <TextBox PlaceholderText="Title (leave blank for filename)" Text="{Binding ItemTitle}" />
-          <TextBox PlaceholderText="Authors" Text="{Binding ItemAuthors}" />
+          <TextBox PlaceholderText="Title (leave blank for filename)" Text="{Binding ItemTitle}" Classes="FormField" />
+          <TextBox PlaceholderText="Authors" Text="{Binding ItemAuthors}" Classes="FormField" />
           <Button Content="Import PDF" Command="{Binding ImportCommand}" />
         </StackPanel>
 
@@ -51,7 +51,7 @@
           <TextBlock Text="Configure MinerU OCR" FontWeight="SemiBold" />
           <TextBlock Text="Get a MinerU API token from https://mineru.net/apiManage/token, then paste it here." TextWrapping="Wrap" />
           <Button Content="Get MinerU API Token" Click="OnOpenMinerUTokenPageClick" HorizontalAlignment="Left" />
-          <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUToken}" PasswordChar="*" />
+          <TextBox PlaceholderText="MinerU API Token" Text="{Binding MinerUToken}" PasswordChar="*" Classes="FormField" />
           <Button Content="Finish Setup" Command="{Binding FinishSetupCommand}" />
         </StackPanel>
 

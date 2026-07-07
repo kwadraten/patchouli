@@ -21,17 +21,17 @@
         <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
           <Grid ColumnDefinitions="*,*,*" ColumnSpacing="14" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="10">
             <TextBlock Grid.Row="0" Grid.ColumnSpan="3" Text="添加任务" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding DocumentInstanceId}" PlaceholderText="DocumentInstanceId" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding PresetId}" PlaceholderText="OCR PresetId" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding Priority}" PlaceholderText="Priority" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding PageIds}" PlaceholderText="PageIds, 逗号分隔" Height="32" VerticalContentAlignment="Center" />
-            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PageId}" PlaceholderText="PageId" Height="32" VerticalContentAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding DocumentInstanceId}" PlaceholderText="DocumentInstanceId" Classes="FormField" />
+            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding PresetId}" PlaceholderText="OCR PresetId" Classes="FormField" />
+            <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding Priority}" PlaceholderText="Priority" Classes="FormField" />
+            <TextBox Grid.Row="2" Grid.Column="0" Text="{Binding PageIds}" PlaceholderText="PageIds, 逗号分隔" Classes="FormField" />
+            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding PageId}" PlaceholderText="PageId" Classes="FormField" />
             <controls:PathPickerTextBox Grid.Row="2" Grid.Column="2" Path="{Binding ImagePath}" PickerMode="OpenFile" DialogTitle="选择图片" PlaceholderText="ImagePath" />
             <StackPanel Grid.Row="3" Grid.ColumnSpan="3" Orientation="Horizontal" Spacing="8">
-              <Button Content="Mock Pages" Command="{Binding EnqueueMockCommand}" Height="32" />
-              <Button Content="Image Page" Command="{Binding EnqueueImageCommand}" Height="32" />
-              <TextBox Text="{Binding Dpi}" Width="72" Height="32" VerticalContentAlignment="Center" />
-              <Button Content="Rendered PDF" Command="{Binding EnqueueRenderedPdfCommand}" Height="32" />
+              <Button Classes="FormFieldAction" Content="Mock Pages" Command="{Binding EnqueueMockCommand}" Padding="16,0" />
+              <Button Classes="FormFieldAction" Content="Image Page" Command="{Binding EnqueueImageCommand}" Padding="16,0" />
+              <TextBox Text="{Binding Dpi}" Width="72" Classes="FormField" />
+              <Button Classes="FormFieldAction" Content="Rendered PDF" Command="{Binding EnqueueRenderedPdfCommand}" Padding="16,0" />
             </StackPanel>
           </Grid>
         </Border>
@@ -41,11 +41,11 @@
             <StackPanel Spacing="10">
               <TextBlock Text="暂停范围" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
               <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" ColumnSpacing="8">
-                <TextBox Grid.Column="0" Text="{Binding PauseTarget}" PlaceholderText="ProviderId 或 TaskId" Height="32" VerticalContentAlignment="Center" />
-                <Button Grid.Column="1" Content="暂停全局" Command="{Binding PauseGlobalCommand}" Height="32" />
-                <Button Grid.Column="2" Content="恢复全局" Command="{Binding ResumeGlobalCommand}" Height="32" />
-                <Button Grid.Column="3" Content="暂停目标" Command="{Binding PauseProviderCommand}" Height="32" />
-                <Button Grid.Column="4" Content="恢复目标" Command="{Binding ResumeProviderCommand}" Height="32" />
+                <TextBox Grid.Column="0" Text="{Binding PauseTarget}" PlaceholderText="ProviderId 或 TaskId" Classes="FormField" />
+                <Button Classes="FormFieldAction" Grid.Column="1" Content="暂停全局" Command="{Binding PauseGlobalCommand}" Padding="12,0" />
+                <Button Classes="FormFieldAction" Grid.Column="2" Content="恢复全局" Command="{Binding ResumeGlobalCommand}" Padding="12,0" />
+                <Button Classes="FormFieldAction" Grid.Column="3" Content="暂停目标" Command="{Binding PauseProviderCommand}" Padding="12,0" />
+                <Button Classes="FormFieldAction" Grid.Column="4" Content="恢复目标" Command="{Binding ResumeProviderCommand}" Padding="12,0" />
               </Grid>
               <StackPanel Orientation="Horizontal" Spacing="8">
                 <Button Content="暂停本机" Command="{Binding PauseLocalCommand}" Height="32" />
@@ -56,7 +56,7 @@
             </StackPanel>
             <StackPanel Grid.Column="1" Spacing="8" Width="300">
               <TextBlock Text="取消任务" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-              <TextBox Text="{Binding TaskId}" PlaceholderText="TaskId" Height="32" VerticalContentAlignment="Center" />
+              <TextBox Text="{Binding TaskId}" PlaceholderText="TaskId" Classes="FormField" />
               <Button Content="取消" Command="{Binding CancelCommand}" Height="32" HorizontalAlignment="Left" />
             </StackPanel>
           </Grid>
