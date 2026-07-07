@@ -35,6 +35,71 @@ public sealed class AsyncCommand : System.Windows.Input.ICommand
     public Task ExecuteAsync() => _run();
 }
 
+public sealed class RelayCommand : System.Windows.Input.ICommand
+{
+    private readonly Action<object?> _execute;
+    public RelayCommand(Action<object?> execute) => _execute = execute;
+    public event EventHandler? CanExecuteChanged { add { } remove { } }
+    public bool CanExecute(object? parameter) => true;
+    public void Execute(object? parameter) => _execute(parameter);
+}
+
+public record ThirdPartyLibrary(string Name, string License, string Url);
+
+public class AboutViewModel : ViewModelBase
+{
+    private readonly MainWindowViewModel _parent;
+    public string VersionInfo => _parent.VersionInfo;
+
+    public string LicenseText { get; }
+    public ObservableCollection<ThirdPartyLibrary> ThirdPartyLibraries { get; }
+    public System.Windows.Input.ICommand OpenUrlCommand { get; }
+
+    public AboutViewModel(MainWindowViewModel parent)
+    {
+        _parent = parent;
+        try
+        {
+            using var stream = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("Patchouli.UI.LICENSE");
+            if (stream != null)
+            {
+                using var reader = new System.IO.StreamReader(stream);
+                LicenseText = reader.ReadToEnd();
+            }
+            else
+            {
+                LicenseText = "Error: Could not find embedded LICENSE resource.";
+            }
+        }
+        catch (Exception ex)
+        {
+            LicenseText = "Error loading license: " + ex.Message;
+        }
+
+        ThirdPartyLibraries = new()
+        {
+            new("Avalonia", "MIT", "https://github.com/AvaloniaUI/Avalonia"),
+            new("Dapper", "Apache 2.0", "https://github.com/DapperLib/Dapper"),
+            new("Microsoft.Data.Sqlite", "MIT", "https://github.com/dotnet/efcore"),
+            new("Blake3", "CC0 / Apache 2.0", "https://github.com/BLAKE3-team/BLAKE3"),
+            new("MuPDF.NET", "AGPL v3.0", "https://github.com/ArtifexSoftware/mupdf.net"),
+            new("PDF4LLM", "AGPL v3.0", "https://github.com/ArtifexSoftware/pdf4llm")
+        };
+
+        OpenUrlCommand = new RelayCommand(url => 
+        {
+            if (url is string s && !string.IsNullOrWhiteSpace(s))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = s,
+                    UseShellExecute = true
+                });
+            }
+        });
+    }
+}
+
 public enum WorkspaceTabKind
 {
     Library,
@@ -139,6 +204,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public McpPreviewViewModel McpPreview { get; }
     public SnapshotViewModel Snapshot { get; }
     public SnapshotBranchViewModel SnapshotBranch { get; }
+    public AboutViewModel About { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
     public AsyncCommand ShowLibraryCommand { get; }
@@ -191,6 +257,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         McpPreview = new(this);
         Snapshot = new(this);
         SnapshotBranch = new(this);
+        About = new(this);
         Shell.MinerUToken = _settings.MinerU.Token;
         Settings.SyncFromCurrentSettings(_settings.MinerU.Token);
         OpenDatabaseCommand = new(async () =>
@@ -515,7 +582,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task OpenAboutAsync()
     {
-        await ActivateTabAsync(WorkspaceTabKind.About, "关于", "Info", true, this);
+        await ActivateTabAsync(WorkspaceTabKind.About, "关于", "Info", true, About);
         RaiseShellSelectionChanged();
     }
 

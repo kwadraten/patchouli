@@ -28,5 +28,6 @@
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <AvaloniaResource Include="Assets\Lucide\*.svg" />
+    <EmbeddedResource Include="..\..\LICENSE" Link="LICENSE" />
   </ItemGroup>
 </Project>
