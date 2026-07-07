@@ -37,7 +37,8 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
         try
         {
             using var reader = MinerUZipReader.Open(request.ZipPath);
-            var contentListJson = reader.ReadFileContent("_content_list.json");
+            var contentListJson = reader.ReadFileContent("_content_list.json")
+                ?? reader.ReadFileContent("_content_list_v2.json");
             fallbackMd = reader.ReadFileContent("full.md");
 
             if (contentListJson is null && fallbackMd is null)
@@ -127,14 +128,25 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             {
                 await connection.ExecuteAsync(
                     """
-                    insert into layout_nodes (node_id, document_instance_id, page_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, revision_id, confidence, ignored)
-                    values (@NodeId, @DocumentInstanceId, @PageId, @NodeType, @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy, @ReadingOrder, @Source, @RevisionId, null, 0);
+                    insert into layout_nodes (
+                        node_id, document_instance_id, page_id, parent_node_id, node_type,
+                        bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
+                        reading_order, source, revision_id, confidence, ignored,
+                        row_index, col_index, row_span, col_span, is_header
+                    )
+                    values (
+                        @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
+                        @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
+                        @ReadingOrder, @Source, @RevisionId, null, 0,
+                        @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
+                    );
                     """,
                     new
                     {
                         NodeId = node.NodeId.ToString(),
                         DocumentInstanceId = node.DocumentInstanceId.ToString(),
                         PageId = node.PageId.ToString(),
+                        ParentNodeId = node.ParentNodeId?.ToString(),
                         node.NodeType,
                         BBoxX = node.BBox?.X,
                         BBoxY = node.BBox?.Y,
@@ -144,7 +156,12 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
                         node.TextPolicy,
                         node.ReadingOrder,
                         Source = LayoutNodeSource.Import,
-                        RevisionId = node.RevisionId.ToString()
+                        RevisionId = node.RevisionId.ToString(),
+                        node.RowIndex,
+                        node.ColIndex,
+                        node.RowSpan,
+                        node.ColSpan,
+                        IsHeader = node.IsHeader ? 1 : 0
                     }, transaction);
             }
 

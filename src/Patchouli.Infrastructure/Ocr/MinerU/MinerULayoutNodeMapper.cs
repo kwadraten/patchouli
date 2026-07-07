@@ -8,12 +8,18 @@ internal sealed record MappedLayoutNode(
     LayoutNodeId NodeId,
     DocumentInstanceId DocumentInstanceId,
     PageId PageId,
+    LayoutNodeId? ParentNodeId,
     string NodeType,
     NormalizedBBox? BBox,
     string? OwnText,
     string TextPolicy,
     int ReadingOrder,
-    LayoutRevisionId RevisionId);
+    LayoutRevisionId RevisionId,
+    int? RowIndex = null,
+    int? ColIndex = null,
+    int? RowSpan = null,
+    int? ColSpan = null,
+    bool IsHeader = false);
 
 internal sealed class MinerULayoutNodeMapper
 {
@@ -37,16 +43,14 @@ internal sealed class MinerULayoutNodeMapper
 
             foreach (var block in mineruPage.Blocks)
             {
-                var mapped = MapBlock(block, documentInstanceId, page.PageId, revisionId, mineruPage.Width, mineruPage.Height);
-                if (mapped is not null)
-                    nodes.Add(mapped);
+                nodes.AddRange(MapBlock(block, documentInstanceId, page.PageId, revisionId, mineruPage.Width, mineruPage.Height));
             }
         }
 
         return nodes;
     }
 
-    private MappedLayoutNode? MapBlock(
+    private IReadOnlyList<MappedLayoutNode> MapBlock(
         MinerUContentBlock block,
         DocumentInstanceId documentInstanceId,
         PageId pageId,
@@ -57,7 +61,7 @@ internal sealed class MinerULayoutNodeMapper
         var (nodeType, textPolicy, text) = MapTypeAndText(block);
 
         if (nodeType is null)
-            return null;
+            return [];
 
         NormalizedBBox? bbox = null;
         if (block.Bbox is { Length: 4 } && pageWidth > 0 && pageHeight > 0)
@@ -70,17 +74,82 @@ internal sealed class MinerULayoutNodeMapper
         }
 
         var order = Interlocked.Increment(ref _globalOrder);
+        var nodeId = LayoutNodeId.New();
 
-        return new MappedLayoutNode(
-            LayoutNodeId.New(),
+        var root = new MappedLayoutNode(
+            nodeId,
             documentInstanceId,
             pageId,
+            null,
             nodeType,
             bbox,
             text,
             textPolicy,
             order,
             revisionId);
+
+        if (nodeType != LayoutNodeType.Table)
+            return [root];
+
+        var cells = (block.TableCells is { Count: > 0 } ? block.TableCells : block.Cells) ?? [];
+        if (cells.Count == 0)
+            return [root];
+
+        var nodes = new List<MappedLayoutNode>
+        {
+            root with { TextPolicy = TextPolicy.AggregateChildren, OwnText = null }
+        };
+        var rowParents = new Dictionary<int, LayoutNodeId>();
+        foreach (var cell in cells.Where(c => c.RowIndex is not null && c.ColIndex is not null).OrderBy(c => c.RowIndex).ThenBy(c => c.ColIndex))
+        {
+            var rowIndex = cell.RowIndex!.Value;
+            if (!rowParents.TryGetValue(rowIndex, out var rowId))
+            {
+                rowId = LayoutNodeId.New();
+                rowParents[rowIndex] = rowId;
+                nodes.Add(new MappedLayoutNode(
+                    rowId,
+                    documentInstanceId,
+                    pageId,
+                    nodeId,
+                    LayoutNodeType.TableRow,
+                    null,
+                    null,
+                    TextPolicy.AggregateChildren,
+                    Interlocked.Increment(ref _globalOrder),
+                    revisionId));
+            }
+
+            nodes.Add(new MappedLayoutNode(
+                LayoutNodeId.New(),
+                documentInstanceId,
+                pageId,
+                rowId,
+                LayoutNodeType.TableCell,
+                ToNormalizedBBox(cell.Bbox, pageWidth, pageHeight),
+                cell.Text,
+                TextPolicy.Own,
+                Interlocked.Increment(ref _globalOrder),
+                revisionId,
+                rowIndex,
+                cell.ColIndex,
+                cell.RowSpan ?? 1,
+                cell.ColSpan ?? 1,
+                cell.IsHeader ?? rowIndex == 0));
+        }
+
+        return nodes;
+    }
+
+    private static NormalizedBBox? ToNormalizedBBox(double[]? bbox, double pageWidth, double pageHeight)
+    {
+        if (bbox is not { Length: 4 } || pageWidth <= 0 || pageHeight <= 0)
+            return null;
+        var x = Math.Clamp(bbox[0] / pageWidth, 0, 1);
+        var y = Math.Clamp(bbox[1] / pageHeight, 0, 1);
+        var w = Math.Clamp((bbox[2] - bbox[0]) / pageWidth, 0, 1 - x);
+        var h = Math.Clamp((bbox[3] - bbox[1]) / pageHeight, 0, 1 - y);
+        return new NormalizedBBox(x, y, w, h);
     }
 
     private static (string? NodeType, string TextPolicy, string? Text) MapTypeAndText(

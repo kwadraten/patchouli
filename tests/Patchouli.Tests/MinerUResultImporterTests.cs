@@ -116,14 +116,139 @@ public sealed class MinerUResultImporterTests
         }
     }
 
-    private static string CreateContentListZip(string sampleJson)
+    [Fact]
+    public async Task ImportResultZip_preserves_structured_table_cells()
+    {
+        await using var context = await ImportTestContext.CreateAsync();
+        var zipPath = CreateContentListZip(sampleJson: """
+        {
+            "pages": [
+                {"page_num": 1, "width": 600, "height": 800, "blocks": [
+                    {"type": "table", "bbox": [50, 100, 550, 260], "table_cells": [
+                        {"row_index": 0, "col_index": 0, "row_span": 1, "col_span": 1, "is_header": true, "text": "Name", "bbox": [50, 100, 300, 140]},
+                        {"row_index": 0, "col_index": 1, "row_span": 1, "col_span": 1, "is_header": true, "text": "Value", "bbox": [300, 100, 550, 140]},
+                        {"row_index": 1, "col_index": 0, "row_span": 1, "col_span": 1, "text": "Pages", "bbox": [50, 140, 300, 180]},
+                        {"row_index": 1, "col_index": 1, "row_span": 1, "col_span": 1, "text": "12", "bbox": [300, 140, 550, 180]}
+                    ]}
+                ]}
+            ]
+        }
+        """);
+
+        try
+        {
+            var result = await context.Importer.ImportResultZipAsync(new MinerUImportRequest(zipPath, context.DocumentInstanceId.ToString(), null));
+
+            result.IsSuccess.Should().BeTrue();
+            result.Value.NodesCreated.Should().Be(7);
+
+            await using var conn = context.Database.ConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+            var tableCount = await conn.ExecuteScalarAsync<int>("select count(1) from layout_nodes where node_type = 'table';");
+            var rowCount = await conn.ExecuteScalarAsync<int>("select count(1) from layout_nodes where node_type = 'table_row';");
+            var cellRows = (await conn.QueryAsync<(int? RowIndex, int? ColIndex, int IsHeader, string? OwnText)>("select row_index as RowIndex, col_index as ColIndex, is_header as IsHeader, own_text as OwnText from layout_nodes where node_type = 'table_cell' order by row_index, col_index;")).ToArray();
+
+            tableCount.Should().Be(1);
+            rowCount.Should().Be(2);
+            cellRows.Select(c => c.OwnText).Should().Equal("Name", "Value", "Pages", "12");
+            cellRows.Where(c => c.RowIndex == 0).Should().OnlyContain(c => c.IsHeader == 1);
+        }
+        finally
+        {
+            File.Delete(zipPath);
+        }
+    }
+
+    [Fact]
+    public async Task ImportResultZip_derives_table_cells_from_mineru_html_table_body()
+    {
+        await using var context = await ImportTestContext.CreateAsync();
+        var zipPath = CreateContentListZip(sampleJson: """
+        [
+            {"type": "title", "text": "Spans And Grouped Headers", "bbox": [80, 57, 413, 76], "page_idx": 0},
+            {"type": "table", "bbox": [84, 101, 914, 225], "page_idx": 0,
+             "table_body": "<table><tr><td colspan=\"4\">Quarterly Plan</td></tr><tr><td>Region</td><td colspan=\"2\">Sales</td><td>Risk</td></tr><tr><td rowspan=\"2\">North</td><td>Q1</td><td>120</td><td>Low</td></tr><tr><td>Q2</td><td>135</td><td>Medium</td></tr></table>"}
+        ]
+        """);
+
+        try
+        {
+            var result = await context.Importer.ImportResultZipAsync(new MinerUImportRequest(zipPath, context.DocumentInstanceId.ToString(), null));
+
+            result.IsSuccess.Should().BeTrue();
+
+            await using var conn = context.Database.ConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+            var cells = (await conn.QueryAsync<TableCellRow>(
+                """
+                select row_index as RowIndex, col_index as ColIndex, row_span as RowSpan, col_span as ColSpan, is_header as IsHeader, own_text as OwnText
+                from layout_nodes
+                where node_type = 'table_cell'
+                order by row_index, col_index;
+                """)).ToArray();
+
+            cells.Select(c => c.OwnText).Should().Equal("Quarterly Plan", "Region", "Sales", "Risk", "North", "Q1", "120", "Low", "Q2", "135", "Medium");
+            cells[0].ColSpan.Should().Be(4);
+            cells.Single(c => c.OwnText == "North").RowSpan.Should().Be(2);
+            cells.Where(c => c.RowIndex == 0).Should().OnlyContain(c => c.IsHeader == 1);
+        }
+        finally
+        {
+            File.Delete(zipPath);
+        }
+    }
+
+    [Fact]
+    public async Task ImportResultZip_reads_mineru_content_list_v2_page_arrays()
+    {
+        await using var context = await ImportTestContext.CreateAsync();
+        var zipPath = CreateContentListZip(sampleJson: """
+        [
+            [
+                {"type": "paragraph", "content": {"paragraph_content": [{"type": "text", "content": "Before"}]}, "bbox": [80, 77, 591, 93]},
+                {"type": "table", "content": {"html": "<table><tr><td>Name</td><td>Value</td></tr><tr><td>Pages</td><td>12</td></tr>", "table_type": "simple_table"}, "bbox": [82, 101, 914, 184]}
+            ]
+        ]
+        """, entryName: "sample_content_list_v2.json");
+
+        try
+        {
+            var result = await context.Importer.ImportResultZipAsync(new MinerUImportRequest(zipPath, context.DocumentInstanceId.ToString(), null));
+
+            result.IsSuccess.Should().BeTrue();
+
+            await using var conn = context.Database.ConnectionFactory.CreateConnection();
+            await conn.OpenAsync();
+            var paragraphCount = await conn.ExecuteScalarAsync<int>("select count(1) from layout_nodes where node_type = 'paragraph' and own_text = 'Before';");
+            var cellTexts = (await conn.QueryAsync<string>("select own_text from layout_nodes where node_type = 'table_cell' order by row_index, col_index;")).ToArray();
+
+            paragraphCount.Should().Be(1);
+            cellTexts.Should().Equal("Name", "Value", "Pages", "12");
+        }
+        finally
+        {
+            File.Delete(zipPath);
+        }
+    }
+
+    private static string CreateContentListZip(string sampleJson, string entryName = "sample_content_list.json")
     {
         var zipPath = Path.Combine(Path.GetTempPath(), $"mineru-test-{Guid.NewGuid():N}.zip");
         using var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
-        var entry = archive.CreateEntry("sample_content_list.json");
+        var entry = archive.CreateEntry(entryName);
         using var writer = new StreamWriter(entry.Open());
         writer.Write(sampleJson);
         return zipPath;
+    }
+
+    private sealed class TableCellRow
+    {
+        public int? RowIndex { get; set; }
+        public int? ColIndex { get; set; }
+        public int? RowSpan { get; set; }
+        public int? ColSpan { get; set; }
+        public int IsHeader { get; set; }
+        public string? OwnText { get; set; }
     }
 
     private sealed class ImportTestContext : IAsyncDisposable
