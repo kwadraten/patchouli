@@ -377,6 +377,339 @@ public sealed class LayoutTreeService : ILayoutTreeService
         }
     }
 
+    public async Task<Result> UpdateNodeTypeAsync(
+        LayoutNodeId nodeId,
+        string nodeType,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(nodeType))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Layout node type is required.");
+        }
+
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            if (node is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
+            }
+
+            var bbox = node.ToNode().BBox;
+            if (bbox is not null)
+            {
+                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, node.RevisionId, node.PageId, node.ParentNodeId, bbox.Value, nodeType.Trim(), [node.NodeId]);
+                if (overlap.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return overlap;
+                }
+            }
+
+            await connection.ExecuteAsync(
+                "update layout_nodes set node_type = @NodeType where node_id = @NodeId;",
+                new { NodeId = nodeId.ToString(), NodeType = nodeType.Trim() },
+                transaction);
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result> UpdateNodeBBoxAsync(
+        LayoutNodeId nodeId,
+        NormalizedBBox? bbox,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = bbox?.Validate() ?? Result.Success();
+        if (validation.IsFailure)
+        {
+            return validation;
+        }
+
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            if (node is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
+            }
+
+            if (bbox is not null)
+            {
+                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, node.RevisionId, node.PageId, node.ParentNodeId, bbox.Value, node.NodeType, [node.NodeId]);
+                if (overlap.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return overlap;
+                }
+            }
+
+            await connection.ExecuteAsync(
+                "update layout_nodes set bbox_x = @X, bbox_y = @Y, bbox_width = @Width, bbox_height = @Height where node_id = @NodeId;",
+                new { NodeId = nodeId.ToString(), X = bbox?.X, Y = bbox?.Y, Width = bbox?.Width, Height = bbox?.Height },
+                transaction);
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result<LayoutNode>> SplitNodeTextAsync(
+        LayoutNodeId nodeId,
+        int splitOffset,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            var row = await GetNodeRowAsync(connection, transaction, nodeId);
+            if (row is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
+            }
+            if (row.TextPolicy != TextPolicy.Own || string.IsNullOrEmpty(row.OwnText) || splitOffset <= 0 || splitOffset >= row.OwnText.Length)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only own-text nodes can be split, and split offset must be inside the text.");
+            }
+            if (await HasChildrenAsync(connection, transaction, row.NodeId))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only leaf text nodes can be split.");
+            }
+
+            var left = row.OwnText[..splitOffset].TrimEnd();
+            var right = row.OwnText[splitOffset..].TrimStart();
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Split must leave text on both sides.");
+            }
+
+            await connection.ExecuteAsync("update layout_nodes set own_text = @Text where node_id = @NodeId;", new { NodeId = nodeId.ToString(), Text = left }, transaction);
+            var newNode = new LayoutNode(
+                LayoutNodeId.New(),
+                DocumentInstanceId.Parse(row.DocumentInstanceId),
+                PageId.Parse(row.PageId),
+                row.ParentNodeId is null ? null : LayoutNodeId.Parse(row.ParentNodeId),
+                row.NodeType,
+                null,
+                right,
+                row.TextPolicy,
+                row.ReadingOrder + 1,
+                LayoutRevisionSource.Manual,
+                LayoutRevisionId.Parse(row.RevisionId),
+                row.Confidence,
+                row.Ignored == 1);
+            await InsertNodeAsync(connection, transaction, newNode);
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result<LayoutNode>.Success(newNode);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return DatabaseFailure<LayoutNode>(exception);
+        }
+    }
+
+    public async Task<Result<LayoutNode>> MergeTextNodesAsync(
+        LayoutNodeId firstNodeId,
+        LayoutNodeId secondNodeId,
+        CancellationToken cancellationToken = default)
+    {
+        if (firstNodeId == secondNodeId)
+        {
+            return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Cannot merge a node with itself.");
+        }
+
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            var first = await GetNodeRowAsync(connection, transaction, firstNodeId);
+            var second = await GetNodeRowAsync(connection, transaction, secondNodeId);
+            if (first is null || second is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
+            }
+            if (first.RevisionId != second.RevisionId || first.PageId != second.PageId || first.ParentNodeId != second.ParentNodeId || first.TextPolicy != TextPolicy.Own || second.TextPolicy != TextPolicy.Own)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only own-text sibling nodes on the same page and revision can be merged.");
+            }
+            if (await HasChildrenAsync(connection, transaction, first.NodeId) || await HasChildrenAsync(connection, transaction, second.NodeId))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only leaf text nodes can be merged.");
+            }
+
+            var text = string.Join("\n", new[] { first.OwnText, second.OwnText }.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t!.Trim()));
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Merged text cannot be empty.");
+            }
+
+            var mergedBBox = Union(first.ToNode().BBox, second.ToNode().BBox);
+            if (mergedBBox is not null)
+            {
+                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, first.RevisionId, first.PageId, first.ParentNodeId, mergedBBox.Value, first.NodeType, [first.NodeId, second.NodeId]);
+                if (overlap.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!);
+                }
+            }
+
+            await connection.ExecuteAsync(
+                "update layout_nodes set own_text = @Text, bbox_x = @X, bbox_y = @Y, bbox_width = @Width, bbox_height = @Height where node_id = @NodeId;",
+                new { NodeId = firstNodeId.ToString(), Text = text, X = mergedBBox?.X, Y = mergedBBox?.Y, Width = mergedBBox?.Width, Height = mergedBBox?.Height },
+                transaction);
+            await connection.ExecuteAsync("delete from layout_nodes where node_id = @NodeId;", new { NodeId = secondNodeId.ToString() }, transaction);
+
+            var updated = (await GetNodeRowAsync(connection, transaction, firstNodeId))!.ToNode();
+            await transaction.CommitAsync(cancellationToken);
+            return Result<LayoutNode>.Success(updated);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return DatabaseFailure<LayoutNode>(exception);
+        }
+    }
+
+    public async Task<Result<LayoutNode>> CreateParentForNodesAsync(
+        IReadOnlyList<LayoutNodeId> childNodeIds,
+        string nodeType,
+        string textPolicy,
+        int readingOrder,
+        NormalizedBBox? bbox = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (childNodeIds.Count == 0)
+        {
+            return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "At least one child node is required.");
+        }
+        var validation = ValidateNodeInput(nodeType, bbox, textPolicy, LayoutRevisionSource.Manual);
+        if (validation.IsFailure)
+        {
+            return Result<LayoutNode>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
+        }
+
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            var rows = new List<LayoutNodeRow>();
+            foreach (var childId in childNodeIds.Distinct())
+            {
+                var row = await GetNodeRowAsync(connection, transaction, childId);
+                if (row is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout child node was not found.");
+                }
+                rows.Add(row);
+            }
+
+            var first = rows[0];
+            if (rows.Any(row => row.RevisionId != first.RevisionId || row.PageId != first.PageId || row.ParentNodeId != first.ParentNodeId))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Selected nodes must share the same page, revision, and parent.");
+            }
+
+            var parentBBox = bbox ?? Union(rows.Select(row => row.ToNode().BBox));
+            if (parentBBox is not null)
+            {
+                var excluded = rows.Select(row => row.NodeId).ToArray();
+                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, first.RevisionId, first.PageId, first.ParentNodeId, parentBBox.Value, nodeType.Trim(), excluded);
+                if (overlap.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!);
+                }
+            }
+
+            var parent = new LayoutNode(
+                LayoutNodeId.New(),
+                DocumentInstanceId.Parse(first.DocumentInstanceId),
+                PageId.Parse(first.PageId),
+                first.ParentNodeId is null ? null : LayoutNodeId.Parse(first.ParentNodeId),
+                nodeType.Trim(),
+                parentBBox,
+                null,
+                textPolicy.Trim(),
+                readingOrder,
+                LayoutRevisionSource.Manual,
+                LayoutRevisionId.Parse(first.RevisionId),
+                null,
+                false);
+            await InsertNodeAsync(connection, transaction, parent);
+            for (var i = 0; i < rows.Count; i++)
+            {
+                await connection.ExecuteAsync(
+                    "update layout_nodes set parent_node_id = @ParentNodeId, reading_order = @ReadingOrder where node_id = @NodeId;",
+                    new { ParentNodeId = parent.NodeId.ToString(), ReadingOrder = i + 1, NodeId = rows[i].NodeId },
+                    transaction);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result<LayoutNode>.Success(parent);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return DatabaseFailure<LayoutNode>(exception);
+        }
+    }
+
     public async Task<Result> MoveNodeAsync(
         LayoutNodeId nodeId,
         LayoutNodeId? newParentNodeId,
@@ -534,6 +867,101 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static string Key(LayoutNodeId? nodeId) => nodeId?.ToString() ?? string.Empty;
+
+    private static async Task InsertNodeAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        LayoutNode node)
+    {
+        await connection.ExecuteAsync(
+            """
+            insert into layout_nodes (
+                node_id, document_instance_id, page_id, parent_node_id, node_type,
+                bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
+                reading_order, source, revision_id, confidence, ignored
+            )
+            values (
+                @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
+                @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
+                @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored
+            );
+            """,
+            ToParameters(node),
+            transaction);
+    }
+
+    private static async Task<Result> ValidateSiblingBBoxAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        string revisionId,
+        string pageId,
+        string? parentNodeId,
+        NormalizedBBox bbox,
+        string nodeType,
+        IReadOnlyCollection<string> excludedNodeIds)
+    {
+        var siblingRows = await connection.QueryAsync<LayoutNodeRow>(
+            SelectNodesSql + """
+             where revision_id = @RevisionId
+               and page_id = @PageId
+               and ((parent_node_id is null and @ParentNodeId is null) or parent_node_id = @ParentNodeId);
+            """,
+            new
+            {
+                RevisionId = revisionId,
+                PageId = pageId,
+                ParentNodeId = parentNodeId
+            },
+            transaction);
+
+        foreach (var sibling in siblingRows)
+        {
+            if (excludedNodeIds.Contains(sibling.NodeId))
+            {
+                continue;
+            }
+            var siblingNode = sibling.ToNode();
+            if (siblingNode.BBox is null || LayoutNodeType.AllowsOverlap(nodeType.Trim()) || LayoutNodeType.AllowsOverlap(siblingNode.NodeType))
+            {
+                continue;
+            }
+            if (bbox.Overlaps(siblingNode.BBox.Value))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed, "Layout node bbox overlaps an existing ordinary sibling node.");
+            }
+        }
+        return Result.Success();
+    }
+
+    private static async Task<bool> HasChildrenAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        string nodeId)
+        => await connection.ExecuteScalarAsync<int>(
+            "select count(1) from layout_nodes where parent_node_id = @NodeId;",
+            new { NodeId = nodeId },
+            transaction) > 0;
+
+    private static NormalizedBBox? Union(NormalizedBBox? first, NormalizedBBox? second)
+    {
+        if (first is null) return second;
+        if (second is null) return first;
+        var x1 = Math.Min(first.Value.X, second.Value.X);
+        var y1 = Math.Min(first.Value.Y, second.Value.Y);
+        var x2 = Math.Max(first.Value.X + first.Value.Width, second.Value.X + second.Value.Width);
+        var y2 = Math.Max(first.Value.Y + first.Value.Height, second.Value.Y + second.Value.Height);
+        return new NormalizedBBox(x1, y1, x2 - x1, y2 - y1);
+    }
+
+    private static NormalizedBBox? Union(IEnumerable<NormalizedBBox?> boxes)
+    {
+        NormalizedBBox? result = null;
+        foreach (var box in boxes)
+        {
+            result = Union(result, box);
+        }
+        return result;
+    }
 
     private static Result ValidateNodeInput(
         string nodeType,

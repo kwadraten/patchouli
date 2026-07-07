@@ -45,6 +45,34 @@ public interface ILayoutTreeService
         string? ownText,
         CancellationToken cancellationToken = default);
 
+    Task<Result> UpdateNodeTypeAsync(
+        LayoutNodeId nodeId,
+        string nodeType,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> UpdateNodeBBoxAsync(
+        LayoutNodeId nodeId,
+        NormalizedBBox? bbox,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<LayoutNode>> SplitNodeTextAsync(
+        LayoutNodeId nodeId,
+        int splitOffset,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<LayoutNode>> MergeTextNodesAsync(
+        LayoutNodeId firstNodeId,
+        LayoutNodeId secondNodeId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<LayoutNode>> CreateParentForNodesAsync(
+        IReadOnlyList<LayoutNodeId> childNodeIds,
+        string nodeType,
+        string textPolicy,
+        int readingOrder,
+        NormalizedBBox? bbox = null,
+        CancellationToken cancellationToken = default);
+
     Task<Result> MoveNodeAsync(
         LayoutNodeId nodeId,
         LayoutNodeId? newParentNodeId,
