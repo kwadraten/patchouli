@@ -304,7 +304,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 {
                     await _searchDirtyMarker.MarkDocumentInstanceDirtyAsync(documentInstanceId, cancellationToken);
                 }
-                // TODO: wire evidence successor links in same transaction when that subsystem exists.
+                // Evidence successor links are materialized by SearchUnitBuilder when the dirty document is rebuilt.
             }
 
             return await GetRunAsync(runId, cancellationToken);
@@ -670,7 +670,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             var adoption = new OcrCandidateAdoption(OcrCandidateAdoptionId.New(), runId, run.Value.DocumentInstanceId, adoptedRevisionId, JsonSerializer.Serialize(selected.Select(p => p.ToString())), _clock.UtcNow.ToUniversalTime());
             await connection.ExecuteAsync("insert into ocr_candidate_adoptions (adoption_id, ocr_run_id, document_instance_id, adopted_revision_id, adopted_pages_json, created_at) values (@AdoptionId, @RunId, @DocumentInstanceId, @RevisionId, @Pages, @CreatedAt);",
                 new { AdoptionId = adoption.AdoptionId.ToString(), RunId = runId.ToString(), DocumentInstanceId = adoption.DocumentInstanceId.ToString(), RevisionId = adoption.AdoptedRevisionId.ToString(), Pages = adoption.AdoptedPagesJson, CreatedAt = F(adoption.CreatedAt) }, tx);
-            // TODO: wire evidence successor links in this transaction once implemented.
+            // Evidence successor links are materialized by SearchUnitBuilder when the dirty document is rebuilt.
             await tx.CommitAsync(cancellationToken);
             if (_searchDirtyMarker is not null)
             {

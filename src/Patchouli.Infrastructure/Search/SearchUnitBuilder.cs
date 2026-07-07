@@ -4,6 +4,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Evidence;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Search;
 
@@ -101,6 +102,9 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         {
             return Result.Failure(AppErrorCodes.ValidationFailed, "Layout revision does not belong to the document instance.");
         }
+        var isCurrentRevision = await connection.ExecuteScalarAsync<int>(
+            "select is_current from layout_revisions where layout_revision_id = @RevisionId;",
+            new { RevisionId = revisionId.ToString() }) == 1;
 
         var rows = (await connection.QueryAsync<NodeRow>(
             """
@@ -120,6 +124,24 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         var generated = BuildUnits(rows, revisionId).ToArray();
         var now = _clock.UtcNow.ToUniversalTime().ToString("O");
         await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+        var previousCurrentUnits = isCurrentRevision
+            ? (await connection.QueryAsync<SearchUnitRow>(
+                """
+                select unit_id as UnitId, page_id as PageId, node_type as NodeType, reading_order as ReadingOrder
+                from search_units
+                where document_instance_id = @DocumentInstanceId
+                  and status = @Status
+                  and layout_revision_id <> @RevisionId
+                  and (@PageId is null or page_id = @PageId)
+                order by page_id, reading_order, unit_id;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString(), Status = SearchUnitStatus.Current, RevisionId = revisionId.ToString(), PageId = pageId?.ToString() },
+                tx)).ToArray()
+            : Array.Empty<SearchUnitRow>();
+        var predecessorBuckets = previousCurrentUnits
+            .GroupBy(u => SuccessorMatchKey(u.PageId, u.NodeType, u.ReadingOrder))
+            .ToDictionary(g => g.Key, g => new Queue<SearchUnitRow>(g), StringComparer.Ordinal);
+        var successorPairs = new List<SearchUnitSuccessorPair>();
         var touched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var unit in generated)
         {
@@ -170,8 +192,42 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                     UpdatedAt = now
                 },
                 tx);
+            if (existing is null
+                && predecessorBuckets.TryGetValue(SuccessorMatchKey(unit.PageId, unit.NodeType, unit.ReadingOrder), out var predecessors)
+                && predecessors.Count > 0)
+            {
+                successorPairs.Add(new SearchUnitSuccessorPair(
+                    predecessors.Dequeue(),
+                    new SearchUnitEvidenceTarget(unitId, unit.DocumentInstanceId, unit.PageId, revisionId.ToString(), revisionId.ToString(), revisionId.ToString(), unit.ResolvedText)));
+            }
         }
 
+        foreach (var pair in successorPairs)
+        {
+            await connection.ExecuteAsync(
+                "update search_units set status = @Status, superseded_by_unit_id = @SuccessorUnitId, updated_at = @UpdatedAt where unit_id = @PredecessorUnitId;",
+                new { Status = SearchUnitStatus.Deleted, SuccessorUnitId = pair.Successor.UnitId, UpdatedAt = now, PredecessorUnitId = pair.Predecessor.UnitId },
+                tx);
+            await connection.ExecuteAsync(
+                "update search_units set supersedes_unit_id = @PredecessorUnitId, updated_at = @UpdatedAt where unit_id = @SuccessorUnitId;",
+                new { PredecessorUnitId = pair.Predecessor.UnitId, UpdatedAt = now, SuccessorUnitId = pair.Successor.UnitId },
+                tx);
+        }
+        if (isCurrentRevision)
+        {
+            await connection.ExecuteAsync(
+                """
+                update search_units
+                set status = @Status, updated_at = @UpdatedAt
+                where document_instance_id = @DocumentInstanceId
+                  and status = @CurrentStatus
+                  and layout_revision_id <> @RevisionId
+                  and (@PageId is null or page_id = @PageId);
+                """,
+                new { Status = SearchUnitStatus.Deleted, UpdatedAt = now, DocumentInstanceId = documentInstanceId.ToString(), CurrentStatus = SearchUnitStatus.Current, RevisionId = revisionId.ToString(), PageId = pageId?.ToString() },
+                tx);
+        }
+        await LinkEvidenceSuccessorsAsync(connection, tx, successorPairs, now);
         await connection.ExecuteAsync(
             """
             update search_units
@@ -193,6 +249,84 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         await UpsertLibraryStatusAsync(connection, SearchIndexStatusValue.Stale, $"document_instance:{documentInstanceId}", "Search units changed; FTS rebuild is pending.");
         return Result.Success();
     }
+
+    private static async Task LinkEvidenceSuccessorsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Data.Common.DbTransaction tx, IReadOnlyList<SearchUnitSuccessorPair> successorPairs, string now)
+    {
+        foreach (var pair in successorPairs)
+        {
+            var predecessorRecords = (await connection.QueryAsync<EvidenceRecordRow>(
+                """
+                select evidence_record_id as EvidenceRecordId, library_id as LibraryId, source_title as SourceTitle, page_label as PageLabel, page_index as PageIndex
+                from evidence_ref_records
+                where unit_id = @UnitId and status = @Status;
+                """,
+                new { UnitId = pair.Predecessor.UnitId, Status = EvidenceRecordStatus.Active },
+                tx)).ToArray();
+            foreach (var predecessorRecord in predecessorRecords)
+            {
+                var reference = new EvidenceReference(
+                    LibraryId.Parse(predecessorRecord.LibraryId),
+                    DocumentInstanceId.Parse(pair.Successor.DocumentInstanceId),
+                    PageId.Parse(pair.Successor.PageId),
+                    SearchUnitId.Parse(pair.Successor.UnitId),
+                    pair.Successor.TextRevisionId,
+                    pair.Successor.BboxRevisionId,
+                    LayoutRevisionId.Parse(pair.Successor.LayoutRevisionId));
+                var encoded = EvidenceReferenceCodec.Encode(reference);
+                if (encoded.IsFailure)
+                {
+                    throw new InvalidOperationException(encoded.ErrorMessage);
+                }
+
+                await connection.ExecuteAsync(
+                    """
+                    insert or ignore into evidence_ref_records (
+                        evidence_record_id, evidence_ref_id, library_id, document_instance_id, page_id, unit_id,
+                        text_revision_id, bbox_revision_id, layout_revision_id, snapshot_id, pinned_text,
+                        source_title, page_label, page_index, status, created_at
+                    )
+                    values (
+                        @RecordId, @EvidenceRefId, @LibraryId, @DocumentInstanceId, @PageId, @UnitId,
+                        @TextRevisionId, @BboxRevisionId, @LayoutRevisionId, null, @PinnedText,
+                        @SourceTitle, @PageLabel, @PageIndex, @Status, @CreatedAt
+                    );
+                    """,
+                    new
+                    {
+                        RecordId = Guid.NewGuid().ToString("D"),
+                        EvidenceRefId = encoded.Value,
+                        predecessorRecord.LibraryId,
+                        pair.Successor.DocumentInstanceId,
+                        pair.Successor.PageId,
+                        pair.Successor.UnitId,
+                        pair.Successor.TextRevisionId,
+                        pair.Successor.BboxRevisionId,
+                        pair.Successor.LayoutRevisionId,
+                        PinnedText = pair.Successor.ResolvedText,
+                        predecessorRecord.SourceTitle,
+                        predecessorRecord.PageLabel,
+                        predecessorRecord.PageIndex,
+                        Status = EvidenceRecordStatus.Active,
+                        CreatedAt = now
+                    },
+                    tx);
+                var successorRecordId = await connection.ExecuteScalarAsync<string>(
+                    "select evidence_record_id from evidence_ref_records where evidence_ref_id = @EvidenceRefId;",
+                    new { EvidenceRefId = encoded.Value },
+                    tx);
+                await connection.ExecuteAsync(
+                    "update evidence_ref_records set status = @Status where evidence_record_id = @RecordId and status = @ActiveStatus;",
+                    new { Status = EvidenceRecordStatus.Superseded, RecordId = predecessorRecord.EvidenceRecordId, ActiveStatus = EvidenceRecordStatus.Active },
+                    tx);
+                await connection.ExecuteAsync(
+                    "insert or ignore into evidence_successors (predecessor_record_id, successor_record_id, reason, created_at) values (@Predecessor, @Successor, @Reason, @CreatedAt);",
+                    new { Predecessor = predecessorRecord.EvidenceRecordId, Successor = successorRecordId, Reason = EvidenceSuccessorReason.LayoutReplaced, CreatedAt = now },
+                    tx);
+            }
+        }
+    }
+
+    private static string SuccessorMatchKey(string pageId, string nodeType, int readingOrder) => $"{pageId}\n{nodeType}\n{readingOrder}";
 
     private static IEnumerable<GeneratedUnit> BuildUnits(IReadOnlyList<NodeRow> rows, LayoutRevisionId revisionId)
     {
@@ -306,7 +440,24 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
     }
 
     private sealed record GeneratedUnit(string DocumentInstanceId, string PageId, string RootNodeId, string ResolvedText, string? BBoxUnionJson, string NodeType, int ReadingOrder);
+    private sealed class SearchUnitRow
+    {
+        public string UnitId { get; set; } = "";
+        public string PageId { get; set; } = "";
+        public string NodeType { get; set; } = "";
+        public int ReadingOrder { get; set; }
+    }
+    private sealed record SearchUnitEvidenceTarget(string UnitId, string DocumentInstanceId, string PageId, string TextRevisionId, string BboxRevisionId, string LayoutRevisionId, string ResolvedText);
+    private sealed record SearchUnitSuccessorPair(SearchUnitRow Predecessor, SearchUnitEvidenceTarget Successor);
     private sealed record BBoxJson(double X, double Y, double Width, double Height);
+    private sealed class EvidenceRecordRow
+    {
+        public string EvidenceRecordId { get; set; } = "";
+        public string LibraryId { get; set; } = "";
+        public string SourceTitle { get; set; } = "";
+        public string? PageLabel { get; set; }
+        public int PageIndex { get; set; }
+    }
     private sealed class NodeRow
     {
         public string NodeId { get; set; } = "";
