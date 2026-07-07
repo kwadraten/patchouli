@@ -113,6 +113,12 @@
               <Image Source="{Binding PdfWorkspace.Image}" Width="{Binding PdfWorkspace.ActualWidthPixels}" Height="{Binding PdfWorkspace.ActualHeightPixels}" Stretch="None" IsVisible="{Binding PdfWorkspace.HasImage}" />
               
               <ItemsControl ItemsSource="{Binding PdfWorkspace.BoundingBoxes}" Width="{Binding PdfWorkspace.ActualWidthPixels}" Height="{Binding PdfWorkspace.ActualHeightPixels}" IsVisible="{Binding PdfWorkspace.HasImage}">
+                <ItemsControl.ItemContainerTheme>
+                  <ControlTheme TargetType="ContentPresenter">
+                    <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                    <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                  </ControlTheme>
+                </ItemsControl.ItemContainerTheme>
                 <ItemsControl.ItemsPanel>
                   <ItemsPanelTemplate>
                     <Canvas />
@@ -123,8 +129,6 @@
                     <Border Classes="BBox"
                             Classes.selected="{Binding IsSelected}"
                             BorderBrush="{Binding BoxColor}" 
-                            Canvas.Left="{Binding Left}" 
-                            Canvas.Top="{Binding Top}" 
                             Width="{Binding Width}" 
                             Height="{Binding Height}"
                             Cursor="Hand"
