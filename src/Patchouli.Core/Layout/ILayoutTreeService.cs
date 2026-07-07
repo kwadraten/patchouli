@@ -33,6 +33,11 @@ public interface ILayoutTreeService
         string source,
         double? confidence = null,
         bool ignored = false,
+        int? rowIndex = null,
+        int? colIndex = null,
+        int? rowSpan = null,
+        int? colSpan = null,
+        bool isHeader = false,
         CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<LayoutNode>>> ListNodesForPageAsync(
@@ -53,6 +58,15 @@ public interface ILayoutTreeService
     Task<Result> UpdateNodeBBoxAsync(
         LayoutNodeId nodeId,
         NormalizedBBox? bbox,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> UpdateTableCellMetadataAsync(
+        LayoutNodeId nodeId,
+        int? rowIndex,
+        int? colIndex,
+        int? rowSpan,
+        int? colSpan,
+        bool isHeader,
         CancellationToken cancellationToken = default);
 
     Task<Result<LayoutNode>> SplitNodeTextAsync(

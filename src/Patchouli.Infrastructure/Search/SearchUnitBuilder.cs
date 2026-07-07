@@ -111,6 +111,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             select n.node_id as NodeId, n.document_instance_id as DocumentInstanceId, n.page_id as PageId, n.parent_node_id as ParentNodeId,
                    n.node_type as NodeType, n.bbox_x as BBoxX, n.bbox_y as BBoxY, n.bbox_width as BBoxWidth, n.bbox_height as BBoxHeight,
                    n.own_text as OwnText, n.text_policy as TextPolicy, n.reading_order as ReadingOrder, n.revision_id as RevisionId, n.ignored as Ignored,
+                   n.row_index as RowIndex, n.col_index as ColIndex, n.row_span as RowSpan, n.col_span as ColSpan, n.is_header as IsHeader,
                    p.page_index as PageIndex
             from layout_nodes n
             join pages p on p.page_id = n.page_id
@@ -379,7 +380,11 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         {
             return "";
         }
-        if (row.NodeType is LayoutNodeType.Table or LayoutNodeType.TableRow or LayoutNodeType.TableCell)
+        if (row.NodeType is LayoutNodeType.Table)
+        {
+            return TryBuildMarkdownTable(row, byParent) ?? "[Table]";
+        }
+        if (row.NodeType is LayoutNodeType.TableRow or LayoutNodeType.TableCell)
         {
             return "[Table]";
         }
@@ -390,6 +395,75 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             _ => ""
         };
     }
+
+    private static string? TryBuildMarkdownTable(NodeRow table, IReadOnlyDictionary<string, NodeRow[]> byParent)
+    {
+        var cells = CollectTableCells(table, byParent).ToArray();
+        if (cells.Length == 0 || cells.Any(cell => cell.RowIndex is null || cell.ColIndex is null || (cell.RowSpan ?? 1) != 1 || (cell.ColSpan ?? 1) != 1))
+            return null;
+
+        var maxRow = cells.Max(cell => cell.RowIndex!.Value);
+        var maxCol = cells.Max(cell => cell.ColIndex!.Value);
+        if (maxRow < 1 || maxCol < 0)
+            return null;
+
+        var map = new Dictionary<(int Row, int Col), NodeRow>();
+        foreach (var cell in cells)
+            if (!map.TryAdd((cell.RowIndex!.Value, cell.ColIndex!.Value), cell))
+                return null;
+
+        for (var row = 0; row <= maxRow; row++)
+        for (var col = 0; col <= maxCol; col++)
+            if (!map.ContainsKey((row, col)))
+                return null;
+
+        if (Enumerable.Range(0, maxCol + 1).Any(col => !map[(0, col)].IsHeader))
+            return null;
+
+        var lines = new List<string>
+        {
+            BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(0, col)], byParent))),
+            BuildMarkdownRow(Enumerable.Repeat("---", maxCol + 1))
+        };
+        for (var row = 1; row <= maxRow; row++)
+            lines.Add(BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(row, col)], byParent))));
+        return string.Join("\n", lines);
+    }
+
+    private static IEnumerable<NodeRow> CollectTableCells(NodeRow node, IReadOnlyDictionary<string, NodeRow[]> byParent)
+    {
+        foreach (var child in byParent.GetValueOrDefault(node.NodeId, []))
+        {
+            if (child.Ignored)
+                continue;
+            if (child.NodeType == LayoutNodeType.TableCell)
+            {
+                yield return child;
+            }
+            else if (child.NodeType == LayoutNodeType.TableRow)
+            {
+                foreach (var cell in CollectTableCells(child, byParent))
+                    yield return cell;
+            }
+        }
+    }
+
+    private static string CellText(NodeRow cell, IReadOnlyDictionary<string, NodeRow[]> byParent)
+    {
+        var text = cell.TextPolicy switch
+        {
+            TextPolicy.Own => cell.OwnText ?? "",
+            TextPolicy.AggregateChildren => string.Join(" ", byParent.GetValueOrDefault(cell.NodeId, []).Select(child => ResolveText(child, byParent)).Where(text => !string.IsNullOrWhiteSpace(text)).Select(text => text.Trim())),
+            _ => ""
+        };
+        return EscapeMarkdownCell(text.Trim());
+    }
+
+    private static string BuildMarkdownRow(IEnumerable<string> cells)
+        => "| " + string.Join(" | ", cells) + " |";
+
+    private static string EscapeMarkdownCell(string text)
+        => text.Replace("\\", "\\\\").Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
 
     private static bool IsExcluded(string nodeType)
         => nodeType is LayoutNodeType.Header or LayoutNodeType.Footer or LayoutNodeType.PageNumber or LayoutNodeType.Marginalia or LayoutNodeType.Annotation;
@@ -475,5 +549,10 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         public string RevisionId { get; set; } = "";
         public bool Ignored { get; set; }
         public int PageIndex { get; set; }
+        public int? RowIndex { get; set; }
+        public int? ColIndex { get; set; }
+        public int? RowSpan { get; set; }
+        public int? ColSpan { get; set; }
+        public bool IsHeader { get; set; }
     }
 }

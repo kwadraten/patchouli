@@ -353,6 +353,82 @@ public sealed class PageLayoutTests
     }
 
     [Fact]
+    public async Task BuildPagePlainText_outputs_markdown_for_regular_table_with_cell_metadata()
+    {
+        await using var context = await PageLayoutTestContext.CreateAsync();
+        var setup = await context.CreatePageAndRevisionAsync();
+        var table = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Table, null, null, TextPolicy.AggregateChildren, 1, LayoutNodeSource.Manual);
+        var header = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableRow, null, null, TextPolicy.AggregateChildren, 1, LayoutNodeSource.Manual);
+        var body = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableRow, null, null, TextPolicy.AggregateChildren, 2, LayoutNodeSource.Manual);
+        await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, header.Value.NodeId, LayoutNodeType.TableCell, null, "Name", TextPolicy.Own, 1, LayoutNodeSource.Manual, rowIndex: 0, colIndex: 0, rowSpan: 1, colSpan: 1, isHeader: true);
+        await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, header.Value.NodeId, LayoutNodeType.TableCell, null, "Value", TextPolicy.Own, 2, LayoutNodeSource.Manual, rowIndex: 0, colIndex: 1, rowSpan: 1, colSpan: 1, isHeader: true);
+        await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, body.Value.NodeId, LayoutNodeType.TableCell, null, "Pages", TextPolicy.Own, 1, LayoutNodeSource.Manual, rowIndex: 1, colIndex: 0, rowSpan: 1, colSpan: 1);
+        await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, body.Value.NodeId, LayoutNodeType.TableCell, null, "12", TextPolicy.Own, 2, LayoutNodeSource.Manual, rowIndex: 1, colIndex: 1, rowSpan: 1, colSpan: 1);
+
+        var text = await context.LayoutTreeService.BuildPagePlainTextAsync(setup.PageId, setup.RevisionId);
+
+        text.Value.Text.Should().Be("| Name | Value |\n| --- | --- |\n| Pages | 12 |");
+    }
+
+    [Fact]
+    public async Task BuildPagePlainText_degrades_irregular_table_without_inventing_markdown()
+    {
+        await using var context = await PageLayoutTestContext.CreateAsync();
+        var setup = await context.CreatePageAndRevisionAsync();
+        var table = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Table, null, null, TextPolicy.AggregateChildren, 1, LayoutNodeSource.Manual);
+        await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableCell, null, "spanning", TextPolicy.Own, 1, LayoutNodeSource.Manual, rowIndex: 0, colIndex: 0, rowSpan: 1, colSpan: 2, isHeader: true);
+
+        var text = await context.LayoutTreeService.BuildPagePlainTextAsync(setup.PageId, setup.RevisionId);
+
+        text.Value.Text.Should().Be("[Table]");
+    }
+
+    [Fact]
+    public async Task UpdateTableCellMetadata_enables_markdown_table_after_manual_correction()
+    {
+        await using var context = await PageLayoutTestContext.CreateAsync();
+        var setup = await context.CreatePageAndRevisionAsync();
+        var table = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Table, null, null, TextPolicy.AggregateChildren, 1, LayoutNodeSource.Manual);
+        var h1 = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableCell, null, "A", TextPolicy.Own, 1, LayoutNodeSource.Manual);
+        var h2 = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableCell, null, "B", TextPolicy.Own, 2, LayoutNodeSource.Manual);
+        var c1 = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableCell, null, "1", TextPolicy.Own, 3, LayoutNodeSource.Manual);
+        var c2 = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, table.Value.NodeId, LayoutNodeType.TableCell, null, "2", TextPolicy.Own, 4, LayoutNodeSource.Manual);
+
+        (await context.LayoutTreeService.BuildPagePlainTextAsync(setup.PageId, setup.RevisionId)).Value.Text.Should().Be("[Table]");
+        await context.LayoutTreeService.UpdateTableCellMetadataAsync(h1.Value.NodeId, 0, 0, 1, 1, true);
+        await context.LayoutTreeService.UpdateTableCellMetadataAsync(h2.Value.NodeId, 0, 1, 1, 1, true);
+        await context.LayoutTreeService.UpdateTableCellMetadataAsync(c1.Value.NodeId, 1, 0, 1, 1, false);
+        await context.LayoutTreeService.UpdateTableCellMetadataAsync(c2.Value.NodeId, 1, 1, 1, 1, false);
+
+        var text = await context.LayoutTreeService.BuildPagePlainTextAsync(setup.PageId, setup.RevisionId);
+
+        text.Value.Text.Should().Be("| A | B |\n| --- | --- |\n| 1 | 2 |");
+    }
+
+    [Fact]
+    public async Task UpdateTableCellMetadata_rejects_non_cell_nodes()
+    {
+        await using var context = await PageLayoutTestContext.CreateAsync();
+        var setup = await context.CreatePageAndRevisionAsync();
+        var paragraph = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Paragraph, null, "not a cell", TextPolicy.Own, 1, LayoutNodeSource.Manual);
+
+        var result = await context.LayoutTreeService.UpdateTableCellMetadataAsync(paragraph.Value.NodeId, 0, 0, 1, 1, true);
+
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
+    [Fact]
+    public async Task AddNode_rejects_table_cell_metadata_on_non_cell_nodes()
+    {
+        await using var context = await PageLayoutTestContext.CreateAsync();
+        var setup = await context.CreatePageAndRevisionAsync();
+
+        var result = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Paragraph, null, "not a cell", TextPolicy.Own, 1, LayoutNodeSource.Manual, rowIndex: 0, colIndex: 0);
+
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
+    [Fact]
     public async Task MigrationRunner_applies_pages_and_layout_migration()
     {
         await using var database = TemporarySqliteDatabase.Create();
@@ -371,6 +447,19 @@ public sealed class PageLayoutTests
             """);
 
         tableCount.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task MigrationRunner_adds_table_cell_metadata_columns()
+    {
+        await using var database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+
+        await using var connection = database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        var columns = (await connection.QueryAsync<string>("select name from pragma_table_info('layout_nodes');")).ToArray();
+
+        columns.Should().Contain(["row_index", "col_index", "row_span", "col_span", "is_header"]);
     }
 
     [Fact]

@@ -67,7 +67,8 @@ public sealed class PdfPageRenderingTests
         "010_expand_item_metadata.sql",
         "011_create_search_profiles.sql",
         "012_hide_ocr_runs.sql",
-        "013_create_structured_item_names_and_dates.sql");
+        "013_create_structured_item_names_and_dates.sql",
+        "014_add_table_cell_metadata.sql");
 
     private sealed class Context : IAsyncDisposable
     {

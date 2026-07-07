@@ -211,7 +211,7 @@ public sealed class OcrAdapterReadinessTests
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs"))
             .Should().Contain("MinerUResultImporter").And.Contain("MinerUOcrAdapter");
     }
-    [Fact] public void No_new_migration_created_in_step_14A() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName).Should().NotContain(name => name!.Contains("14", StringComparison.OrdinalIgnoreCase));
+    [Fact] public void Step_14A_has_only_reported_table_cell_metadata_migration() => Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName).Where(name => name!.Contains("14", StringComparison.OrdinalIgnoreCase)).Should().Equal("014_add_table_cell_metadata.sql");
 
     private static OcrAdapterRegistry CreateRegistry(IRealOcrAdapter? extraAdapter = null)
     {

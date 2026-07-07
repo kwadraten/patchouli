@@ -200,9 +200,14 @@ public sealed class LayoutTreeService : ILayoutTreeService
         string source,
         double? confidence = null,
         bool ignored = false,
+        int? rowIndex = null,
+        int? colIndex = null,
+        int? rowSpan = null,
+        int? colSpan = null,
+        bool isHeader = false,
         CancellationToken cancellationToken = default)
     {
-        var validation = ValidateNodeInput(nodeType, bbox, textPolicy, source);
+        var validation = ValidateNodeInput(nodeType, bbox, textPolicy, source, rowIndex, colIndex, rowSpan, colSpan, isHeader);
         if (validation.IsFailure)
         {
             return Result<LayoutNode>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -292,23 +297,14 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 source.Trim(),
                 revisionId,
                 confidence,
-                ignored);
+                ignored,
+                rowIndex,
+                colIndex,
+                rowSpan,
+                colSpan,
+                isHeader);
 
-            await connection.ExecuteAsync(
-                """
-                insert into layout_nodes (
-                    node_id, document_instance_id, page_id, parent_node_id, node_type,
-                    bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
-                    reading_order, source, revision_id, confidence, ignored
-                )
-                values (
-                    @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
-                    @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
-                    @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored
-                );
-                """,
-                ToParameters(node),
-                transaction);
+            await InsertNodeAsync(connection, transaction, node);
 
             await transaction.CommitAsync(cancellationToken);
             return Result<LayoutNode>.Success(node);
@@ -466,6 +462,65 @@ public sealed class LayoutTreeService : ILayoutTreeService
             await connection.ExecuteAsync(
                 "update layout_nodes set bbox_x = @X, bbox_y = @Y, bbox_width = @Width, bbox_height = @Height where node_id = @NodeId;",
                 new { NodeId = nodeId.ToString(), X = bbox?.X, Y = bbox?.Y, Width = bbox?.Width, Height = bbox?.Height },
+                transaction);
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result> UpdateTableCellMetadataAsync(
+        LayoutNodeId nodeId,
+        int? rowIndex,
+        int? colIndex,
+        int? rowSpan,
+        int? colSpan,
+        bool isHeader,
+        CancellationToken cancellationToken = default)
+    {
+        var validation = ValidateTableCellMetadata(rowIndex, colIndex, rowSpan, colSpan);
+        if (validation.IsFailure)
+        {
+            return validation;
+        }
+
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            if (node is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
+            }
+            if (node.NodeType != LayoutNodeType.TableCell)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.ValidationFailed, "Only table_cell nodes can store table cell metadata.");
+            }
+
+            await connection.ExecuteAsync(
+                """
+                update layout_nodes
+                set row_index = @RowIndex,
+                    col_index = @ColIndex,
+                    row_span = @RowSpan,
+                    col_span = @ColSpan,
+                    is_header = @IsHeader
+                where node_id = @NodeId;
+                """,
+                new { NodeId = nodeId.ToString(), RowIndex = rowIndex, ColIndex = colIndex, RowSpan = rowSpan, ColSpan = colSpan, IsHeader = isHeader ? 1 : 0 },
                 transaction);
 
             await transaction.CommitAsync(cancellationToken);
@@ -847,7 +902,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
             return string.Empty;
         }
 
-        if (node.NodeType is LayoutNodeType.Table or LayoutNodeType.TableRow or LayoutNodeType.TableCell)
+        if (node.NodeType is LayoutNodeType.Table)
+        {
+            return TryBuildMarkdownTable(node, byParent) ?? "[Table]";
+        }
+
+        if (node.NodeType is LayoutNodeType.TableRow or LayoutNodeType.TableCell)
         {
             return "[Table]";
         }
@@ -866,6 +926,105 @@ public sealed class LayoutTreeService : ILayoutTreeService
         };
     }
 
+    private static string? TryBuildMarkdownTable(
+        LayoutNode table,
+        IReadOnlyDictionary<string, LayoutNode[]> byParent)
+    {
+        var cells = CollectTableCells(table, byParent).ToArray();
+        if (cells.Length == 0
+            || cells.Any(cell => cell.RowIndex is null || cell.ColIndex is null || (cell.RowSpan ?? 1) != 1 || (cell.ColSpan ?? 1) != 1))
+        {
+            return null;
+        }
+
+        var maxRow = cells.Max(cell => cell.RowIndex!.Value);
+        var maxCol = cells.Max(cell => cell.ColIndex!.Value);
+        if (maxRow < 1 || maxCol < 0)
+        {
+            return null;
+        }
+
+        var map = new Dictionary<(int Row, int Col), LayoutNode>();
+        foreach (var cell in cells)
+        {
+            var key = (cell.RowIndex!.Value, cell.ColIndex!.Value);
+            if (!map.TryAdd(key, cell))
+            {
+                return null;
+            }
+        }
+
+        for (var row = 0; row <= maxRow; row++)
+        for (var col = 0; col <= maxCol; col++)
+            if (!map.ContainsKey((row, col)))
+                return null;
+
+        if (Enumerable.Range(0, maxCol + 1).Any(col => !map[(0, col)].IsHeader))
+        {
+            return null;
+        }
+
+        var lines = new List<string>
+        {
+            BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(0, col)], byParent))),
+            BuildMarkdownRow(Enumerable.Repeat("---", maxCol + 1))
+        };
+        for (var row = 1; row <= maxRow; row++)
+        {
+            lines.Add(BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(row, col)], byParent))));
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private static IEnumerable<LayoutNode> CollectTableCells(
+        LayoutNode node,
+        IReadOnlyDictionary<string, LayoutNode[]> byParent)
+    {
+        foreach (var child in byParent.GetValueOrDefault(Key(node.NodeId), []))
+        {
+            if (child.Ignored)
+            {
+                continue;
+            }
+            if (child.NodeType == LayoutNodeType.TableCell)
+            {
+                yield return child;
+            }
+            else if (child.NodeType == LayoutNodeType.TableRow)
+            {
+                foreach (var cell in CollectTableCells(child, byParent))
+                {
+                    yield return cell;
+                }
+            }
+        }
+    }
+
+    private static string CellText(
+        LayoutNode cell,
+        IReadOnlyDictionary<string, LayoutNode[]> byParent)
+    {
+        var text = cell.TextPolicy switch
+        {
+            TextPolicy.Own => cell.OwnText ?? string.Empty,
+            TextPolicy.AggregateChildren => string.Join(
+                " ",
+                byParent.GetValueOrDefault(Key(cell.NodeId), [])
+                    .Select(child => BuildNodeText(child, byParent))
+                    .Where(text => !string.IsNullOrWhiteSpace(text))
+                    .Select(text => text.Trim())),
+            _ => string.Empty
+        };
+        return EscapeMarkdownCell(text.Trim());
+    }
+
+    private static string BuildMarkdownRow(IEnumerable<string> cells)
+        => "| " + string.Join(" | ", cells) + " |";
+
+    private static string EscapeMarkdownCell(string text)
+        => text.Replace("\\", "\\\\").Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
+
     private static string Key(LayoutNodeId? nodeId) => nodeId?.ToString() ?? string.Empty;
 
     private static async Task InsertNodeAsync(
@@ -878,12 +1037,14 @@ public sealed class LayoutTreeService : ILayoutTreeService
             insert into layout_nodes (
                 node_id, document_instance_id, page_id, parent_node_id, node_type,
                 bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
-                reading_order, source, revision_id, confidence, ignored
+                reading_order, source, revision_id, confidence, ignored,
+                row_index, col_index, row_span, col_span, is_header
             )
             values (
                 @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
                 @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
-                @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored
+                @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
+                @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
             );
             """,
             ToParameters(node),
@@ -967,7 +1128,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
         string nodeType,
         NormalizedBBox? bbox,
         string textPolicy,
-        string source)
+        string source,
+        int? rowIndex = null,
+        int? colIndex = null,
+        int? rowSpan = null,
+        int? colSpan = null,
+        bool isHeader = false)
     {
         if (string.IsNullOrWhiteSpace(nodeType))
         {
@@ -989,6 +1155,27 @@ public sealed class LayoutTreeService : ILayoutTreeService
             return bbox.Value.Validate();
         }
 
+        var metadataValidation = ValidateTableCellMetadata(rowIndex, colIndex, rowSpan, colSpan);
+        if (metadataValidation.IsFailure)
+            return metadataValidation;
+        if (nodeType.Trim() != LayoutNodeType.TableCell && (rowIndex is not null || colIndex is not null || rowSpan is not null || colSpan is not null || isHeader))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Only table_cell nodes can store table cell metadata.");
+        }
+
+        return Result.Success();
+    }
+
+    private static Result ValidateTableCellMetadata(int? rowIndex, int? colIndex, int? rowSpan, int? colSpan)
+    {
+        if (rowIndex is not null && rowIndex < 0)
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell row_index must be zero or greater.");
+        if (colIndex is not null && colIndex < 0)
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell col_index must be zero or greater.");
+        if (rowSpan is not null && rowSpan <= 0)
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell row_span must be positive.");
+        if (colSpan is not null && colSpan <= 0)
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell col_span must be positive.");
         return Result.Success();
     }
 
@@ -1090,7 +1277,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
             source as Source,
             revision_id as RevisionId,
             confidence as Confidence,
-            ignored as Ignored
+            ignored as Ignored,
+            row_index as RowIndex,
+            col_index as ColIndex,
+            row_span as RowSpan,
+            col_span as ColSpan,
+            is_header as IsHeader
         from layout_nodes
         """;
 
@@ -1126,7 +1318,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
             node.Source,
             RevisionId = node.RevisionId.ToString(),
             node.Confidence,
-            Ignored = node.Ignored ? 1 : 0
+            Ignored = node.Ignored ? 1 : 0,
+            node.RowIndex,
+            node.ColIndex,
+            node.RowSpan,
+            node.ColSpan,
+            IsHeader = node.IsHeader ? 1 : 0
         };
     }
 
@@ -1182,6 +1379,11 @@ public sealed class LayoutTreeService : ILayoutTreeService
         public string RevisionId { get; set; } = string.Empty;
         public double? Confidence { get; set; }
         public int Ignored { get; set; }
+        public int? RowIndex { get; set; }
+        public int? ColIndex { get; set; }
+        public int? RowSpan { get; set; }
+        public int? ColSpan { get; set; }
+        public int IsHeader { get; set; }
 
         public LayoutNode ToNode()
         {
@@ -1198,7 +1400,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 Source,
                 Patchouli.Core.Ids.LayoutRevisionId.Parse(RevisionId),
                 Confidence,
-                Ignored == 1);
+                Ignored == 1,
+                RowIndex,
+                ColIndex,
+                RowSpan,
+                ColSpan,
+                IsHeader == 1);
         }
     }
 }

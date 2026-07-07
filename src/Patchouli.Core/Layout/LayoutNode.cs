@@ -15,4 +15,9 @@ public sealed record LayoutNode(
     string Source,
     LayoutRevisionId RevisionId,
     double? Confidence,
-    bool Ignored);
+    bool Ignored,
+    int? RowIndex = null,
+    int? ColIndex = null,
+    int? RowSpan = null,
+    int? ColSpan = null,
+    bool IsHeader = false);
