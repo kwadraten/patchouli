@@ -8,7 +8,8 @@ public sealed record SnapshotPublishRequest(
     string SyncRoot,
     string DeviceId,
     string? ParentSnapshotId = null,
-    string? Notes = null);
+    string? Notes = null,
+    long TargetShardSizeBytes = 512L * 1024L * 1024L);
 
 public sealed record SnapshotPublishResult(
     string SnapshotId,

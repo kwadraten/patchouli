@@ -12,6 +12,43 @@ namespace Patchouli.Infrastructure.Snapshots;
 
 public sealed class SnapshotPublisher : ISnapshotPublisher
 {
+    private const long DefaultTargetShardSizeBytes = 512L * 1024L * 1024L;
+    private static readonly string[] DataTables =
+    [
+        "library_metadata",
+        "items",
+        "item_identifiers",
+        "item_creators",
+        "item_dates",
+        "file_assets",
+        "file_search_roots",
+        "known_file_locations",
+        "document_instances",
+        "pages",
+        "layout_revisions",
+        "layout_nodes",
+        "ocr_presets",
+        "ocr_preset_versions",
+        "ocr_runs",
+        "ocr_page_results",
+        "ocr_candidate_adoptions",
+        "search_units",
+        "search_index_status",
+        "evidence_ref_records",
+        "evidence_successors",
+        "search_profiles",
+        "search_rewrite_rules",
+        "search_settings"
+    ];
+    private static readonly string[][] DataShardTableGroups =
+    [
+        ["library_metadata", "items", "item_identifiers", "item_creators", "item_dates", "file_assets", "file_search_roots", "known_file_locations", "document_instances"],
+        ["pages", "layout_revisions", "layout_nodes"],
+        ["ocr_presets", "ocr_preset_versions", "ocr_runs", "ocr_page_results", "ocr_candidate_adoptions"],
+        ["search_units", "search_index_status", "evidence_ref_records", "evidence_successors"],
+        ["search_profiles", "search_rewrite_rules", "search_settings"]
+    ];
+    private static readonly string[] CredentialTables = ["provider_credentials", "provider_credential_bindings"];
     private readonly IClock _clock;
 
     public SnapshotPublisher(IClock clock)
@@ -64,30 +101,21 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             var libraryId = await ReadLibraryIdAsync(runtimePath);
             var generation = current is null ? 1 : current.LogicalGeneration + 1;
             var snapshotId = Guid.NewGuid().ToString("D");
-            var shardId = Guid.NewGuid().ToString("D");
-            var shardFile = $"{shardId}.sqlite";
-            var shardPath = Path.Combine(syncRoot, "shards", shardFile);
 
             await CheckpointAsync(runtimePath);
-            await BackupDatabaseAsync(runtimePath, shardPath);
-            await ClearLocalFtsCacheAsync(shardPath);
-            await RedactCredentialsAsync(shardPath);
-            await RedactLocalFileLocationsAsync(shardPath);
-
-            var shard = new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), "data", true);
-            if (!await VerifyShardAsync(syncRoot, shard))
-            {
-                return Result<SnapshotPublishResult>.Failure(AppErrorCodes.DatabaseError, "Shard hash verification failed after publish.");
-            }
+            var shards = await CreateDataShardsAsync(runtimePath, syncRoot, snapshotId, NormalizeTargetShardSize(request.TargetShardSizeBytes));
+            foreach (var shard in shards)
+                if (!await VerifyShardAsync(syncRoot, shard))
+                    return Result<SnapshotPublishResult>.Failure(AppErrorCodes.DatabaseError, "Shard hash verification failed after publish.");
 
             var credentialShard = await CreateCredentialShardAsync(runtimePath, syncRoot, snapshotId);
-            var manifest = new SnapshotManifest(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId, AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), new[] { shard }, credentialShard is null ? Array.Empty<SnapshotShard>() : new[] { credentialShard }, await Blake3FileAsync(runtimePath), request.Notes);
+            var manifest = new SnapshotManifest(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId, AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), shards, credentialShard is null ? Array.Empty<SnapshotShard>() : new[] { credentialShard }, await Blake3FileAsync(runtimePath), request.Notes);
             var manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
             var pointer = new SnapshotCurrentPointer(snapshotId, Path.Combine("manifests", $"{snapshotId}.json"), libraryId, generation, _clock.UtcNow.ToUniversalTime());
             await WriteJsonAtomicAsync(currentPath, pointer, cancellationToken);
 
-            return Result<SnapshotPublishResult>.Success(new SnapshotPublishResult(snapshotId, manifestPath, currentPath, false, null, new[] { shard }, generation, "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical."));
+            return Result<SnapshotPublishResult>.Success(new SnapshotPublishResult(snapshotId, manifestPath, currentPath, false, null, shards, generation, shards.Count > 1 ? "Runtime database exceeded the snapshot shard target; data was split into multiple immutable shards. FTS rows are cleared in data shards; persisted search_units remain canonical." : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical."));
         }
         catch (Exception ex)
         {
@@ -145,6 +173,206 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             await connection.ExecuteAsync("update ocr_preset_versions set model_path = '[redacted]' where model_path is not null;");
         await connection.ExecuteAsync("vacuum;");
     }
+
+    private static long NormalizeTargetShardSize(long targetShardSizeBytes) => targetShardSizeBytes <= 0 ? DefaultTargetShardSizeBytes : targetShardSizeBytes;
+
+    private static async Task<IReadOnlyList<SnapshotShard>> CreateDataShardsAsync(string runtimePath, string syncRoot, string snapshotId, long targetShardSizeBytes)
+    {
+        if (new FileInfo(runtimePath).Length <= targetShardSizeBytes)
+        {
+            var shardId = Guid.NewGuid().ToString("D");
+            var shardFile = $"{shardId}.sqlite";
+            var shardPath = Path.Combine(syncRoot, "shards", shardFile);
+            await BackupDatabaseAsync(runtimePath, shardPath);
+            await PrepareDataShardAsync(shardPath, null);
+            return [new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), "data", true)];
+        }
+
+        var shards = new List<SnapshotShard>();
+        for (var i = 0; i < DataShardTableGroups.Length; i++)
+        {
+            var tableGroup = DataShardTableGroups[i];
+            var shardId = $"{snapshotId}_data_{i + 1:D2}";
+            var shardFile = $"{shardId}.sqlite";
+            var shardPath = Path.Combine(syncRoot, "shards", shardFile);
+            await BackupDatabaseAsync(runtimePath, shardPath);
+            await PrepareDataShardAsync(shardPath, tableGroup);
+            if (await HasAnyRowsAsync(shardPath, tableGroup) || i == 0)
+            {
+                var shard = new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), $"data:{i + 1:D2}", true);
+                if (shard.SizeBytes <= targetShardSizeBytes)
+                {
+                    shards.Add(shard);
+                }
+                else
+                {
+                    File.Delete(shardPath);
+                    await AddTableSplitShardsAsync(shards, runtimePath, syncRoot, snapshotId, i + 1, tableGroup, targetShardSizeBytes, i == 0);
+                }
+            }
+            else if (File.Exists(shardPath))
+            {
+                File.Delete(shardPath);
+            }
+        }
+
+        return shards;
+    }
+
+    private static async Task AddTableSplitShardsAsync(List<SnapshotShard> shards, string runtimePath, string syncRoot, string snapshotId, int groupOrdinal, IReadOnlyList<string> tableGroup, long targetShardSizeBytes, bool forceFirst)
+    {
+        var addedAny = false;
+        for (var tableIndex = 0; tableIndex < tableGroup.Count; tableIndex++)
+        {
+            var table = tableGroup[tableIndex];
+            var rowCount = await CountRowsAsync(runtimePath, table, null);
+            if (rowCount == 0 && !(forceFirst && !addedAny))
+                continue;
+
+            var tableShardId = $"{snapshotId}_data_{groupOrdinal:D2}_{tableIndex + 1:D2}";
+            var tableShard = await CreatePreparedDataShardAsync(runtimePath, syncRoot, tableShardId, $"data:{groupOrdinal:D2}:{tableIndex + 1:D2}", [table], null);
+            if (tableShard.SizeBytes <= targetShardSizeBytes || rowCount <= 1)
+            {
+                shards.Add(tableShard);
+                addedAny = true;
+                continue;
+            }
+
+            File.Delete(Path.Combine(syncRoot, tableShard.FileName));
+            await AddRowSplitShardsAsync(shards, runtimePath, syncRoot, snapshotId, groupOrdinal, tableIndex + 1, table, rowCount, tableShard.SizeBytes, targetShardSizeBytes);
+            addedAny = true;
+        }
+    }
+
+    private static async Task AddRowSplitShardsAsync(List<SnapshotShard> shards, string runtimePath, string syncRoot, string snapshotId, int groupOrdinal, int tableOrdinal, string table, long rowCount, long tableShardSizeBytes, long targetShardSizeBytes)
+    {
+        var chunkCount = Math.Min(rowCount, Math.Max(2, (long)Math.Ceiling(tableShardSizeBytes / (double)targetShardSizeBytes)));
+        while (true)
+        {
+            var ranges = await CreateRowIdRangesAsync(runtimePath, table, chunkCount);
+            var created = new List<SnapshotShard>();
+            var needsMoreSplitting = false;
+            for (var i = 0; i < ranges.Count; i++)
+            {
+                var shardId = $"{snapshotId}_data_{groupOrdinal:D2}_{tableOrdinal:D2}_{i + 1:D4}";
+                var shard = await CreatePreparedDataShardAsync(runtimePath, syncRoot, shardId, $"data:{groupOrdinal:D2}:{tableOrdinal:D2}:{i + 1:D4}", [table], new Dictionary<string, RowIdRange> { [table] = ranges[i] });
+                created.Add(shard);
+                var chunkRows = await CountRowsAsync(runtimePath, table, ranges[i]);
+                if (shard.SizeBytes > targetShardSizeBytes && chunkRows > 1 && chunkCount < rowCount)
+                    needsMoreSplitting = true;
+            }
+
+            if (!needsMoreSplitting)
+            {
+                shards.AddRange(created);
+                return;
+            }
+
+            foreach (var shard in created)
+                File.Delete(Path.Combine(syncRoot, shard.FileName));
+            var nextChunkCount = Math.Min(rowCount, chunkCount * 2);
+            if (nextChunkCount == chunkCount)
+            {
+                shards.AddRange(created);
+                return;
+            }
+            chunkCount = nextChunkCount;
+        }
+    }
+
+    private static async Task<SnapshotShard> CreatePreparedDataShardAsync(string runtimePath, string syncRoot, string shardId, string kind, IReadOnlyCollection<string> includedTables, IReadOnlyDictionary<string, RowIdRange>? rowRanges)
+    {
+        var shardFile = $"{shardId}.sqlite";
+        var shardPath = Path.Combine(syncRoot, "shards", shardFile);
+        await BackupDatabaseAsync(runtimePath, shardPath);
+        await PrepareDataShardAsync(shardPath, includedTables, rowRanges);
+        return new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length, await Blake3FileAsync(shardPath), kind, true);
+    }
+
+    private static async Task PrepareDataShardAsync(string shardPath, IReadOnlyCollection<string>? includedTables, IReadOnlyDictionary<string, RowIdRange>? rowRanges = null)
+    {
+        await using (var connection = new SqliteConnection(BuildConnectionString(shardPath, SqliteOpenMode.ReadWriteCreate)))
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("pragma foreign_keys = off;");
+            foreach (var table in DataTables)
+            {
+                if (includedTables is null || includedTables.Contains(table)) continue;
+                if (await TableExistsAsync(connection, table))
+                    await connection.ExecuteAsync($"delete from {table};");
+            }
+            if (rowRanges is not null)
+            {
+                foreach (var range in rowRanges)
+                    if (await TableExistsAsync(connection, range.Key))
+                        await connection.ExecuteAsync($"delete from {range.Key} where rowid < @MinRowId or rowid > @MaxRowId;", new { range.Value.MinRowId, range.Value.MaxRowId });
+            }
+            foreach (var table in CredentialTables)
+            {
+                if (await TableExistsAsync(connection, table))
+                    await connection.ExecuteAsync($"delete from {table};");
+            }
+            if (await TableExistsAsync(connection, "search_units_fts"))
+                await connection.ExecuteAsync("delete from search_units_fts;");
+            await connection.ExecuteAsync("pragma foreign_keys = on;");
+        }
+
+        await RedactLocalFileLocationsAsync(shardPath);
+    }
+
+    private static async Task<bool> HasAnyRowsAsync(string shardPath, IReadOnlyList<string> tables)
+    {
+        await using var connection = new SqliteConnection(BuildConnectionString(shardPath, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync();
+        foreach (var table in tables)
+        {
+            if (await TableExistsAsync(connection, table) && await connection.ExecuteScalarAsync<int>($"select count(1) from {table} limit 1;") > 0)
+                return true;
+        }
+        return false;
+    }
+
+    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string table)
+        => await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where type in ('table','view') and name = @Table;", new { Table = table }) > 0;
+
+    private static async Task<long> CountRowsAsync(string databasePath, string table, RowIdRange? range)
+    {
+        await using var connection = new SqliteConnection(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync();
+        if (!await TableExistsAsync(connection, table))
+            return 0;
+        if (range is null)
+            return await connection.ExecuteScalarAsync<long>($"select count(1) from {table};");
+        return await connection.ExecuteScalarAsync<long>($"select count(1) from {table} where rowid >= @MinRowId and rowid <= @MaxRowId;", new { range.Value.MinRowId, range.Value.MaxRowId });
+    }
+
+    private static async Task<IReadOnlyList<RowIdRange>> CreateRowIdRangesAsync(string databasePath, string table, long chunkCount)
+    {
+        await using var connection = new SqliteConnection(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync();
+        var rowCount = await connection.ExecuteScalarAsync<long>($"select count(1) from {table};");
+        if (rowCount == 0)
+            return [];
+
+        chunkCount = Math.Clamp(chunkCount, 1, rowCount);
+        var rowsPerChunk = (long)Math.Ceiling(rowCount / (double)chunkCount);
+        var starts = new List<long>();
+        for (var offset = 0L; offset < rowCount; offset += rowsPerChunk)
+        {
+            var rowId = await connection.ExecuteScalarAsync<long>($"select rowid from {table} order by rowid limit 1 offset @Offset;", new { Offset = offset });
+            starts.Add(rowId);
+        }
+
+        var ranges = new List<RowIdRange>();
+        for (var i = 0; i < starts.Count; i++)
+        {
+            var max = i + 1 < starts.Count ? starts[i + 1] - 1 : long.MaxValue;
+            ranges.Add(new RowIdRange(starts[i], max));
+        }
+        return ranges;
+    }
+
+    private readonly record struct RowIdRange(long MinRowId, long MaxRowId);
 
     private static async Task<SnapshotShard?> CreateCredentialShardAsync(string runtimePath, string syncRoot, string snapshotId)
     {
@@ -291,6 +519,10 @@ public sealed class SnapshotImporter : ISnapshotImporter
         var firstShard = manifest.Shards.First();
         var stagingPath = Path.Combine(request.StagingRoot, $"{manifest.SnapshotId}.staging.sqlite");
         File.Copy(Path.Combine(syncRoot, firstShard.FileName), stagingPath, overwrite: true);
+        foreach (var shard in manifest.Shards.Skip(1))
+        {
+            await MergeDataShardIntoStagingAsync(stagingPath, Path.Combine(syncRoot, shard.FileName), cancellationToken);
+        }
         foreach (var shard in manifest.SensitiveMutableShards)
         {
             File.Copy(Path.Combine(syncRoot, shard.FileName), Path.Combine(request.StagingRoot, Path.GetFileName(shard.FileName)), overwrite: true);
@@ -308,4 +540,53 @@ public sealed class SnapshotImporter : ISnapshotImporter
         }
         return Result<SnapshotBranchDetectionResult>.Success(new SnapshotBranchDetectionResult(current.SnapshotId != localParentSnapshotId, current.SnapshotId, localParentSnapshotId));
     }
+
+    private static async Task MergeDataShardIntoStagingAsync(string stagingPath, string shardPath, CancellationToken cancellationToken)
+    {
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = stagingPath, Mode = SqliteOpenMode.ReadWriteCreate, Pooling = false, ForeignKeys = false }.ToString());
+        await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync("attach database @Path as shard;", new { Path = shardPath });
+        await connection.ExecuteAsync("pragma foreign_keys = off;");
+        foreach (var table in MergeTables)
+        {
+            if (!await TableExistsAsync(connection, table, "main") || !await TableExistsAsync(connection, table, "shard"))
+            {
+                continue;
+            }
+            await connection.ExecuteAsync($"insert or ignore into main.{table} select * from shard.{table};");
+        }
+        await connection.ExecuteAsync("detach database shard;");
+        await connection.ExecuteAsync("pragma foreign_keys = on;");
+    }
+
+    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string table, string schema)
+        => await connection.ExecuteScalarAsync<int>($"select count(1) from {schema}.sqlite_master where type in ('table','view') and name = @Table;", new { Table = table }) > 0;
+
+    private static readonly string[] MergeTables =
+    [
+        "library_metadata",
+        "items",
+        "item_identifiers",
+        "item_creators",
+        "item_dates",
+        "file_assets",
+        "file_search_roots",
+        "known_file_locations",
+        "document_instances",
+        "pages",
+        "layout_revisions",
+        "layout_nodes",
+        "ocr_presets",
+        "ocr_preset_versions",
+        "ocr_runs",
+        "ocr_page_results",
+        "ocr_candidate_adoptions",
+        "search_units",
+        "search_index_status",
+        "evidence_ref_records",
+        "evidence_successors",
+        "search_profiles",
+        "search_rewrite_rules",
+        "search_settings"
+    ];
 }
