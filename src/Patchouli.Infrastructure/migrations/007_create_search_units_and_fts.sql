@@ -36,6 +36,9 @@ create table if not exists search_index_status (
     primary key (scope_type, scope_id)
 );
 
+-- The application stores analyzer-expanded text in this FTS table:
+-- Latin words/numbers plus CJK 1/2/3-grams. unicode61 is only the
+-- storage tokenizer for those emitted tokens, not the search analyzer.
 create virtual table if not exists search_units_fts using fts5(
     unit_id unindexed,
     document_instance_id unindexed,

@@ -173,23 +173,12 @@ public sealed class SqliteSearchService : ISearchService
 
     private static string BuildFtsQuery(string query)
     {
-        var tokens = new List<string>();
         var raw = query.Trim();
-        tokens.Add(QuoteFts(raw));
-        var cjk = raw.Where(IsCjk).ToArray();
-        for (var i = 0; i < cjk.Length - 1; i++)
-        {
-            tokens.Add(QuoteFts($"{cjk[i]}{cjk[i + 1]}"));
-        }
-        foreach (var token in raw.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            tokens.Add(QuoteFts(token));
-        }
+        var tokens = SearchTextAnalyzer.BuildQueryTokens(raw).Select(QuoteFts).ToArray();
+        if (tokens.Length == 0)
+            return QuoteFts(raw);
         return string.Join(" OR ", tokens.Distinct(StringComparer.Ordinal));
     }
-
-    private static bool IsCjk(char c)
-        => (c >= '\u3400' && c <= '\u9fff') || (c >= '\uf900' && c <= '\ufaff');
 
     private static string QuoteFts(string value)
         => "\"" + value.Replace("\"", "\"\"") + "\"";

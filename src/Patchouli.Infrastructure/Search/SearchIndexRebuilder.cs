@@ -1,4 +1,3 @@
-using System.Text;
 using Dapper;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -105,25 +104,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
     }
 
     internal static string BuildIndexText(string canonicalText)
-    {
-        var builder = new StringBuilder(canonicalText);
-        var cjk = canonicalText.Where(IsCjk).ToArray();
-        if (cjk.Length > 0)
-        {
-            builder.Append(' ');
-            builder.AppendJoin(' ', cjk);
-            for (var i = 0; i < cjk.Length - 1; i++)
-            {
-                builder.Append(' ');
-                builder.Append(cjk[i]);
-                builder.Append(cjk[i + 1]);
-            }
-        }
-        return builder.ToString();
-    }
-
-    private static bool IsCjk(char c)
-        => (c >= '\u3400' && c <= '\u9fff') || (c >= '\uf900' && c <= '\ufaff');
+        => SearchTextAnalyzer.BuildIndexText(canonicalText);
 
     private static Task InsertFtsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Data.Common.DbTransaction tx, UnitRow unit)
         => connection.ExecuteAsync(
