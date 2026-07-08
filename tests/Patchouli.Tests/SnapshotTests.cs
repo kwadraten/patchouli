@@ -6,6 +6,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Core.Operations;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
@@ -15,6 +16,7 @@ using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
+using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Ocr;
@@ -37,10 +39,11 @@ public sealed class SnapshotTests
     [Fact] public async Task PublishSnapshot_does_not_treat_fts_as_canonical() { await using var c = await SnapshotTestContext.CreateAsync(); var r = await c.PublishAsync(); await using var cn = OpenShard(c.SyncRoot, r.Value.Shards.Single()); (await cn.ExecuteScalarAsync<int>("select count(1) from search_units;")).Should().BeGreaterThan(0); (await cn.ExecuteScalarAsync<int>("select count(1) from search_units_fts;")).Should().Be(0); }
     [Fact] public async Task ValidateSnapshot_succeeds_for_valid_manifest() { await using var c = await SnapshotTestContext.CreateAsync(); var r = await c.PublishAsync(); (await c.Importer.ValidateSnapshotAsync(r.Value.ManifestPath)).Value.IsValid.Should().BeTrue(); }
     [Fact] public async Task ValidateSnapshot_fails_for_hash_mismatch() { await using var c = await SnapshotTestContext.CreateAsync(); var r = await c.PublishAsync(); await File.AppendAllTextAsync(Path.Combine(c.SyncRoot, r.Value.Shards.Single().FileName), "corrupt"); var v = await c.Importer.ValidateSnapshotAsync(r.Value.ManifestPath); v.Value.IsValid.Should().BeFalse(); v.Value.Errors.Should().Contain(e => e.Contains("hash") || e.Contains("size")); }
-    [Fact] public async Task ImportSnapshotToStaging_does_not_replace_active_runtime_db() { await using var c = await SnapshotTestContext.CreateAsync(); var before = await File.ReadAllBytesAsync(c.Database.Path); var r = await c.PublishAsync(); await c.ImportAsync(r.Value.ManifestPath); (await File.ReadAllBytesAsync(c.Database.Path)).Should().Equal(before); }
+    [Fact] public async Task ImportSnapshotToStaging_does_not_replace_active_runtime_db() { await using var c = await SnapshotTestContext.CreateAsync(); var before = await c.RuntimeCountsAsync(); var r = await c.PublishAsync(); await c.ImportAsync(r.Value.ManifestPath); (await c.RuntimeCountsAsync()).Should().Be(before); }
     [Fact] public async Task ImportSnapshotToStaging_creates_staging_copy() { await using var c = await SnapshotTestContext.CreateAsync(); var r = await c.PublishAsync(); var imported = await c.ImportAsync(r.Value.ManifestPath); File.Exists(imported.Value.StagingDatabasePath).Should().BeTrue(); }
     [Fact] public async Task ImportSnapshotToStaging_detects_library_mismatch() { await using var c = await SnapshotTestContext.CreateAsync(); var r = await c.PublishAsync(); var imported = await c.Importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(r.Value.ManifestPath, c.StagingRoot, LibraryId.New())); imported.Value.IsLibraryMatch.Should().BeFalse(); imported.Value.StagingDatabasePath.Should().BeNull(); }
     [Fact] public async Task ImportSnapshotToStaging_accepts_matching_library() { await using var c = await SnapshotTestContext.CreateAsync(); var r = await c.PublishAsync(); var imported = await c.Importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(r.Value.ManifestPath, c.StagingRoot, c.LibraryId)); imported.Value.IsLibraryMatch.Should().BeTrue(); }
+    [Fact] public async Task ImportSnapshotToStaging_validation_failure_records_blocking_operation_and_leaves_runtime_db_unchanged() { await using var c = await SnapshotTestContext.CreateAsync(); var before = await c.RuntimeCountsAsync(); var r = await c.PublishAsync(); await File.AppendAllTextAsync(Path.Combine(c.SyncRoot, r.Value.Shards.Single().FileName), "corrupt"); var imported = await c.Importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(r.Value.ManifestPath, c.StagingRoot, c.LibraryId, c.Database.Path)); var operations = await c.BlockingOperations.ListAsync(status: BlockingOperationStatus.Failed, operationType: BlockingOperationTypes.SnapshotImportValidation, scopeType: BlockingOperationScopeTypes.SnapshotImport, scopeId: Path.GetFileName(r.Value.ManifestPath)); imported.IsSuccess.Should().BeTrue(); imported.Value.IsValid.Should().BeFalse(); imported.Value.StagingDatabasePath.Should().BeNull(); (await c.RuntimeCountsAsync()).Should().Be(before); operations.IsSuccess.Should().BeTrue(); operations.Value.Should().ContainSingle(); operations.Value.Single().FailureCode.Should().Be(AppErrorCodes.ValidationFailed); operations.Value.Single().FailureMessage.Should().Contain("mismatch"); }
     [Fact] public async Task PublishSnapshot_detects_parent_mismatch_and_does_not_overwrite_current() { await using var c = await SnapshotTestContext.CreateAsync(); var first = await c.PublishAsync(); var conflict = await c.PublishAsync(parent: "different-parent"); conflict.Value.CreatedBranch.Should().BeTrue(); var current = await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(Path.Combine(c.SyncRoot, "current.json"), default); current!.SnapshotId.Should().Be(first.Value.SnapshotId); }
     [Fact] public async Task PublishSnapshot_writes_branch_metadata_on_conflict() { await using var c = await SnapshotTestContext.CreateAsync(); await c.PublishAsync(); var conflict = await c.PublishAsync(parent: "different-parent"); conflict.Value.BranchInfo.Should().NotBeNull(); Directory.EnumerateFiles(Path.Combine(c.SyncRoot, "branches"), "*.json").Should().HaveCount(1); }
     [Fact] public async Task DetectBranch_returns_false_when_parent_matches() { await using var c = await SnapshotTestContext.CreateAsync(); var first = await c.PublishAsync(); (await c.Importer.DetectBranchAsync(c.SyncRoot, first.Value.SnapshotId)).Value.BranchDetected.Should().BeFalse(); }
@@ -66,13 +69,14 @@ public sealed class SnapshotTests
 
     private sealed class SnapshotTestContext : IAsyncDisposable
     {
-        private SnapshotTestContext(TemporarySqliteDatabase database, string syncRoot, string stagingRoot, LibraryId libraryId, SearchUnitId unitId)
-        { Database = database; SyncRoot = syncRoot; StagingRoot = stagingRoot; LibraryId = libraryId; UnitId = unitId; Publisher = new SnapshotPublisher(new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"))); Importer = new SnapshotImporter(); Evidence = new EvidenceReferenceService(database.ConnectionFactory, new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"))); }
+        private SnapshotTestContext(TemporarySqliteDatabase database, string syncRoot, string stagingRoot, LibraryId libraryId, SearchUnitId unitId, IBlockingOperationService blockingOperations)
+        { Database = database; SyncRoot = syncRoot; StagingRoot = stagingRoot; LibraryId = libraryId; UnitId = unitId; BlockingOperations = blockingOperations; Publisher = new SnapshotPublisher(new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"))); Importer = new SnapshotImporter(blockingOperations); Evidence = new EvidenceReferenceService(database.ConnectionFactory, new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"))); }
         public TemporarySqliteDatabase Database { get; }
         public string SyncRoot { get; }
         public string StagingRoot { get; }
         public LibraryId LibraryId { get; }
         public SearchUnitId UnitId { get; }
+        public IBlockingOperationService BlockingOperations { get; }
         public SnapshotPublisher Publisher { get; }
         public SnapshotImporter Importer { get; }
         public EvidenceReferenceService Evidence { get; }
@@ -96,7 +100,8 @@ public sealed class SnapshotTests
             await builder.RebuildForDocumentInstanceAsync(doc.Value.DocumentInstanceId); await rebuilder.RebuildFtsForLibraryAsync();
             await using var cn = db.ConnectionFactory.CreateConnection(); await cn.OpenAsync();
             var unit = SearchUnitId.Parse((await cn.ExecuteScalarAsync<string>("select unit_id from search_units limit 1;"))!);
-            return new SnapshotTestContext(db, TempDir(), TempDir(), lib.Value.LibraryId, unit);
+            var blockingOperations = new BlockingOperationService(db.ConnectionFactory, clock);
+            return new SnapshotTestContext(db, TempDir(), TempDir(), lib.Value.LibraryId, unit, blockingOperations);
         }
         public Task<Result<SnapshotPublishResult>> PublishAsync(string? parent = null, long? targetShardSizeBytes = null) => Publisher.PublishSnapshotAsync(new SnapshotPublishRequest(Database.Path, SyncRoot, "device-a", parent, TargetShardSizeBytes: targetShardSizeBytes ?? 512L * 1024L * 1024L));
         public Task<Result<SnapshotImportResult>> ImportAsync(string manifest) => Importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(manifest, StagingRoot, LibraryId, Database.Path));

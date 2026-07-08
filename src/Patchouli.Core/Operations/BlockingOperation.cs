@@ -42,6 +42,7 @@ public static class BlockingOperationScopeTypes
 {
     public const string McpServerSettings = "mcp_server_settings";
     public const string CslStyle = "csl_style";
+    public const string SnapshotImport = "snapshot_import";
 }
 
 public static class BlockingOperationLogLevel

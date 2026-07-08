@@ -90,7 +90,7 @@ public sealed class AppServices
         McpSettings = new McpServerSettingsService(ConnectionFactory, Clock, BlockingOperations);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
-        SnapshotImporter = new SnapshotImporter();
+        SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
         Credentials = new CredentialStore(ConnectionFactory, Library, Clock);
         PdfMetadata = new PdfMetadataReader();

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Dapper;
 using Patchouli.Core;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
@@ -490,6 +491,13 @@ file sealed class BindingShardRow { public string BindingId { get; set; } = ""; 
 
 public sealed class SnapshotImporter : ISnapshotImporter
 {
+    private readonly IBlockingOperationService? _blockingOperations;
+
+    public SnapshotImporter(IBlockingOperationService? blockingOperations = null)
+    {
+        _blockingOperations = blockingOperations;
+    }
+
     public async Task<Result<SnapshotValidationResult>> ValidateSnapshotAsync(string manifestPath, CancellationToken cancellationToken = default)
     {
         try
@@ -523,46 +531,106 @@ public sealed class SnapshotImporter : ISnapshotImporter
 
     public async Task<Result<SnapshotImportResult>> ImportSnapshotToStagingAsync(SnapshotImportRequest request, CancellationToken cancellationToken = default)
     {
-        var validation = await ValidateSnapshotAsync(request.ManifestPath, cancellationToken);
-        if (validation.IsFailure) return Result<SnapshotImportResult>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
-        if (!validation.Value.IsValid || validation.Value.Manifest is null)
+        var validationOperationId = await TryStartValidationOperationAsync(request.ManifestPath, cancellationToken);
+        try
         {
-            return Result<SnapshotImportResult>.Success(new SnapshotImportResult("", default, null, false, false, false, validation.Value.Errors));
-        }
-
-        var manifest = validation.Value.Manifest;
-        var libraryId = LibraryId.Parse(manifest.LibraryId);
-        var warnings = new List<string>();
-        var matches = request.ExpectedLibraryId is null || request.ExpectedLibraryId.Value == libraryId;
-        if (!matches)
-        {
-            warnings.Add("Manifest library does not match expected library.");
-            return Result<SnapshotImportResult>.Success(new SnapshotImportResult(manifest.SnapshotId, libraryId, null, false, true, false, warnings));
-        }
-        if (request.CurrentRuntimeDatabasePath is not null && File.Exists(request.CurrentRuntimeDatabasePath))
-        {
-            var localLibrary = await SnapshotPublisher.ReadLibraryIdAsync(request.CurrentRuntimeDatabasePath);
-            if (!string.Equals(localLibrary, manifest.LibraryId, StringComparison.OrdinalIgnoreCase))
+            var validation = await ValidateSnapshotAsync(request.ManifestPath, cancellationToken);
+            if (validation.IsFailure)
             {
-                warnings.Add("Manifest library does not match current runtime database.");
+                await TryFailValidationOperationAsync(
+                    validationOperationId,
+                    validation.ErrorCode ?? AppErrorCodes.ValidationFailed,
+                    validation.ErrorMessage ?? "Snapshot validation failed.",
+                    "Snapshot import validation failed.",
+                    ["Review snapshot manifest", "Retry import after fixing snapshot files"],
+                    cancellationToken);
+                return Result<SnapshotImportResult>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
+            }
+
+            if (!validation.Value.IsValid || validation.Value.Manifest is null)
+            {
+                await TryFailValidationOperationAsync(
+                    validationOperationId,
+                    AppErrorCodes.ValidationFailed,
+                    string.Join(" ", validation.Value.Errors),
+                    "Snapshot import validation failed.",
+                    ["Review snapshot manifest", "Retry import after fixing snapshot files"],
+                    cancellationToken);
+                return Result<SnapshotImportResult>.Success(new SnapshotImportResult("", default, null, false, false, false, validation.Value.Errors));
+            }
+
+            var manifest = validation.Value.Manifest;
+            var libraryId = LibraryId.Parse(manifest.LibraryId);
+            var warnings = new List<string>();
+            var matches = request.ExpectedLibraryId is null || request.ExpectedLibraryId.Value == libraryId;
+            if (!matches)
+            {
+                const string message = "Manifest library does not match expected library.";
+                warnings.Add(message);
+                await TryFailValidationOperationAsync(
+                    validationOperationId,
+                    AppErrorCodes.LibraryMismatch,
+                    message,
+                    "Snapshot import blocked by library mismatch.",
+                    ["Choose a snapshot from the current library", "Retry import after verifying library identity"],
+                    cancellationToken);
                 return Result<SnapshotImportResult>.Success(new SnapshotImportResult(manifest.SnapshotId, libraryId, null, false, true, false, warnings));
             }
-        }
 
-        Directory.CreateDirectory(request.StagingRoot);
-        var syncRoot = Directory.GetParent(Directory.GetParent(Path.GetFullPath(request.ManifestPath))!.FullName)!.FullName;
-        var firstShard = manifest.Shards.First();
-        var stagingPath = Path.Combine(request.StagingRoot, $"{manifest.SnapshotId}.staging.sqlite");
-        File.Copy(Path.Combine(syncRoot, firstShard.FileName), stagingPath, overwrite: true);
-        foreach (var shard in manifest.Shards.Skip(1))
-        {
-            await MergeDataShardIntoStagingAsync(stagingPath, Path.Combine(syncRoot, shard.FileName), cancellationToken);
+            if (request.CurrentRuntimeDatabasePath is not null && File.Exists(request.CurrentRuntimeDatabasePath))
+            {
+                var localLibrary = await SnapshotPublisher.ReadLibraryIdAsync(request.CurrentRuntimeDatabasePath);
+                if (!string.Equals(localLibrary, manifest.LibraryId, StringComparison.OrdinalIgnoreCase))
+                {
+                    const string message = "Manifest library does not match current runtime database.";
+                    warnings.Add(message);
+                    await TryFailValidationOperationAsync(
+                        validationOperationId,
+                        AppErrorCodes.LibraryMismatch,
+                        message,
+                        "Snapshot import blocked by library mismatch.",
+                        ["Choose a snapshot from the current library", "Retry import after verifying library identity"],
+                        cancellationToken);
+                    return Result<SnapshotImportResult>.Success(new SnapshotImportResult(manifest.SnapshotId, libraryId, null, false, true, false, warnings));
+                }
+            }
+
+            Directory.CreateDirectory(request.StagingRoot);
+            var syncRoot = Directory.GetParent(Directory.GetParent(Path.GetFullPath(request.ManifestPath))!.FullName)!.FullName;
+            var firstShard = manifest.Shards.First();
+            var stagingPath = Path.Combine(request.StagingRoot, $"{manifest.SnapshotId}.staging.sqlite");
+            File.Copy(Path.Combine(syncRoot, firstShard.FileName), stagingPath, overwrite: true);
+            foreach (var shard in manifest.Shards.Skip(1))
+            {
+                await MergeDataShardIntoStagingAsync(stagingPath, Path.Combine(syncRoot, shard.FileName), cancellationToken);
+            }
+
+            foreach (var shard in manifest.SensitiveMutableShards)
+            {
+                File.Copy(Path.Combine(syncRoot, shard.FileName), Path.Combine(request.StagingRoot, Path.GetFileName(shard.FileName)), overwrite: true);
+            }
+
+            await TryCompleteValidationOperationAsync(
+                validationOperationId,
+                $"Snapshot import validation passed for '{manifest.SnapshotId}'.",
+                cancellationToken);
+            return Result<SnapshotImportResult>.Success(new SnapshotImportResult(manifest.SnapshotId, libraryId, stagingPath, true, true, false, warnings));
         }
-        foreach (var shard in manifest.SensitiveMutableShards)
+        catch (OperationCanceledException)
         {
-            File.Copy(Path.Combine(syncRoot, shard.FileName), Path.Combine(request.StagingRoot, Path.GetFileName(shard.FileName)), overwrite: true);
+            throw;
         }
-        return Result<SnapshotImportResult>.Success(new SnapshotImportResult(manifest.SnapshotId, libraryId, stagingPath, true, true, false, warnings));
+        catch (Exception exception)
+        {
+            await TryFailValidationOperationAsync(
+                validationOperationId,
+                AppErrorCodes.DatabaseError,
+                $"Snapshot import failed: {exception.Message}",
+                "Snapshot import validation failed.",
+                ["Retry import after fixing snapshot files"],
+                cancellationToken);
+            return Result<SnapshotImportResult>.Failure(AppErrorCodes.DatabaseError, $"Snapshot import failed: {exception.Message}");
+        }
     }
 
     public async Task<Result<SnapshotBranchDetectionResult>> DetectBranchAsync(string syncRoot, string localParentSnapshotId, CancellationToken cancellationToken = default)
@@ -624,4 +692,80 @@ public sealed class SnapshotImporter : ISnapshotImporter
         "search_rewrite_rules",
         "search_settings"
     ];
+
+    private async Task<BlockingOperationId?> TryStartValidationOperationAsync(string manifestPath, CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var started = await _blockingOperations.StartAsync(
+                BlockingOperationTypes.SnapshotImportValidation,
+                BlockingOperationScopeTypes.SnapshotImport,
+                Path.GetFileName(manifestPath),
+                canCancel: false,
+                progressLabel: "Validating snapshot import.",
+                nextActions: ["Review snapshot manifest", "Retry import after fixing snapshot files"],
+                cancellationToken: cancellationToken);
+            return started.IsSuccess ? started.Value.OperationId : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task TryCompleteValidationOperationAsync(
+        BlockingOperationId? operationId,
+        string progressLabel,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _blockingOperations.CompleteAsync(
+                operationId.Value,
+                progressLabel,
+                Array.Empty<string>(),
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task TryFailValidationOperationAsync(
+        BlockingOperationId? operationId,
+        string errorCode,
+        string errorMessage,
+        string progressLabel,
+        IReadOnlyList<string> nextActions,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _blockingOperations.FailAsync(
+                operationId.Value,
+                errorCode,
+                errorMessage,
+                progressLabel,
+                nextActions,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
 }
