@@ -1,5 +1,6 @@
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
@@ -11,6 +12,7 @@ using Patchouli.Core.Time;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Credentials;
+using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Coordinates;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
@@ -36,6 +38,7 @@ namespace Patchouli.UI;
 public sealed class AppServices
 {
     private IOcrQueueScheduler? _ocrQueue;
+    private HttpClient? _cslCatalogHttpClient;
     private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings)
     {
         RuntimeDatabasePath = runtimeDatabasePath;
@@ -47,6 +50,11 @@ public sealed class AppServices
         LibraryPreferences = new LibraryPreferencesService(ConnectionFactory, Library, Clock);
         LibraryItems = new LibraryItemQueryService(ConnectionFactory);
         Items = new ItemService(ConnectionFactory, Library, Clock);
+        _cslCatalogHttpClient = new HttpClient();
+        CslCatalog = new CslStyleCatalog(ConnectionFactory, _cslCatalogHttpClient);
+        CslStore = new CslStyleStore(ConnectionFactory, Clock);
+        CslItemMapper = new CslItemMapper();
+        CslRenderer = new CslRenderer(Items, CslStore, CslItemMapper);
         ItemTypeProfiles = new CslItemTypeProfileService();
         ItemTypeInference = new ItemTypeInferenceService(ConnectionFactory, Clock, ItemTypeProfiles, Items);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
@@ -77,7 +85,7 @@ public sealed class AppServices
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
         Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
         McpSettings = new McpServerSettingsService(ConnectionFactory, Clock);
-        Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates);
+        Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter();
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -97,6 +105,10 @@ public sealed class AppServices
     public ILibraryPreferencesService LibraryPreferences { get; }
     public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
+    public ICslStyleCatalog CslCatalog { get; }
+    public ICslStyleStore CslStore { get; }
+    public ICslItemMapper CslItemMapper { get; }
+    public ICslRenderer CslRenderer { get; }
     public ICslItemTypeProfileService ItemTypeProfiles { get; }
     public IItemTypeInferenceService ItemTypeInference { get; }
     public IFileAssetService Files { get; }

@@ -114,9 +114,11 @@ public sealed class ItemService : IItemService
 
             var creators = await LoadCreatorsAsync(connection, new[] { itemId }, cancellationToken);
             var dates = await LoadDatesAsync(connection, new[] { itemId }, cancellationToken);
+            var identifiers = await LoadIdentifiersAsync(connection, new[] { itemId }, cancellationToken);
             return Result<ItemMetadata>.Success(row.ToMetadata(
                 creators.GetValueOrDefault(itemId) ?? LegacyCreators(row),
-                dates.GetValueOrDefault(itemId) ?? LegacyDates(row)));
+                dates.GetValueOrDefault(itemId) ?? LegacyDates(row),
+                identifiers.GetValueOrDefault(itemId) ?? Array.Empty<ItemIdentifier>()));
         }
         catch (OperationCanceledException)
         {
@@ -173,6 +175,7 @@ public sealed class ItemService : IItemService
                 Array.Empty<ItemCreator>(),
                 request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
                 Array.Empty<ItemDate>(),
+                Array.Empty<ItemIdentifier>(),
                 NullIfWhiteSpace(request.PublicationTitle),
                 NullIfWhiteSpace(request.ContainerTitleShort),
                 NullIfWhiteSpace(request.CollectionTitle),
@@ -407,11 +410,13 @@ public sealed class ItemService : IItemService
             var itemIds = pageRows.Select(row => row.ToItemId()).ToArray();
             var creators = await LoadCreatorsAsync(connection, itemIds, cancellationToken);
             var dates = await LoadDatesAsync(connection, itemIds, cancellationToken);
+            var identifiers = await LoadIdentifiersAsync(connection, itemIds, cancellationToken);
 
             return Result<ItemListPage>.Success(new ItemListPage(
                 pageRows.Select(row => row.ToMetadata(
                     creators.GetValueOrDefault(row.ToItemId()) ?? LegacyCreators(row),
-                    dates.GetValueOrDefault(row.ToItemId()) ?? LegacyDates(row))).ToArray(),
+                    dates.GetValueOrDefault(row.ToItemId()) ?? LegacyDates(row),
+                    identifiers.GetValueOrDefault(row.ToItemId()) ?? Array.Empty<ItemIdentifier>())).ToArray(),
                 nextCursor,
                 totalCount));
         }
@@ -665,6 +670,37 @@ public sealed class ItemService : IItemService
             .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemDate>)group.Select(row => row.ToDate()).ToArray());
     }
 
+    private static async Task<Dictionary<ItemId, IReadOnlyList<ItemIdentifier>>> LoadIdentifiersAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (itemIds.Count == 0)
+        {
+            return new Dictionary<ItemId, IReadOnlyList<ItemIdentifier>>();
+        }
+
+        var rows = await connection.QueryAsync<IdentifierRow>(
+            """
+            select
+                identifier_id as IdentifierId,
+                item_id as ItemId,
+                scheme as Scheme,
+                value as Value,
+                note as Note,
+                created_at as CreatedAt
+            from item_identifiers
+            where item_id in @ItemIds
+            order by item_id, created_at, identifier_id;
+            """,
+            new { ItemIds = itemIds.Select(id => id.ToString()).ToArray() });
+
+        return rows
+            .GroupBy(row => ItemId.Parse(row.ItemId))
+            .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemIdentifier>)group.Select(row => row.ToIdentifier()).ToArray());
+    }
+
     private static async Task ReplaceCreatorsAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
         System.Data.Common.DbTransaction transaction,
@@ -907,6 +943,7 @@ public sealed class ItemService : IItemService
                 Array.Empty<ItemCreator>(),
                 request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
                 Array.Empty<ItemDate>(),
+                Array.Empty<ItemIdentifier>(),
                 NullIfWhiteSpace(request.PublicationTitle),
                 NullIfWhiteSpace(request.ContainerTitleShort),
                 NullIfWhiteSpace(request.CollectionTitle),
@@ -1273,7 +1310,7 @@ public sealed class ItemService : IItemService
         public Patchouli.Core.Ids.ItemId ToItemId() => Patchouli.Core.Ids.ItemId.Parse(ItemId);
         public Patchouli.Core.Ids.LibraryId ToLibraryId() => Patchouli.Core.Ids.LibraryId.Parse(LibraryId);
 
-        public ItemMetadata ToMetadata(IReadOnlyList<ItemCreator> creators, IReadOnlyList<ItemDate> dates)
+        public ItemMetadata ToMetadata(IReadOnlyList<ItemCreator> creators, IReadOnlyList<ItemDate> dates, IReadOnlyList<ItemIdentifier> identifiers)
         {
             return new ItemMetadata(
                 Patchouli.Core.Ids.ItemId.Parse(ItemId),
@@ -1287,6 +1324,7 @@ public sealed class ItemService : IItemService
                 creators,
                 Date,
                 dates,
+                identifiers,
                 PublicationTitle,
                 ContainerTitleShort,
                 CollectionTitle,

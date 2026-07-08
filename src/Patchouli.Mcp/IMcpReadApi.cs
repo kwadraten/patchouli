@@ -12,4 +12,8 @@ public interface IMcpReadApi
     Task<Result<McpPageTextResponse>> GetPageTextAsync(McpPageTextRequest request, CancellationToken cancellationToken = default);
     Task<Result<McpPageBlocksResponse>> GetPageBlocksAsync(McpPageBlocksRequest request, CancellationToken cancellationToken = default);
     Task<Result<McpSearchContextResponse>> GetSearchResultContextAsync(McpSearchContextRequest request, CancellationToken cancellationToken = default);
+    Task<Result<IReadOnlyList<McpCslStyleSummary>>> ListCslStylesAsync(CancellationToken cancellationToken = default);
+    Task<Result<McpCslStyleResponse>> GetCslStyleAsync(string styleId, CancellationToken cancellationToken = default);
+    Task<Result<McpRenderBibliographyResponse>> RenderItemBibliographyAsync(ItemId itemId, string? styleId = null, string? locale = null, CancellationToken cancellationToken = default);
+    Task<Result<McpRenderBibliographyResponse>> RenderItemsBibliographyAsync(McpRenderBibliographyRequest request, CancellationToken cancellationToken = default);
 }

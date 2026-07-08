@@ -1,5 +1,6 @@
 using Dapper;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Csl;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -19,13 +20,17 @@ public sealed class McpReadApi : IMcpReadApi
     private readonly ISearchService _searchService;
     private readonly IEvidenceReferenceService _evidenceService;
     private readonly IPageCoordinateService? _coordinates;
+    private readonly ICslStyleStore? _cslStyleStore;
+    private readonly ICslRenderer? _cslRenderer;
 
-    public McpReadApi(SqliteConnectionFactory connectionFactory, ISearchService searchService, IEvidenceReferenceService evidenceService, IPageCoordinateService? coordinates = null)
+    public McpReadApi(SqliteConnectionFactory connectionFactory, ISearchService searchService, IEvidenceReferenceService evidenceService, IPageCoordinateService? coordinates = null, ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null)
     {
         _connectionFactory = connectionFactory;
         _searchService = searchService;
         _evidenceService = evidenceService;
         _coordinates = coordinates;
+        _cslStyleStore = cslStyleStore;
+        _cslRenderer = cslRenderer;
     }
 
     public async Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request, CancellationToken cancellationToken = default)
@@ -258,6 +263,79 @@ public sealed class McpReadApi : IMcpReadApi
         }
         var warning = _coordinates is null ? null : string.Join("; ", (await Task.WhenAll(units.Select(async unit => await _coordinates.DetectBBoxWarningsAsync(unit.PageId, cancellationToken: cancellationToken)))).SelectMany(x => x).Distinct());
         return Result<McpSearchContextResponse>.Success(new McpSearchContextResponse(units, string.IsNullOrWhiteSpace(warning) ? null : warning));
+    }
+
+    public async Task<Result<IReadOnlyList<McpCslStyleSummary>>> ListCslStylesAsync(CancellationToken cancellationToken = default)
+    {
+        if (_cslStyleStore is null)
+        {
+            return Result<IReadOnlyList<McpCslStyleSummary>>.Failure(AppErrorCodes.UnsupportedOperation, "CSL style store is not configured.");
+        }
+
+        var styles = await _cslStyleStore.ListInstalledStylesAsync(cancellationToken);
+        if (styles.IsFailure)
+        {
+            return Result<IReadOnlyList<McpCslStyleSummary>>.Failure(styles.ErrorCode!, styles.ErrorMessage!);
+        }
+
+        return Result<IReadOnlyList<McpCslStyleSummary>>.Success(styles.Value
+            .Select(style => new McpCslStyleSummary(style.StyleId, style.DisplayName, style.DefaultLocale, style.Enabled))
+            .ToArray());
+    }
+
+    public async Task<Result<McpCslStyleResponse>> GetCslStyleAsync(string styleId, CancellationToken cancellationToken = default)
+    {
+        if (_cslStyleStore is null)
+        {
+            return Result<McpCslStyleResponse>.Failure(AppErrorCodes.UnsupportedOperation, "CSL style store is not configured.");
+        }
+
+        var style = await _cslStyleStore.GetStyleAsync(styleId, cancellationToken);
+        if (style.IsFailure)
+        {
+            return Result<McpCslStyleResponse>.Failure(style.ErrorCode!, style.ErrorMessage!);
+        }
+
+        var content = await _cslStyleStore.GetStyleContentAsync(styleId, cancellationToken);
+        if (content.IsFailure)
+        {
+            return Result<McpCslStyleResponse>.Failure(content.ErrorCode!, content.ErrorMessage!);
+        }
+
+        return Result<McpCslStyleResponse>.Success(new McpCslStyleResponse(
+            style.Value.StyleId,
+            style.Value.DisplayName,
+            style.Value.DefaultLocale,
+            style.Value.Enabled,
+            style.Value.SourceUrl,
+            content.Value));
+    }
+
+    public Task<Result<McpRenderBibliographyResponse>> RenderItemBibliographyAsync(ItemId itemId, string? styleId = null, string? locale = null, CancellationToken cancellationToken = default)
+        => RenderItemsBibliographyAsync(new McpRenderBibliographyRequest([itemId], styleId, locale), cancellationToken);
+
+    public async Task<Result<McpRenderBibliographyResponse>> RenderItemsBibliographyAsync(McpRenderBibliographyRequest request, CancellationToken cancellationToken = default)
+    {
+        if (_cslRenderer is null)
+        {
+            return Result<McpRenderBibliographyResponse>.Failure(AppErrorCodes.UnsupportedOperation, "CSL renderer is not configured.");
+        }
+
+        var rendered = await _cslRenderer.RenderAsync(new CslRenderRequest(request.ItemIds, request.StyleId, request.Locale), cancellationToken);
+        if (rendered.IsFailure)
+        {
+            return Result<McpRenderBibliographyResponse>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
+        }
+
+        return Result<McpRenderBibliographyResponse>.Success(new McpRenderBibliographyResponse(
+            rendered.Value.StyleId,
+            rendered.Value.StyleDisplayName,
+            rendered.Value.Locale,
+            rendered.Value.ItemIds,
+            rendered.Value.RenderedText,
+            rendered.Value.RenderedHtml,
+            rendered.Value.Warnings,
+            rendered.Value.Errors));
     }
 
     private async Task<Result<McpPageTextResponse>> CurrentPageTextAsync(PageId pageId, bool includeAnnotations, CancellationToken cancellationToken)

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -10,6 +11,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
@@ -34,6 +36,10 @@ public sealed class McpReadApiTests
     [Fact] public async Task GetItemMetadata_returns_bibliographic_metadata() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); var r = await c.Api.GetItemMetadataAsync(c.ItemId); r.Value.Title.Should().Be("MCP Item"); r.Value.ItemType.Should().Be("book"); r.Value.CitationKey.Should().StartWith("mcp-item-"); }
     [Fact] public async Task GetItemMetadata_returns_identifiers() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); await c.ItemService.AddIdentifierAsync(c.ItemId, BuiltInIdentifierSchemes.DOI, "10.1/test", null); var r = await c.Api.GetItemMetadataAsync(c.ItemId); r.Value.Identifiers.Single().Value.Should().Be("10.1/test"); }
     [Fact] public async Task GetItemMetadata_returns_structured_creators_and_dates() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("book", "MCP Item", Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada")], Dates: [new ItemDateInput(ItemDateRoles.Issued, """[[1843]]""")])); var r = await c.Api.GetItemMetadataAsync(c.ItemId); r.Value.Creators.Single().DisplayName.Should().Be("Ada Lovelace"); r.Value.Dates.Single().Role.Should().Be(ItemDateRoles.Issued); r.Value.Dates.Single().DatePartsJson.Should().Be("""[[1843]]"""); }
+    [Fact] public async Task ListCslStyles_returns_installed_style_summaries() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); var r = await c.Api.ListCslStylesAsync(); r.IsSuccess.Should().BeTrue(); r.Value.Should().ContainSingle(); r.Value.Single().StyleId.Should().Be("apa"); }
+    [Fact] public async Task GetCslStyle_returns_style_without_local_path_leak() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); var r = await c.Api.GetCslStyleAsync("apa"); r.IsSuccess.Should().BeTrue(); r.Value.ContentXml.Should().Contain("<style"); JsonSerializer.Serialize(r.Value).Should().NotContain("installed"); }
+    [Fact] public async Task RenderItemBibliography_returns_rendered_text_and_html() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("book", "MCP Item", Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada")], Dates: [new ItemDateInput(ItemDateRoles.Issued, """[[1843]]""")])); var r = await c.Api.RenderItemBibliographyAsync(c.ItemId, "apa", "en-US"); r.IsSuccess.Should().BeTrue(); r.Value.RenderedText.Should().Contain("Ada Lovelace").And.Contain("MCP Item"); r.Value.RenderedHtml.Should().Contain("<i>MCP Item</i>"); }
+    [Fact] public async Task RenderItemBibliography_blocks_general_type() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("general", "MCP Item")); var r = await c.Api.RenderItemBibliographyAsync(c.ItemId, "apa", "en-US"); r.IsFailure.Should().BeTrue(); r.ErrorCode.Should().Be("general_type_not_renderable"); }
     [Fact] public async Task GetItemMetadata_does_not_return_file_paths() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", "/Users/alice/private/source.pdf"); var json = JsonSerializer.Serialize((await c.Api.GetItemMetadataAsync(c.ItemId)).Value); json.Should().NotContain("/Users/alice/private/source.pdf").And.NotContain("source.pdf"); }
     [Fact] public async Task GetDocumentStatus_returns_has_current_layout() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); (await c.Api.GetDocumentStatusAsync(c.DocumentInstanceId)).Value.HasCurrentLayout.Should().BeTrue(); }
     [Fact] public async Task GetDocumentStatus_returns_is_search_indexed() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); (await c.Api.GetDocumentStatusAsync(c.DocumentInstanceId)).Value.IsSearchIndexed.Should().BeTrue(); }
@@ -57,7 +63,7 @@ public sealed class McpReadApiTests
     [Fact] public async Task GetSearchResultContext_does_not_cross_page() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("context text"); var otherPage = await c.AddSecondPageUnitAsync("other"); var r = await c.Api.GetSearchResultContextAsync(new McpSearchContextRequest(c.UnitId, 10, 10)); r.Value.Units.Should().OnlyContain(u => u.PageId == c.PageId); otherPage.Should().NotBe(c.PageId); }
     [Fact] public async Task GetSearchResultContext_caps_before_after() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("u0"); for (var i = 1; i < 30; i++) await c.AddUnitAsync($"u{i}", i + 1); await c.RebuildAsync(); var r = await c.Api.GetSearchResultContextAsync(new McpSearchContextRequest(c.UnitId, 99, 99)); r.Value.Units.Count.Should().BeLessThanOrEqualTo(21); }
     [Fact] public async Task GetSearchResultContext_does_not_return_whole_page_text() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("match"); await c.AddUnitAsync("far away", 30); await c.RebuildAsync(); var r = await c.Api.GetSearchResultContextAsync(new McpSearchContextRequest(c.UnitId, 0, 0)); r.Value.Units.Should().HaveCount(1); JsonSerializer.Serialize(r.Value).Should().NotContain("far away"); }
-    [Fact] public void IMcpReadApi_exposes_only_read_methods() { var allowed = new[] { nameof(IMcpReadApi.SearchLibraryAsync), nameof(IMcpReadApi.GetItemMetadataAsync), nameof(IMcpReadApi.GetDocumentStatusAsync), nameof(IMcpReadApi.GetPageTextAsync), nameof(IMcpReadApi.GetPageBlocksAsync), nameof(IMcpReadApi.GetSearchResultContextAsync) }; typeof(IMcpReadApi).GetMethods().Select(m => m.Name).Should().OnlyContain(n => allowed.Contains(n)); typeof(IMcpReadApi).GetMethods().Select(m => m.Name).Should().NotContain(n => n.Contains("Run", StringComparison.OrdinalIgnoreCase) || n.Contains("Edit", StringComparison.OrdinalIgnoreCase) || n.Contains("Delete", StringComparison.OrdinalIgnoreCase) || n.Contains("Update", StringComparison.OrdinalIgnoreCase) || n.Contains("Purge", StringComparison.OrdinalIgnoreCase)); }
+    [Fact] public void IMcpReadApi_exposes_only_read_methods() { var allowed = new[] { nameof(IMcpReadApi.SearchLibraryAsync), nameof(IMcpReadApi.GetItemMetadataAsync), nameof(IMcpReadApi.GetDocumentStatusAsync), nameof(IMcpReadApi.GetPageTextAsync), nameof(IMcpReadApi.GetPageBlocksAsync), nameof(IMcpReadApi.GetSearchResultContextAsync), nameof(IMcpReadApi.ListCslStylesAsync), nameof(IMcpReadApi.GetCslStyleAsync), nameof(IMcpReadApi.RenderItemBibliographyAsync), nameof(IMcpReadApi.RenderItemsBibliographyAsync) }; typeof(IMcpReadApi).GetMethods().Select(m => m.Name).Should().OnlyContain(n => allowed.Contains(n)); typeof(IMcpReadApi).GetMethods().Select(m => m.Name).Should().NotContain(n => n.Contains("Run", StringComparison.OrdinalIgnoreCase) || n.Contains("Edit", StringComparison.OrdinalIgnoreCase) || n.Contains("Delete", StringComparison.OrdinalIgnoreCase) || n.Contains("Update", StringComparison.OrdinalIgnoreCase) || n.Contains("Purge", StringComparison.OrdinalIgnoreCase)); }
     [Fact] public void MCP_has_no_queue_control_or_queue_task_exposure() { var names=typeof(IMcpReadApi).GetMethods().Select(m=>m.Name).ToArray(); names.Should().NotContain(n=>n.Contains("Queue",StringComparison.OrdinalIgnoreCase)||n.Contains("Task",StringComparison.OrdinalIgnoreCase)); typeof(IMcpReadApi).Assembly.GetTypes().SelectMany(t=>t.GetProperties()).Should().NotContain(p=>p.PropertyType.Name.Contains("OcrQueue",StringComparison.Ordinal)); }
     [Fact] public async Task MCP_responses_do_not_contain_original_path_or_resolved_path() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("needle", "/Users/alice/private/source.pdf"); var json = await c.AllResponsesJsonAsync("needle"); json.Should().NotContain("/Users/alice/private/source.pdf").And.NotContain("original_path").And.NotContain("resolved_path"); }
     [Fact] public async Task MCP_responses_do_not_contain_file_url_or_cache_path() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("needle", "file:///Users/alice/cache/source.pdf"); var json = await c.AllResponsesJsonAsync("needle"); json.Should().NotContain("file://").And.NotContain("/Users/alice/cache/source.pdf"); }
@@ -81,7 +87,7 @@ public sealed class McpReadApiTests
         public McpReadApi Api { get; }
         public EvidenceReferenceService Evidence { get; }
         public ItemService ItemService { get; }
-        public static async Task<McpTestContext> CreateWithIndexedUnitAsync(string text, string? originalPath = null, bool failingEvidence = false)
+        public static async Task<McpTestContext> CreateWithIndexedUnitAsync(string text, string? originalPath = null, bool failingEvidence = false, bool withCsl = false)
         {
             var db = TemporarySqliteDatabase.Create(); var clock = new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
             await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
@@ -105,7 +111,23 @@ public sealed class McpReadApiTests
             var search = new SqliteSearchService(db.ConnectionFactory, new SearchProfileService(db.ConnectionFactory, librarySvc, clock));
             var evidence = new EvidenceReferenceService(db.ConnectionFactory, clock);
             IEvidenceReferenceService evidenceForApi = failingEvidence ? new FailingEvidenceService() : evidence;
-            var api = new McpReadApi(db.ConnectionFactory, search, evidenceForApi);
+            ICslStyleStore? styleStore = null;
+            ICslRenderer? renderer = null;
+            if (withCsl)
+            {
+                styleStore = new CslStyleStore(db.ConnectionFactory, clock);
+                await styleStore.InstallStyleAsync(
+                    new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
+                    """
+                    <style xmlns="http://purl.org/net/xbiblio/csl" version="1.0" default-locale="en-US">
+                      <info>
+                        <title>APA</title>
+                      </info>
+                    </style>
+                    """);
+                renderer = new CslRenderer(itemSvc, styleStore, new CslItemMapper());
+            }
+            var api = new McpReadApi(db.ConnectionFactory, search, evidenceForApi, cslStyleStore: styleStore, cslRenderer: renderer);
             return new McpTestContext(db, clock, lib.Value.LibraryId, item.Value.ItemId, doc.Value.DocumentInstanceId, page.Value.PageId, rev.Value.LayoutRevisionId, unitId, api, evidence, itemSvc);
         }
         public async Task AddAnnotationAsync(string text) => await new LayoutTreeService(Database.ConnectionFactory, Clock).AddNodeAsync(RevisionId, PageId, null, LayoutNodeType.Annotation, new NormalizedBBox(0.4, 0.4, 0.1, 0.1), text, TextPolicy.Own, 99, LayoutNodeSource.Mock);

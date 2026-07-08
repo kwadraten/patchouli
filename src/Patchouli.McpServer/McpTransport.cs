@@ -100,7 +100,11 @@ public sealed class McpProtocolHandler
         new("get_document_status", "Read-only document status.", ["document_instance_id"]),
         new("get_page_text", "Read-only page text.", ["document_instance_id", "page_number"]),
         new("get_page_blocks", "Read-only page blocks.", ["document_instance_id", "page_number"]),
-        new("get_search_result_context", "Read-only search context.", ["search_unit_id"])
+        new("get_search_result_context", "Read-only search context.", ["search_unit_id"]),
+        new("list_csl_styles", "Read-only installed CSL styles.", Array.Empty<string>()),
+        new("get_csl_style", "Read-only CSL style metadata and XML.", ["style_id"]),
+        new("render_item_bibliography", "Render a bibliography entry for one item.", ["item_id"]),
+        new("render_items_bibliography", "Render bibliography entries for multiple items.", ["item_ids"])
     ];
 
     private async Task<object> CallAsync(JsonElement parameters, CancellationToken ct)
@@ -122,6 +126,10 @@ public sealed class McpProtocolHandler
             "get_page_text" => await PageTextAsync(a, ct),
             "get_page_blocks" => await PageBlocksAsync(a, ct),
             "get_search_result_context" => Wrap(await _api.GetSearchResultContextAsync(new McpSearchContextRequest(SearchUnitId.Parse(a.GetProperty("search_unit_id").GetString()!)), ct)),
+            "list_csl_styles" => Wrap(await _api.ListCslStylesAsync(ct)),
+            "get_csl_style" => Wrap(await _api.GetCslStyleAsync(a.GetProperty("style_id").GetString()!, ct)),
+            "render_item_bibliography" => Wrap(await _api.RenderItemBibliographyAsync(ItemId.Parse(a.GetProperty("item_id").GetString()!), a.TryGetProperty("style_id", out var oneStyleId) ? oneStyleId.GetString() : null, a.TryGetProperty("locale", out var oneLocale) ? oneLocale.GetString() : null, ct)),
+            "render_items_bibliography" => await RenderItemsBibliographyAsync(a, ct),
             _ => Result<object>.Failure("unknown_tool", "Unknown tool.")
         };
         return r.IsSuccess ? new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(r.Value) } } } : new { isError = true, content = new[] { new { type = "text", text = $"{r.ErrorCode}: {r.ErrorMessage}" } } };
@@ -129,6 +137,7 @@ public sealed class McpProtocolHandler
     private async Task<Result<object>> SearchAsync(JsonElement a, CancellationToken ct) { var q=a.GetProperty("query").GetString()??"";var req=new McpSearchLibraryRequest(q,a.TryGetProperty("limit",out var l)?l.GetInt32():10,a.TryGetProperty("cursor",out var c)?c.GetString():null,null,a.TryGetProperty("include_evidence_refs",out var e)?e.GetBoolean():true,a.TryGetProperty("profile_id",out var p)&&Guid.TryParse(p.GetString(),out var pid)?new SearchProfileId(pid):null,a.TryGetProperty("profile_alias",out var al)?al.GetString():null,a.TryGetProperty("include_rewrite_plan",out var rp)?rp.GetBoolean():true);return Wrap(await _api.SearchLibraryAsync(req,ct)); }
     private async Task<Result<object>> PageTextAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageTextAsync(new McpPageTextRequest(page.Value,a.TryGetProperty("mode",out var m)?m.GetString()??McpReadMode.Current:McpReadMode.Current,a.TryGetProperty("evidence_ref",out var e)?e.GetString():null),ct));}
     private async Task<Result<object>> PageBlocksAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageBlocksAsync(new McpPageBlocksRequest(page.Value,IncludeBbox:a.TryGetProperty("include_bbox",out var b)&&b.GetBoolean()),ct));}
+    private async Task<Result<object>> RenderItemsBibliographyAsync(JsonElement a, CancellationToken ct){var ids=a.GetProperty("item_ids").EnumerateArray().Select(x=>ItemId.Parse(x.GetString()!)).ToArray();return Wrap(await _api.RenderItemsBibliographyAsync(new McpRenderBibliographyRequest(ids,a.TryGetProperty("style_id",out var styleId)?styleId.GetString():null,a.TryGetProperty("locale",out var locale)?locale.GetString():null),ct));}
     private async Task<Result<PageId>> PageAsync(JsonElement a,CancellationToken ct){var doc=DocumentInstanceId.Parse(a.GetProperty("document_instance_id").GetString()!);var number=a.GetProperty("page_number").GetInt32();await using var c=_db.CreateConnection();await c.OpenAsync(ct);var id=await c.ExecuteScalarAsync<string?>("select page_id from pages where document_instance_id=@D and page_index=@P",new{D=doc.ToString(),P=number});return id is null?Result<PageId>.Failure("not_found","Page was not found."):Result<PageId>.Success(PageId.Parse(id));}
     private static Result<object> Wrap<T>(Result<T> result) => result.IsSuccess ? Result<object>.Success(result.Value!) : Result<object>.Failure(result.ErrorCode!, result.ErrorMessage!);
 

@@ -14,6 +14,7 @@ public sealed record ItemMetadata(
     IReadOnlyList<ItemCreator> Creators,
     string? Date,
     IReadOnlyList<ItemDate> Dates,
+    IReadOnlyList<ItemIdentifier> Identifiers,
     string? PublicationTitle,
     string? ContainerTitleShort,
     string? CollectionTitle,

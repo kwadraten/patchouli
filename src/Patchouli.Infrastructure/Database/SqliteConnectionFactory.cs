@@ -16,6 +16,8 @@ public sealed class SqliteConnectionFactory
         _databasePath = databasePath;
     }
 
+    public string DatabasePath => _databasePath;
+
     public SqliteConnection CreateConnection()
     {
         var builder = new SqliteConnectionStringBuilder

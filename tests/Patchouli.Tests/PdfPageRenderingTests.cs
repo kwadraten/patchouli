@@ -70,6 +70,7 @@ public sealed class PdfPageRenderingTests
         "013_create_structured_item_names_and_dates.sql",
         "014_add_table_cell_metadata.sql",
         "015_create_mcp_server_settings.sql",
+        "016_create_csl_styles.sql",
         "017_create_item_type_inferences.sql",
         "021_create_library_preferences.sql");
 

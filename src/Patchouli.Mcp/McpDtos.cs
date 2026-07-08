@@ -160,6 +160,35 @@ public sealed record McpContextUnit(
     PageId PageId,
     LayoutRevisionId LayoutRevisionId);
 
+public sealed record McpCslStyleSummary(
+    string StyleId,
+    string DisplayName,
+    string? Locale,
+    bool Enabled);
+
+public sealed record McpCslStyleResponse(
+    string StyleId,
+    string DisplayName,
+    string? Locale,
+    bool Enabled,
+    string? SourceUrl,
+    string ContentXml);
+
+public sealed record McpRenderBibliographyRequest(
+    IReadOnlyList<ItemId> ItemIds,
+    string? StyleId = null,
+    string? Locale = null);
+
+public sealed record McpRenderBibliographyResponse(
+    string StyleId,
+    string StyleDisplayName,
+    string? Locale,
+    IReadOnlyList<ItemId> ItemIds,
+    string RenderedText,
+    string RenderedHtml,
+    IReadOnlyList<string> Warnings,
+    IReadOnlyList<string> Errors);
+
 public static class McpReadMode
 {
     public const string Current = "current";
