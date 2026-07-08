@@ -2,6 +2,7 @@ using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Conflicts;
@@ -17,17 +18,20 @@ public sealed class FileResolutionService : IFileResolutionService
     private readonly ILibraryIdentityService _libraryIdentityService;
     private readonly IClock _clock;
     private readonly IFileFingerprintService _fingerprintService;
+    private readonly IBlockingOperationService? _blockingOperations;
 
     public FileResolutionService(
         SqliteConnectionFactory connectionFactory,
         ILibraryIdentityService libraryIdentityService,
         IClock clock,
-        IFileFingerprintService? fingerprintService = null)
+        IFileFingerprintService? fingerprintService = null,
+        IBlockingOperationService? blockingOperations = null)
     {
         _connectionFactory = connectionFactory;
         _libraryIdentityService = libraryIdentityService;
         _clock = clock;
         _fingerprintService = fingerprintService ?? new FileFingerprintService();
+        _blockingOperations = blockingOperations;
     }
 
     public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
@@ -48,13 +52,16 @@ public sealed class FileResolutionService : IFileResolutionService
         try
         {
             var now = _clock.UtcNow.ToUniversalTime();
+            var normalizedRootPath = Path.GetFullPath(rootPath);
+            var isRootAvailable = Directory.Exists(normalizedRootPath);
             var root = new FileSearchRoot(
                 FileSearchRootId.New(),
                 libraryResult.Value.LibraryId,
-                Path.GetFullPath(rootPath),
-                IsAvailable: true,
+                normalizedRootPath,
+                isRootAvailable,
                 now,
                 now);
+            var scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
 
             await using var connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
@@ -68,6 +75,13 @@ public sealed class FileResolutionService : IFileResolutionService
             if (duplicate > 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
+                await TryFailRootScanAsync(
+                    scanOperationId,
+                    AppErrorCodes.InvalidState,
+                    "This search root is already registered for the current library.",
+                    "Search root scan blocked by duplicate registration.",
+                    ["Choose a different search root"],
+                    cancellationToken);
                 return Result<FileSearchRoot>.Failure(
                     AppErrorCodes.InvalidState,
                     "This search root is already registered for the current library.");
@@ -81,7 +95,29 @@ public sealed class FileResolutionService : IFileResolutionService
                 ToParameters(root),
                 transaction);
 
+            var scanSummary = ScanRoot(root.RootPath, cancellationToken);
             await transaction.CommitAsync(cancellationToken);
+
+            if (!root.IsAvailable)
+            {
+                await TryFailRootScanAsync(
+                    scanOperationId,
+                    AppErrorCodes.NotFound,
+                    "Search root directory is not currently available.",
+                    "Search root scan did not run because the directory is unavailable.",
+                    ["Reconnect the search root", "Retry the root scan after the directory is available"],
+                    cancellationToken);
+            }
+            else
+            {
+                await TryCompleteRootScanAsync(
+                    scanOperationId,
+                    scanSummary.HitScanLimit
+                        ? $"Scanned {scanSummary.ScannedFileCount} file(s) while registering the search root before hitting the scan cap."
+                        : $"Scanned {scanSummary.ScannedFileCount} file(s) while registering the search root.",
+                    cancellationToken);
+            }
+
             return Result<FileSearchRoot>.Success(root);
         }
         catch (OperationCanceledException)
@@ -545,6 +581,27 @@ public sealed class FileResolutionService : IFileResolutionService
         return candidates;
     }
 
+    private RootScanSummary ScanRoot(string rootPath, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(rootPath))
+        {
+            return new RootScanSummary(0, false);
+        }
+
+        var scannedFileCount = 0;
+        foreach (var _ in EnumerateFilesSafely(rootPath))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            scannedFileCount++;
+            if (scannedFileCount >= MaxScannedFiles)
+            {
+                return new RootScanSummary(scannedFileCount, true);
+            }
+        }
+
+        return new RootScanSummary(scannedFileCount, false);
+    }
+
     private static IEnumerable<string> EnumerateFilesSafely(string rootPath)
     {
         var pending = new Stack<string>();
@@ -717,6 +774,84 @@ public sealed class FileResolutionService : IFileResolutionService
         return Result<T>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
     }
 
+    private async Task<BlockingOperationId?> TryStartRootScanAsync(
+        string rootPath,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var started = await _blockingOperations.StartAsync(
+                BlockingOperationTypes.FileSearchRootScan,
+                BlockingOperationScopeTypes.FileSearchRoot,
+                rootPath,
+                canCancel: true,
+                progressLabel: "Scanning file search root.",
+                nextActions: ["Reconnect the search root", "Retry registering the search root"],
+                cancellationToken: cancellationToken);
+            return started.IsSuccess ? started.Value.OperationId : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task TryCompleteRootScanAsync(
+        BlockingOperationId? operationId,
+        string progressLabel,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _blockingOperations.CompleteAsync(
+                operationId.Value,
+                progressLabel,
+                Array.Empty<string>(),
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task TryFailRootScanAsync(
+        BlockingOperationId? operationId,
+        string errorCode,
+        string errorMessage,
+        string progressLabel,
+        IReadOnlyList<string> nextActions,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _blockingOperations.FailAsync(
+                operationId.Value,
+                errorCode,
+                errorMessage,
+                progressLabel,
+                nextActions,
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
     private sealed class FileAssetRow
     {
         public string FileAssetId { get; set; } = string.Empty;
@@ -784,4 +919,8 @@ public sealed class FileResolutionService : IFileResolutionService
         string Reason,
         string Status)
         : FileResolutionCandidate(Path, SizeBytes, MtimeUtc, QuickHash, FullBlake3, Confidence, Reason);
+
+    private sealed record RootScanSummary(
+        int ScannedFileCount,
+        bool HitScanLimit);
 }

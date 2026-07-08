@@ -62,7 +62,7 @@ public sealed class AppServices
         ItemTypeInference = new ItemTypeInferenceService(ConnectionFactory, Clock, ItemTypeProfiles, Items);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
-        FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock);
+        FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock, blockingOperations: BlockingOperations);
         Pages = new PageService(ConnectionFactory, Clock);
         Layout = new LayoutTreeService(ConnectionFactory, Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
@@ -97,7 +97,7 @@ public sealed class AppServices
         PdfDiscovery = new PdfDiscoveryService();
         PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
-        FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport);
+        FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
     }
     public string RuntimeDatabasePath { get; }
     public PatchouliAppSettings Settings { get; }

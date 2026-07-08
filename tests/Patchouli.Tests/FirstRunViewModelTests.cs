@@ -2,6 +2,8 @@ using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
+using Patchouli.Core.Operations;
+using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
@@ -10,6 +12,7 @@ using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
+using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Ocr;
 using Patchouli.UI;
@@ -133,6 +136,53 @@ public sealed class FirstRunViewModelTests
     }
 
     [Fact]
+    public async Task ScanDirectoryCommand_records_completed_initial_root_scan()
+    {
+        await using var context = await ScanImportContext.CreateAsync();
+        TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "full-document.pdf");
+        var viewModel = new FirstRunViewModel(context.Workflow, new PdfDiscoveryService())
+        {
+            ScanRoot = context.ScanRoot
+        };
+
+        await viewModel.ScanCommand.ExecuteAsync();
+
+        var operations = await context.BlockingOperations.ListAsync(
+            status: BlockingOperationStatus.Completed,
+            operationType: BlockingOperationTypes.InitialRootScan,
+            scopeType: BlockingOperationScopeTypes.FileSearchRoot,
+            scopeId: Path.GetFullPath(context.ScanRoot));
+
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().ProgressLabel.Should().Contain("candidate");
+    }
+
+    [Fact]
+    public async Task ScanDirectoryCommand_records_failed_initial_root_scan_when_no_pdfs_are_found()
+    {
+        await using var context = await ScanImportContext.CreateAsync();
+        var viewModel = new FirstRunViewModel(context.Workflow, new PdfDiscoveryService())
+        {
+            ScanRoot = context.ScanRoot
+        };
+
+        await viewModel.ScanCommand.ExecuteAsync();
+
+        var operations = await context.BlockingOperations.ListAsync(
+            status: BlockingOperationStatus.Failed,
+            operationType: BlockingOperationTypes.InitialRootScan,
+            scopeType: BlockingOperationScopeTypes.FileSearchRoot,
+            scopeId: Path.GetFullPath(context.ScanRoot));
+
+        viewModel.CurrentStep.Should().Be(FirstRunStep.Scan);
+        viewModel.HasError.Should().BeTrue();
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().FailureCode.Should().Be(AppErrorCodes.NotFound);
+    }
+
+    [Fact]
     public async Task FinishSetupCommand_requires_token()
     {
         var viewModel = new FirstRunViewModel(_ =>
@@ -188,16 +238,22 @@ public sealed class FirstRunViewModelTests
 
     private sealed class ScanImportContext : IAsyncDisposable
     {
-        private ScanImportContext(TemporarySqliteDatabase database, string scanRoot, FirstRunWorkflow workflow)
+        private ScanImportContext(
+            TemporarySqliteDatabase database,
+            string scanRoot,
+            FirstRunWorkflow workflow,
+            IBlockingOperationService blockingOperations)
         {
             Database = database;
             ScanRoot = scanRoot;
             Workflow = workflow;
+            BlockingOperations = blockingOperations;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public string ScanRoot { get; }
         public FirstRunWorkflow Workflow { get; }
+        public IBlockingOperationService BlockingOperations { get; }
 
         public static async Task<ScanImportContext> CreateAsync()
         {
@@ -213,9 +269,10 @@ public sealed class FirstRunViewModelTests
                 new PageService(database.ConnectionFactory, clock),
                 new PdfMetadataReader(),
                 clock);
-            var workflow = new FirstRunWorkflow(library, new PdfDiscoveryService(), pdfImport);
+            var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
+            var workflow = new FirstRunWorkflow(library, new PdfDiscoveryService(), pdfImport, blockingOperations);
             var scanRoot = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-scan-{Guid.NewGuid():N}")).FullName;
-            return new ScanImportContext(database, scanRoot, workflow);
+            return new ScanImportContext(database, scanRoot, workflow, blockingOperations);
         }
 
         public async ValueTask DisposeAsync()

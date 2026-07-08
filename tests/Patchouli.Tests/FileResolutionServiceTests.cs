@@ -4,12 +4,14 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Infrastructure.Operations;
 
 namespace Patchouli.Tests;
 
@@ -218,6 +220,48 @@ public sealed class FileResolutionServiceTests
     }
 
     [Fact]
+    public async Task AddSearchRoot_records_completed_scan_operation_for_available_root()
+    {
+        await using var context = await FileResolutionTestContext.CreateAsync();
+        var root = context.Temp.CreateDirectory("scan-root");
+        await context.Temp.WriteFileAsync(Path.Combine("scan-root", "one.pdf"), "one");
+        await context.Temp.WriteFileAsync(Path.Combine("scan-root", "nested", "two.pdf"), "two");
+
+        var added = await context.FileResolutionService.AddSearchRootAsync(root);
+        var operations = await context.BlockingOperations.ListAsync(
+            status: BlockingOperationStatus.Completed,
+            operationType: BlockingOperationTypes.FileSearchRootScan,
+            scopeType: BlockingOperationScopeTypes.FileSearchRoot,
+            scopeId: Path.GetFullPath(root));
+
+        added.IsSuccess.Should().BeTrue();
+        added.Value.IsAvailable.Should().BeTrue();
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().ProgressLabel.Should().Contain("Scanned 2 file");
+    }
+
+    [Fact]
+    public async Task AddSearchRoot_records_failed_scan_operation_for_unavailable_root()
+    {
+        await using var context = await FileResolutionTestContext.CreateAsync();
+        var root = Path.Combine(context.Temp.Path, "missing-root");
+
+        var added = await context.FileResolutionService.AddSearchRootAsync(root);
+        var operations = await context.BlockingOperations.ListAsync(
+            status: BlockingOperationStatus.Failed,
+            operationType: BlockingOperationTypes.FileSearchRootScan,
+            scopeType: BlockingOperationScopeTypes.FileSearchRoot,
+            scopeId: Path.GetFullPath(root));
+
+        added.IsSuccess.Should().BeTrue();
+        added.Value.IsAvailable.Should().BeFalse();
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().FailureCode.Should().Be(AppErrorCodes.NotFound);
+    }
+
+    [Fact]
     public async Task ListKnownLocations_returns_registered_locations()
     {
         await using var context = await FileResolutionTestContext.CreateAsync();
@@ -272,7 +316,8 @@ public sealed class FileResolutionServiceTests
             ItemService itemService,
             FileAssetService fileAssetService,
             DocumentInstanceService documentInstanceService,
-            FileResolutionService fileResolutionService)
+            FileResolutionService fileResolutionService,
+            IBlockingOperationService blockingOperations)
         {
             Database = database;
             Temp = temp;
@@ -280,6 +325,7 @@ public sealed class FileResolutionServiceTests
             FileAssetService = fileAssetService;
             DocumentInstanceService = documentInstanceService;
             FileResolutionService = fileResolutionService;
+            BlockingOperations = blockingOperations;
         }
 
         public TemporarySqliteDatabase Database { get; }
@@ -288,6 +334,7 @@ public sealed class FileResolutionServiceTests
         public FileAssetService FileAssetService { get; }
         public DocumentInstanceService DocumentInstanceService { get; }
         public FileResolutionService FileResolutionService { get; }
+        public IBlockingOperationService BlockingOperations { get; }
 
         public static async Task<FileResolutionTestContext> CreateAsync()
         {
@@ -300,10 +347,16 @@ public sealed class FileResolutionServiceTests
             var libraryService = new LibraryIdentityService(database.ConnectionFactory, clock);
             await libraryService.CreateLibraryAsync("File resolution library");
             var fingerprintService = new FileFingerprintService();
+            var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
             var itemService = new ItemService(database.ConnectionFactory, libraryService, clock);
             var fileAssetService = new FileAssetService(database.ConnectionFactory, libraryService, clock, fingerprintService);
             var documentInstanceService = new DocumentInstanceService(database.ConnectionFactory, clock);
-            var fileResolutionService = new FileResolutionService(database.ConnectionFactory, libraryService, clock, fingerprintService);
+            var fileResolutionService = new FileResolutionService(
+                database.ConnectionFactory,
+                libraryService,
+                clock,
+                fingerprintService,
+                blockingOperations);
 
             return new FileResolutionTestContext(
                 database,
@@ -311,7 +364,8 @@ public sealed class FileResolutionServiceTests
                 itemService,
                 fileAssetService,
                 documentInstanceService,
-                fileResolutionService);
+                fileResolutionService,
+                blockingOperations);
         }
 
         public async ValueTask DisposeAsync()
