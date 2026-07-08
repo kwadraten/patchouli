@@ -5,6 +5,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
@@ -43,7 +44,11 @@ public sealed class AppServices
         Clock = new SystemClock();
         MigrationRunner = new MigrationRunner(ConnectionFactory, Path.Combine(AppContext.BaseDirectory, "migrations"));
         Library = new LibraryIdentityService(ConnectionFactory, Clock);
+        LibraryPreferences = new LibraryPreferencesService(ConnectionFactory, Library, Clock);
+        LibraryItems = new LibraryItemQueryService(ConnectionFactory);
         Items = new ItemService(ConnectionFactory, Library, Clock);
+        ItemTypeProfiles = new CslItemTypeProfileService();
+        ItemTypeInference = new ItemTypeInferenceService(ConnectionFactory, Clock, ItemTypeProfiles, Items);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock);
@@ -71,6 +76,7 @@ public sealed class AppServices
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
         Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
+        McpSettings = new McpServerSettingsService(ConnectionFactory, Clock);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter();
@@ -78,7 +84,7 @@ public sealed class AppServices
         Credentials = new CredentialStore(ConnectionFactory, Library, Clock);
         PdfMetadata = new PdfMetadataReader();
         PdfDiscovery = new PdfDiscoveryService();
-        PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock);
+        PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport);
     }
@@ -88,7 +94,11 @@ public sealed class AppServices
     public IClock Clock { get; }
     public MigrationRunner MigrationRunner { get; }
     public ILibraryIdentityService Library { get; }
+    public ILibraryPreferencesService LibraryPreferences { get; }
+    public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
+    public ICslItemTypeProfileService ItemTypeProfiles { get; }
+    public IItemTypeInferenceService ItemTypeInference { get; }
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
@@ -108,6 +118,7 @@ public sealed class AppServices
     public IQueryRewriter QueryRewriter { get; }
     public IEvidenceReferenceService Evidence { get; }
     public IMcpReadApi Mcp { get; }
+    public IMcpServerSettingsService McpSettings { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
     public ISnapshotBranchInspectionService BranchInspection { get; }
@@ -145,6 +156,13 @@ public sealed class AppServices
         var executor = new OcrQueueTaskExecutor(Ocr);
         _ocrQueue = new OcrQueueScheduler(library.Value.LibraryId, Clock, executor);
         return Result<IOcrQueueScheduler>.Success(_ocrQueue);
+    }
+    public async Task<Result<IOcrQueueRowService>> GetOcrQueueRowsAsync(CancellationToken cancellationToken = default)
+    {
+        var queue = await GetOcrQueueAsync(cancellationToken);
+        return queue.IsFailure
+            ? Result<IOcrQueueRowService>.Failure(queue.ErrorCode!, queue.ErrorMessage!)
+            : Result<IOcrQueueRowService>.Success(new OcrQueueRowService(queue.Value, ConnectionFactory));
     }
     public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null)
     {

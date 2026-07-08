@@ -113,6 +113,28 @@ public sealed class BibliographicCoreTests
     }
 
     [Fact]
+    public async Task CreateItem_request_can_stage_identifiers_in_same_transaction()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+
+        var created = await context.ItemService.CreateItemAsync(
+            new CreateItemRequest(
+                "book",
+                "Identifier-rich item",
+                Identifiers:
+                [
+                    new ItemIdentifierInput(BuiltInIdentifierSchemes.DOI, "10.1234/example"),
+                    new ItemIdentifierInput("local_catalog", "A-001", "Imported")
+                ]));
+
+        created.IsSuccess.Should().BeTrue();
+        var identifiers = await context.ItemService.ListIdentifiersAsync(created.Value.ItemId);
+        identifiers.IsSuccess.Should().BeTrue();
+        identifiers.Value.Should().HaveCount(2);
+        identifiers.Value.Select(identifier => identifier.Scheme).Should().BeEquivalentTo(BuiltInIdentifierSchemes.DOI, "local_catalog");
+    }
+
+    [Fact]
     public async Task GetItem_uses_legacy_creator_and_date_fallback_when_structured_rows_are_absent()
     {
         await using var context = await BibliographicTestContext.CreateAsync();

@@ -38,7 +38,11 @@ public sealed class PdfImportWorkflowTests
             var pageCount = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from pages where document_instance_id = @Id;",
                 new { Id = result.CreatedDocumentInstanceId });
+            var itemType = await connection.ExecuteScalarAsync<string>(
+                "select item_type from items where item_id = @Id;",
+                new { Id = result.CreatedItemId });
             pageCount.Should().Be(3);
+            itemType.Should().Be("general");
         }
         finally
         {
@@ -67,6 +71,32 @@ public sealed class PdfImportWorkflowTests
         }
     }
 
+    [Fact]
+    public async Task ImportPdf_creates_type_inference_suggestion_from_filename_when_confident()
+    {
+        await using var context = await CreateContextAsync();
+        var workflow = context.CreateWorkflow(new PdfMetadataReader());
+        var pdf = Path.Combine(Path.GetTempPath(), $"thesis-import-{Guid.NewGuid():N}.pdf");
+        File.Copy(TestFixtures.RealThreePagePdf, pdf);
+
+        try
+        {
+            var result = await workflow.ImportPdfAsync(new PdfImportRequest(
+                pdf, "Thesis Fixture", null, null));
+
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            var suggestions = await context.ItemTypeInference.ListSuggestionsAsync(Patchouli.Core.Ids.ItemId.Parse(result.CreatedItemId!));
+            suggestions.IsSuccess.Should().BeTrue();
+            suggestions.Value.Should().ContainSingle();
+            suggestions.Value.Single().SuggestedType.Should().Be("thesis");
+            suggestions.Value.Single().Confidence.Should().BeGreaterThan(0.9);
+        }
+        finally
+        {
+            File.Delete(pdf);
+        }
+    }
+
     private static async Task<ImportContext> CreateContextAsync()
     {
         var db = TemporarySqliteDatabase.Create();
@@ -82,12 +112,18 @@ public sealed class PdfImportWorkflowTests
         public TemporarySqliteDatabase Database { get; }
         private IClock Clock { get; }
         private LibraryIdentityService Library { get; }
+        public ItemTypeInferenceService ItemTypeInference { get; }
 
         public ImportContext(TemporarySqliteDatabase database, IClock clock, LibraryIdentityService library)
         {
             Database = database;
             Clock = clock;
             Library = library;
+            ItemTypeInference = new ItemTypeInferenceService(
+                database.ConnectionFactory,
+                clock,
+                new CslItemTypeProfileService(),
+                new ItemService(database.ConnectionFactory, library, clock));
         }
 
         public PdfImportWorkflow CreateWorkflow(IPdfMetadataReader metadataReader)
@@ -98,7 +134,8 @@ public sealed class PdfImportWorkflowTests
                 new DocumentInstanceService(Database.ConnectionFactory, Clock),
                 new PageService(Database.ConnectionFactory, Clock),
                 metadataReader,
-                Clock);
+                Clock,
+                ItemTypeInference);
         }
 
         public ValueTask DisposeAsync() => Database.DisposeAsync();

@@ -176,3 +176,11 @@ public static class McpSourceFileStatus
     public const string Conflict = "conflict";
     public const string Unknown = "unknown";
 }
+
+public static class McpErrorCodes
+{
+    public const string Disabled = "disabled";
+    public const string ToolUnavailable = "tool_unavailable";
+    public const string Unauthorized = "unauthorized";
+    public const string UnsafeConfiguration = "unsafe_configuration";
+}

@@ -110,62 +110,43 @@ public sealed class LibraryShellViewModel : ViewModelBase
             _main.RaiseLibraryTitleChanged();
         }
 
+        var rowsResult = await services.LibraryItems.ListRowsAsync();
+        if (rowsResult.IsFailure)
+        {
+            throw new InvalidOperationException(rowsResult.ErrorMessage);
+        }
+
         await using var connection = services.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-
-        var rows = await connection.QueryAsync<LibraryItemRow>(
+        var sourcePaths = (await connection.QueryAsync<(string DocumentInstanceId, string SourcePath, string? FileAssetId)>(
             """
-            select
-                i.item_id as ItemId,
-                i.title as Title,
-                i.item_type as ItemType,
-                i.creators_json as CreatorsJson,
-                coalesce(
-                    (select group_concat(
-                        case
-                            when length(trim(coalesce(c.literal, ''))) > 0 then c.literal
-                            else trim(coalesce(c.given, '') || ' ' || coalesce(c.particles, '') || ' ' || coalesce(c.family, '') || ' ' || coalesce(c.suffix, ''))
-                        end,
-                        ', '
-                    )
-                     from item_creators c
-                     where c.item_id = i.item_id and c.role = 'author'
-                     order by c.sequence_index),
-                    ''
-                ) as Authors,
-                coalesce((select d.literal from item_dates d where d.item_id = i.item_id and d.role = 'issued'), i.date, '') as Year,
-                coalesce(i.publication_title, '') as PublicationTitle,
-                d.document_instance_id as DocumentInstanceId,
-                f.file_asset_id as FileAssetId,
-                coalesce(d.status, 'unknown') as DocumentStatus,
-                coalesce(f.file_name, '') as FileName,
-                coalesce(f.original_path, '') as SourcePath,
-                (select count(1) from pages p where p.document_instance_id = d.document_instance_id) as PageCount,
-                (select count(1) from search_units su where su.document_instance_id = d.document_instance_id and su.status = 'current') as SearchUnitCount,
-                coalesce((select sis.status from search_index_status sis where sis.scope_type = 'document_instance' and sis.scope_id = d.document_instance_id), 'not_indexed') as IndexStatus
-            from items i
-            left join document_instances d on d.item_id = i.item_id and d.is_primary = 1
-            left join file_assets f on f.file_asset_id = d.file_asset_id
-            where i.deleted_at is null
-            order by i.created_at desc, i.title;
-            """);
+            select di.document_instance_id as DocumentInstanceId,
+                   coalesce(fa.original_path, '') as SourcePath,
+                   fa.file_asset_id as FileAssetId
+            from document_instances di
+            left join file_assets fa on fa.file_asset_id = di.file_asset_id;
+            """))
+            .ToDictionary(value => value.DocumentInstanceId, value => value, StringComparer.Ordinal);
 
         Items.Clear();
         RecentItems.Clear();
         RecentDocuments.Clear();
-        foreach (var row in rows)
+        foreach (var row in rowsResult.Value)
         {
+            var source = row.DocumentInstanceId is not null && sourcePaths.TryGetValue(row.DocumentInstanceId.ToString(), out var value)
+                ? value
+                : default;
             var item = new LibraryItemViewModel(
-                row.ItemId,
+                row.ItemId.ToString(),
                 row.Title,
                 row.ItemType,
-                string.IsNullOrWhiteSpace(row.Authors) ? FormatCreators(row.CreatorsJson) : row.Authors,
-                row.Year,
-                row.PublicationTitle,
-                row.DocumentInstanceId,
-                row.FileAssetId,
-                row.FileName,
-                row.SourcePath,
+                row.Authors,
+                row.Year ?? "",
+                row.PublicationTitle ?? "",
+                row.DocumentInstanceId?.ToString(),
+                source.FileAssetId,
+                row.LinkedFileName ?? "",
+                source.SourcePath ?? "",
                 row.PageCount,
                 row.SearchUnitCount,
                 row.IndexStatus,
@@ -174,8 +155,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 ViewPdfForItemAsync);
             Items.Add(item);
             RecentItems.Add(row.Title);
-            if (!string.IsNullOrWhiteSpace(row.FileName))
-                RecentDocuments.Add(row.FileName);
+            if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
+                RecentDocuments.Add(row.LinkedFileName);
         }
 
         if (SelectedItem is null || Items.All(item => item.ItemId != SelectedItem.ItemId))
@@ -324,44 +305,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         try { await RefreshItemsAsync(); } catch { }
         Raise(nameof(StatusText));
         Raise(nameof(LibraryName));
-    }
-
-    private sealed class LibraryItemRow
-    {
-        public string ItemId { get; set; } = "";
-        public string Title { get; set; } = "";
-        public string ItemType { get; set; } = "";
-        public string CreatorsJson { get; set; } = "[]";
-        public string Authors { get; set; } = "";
-        public string Year { get; set; } = "";
-        public string PublicationTitle { get; set; } = "";
-        public string? DocumentInstanceId { get; set; }
-        public string? FileAssetId { get; set; }
-        public string DocumentStatus { get; set; } = "";
-        public string FileName { get; set; } = "";
-        public string SourcePath { get; set; } = "";
-        public int PageCount { get; set; }
-        public int SearchUnitCount { get; set; }
-        public string IndexStatus { get; set; } = "";
-    }
-
-    private static string FormatCreators(string creatorsJson)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(creatorsJson) ? "[]" : creatorsJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Array) return "";
-            return string.Join(", ", document.RootElement.EnumerateArray()
-                .Select(element =>
-                    element.TryGetProperty("name", out var name) ? name.GetString() :
-                    element.TryGetProperty("Name", out var upperName) ? upperName.GetString() :
-                    null)
-                .Where(value => !string.IsNullOrWhiteSpace(value)));
-        }
-        catch
-        {
-            return "";
-        }
     }
 }
 

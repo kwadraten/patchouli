@@ -392,8 +392,25 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         await StopMcpServerAsync("MCP HTTP 服务正在启动。");
-        SetMcpStatus("MCP: 启动中", $"正在监听 {McpEndpoint}", Brushes.Goldenrod);
-        var server = new McpHttpServer(new McpProtocolHandler(services.Mcp, services.ConnectionFactory), _mcpPort);
+        var settingsResult = await services.McpSettings.GetSettingsAsync();
+        if (settingsResult.IsFailure)
+        {
+            var message = McpOutputSanitizer.Sanitize(settingsResult.ErrorMessage ?? "无法读取 MCP 设置。");
+            SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
+            return;
+        }
+
+        var serverSettings = settingsResult.Value with { Port = _mcpPort };
+        var validation = await services.McpSettings.ValidateSettingsAsync(serverSettings);
+        if (validation.IsFailure)
+        {
+            var message = McpOutputSanitizer.Sanitize(validation.ErrorMessage ?? "MCP 设置无效。");
+            SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
+            return;
+        }
+
+        SetMcpStatus("MCP: 启动中", $"正在监听 http://{serverSettings.BindAddress}:{serverSettings.Port}", Brushes.Goldenrod);
+        var server = new McpHttpServer(new McpProtocolHandler(services.Mcp, services.ConnectionFactory, serverSettings), serverSettings);
         server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
         {

@@ -1,14 +1,16 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Dapper;
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Mcp;
+using Patchouli.Infrastructure.Mcp;
 
 namespace Patchouli.McpServer;
 
-public sealed record McpServerOptions(string DatabasePath, int Port)
+public sealed record McpServerOptions(string DatabasePath, int Port, bool PortWasExplicitlySet = false)
 {
     public const int DefaultPort = 4536;
 
@@ -30,7 +32,7 @@ public sealed record McpServerOptions(string DatabasePath, int Port)
             }
         }
 
-        return McpServerOptionsParseResult.Success(new McpServerOptions(args[dbIndex + 1], port));
+        return McpServerOptionsParseResult.Success(new McpServerOptions(args[dbIndex + 1], port, portIndex >= 0));
     }
 }
 
@@ -61,8 +63,17 @@ public static class McpOutputSanitizer
 
 public sealed class McpProtocolHandler
 {
-    private readonly IMcpReadApi _api; private readonly SqliteConnectionFactory _db;
-    public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db) { _api = api; _db = db; }
+    private readonly IMcpReadApi _api;
+    private readonly SqliteConnectionFactory _db;
+    private readonly McpServerSettings _settings;
+
+    public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db, McpServerSettings? settings = null)
+    {
+        _api = api;
+        _db = db;
+        _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with { AuthRequired = false };
+    }
+
     public async Task<string> HandleAsync(string line, CancellationToken ct = default)
     {
         try
@@ -71,7 +82,7 @@ public sealed class McpProtocolHandler
             object result = method switch
             {
                 "initialize" => new { protocolVersion = "2024-11-05", serverInfo = new { name = "Patchouli", version = Patchouli.Core.BuildInfo.Version }, capabilities = new { tools = new { } } },
-                "tools/list" => new { tools = Tools() },
+                "tools/list" => new { tools = Tools().Where(tool => IsToolEnabled(tool.Name)).Select(tool => tool.ToWire()).ToArray() },
                 "tools/call" => await CallAsync(pars, ct),
                 "shutdown" => new { },
                 _ => throw new InvalidOperationException("Unknown MCP method.")
@@ -81,16 +92,28 @@ public sealed class McpProtocolHandler
         }
         catch (Exception ex) { return "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32602,\"message\":\"" + McpOutputSanitizer.Sanitize(ex.Message) + "\"}}"; }
     }
-    private static object[] Tools() => [
-        new { name="search_library", description="Read-only full text search.", inputSchema=new { type="object", required=new[]{"query"} } },
-        new { name="get_item_metadata", description="Read-only item metadata.", inputSchema=new { type="object", required=new[]{"item_id"} } },
-        new { name="get_document_status", description="Read-only document status.", inputSchema=new { type="object", required=new[]{"document_instance_id"} } },
-        new { name="get_page_text", description="Read-only page text.", inputSchema=new { type="object", required=new[]{"document_instance_id","page_number"} } },
-        new { name="get_page_blocks", description="Read-only page blocks.", inputSchema=new { type="object", required=new[]{"document_instance_id","page_number"} } },
-        new { name="get_search_result_context", description="Read-only search context.", inputSchema=new { type="object", required=new[]{"search_unit_id"} } }];
+
+    private static ToolDefinition[] Tools() =>
+    [
+        new("search_library", "Read-only full text search.", ["query"]),
+        new("get_item_metadata", "Read-only item metadata.", ["item_id"]),
+        new("get_document_status", "Read-only document status.", ["document_instance_id"]),
+        new("get_page_text", "Read-only page text.", ["document_instance_id", "page_number"]),
+        new("get_page_blocks", "Read-only page blocks.", ["document_instance_id", "page_number"]),
+        new("get_search_result_context", "Read-only search context.", ["search_unit_id"])
+    ];
+
     private async Task<object> CallAsync(JsonElement parameters, CancellationToken ct)
     {
-        var name = parameters.GetProperty("name").GetString() ?? throw new InvalidOperationException("Tool name is required."); var a = parameters.TryGetProperty("arguments", out var args) ? args : default;
+        var name = parameters.GetProperty("name").GetString() ?? throw new InvalidOperationException("Tool name is required.");
+        if (!IsToolEnabled(name))
+        {
+            var disabledReason = ToolDisabledReason(name);
+            var disabled = Result<object>.Failure(McpErrorCodes.ToolUnavailable, $"disabled: {disabledReason ?? "This MCP tool is disabled."}");
+            return new { isError = true, content = new[] { new { type = "text", text = $"{disabled.ErrorCode}: {disabled.ErrorMessage}" } } };
+        }
+
+        var a = parameters.TryGetProperty("arguments", out var args) ? args : default;
         Result<object> r = name switch
         {
             "search_library" => await SearchAsync(a, ct),
@@ -108,4 +131,15 @@ public sealed class McpProtocolHandler
     private async Task<Result<object>> PageBlocksAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageBlocksAsync(new McpPageBlocksRequest(page.Value,IncludeBbox:a.TryGetProperty("include_bbox",out var b)&&b.GetBoolean()),ct));}
     private async Task<Result<PageId>> PageAsync(JsonElement a,CancellationToken ct){var doc=DocumentInstanceId.Parse(a.GetProperty("document_instance_id").GetString()!);var number=a.GetProperty("page_number").GetInt32();await using var c=_db.CreateConnection();await c.OpenAsync(ct);var id=await c.ExecuteScalarAsync<string?>("select page_id from pages where document_instance_id=@D and page_index=@P",new{D=doc.ToString(),P=number});return id is null?Result<PageId>.Failure("not_found","Page was not found."):Result<PageId>.Success(PageId.Parse(id));}
     private static Result<object> Wrap<T>(Result<T> result) => result.IsSuccess ? Result<object>.Success(result.Value!) : Result<object>.Failure(result.ErrorCode!, result.ErrorMessage!);
+
+    private bool IsToolEnabled(string toolName)
+        => !_settings.ToolOverrides.Any(value => string.Equals(value.ToolName, toolName, StringComparison.Ordinal) && !value.Enabled);
+
+    private string? ToolDisabledReason(string toolName)
+        => _settings.ToolOverrides.FirstOrDefault(value => string.Equals(value.ToolName, toolName, StringComparison.Ordinal) && !value.Enabled)?.DisabledReason;
+
+    private sealed record ToolDefinition(string Name, string Description, string[] Required)
+    {
+        public object ToWire() => new { name = Name, description = Description, inputSchema = new { type = "object", required = Required } };
+    }
 }

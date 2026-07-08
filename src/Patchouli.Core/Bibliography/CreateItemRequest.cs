@@ -1,0 +1,37 @@
+namespace Patchouli.Core.Bibliography;
+
+public sealed record CreateItemRequest(
+    string ItemType,
+    string Title,
+    string? Subtitle = null,
+    string? TitleShort = null,
+    string? CreatorsJson = null,
+    string? Date = null,
+    string? PublicationTitle = null,
+    string? ContainerTitleShort = null,
+    string? CollectionTitle = null,
+    string? Publisher = null,
+    string? Place = null,
+    string? Edition = null,
+    string? Genre = null,
+    string? Number = null,
+    string? ChapterNumber = null,
+    string? Volume = null,
+    string? Version = null,
+    string? Issue = null,
+    string? Pages = null,
+    string? Language = null,
+    string? Status = null,
+    string? Note = null,
+    string? AbstractText = null,
+    string? TagsJson = null,
+    string? CollectionsJson = null,
+    string? CustomFieldsJson = null,
+    IReadOnlyList<ItemCreatorInput>? Creators = null,
+    IReadOnlyList<ItemDateInput>? Dates = null,
+    IReadOnlyList<ItemIdentifierInput>? Identifiers = null);
+
+public sealed record ItemIdentifierInput(
+    string Scheme,
+    string Value,
+    string? Note = null);

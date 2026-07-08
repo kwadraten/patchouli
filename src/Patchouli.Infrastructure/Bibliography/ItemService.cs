@@ -29,6 +29,13 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<ItemMetadata>> CreateItemAsync(
+        CreateItemRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        return await CreateItemCoreAsync(request, cancellationToken);
+    }
+
+    public async Task<Result<ItemMetadata>> CreateItemAsync(
         string itemType,
         string title,
         string? subtitle = null,
@@ -59,98 +66,37 @@ public sealed class ItemService : IItemService
         IReadOnlyList<ItemDateInput>? dates = null,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item title is required.");
-        }
-
-        if (string.IsNullOrWhiteSpace(itemType))
-        {
-            return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item type is required.");
-        }
-
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
-        if (libraryResult.IsFailure)
-        {
-            return Result<ItemMetadata>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
-        }
-
-        try
-        {
-            var now = _clock.UtcNow.ToUniversalTime();
-            var itemId = ItemId.New();
-            var creatorInputs = creators ?? ParseCreatorInputs(creatorsJson);
-            var dateInputs = dates ?? ParseDateInputs(date);
-            var item = new ItemMetadata(
-                itemId,
-                libraryResult.Value.LibraryId,
-                itemType.Trim(),
-                GenerateCitationKey(title, itemId),
-                title.Trim(),
-                NullIfWhiteSpace(subtitle),
-                NullIfWhiteSpace(titleShort),
-                creators is null ? DefaultJsonArray(creatorsJson) : SerializeCreatorCache(creatorInputs),
-                Array.Empty<ItemCreator>(),
-                dates is null ? NullIfWhiteSpace(date) : DisplayIssuedDate(dateInputs),
-                Array.Empty<ItemDate>(),
-                NullIfWhiteSpace(publicationTitle),
-                NullIfWhiteSpace(containerTitleShort),
-                NullIfWhiteSpace(collectionTitle),
-                NullIfWhiteSpace(publisher),
-                NullIfWhiteSpace(place),
-                NullIfWhiteSpace(edition),
-                NullIfWhiteSpace(genre),
-                NullIfWhiteSpace(number),
-                NullIfWhiteSpace(chapterNumber),
-                NullIfWhiteSpace(volume),
-                NullIfWhiteSpace(version),
-                NullIfWhiteSpace(issue),
-                NullIfWhiteSpace(pages),
-                NullIfWhiteSpace(language),
-                NullIfWhiteSpace(status),
-                NullIfWhiteSpace(note),
-                NullIfWhiteSpace(abstractText),
-                DefaultJsonArray(tagsJson),
-                DefaultJsonArray(collectionsJson),
-                DefaultJsonObject(customFieldsJson),
-                now,
-                now);
-
-            await using var connection = _connectionFactory.CreateConnection();
-            await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-            await connection.ExecuteAsync(
-                """
-                insert into items (
-                    item_id, library_id, item_type, citation_key, title, subtitle, title_short, creators_json, date,
-                    publication_title, container_title_short, collection_title, publisher, place, edition, genre,
-                    number, chapter_number, volume, version, issue, pages, language, status, note, abstract,
-                    tags_json, collections_json, custom_fields_json, created_at, updated_at, deleted_at
-                )
-                values (
-                    @ItemId, @LibraryId, @ItemType, @CitationKey, @Title, @Subtitle, @TitleShort, @CreatorsJson, @Date,
-                    @PublicationTitle, @ContainerTitleShort, @CollectionTitle, @Publisher, @Place, @Edition, @Genre,
-                    @Number, @ChapterNumber, @Volume, @Version, @Issue, @Pages, @Language, @Status, @Note, @Abstract,
-                    @TagsJson, @CollectionsJson, @CustomFieldsJson, @CreatedAt, @UpdatedAt, null
-                );
-                """,
-                ToParameters(item),
-                transaction);
-
-            await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, now);
-            await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, now);
-            await transaction.CommitAsync(cancellationToken);
-            return await GetItemAsync(itemId, cancellationToken);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            return DatabaseFailure<ItemMetadata>(exception);
-        }
+        return await CreateItemCoreAsync(
+            new CreateItemRequest(
+                itemType,
+                title,
+                subtitle,
+                titleShort,
+                creatorsJson,
+                date,
+                publicationTitle,
+                containerTitleShort,
+                collectionTitle,
+                publisher,
+                place,
+                edition,
+                genre,
+                number,
+                chapterNumber,
+                volume,
+                version,
+                issue,
+                pages,
+                language,
+                status,
+                note,
+                abstractText,
+                tagsJson,
+                collectionsJson,
+                customFieldsJson,
+                creators,
+                dates),
+            cancellationToken);
     }
 
     public async Task<Result<ItemMetadata>> GetItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
@@ -212,6 +158,9 @@ public sealed class ItemService : IItemService
 
             var creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
             var dateInputs = request.Dates ?? ParseDateInputs(request.Date);
+            var customFieldsJson = request.CustomFieldsJson is null
+                ? existing.CustomFieldsJson
+                : DefaultJsonObject(request.CustomFieldsJson);
             var updated = new ItemMetadata(
                 existing.ToItemId(),
                 existing.ToLibraryId(),
@@ -243,7 +192,7 @@ public sealed class ItemService : IItemService
                 NullIfWhiteSpace(request.AbstractText),
                 DefaultJsonArray(request.TagsJson),
                 DefaultJsonArray(request.CollectionsJson),
-                DefaultJsonObject(request.CustomFieldsJson),
+                customFieldsJson,
                 DateTimeOffset.Parse(existing.CreatedAt),
                 _clock.UtcNow.ToUniversalTime());
 
@@ -920,6 +869,115 @@ public sealed class ItemService : IItemService
         return Result<T>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
     }
 
+    private async Task<Result<ItemMetadata>> CreateItemCoreAsync(
+        CreateItemRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Title))
+        {
+            return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item title is required.");
+        }
+
+        if (string.IsNullOrWhiteSpace(request.ItemType))
+        {
+            return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item type is required.");
+        }
+
+        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (libraryResult.IsFailure)
+        {
+            return Result<ItemMetadata>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
+        }
+
+        try
+        {
+            var now = _clock.UtcNow.ToUniversalTime();
+            var itemId = ItemId.New();
+            var creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
+            var dateInputs = request.Dates ?? ParseDateInputs(request.Date);
+            var item = new ItemMetadata(
+                itemId,
+                libraryResult.Value.LibraryId,
+                request.ItemType.Trim(),
+                GenerateCitationKey(request.Title, itemId),
+                request.Title.Trim(),
+                NullIfWhiteSpace(request.Subtitle),
+                NullIfWhiteSpace(request.TitleShort),
+                request.Creators is null ? DefaultJsonArray(request.CreatorsJson) : SerializeCreatorCache(creatorInputs),
+                Array.Empty<ItemCreator>(),
+                request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
+                Array.Empty<ItemDate>(),
+                NullIfWhiteSpace(request.PublicationTitle),
+                NullIfWhiteSpace(request.ContainerTitleShort),
+                NullIfWhiteSpace(request.CollectionTitle),
+                NullIfWhiteSpace(request.Publisher),
+                NullIfWhiteSpace(request.Place),
+                NullIfWhiteSpace(request.Edition),
+                NullIfWhiteSpace(request.Genre),
+                NullIfWhiteSpace(request.Number),
+                NullIfWhiteSpace(request.ChapterNumber),
+                NullIfWhiteSpace(request.Volume),
+                NullIfWhiteSpace(request.Version),
+                NullIfWhiteSpace(request.Issue),
+                NullIfWhiteSpace(request.Pages),
+                NullIfWhiteSpace(request.Language),
+                NullIfWhiteSpace(request.Status),
+                NullIfWhiteSpace(request.Note),
+                NullIfWhiteSpace(request.AbstractText),
+                DefaultJsonArray(request.TagsJson),
+                DefaultJsonArray(request.CollectionsJson),
+                DefaultJsonObject(request.CustomFieldsJson),
+                now,
+                now);
+
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            await connection.ExecuteAsync(
+                """
+                insert into items (
+                    item_id, library_id, item_type, citation_key, title, subtitle, title_short, creators_json, date,
+                    publication_title, container_title_short, collection_title, publisher, place, edition, genre,
+                    number, chapter_number, volume, version, issue, pages, language, status, note, abstract,
+                    tags_json, collections_json, custom_fields_json, created_at, updated_at, deleted_at
+                )
+                values (
+                    @ItemId, @LibraryId, @ItemType, @CitationKey, @Title, @Subtitle, @TitleShort, @CreatorsJson, @Date,
+                    @PublicationTitle, @ContainerTitleShort, @CollectionTitle, @Publisher, @Place, @Edition, @Genre,
+                    @Number, @ChapterNumber, @Volume, @Version, @Issue, @Pages, @Language, @Status, @Note, @Abstract,
+                    @TagsJson, @CollectionsJson, @CustomFieldsJson, @CreatedAt, @UpdatedAt, null
+                );
+                """,
+                ToParameters(item),
+                transaction);
+
+            await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, now);
+            await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, now);
+            foreach (var identifier in request.Identifiers ?? Array.Empty<ItemIdentifierInput>())
+            {
+                var normalized = NormalizeIdentifier(identifier);
+                if (normalized is null)
+                {
+                    continue;
+                }
+
+                await InsertIdentifierAsync(connection, transaction, itemId, normalized, now);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return await GetItemAsync(itemId, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return DatabaseFailure<ItemMetadata>(exception);
+        }
+    }
+
     private static IReadOnlyList<ItemCreatorInput> ParseCreatorInputs(string? creatorsJson)
     {
         if (string.IsNullOrWhiteSpace(creatorsJson))
@@ -1005,6 +1063,46 @@ public sealed class ItemService : IItemService
         }
 
         return new ItemDateInput(date.Role, datePartsJson, date.Circa, season, literal);
+    }
+
+    private static ItemIdentifierInput? NormalizeIdentifier(ItemIdentifierInput identifier)
+    {
+        var scheme = NullIfWhiteSpace(identifier.Scheme);
+        var value = NullIfWhiteSpace(identifier.Value);
+        if (scheme is null || value is null)
+        {
+            return null;
+        }
+
+        return new ItemIdentifierInput(scheme, value, NullIfWhiteSpace(identifier.Note));
+    }
+
+    private static async Task InsertIdentifierAsync(
+        Microsoft.Data.Sqlite.SqliteConnection connection,
+        System.Data.Common.DbTransaction transaction,
+        ItemId itemId,
+        ItemIdentifierInput identifier,
+        DateTimeOffset now)
+    {
+        await connection.ExecuteAsync(
+            """
+            insert into item_identifiers (
+                identifier_id, item_id, scheme, value, note, created_at
+            )
+            values (
+                @IdentifierId, @ItemId, @Scheme, @Value, @Note, @CreatedAt
+            );
+            """,
+            new
+            {
+                IdentifierId = IdentifierId.New().ToString(),
+                ItemId = itemId.ToString(),
+                identifier.Scheme,
+                identifier.Value,
+                identifier.Note,
+                CreatedAt = FormatUtc(now)
+            },
+            transaction);
     }
 
     private static IReadOnlyList<ItemCreator> LegacyCreators(ItemRow row)

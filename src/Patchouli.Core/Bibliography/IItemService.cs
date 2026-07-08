@@ -6,6 +6,10 @@ namespace Patchouli.Core.Bibliography;
 public interface IItemService
 {
     Task<Result<ItemMetadata>> CreateItemAsync(
+        CreateItemRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<ItemMetadata>> CreateItemAsync(
         string itemType,
         string title,
         string? subtitle = null,

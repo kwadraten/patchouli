@@ -49,6 +49,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         ["search_profiles", "search_rewrite_rules", "search_settings"]
     ];
     private static readonly string[] CredentialTables = ["provider_credentials", "provider_credential_bindings"];
+    private static readonly string[] LocalOnlyTables = ["mcp_server_settings", "mcp_tool_overrides"];
     private readonly IClock _clock;
 
     public SnapshotPublisher(IClock clock)
@@ -337,6 +338,11 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                         await connection.ExecuteAsync($"delete from {range.Key} where rowid < @MinRowId or rowid > @MaxRowId;", new { range.Value.MinRowId, range.Value.MaxRowId });
             }
             foreach (var table in CredentialTables)
+            {
+                if (await TableExistsAsync(connection, table))
+                    await connection.ExecuteAsync($"delete from {table};");
+            }
+            foreach (var table in LocalOnlyTables)
             {
                 if (await TableExistsAsync(connection, table))
                     await connection.ExecuteAsync($"delete from {table};");

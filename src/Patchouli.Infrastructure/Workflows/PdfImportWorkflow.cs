@@ -17,6 +17,7 @@ public sealed class PdfImportWorkflow
     private readonly IPageService _pageService;
     private readonly IPdfMetadataReader _pdfMetadataReader;
     private readonly IClock _clock;
+    private readonly IItemTypeInferenceService? _itemTypeInferenceService;
 
     public PdfImportWorkflow(
         IFileAssetService fileAssetService,
@@ -24,7 +25,8 @@ public sealed class PdfImportWorkflow
         IDocumentInstanceService documentInstanceService,
         IPageService pageService,
         IPdfMetadataReader pdfMetadataReader,
-        IClock clock)
+        IClock clock,
+        IItemTypeInferenceService? itemTypeInferenceService = null)
     {
         _fileAssetService = fileAssetService;
         _itemService = itemService;
@@ -32,6 +34,7 @@ public sealed class PdfImportWorkflow
         _pageService = pageService;
         _pdfMetadataReader = pdfMetadataReader;
         _clock = clock;
+        _itemTypeInferenceService = itemTypeInferenceService;
     }
 
     public async Task<PdfImportResult> ImportPdfAsync(
@@ -61,7 +64,11 @@ public sealed class PdfImportWorkflow
             : null;
 
         var itemResult = await _itemService.CreateItemAsync(
-            "document", title, creatorsJson: creatorsJson, cancellationToken: cancellationToken);
+            new CreateItemRequest(
+                "general",
+                title,
+                CreatorsJson: creatorsJson),
+            cancellationToken);
 
         if (itemResult.IsFailure)
             return new PdfImportResult(false, itemResult.ErrorMessage, null, null, null, null);
@@ -88,10 +95,53 @@ public sealed class PdfImportWorkflow
                     null, null, null, null);
         }
 
+        if (_itemTypeInferenceService is not null)
+        {
+            var inferredType = InferTypeFromFileName(request.PdfPath);
+            if (inferredType is not null)
+            {
+                await _itemTypeInferenceService.SuggestAsync(
+                    item.ItemId,
+                    inferredType.Value.SuggestedType,
+                    inferredType.Value.Confidence,
+                    ItemTypeInferenceSources.FileNameHeuristic,
+                    inferredType.Value.EvidenceSummary,
+                    cancellationToken);
+            }
+        }
+
         return new PdfImportResult(
             true, null, "imported",
             item.ItemId.ToString(),
             fileAsset.FileAssetId.ToString(),
             documentInstance.DocumentInstanceId.ToString());
+    }
+
+    private static (string SuggestedType, double Confidence, string EvidenceSummary)? InferTypeFromFileName(string pdfPath)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(pdfPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return null;
+        }
+
+        var normalized = fileName.Trim().ToLowerInvariant();
+        if (normalized.Contains("thesis", StringComparison.Ordinal))
+        {
+            return ("thesis", 0.92, "Filename contains 'thesis'.");
+        }
+
+        if (normalized.Contains("patent", StringComparison.Ordinal))
+        {
+            return ("patent", 0.92, "Filename contains 'patent'.");
+        }
+
+        if (normalized.Contains("proceeding", StringComparison.Ordinal)
+            || normalized.Contains("conference", StringComparison.Ordinal))
+        {
+            return ("paper-conference", 0.8, "Filename suggests conference proceedings.");
+        }
+
+        return null;
     }
 }
