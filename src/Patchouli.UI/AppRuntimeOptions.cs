@@ -1,9 +1,10 @@
+using System.Collections.Generic;
 using System.Text.Json;
 using Patchouli.Core.Import;
 
 namespace Patchouli.UI;
 
-public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string DefaultSyncRoot, string DefaultStagingRoot, string LogDirectory, bool UseMockOcrOnly = false)
+public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string DefaultSyncRoot, string DefaultStagingRoot, string LogDirectory, string FileSearchRoot, bool RememberLastDatabase = true, bool UseMockOcrOnly = false)
 {
     public static AppRuntimeOptions FromAppSettings(string? settingsPath = null) =>
         PatchouliAppSettings.Load(settingsPath).Runtime;
@@ -15,7 +16,8 @@ public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string Defaul
             Path.Combine(root, "patchouli-runtime.sqlite"),
             Path.Combine(root, "sync"),
             Path.Combine(root, "staging"),
-            Path.Combine(root, "logs"));
+            Path.Combine(root, "logs"),
+            Path.Combine(root, "search"));
     }
 }
 
@@ -34,10 +36,27 @@ public sealed record MinerUAppSettings(
         new(token, BaseUrl, ModelVersion, IsOcr, EnableTable, EnableFormula);
 }
 
-public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSettings MinerU)
+public sealed record McpAppSettings(
+    int Port,
+    bool BlockExternalAccess,
+    string ServerToken,
+    Dictionary<string, bool> DisabledTools)
+{
+    public static McpAppSettings Default() =>
+        new(31337, true, string.Empty, new Dictionary<string, bool>());
+}
+
+public sealed record UiPreferences(
+    Dictionary<string, bool> LibraryGridVisibleColumns)
+{
+    public static UiPreferences Default() =>
+        new(new Dictionary<string, bool>());
+}
+
+public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSettings MinerU, McpAppSettings Mcp, UiPreferences Ui)
 {
     public static PatchouliAppSettings Default() =>
-        new(AppRuntimeOptions.Default(), MinerUAppSettings.Default());
+        new(AppRuntimeOptions.Default(), MinerUAppSettings.Default(), McpAppSettings.Default(), UiPreferences.Default());
 
     public static string ResolvePath(string? settingsPath = null) =>
         string.IsNullOrWhiteSpace(settingsPath)
@@ -56,6 +75,8 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         var root = document.RootElement;
         var patchouli = GetSection(root, "Patchouli");
         var minerU = GetSection(root, "MinerU");
+        var mcp = GetSection(root, "Mcp");
+        var ui = GetSection(root, "Ui");
 
         return new PatchouliAppSettings(
             new AppRuntimeOptions(
@@ -63,6 +84,8 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 ExpandPath(ReadString(patchouli, "DefaultSyncRoot", defaults.Runtime.DefaultSyncRoot)),
                 ExpandPath(ReadString(patchouli, "DefaultStagingRoot", defaults.Runtime.DefaultStagingRoot)),
                 ExpandPath(ReadString(patchouli, "LogDirectory", defaults.Runtime.LogDirectory)),
+                ExpandPath(ReadString(patchouli, "FileSearchRoot", defaults.Runtime.FileSearchRoot)),
+                ReadBool(patchouli, "RememberLastDatabase", defaults.Runtime.RememberLastDatabase),
                 ReadBool(patchouli, "UseMockOcrOnly", defaults.Runtime.UseMockOcrOnly)),
             new MinerUAppSettings(
                 ReadString(minerU, "BaseUrl", defaults.MinerU.BaseUrl),
@@ -70,7 +93,14 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
                 ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
                 ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
-                ReadString(minerU, "Token", defaults.MinerU.Token).Trim()));
+                ReadString(minerU, "Token", defaults.MinerU.Token).Trim()),
+            new McpAppSettings(
+                ReadInt(mcp, "Port", defaults.Mcp.Port),
+                ReadBool(mcp, "BlockExternalAccess", defaults.Mcp.BlockExternalAccess),
+                ReadString(mcp, "ServerToken", defaults.Mcp.ServerToken).Trim(),
+                ReadStringBoolDict(mcp, "DisabledTools", defaults.Mcp.DisabledTools)),
+            new UiPreferences(
+                ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns)));
     }
 
     public void Save(string? settingsPath = null)
@@ -88,6 +118,8 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 Runtime.DefaultSyncRoot,
                 Runtime.DefaultStagingRoot,
                 Runtime.LogDirectory,
+                Runtime.FileSearchRoot,
+                Runtime.RememberLastDatabase,
                 Runtime.UseMockOcrOnly
             },
             MinerU = new
@@ -98,6 +130,17 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 MinerU.EnableTable,
                 MinerU.EnableFormula,
                 MinerU.Token
+            },
+            Mcp = new
+            {
+                Mcp.Port,
+                Mcp.BlockExternalAccess,
+                Mcp.ServerToken,
+                Mcp.DisabledTools
+            },
+            Ui = new
+            {
+                Ui.LibraryGridVisibleColumns
             }
         };
 
@@ -127,6 +170,35 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         return element.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? value.GetBoolean()
             : fallback;
+    }
+
+    private static int ReadInt(JsonElement? section, string name, int fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+            return fallback;
+
+        return element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var result)
+            ? result
+            : fallback;
+    }
+
+    private static Dictionary<string, bool> ReadStringBoolDict(JsonElement? section, string name, Dictionary<string, bool> fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+            return fallback;
+
+        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+            return fallback;
+
+        var dict = new Dictionary<string, bool>();
+        foreach (var property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            {
+                dict[property.Name] = property.Value.GetBoolean();
+            }
+        }
+        return dict;
     }
 
     private static string ExpandPath(string value)
