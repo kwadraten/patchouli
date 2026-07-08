@@ -2,6 +2,37 @@
 
 Patchouli is a personal literature manager that treats user-owned source files as evidence-bearing documents. The domain language centers on stable bibliographic identity, relocatable files, versioned OCR/layout text, searchable units, and text-only evidence references.
 
+## Standing Product Boundaries
+
+These boundaries are not backlog items. They are durable constraints that future PRDs should inherit unless an ADR explicitly replaces them.
+
+**Storage and sync**:
+The active runtime SQLite database stays outside sync roots. Sync publishes validated snapshot artifacts rather than syncing WAL/SHM files. Published snapshots use manifests plus SQLite shards; runtime caches, render images, and active working files are not snapshot payloads.
+
+**User-owned source files**:
+Original PDFs/images remain in user-managed folders. Patchouli stores FileAsset identity, fingerprints, known locations, pages, OCR/layout/search artifacts, and evidence metadata. A missing or moved source file does not delete Item metadata, OCR history, SearchUnits, or EvidenceRefs.
+
+**Cache boundary**:
+Page renders, thumbnails, OCR intermediate images, and overlays are local rebuildable caches. `page_renders` is a local cache namespace only. MCP never returns cached images or image paths.
+
+**OCR adoption**:
+OCR output is staging or candidate output until adopted. Only committed current LayoutRevisions feed default search, evidence resolution, and MCP reads. Failed bbox coordinate conversion blocks that page from OCR/layout/search/MCP exposure.
+
+**OCR interchange schema**:
+MinerU remains the preferred OCR/layout provider and its content-list-style output is the compatibility baseline for OCR text storage, editing, layout mapping, tables, bbox, SearchUnits, and evidence. Other OCR providers, including multimodal LLM OCR, must normalize their output into a MinerU-compatible intermediate shape before it enters LayoutRevisions, LayoutNodes, SearchUnits, or MCP-visible evidence.
+
+**Search and evidence**:
+SearchUnits are persisted derived text units generated from committed layout trees. SearchUnit metadata is synced; the local FTS index is a rebuildable local cache. EvidenceRefs resolve pinned by default, and current/compare modes must surface drift instead of silently changing copied evidence.
+
+**MCP Read API**:
+MCP is read-only and text-only. It can search and read evidence context, but it never writes metadata, edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. MCP 无法读取提供程序密钥.
+
+**Snapshot branches**:
+Snapshot divergence creates a Snapshot Branch. Branches are inspected and imported explicitly; v1 does not perform automatic object-level merge or silent last-writer-wins conflict resolution.
+
+**Provider credentials**:
+ProviderCredential values are user-owned secrets for OCR/HTR providers. They may be present in trusted-user-device sync only through the mutable sensitive credential path, never in immutable historical content shards, never in MCP, and never in logs.
+
 ## Language
 
 **Library**:

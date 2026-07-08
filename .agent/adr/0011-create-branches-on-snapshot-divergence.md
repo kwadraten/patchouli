@@ -7,3 +7,11 @@ When a device publishes from a parent snapshot that is no longer current in the 
 **Consequences**
 
 Automatic merge is deliberately conservative, especially for OCR/layout revisions, SearchUnits, and EvidenceRefs.
+
+**Standing Constraints**
+
+- A divergent snapshot is opened as an independent branch for inspection.
+- v1 does not perform automatic object-level merge across branches.
+- v1 must not silently apply last-writer-wins between branches.
+- Branch import plans exclude provider credentials, cache paths, original-file copies, staging paths, and local machine paths.
+- Imported documents mark their local search index state stale so the active branch can rebuild safely.

@@ -1,689 +1,384 @@
-# 文献管理程序 PRD v1.1
+# Patchouli PRD v2 正式版
 
-## 1. 问题陈述
+状态：正式版
+日期：2026-07-08
 
-研究者需要一个个人文献管理器，用来管理题录、PDF/扫描本、OCR/HTR 文本、版面结构、全文检索结果和可复现证据引用。现有工具通常在以下方面不足：
+## 1. 产品定位
 
-- 文件同步、数据库同步和本地运行库容易混在一起，网盘同步可能损坏运行数据库。
-- PDF 路径变化后，题录、OCR、索引和原文定位之间容易断裂。
-- OCR/HTR 管线难以针对多语言、古籍、手稿、竖排、多栏、边注等材料做细粒度配置。
-- OCR 结果很难持续修正，并且修正后的文本、bbox、layout、索引和外部引用缺少统一修订机制。
-- 搜索结果往往只返回文本片段，缺少页级、bbox、修订版本和来源证据。
-- 外部 agent 需要通过 MCP 检索和读取证据，但不应该获得写权限、本机路径、密钥或执行 OCR 的能力。
+Patchouli 是桌面优先的个人文献管理器，围绕题录、用户自有源文件、OCR/布局修订、搜索单元和稳定证据引用构建。
 
-目标是开发一个桌面优先、个人使用、可同步、可修正、可检索、可被外部工具读取证据的文献管理程序。
+v2 的目标是推出最终用户可用版本。这里的“可用”指：
 
-## 2. 解决方案
+- 用户可以通过 UI 正确管理库数据库、同步根、文件搜索根、快照发布/导入和冲突处理。
+- 用户可以管理 CSL 样式，并从题录生成、复制和导出正确的 CSL 题录/参考文献文本。
+- MCP 高度可用：可配置、可鉴权、可被局域网或本机写作工具稳定读取，并向 agent 提供题录、证据和 CSL 输出。
+- OCR 编辑器可以支持真实生产 OCR、局部识别、候选采纳和 bbox 冲突处理。
+- 设置、菜单栏、右键菜单、书库表格和后台任务看板具备一致的信息架构，而不是 alpha 阶段的功能堆叠。
 
-构建一个个人文献管理器，并增加可编程增强层：
+核心假设保持不变：OCR/布局/搜索/证据是用户自有文件之上的一个版本化、可检查的知识层。长期不变量的权威位置是 `.agent/CONTEXT.md` 和 `.agent/adr/`。
 
-- **题录管理**：以题录（Item/Work）为学术引用身份，支持基础元数据、可扩展标识符、标签、集合和自定义字段。
-- **文件管理**：PDF/图像不入库，由用户自己的目录和云盘管理；程序通过哈希值、已知位置和搜索目录重新定位。
-- **同步**：运行库与发布快照分离；发布快照由 SQLite 分片 + 清单文件组成，可通过 Google Drive、OneDrive、Syncthing、NAS 等同步。
-- **OCR/HTR**：用户手动选择 OCR 预设，可按文档/页面/bbox 运行，支持云端或本地模型。
-- **布局 / bbox**：OCR 输出进入可重组布局树；用户可以持续修正文字、bbox、阅读顺序和节点结构。
-- **检索**：全文检索以 SQLite FTS5 为第一版提供程序；搜索单元持久化为可重建派生表，本地 FTS 索引可重建。
-- **证据**：搜索和 MCP 返回稳定的证据引用（evidence_ref），支持 pinned/current/compare 解析和长期可复制的 evref 字符串。
-- **MCP**：第一版只提供检索与证据读取，不提供写入、OCR 触发、本机路径、提供程序密钥或原文打开。
+PRD 仍保留这些短语作为测试锚点：MCP 从不触发 OCR 或索引重建；搜索配置文件；本地 FTS 索引是可重建的本地缓存；提供程序凭据；缓存图像；MCP never returns cached images or image paths；page_renders；第一版 MCP 是只读且纯文本的；MCP 无法读取提供程序密钥；作为独立分支打开以供检查；v1 不执行自动对象级合并；不得在分支间静默执行最后写入者胜出。
 
-## 3. 目标
+## 2. 成功标准
 
-- 建立可靠的个人书库数据模型：库（library）、题录（item）、文件资产（file_asset）、文档实例（document_instance）、页面（page）、布局节点（layout_node）、搜索单元（search_unit）、修订版本（revision）。
-- 支持数据库快照通过常见同步服务同步，不依赖程序自带文件同步。
-- 支持 PDF/图像文件路径变化后的快速定位与深度修复扫描。
-- 支持多语言 OCR/HTR 预设、预设版本、重试运行、候选结果和局部采用。
-- 支持用户持续修正 OCR 文本、bbox 和布局树。
-- 支持页级全文检索、查询重写、搜索配置文件和携带稳定证据引用的搜索结果。
-- 提供纯文本 MCP，面向外部 agent 返回可验证文本证据。
-- 第一版优先保证证据一致性、修订版本可追踪、同步安全和大库可扩展。
+v2 完成时，用户应能完成以下端到端工作流：
 
-## 4. 非目标与 V1 排除项
+1. 创建或打开本地库，配置同步根和文件搜索根，首次扫描以阻塞式任务完成。
+2. 扫描 PDF 后得到可编辑题录和主文档实例；未知题录进入 `general` 类型，用户被引导细分为 CSL 支持的具体类型。
+3. 在书库 DataGrid 中排序、调整列、隐藏列、查看 OCR/索引状态、页数和关联文件名。
+4. 在题录编辑器中按 CSL type 填写合适字段，保存 creator、date、identifier 和扩展 CSL 字段。
+5. 管理 CSL 样式，复制或导出单条/多条题录；遇到 `general` 或渲染错误时得到明确 warning/error，而不是空结果。
+6. 配置 MCP 端口、bind、CORS 和 token；MCP 可返回题录、证据、文档状态和 CSL 输出，但不暴露路径、图片、密钥或 OCR 配置。
+7. 使用 MinerU 或其他生产 OCR provider 运行 OCR，所有 provider 输出进入同一 MinerU-compatible/OcrLayoutDocument 流水线。
+8. 在 OCR 编辑器里局部识别、预览候选、处理 bbox 冲突并采纳结果。
+9. 通过清晰菜单、右键菜单、状态栏、阻塞弹窗和冲突弹窗理解当前操作后果。
 
-以下能力不属于第一版范围。部分能力可以作为 v2/v3/待办事项继续讨论。
+## 3. v2 功能需求
 
-| 类别 | V1 排除项 | 后续跟踪 |
+### 3.1 MCP Server 可配置化
+
+UI 与 MCP server 层必须支持以下配置：
+
+- 端口：用户可配置 MCP HTTP server 监听端口，并显示端口占用/启动失败原因。
+- Bind 地址：支持 `127.0.0.1` 和 `0.0.0.0`，其中 `0.0.0.0` 必须带明显的安全说明和鉴权要求。
+- CORS：允许配置启用/禁用 CORS、允许源列表和预检请求行为。
+- 鉴权 token：用户可直接输入自定义 Token，或点击生成随机 Token。Token 作为桌面应用的本地凭据，允许用户在本机 UI 查看明文以便复制核对。
+- Server 状态：设置页显示 stopped/running/error、监听地址、端口、CORS 状态、鉴权状态和最近错误。
+- 工具开关：设置页允许用户针对性启用或禁用 MCP 中的特定工具；禁用后的工具不得出现在可调用工具列表中，直接调用时返回明确的 disabled/tool_unavailable 错误。
+- MCP server 不得因配置读取失败而静默降级为无鉴权公网监听。
+- MCP 配置必须有独立模型，例如 `McpServerSettings`：port、bind_address、cors_enabled、allowed_origins、auth_required、token、tool_overrides、updated_at。
+- 鉴权 token 是本机 MCP 访问 secret，不是 OCR ProviderCredential。它默认只存在于本机设置/本机 secret 存储，不进入库快照或 branch import。
+- HTTP 请求鉴权使用 `Authorization: Bearer <token>`；失败返回 401，不把 token 写入日志。
+- `/health` 可以无鉴权返回 minimal status；MCP JSON-RPC endpoint 必须鉴权，除非 bind 为 `127.0.0.1` 且用户显式关闭鉴权。
+
+MCP 能力继承长期边界：MCP 从不触发 OCR 或索引重建，不暴露本地路径、缓存图像、提供程序凭据或 OCR provider 配置。v2 新增 CSL 渲染能力仍是只读读取和格式化，不得写入题录、样式或布局。
+
+### 3.2 题录编辑 UI 与 CSL Type Profiles
+
+当前题录编辑页把所有 `ItemType` 共享为一套表单，这会导致 journal article、book、chapter、thesis、webpage、manuscript 等类型显示大量不相关字段，也会隐藏某些类型关键字段。v2 必须改为 type-aware 编辑器。
+
+CSL JSON schema 只把 `id` 和 `type` 作为通用必需字段；字段全集由 CSL 变量集合定义，实际样式会按 item type 和变量存在性渲染。因此 Patchouli UI 不能把“所有 CSL 字段”简单铺成一个巨大表单，也不能假设 schema 会给出每种 type 的唯一必填字段。v2 需要维护自己的 `CslItemTypeProfile`。
+
+`CslItemTypeProfile` 至少包含：
+
+- `item_type`
+- `display_name`
+- `description`
+- `primary_fields`：该类型首屏核心字段。
+- `recommended_fields`：常用但非首屏字段。
+- `advanced_fields`：低频 CSL 字段，进入高级/更多字段区。
+- `creator_roles`：该类型常用 name variables，例如 author、editor、translator、interviewer。
+- `date_roles`：该类型常用 date variables，例如 issued、accessed、original-date、event-date、submitted。
+- `identifier_schemes`：该类型优先显示的标识符，例如 DOI、ISBN、ISSN、URL、PMID、patent number。
+- `field_labels`：类型内字段标签覆盖，例如 chapter 的 `container-title` 显示为“书名/论文集名”，article-journal 显示为“期刊名”。
+- `hidden_by_default_fields`：不在默认 UI 展示但保留数据的字段。
+
+v2 首批必须支持这些 profile：
+
+| Type | 首屏核心字段 | 典型推荐字段 |
 |---|---|---|
-| 协作 | 团队功能、多人权限、审计日志、机构级后台管理 | 不计划 |
-| 文件同步 | 程序自带 PDF/图像文件同步、托管文件目录 | 不计划 |
-| 搜索降级 | 搜索索引不可用时的 SQL LIKE / 线性扫描降级 | 待办事项 |
-| OCR 自动化 | 自动推荐 OCR 预设、自动云成本确认策略 | 不计划 |
-| 引文 | CSL 引文渲染、参考文献导出、复制页面引文 | v2 |
-| 布局 | 独立阅读顺序视图、多父节点布局图、bbox 级候选采用 | v2/v3 |
-| 表格模型 | 完整表格语义、公式、复杂样式、嵌套表格模型 | v2 |
-| 查询排序 | 查询重写权重排序、语义混合排序 | v2 |
-| MCP 操作 | MCP 写入、OCR 触发、bbox 编辑、元数据更新、删除操作 | v1 不计划 |
-| MCP 媒体/路径 | MCP 返回图片、缓存路径、本机路径、文件 URL | 不计划 |
-| 加密 | 库级加密、主密码、每设备凭据解封 | v2+ |
-| 模型溯源 | 完整模型指纹/可复现性包 | 待办事项 |
-
-## 5. 用户故事
-
-1. 作为一名研究者，我希望管理我的个人文献库，以便在一个地方组织书籍、论文、扫描件和元数据。
-2. 作为一名研究者，我希望数据库可以通过 Google Drive 或类似服务同步，以便在多台设备上使用同一个文献库。
-3. 作为一名研究者，我希望 PDF 保留在我自己的文件夹结构中，以便程序不会接管我的文件组织。
-4. 作为一名研究者，我希望程序能够通过哈希值和搜索根目录找到已移动的 PDF，以便文件移动后元数据和 OCR 仍然可用。
-5. 作为一名研究者，我希望缺失的 PDF 不会删除或隐藏元数据、OCR 和搜索结果，以便我的文献库在离线时仍然可用。
-6. 作为一名研究者，我希望题录元数据带有可扩展标识符，以便我可以存储 DOI、ISBN、JPNO、NDLBibID、索书号和自定义目录 ID。
-7. 作为一名研究者，我希望一个题录下有多个文档实例，以便扫描件、OCR PDF、部分文件和补充材料可以属于同一个被引作品。
-8. 作为一名研究者，我希望不同版本、翻译、卷册和预印本在引用身份不同时作为不同的题录，以便引用保持准确。
-9. 作为一名研究者，我希望手动选择 OCR/HTR 预设，以便为手稿、古典日语文本或现代 PDF 选择合适的模型。
-10. 作为一名研究者，我希望风险较高的 OCR 结果在我采纳之前保持候选状态，以便低置信度的运行不会污染搜索和证据。
-11. 作为一名研究者，我希望部分失败的 OCR 运行中成功的页面被保留，以便少数坏页面不会丢弃整个大型运行。
-12. 作为一名研究者，我希望能够修正 OCR 文本、布局、bbox 和阅读顺序，以便搜索和引文随着时间的推移指向更好的证据。
-13. 作为一名研究者，我希望搜索返回页级结果，带有匹配文本和证据引用，以便我能在源上下文中验证主张。
-14. 作为一名研究者，我希望搜索支持历史拼写、异体字、OCR 混淆和词典，以便多语言或历史材料可以被检索到。
-15. 作为一名研究者，我希望过时或部分索引状态能够被显示，以便我知道搜索结果何时可能不完整。
-16. 作为外部 agent，我希望 MCP search_library 返回证据引用和匹配单元，以便我能够引用证据。
-17. 作为外部 agent，我希望 get_search_result_context 返回附近的单元及其自己的证据引用，以便我能够独立引用上下文。
-18. 作为外部 agent，我希望 get_page_text 默认返回纯文本，以便我可以低成本地请求页面上下文。
-19. 作为外部 agent，我希望 get_page_blocks 仅在请求时返回结构化文本和 bbox，以便在需要时验证布局。
-20. 作为外部 agent，我希望 MCP 只返回纯文本，以便不暴露本地图像、文件路径或缓存。
-21. 作为外部 agent，我希望证据引用默认是 pinned，以便 OCR 修正后引用不会漂移。
-22. 作为一名研究者，我希望从搜索结果和块中复制证据 Markdown，以便我可以将可复制的引文粘贴到笔记中。
-23. 作为一名研究者，我希望稍后实现正常的题录级引文生成，以便在核心证据系统稳定后添加参考文献和 CSL 样式。
-
-## 6. 功能需求
-
-### 6.1 产品范围
-
-- 应用程序是一个个人桌面文献管理器，具有可编程增强功能。
-- 团队工作流、共享权限、审计日志和机构管理不在范围内。
-- 桌面应用程序是主要的；优先选择 .NET 生态系统，在实际可行的情况下优先选择 F#。
-- UI 栈：目前使用原生 Avalonia 12。
-
-### 6.2 库标识与多重性
-
-- 库是元数据、文档实例、OCR/布局/搜索制品、证据引用、快照和 MCP 解析的顶层持久边界。
-- v1 在桌面应用程序中一次只支持打开一个活动库。
-- v1 数据模型仍必须支持磁盘上的多个库，每个库有唯一的 `library_id`。
-- `library_id` 在库创建时生成一次，并且在该库的整个生命周期中必须保持稳定。
-- `library_id` 不从路径、设备名称、同步根目录或用户账户派生。
-- 库显示名称可以在不更改 `library_id` 的情况下重命名。
-- 库可以移动到另一个文件夹或同步服务，而不更改 `library_id`。
-- v1 不支持自动库合并或拆分。
-- v1 不允许跨库证据解析。如果某个 evidence_ref 属于另一个库，解析返回 `library_mismatch`。
-- 快照是每个库独立的。一个快照清单不能包含来自多个库的对象。
-- `device_id` 标识一个库内的写入设备；它不是引用身份的一部分。
-
-### 6.3 库数据库与快照同步
-
-- 数据库是元数据、OCR/HTR、布局、bbox、修订版本、脏队列、OCR 运行、搜索单元元数据和可选向量的唯一真实来源。
-- PDF/图像原件和大二进制缓存不存储在数据库中。
-- 运行数据库位于同步文件夹之外，可以使用 WAL。
-- 发布的快照数据库以 SQLite 分片加清单文件的形式检查点到同步根目录中。
-- 分片目标大小为 512-768 MB，硬上限低于 1 GB。
-- 分片大小依据：
-  - 保持单个同步文件低于常见云客户端的压力阈值；
-  - 减少活动数据变化时的重新上传成本；
-  - 保持验证/哈希和修复操作在有限范围内；
-  - 避免快照发布期间出现大的 WAL/检查点停顿。
-- 旧的大数据分片应尽量不可变；变化作为新的修订版本/增量数据写入活动分片。
-- 快照标识必须包含 library_id、device_id、snapshot_id、parent_snapshot_id、schema_version、分片列表、分片哈希和逻辑代次。
-- 从应用程序角度看，快照发布是原子性的：写入候选清单，验证分片哈希，然后更新当前指针。
-- 快照导入不会就地替换活动运行数据库。它导入到一个临时区域，在验证后应用。
-
-### 6.4 快照冲突解决
-
-- 第一版同步使用单写入者约定，通过检测和警告而非硬分布式锁来强制执行。
-- 每个设备写入 `device_id`、最后本地代次、parent_snapshot_id 和发布时间戳。
-- 在发布时，如果同步根目录的当前快照不再是本地父快照，应用程序不得覆盖它。
-- 该条件创建一个快照分支。
-- v1 不执行自动对象级合并。
-- v1 分支操作：
-  - 作为独立分支打开以供检查；
-  - 通过显式用户操作将选中的题录/文档实例导入当前分支；
-  - 丢弃本地分支；
-  - 将分支保留为独立的库副本。
-- v1 不得在分支间静默执行最后写入者胜出。
-
-v1 中的对象策略：
-
-| 对象类型 | 同分支更新 | 跨分支冲突 |
-|---|---|---|
-| 库元数据 | 分支中最新已提交变更 | 手动选择 |
-| 题录元数据 | 修订版本化更新 | 手动导入/选择 |
-| 文件资产位置 | 本地 known_locations 可追加 | 身份冲突时手动选择 |
-| 文档实例 | 修订版本化更新 | 手动导入/选择 |
-| 页面元数据 | 从文档实例/文件派生 | 禁止自动合并 |
-| OCR 运行 | 分支内仅追加 | 仅随所属文档实例导入 |
-| OCR/布局修订版本 | 分支内仅追加/当前指针 | 手动选择；无自动指针合并 |
-| 搜索单元 | 分支内派生/持久化 | 随所属布局修订版本重建/导入 |
-| 证据引用 | 仅在所属库/分支上下文中解析 | 歧义时返回分支候选项 |
-| 提供程序凭据 | 可变凭据存储，选中的分支中取最新 | 手动选择/重新输入 |
-| 缓存/索引 | 本地可重建 | 从不合并 |
-
-### 6.5 凭据同步与信任边界
-
-- 提供程序凭据是用户拥有的云/本地提供程序密钥和令牌，供 OCR/HTR 适配器使用。
-- 根据产品决策，v1 可以在受信任的用户设备间同步提供程序凭据。
-- 从应用程序角度看，凭据以明文存储；v1 不实现库级加密、主密码或每设备解封。
-- 凭据不得写入不可变的历史内容寻址数据分片。
-- 凭据存在于最新清单引用的可变凭据存储/分片中，并标记为 `sensitive_mutable`。
-- 凭据变更重写/轮换可变凭据存储，而不是将秘密追加到历史数据分片中。
-- 快照发布必须保持普通不可变数据分片和 `sensitive_mutable` 凭据分片在逻辑上分离。
-- 紧急凭据清除/撤销是 v1 需求：
-  - 从活动运行数据库中删除提供程序凭据行；
-  - 重写可变凭据存储，不包含该秘密；
-  - 更新清单引用；
-  - 将受影响的 OCR 预设/提供程序标记为 `credential_missing`。
-- 应用程序可以删除其管理的同步根目录下的凭据分片和清单引用，但无法擦除云提供程序的历史版本、外部备份或用户复制的文件。
-- 用户负责信任设备、同步服务和同步文件夹的访问控制。
-- MCP 无法读取提供程序密钥或提供程序配置详情。
-- MCP 仅报告文档证据能力，不报告提供程序状态。
-
-### 6.6 文件资产与文件解析
-
-- 应用程序不拥有托管的文件目录。
-- 用户分别配置 file_search_roots 和 database_sync_roots。
-- PDF 文件缺失不意味着文献缺失。
-- 文件状态：available、moved_candidate、missing、offline_root、conflict、changed。
-- 文件标识使用快速哈希和可选的完整 BLAKE3；SHA-256 不是核心字段。
-- 导入存储路径、名称、大小、修改时间、快速哈希、页数，以及可能存在的 PDF trailer ID。
-- 完整 BLAKE3 在空闲后台工作中稍后计算。
-- 重新定位首先检查 known_locations，然后是大小 + 快速哈希，必要时再进行完整 BLAKE3。
-- 扫描模式：
-  - 启动时快速扫描。
-  - 增量式监控驱动扫描。
-  - 用户触发的深度修复扫描。
-- 必须使用统一的文件解析 API 来打开原件、渲染页面、运行 OCR 和验证哈希。
-- `resolve_file(file_asset_id, purpose)` 向可信的内部调用者返回状态、解析路径、候选项、置信度和所需操作。
-- MCP 从不接收解析路径。
-- conflict 和 changed 状态不自动打开；它们需要用户确认。
-- 如果 file_asset 状态变为 `changed`，依赖的页面渲染/OCR/bbox 证据仅作为先前已提交的证据可用，并且必须标记为 `source_changed`。
-- `source_changed` 不会自动使 pinned 证据失效，但 current 模式的消费者必须收到警告，提示 bbox/页面的基准可能不再与当前源文件匹配。
-
-### 6.7 题录元数据与书目模型
-
-- 核心模型有三层：**题录（Item/Work）**、**file_asset**、**document_instance**。
-- **题录（Item/Work）** 是引用身份。
-- **file_asset** 是文件身份、位置和验证。
-- **document_instance** 是一个题录下的具体 PDF/扫描表现形态，拥有页面/OCR/布局/搜索/向量制品。
-- 不同的引用身份必须是不同的题录：版本、翻译、卷册（当引用不同时）、预印本与正式版（如果元数据不同）。
-- 相同的引用身份可以有多个文档实例：不同扫描件、OCR PDF、拆分 PDF、缺页补充材料。
-- 默认搜索仅针对主要文档实例；高级搜索可以包含备选、部分、已弃用的实例或特定文档实例。
-- 题录元数据字段命名与 CSL 变量（CSL variable）对齐，以便与 CSL 样式处理引擎和 citeproc 工具链互操作。存储策略遵循以下原则：
-
-  | 原则 | 策略 |
-  |---|---|
-  | 高频、查询常用、排序常用 | 单列 |
-  | 结构化变量（name-list、日期） | 独立表 |
-  | 低频 CSL 变量 | `extra_csl` JSON |
-  | 除 URL 外的标识符 | `identifiers` JSON/map |
-  | 可派生变量 | 不落库 |
-  | 运行时变量 | 交给 CSL processor |
-
-  第一版核心字段及分组如下：
-
-  **1. 条目核心字段（单列）**
-
-  | 字段 | CSL 对应 | 说明 |
-  |---|---|---|
-  | `id` | `id` | 内部主键，可导出为 citeproc JSON id |
-  | `type` | `type` | book、article-journal、chapter、thesis、report、webpage 等 |
-  | `citation_key` | `citation-key` | 供 Markdown、Typst、LaTeX、外部引用的稳定引用键 |
-  | `language` | `language` | 多语种大小写转换、排序、locale 判断 |
-  | `title` | `title` | 主标题 |
-  | `title_short` | `title-short` | 可选，短标题需人工指定 |
-  | `container_title` | `container-title` | 期刊名、论文集名、书章所在书名 |
-  | `container_title_short` | `container-title-short` | 可选，期刊缩写 |
-  | `collection_title` | `collection-title` | 丛书名、系列名 |
-  | `publisher` | `publisher` | 出版社、发布机构 |
-  | `publisher_place` | `publisher-place` | 出版地，人文学科常用 |
-  | `edition` | `edition` | 版次 |
-  | `volume` | `volume` | 卷 |
-  | `issue` | `issue` | 期 |
-  | `page` | `page` | 页码范围；`page-first` 由此派生 |
-  | `genre` | `genre` | 学位论文类型、报告类型、文献体裁 |
-  | `number` | `number` | 报告号、标准号、专利号等（非 DOI/ISBN） |
-  | `chapter_number` | `chapter-number` | 可选，章节号 |
-  | `version` | `version` | 可选，软件/数据集/在线资源版本 |
-  | `status` | `status` | 可选，forthcoming、in press 等 |
-  | `note` | `note` | 用户备注、注释 |
-  | `abstract` | — | 扩展用于检索，不参与引用输出 |
-  | `tags` | — | 用户自定义标签，JSON 字符串数组。导入文献元数据时，`keyword` 字段的值并入此处；不独立存储 `keyword`。支持全文搜索与过滤 |
-
-  **2. 标识符字段：统一 map**
-
-  不为每个标识符建固定列，以 `scheme → value` map 存储：
-
-  ```json
-  {
-    "DOI": "10.1234/example",
-    "ISBN": "9780000000000",
-    "ISSN": "1234-5678",
-    "PMID": "12345678",
-    "PMCID": "PMC1234567",
-    "arXiv": "2401.00001",
-    "JSTOR": "123456"
-  }
-  ```
-
-  - 内置常见 scheme：DOI、ISBN、ISSN、PMID、PMCID、arXiv、JSTOR、URL、archive_id、call_number、jpno、ndlbibid。
-  - URL 因其访问日期、快照、死链检查等逻辑特殊，可单独表或 map 内附 metadata。
-  - 导出为 citeproc JSON 时将 map 展开为顶层属性即可。
-
-  **3. 人名字段：结构化 name-list**
-
-  第一版支持的角色：
-
-  | 角色 | CSL 变量 |
-  |---|---|
-  | 作者 | `author` |
-  | 编者 | `editor` |
-  | 译者 | `translator` |
-  | 容器作者 | `container-author` |
-
-  - `author` 等不是字符串，而是 `name-list`，每个 name 包含 `family`、`given`、`literal`、`suffix`、`particles` 等子字段。
-  - 不将作者平铺为 `author_name`、`editor_name` 等字符串列。
-
-  **4. 日期字段：结构化日期**
-
-  第一版支持的 date role：
-
-  | 角色 | CSL 变量 |
-  |---|---|
-  | 出版日期 | `issued` |
-  | 访问日期 | `accessed` |
-  | 原始出版日期 | `original-date` |
-
-  - 不拆分为 `issued_year`、`issued_month`、`issued_day` 等独立列。
-  - 遵循 citeproc JSON date-parts 模型，支持 season、circa、literal 等。
-- CSL 渲染、参考文献导出、规范控制、创作者消歧、多语言标题和详细的版本/历史字段是重要的待办事项。
-
-### 6.8 OCR/HTR 预设、模型与提供程序配置
-
-- "OCR Preset"（OCR 预设）是用户面向的可复用 OCR/HTR 配置的名称。
-- `ocr_preset` 替换了早期的"OCR Profile"术语，以避免与搜索配置文件混淆。
-- 用户手动选择 OCR/HTR 预设；系统不会自动推荐预设。
-- 预设作用域优先级：
-  - bbox 覆盖
-  - 页面覆盖
-  - 文档默认
-  - 集合/标签批量分配
-- 支持的任务：
-  - RunPresetOnDocument（在文档上运行预设）
-  - RunPresetOnPages（在页面上运行预设）
-  - RunPresetOnRegion（在区域上运行预设）
-- 预设版本对于 OCR 溯源是不可变的。
-- preset 包含名称、current_version_id 和归档状态。
-- preset_version 包含 engine_id、model_id、model_path、parameters、apply_on_success 和 created_at。
-- 更改引擎/模型/参数/apply_on_success 会创建一个新的 preset_version。
-- 更改名称/描述/标签可以就地更新 preset。
-- ocr_run 记录 preset_id、preset_version_id、engine_id、model_id、parameters_snapshot、source_revision_id 和 output_revision_id。
-- 第一版的模型标识仅为 model_id + model_path。
-- model_path 可以是本地文件系统路径或 URL/端点/模型页面 URL。
-- 更强的模型哈希/指纹识别是待办事项，不是 v1 需求。
-- 本地模型路径缺失/不可访问会阻止 OCR 并允许用户重新绑定；重新绑定会创建新的 preset_version。
-- 云提供程序认证/模型/端点故障会阻止 OCR，不会自动降级。
-
-### 6.9 OCR/HTR 运行生命周期
-
-- OCR 结果按页面保存。
-- ocr_run 状态：pending、running、completed、completed_with_errors、failed、cancelled。
-- ocr_page_result 状态：pending、processing、succeeded、failed、skipped、cancelled。
-- 运行 OCR 写入临时结果；临时结果可预览但不进入当前布局、全文索引或 MCP。
-- cancelled OCR 回滚整个运行并删除该运行的 staging/暂存结果。
-- apply_on_success=true 将临时结果提升为当前 OCR/布局修订版本，将相关 search_unit 标记为脏，并调度本地索引重建。
-- apply_on_success=false 将结果提升为候选结果；在用户采纳之前，它不能通过默认 MCP 检索。
-- 候选采纳支持整个运行或选定的页面；第一版不支持 bbox 级候选采纳。
-- bbox 坐标转换失败会拒绝整个页面：不产生文本、布局、search_unit、索引条目或 MCP 暴露。
-- 部分页面失败产生 completed_with_errors；成功页面被保留。
-- 源修复后重试会创建一个新的重试运行，包含 retry_of_run_id 和 retry_scope_pages；原始运行不被重写。
-- 重试运行的采纳遵循其自己记录的 apply_on_success。
-- 自动重试仅适用于瞬时故障：network_timeout、temporary_provider_error、rate_limited、retryable quota_exceeded、worker_crashed。
-- 以下情况需要手动修复：auth_failed、model_not_found、bad endpoint config、model_path missing/inaccessible、source_file missing/changed/conflict、bbox_coordinate_transform_failed、unsupported_file、invalid_page_box。
-
-OCR 采纳事务边界：
-
-- 采纳按 document_instance 序列化。
-- 一个 document_instance 可以有多个 OCR 运行正在进行，但一次只能有一个采纳事务更新当前的 OCR/布局指针。
-- 事务必须一起提交当前 OCR/布局修订版本指针、search_unit 重新生成或脏标记，以及证据后继链接。
-- 本地 FTS 重建在提交后进行，允许滞后；search_index_status 必须变为 stale/partial，直到重建赶上。
-- search_library 必须只返回与已提交布局/文本修订版本关联的 search_unit。
-- MCP read_mode=current 必须从一个已提交的修订版本集中读取，并且不得在一次响应中混合旧文本和新 bbox/布局。
-
-### 6.10 OCR/HTR 队列
-
-- 队列支持全局、本地、云、按提供程序、按引擎和按预设的并发限制。
-- 默认建议：
-  - global_max_concurrent = min(4, max(2, logical_cpu_count / 4))。
-  - local_max_concurrent = 1，除非本地引擎声明了安全并行能力。
-  - cloud_max_concurrent = 2。
-  - per_provider_max_concurrent = 1 或提供程序特定的配额。
-- 队列支持优先级 + 老化。
-- 优先级顺序：
-  - interactive_current_page
-  - interactive_selected_pages
-  - user_started_document
-  - background_retry
-  - batch_collection
-  - maintenance
-- 队列支持暂停范围：global、local、cloud、provider、task。
-- 第一版不支持预设级暂停。
-- 暂停影响尚未开始的任务；取消中断正在运行的任务并遵循 OCR 回滚规则。
-- 恢复使用优先级 + 老化重新计算有效优先级。
-- 云端 OCR/HTR 没有成本/页面/调用估算确认，也没有额外的隐私/成本警告。UI 只能显示提供程序类型/名称。
-
-### 6.11 OCR 修订版本、重置、隐藏、逻辑删除、清除
-
-- 原始 OCR/HTR 输出默认不可变。
-- 用户修正保存为修订版本/增量。
-- current_revision 指针控制当前视图。
-- 重置级别：
-  - 取消设置当前 OCR：移除当前指针；保留历史。
-  - 隐藏 OCR 运行：从当前视图/索引/MCP 隐藏；保留数据。
-  - 逻辑删除 OCR 数据：从普通 UI/索引/MCP 隐藏；保留逻辑删除标记用于同步/引用处理。
-  - 清除 OCR 数据：物理删除 OCR 文本/布局/向量，作为高级维护操作。
-
-跨设备语义：
-
-- 逻辑删除是正常的同步状态，通过快照传播。
-- 逻辑删除在导入设备上隐藏目标以免出现在当前 UI/搜索/MCP 中，同时保留足够的身份以将旧证据引用解析为 `tombstoned`。
-- 清除在可能的情况下删除有效载荷数据，并留下一个最小清除标记用于证据解析。
-- 在 v1 中，清除不得要求重写不可变的历史分片。如果历史分片仍包含有效载荷，应用程序必须在清除后将其视为从当前清单不可达。
-- 完整的历史压缩是待办事项。
-- 如果设备 B 从较旧的分支中仍有对已清除数据的引用，则在选中的当前分支中解析返回 `purged` 或分支候选项，而不是静默复活。
-
-### 6.12 布局树、文本、表格和 BBox
-
-- 第一版使用可变树层次结构，而不是独立的阅读顺序视图，也不是多父节点图。
-- layout_node 支持 node_id、document_instance_id、page_id、parent_node_id、node_type、bbox、own_text、text_policy、reading_order、source、revision_id、confidence、ignored。
-- 支持的操作：合并、拆分、移动到新的父节点下、更改类型、更改 reading_order、调整 bbox、从选择创建父节点、分离、标记为忽略/非文本。
-- 节点类型是半开放的：内置标准类型加上映射到基类型的用户定义类型。
-- 从另一台设备导入的未知自定义节点类型必须被保留，以其基类型显示，不得丢弃。
-- text_policy：
-  - own
-  - aggregate_children
-  - none
-- index_policy 是类型默认值 + 节点覆盖：
-  - container
-  - self
-  - ignore
-  - ignore_subtree
-- 普通 bbox 重叠在当前布局树中是被禁止的；ruby、warichu、注释、旁注、印章/戳记和已配置的自定义类型可以重叠。
-- OCR 导入/暂存可以临时包含重叠冲突，但非允许的重叠必须在采纳前解决或跳过。
-- 在选定的 bbox 上运行的本地 OCR 在单页当前树中插入/替换节点。
-- 替换模式在第一版中仅替换显式选中的节点。
-- 规范 bbox 使用 normalized_page 坐标 x/y/width/height，范围 0..1。
-- normalized_page 以视口为先：相对于应用程序的页面渲染器用于该已提交页面修订版本的实际可见/渲染页面框。
-- 降级基准顺序为 crop_box、media_box，然后是 image_bounds。
-- 每页修订版本必须记录页面坐标基准、基准尺寸、页面旋转和渲染器基准版本。
-- 规范 bbox 归一化为 upright_view；source_bbox 可以保留原始引擎坐标。
-- 如果源文件更改，现有 bbox 仅相对于记录的页面基准有效，而不是自动相对于新的源文件。
-- 当当前文件验证不再匹配记录的页面基准时，证据和 MCP 响应必须显示 `source_changed` 或 `bbox_basis_stale`。
-- MCP 返回 bbox，不生成自然语言位置描述。
-- 表格在布局树中使用 table/table_row/table_cell 表示；第一版没有独立的表格模型。
-- table_cell 可以存储 row_index、col_index、row_span、col_span、is_header。
-- 纯文本输出在安全时默认为 Markdown 表格。
-- 不规则表格降级为 `[Table]` 块或按需返回结构化块；应用程序不得编造虚假的规则 Markdown 表格。
-
-### 6.13 页面文本与结构化块
-
-- get_page_text 默认返回布局派生的纯文本。
-- 结构、bbox、OCR 边界和证据引用通过结构化格式或 get_page_blocks 显式请求。
-- get_page_text/get_page_blocks 支持 read_mode：current、pinned、compare。
-- 页面纯文本规则：
-  - 按 reading_order 追加页面 search_unit。
-  - 连续文本使用单个换行符。
-  - 段落/块/列之间使用空行。
-  - 默认排除页眉、页脚、页码、忽略的节点。
-  - 脚注放在正文之后，带有 `[Footnotes]` 标记。
-  - 旁注/注释被排除，除非 include_annotations=true。
-  - 表格输出在安全时使用 Markdown 表格。
-
-### 6.14 搜索单元、索引与查询
-
-- search_unit 是持久化的派生表，包含在快照中；本地 FTS 索引是可重建的本地缓存，不同步。
-- search_unit 字段包括 unit_id、document_instance_id、page_id、root_node_id、text_revision_id、bbox_revision_id、layout_revision_id、resolved_text、bbox_union、node_type、reading_order、status。
-- unit_id 在文本编辑、bbox 编辑、node_type 编辑、reading_order 编辑和小幅移动时保持稳定。
-- 拆分/合并/替换/删除-重建会生成新的 unit_id 并使用 supersedes/superseded_by 链接。
-- 全文索引从布局树/search_unit 生成。
-- SQLite FTS5 是第一个提供程序。SearchProvider 抽象允许以后使用 Lucene.NET/Tantivy。
-- CJK 第一版使用字符 n-gram；拉丁文本使用单词令牌；混合文本使用混合分析器。
-- 规范文本保持原样。索引文本仅应用最小的技术规范化：Unicode 规范化、大小写折叠、必要的空格处理和拉丁字母数字全角/半角处理。
-- 索引文本中没有默认的简体/繁体转换、新旧字形转换、异体替换、历史假名规范化或语义同义词替换。
-- 查询重写处理召回：变体、新旧形式、简体/繁体、历史假名、OCR/HTR 混淆、同义词、正则表达式重写、用户词典。
-- 搜索配置文件组合重写规则和命令别名。
-- 搜索配置文件优先级：显式别名、当前搜索框选择、全局上次使用、系统默认。
-- 重写计划默认执行，可在结果中查看；高级设置可以在执行前预览。
-- 第一版中重写命中具有相同权重。
-- 搜索结果按页面分组，匹配单元在页面内去重。
-- search_library 返回游标分页，默认 page_size 为 20，最大 100。
-- 不保证精确的 total_result_count；可以返回 estimated_total。
-- estimated_total 是近似 FTS/提供程序估算，必须标记为"估算值"。
-- 每个 SearchPageResult 默认返回 5 个 matched_unit，最多 20 个；matched_units_has_more 指示截断。
-- get_search_result_context 默认返回 2 个前驱和 2 个后继兄弟 search_unit；每侧最多 10 个；不支持跨页上下文。
-- get_search_result_context 不包含整个页面文本；请使用 get_page_text。
-- 所有上下文单元包括 unit_id、evidence_ref、text、bbox、is_match、reading_order。
-- 搜索索引重建是自动的，默认是本地的/部分的；手动重建选中文档/集合/整个库可用于维护。
-- 首次同步/导入会调度紧急后台索引重建，但不得阻塞库打开或元数据浏览。
-- 脏范围按 document_instance 优先级重建：
-  - 当前/打开的文档；
-  - 最近修改的文档；
-  - 用户固定的集合；
-  - 其余库。
-- search_library 返回 index_status：current、stale、partial、unavailable。
-- stale/partial 返回可用结果，附带 affected_scopes_summary。
-- partial 状态必须至少包含 pending_document_count 和 pending_unit_count；当总范围已知时应返回 progress_percent。
-- unavailable 返回空结果和原因；不使用 SQL LIKE 或线性扫描降级。
-
-### 6.15 证据引用
-
-- 搜索结果和 MCP 返回稳定的 evidence_ref 以及可选的短生命周期 result_id（用于 UI 会话）。
-- EvidenceReference 包括 library_id、document_instance_id、page_id、unit_id、text_revision_id、bbox_revision_id、layout_revision_id、可选的 snapshot_id。
-- 默认证据解析模式为 pinned。
-- current 通过 unit_id 跟随到当前/最新修订版本。
-- compare 返回 pinned 和 current 及其变更标志。
-- evidence_ref_id 是长期公开可解析的字符串：`evref:v1:<payload>`。
-- 载荷应使用紧凑二进制或 URL 安全的 base64 编码。具体编码是实现定义的但带有版本号。
-- v1 接受长的 evref 字符串以保证持久性；短本地别名是待办事项。
-- evidence_ref_id 不得包含本地路径、提供程序密钥或未同步的本地状态。
-- 旧证据解析返回显式状态：
-  - found_pinned
-  - superseded
-  - tombstoned
-  - purged
-  - not_found
-  - library_mismatch
-- superseded 返回后继 evidence_ref 但不自动采纳。
-- current/compare 沿着后继链到达 final current，带有最大深度和链摘要。
-- 后继分支返回 multiple_current_candidates，不自动选择最新的。
-
-示例证据 Markdown：
-
-```markdown
-> 漢字文化圏における書誌記述は...
-
-来源：『近代東亞書誌研究』, p. 42
-证据：evref:v1:full:Ab3Z4Q9r7K2mX8pV5nE1sT0uY6cD4fG2hJ9kL3mN8pQ
-```
-
-示例载荷仅供说明；实际载荷长度可能因 ID 编码方式而异。
-
-### 6.16 MCP API
-
-- 第一版 MCP 是只读且纯文本的。
-- MCP 工具：
-  - search_library（搜索库）
-  - get_item_metadata（获取题录元数据）
-  - get_document_status（获取文档状态）
-  - get_page_text（获取页面文本）
-  - get_page_blocks（获取页面块）
-  - get_search_result_context（获取搜索结果上下文）
-- MCP 不提供：
-  - run_ocr、edit_ocr、edit_bbox、reset_ocr、purge_ocr、update_metadata、delete_anything。
-  - resolved_path、本地文件系统路径、open_original、file:// URL。
-  - 提供程序密钥或提供程序配置详情。
-  - 缓存图像或图像路径。
-- get_document_status 返回 has_ocr_text、has_current_layout、is_search_indexed、source_file_status。
-- 通过 MCP 暴露的 source_file_status 值限于：available、missing、offline_root、changed、conflict、unknown。
-- source_file_status 有目的地暴露证据可用性，而不是本地路径或根目录名称。
-- has_ocr_text 表示当前文档具有可读的 OCR/HTR 文本；并不意味着可以运行 OCR。
-- MCP 从不触发 OCR 或索引重建。
-- MCP 搜索使用两步模式：先 search_library 获取结果，然后 get_search_result_context 获取证据上下文。
-
-### 6.17 UI 证据复制
-
-- UI 支持复制证据引用和复制证据 Markdown。
-- 第一版不支持复制页面引文或复制页面证据引文。
-- 证据 Markdown 包含引用的 pinned 文本、最小来源和证据 evref。
-- 来源是标题 + page_label/page_index。
-- 证据 Markdown 默认文本必须与 pinned evidence_ref 匹配。
-- 如果需要 current 修订版本，复制 Current Evidence Markdown 是一个显式操作。
-
-### 6.18 缓存
-
-- 页面渲染、缩略图、OCR 中间图像和叠加层是本地可重建的缓存。
-- `page_renders` 是页面渲染缓存命名空间，只能存放在本地缓存根目录下。
-- 它们不进入数据库分片、发布的快照或同步。
-- 数据库只能存储缓存元数据。
-- 如果源文件缺失/离线，UI 可能将旧的页面渲染缓存显示为 stale_possible 预览。
-- MCP never returns cached images or image paths.
-- MCP 从不返回缓存的图像或图像路径。
-
-### 6.19 向量
-
-- 嵌入是可选的增强功能。
-- 全文搜索是核心功能。
-- 默认不为整个库生成向量。
-- 可选的生成范围包括：集合、标签、选中文档、语言或 OCR 预设输出。
-- text_revision 变更会将嵌入标记为 stale。
-
-## 7. 实现决策
-
-实现依据在 `.agent/adr/` 中；本 PRD 仍然是产品契约。
-
-### 7.1 模块结构
-
-- **Patchouli.UI**：原生 Avalonia 桌面 UI。
-- **Patchouli.Core**：领域模型和应用程序契约。
-- **Patchouli.Infrastructure**：SQLite、迁移、快照、文件解析、凭据、OCR 编排和具体服务实现。
-- **Patchouli.Search**：搜索单元生成、SQLite FTS5 提供程序、查询重写、搜索配置文件和脏索引重建。
-- **Patchouli.Ocr**：OCR/HTR 预设、预设版本、适配器、队列契约、重试、暂存和候选采纳。
-- **Patchouli.Mcp**：只读纯文本 MCP DTO 和服务接口。
-
-### 7.2 架构决策记录
-
-- `.agent/adr/0001-keep-runtime-database-out-of-sync-roots.md`
-- `.agent/adr/0002-use-content-addressed-sqlite-snapshot-shards.md`
-- `.agent/adr/0003-keep-original-files-outside-the-database.md`
-- `.agent/adr/0004-use-path-independent-library-identity.md`
-- `.agent/adr/0005-separate-item-fileasset-and-documentinstance.md`
-- `.agent/adr/0006-version-ocr-presets-for-provenance.md`
-- `.agent/adr/0007-stage-ocr-before-current-adoption.md`
-- `.agent/adr/0008-use-layout-tree-as-source-for-search-units.md`
-- `.agent/adr/0009-make-evidence-refs-stable-and-pinned-by-default.md`
-- `.agent/adr/0010-keep-mcp-read-only-and-text-only.md`
-- `.agent/adr/0011-create-branches-on-snapshot-divergence.md`
-- `.agent/adr/0012-use-dapper-and-manual-sql.md`
-- `.agent/adr/0013-use-dotnet-and-avalonia-for-the-desktop-app.md`
-- `.agent/adr/0014-use-mineru-as-first-product-ocr-provider.md`
-
-## 8. 规模假设与性能目标
-
-以下是 v1 设计目标，而非硬性产品限制。
-
-| 领域 | V1 目标 |
+| `general` | title、author/editor、issued、publisher、publication-title、DOI、ISBN、URL、note | 所有 CSL 对齐字段和 `extra_csl` 均可通过“更多字段”填写 |
+| `book` | title、author/editor、issued、publisher、publisher-place、edition、ISBN | collection-title、volume、number-of-volumes、language、original-title |
+| `article-journal` | title、author、issued、container-title、volume、issue、page、DOI、ISSN | container-title-short、status、PMID、PMCID、URL |
+| `chapter` | title、author、container-title、editor、issued、publisher、publisher-place、page | chapter-number、collection-title、edition、translator、DOI/ISBN |
+| `thesis` | title、author、issued、publisher、publisher-place、genre | archive、URL、language |
+| `report` | title、author/institution、issued、publisher、number、genre | collection-title、URL、DOI |
+| `webpage` | title、author、issued、accessed、URL、container-title | publisher、language |
+| `manuscript` | title、author、issued/original-date、archive、archive_location、call-number | archive-place、genre、language |
+| `paper-conference` | title、author、issued、container-title、event-title、event-place、page、DOI | publisher、publisher-place、ISBN |
+| `patent` | title、author/inventor、issued、number、authority、jurisdiction | status、references、URL |
+| `standard` | title、author/institution、issued、number、publisher | authority、version、URL |
+
+UI 整理要求：
+
+- 顶部保留 item type selector；切换 type 时不删除任何已有字段值。
+- 首屏显示 profile 的 `primary_fields`；“更多字段”区域显示 recommended/advanced。
+- 不适用于当前 type 的已有字段要进入“其他已保存字段”区域，提示“该字段不会丢失，但当前类型通常不使用”。
+- 字段保存必须仍写入现有 Item 模型或 `extra_csl`，不能只存在于 UI。
+- creator 编辑器必须支持 family/given/literal，而不是只支持一个 Literal 文本框。
+- 日期编辑器必须支持 literal 和 date-parts 两种输入；至少能保留当前 literal 行为。
+- identifiers 不再是保存后才能添加的孤立动作；新建题录时可以暂存 identifiers，保存 item 时一起提交。
+- 编辑器右侧应有 CSL 预览，使用当前默认 CSL 样式渲染；缺字段时显示 warnings，而不是阻止保存。若 item type 是 `general`，预览区必须显示不可渲染警告，不得伪造 CSL 结果。
+- `ItemEditorViewModel` 不应继续暴露一组固定字段作为全部 UI；v2 应引入 `ItemFieldDescriptor` / `EditableItemField`，由 `CslItemTypeProfile` 生成可见字段。
+
+实现层需要新增 `ICslItemTypeProfileService` 或等价模块。profile 可以先用内置 JSON/代码常量提供，后续再允许用户自定义；但 v2 不要求自定义 profile UI。
+
+### 3.3 初次 PDF 扫描与 `general` 类型
+
+当前初次 PDF 导入路径会把 CSL type 直接写成 `document`。这把“文件是一个 PDF 文档实例”和“书目条目是 CSL document 类型”混在了一起。v2 必须把 PDF 文件发现、文档实例创建和题录类型分类拆开处理。初次导入应效仿 NoteExpress 一类文献管理器的宽松录入思路，使用 Patchouli 内部 `general` 类型承接未知题录，而不是把未知 PDF 静默确认为 CSL `document`。
+
+- `PdfDiscoveryService` 只发现文件候选、页数、大小、mtime、hash 等文件事实，不直接声明 CSL item type。
+- `PdfImportWorkflow` 创建的是 skeleton item + primary `DocumentInstance`。如果没有可靠书目信息，题录 `item_type` 写为 Patchouli 内部类型 `general`，并进入“待细分/待补全”状态，而不是静默确认为 CSL `document`。
+- `general` 是 UI/数据录入类型，不是 CSL 类型。它的编辑表单必须宽松：所有 CSL 对齐字段、identifier、creator、date 和 `extra_csl` 都允许填写；字段不因当前 type 不匹配而隐藏到不可编辑状态。
+- 保存 `general` 题录时 UI 必须显示明确警告：该条目尚未细分为 CSL 支持的类型，后续无法生成正式 CSL 题录；建议用户选择 book、article-journal、chapter、thesis、report、webpage 等更具体类型。该警告不阻止保存。
+- CSL renderer 不得把 `general` 自动映射成 CSL `document`。复制 CSL 题录、导出题录和 MCP CSL 渲染遇到 `general` 时必须阻止渲染，返回 warning/error：`general_type_not_renderable`，并给出“请先细分题录类型”的恢复动作。
+- 自动类型推断只能产生“建议”，不能在低置信度时直接确认。可用信号包括 DOI/ISBN/ISSN 或外部元数据 lookup 返回的类型、导入的 CSL JSON/BibTeX 类型、PDF/XMP 内嵌 metadata、文件名/目录名启发式、OCR 或文本层首屏抽取结果。
+- 只有高置信度来源或用户选择可以把 `general` 转换为具体类型。建议状态至少包括 `general`、`suggested`、`confirmed`、`rejected`。
+- 建议新增 `ItemTypeInference` 或等价模型：`item_id`、`suggested_type`、`confidence`、`source`、`evidence_summary`、`created_at`、`accepted_at`。
+- 题录列表和导入结果页应提供 `general` / “待细分”过滤器；批量导入后优先引导用户确认 type、title、creator、issued 和 identifier。
+- MCP 的题录元数据响应应暴露 `general` 状态和 warnings，让 agent 知道该 item 还不是可渲染的 CSL item。
+
+### 3.4 CSL 样式管理与题录生成
+
+v2 必须实现独立的 CSL 样式管理 UI 和题录生成功能。
+
+- 接入 Zotero 中文社区 CSL 样式入口 `https://zotero-chinese.github.io/styles/`，并保留接入 Zotero 官方 CSL 样式仓库的能力。
+- 样式索引应缓存到本地，支持刷新、搜索、安装、更新、禁用/删除本地样式。
+- 样式详情至少显示名称、id、来源、更新时间、语言/地区提示、是否已安装和本地版本。
+- CSL 样式文件应存储在库或用户配置的可管理位置，并记录来源 URL 与内容哈希。
+- 题录详情页和题录列表右键菜单支持“复制 CSL 题录”。
+- 复制时使用当前默认 CSL 样式；右键二级菜单允许选择最近使用样式。
+- 设置页允许选择默认 CSL 样式和输出 locale。
+- 题录生成必须基于 Item 的 CSL 对齐字段、creator/date/identifier 结构化数据和 `extra_csl`。
+- v2 应新增 CSL 服务边界，例如 `ICslStyleCatalog`、`ICslStyleStore`、`ICslItemMapper`、`ICslRenderer`。
+- 需要持久化 `csl_styles` 与 `csl_settings`，至少记录 style_id、display_name、source_url、source_kind、content_hash、installed_at、updated_at、locale、is_default。
+- Item 到 CSL JSON 的转换必须是可测试的纯映射：不在 renderer 中临时猜字段。
+- CSL renderer 失败必须返回 warning/error，不允许复制空字符串并报告成功。
+- MCP 对外提供 CSL 题录信息，供人类和 agent 学术写作使用。建议新增只读能力：`list_csl_styles`、`get_csl_style`、`render_item_bibliography`、`render_items_bibliography`。
+- MCP 返回 CSL 输出时必须包含 style id、style display name、locale、item ids、rendered text/html 和可选 warnings。
+
+### 3.5 OCR 编辑器与局部识别
+
+v2 必须把 OCR 编辑器从 alpha 预览推进到可用工作台。
+
+- PDF 工作台显示页面图像、当前布局节点、bbox、阅读顺序和选中节点属性。
+- 支持框选区域后运行局部 OCR。
+- 支持局部 OCR 结果作为候选进入 staging，不自动污染 current layout/search/MCP。
+- 支持候选结果对比、按区域/页面采纳、撤销采纳前操作。
+- 支持手工编辑文本、节点类型、reading_order、bbox 和 ignored 状态。
+- 对普通 bbox 重叠显示冲突，而不是静默保存。
+- ruby、边注等允许重叠类型必须有显式节点类型或样式声明。
+- OCR 编辑器中所有会改变证据 current 的操作都应显示 search index stale/partial 的后果。
+- 局部 OCR 的输入是 page + normalized bbox + OCR Preset Version；输出仍进入 MinerU-compatible 中间结构。
+- 局部 OCR 采纳默认只替换用户显式选中的节点或空区域，不自动推断删除周边节点。
+- OCR 编辑器必须把 `LayoutTreeService` 的普通 bbox overlap 从通用 validation error 提升为结构化冲突 `CF-06`。
+
+### 3.6 生产 OCR Provider
+
+v2 不再把 Mock、Tesseract、本地占位 OCR 作为用户可见或生产可选 OCR。MinerU 仍然是首选生产 OCR/provider，并且 MinerU content list / layout mapper 仍是 OCR 文本存储、编辑、表格、bbox、布局修订和搜索单元生成的 schema 基准。
+
+- Mock OCR 只允许存在于测试工程或明确的开发测试路径。
+- Tesseract CLI 和 local placeholder 不应出现在最终用户 UI、默认设置、首轮初始化或生产 preset 中。
+- v2 可新增多模态 LLM OCR provider，作为 MinerU 之外的生产 OCR 路径之一。
+- 任何新增 OCR provider 都必须把输出规范化为 MinerU-compatible 的中间结构，再进入 `LayoutRevision`、`LayoutNode`、SearchUnit、证据和 MCP。
+- 兼容结构至少需要表达 page、block type、text/latex、bbox、confidence、table/table_row/table_cell、row/column/span/header 信息。
+- Provider-specific 原始响应可以作为调试/溯源附件保留，但不得成为默认编辑、搜索或 MCP 读取的直接数据源。
+- v2 应把当前 `MinerUContentListDocument` / mapper 概念抽象成 provider-neutral DTO，例如 `OcrLayoutDocument`、`OcrLayoutPage`、`OcrLayoutBlock`、`OcrTableCell`。MinerU importer 是该 DTO 的第一个 parser，其他 provider 先转换到该 DTO。
+- 不允许每个 provider 各自直接写 `layout_nodes`；所有 provider 必须走同一个 import/adoption service。
+- OCR provider 配置只负责保存和使用用户提供的 token/secret key、endpoint、model id 和必要参数。
+- Patchouli 不负责账号注册、配额购买、余额检查、成本估算或云端计费策略。
+- provider 返回的认证、限流、配额、模型不可用等错误按普通 provider 错误展示，不进入账号管理流程。
+- 所有 provider secret 必须沿用 ProviderCredential 边界：不进 MCP、不进日志、不进不可变历史分片。
+
+### 3.7 设置 UI
+
+设置 UI 需要变成最终用户可理解的控制台。
+
+- 分组至少包括：库与数据库、同步、文件搜索根、MCP Server、CSL 样式、OCR Provider、缓存与维护、关于。
+- 在“库与数据库”分组中，必须提供“记住上次打开的数据库”开关，并确保状态能持久化保存。
+- 每个设置分组显示保存状态、验证状态、上次错误和需要重启/重载的提示。
+- 增加文件搜索根时必须触发阻塞式扫描流程；扫描完成前不得假装配置已完全可用。
+- 设置页保存 provider secret 时只显示配置状态，不回显 secret。
+- 维护区提供安全操作：重建搜索索引、刷新 CSL 索引、清理本地缓存、打开日志目录。
+- v2 设置页不直接拼接数据库 SQL；所有设置变更走服务接口，以便阻塞/冲突/secret 处理可测试。
+- 每个可保存分组必须显示 dirty/saving/saved/failed 状态，避免用户误以为已经持久化。
+
+### 3.8 菜单栏、右键菜单与反馈
+
+v2 需要整理菜单信息架构。
+
+- 菜单栏按任务组织：Library、Sync、Items、OCR、Search、MCP、Settings、Help。
+- 右键菜单按对象组织：题录、文档实例、页面、布局节点、搜索结果、证据引用。
+- 题录右键菜单必须包含：编辑元数据、打开文档、运行 OCR、复制证据 Markdown、复制 CSL 题录、导出题录、查看同步/冲突状态。
+- 与当前选择无关的命令隐藏或禁用，并显示禁用原因。
+- alpha/dev 命令不得出现在生产默认菜单中。
+- v2 应引入 UI command 描述层，例如 `UiCommandDescriptor`：id、label、scope、enabled、disabled_reason、danger_level、handler。
+- 菜单栏、右键菜单和快捷键应复用同一命令描述，避免同一个动作在不同入口有不同可用性判断。
+- 不引入 Toast 组件。轻量级成功/错误提示走 MainWindow 底部状态栏，阻塞式长任务走独立模态弹窗。
+
+### 3.9 OCR 队列看板
+
+v2 必须将 OCR 队列标签页从“开发者控制台”重构为面向最终用户的“后台任务看板”，严格贯彻删除而非隐藏不直觉内容的原则。
+
+- 完全删除所有依赖手动输入散列 ID（如 `DocumentInstanceId`、`PresetId`、`TaskId` 等）的“添加任务”、“暂停范围”和“取消任务”表单面板。
+- 顶部面板使用直观卡片/看板展示健康度：排队中、运行中、已完成、失败/阻塞。
+- 仅保留“刷新列表”、“全部暂停”、“全部恢复”的全局操作按钮。
+- 列表不再仅展示散列 ID。ViewModel 必须请求关联的真实文献标题 (Item Title) 并展示在行内。
+- 直接在任务列表每一行末尾提供“暂停”、“恢复”、“取消”的行级操作按钮，支持针对单一任务的直接操作。
+
+### 3.10 书库 DataGrid
+
+当前基于 ListBox 的伪表格无法满足现代文献管理器的高效数据操作需求。v2 必须引入 Avalonia 官方 `DataGrid` 控件重构书库列表。
+
+- 利用 DataGrid 提供列宽拖拽调整、列顺序拖动交换、点击表头升/降序排序等原生功能。
+- 除基础题录信息外，新增“OCR/索引状态”、“页数”和“关联文件名”等列。
+- 允许用户自由隐藏或显示特定列，例如通过主菜单栏“视图 -> 书库列”或表头右键菜单。
+- 列可见性和顺序设置必须跨重启持久化，建议通过 `LibraryPreferences` 或等价模型保存到应用配置中。
+
+## 4. 阻塞与冲突语义
+
+v2 UI 必须把阻塞和冲突作为一等状态表达，而不是普通状态字符串。
+
+### 4.1 强制阻塞语义
+
+强制阻塞表示用户必须等待、取消或完成处理，否则下一步会产生不完整或错误状态。
+
+| 场景 | UI 语义 |
 |---|---|
-| 题录 | 50k 条 |
-| 文档实例 | 100k 个 |
-| 页面 | 500 万页 |
-| 运行数据库逻辑数据 | 20GB（不包括原始文件和缓存） |
-| 快照分片大小 | 目标 512-768MB，硬上限低于 1GB |
-| 库打开 | 本地热数据库在 5 秒内可用元数据 |
-| 搜索当前索引 | 常见查询返回第一页的 p95 低于 1 秒 |
-| 搜索部分索引 | 在同一分页规则下返回可用的已索引结果 |
-| get_page_text | 已缓存已提交布局文本的 p95 低于 300ms |
-| get_page_blocks | 已缓存已提交结构化块的 p95 低于 800ms |
-| 快照发布小增量 | 普通元数据/OCR 增量低于 30 秒 |
-| 快照导入验证 | 流式哈希验证，大型库可见进度 |
-| OCR 队列 UI 响应性 | 队列操作在 500ms 内反映到 UI |
+| 初始化时扫描整个文件夹根 | 显示阻塞式进度弹窗；允许取消；完成前不得进入“库已准备好”状态。 |
+| 设置页面加入文件搜索根触发扫描 | 显示阻塞式扫描任务；完成前该 root 标记为 `scanning`，相关文件解析显示 pending。 |
+| 快照导入验证 | 显示阻塞式验证任务；失败不得修改当前活动库。 |
+| MCP server 绑定 `0.0.0.0` 但无 token | 阻止启动，并要求先配置鉴权 token。 |
+| CSL 样式刷新或安装失败 | 不阻塞库使用，但阻塞该样式成为默认样式。 |
 
-## 9. 测试决策
+在 Avalonia 桌面应用中，阻塞组件不应是页面内遮罩，而必须是独立的模态对话框。阻塞弹窗应统一显示：标题、原因、影响范围、进度、可取消性、失败后的恢复动作，并提供可滚动日志/详情区域，以输出细粒度执行进度，例如正在处理的具体文件路径。
 
-- 测试应验证外部行为和持久不变量，而非实现细节。
-- 快照测试应覆盖分片重用、清单正确性、当前指针更新、分支冲突保留和 sensitive_mutable 凭据分片分离。
-- 库标识测试应覆盖创建、重命名、移动、跨库证据不匹配和每库快照边界。
-- 文件解析测试应覆盖 known path available、moved_candidate、missing file、offline_root、changed file、conflict、quick hash match、完整 BLAKE3 确认和 source_changed 传播。
-- 元数据测试应覆盖题录/文档实例/文件资产关系以及可扩展标识符。
-- 凭据测试应覆盖同步包含性、不包含在不可变分片中、紧急清除/撤销和 MCP 不暴露。
-- OCR 生命周期测试应覆盖暂存预览隔离、取消回滚、apply_on_success true/false、按页面候选采纳、completed_with_errors、重试运行溯源、bbox 转换失败导致的硬页面拒绝以及序列化采纳。
-- 队列测试应覆盖并发限制、优先级排序、老化、暂停/恢复范围、取消行为、瞬时重试和需要手动修复的故障。
-- 布局测试应覆盖 text_policy 解析、index_policy 遍历、bbox 重叠约束、树形变更操作、自定义类型保留和表格 Markdown 降级。
-- 页面坐标测试应覆盖 crop/media/image 基准降级、upright_view 归一化、source_changed 和 bbox_basis_stale 警告。
-- 搜索单元测试应覆盖编辑时稳定的单元身份以及拆分/合并/替换时创建新单元。
-- 搜索测试应覆盖查询重写、搜索配置文件选择、页面聚合、匹配单元截断、分页、stale/partial/unavailable 索引状态、进度字段和无线性降级。
-- 证据测试应覆盖 evref 编码/解码、pinned/current/compare、superseded 后继、tombstone、purge、not_found、library_mismatch、分支候选项和最大链深度。
-- MCP 契约测试应验证没有写入工具、没有 OCR 触发器、没有提供程序密钥、没有提供程序配置、没有本地路径、没有文件 URL、没有图像以及正确的纯文本响应。
-- UI 聚焦测试应覆盖证据 Markdown 生成、pinned/current 复制行为、索引重建状态、分支警告、credential_missing 状态以及第一版中没有复制页面引文。
+实现层需要统一阻塞状态模型，例如 `BlockingOperation`：
 
-## 10. 验收标准
+- `operation_id`
+- `operation_type`：initial_root_scan、file_search_root_scan、snapshot_import_validation、mcp_start_validation、csl_style_install
+- `scope_type` / `scope_id`
+- `status`：pending、running、blocked_waiting_user、succeeded、failed、cancelled
+- `progress_current` / `progress_total` / `progress_label`
+- `can_cancel`
+- `failure_code` / `failure_message`
+- `next_actions`
+
+UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设置页 banner 和状态栏都读同一模型。
+
+### 4.2 冲突语义
+
+| 编号 | 领域 | 冲突 | 触发条件 | UI 处理 |
+|---|---|---|---|---|
+| CF-01 | 快照同步 | 书目内容 ID 冲突 | 同一 `item_id` 在分支与目标库中存在，但 Title/Type 不同（`same_id_different_content`）。 | 分支检查页列出两侧题录摘要；要求用户选择保留本地、导入为新题录或跳过。 |
+| CF-02 | 快照同步 | 主要文档实例冲突 | 导入分支 `is_primary=1` 文档，但本地该题录已有主要文档（`primary_document_conflict`）。 | 显示两侧文档信息；允许保留本地主要文档、改为备用文档、替换主要文档。 |
+| CF-03 | 快照同步 | 凭据丢失警告 | 分支数据库中关联的 Preset 凭据不进行合并（`credential_not_imported`）。 | 非阻塞警告；导入后对应 preset 标记 `credential_missing`，引导用户在设置页重新配置。 |
+| CF-04 | 文件解析 | 文件多路径冲突 | relocation 扫描匹配到多个大小与快速哈希相同的本地文件（`ChooseCandidate` / `FileAssetStatus.Conflict`）。 | 文件解析面板列出候选路径、mtime、大小、hash 置信度；要求用户选择或保持 unresolved。 |
+| CF-05 | 文件解析 | 源文件被修改 | 绑定路径上的文件哈希改变，导致版面 bbox 对应发生漂移（`FileAssetStatus.Changed`）。 | 文档页显示 source_changed/bbox_basis_stale；current 证据显示警告；允许重新绑定、确认新源或保留旧证据。 |
+| CF-06 | 版面编辑 | BBox 选区普通重叠 | 手工编辑或局部重新 OCR 时 bbox 与已有文本块重合，且不属于允许重叠类型。 | OCR 编辑器阻止采纳；高亮冲突节点；提供调整 bbox、改为允许类型、跳过候选的动作。 |
+
+对于 CF-01 到 CF-05，UI 处理应采用独立的冲突解决模态对话框。弹窗必须提供双栏对比视窗（左侧本地现状，右侧传入状态），并在底部提供明确的互斥行动按钮，例如：替换为主文档、作为备用文档保留、跳过。
+
+所有冲突都必须有稳定 code、用户可读描述、影响对象、推荐动作和可测试的状态转换。
+
+实现层需要统一冲突模型，例如 `ConflictDescriptor`：
+
+- `conflict_code`：CF-01 到 CF-06。
+- `domain`：snapshot_sync、file_resolution、layout_edit。
+- `severity`：blocking、warning、info。
+- `object_type` / `object_id`
+- `summary`
+- `local_snapshot`
+- `incoming_snapshot`
+- `recommended_actions`
+- `selected_action`
+- `resolution_status`：unresolved、resolved、ignored、superseded。
+
+现有 `BranchImportConflict` 可以作为快照同步冲突来源，但 v2 UI 应转换到统一 `ConflictDescriptor`，文件解析和版面编辑也应使用同一结构。
+
+## 5. 实现决策
+
+| 主题 | 决策 |
+|---|---|
+| MCP 配置 | server 运行配置是本机设置；端口/bind/CORS/token 不进入快照。UI 保存后启动 server 使用同一 `McpServerSettings`。 |
+| MCP token | 不进同步，不写日志。但在本地 UI 中允许直接回显和配置明文，因为这是桌面单机软件。 |
+| MCP CORS | `0.0.0.0` + 无 token 是强制阻塞。 |
+| MCP tool 开关 | 设置页的工具启用/禁用必须由 MCP transport/enumerator 和 tools/call 共同执行，不能只隐藏 UI；禁用工具不可出现在工具列表中，直接调用返回 disabled/tool_unavailable。 |
+| 反馈 | 不引入 Toast；轻量成功/错误提示走底部状态栏，阻塞式长任务走独立模态弹窗。 |
+| CSL renderer | 渲染失败不复制空结果；返回失败状态和 warnings。UI 保持旧剪贴板内容不变。 |
+| CSL 数据模型 | v2 需要显式 `extra_csl` 语义。可以先复用 `custom_fields_json` 存储，但 mapper 必须把低频 CSL 变量作为 `extra_csl` 处理并测试。 |
+| 题录编辑字段 | CSL schema 不能直接决定每个 type 的表单；v2 维护 `CslItemTypeProfile`。 |
+| 初次 PDF 导入 type | 扫描只产生文件事实；导入 skeleton item 使用内部 `general` 类型；保存时警告用户细分；CSL 渲染遇到 `general` 必须阻止并返回 `general_type_not_renderable`。 |
+| 切换 item type | 不删除隐藏字段。隐藏字段保留并显示在“其他已保存字段”区域。 |
+| 新建题录标识符 | 新建时 identifiers 暂存，保存时与 item 一起提交。 |
+| OCR schema | 多模态 LLM 输出不能直接写 layout_nodes；必须先转换为 MinerU-compatible/OcrLayoutDocument，再走统一 import/adoption。 |
+| 局部 OCR | 区域 OCR 不自动删除重叠块；只替换显式选中节点；普通重叠生成 CF-06。 |
+| FileSearchRoot 扫描 | AddSearchRoot 不是单纯 insert；添加 root 必须创建 scan run，并以阻塞操作表达。 |
+| 冲突 code | UI 不解析错误字符串；CF-01 到 CF-06 必须是结构化 code/DTO。 |
+| 分支导入 | `credential_not_imported` 是非阻塞 warning/conflict item；导入可继续，但相关 preset 必须进入 `credential_missing`。 |
+| 菜单 | v2 需要集中 command descriptor，菜单/右键/快捷键共享。 |
+| Mock/Tesseract | 不删除测试能力；从生产 UI、默认 preset、首轮初始化和用户菜单清除。 |
+
+## 6. 明确不做
+
+- 向量化、混合搜索和语义搜索推迟到 v2 之后的版本。
+- 不做程序托管的原文件同步。
+- 不做账号注册、配额购买、余额检查或云端计费管理。
+- 不做 MCP 写入、OCR 触发、bbox 编辑、元数据更新或删除操作。
+- 不做自动对象级同步合并；分支冲突仍必须显式处理。
+- 不做库级加密、主密码或每设备凭据解封。
+
+## 7. 验收标准
 
 | 编号 | 验收标准 | 验证方式 |
 |---|---|---|
-| AC1 | 用户可以创建/导入具有稳定 library_id 的个人库，并可以重命名/移动而不更改标识。 | 库标识测试 |
-| AC2 | 用户可以添加题录元数据，附加文档实例，并通过搜索根目录定位文件。 | 元数据 + 文件解析测试 |
-| AC3 | 数据库同步可以发布内容寻址的 SQLite 数据分片快照，而无需同步 WAL/SHM 运行时文件。 | 快照发布测试 |
-| AC4 | 提供程序凭据可以通过可变凭据存储同步，不会写入不可变的历史数据分片。 | 凭据分片测试 |
-| AC5 | 多写入者快照分歧创建分支，从不静默执行最后写入者胜出。 | 分支冲突测试 |
-| AC6 | 缺失或已变更的源文件不会移除元数据、OCR、布局、搜索单元或证据引用。 | 文件状态 + 证据测试 |
-| AC7 | 已变更的源文件在证据依赖于旧页面基准时显示 source_changed/bbox_basis_stale 警告。 | 页面坐标测试 |
-| AC8 | OCR/HTR 运行可以暂存、取消、按页面完成/失败、重试和根据预设版本设置采纳。 | OCR 生命周期测试 |
-| AC9 | OCR 采纳以每个 document_instance 为单位原子性地提交当前修订版本、脏 search_unit 和后继链接。 | 序列化采纳测试 |
-| AC10 | 坏的 bbox 坐标转换阻止该页面进入 OCR/布局/搜索/MCP。 | OCR 硬失败测试 |
-| AC11 | 布局节点可以被修正并产生搜索单元，而不会导致父子节点重复索引。 | 布局 + 搜索单元测试 |
-| AC12 | 搜索返回页级结果，带有证据引用、匹配单元截断、游标分页、感知进度的索引状态，以及在不可用时没有线性降级。 | 搜索契约测试 |
-| AC13 | MCP 可以搜索、读取元数据/状态/页面文本/页面块/上下文，并且不能改变库状态或暴露本地路径/密钥/图像。 | MCP 契约测试 |
-| AC14 | 证据引用是长期可解析的，默认为 pinned，并显式解析旧/superseded/tombstoned/purged 引用。 | 证据测试 |
-| AC15 | UI 可以复制证据引用和证据 Markdown（带 pinned 文本和 evref），但在 v1 中不暴露复制页面引文。 | UI 测试 |
+| V2-AC1 | 用户可以在 UI 中配置 MCP 端口、bind 地址、CORS、鉴权 token 和特定工具启用/禁用，并看到 server 状态与错误。 | UI/ViewModel + MCP server 配置测试 |
+| V2-AC2 | MCP 在无 token 时拒绝不安全的 `0.0.0.0` 启动，并且请求鉴权可测试。 | MCP transport/security tests |
+| V2-AC3 | 用户可以刷新、搜索、安装、选择默认 CSL 样式，并复制单条或多条 CSL 题录。 | CSL style manager + render tests |
+| V2-AC4 | MCP 可以返回 CSL 样式列表和题录渲染结果，且不暴露本地路径或 secret。 | MCP CSL contract tests |
+| V2-AC5 | 题录编辑器按 `CslItemTypeProfile` 显示 type-aware 字段，切换 type 不丢字段，creator/date/identifier 可在新建时完整编辑。 | Item editor profile + UI tests |
+| V2-AC6 | 初次 PDF 扫描/导入不把未知题录静默确认为 CSL `document`；未知题录进入 `general`，保存时明确警告需要细分，CSL 复制/导出/MCP 渲染必须阻止 `general` 并返回 warning/error。 | Pdf import classification + CSL warning tests |
+| V2-AC7 | OCR 编辑器支持区域选择、局部 OCR、候选预览、采纳和 bbox 冲突阻止。 | OCR editor UI + layout conflict tests |
+| V2-AC8 | 生产 UI 不再暴露 Mock/Tesseract/local placeholder OCR；测试路径仍可使用 mock。 | UI/menu/settings boundary tests |
+| V2-AC9 | MinerU 是首选生产 OCR；多模态 LLM OCR provider 可以使用保存的 token/secret key 运行，并把输出规范化为 MinerU-compatible schema。 | OCR provider integration + schema compatibility tests |
+| V2-AC10 | 初始化扫描和新增文件搜索根扫描以阻塞式任务表达，完成前状态不可误报为 ready。 | Blocking workflow tests |
+| V2-AC11 | CF-01 到 CF-06 均有 UI 表达、状态 code、推荐动作和测试覆盖。 | Conflict workflow tests |
+| V2-AC12 | 菜单栏和右键菜单按对象/任务组织，不出现 alpha/dev-only 命令。 | XAML/ViewModel menu tests |
+| V2-AC13 | AddSearchRoot、首次初始化扫描、快照导入验证和 MCP 启动验证都通过统一 BlockingOperation 模型表达。 | BlockingOperation service tests |
+| V2-AC14 | 所有 OCR provider 通过同一 OcrLayoutDocument import/adoption service 写入布局，不允许 provider 直写 layout_nodes。 | OCR schema boundary tests |
+| V2-AC15 | CSL item mapper 对核心 CSL 字段、creator/date/identifier、extra_csl、`general` 阻止渲染和 warning 行为有纯单元测试。 | CSL mapper tests |
+| V2-AC16 | OCR 队列页面删除手工 ID 输入表单，改为后台任务看板、真实题录标题和行级操作。 | OCR queue UI/ViewModel tests |
+| V2-AC17 | 书库列表使用 Avalonia DataGrid，支持列宽、列顺序、排序、列显隐和跨重启持久化。 | Library grid UI/ViewModel tests |
+| V2-AC18 | 轻量反馈走底部状态栏，阻塞任务和冲突解决走模态弹窗，且可显示日志/详情。 | UI feedback + blocking modal tests |
 
-## 11. 重要待办事项
+## 8. v1.1 完成基线附录
 
-### v2 候选
+以下条目已从旧 v1.1 PRD 需求正文压缩为完成清单。需要查看长期约束时，优先读 `.agent/CONTEXT.md` 和 `.agent/adr/`。
 
-- 题录级引文生成。
-- CSL 样式支持。
-- 参考文献导出。
-- 引用键 / Better BibTeX 类似工作流。
-- 完整 CSL 字段映射。
-- 多语言标题和音译标题。
-- 详细的版本/历史字段。
-- 短本地证据别名。
-- 区域级 OCR 合并/采纳。
-- 派生的阅读顺序视图。
-- 查询重写加权。
-- Lucene.NET / Tantivy SearchProvider 评估。
+| 领域 | 已完成能力 | 主要证据 |
+|---|---|---|
+| 项目边界 | agent 文档集中在 `.agent/`，根目录只保留 `AGENTS.md` 入口；无 `docs/` 依赖。 | `AlphaPackagingTests`、`.agent/domain.md` |
+| 桌面技术栈 | .NET + Avalonia 桌面应用、版本信息、设置、首轮初始化、库页面、题录编辑、搜索、OCR 队列、PDF 工作台与 About 页面。 | `src/Patchouli.UI`、`UiViewModelTests`、`FirstRunViewModelTests` |
+| 库身份 | `library_id` 创建后稳定，重命名/移动不改变身份；跨库证据解析返回 mismatch。 | `LibraryIdentityServiceTests`、`EvidenceReferenceServiceTests` |
+| 题录模型 | Item/FileAsset/DocumentInstance 三层模型；CSL 对齐字段；可扩展标识符；结构化 creator/date；标签来自导入 keyword 但不保留独立 keyword 字段。 | `BibliographicCoreTests`、迁移 `003`、`010`、`013` |
+| 文件资产 | 原文件不入库；known locations、search roots、快速哈希、BLAKE3、缺失/移动/变更/冲突状态与统一文件解析服务。 | `FileResolutionServiceTests`、`FileFingerprintServiceTests` |
+| PDF 导入与页面 | PDF 扫描、导入 workflow、页数读取、页面记录、页面坐标基准。 | `PdfDiscoveryServiceTests`、`PdfImportWorkflowTests`、`PageLayoutTests` |
+| 页面渲染缓存 | PDF 页面渲染、缓存命名空间 `page_renders`、渲染失败/超时结果化、渲染输出用于 OCR 输入。MCP never returns cached images or image paths. | `PdfPageRenderingTests`、`RealPdfRendererTests` |
+| OCR Preset | OCR Preset 和不可变 Preset Version；模型/路径/参数变更创建新版本；ready/missing/rebind 状态。 | `OcrLifecycleTests`、`OcrAdapterReadinessTests` |
+| OCR 提供程序 | Mock、本地占位/Tesseract、MinerU client/downloader/importer/layout mapper/content list v2 解析已存在；MinerU 是第一产品 OCR/layout 路径的 ADR 已记录。 | `MinerU*Tests`、`LocalImageOcrAdapterTests`、ADR `0014` |
+| OCR 生命周期 | 运行按页面保存；staging/candidate/current；取消、隐藏、unset current、completed_with_errors、失败页面保留、bbox 硬失败、重试溯源、按页候选采纳。 | `OcrLifecycleTests` |
+| OCR 队列 | 并发限制、优先级、老化、暂停/恢复、取消、瞬时重试、需要人工修复的失败分类。 | `OcrQueueSchedulerTests` |
+| 布局树 | layout revision、layout node、text policy、index policy、阅读顺序、bbox、半开放节点类型、表格 cell 元数据。 | `PageLayoutTests`、迁移 `005`、`014` |
+| 搜索单元与 FTS | layout tree 生成 search_unit；本地 FTS 索引是可重建的本地缓存；索引状态 current/stale/partial/unavailable；无线性 SQL LIKE 降级。 | `SearchTests` |
+| 搜索配置文件 | 搜索配置文件、rewrite rule、alias/effective profile、rewrite plan、预览/执行边界。 | `SearchProfileRewriteTests`、迁移 `011` |
+| 证据引用 | `evref:v1` 编码、pinned 默认、current/compare、superseded、tombstoned/purged/not_found/library_mismatch、Markdown 复制文本与来源。 | `EvidenceReferenceServiceTests` |
+| MCP Read API | 第一版 MCP 是只读且纯文本的；search_library、get_item_metadata、get_document_status、get_page_text、get_page_blocks、get_search_result_context；HTTP transport。 | `McpReadApiTests`、`McpServerTransportTests` |
+| MCP 安全边界 | MCP 从不触发 OCR 或索引重建；MCP 无法读取提供程序密钥；不返回本地路径、file URL、提供程序配置、缓存图像或图像路径。 | `AlphaSecurityBoundaryTests`、ADR `0010` |
+| 凭据 | ProviderCredential、credential binding、配置读取、日志脱敏、快照中普通分片与 `sensitive_mutable` 分离。 | `CredentialStoreTests`、`AlphaSecurityBoundaryTests` |
+| 快照 | 运行库与同步快照分离；内容寻址 SQLite 分片、manifest、current pointer、导入验证、缓存排除。 | `SnapshotTests`、ADR `0001`、`0002` |
+| 快照分支 | 分歧作为独立分支打开以供检查；选择性导入题录/文档实例；v1 不执行自动对象级合并；不得在分支间静默执行最后写入者胜出。 | `SnapshotBranchInspectionTests`、ADR `0011` |
+| 端到端 Alpha | 创建库、导入题录/文件/页面、布局、搜索、证据、OCR 队列、MCP、PDF 渲染 OCR、快照分支等主路径有 smoke/regression 覆盖。 | `AlphaEndToEndWorkflowTests`、`scripts/alpha-*.sh` |
 
-### v3 候选
+## 9. 长期约束索引
 
-- 团队/共享库工作流。
-- 规范控制和创作者消歧。
-- 更复杂的多写入者同步合并。
-- 多父节点布局图。
-- 完整表格语义模型。
-- 向量/混合/语义搜索作为一等工作流。
-- 库级加密或每设备凭据解封。
+| 约束 | 权威位置 |
+|---|---|
+| 领域词汇、Item/FileAsset/DocumentInstance/SearchUnit/EvidenceRef/MCP Read API 的含义 | `.agent/CONTEXT.md` |
+| 运行数据库不得放入同步根；快照发布/导入而非同步 WAL/SHM | ADR `0001` |
+| 内容寻址 SQLite 分片与 manifest | ADR `0002` |
+| 原始 PDF/图像与缓存不进数据库/快照；`page_renders` 只属于本地缓存 | ADR `0003` |
+| library_id 路径无关 | ADR `0004` |
+| Item/FileAsset/DocumentInstance 三层模型 | ADR `0005` |
+| OCR Preset Version 溯源 | ADR `0006` |
+| OCR staging 先于 current adoption | ADR `0007` |
+| layout tree 生成 SearchUnit；本地 FTS 是缓存；搜索配置文件只影响查询召回 | ADR `0008` |
+| EvidenceRef 默认 pinned，旧引用不静默漂移 | ADR `0009` |
+| MCP 只读、纯文本、无 OCR/索引动作、无路径/密钥/图片 | ADR `0010` |
+| 快照分歧创建分支，无自动对象级合并，无 last-writer-wins | ADR `0011` |
 
-### 待办事项/研究
+## 10. 版本管理理念
 
-- MeCab / Sudachi / Jieba 分析器。
-- BBox 重叠候选替换。
-- OCR 数据清除压缩。
-- 如果可复现性要求增加，进行更强的模型指纹识别。
-- 程序管理的文件同步。
-- 如果首次同步体验被证明过于严格，在 FTS 重建前提供受控的小范围子串降级。
-
-## 12. 版本管理理念
-
-- v1 应保守：保护证据，暴露歧义，拒绝不安全的自动化。
-- v1.1 PRD 明确了开发契约；不应静默扩展产品范围。
-- v2 应关注引文工作流、更好的搜索/排序和受控的证据 UX 改进。
-- v3 可能重新审视协作、自动合并、更强的加密和机构工作流。
-- 削弱证据可复现性的功能必须是选择加入并显式标记。
-
-## 13. 补充说明
-
-- 第一版针对个人使用、证据正确性、本地优先存储和显式溯源进行优化。
-- 核心产品假设是：OCR/布局/搜索/证据可以被视为用户自有文件之上的一个版本化、可检查的知识层。
-- 应用程序应在可能导致证据变得模糊的情况下优先采用保守的失败行为。
-- MCP 接口应保持小巧、可预测、纯文本且对外部 agent 安全使用。
+- v1 已经形成 alpha 可验证基线：保护证据，暴露歧义，拒绝不安全自动化。
+- v2 是最终用户可用版：优先 UI 完整性、同步可理解性、CSL 输出、MCP 可用性和生产 OCR。
+- v2 PRD 不应把所有研究方向都纳入；向量化和语义搜索留到 v2 之后。
+- 削弱证据可复现性的功能必须选择加入，并在 UI 和 MCP 响应中显式标记。
