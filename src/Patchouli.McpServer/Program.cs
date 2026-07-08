@@ -1,5 +1,7 @@
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Time;
+using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -52,7 +54,12 @@ try
     var library = new LibraryIdentityService(db, clock);
     await new MigrationRunner(db, Path.Combine(AppContext.BaseDirectory, "migrations")).RunAsync();
     var profiles = new SearchProfileService(db, library, clock);
-    var api = new McpReadApi(db, new SqliteSearchService(db, profiles), new EvidenceReferenceService(db, clock));
+    var search = new SqliteSearchService(db, profiles);
+    var evidence = new EvidenceReferenceService(db, clock);
+    var items = new ItemService(db, library, clock);
+    var cslStore = new CslStyleStore(db, clock, blockingOperations: blockingOperations);
+    var cslRenderer = new CslRenderer(items, cslStore, new CslItemMapper());
+    var api = new McpReadApi(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
     var handler = new McpProtocolHandler(api, db, effectiveSettings);
     await using var server = new McpHttpServer(handler, effectiveSettings);
     await server.RunAsync();

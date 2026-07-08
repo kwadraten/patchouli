@@ -26,12 +26,12 @@ public sealed class CslRendererTests
         var rendered = await context.Renderer.RenderAsync(new CslRenderRequest([item.Value.ItemId], "apa", "en-US"));
 
         rendered.IsSuccess.Should().BeTrue();
-        rendered.Value.RenderedText.Should().Contain("Jane Austen").And.Contain("1813").And.Contain("Pride and Prejudice");
+        rendered.Value.RenderedText.Should().Contain("Austen").And.Contain("1813").And.Contain("Pride and Prejudice");
         rendered.Value.RenderedHtml.Should().Contain("<i>Pride and Prejudice</i>");
     }
 
     [Fact]
-    public async Task Render_missing_year_returns_warning()
+    public async Task Render_missing_year_still_returns_a_non_empty_bibliography()
     {
         await using var context = await CreateContextAsync();
         var item = await context.Items.CreateItemAsync(
@@ -43,7 +43,8 @@ public sealed class CslRendererTests
         var rendered = await context.Renderer.RenderAsync(new CslRenderRequest([item.Value.ItemId], "apa"));
 
         rendered.IsSuccess.Should().BeTrue();
-        rendered.Value.Warnings.Should().Contain(warning => warning.Contains("issued year", StringComparison.OrdinalIgnoreCase));
+        rendered.Value.RenderedText.Should().Contain("Undated Book");
+        rendered.Value.RenderedHtml.Should().Contain("<i>Undated Book</i>");
     }
 
     [Fact]
@@ -86,15 +87,40 @@ public sealed class CslRendererTests
         var store = new CslStyleStore(database.ConnectionFactory, clock);
         await store.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
-            """
-            <style xmlns="http://purl.org/net/xbiblio/csl" version="1.0" default-locale="en-US">
-              <info>
-                <title>APA</title>
-              </info>
-            </style>
-            """);
+            ValidStyleXml("APA", "en-US"));
         return new TestContext(database, items, store, new CslRenderer(items, store, new CslItemMapper()));
     }
+
+    private static string ValidStyleXml(string title, string locale)
+        => $"""
+           <?xml version="1.0" encoding="utf-8"?>
+           <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="{locale}">
+             <info>
+               <title>{title}</title>
+               <id>https://example.test/styles/{title.ToLowerInvariant().Replace(' ', '-')}</id>
+             </info>
+             <citation>
+               <layout prefix="(" suffix=")" delimiter="; ">
+                 <names variable="author">
+                   <name and="text" delimiter=", " initialize-with=". "/>
+                 </names>
+               </layout>
+             </citation>
+             <bibliography>
+               <layout suffix=".">
+                 <group delimiter=" ">
+                   <names variable="author">
+                     <name and="text" delimiter=", " sort-separator=", " initialize-with=". "/>
+                   </names>
+                   <date variable="issued" prefix=" (" suffix=")">
+                     <date-part name="year"/>
+                   </date>
+                   <text variable="title" font-style="italic"/>
+                 </group>
+               </layout>
+             </bibliography>
+           </style>
+           """;
 
     private sealed class TestContext : IAsyncDisposable
     {

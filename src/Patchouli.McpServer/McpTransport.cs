@@ -76,9 +76,10 @@ public sealed class McpProtocolHandler
 
     public async Task<string> HandleAsync(string line, CancellationToken ct = default)
     {
+        var id = "null";
         try
         {
-            using var doc = JsonDocument.Parse(line); var root = doc.RootElement; var id = root.TryGetProperty("id", out var i) ? i.GetRawText() : "null"; var method = root.GetProperty("method").GetString(); var pars = root.TryGetProperty("params", out var p) ? p : default;
+            using var doc = JsonDocument.Parse(line); var root = doc.RootElement; id = root.TryGetProperty("id", out var i) ? i.GetRawText() : "null"; var method = root.GetProperty("method").GetString(); var pars = root.TryGetProperty("params", out var p) ? p : default;
             object result = method switch
             {
                 "initialize" => new { protocolVersion = "2024-11-05", serverInfo = new { name = "Patchouli", version = Patchouli.Core.BuildInfo.Version }, capabilities = new { tools = new { } } },
@@ -90,21 +91,70 @@ public sealed class McpProtocolHandler
             var json = $"{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{JsonSerializer.Serialize(result)}}}";
             return McpOutputSanitizer.Sanitize(json);
         }
-        catch (Exception ex) { return "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32602,\"message\":\"" + McpOutputSanitizer.Sanitize(ex.Message) + "\"}}"; }
+        catch (Exception ex) { return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"" + McpOutputSanitizer.Sanitize(ex.Message) + "\"}}"; }
     }
 
     private static ToolDefinition[] Tools() =>
     [
-        new("search_library", "Read-only full text search.", ["query"]),
-        new("get_item_metadata", "Read-only item metadata.", ["item_id"]),
-        new("get_document_status", "Read-only document status.", ["document_instance_id"]),
-        new("get_page_text", "Read-only page text.", ["document_instance_id", "page_number"]),
-        new("get_page_blocks", "Read-only page blocks.", ["document_instance_id", "page_number"]),
-        new("get_search_result_context", "Read-only search context.", ["search_unit_id"]),
-        new("list_csl_styles", "Read-only installed CSL styles.", Array.Empty<string>()),
-        new("get_csl_style", "Read-only CSL style metadata and XML.", ["style_id"]),
-        new("render_item_bibliography", "Render a bibliography entry for one item.", ["item_id"]),
-        new("render_items_bibliography", "Render bibliography entries for multiple items.", ["item_ids"])
+        new("search_library", "Read-only full text search.", ["query"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["query"] = ToolSchemaProperty.String("Search query text."),
+            ["limit"] = ToolSchemaProperty.Integer("Maximum number of pages to return."),
+            ["cursor"] = ToolSchemaProperty.String("Opaque cursor from a previous search result."),
+            ["profile_id"] = ToolSchemaProperty.String("Optional search profile identifier."),
+            ["profile_alias"] = ToolSchemaProperty.String("Optional search profile alias."),
+            ["include_evidence_refs"] = ToolSchemaProperty.Boolean("Whether to materialize evidence refs in the response."),
+            ["include_rewrite_plan"] = ToolSchemaProperty.Boolean("Whether to include the rewrite plan in the response.")
+        }),
+        new("get_item_metadata", "Read-only item metadata.", ["item_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["item_id"] = ToolSchemaProperty.String("Patchouli item identifier.")
+        }),
+        new("get_document_status", "Read-only document status.", ["document_instance_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli document instance identifier.")
+        }),
+        new("get_page_text", "Read-only page text.", ["document_instance_id", "page_number"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli document instance identifier."),
+            ["page_number"] = ToolSchemaProperty.Integer("Zero-based page index."),
+            ["mode"] = ToolSchemaProperty.String("Read mode: current, pinned, or compare."),
+            ["evidence_ref"] = ToolSchemaProperty.String("Evidence ref required for pinned or compare mode."),
+            ["include_annotations"] = ToolSchemaProperty.Boolean("Whether annotation blocks should be included in page text.")
+        }),
+        new("get_page_blocks", "Read-only page blocks.", ["document_instance_id", "page_number"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli document instance identifier."),
+            ["page_number"] = ToolSchemaProperty.Integer("Zero-based page index."),
+            ["mode"] = ToolSchemaProperty.String("Read mode: current, pinned, or compare."),
+            ["evidence_ref"] = ToolSchemaProperty.String("Evidence ref required for pinned or compare mode."),
+            ["include_bbox"] = ToolSchemaProperty.Boolean("Whether normalized bounding boxes should be included."),
+            ["include_annotations"] = ToolSchemaProperty.Boolean("Whether annotation blocks should be included.")
+        }),
+        new("get_search_result_context", "Read-only search context.", ["search_unit_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["search_unit_id"] = ToolSchemaProperty.String("Patchouli search unit identifier."),
+            ["before"] = ToolSchemaProperty.Integer("How many units before the match to include."),
+            ["after"] = ToolSchemaProperty.Integer("How many units after the match to include."),
+            ["include_evidence_refs"] = ToolSchemaProperty.Boolean("Whether to materialize evidence refs in the response.")
+        }),
+        new("list_csl_styles", "Read-only installed CSL styles.", Array.Empty<string>(), new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)),
+        new("get_csl_style", "Read-only CSL style metadata and XML.", ["style_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["style_id"] = ToolSchemaProperty.String("Installed CSL style identifier.")
+        }),
+        new("render_item_bibliography", "Render a bibliography entry for one item.", ["item_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["item_id"] = ToolSchemaProperty.String("Patchouli item identifier."),
+            ["style_id"] = ToolSchemaProperty.String("Optional installed CSL style identifier."),
+            ["locale"] = ToolSchemaProperty.String("Optional CSL locale override, such as en-US or zh-CN.")
+        }),
+        new("render_items_bibliography", "Render bibliography entries for multiple items.", ["item_ids"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+        {
+            ["item_ids"] = ToolSchemaProperty.Array("Patchouli item identifiers to render.", ToolSchemaProperty.String("Patchouli item identifier.")),
+            ["style_id"] = ToolSchemaProperty.String("Optional installed CSL style identifier."),
+            ["locale"] = ToolSchemaProperty.String("Optional CSL locale override, such as en-US or zh-CN.")
+        })
     ];
 
     private async Task<object> CallAsync(JsonElement parameters, CancellationToken ct)
@@ -125,7 +175,7 @@ public sealed class McpProtocolHandler
             "get_document_status" => Wrap(await _api.GetDocumentStatusAsync(DocumentInstanceId.Parse(a.GetProperty("document_instance_id").GetString()!), ct)),
             "get_page_text" => await PageTextAsync(a, ct),
             "get_page_blocks" => await PageBlocksAsync(a, ct),
-            "get_search_result_context" => Wrap(await _api.GetSearchResultContextAsync(new McpSearchContextRequest(SearchUnitId.Parse(a.GetProperty("search_unit_id").GetString()!)), ct)),
+            "get_search_result_context" => await SearchContextAsync(a, ct),
             "list_csl_styles" => Wrap(await _api.ListCslStylesAsync(ct)),
             "get_csl_style" => Wrap(await _api.GetCslStyleAsync(a.GetProperty("style_id").GetString()!, ct)),
             "render_item_bibliography" => Wrap(await _api.RenderItemBibliographyAsync(ItemId.Parse(a.GetProperty("item_id").GetString()!), a.TryGetProperty("style_id", out var oneStyleId) ? oneStyleId.GetString() : null, a.TryGetProperty("locale", out var oneLocale) ? oneLocale.GetString() : null, ct)),
@@ -135,8 +185,9 @@ public sealed class McpProtocolHandler
         return r.IsSuccess ? new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(r.Value) } } } : new { isError = true, content = new[] { new { type = "text", text = $"{r.ErrorCode}: {r.ErrorMessage}" } } };
     }
     private async Task<Result<object>> SearchAsync(JsonElement a, CancellationToken ct) { var q=a.GetProperty("query").GetString()??"";var req=new McpSearchLibraryRequest(q,a.TryGetProperty("limit",out var l)?l.GetInt32():10,a.TryGetProperty("cursor",out var c)?c.GetString():null,null,a.TryGetProperty("include_evidence_refs",out var e)?e.GetBoolean():true,a.TryGetProperty("profile_id",out var p)&&Guid.TryParse(p.GetString(),out var pid)?new SearchProfileId(pid):null,a.TryGetProperty("profile_alias",out var al)?al.GetString():null,a.TryGetProperty("include_rewrite_plan",out var rp)?rp.GetBoolean():true);return Wrap(await _api.SearchLibraryAsync(req,ct)); }
-    private async Task<Result<object>> PageTextAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageTextAsync(new McpPageTextRequest(page.Value,a.TryGetProperty("mode",out var m)?m.GetString()??McpReadMode.Current:McpReadMode.Current,a.TryGetProperty("evidence_ref",out var e)?e.GetString():null),ct));}
-    private async Task<Result<object>> PageBlocksAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageBlocksAsync(new McpPageBlocksRequest(page.Value,IncludeBbox:a.TryGetProperty("include_bbox",out var b)&&b.GetBoolean()),ct));}
+    private async Task<Result<object>> PageTextAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageTextAsync(new McpPageTextRequest(page.Value,a.TryGetProperty("mode",out var m)?m.GetString()??McpReadMode.Current:McpReadMode.Current,a.TryGetProperty("evidence_ref",out var e)?e.GetString():null,a.TryGetProperty("include_annotations",out var includeAnnotations)&&includeAnnotations.GetBoolean()),ct));}
+    private async Task<Result<object>> PageBlocksAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageBlocksAsync(new McpPageBlocksRequest(page.Value,a.TryGetProperty("mode",out var m)?m.GetString()??McpReadMode.Current:McpReadMode.Current,a.TryGetProperty("evidence_ref",out var e)?e.GetString():null,a.TryGetProperty("include_bbox",out var b)&&b.GetBoolean(),a.TryGetProperty("include_annotations",out var includeAnnotations)&&includeAnnotations.GetBoolean()),ct));}
+    private async Task<Result<object>> SearchContextAsync(JsonElement a,CancellationToken ct){return Wrap(await _api.GetSearchResultContextAsync(new McpSearchContextRequest(SearchUnitId.Parse(a.GetProperty("search_unit_id").GetString()!),a.TryGetProperty("before",out var before)?before.GetInt32():2,a.TryGetProperty("after",out var after)?after.GetInt32():2,a.TryGetProperty("include_evidence_refs",out var includeEvidenceRefs)?includeEvidenceRefs.GetBoolean():true),ct));}
     private async Task<Result<object>> RenderItemsBibliographyAsync(JsonElement a, CancellationToken ct){var ids=a.GetProperty("item_ids").EnumerateArray().Select(x=>ItemId.Parse(x.GetString()!)).ToArray();return Wrap(await _api.RenderItemsBibliographyAsync(new McpRenderBibliographyRequest(ids,a.TryGetProperty("style_id",out var styleId)?styleId.GetString():null,a.TryGetProperty("locale",out var locale)?locale.GetString():null),ct));}
     private async Task<Result<PageId>> PageAsync(JsonElement a,CancellationToken ct){var doc=DocumentInstanceId.Parse(a.GetProperty("document_instance_id").GetString()!);var number=a.GetProperty("page_number").GetInt32();await using var c=_db.CreateConnection();await c.OpenAsync(ct);var id=await c.ExecuteScalarAsync<string?>("select page_id from pages where document_instance_id=@D and page_index=@P",new{D=doc.ToString(),P=number});return id is null?Result<PageId>.Failure("not_found","Page was not found."):Result<PageId>.Success(PageId.Parse(id));}
     private static Result<object> Wrap<T>(Result<T> result) => result.IsSuccess ? Result<object>.Success(result.Value!) : Result<object>.Failure(result.ErrorCode!, result.ErrorMessage!);
@@ -147,8 +198,32 @@ public sealed class McpProtocolHandler
     private string? ToolDisabledReason(string toolName)
         => _settings.ToolOverrides.FirstOrDefault(value => string.Equals(value.ToolName, toolName, StringComparison.Ordinal) && !value.Enabled)?.DisabledReason;
 
-    private sealed record ToolDefinition(string Name, string Description, string[] Required)
+    private sealed record ToolDefinition(string Name, string Description, string[] Required, IReadOnlyDictionary<string, ToolSchemaProperty> Properties)
     {
-        public object ToWire() => new { name = Name, description = Description, inputSchema = new { type = "object", required = Required } };
+        public object ToWire() => new
+        {
+            name = Name,
+            description = Description,
+            inputSchema = new
+            {
+                type = "object",
+                additionalProperties = false,
+                properties = Properties.ToDictionary(pair => pair.Key, pair => pair.Value.ToWire(), StringComparer.Ordinal),
+                required = Required
+            }
+        };
+    }
+
+    private sealed record ToolSchemaProperty(string Type, string Description, ToolSchemaProperty? Items = null)
+    {
+        public object ToWire()
+            => Items is null
+                ? new { type = Type, description = Description }
+                : new { type = Type, description = Description, items = Items.ToWire() };
+
+        public static ToolSchemaProperty String(string description) => new("string", description);
+        public static ToolSchemaProperty Integer(string description) => new("integer", description);
+        public static ToolSchemaProperty Boolean(string description) => new("boolean", description);
+        public static ToolSchemaProperty Array(string description, ToolSchemaProperty items) => new("array", description, items);
     }
 }

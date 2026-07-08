@@ -117,7 +117,13 @@ public sealed class CslStyleStore : ICslStyleStore
             return Result<string>.Failure(style.ErrorCode!, style.ErrorMessage!);
         }
 
-        var path = StylePath(style.Value.StyleId);
+        var resolvedPath = ResolveStylePath(style.Value.StyleId);
+        if (resolvedPath.IsFailure)
+        {
+            return Result<string>.Failure(resolvedPath.ErrorCode!, resolvedPath.ErrorMessage!);
+        }
+
+        var path = resolvedPath.Value;
         if (!File.Exists(path))
         {
             return Result<string>.Failure(AppErrorCodes.NotFound, "CSL style content file was not found.");
@@ -150,10 +156,21 @@ public sealed class CslStyleStore : ICslStyleStore
         }
 
         var metadata = ParseMetadata(catalogStyle.StyleId, catalogStyle.DisplayName, catalogStyle.SourceUrl, catalogStyle.SourceKind, contentXml);
+        var resolvedPath = ResolveStylePath(metadata.StyleId);
+        if (resolvedPath.IsFailure)
+        {
+            await TryFailInstallOperationAsync(
+                installOperationId,
+                resolvedPath.ErrorCode!,
+                resolvedPath.ErrorMessage!,
+                cancellationToken);
+            return Result<CslStyle>.Failure(resolvedPath.ErrorCode!, resolvedPath.ErrorMessage!);
+        }
+
         try
         {
             Directory.CreateDirectory(_installedRoot);
-            await File.WriteAllTextAsync(StylePath(metadata.StyleId), contentXml, cancellationToken);
+            await File.WriteAllTextAsync(resolvedPath.Value, contentXml, cancellationToken);
 
             await using var connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
@@ -252,7 +269,13 @@ public sealed class CslStyleStore : ICslStyleStore
             await connection.ExecuteAsync(
                 "update csl_styles set deleted = 1, enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
                 new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") });
-            var path = StylePath(style.Value.StyleId);
+            var resolvedPath = ResolveStylePath(style.Value.StyleId);
+            if (resolvedPath.IsFailure)
+            {
+                return Result.Failure(resolvedPath.ErrorCode!, resolvedPath.ErrorMessage!);
+            }
+
+            var path = resolvedPath.Value;
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -343,7 +366,33 @@ public sealed class CslStyleStore : ICslStyleStore
         }
     }
 
-    private string StylePath(string styleId) => Path.Combine(_installedRoot, $"{styleId}.csl");
+    private Result<string> ResolveStylePath(string styleId)
+    {
+        if (string.IsNullOrWhiteSpace(styleId))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "CSL style id is required.");
+        }
+
+        var normalized = styleId.Trim();
+        if (normalized.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+            || normalized.Contains(Path.DirectorySeparatorChar)
+            || normalized.Contains(Path.AltDirectorySeparatorChar)
+            || Path.IsPathRooted(normalized)
+            || normalized is "." or ".."
+            || normalized.Contains("..", StringComparison.Ordinal))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "CSL style id contains an invalid path segment.");
+        }
+
+        var installedRoot = Path.GetFullPath(_installedRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var candidate = Path.GetFullPath(Path.Combine(installedRoot, $"{normalized}.csl"));
+        if (!candidate.StartsWith(installedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "CSL style id resolves outside the installed style directory.");
+        }
+
+        return Result<string>.Success(candidate);
+    }
 
     private CslStyle ParseMetadata(string styleId, string displayName, string? sourceUrl, string sourceKind, string contentXml)
     {

@@ -38,7 +38,7 @@ public sealed class McpReadApiTests
     [Fact] public async Task GetItemMetadata_returns_structured_creators_and_dates() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("book", "MCP Item", Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada")], Dates: [new ItemDateInput(ItemDateRoles.Issued, """[[1843]]""")])); var r = await c.Api.GetItemMetadataAsync(c.ItemId); r.Value.Creators.Single().DisplayName.Should().Be("Ada Lovelace"); r.Value.Dates.Single().Role.Should().Be(ItemDateRoles.Issued); r.Value.Dates.Single().DatePartsJson.Should().Be("""[[1843]]"""); }
     [Fact] public async Task ListCslStyles_returns_installed_style_summaries() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); var r = await c.Api.ListCslStylesAsync(); r.IsSuccess.Should().BeTrue(); r.Value.Should().ContainSingle(); r.Value.Single().StyleId.Should().Be("apa"); }
     [Fact] public async Task GetCslStyle_returns_style_without_local_path_leak() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); var r = await c.Api.GetCslStyleAsync("apa"); r.IsSuccess.Should().BeTrue(); r.Value.ContentXml.Should().Contain("<style"); JsonSerializer.Serialize(r.Value).Should().NotContain("installed"); }
-    [Fact] public async Task RenderItemBibliography_returns_rendered_text_and_html() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("book", "MCP Item", Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada")], Dates: [new ItemDateInput(ItemDateRoles.Issued, """[[1843]]""")])); var r = await c.Api.RenderItemBibliographyAsync(c.ItemId, "apa", "en-US"); r.IsSuccess.Should().BeTrue(); r.Value.RenderedText.Should().Contain("Ada Lovelace").And.Contain("MCP Item"); r.Value.RenderedHtml.Should().Contain("<i>MCP Item</i>"); }
+    [Fact] public async Task RenderItemBibliography_returns_rendered_text_and_html() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("book", "MCP Item", Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada")], Dates: [new ItemDateInput(ItemDateRoles.Issued, """[[1843]]""")])); var r = await c.Api.RenderItemBibliographyAsync(c.ItemId, "apa", "en-US"); r.IsSuccess.Should().BeTrue(); r.Value.RenderedText.Should().Contain("Lovelace").And.Contain("1843").And.Contain("MCP Item"); r.Value.RenderedHtml.Should().Contain("<i>MCP Item</i>"); }
     [Fact] public async Task RenderItemBibliography_blocks_general_type() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", withCsl: true); await c.ItemService.UpdateItemAsync(c.ItemId, new UpdateItemRequest("general", "MCP Item")); var r = await c.Api.RenderItemBibliographyAsync(c.ItemId, "apa", "en-US"); r.IsFailure.Should().BeTrue(); r.ErrorCode.Should().Be("general_type_not_renderable"); }
     [Fact] public async Task GetItemMetadata_does_not_return_file_paths() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text", "/Users/alice/private/source.pdf"); var json = JsonSerializer.Serialize((await c.Api.GetItemMetadataAsync(c.ItemId)).Value); json.Should().NotContain("/Users/alice/private/source.pdf").And.NotContain("source.pdf"); }
     [Fact] public async Task GetDocumentStatus_returns_has_current_layout() { await using var c = await McpTestContext.CreateWithIndexedUnitAsync("text"); (await c.Api.GetDocumentStatusAsync(c.DocumentInstanceId)).Value.HasCurrentLayout.Should().BeTrue(); }
@@ -118,13 +118,7 @@ public sealed class McpReadApiTests
                 styleStore = new CslStyleStore(db.ConnectionFactory, clock);
                 await styleStore.InstallStyleAsync(
                     new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
-                    """
-                    <style xmlns="http://purl.org/net/xbiblio/csl" version="1.0" default-locale="en-US">
-                      <info>
-                        <title>APA</title>
-                      </info>
-                    </style>
-                    """);
+                    ValidStyleXml("APA", "en-US"));
                 renderer = new CslRenderer(itemSvc, styleStore, new CslItemMapper());
             }
             var api = new McpReadApi(db.ConnectionFactory, search, evidenceForApi, cslStyleStore: styleStore, cslRenderer: renderer);
@@ -155,6 +149,37 @@ public sealed class McpReadApiTests
         public async Task<string> AllResponsesJsonAsync(string query) => JsonSerializer.Serialize(new object?[] { (await Api.SearchLibraryAsync(new McpSearchLibraryRequest(query))).Value, (await Api.GetItemMetadataAsync(ItemId)).Value, (await Api.GetDocumentStatusAsync(DocumentInstanceId)).Value, (await Api.GetPageTextAsync(new McpPageTextRequest(PageId))).Value, (await Api.GetPageBlocksAsync(new McpPageBlocksRequest(PageId))).Value, (await Api.GetSearchResultContextAsync(new McpSearchContextRequest(UnitId))).Value });
         public Microsoft.Data.Sqlite.SqliteConnection Connection() { var c = Database.ConnectionFactory.CreateConnection(); c.Open(); return c; }
         public ValueTask DisposeAsync() => Database.DisposeAsync();
+
+        private static string ValidStyleXml(string title, string locale)
+            => $"""
+               <?xml version="1.0" encoding="utf-8"?>
+               <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="{locale}">
+                 <info>
+                   <title>{title}</title>
+                   <id>https://example.test/styles/{title.ToLowerInvariant().Replace(' ', '-')}</id>
+                 </info>
+                 <citation>
+                   <layout prefix="(" suffix=")" delimiter="; ">
+                     <names variable="author">
+                       <name and="text" delimiter=", " initialize-with=". "/>
+                     </names>
+                   </layout>
+                 </citation>
+                 <bibliography>
+                   <layout suffix=".">
+                     <group delimiter=" ">
+                       <names variable="author">
+                         <name and="text" delimiter=", " sort-separator=", " initialize-with=". "/>
+                       </names>
+                       <date variable="issued" prefix=" (" suffix=")">
+                         <date-part name="year"/>
+                       </date>
+                       <text variable="title" font-style="italic"/>
+                     </group>
+                   </layout>
+                 </bibliography>
+               </style>
+               """;
     }
 
     private sealed class FailingEvidenceService : IEvidenceReferenceService

@@ -3,7 +3,7 @@ using Patchouli.Core.Import;
 
 namespace Patchouli.UI;
 
-public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string DefaultSyncRoot, string DefaultStagingRoot, string LogDirectory, bool UseMockOcrOnly = true)
+public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string DefaultSyncRoot, string DefaultStagingRoot, string LogDirectory, bool UseMockOcrOnly = false)
 {
     public static AppRuntimeOptions FromAppSettings(string? settingsPath = null) =>
         PatchouliAppSettings.Load(settingsPath).Runtime;

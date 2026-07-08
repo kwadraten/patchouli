@@ -68,8 +68,12 @@ public sealed class AppServices
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
         var adapterRegistry = new OcrAdapterRegistry();
-        adapterRegistry.RegisterAdapter(new MockOcrAdapter());
-        adapterRegistry.RegisterAdapter(new LocalPlaceholderOcrAdapter(ModelPathValidator));
+        if (settings.Runtime.UseMockOcrOnly)
+        {
+            adapterRegistry.RegisterAdapter(new MockOcrAdapter());
+            adapterRegistry.RegisterAdapter(new LocalPlaceholderOcrAdapter(ModelPathValidator));
+        }
+
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
 
         OcrAdapters = adapterRegistry;
@@ -87,7 +91,8 @@ public sealed class AppServices
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrLayoutImporter);
-        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, ocrLayoutImporter, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
+        IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
+        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, pageOcrEngine, searchUnitBuilder, ocrLayoutImporter, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
         McpSettings = new McpServerSettingsService(ConnectionFactory, Clock, BlockingOperations);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
@@ -150,7 +155,7 @@ public sealed class AppServices
         new OcrRunCoordinator(
             ConnectionFactory,
             Clock,
-            new MockOcrEngine(),
+            Settings.Runtime.UseMockOcrOnly ? (IOcrEngine)new MockOcrEngine() : new UnavailableOcrEngine(),
             new SearchUnitBuilder(ConnectionFactory, Clock),
             new OcrLayoutImporter(ConnectionFactory, Clock),
             OcrAdapters,

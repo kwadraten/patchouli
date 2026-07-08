@@ -128,6 +128,23 @@ public sealed class CslStyleStoreTests
         operations.Value.Single().NextActions.Should().BeEmpty();
     }
 
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("..\\escape")]
+    [InlineData("nested/style")]
+    [InlineData("nested\\style")]
+    public async Task Style_ids_cannot_escape_the_installed_directory(string styleId)
+    {
+        await using var context = await CreateContextAsync();
+
+        var installed = await context.Store.InstallStyleAsync(
+            new CslCatalogStyle(styleId, "Bad Style", "https://example.test/bad.csl", "test"),
+            StyleXml("bad-style", "Bad Style", "en-US"));
+
+        installed.IsFailure.Should().BeTrue();
+        installed.ErrorCode.Should().Be("validation_failed");
+    }
+
     private static async Task<TestContext> CreateContextAsync()
     {
         var database = TemporarySqliteDatabase.Create();
@@ -144,11 +161,32 @@ public sealed class CslStyleStoreTests
 
     private static string StyleXml(string id, string title, string locale)
         => $"""
-           <style xmlns="http://purl.org/net/xbiblio/csl" version="1.0" default-locale="{locale}">
+           <?xml version="1.0" encoding="utf-8"?>
+           <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="{locale}">
              <info>
                <title>{title}</title>
                <id>https://example.test/styles/{id}</id>
              </info>
+             <citation>
+               <layout prefix="(" suffix=")" delimiter="; ">
+                 <names variable="author">
+                   <name and="text" delimiter=", " initialize-with=". "/>
+                 </names>
+               </layout>
+             </citation>
+             <bibliography>
+               <layout suffix=".">
+                 <group delimiter=" ">
+                   <names variable="author">
+                     <name and="text" delimiter=", " sort-separator=", " initialize-with=". "/>
+                   </names>
+                   <date variable="issued" prefix=" (" suffix=")">
+                     <date-part name="year"/>
+                   </date>
+                   <text variable="title" font-style="italic"/>
+                 </group>
+               </layout>
+             </bibliography>
            </style>
            """;
 
