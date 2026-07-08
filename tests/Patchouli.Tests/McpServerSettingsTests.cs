@@ -1,9 +1,11 @@
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Operations;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Mcp;
+using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Snapshots;
 
 namespace Patchouli.Tests;
@@ -44,7 +46,8 @@ public sealed class McpServerSettingsTests
         await using var database = TemporarySqliteDatabase.Create();
         var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var service = new McpServerSettingsService(database.ConnectionFactory, clock);
+        var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
+        var service = new McpServerSettingsService(database.ConnectionFactory, clock, blockingOperations);
 
         var result = await service.ValidateSettingsAsync(new McpServerSettings(
             4536,
@@ -55,9 +58,19 @@ public sealed class McpServerSettingsTests
             null,
             [],
             clock.UtcNow));
+        var operations = await blockingOperations.ListAsync(
+            status: BlockingOperationStatus.Failed,
+            operationType: BlockingOperationTypes.McpStartValidation,
+            scopeType: BlockingOperationScopeTypes.McpServerSettings,
+            scopeId: "default");
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be("unsafe_configuration");
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().FailureCode.Should().Be("unsafe_configuration");
+        operations.Value.Single().FailureMessage.Should().Be("Binding MCP to 0.0.0.0 requires a bearer token.");
+        operations.Value.Single().NextActions.Should().Equal("Bind to 127.0.0.1", "Configure a bearer token");
     }
 
     [Fact]

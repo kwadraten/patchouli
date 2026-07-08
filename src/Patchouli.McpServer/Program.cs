@@ -5,6 +5,7 @@ using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.McpServer;
 
@@ -26,7 +27,8 @@ try
 {
     var db = new SqliteConnectionFactory(options.Value.DatabasePath);
     var clock = new SystemClock();
-    var settingsService = new McpServerSettingsService(db, clock);
+    var blockingOperations = new BlockingOperationService(db, clock);
+    var settingsService = new McpServerSettingsService(db, clock, blockingOperations);
     var loadedSettings = await settingsService.GetSettingsAsync();
     if (loadedSettings.IsFailure)
     {

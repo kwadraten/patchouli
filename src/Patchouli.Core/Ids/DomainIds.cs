@@ -158,3 +158,17 @@ public readonly record struct SearchRewriteRuleId(Guid Value)
     public static SearchRewriteRuleId Parse(string value) => new(Guid.Parse(value));
     public override string ToString() => Value.ToString("D");
 }
+
+public readonly record struct BlockingOperationId(Guid Value)
+{
+    public static BlockingOperationId New() => new(Guid.NewGuid());
+    public static BlockingOperationId Parse(string value) => new(Guid.Parse(value));
+    public override string ToString() => Value.ToString("D");
+}
+
+public readonly record struct BlockingOperationLogEntryId(Guid Value)
+{
+    public static BlockingOperationLogEntryId New() => new(Guid.NewGuid());
+    public static BlockingOperationLogEntryId Parse(string value) => new(Guid.Parse(value));
+    public override string ToString() => Value.ToString("D");
+}

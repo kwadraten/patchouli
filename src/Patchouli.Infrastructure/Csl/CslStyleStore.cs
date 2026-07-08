@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Xml.Linq;
 using Dapper;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Ids;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
@@ -16,13 +18,19 @@ public sealed class CslStyleStore : ICslStyleStore
     private readonly IClock _clock;
     private readonly string _stylesRoot;
     private readonly string _installedRoot;
+    private readonly IBlockingOperationService? _blockingOperations;
 
-    public CslStyleStore(SqliteConnectionFactory connectionFactory, IClock clock, string? stylesRoot = null)
+    public CslStyleStore(
+        SqliteConnectionFactory connectionFactory,
+        IClock clock,
+        string? stylesRoot = null,
+        IBlockingOperationService? blockingOperations = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _stylesRoot = stylesRoot ?? CslStoragePaths.GetStylesRoot(connectionFactory.DatabasePath);
         _installedRoot = Path.Combine(_stylesRoot, "installed");
+        _blockingOperations = blockingOperations;
         Directory.CreateDirectory(_installedRoot);
     }
 
@@ -120,13 +128,24 @@ public sealed class CslStyleStore : ICslStyleStore
 
     public async Task<Result<CslStyle>> InstallStyleAsync(CslCatalogStyle catalogStyle, string contentXml, CancellationToken cancellationToken = default)
     {
+        var installOperationId = await TryStartInstallOperationAsync(catalogStyle.StyleId, cancellationToken);
         if (string.IsNullOrWhiteSpace(catalogStyle.StyleId))
         {
+            await TryFailInstallOperationAsync(
+                installOperationId,
+                AppErrorCodes.ValidationFailed,
+                "CSL style id is required.",
+                cancellationToken);
             return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed, "CSL style id is required.");
         }
 
         if (string.IsNullOrWhiteSpace(contentXml))
         {
+            await TryFailInstallOperationAsync(
+                installOperationId,
+                AppErrorCodes.ValidationFailed,
+                "CSL style content is required.",
+                cancellationToken);
             return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed, "CSL style content is required.");
         }
 
@@ -170,6 +189,10 @@ public sealed class CslStyleStore : ICslStyleStore
                     UpdatedAt = metadata.UpdatedAt.ToString("O")
                 });
 
+            await TryCompleteInstallOperationAsync(
+                installOperationId,
+                $"Installed CSL style '{metadata.StyleId}'.",
+                cancellationToken);
             return Result<CslStyle>.Success(metadata);
         }
         catch (OperationCanceledException)
@@ -178,6 +201,11 @@ public sealed class CslStyleStore : ICslStyleStore
         }
         catch (Exception exception)
         {
+            await TryFailInstallOperationAsync(
+                installOperationId,
+                AppErrorCodes.DatabaseError,
+                $"CSL style install failed: {exception.Message}",
+                cancellationToken);
             return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError, $"CSL style install failed: {exception.Message}");
         }
     }
@@ -360,6 +388,80 @@ public sealed class CslStyleStore : ICslStyleStore
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
         return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private async Task<BlockingOperationId?> TryStartInstallOperationAsync(string? styleId, CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var started = await _blockingOperations.StartAsync(
+                BlockingOperationTypes.CslStyleInstall,
+                BlockingOperationScopeTypes.CslStyle,
+                string.IsNullOrWhiteSpace(styleId) ? null : styleId.Trim(),
+                canCancel: false,
+                progressLabel: "Installing CSL style.",
+                nextActions: ["Retry style installation", "Choose a different style source"],
+                cancellationToken: cancellationToken);
+            return started.IsSuccess ? started.Value.OperationId : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task TryCompleteInstallOperationAsync(
+        BlockingOperationId? operationId,
+        string progressLabel,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _blockingOperations.CompleteAsync(
+                operationId.Value,
+                progressLabel,
+                Array.Empty<string>(),
+                cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task TryFailInstallOperationAsync(
+        BlockingOperationId? operationId,
+        string errorCode,
+        string errorMessage,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _blockingOperations.FailAsync(
+                operationId.Value,
+                errorCode,
+                errorMessage,
+                "CSL style installation failed.",
+                ["Retry style installation", "Keep the existing default style"],
+                cancellationToken);
+        }
+        catch
+        {
+        }
     }
 
     private sealed class Row

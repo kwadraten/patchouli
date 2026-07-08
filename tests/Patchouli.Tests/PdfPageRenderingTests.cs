@@ -72,6 +72,7 @@ public sealed class PdfPageRenderingTests
         "015_create_mcp_server_settings.sql",
         "016_create_csl_styles.sql",
         "017_create_item_type_inferences.sql",
+        "019_create_blocking_operations.sql",
         "021_create_library_preferences.sql");
 
     private sealed class Context : IAsyncDisposable

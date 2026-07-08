@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Dapper;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
@@ -13,11 +14,16 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     public const int DefaultPort = 4536;
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
+    private readonly IBlockingOperationService? _blockingOperations;
 
-    public McpServerSettingsService(SqliteConnectionFactory connectionFactory, IClock clock)
+    public McpServerSettingsService(
+        SqliteConnectionFactory connectionFactory,
+        IClock clock,
+        IBlockingOperationService? blockingOperations = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
+        _blockingOperations = blockingOperations;
     }
 
     public async Task<Result<McpServerSettings>> GetSettingsAsync(CancellationToken cancellationToken = default)
@@ -132,31 +138,33 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         }
     }
 
-    public Task<Result> ValidateSettingsAsync(McpServerSettings settings, CancellationToken cancellationToken = default)
+    public async Task<Result> ValidateSettingsAsync(McpServerSettings settings, CancellationToken cancellationToken = default)
     {
         if (settings.Port is < 1 or > 65535)
         {
-            return Task.FromResult(Result.Failure(AppErrorCodes.ValidationFailed, "MCP port must be between 1 and 65535."));
+            return Result.Failure(AppErrorCodes.ValidationFailed, "MCP port must be between 1 and 65535.");
         }
 
         if (string.IsNullOrWhiteSpace(settings.BindAddress))
         {
-            return Task.FromResult(Result.Failure(AppErrorCodes.ValidationFailed, "MCP bind address is required."));
+            return Result.Failure(AppErrorCodes.ValidationFailed, "MCP bind address is required.");
         }
 
         var bindAddress = settings.BindAddress.Trim();
         if (string.Equals(bindAddress, "0.0.0.0", StringComparison.Ordinal)
             && string.IsNullOrWhiteSpace(settings.Token))
         {
-            return Task.FromResult(Result.Failure(McpErrorCodes.UnsafeConfiguration, "Binding MCP to 0.0.0.0 requires a bearer token."));
+            const string message = "Binding MCP to 0.0.0.0 requires a bearer token.";
+            await RecordUnsafeBindFailureAsync(message, cancellationToken);
+            return Result.Failure(McpErrorCodes.UnsafeConfiguration, message);
         }
 
         if (settings.AuthRequired && string.IsNullOrWhiteSpace(settings.Token))
         {
-            return Task.FromResult(Result.Failure(AppErrorCodes.ValidationFailed, "Auth-required MCP settings must include a token."));
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Auth-required MCP settings must include a token.");
         }
 
-        return Task.FromResult(Result.Success());
+        return Result.Success();
     }
 
     public async Task<Result<bool>> IsToolEnabledAsync(string toolName, CancellationToken cancellationToken = default)
@@ -185,6 +193,39 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         null,
         [],
         now.ToUniversalTime());
+
+    private async Task RecordUnsafeBindFailureAsync(string failureMessage, CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var started = await _blockingOperations.StartAsync(
+                BlockingOperationTypes.McpStartValidation,
+                BlockingOperationScopeTypes.McpServerSettings,
+                "default",
+                canCancel: false,
+                progressLabel: "Validating MCP startup configuration.",
+                nextActions: ["Bind to 127.0.0.1", "Configure a bearer token"],
+                cancellationToken: cancellationToken);
+            if (started.IsSuccess)
+            {
+                await _blockingOperations.FailAsync(
+                    started.Value.OperationId,
+                    McpErrorCodes.UnsafeConfiguration,
+                    failureMessage,
+                    "Unsafe MCP startup configuration blocked.",
+                    ["Bind to 127.0.0.1", "Configure a bearer token"],
+                    cancellationToken);
+            }
+        }
+        catch
+        {
+        }
+    }
 
     private sealed class Row
     {

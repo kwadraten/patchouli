@@ -1,8 +1,10 @@
 using FluentAssertions;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Operations;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Infrastructure.Operations;
 
 namespace Patchouli.Tests;
 
@@ -83,6 +85,49 @@ public sealed class CslStyleStoreTests
         secondContent.Value.Should().Contain("APA From Second").And.NotContain("APA From First");
     }
 
+    [Fact]
+    public async Task Invalid_install_records_failed_blocking_operation()
+    {
+        await using var context = await CreateContextAsync();
+
+        var result = await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
+            "");
+        var operations = await context.BlockingOperations.ListAsync(
+            status: BlockingOperationStatus.Failed,
+            operationType: BlockingOperationTypes.CslStyleInstall,
+            scopeType: BlockingOperationScopeTypes.CslStyle,
+            scopeId: "apa");
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be("validation_failed");
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().FailureMessage.Should().Be("CSL style content is required.");
+        operations.Value.Single().ProgressLabel.Should().Be("CSL style installation failed.");
+    }
+
+    [Fact]
+    public async Task Successful_install_records_completed_blocking_operation()
+    {
+        await using var context = await CreateContextAsync();
+
+        var installed = await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
+            StyleXml("apa", "APA", "en-US"));
+        var operations = await context.BlockingOperations.ListAsync(
+            status: BlockingOperationStatus.Completed,
+            operationType: BlockingOperationTypes.CslStyleInstall,
+            scopeType: BlockingOperationScopeTypes.CslStyle,
+            scopeId: "apa");
+
+        installed.IsSuccess.Should().BeTrue();
+        operations.IsSuccess.Should().BeTrue();
+        operations.Value.Should().ContainSingle();
+        operations.Value.Single().ProgressLabel.Should().Be("Installed CSL style 'apa'.");
+        operations.Value.Single().NextActions.Should().BeEmpty();
+    }
+
     private static async Task<TestContext> CreateContextAsync()
     {
         var database = TemporarySqliteDatabase.Create();
@@ -90,7 +135,11 @@ public sealed class CslStyleStoreTests
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         var library = new LibraryIdentityService(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("CSL Styles");
-        return new TestContext(database, new CslStyleStore(database.ConnectionFactory, clock));
+        var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
+        return new TestContext(
+            database,
+            new CslStyleStore(database.ConnectionFactory, clock, blockingOperations: blockingOperations),
+            blockingOperations);
     }
 
     private static string StyleXml(string id, string title, string locale)
@@ -105,14 +154,19 @@ public sealed class CslStyleStoreTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(TemporarySqliteDatabase database, CslStyleStore store)
+        public TestContext(
+            TemporarySqliteDatabase database,
+            CslStyleStore store,
+            IBlockingOperationService blockingOperations)
         {
             Database = database;
             Store = store;
+            BlockingOperations = blockingOperations;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public CslStyleStore Store { get; }
+        public IBlockingOperationService BlockingOperations { get; }
 
         public ValueTask DisposeAsync() => Database.DisposeAsync();
     }

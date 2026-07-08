@@ -7,6 +7,7 @@ using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
@@ -24,6 +25,7 @@ using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Rendering;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Snapshots;
@@ -45,6 +47,7 @@ public sealed class AppServices
         Settings = settings;
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = new SystemClock();
+        BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
         MigrationRunner = new MigrationRunner(ConnectionFactory, Path.Combine(AppContext.BaseDirectory, "migrations"));
         Library = new LibraryIdentityService(ConnectionFactory, Clock);
         LibraryPreferences = new LibraryPreferencesService(ConnectionFactory, Library, Clock);
@@ -52,7 +55,7 @@ public sealed class AppServices
         Items = new ItemService(ConnectionFactory, Library, Clock);
         _cslCatalogHttpClient = new HttpClient();
         CslCatalog = new CslStyleCatalog(ConnectionFactory, _cslCatalogHttpClient);
-        CslStore = new CslStyleStore(ConnectionFactory, Clock);
+        CslStore = new CslStyleStore(ConnectionFactory, Clock, blockingOperations: BlockingOperations);
         CslItemMapper = new CslItemMapper();
         CslRenderer = new CslRenderer(Items, CslStore, CslItemMapper);
         ItemTypeProfiles = new CslItemTypeProfileService();
@@ -84,7 +87,7 @@ public sealed class AppServices
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
         Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
-        McpSettings = new McpServerSettingsService(ConnectionFactory, Clock);
+        McpSettings = new McpServerSettingsService(ConnectionFactory, Clock, BlockingOperations);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter();
@@ -100,6 +103,7 @@ public sealed class AppServices
     public PatchouliAppSettings Settings { get; }
     public SqliteConnectionFactory ConnectionFactory { get; }
     public IClock Clock { get; }
+    public IBlockingOperationService BlockingOperations { get; }
     public MigrationRunner MigrationRunner { get; }
     public ILibraryIdentityService Library { get; }
     public ILibraryPreferencesService LibraryPreferences { get; }
