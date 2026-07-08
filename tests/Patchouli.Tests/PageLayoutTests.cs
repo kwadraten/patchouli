@@ -1,6 +1,7 @@
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -187,6 +188,21 @@ public sealed class PageLayoutTests
         var result = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Block, new NormalizedBBox(0.2, 0.2, 0.2, 0.2), "B", TextPolicy.Own, 2, LayoutNodeSource.Manual);
 
         result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        result.Conflicts.Should().ContainSingle(conflict => conflict.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap);
+    }
+
+    [Fact]
+    public async Task UpdateNodeBBox_overlap_returns_cf06_conflict_descriptor()
+    {
+        await using var context = await PageLayoutTestContext.CreateAsync();
+        var setup = await context.CreatePageAndRevisionAsync();
+        await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Paragraph, new NormalizedBBox(0.1, 0.1, 0.2, 0.2), "A", TextPolicy.Own, 1, LayoutNodeSource.Manual);
+        var node = await context.LayoutTreeService.AddNodeAsync(setup.RevisionId, setup.PageId, null, LayoutNodeType.Block, new NormalizedBBox(0.5, 0.5, 0.2, 0.2), "B", TextPolicy.Own, 2, LayoutNodeSource.Manual);
+
+        var result = await context.LayoutTreeService.UpdateNodeBBoxAsync(node.Value.NodeId, new NormalizedBBox(0.15, 0.15, 0.2, 0.2));
+
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        result.Conflicts.Should().ContainSingle(conflict => conflict.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap);
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Results;
@@ -56,6 +57,7 @@ public sealed class FileResolutionServiceTests
         result.Value.Status.Should().Be(FileAssetStatus.Changed);
         result.Value.ResolvedPath.Should().BeNull();
         result.Value.RequiredAction.Should().Be(FileResolutionRequiredAction.ConfirmChangedFile);
+        result.Value.Conflicts.Should().ContainSingle(conflict => conflict.ConflictCode == ConflictCode.SourceFileChangedOrBBoxBasisStale);
     }
 
     [Fact]
@@ -98,6 +100,7 @@ public sealed class FileResolutionServiceTests
         result.Value.ResolvedPath.Should().BeNull();
         result.Value.RequiredAction.Should().Be(FileResolutionRequiredAction.ChooseCandidate);
         result.Value.Candidates.Should().HaveCount(2);
+        result.Value.Conflicts.Should().ContainSingle(conflict => conflict.ConflictCode == ConflictCode.FileRelocationMultipleCandidates);
     }
 
     [Fact]

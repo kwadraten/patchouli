@@ -4,6 +4,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Files;
@@ -246,7 +247,11 @@ public sealed class FileResolutionService : IFileResolutionService
 
             if (original?.Status == FileAssetStatus.Changed)
             {
-                return ChangedResolution(asset.FileAssetId, [original], "Original path exists, but size or quick_hash changed.");
+                return ChangedResolution(
+                    fileAssetId,
+                    asset.OriginalPath,
+                    [original],
+                    "Original path exists, but size or quick_hash changed.");
             }
 
             var knownLocations = (await connection.QueryAsync<KnownLocationRow>(
@@ -289,7 +294,11 @@ public sealed class FileResolutionService : IFileResolutionService
 
             if (knownCandidates.Any(candidate => candidate.Status == FileAssetStatus.Changed))
             {
-                return ChangedResolution(fileAssetId.ToString(), knownCandidates, "Known location exists, but size or quick_hash changed.");
+                return ChangedResolution(
+                    fileAssetId,
+                    asset.OriginalPath,
+                    knownCandidates,
+                    "Known location exists, but size or quick_hash changed.");
             }
 
             var roots = (await connection.QueryAsync<SearchRootRow>(
@@ -335,7 +344,16 @@ public sealed class FileResolutionService : IFileResolutionService
                     scannedCandidates,
                     FileResolutionConfidence.High,
                     FileResolutionRequiredAction.ChooseCandidate,
-                    "Multiple matching candidates were found."));
+                    "Multiple matching candidates were found.")
+                {
+                    Conflicts =
+                    [
+                        ConflictDescriptorMapper.FileRelocationMultipleCandidates(
+                            fileAssetId,
+                            asset.OriginalPath,
+                            scannedCandidates)
+                    ]
+                });
             }
 
             return Result<FileResolutionResult>.Success(new FileResolutionResult(
@@ -626,18 +644,29 @@ public sealed class FileResolutionService : IFileResolutionService
     }
 
     private static Result<FileResolutionResult> ChangedResolution(
-        string fileAssetId,
+        FileAssetId fileAssetId,
+        string? originalPath,
         IReadOnlyList<FileResolutionCandidate> candidates,
         string warning)
     {
         return Result<FileResolutionResult>.Success(new FileResolutionResult(
-            FileAssetId.Parse(fileAssetId),
+            fileAssetId,
             FileAssetStatus.Changed,
             ResolvedPath: null,
             candidates,
             FileResolutionConfidence.Low,
             FileResolutionRequiredAction.ConfirmChangedFile,
-            warning));
+            warning)
+        {
+            Conflicts =
+            [
+                ConflictDescriptorMapper.SourceFileChanged(
+                    fileAssetId,
+                    originalPath,
+                    candidates,
+                    warning)
+            ]
+        });
     }
 
     private static Task<FileAssetRow?> GetFileAssetRowAsync(

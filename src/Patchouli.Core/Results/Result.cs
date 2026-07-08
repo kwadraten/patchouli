@@ -1,22 +1,29 @@
+using Patchouli.Core.Conflicts;
+
 namespace Patchouli.Core.Results;
 
 public sealed record Result
 {
-    private Result(bool isSuccess, string? errorCode, string? errorMessage)
+    private Result(bool isSuccess, string? errorCode, string? errorMessage, IReadOnlyList<ConflictDescriptor> conflicts)
     {
         IsSuccess = isSuccess;
         ErrorCode = errorCode;
         ErrorMessage = errorMessage;
+        Conflicts = conflicts;
     }
 
     public bool IsSuccess { get; }
     public bool IsFailure => !IsSuccess;
     public string? ErrorCode { get; }
     public string? ErrorMessage { get; }
+    public IReadOnlyList<ConflictDescriptor> Conflicts { get; }
 
-    public static Result Success() => new(true, null, null);
+    public static Result Success() => new(true, null, null, Array.Empty<ConflictDescriptor>());
 
-    public static Result Failure(string errorCode, string errorMessage)
+    public static Result Failure(
+        string errorCode,
+        string errorMessage,
+        IReadOnlyList<ConflictDescriptor>? conflicts = null)
     {
         if (string.IsNullOrWhiteSpace(errorCode))
         {
@@ -28,7 +35,7 @@ public sealed record Result
             throw new ArgumentException("Error message is required.", nameof(errorMessage));
         }
 
-        return new Result(false, errorCode, errorMessage);
+        return new Result(false, errorCode, errorMessage, conflicts ?? Array.Empty<ConflictDescriptor>());
     }
 }
 
@@ -36,12 +43,18 @@ public sealed record Result<T>
 {
     private readonly T? _value;
 
-    private Result(bool isSuccess, T? value, string? errorCode, string? errorMessage)
+    private Result(
+        bool isSuccess,
+        T? value,
+        string? errorCode,
+        string? errorMessage,
+        IReadOnlyList<ConflictDescriptor> conflicts)
     {
         IsSuccess = isSuccess;
         _value = value;
         ErrorCode = errorCode;
         ErrorMessage = errorMessage;
+        Conflicts = conflicts;
     }
 
     public bool IsSuccess { get; }
@@ -62,10 +75,14 @@ public sealed record Result<T>
 
     public string? ErrorCode { get; }
     public string? ErrorMessage { get; }
+    public IReadOnlyList<ConflictDescriptor> Conflicts { get; }
 
-    public static Result<T> Success(T value) => new(true, value, null, null);
+    public static Result<T> Success(T value) => new(true, value, null, null, Array.Empty<ConflictDescriptor>());
 
-    public static Result<T> Failure(string errorCode, string errorMessage)
+    public static Result<T> Failure(
+        string errorCode,
+        string errorMessage,
+        IReadOnlyList<ConflictDescriptor>? conflicts = null)
     {
         if (string.IsNullOrWhiteSpace(errorCode))
         {
@@ -77,6 +94,6 @@ public sealed record Result<T>
             throw new ArgumentException("Error message is required.", nameof(errorMessage));
         }
 
-        return new Result<T>(false, default, errorCode, errorMessage);
+        return new Result<T>(false, default, errorCode, errorMessage, conflicts ?? Array.Empty<ConflictDescriptor>());
     }
 }

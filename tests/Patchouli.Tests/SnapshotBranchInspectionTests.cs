@@ -1,5 +1,6 @@
 using Dapper;
 using FluentAssertions;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Ids;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
@@ -22,7 +23,7 @@ public sealed class SnapshotBranchInspectionTests
     [Fact] public async Task Import_plan_includes_owning_dependencies_and_hides_secret()
     {
         await using var c=await Ctx.Create(); var b=(await c.Open()).Value; var p=await c.Service.BuildImportPlanAsync(b,[c.Item],[]);
-        p.Value.ItemsToImport.Should().Contain(c.Item); p.Value.DocumentInstancesToImport.Should().Contain(c.Doc); p.Value.PagesToImport.Should().Be(1);p.Value.LayoutRevisionsToImport.Should().Be(1);p.Value.SearchUnitsToImport.Should().Be(1);System.Text.Json.JsonSerializer.Serialize(p.Value).Should().NotContain(c.Secret);
+        p.Value.ItemsToImport.Should().Contain(c.Item); p.Value.DocumentInstancesToImport.Should().Contain(c.Doc); p.Value.PagesToImport.Should().Be(1);p.Value.LayoutRevisionsToImport.Should().Be(1);p.Value.SearchUnitsToImport.Should().Be(1);p.Value.Conflicts.Should().Contain(x=>x.ConflictCode==ConflictCode.CredentialNotImported&&x.Severity==ConflictSeverity.Warning);System.Text.Json.JsonSerializer.Serialize(p.Value).Should().NotContain(c.Secret);
     }
     [Fact] public async Task Apply_requires_confirmation_then_imports_and_marks_stale()
     {
@@ -32,7 +33,7 @@ public sealed class SnapshotBranchInspectionTests
     }
     [Fact] public async Task Conflict_blocks_overwrite_and_branch_actions_do_not_touch_active()
     {
-        await using var c=await Ctx.Create();var b=(await c.Open()).Value;await c.InsertConflictingItem();var p=(await c.Service.BuildImportPlanAsync(b,[c.Item],[])).Value;p.Conflicts.Should().Contain(x=>x.ConflictType=="same_id_different_content");(await c.Service.ApplyImportPlanAsync(p,true)).ErrorCode.Should().Be("conflict_unresolved");(await c.Title()).Should().Be("Existing");var copy=Path.Combine(c.Root,"copy.sqlite");(await c.Service.KeepBranchAsSeparateLibraryCopyAsync(b,copy)).IsSuccess.Should().BeTrue();File.Exists(copy).Should().BeTrue();(await c.Service.DiscardBranchAsync(b)).IsSuccess.Should().BeTrue();File.Exists(c.Db.Path).Should().BeTrue();
+        await using var c=await Ctx.Create();var b=(await c.Open()).Value;await c.InsertConflictingItem();var p=(await c.Service.BuildImportPlanAsync(b,[c.Item],[])).Value;p.Conflicts.Should().Contain(x=>x.ConflictCode==ConflictCode.SameIdDifferentContent);var apply=await c.Service.ApplyImportPlanAsync(p,true);apply.ErrorCode.Should().Be("conflict_unresolved");apply.Conflicts.Should().Contain(x=>x.ConflictCode==ConflictCode.SameIdDifferentContent);(await c.Title()).Should().Be("Existing");var copy=Path.Combine(c.Root,"copy.sqlite");(await c.Service.KeepBranchAsSeparateLibraryCopyAsync(b,copy)).IsSuccess.Should().BeTrue();File.Exists(copy).Should().BeTrue();(await c.Service.DiscardBranchAsync(b)).IsSuccess.Should().BeTrue();File.Exists(c.Db.Path).Should().BeTrue();
     }
     [Fact] public void MCP_has_no_branch_import_methods()
     { typeof(Patchouli.Mcp.IMcpReadApi).GetMethods().Select(x=>x.Name).Should().NotContain(x=>x.Contains("branch",StringComparison.OrdinalIgnoreCase)||x.Contains("import",StringComparison.OrdinalIgnoreCase)||x.Contains("merge",StringComparison.OrdinalIgnoreCase)); }
@@ -43,7 +44,7 @@ public sealed class SnapshotBranchInspectionTests
     [Fact] public async Task ViewModel_open_apply_confirmation_and_safety_warning_are_visible(){await using var c=await Ctx.Create();var vm=new Patchouli.UI.MainWindowViewModel{RuntimeDatabasePath=c.Db.Path};await vm.OpenDatabaseCommand.ExecuteAsync();vm.SnapshotBranch.ManifestPath=c.Pub.ManifestPath;vm.SnapshotBranch.StagingRoot=Path.Combine(c.Root,"vm-staging");vm.SnapshotBranch.Output.Should().Contain("No automatic merge").And.Contain("No silent last-writer-wins");await vm.SnapshotBranch.OpenCommand.ExecuteAsync();vm.SnapshotBranch.Output.Should().Contain("StagingDatabasePath");vm.SnapshotBranch.SelectedItemIds=c.Item.ToString();await vm.SnapshotBranch.BuildPlanCommand.ExecuteAsync();await vm.SnapshotBranch.ApplyCommand.ExecuteAsync();vm.SnapshotBranch.Output.Should().Contain("requires_confirmation");}
     [Fact] public void Agent_prd_documents_branch_safety(){var prd=File.ReadAllText(TestPaths.FromRepositoryRoot(".agent","PRD.md"));prd.Should().Contain("作为独立分支打开以供检查").And.Contain("v1 不执行自动对象级合并").And.Contain("不得在分支间静默执行最后写入者胜出").And.Contain("提供程序凭据");}
     [Fact] public async Task BuildImportPlan_selected_document_includes_owning_item(){await using var c=await Ctx.Create();var p=(await c.Service.BuildImportPlanAsync((await c.Open()).Value,[],[c.Doc])).Value;p.ItemsToImport.Should().Contain(c.Item);p.DocumentInstancesToImport.Should().Contain(c.Doc);}
-    [Fact] public async Task BuildImportPlan_detects_primary_document_conflict(){await using var c=await Ctx.Create();await c.InsertExistingPrimary();var p=(await c.Service.BuildImportPlanAsync((await c.Open()).Value,[c.Item],[])).Value;p.Conflicts.Should().Contain(x=>x.ConflictType=="primary_document_conflict");}
+    [Fact] public async Task BuildImportPlan_detects_primary_document_conflict(){await using var c=await Ctx.Create();await c.InsertExistingPrimary();var p=(await c.Service.BuildImportPlanAsync((await c.Open()).Value,[c.Item],[])).Value;p.Conflicts.Should().Contain(x=>x.ConflictCode==ConflictCode.PrimaryDocumentConflict&&x.Severity==ConflictSeverity.Blocking);}
     [Fact] public async Task ApplyImportPlan_marks_search_index_stale_for_imported_document(){await using var c=await Ctx.Create();var p=(await c.Service.BuildImportPlanAsync((await c.Open()).Value,[c.Item],[])).Value;await c.Service.ApplyImportPlanAsync(p,true);(await c.Status(c.Doc)).Should().Be("stale");}
     [Fact] public void MCP_does_not_expose_staging_or_manifest_paths(){var types=typeof(Patchouli.Mcp.IMcpReadApi).Assembly.GetTypes();System.Text.Json.JsonSerializer.Serialize(types.Select(t=>t.Name)).Should().NotContain("StagingDatabasePath").And.NotContain("ManifestPath");}
     [Fact] public async Task Plan_result_does_not_include_cache_path(){await using var c=await Ctx.Create();var path=Path.Combine(c.Root,"cache","render.png");var p=(await c.Service.BuildImportPlanAsync((await c.Open()).Value,[c.Item],[])).Value;System.Text.Json.JsonSerializer.Serialize(p).Should().NotContain(path);}

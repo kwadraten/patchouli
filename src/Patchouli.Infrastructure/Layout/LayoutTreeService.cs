@@ -3,6 +3,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Layout;
@@ -253,34 +254,19 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             if (bbox is not null)
             {
-                var siblingRows = await connection.QueryAsync<LayoutNodeRow>(
-                    SelectNodesSql + """
-                     where revision_id = @RevisionId
-                       and page_id = @PageId
-                       and ((parent_node_id is null and @ParentNodeId is null) or parent_node_id = @ParentNodeId);
-                    """,
-                    new
-                    {
-                        RevisionId = revisionId.ToString(),
-                        PageId = pageId.ToString(),
-                        ParentNodeId = parentNodeId?.ToString()
-                    },
-                    transaction);
-
-                foreach (var sibling in siblingRows.Select(row => row.ToNode()))
+                var overlap = await ValidateSiblingBBoxAsync(
+                    connection,
+                    transaction,
+                    revisionId.ToString(),
+                    pageId.ToString(),
+                    parentNodeId?.ToString(),
+                    bbox.Value,
+                    nodeType.Trim(),
+                    Array.Empty<string>());
+                if (overlap.IsFailure)
                 {
-                    if (sibling.BBox is null || LayoutNodeType.AllowsOverlap(nodeType.Trim()) || LayoutNodeType.AllowsOverlap(sibling.NodeType))
-                    {
-                        continue;
-                    }
-
-                    if (bbox.Value.Overlaps(sibling.BBox.Value))
-                    {
-                        await transaction.RollbackAsync(cancellationToken);
-                        return Result<LayoutNode>.Failure(
-                            AppErrorCodes.ValidationFailed,
-                            "Layout node bbox overlaps an existing ordinary sibling node.");
-                    }
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!, overlap.Conflicts);
                 }
             }
 
@@ -650,7 +636,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 if (overlap.IsFailure)
                 {
                     await transaction.RollbackAsync(cancellationToken);
-                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!);
+                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!, overlap.Conflicts);
                 }
             }
 
@@ -725,7 +711,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 if (overlap.IsFailure)
                 {
                     await transaction.RollbackAsync(cancellationToken);
-                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!);
+                    return Result<LayoutNode>.Failure(overlap.ErrorCode!, overlap.ErrorMessage!, overlap.Conflicts);
                 }
             }
 
@@ -1088,7 +1074,18 @@ public sealed class LayoutTreeService : ILayoutTreeService
             }
             if (bbox.Overlaps(siblingNode.BBox.Value))
             {
-                return Result.Failure(AppErrorCodes.ValidationFailed, "Layout node bbox overlaps an existing ordinary sibling node.");
+                return Result.Failure(
+                    AppErrorCodes.ValidationFailed,
+                    "Layout node bbox overlaps an existing ordinary sibling node.",
+                    [
+                        ConflictDescriptorMapper.LayoutBBoxOrdinaryOverlap(
+                            pageId,
+                            sibling.NodeId,
+                            siblingNode.NodeType,
+                            siblingNode.BBox.Value,
+                            nodeType.Trim(),
+                            bbox)
+                    ]);
             }
         }
         return Result.Success();

@@ -1,3 +1,4 @@
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Ids;
 
 namespace Patchouli.Core.Files;
@@ -9,4 +10,7 @@ public sealed record FileResolutionResult(
     IReadOnlyList<FileResolutionCandidate> Candidates,
     string Confidence,
     string RequiredAction,
-    string? Warning);
+    string? Warning)
+{
+    public IReadOnlyList<ConflictDescriptor> Conflicts { get; init; } = Array.Empty<ConflictDescriptor>();
+}
