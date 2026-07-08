@@ -4,12 +4,14 @@ using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Tests;
@@ -69,6 +71,39 @@ public sealed class MinerUResultImporterTests
             var request = new MinerUImportRequest(zipPath, context.DocumentInstanceId.ToString(), null);
             var result = await context.Importer.ImportResultZipAsync(request);
             result.IsFailure.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zipPath);
+        }
+    }
+
+    [Fact]
+    public async Task ImportResultZip_delegates_layout_persistence_to_common_importer()
+    {
+        var spy = new SpyLayoutImporter();
+        await using var context = await ImportTestContext.CreateAsync(layoutImporter: spy);
+        var zipPath = CreateContentListZip(sampleJson: """
+        {
+            "pages": [
+                {"page_num": 1, "width": 595, "height": 842, "blocks": [
+                    {"type": "text", "bbox": [0, 0, 100, 50], "text": "Delegated"}
+                ]}
+            ]
+        }
+        """);
+
+        try
+        {
+            var result = await context.Importer.ImportResultZipAsync(new MinerUImportRequest(zipPath, context.DocumentInstanceId.ToString(), null));
+
+            result.IsSuccess.Should().BeTrue();
+            spy.ImportCalls.Should().Be(1);
+            spy.LastImportRequest.Should().NotBeNull();
+            spy.LastImportRequest!.RevisionSource.Should().Be(LayoutRevisionSource.Import);
+            spy.LastImportRequest.NodeSource.Should().Be(LayoutNodeSource.Import);
+            spy.LastImportRequest.Document.TotalBlockCount.Should().Be(1);
+            spy.LastImportRequest.Document.Pages[0].Blocks[0].Text.Should().Be("Delegated");
         }
         finally
         {
@@ -264,7 +299,7 @@ public sealed class MinerUResultImporterTests
             DocumentInstanceId = docId;
         }
 
-        public static async Task<ImportTestContext> CreateAsync(int pageCount = 1)
+        public static async Task<ImportTestContext> CreateAsync(int pageCount = 1, IOcrLayoutImporter? layoutImporter = null)
         {
             var db = TemporarySqliteDatabase.Create();
             var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
@@ -279,10 +314,26 @@ public sealed class MinerUResultImporterTests
             for (var i = 0; i < pageCount; i++)
                 await pages.CreatePageAsync(doc.Value.DocumentInstanceId, i, $"Page {i + 1}", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test", null);
 
-            var importer = new MinerUResultImporter(db.ConnectionFactory, clock);
+            var importer = new MinerUResultImporter(db.ConnectionFactory, clock, layoutImporter);
             return new ImportTestContext(db, importer, doc.Value.DocumentInstanceId);
         }
 
         public async ValueTask DisposeAsync() => await Database.DisposeAsync();
+    }
+
+    private sealed class SpyLayoutImporter : IOcrLayoutImporter
+    {
+        public int ImportCalls { get; private set; }
+        public OcrLayoutImportRequest? LastImportRequest { get; private set; }
+
+        public Task<Result<OcrLayoutImportResult>> ImportRevisionAsync(OcrLayoutImportRequest request, CancellationToken cancellationToken = default)
+        {
+            ImportCalls++;
+            LastImportRequest = request;
+            return Task.FromResult(Result<OcrLayoutImportResult>.Success(new OcrLayoutImportResult(request.RevisionId ?? LayoutRevisionId.New(), request.Document.TotalBlockCount)));
+        }
+
+        public Task<Result<OcrLayoutCopyResult>> CopyPagesAsync(OcrLayoutCopyRequest request, CancellationToken cancellationToken = default)
+            => Task.FromResult(Result<OcrLayoutCopyResult>.Success(new OcrLayoutCopyResult(0)));
     }
 }

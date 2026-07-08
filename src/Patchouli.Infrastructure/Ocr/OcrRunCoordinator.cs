@@ -26,15 +26,17 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly IPageRenderService? _pageRenderService;
     private readonly IPageCoordinateService? _pageCoordinateService;
     private readonly IMinerUResultImporter? _minerUResultImporter;
+    private readonly IOcrLayoutImporter _layoutImporter;
     private readonly Func<MinerUConfiguration, IMinerUClient>? _minerUClientFactory;
     private readonly string _minerUCacheRoot;
 
-    public OcrRunCoordinator(SqliteConnectionFactory connectionFactory, IClock clock, IOcrEngine? engine = null, ISearchDirtyMarker? searchDirtyMarker = null, IOcrAdapterRegistry? adapterRegistry = null, IPageRenderService? pageRenderService = null, IPageCoordinateService? pageCoordinateService = null, IMinerUResultImporter? minerUResultImporter = null, Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null, string? minerUCacheRoot = null)
+    public OcrRunCoordinator(SqliteConnectionFactory connectionFactory, IClock clock, IOcrEngine? engine = null, ISearchDirtyMarker? searchDirtyMarker = null, IOcrLayoutImporter? layoutImporter = null, IOcrAdapterRegistry? adapterRegistry = null, IPageRenderService? pageRenderService = null, IPageCoordinateService? pageCoordinateService = null, IMinerUResultImporter? minerUResultImporter = null, Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null, string? minerUCacheRoot = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _engine = engine ?? new MockOcrEngine();
         _searchDirtyMarker = searchDirtyMarker;
+        _layoutImporter = layoutImporter ?? new OcrLayoutImporter(connectionFactory, clock);
         _adapterRegistry = adapterRegistry;
         _pageRenderService = pageRenderService;
         _pageCoordinateService = pageCoordinateService;
@@ -140,7 +142,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             if (download.IsFailure)
                 return await FailMinerURunAsync(connection, runId, pageIds, download.ErrorCode!, download.ErrorMessage!, cancellationToken);
 
-            var importer = _minerUResultImporter ?? new MinerUResultImporter(_connectionFactory, _clock);
+            var importer = _minerUResultImporter ?? new MinerUResultImporter(_connectionFactory, _clock, _layoutImporter);
             var import = await importer.ImportResultZipAsync(new MinerUImportRequest(download.Value.ZipPath, documentInstanceId.ToString(), null), cancellationToken);
             if (import.IsFailure)
                 return await FailMinerURunAsync(connection, runId, pageIds, import.ErrorCode!, import.ErrorMessage!, cancellationToken);
@@ -304,11 +306,22 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                     if (normalized.IsFailure) result = new OcrEnginePageResult(result.PageId, false, null, null, OcrFailureCode.BBoxCoordinateTransformFailed, normalized.ErrorMessage);
                     else result = result with { BBox = normalized.Value };
                 }
+                if (result.Succeeded)
+                {
+                    var import = await _layoutImporter.ImportRevisionAsync(
+                        CreateRevisionImportRequest(
+                            documentInstanceId,
+                            stagingRevisionId,
+                            currentRevisionId,
+                            LayoutNodeSource.Ocr,
+                            CreateSingleBlockDocument(PageId.Parse(page.PageId), page.PageIndex, page.Width, page.Height, result.Text, result.BBox, 0.99)),
+                        cancellationToken);
+                    if (import.IsFailure)
+                        result = new OcrEnginePageResult(result.PageId, false, null, null, import.ErrorCode, import.ErrorMessage);
+                }
                 await using var pageTx = await connection.BeginTransactionAsync(cancellationToken);
                 if (result.Succeeded)
                 {
-                    await connection.ExecuteAsync("insert into layout_nodes (node_id, document_instance_id, page_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, revision_id, confidence, ignored) values (@NodeId, @DocumentInstanceId, @PageId, @NodeType, @X, @Y, @W, @H, @Text, @TextPolicy, @Order, @Source, @RevisionId, @Confidence, 0);",
-                        new { NodeId = LayoutNodeId.New().ToString(), DocumentInstanceId = documentInstanceId.ToString(), PageId = page.PageId, NodeType = LayoutNodeType.Paragraph, X = result.BBox!.Value.X, Y = result.BBox.Value.Y, W = result.BBox.Value.Width, H = result.BBox.Value.Height, Text = result.Text, TextPolicy = TextPolicy.Own, Order = page.PageIndex, Source = LayoutNodeSource.Ocr, RevisionId = stagingRevisionId.ToString(), Confidence = 0.99 }, pageTx);
                     await UpdatePageResultAsync(connection, pageTx, runId, PageId.Parse(page.PageId), OcrPageResultState.Succeeded, stagingRevisionId, null, null, _clock.UtcNow);
                     success++;
                 }
@@ -405,12 +418,25 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 else normalizedBBox = normalized.Value;
             }
 
+            if (engineResult.Succeeded)
+            {
+                var import = await _layoutImporter.ImportRevisionAsync(
+                    CreateRevisionImportRequest(
+                        documentInstanceId,
+                        stagingRevisionId,
+                        currentRevisionId,
+                        LayoutNodeSource.Ocr,
+                        CreateSingleBlockDocument(pageId, page.PageIndex, page.Width, page.Height, engineResult.Text, normalizedBBox, null)),
+                    cancellationToken);
+                if (import.IsFailure)
+                    engineResult = new OcrEnginePageResult(pageId, false, null, null, import.ErrorCode, import.ErrorMessage);
+            }
+
             var succeeded = engineResult.Succeeded;
             await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
             {
                 if (succeeded)
                 {
-                    await connection.ExecuteAsync("insert into layout_nodes (node_id, document_instance_id, page_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, revision_id, confidence, ignored) values (@NodeId, @DocumentInstanceId, @PageId, @NodeType, @X, @Y, @W, @H, @Text, @TextPolicy, @Order, @Source, @RevisionId, null, 0);", new { NodeId = LayoutNodeId.New().ToString(), DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString(), NodeType = LayoutNodeType.Paragraph, X = normalizedBBox!.Value.X, Y = normalizedBBox.Value.Y, W = normalizedBBox.Value.Width, H = normalizedBBox.Value.Height, Text = engineResult.Text, TextPolicy = TextPolicy.Own, Order = page.PageIndex, Source = LayoutNodeSource.Ocr, RevisionId = stagingRevisionId.ToString() }, transaction);
                     await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Succeeded, stagingRevisionId, null, null, _clock.UtcNow);
                 }
                 else
@@ -479,13 +505,25 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 if (normalized.IsFailure) engineResult = new OcrEnginePageResult(pageId, false, null, null, OcrFailureCode.BBoxCoordinateTransformFailed, normalized.ErrorMessage);
                 else engineResult = engineResult with { BBox = normalized.Value };
             }
+            if (engineResult.Succeeded)
+            {
+                var import = await _layoutImporter.ImportRevisionAsync(
+                    CreateRevisionImportRequest(
+                        documentInstanceId,
+                        stagingRevisionId,
+                        currentRevisionId,
+                        LayoutNodeSource.Ocr,
+                        CreateSingleBlockDocument(pageId, page.PageIndex, page.Width, page.Height, engineResult.Text, engineResult.BBox, null)),
+                    cancellationToken);
+                if (import.IsFailure)
+                    engineResult = new OcrEnginePageResult(pageId, false, null, null, import.ErrorCode, import.ErrorMessage);
+            }
+
             var succeeded = engineResult.Succeeded;
             await using (var transaction = await connection.BeginTransactionAsync(cancellationToken))
             {
                 if (succeeded)
                 {
-                    var bbox = engineResult.BBox;
-                    await connection.ExecuteAsync("insert into layout_nodes (node_id, document_instance_id, page_id, node_type, bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy, reading_order, source, revision_id, confidence, ignored) values (@NodeId, @DocumentInstanceId, @PageId, @NodeType, @X, @Y, @W, @H, @Text, @TextPolicy, @Order, @Source, @RevisionId, null, 0);", new { NodeId = LayoutNodeId.New().ToString(), DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString(), NodeType = LayoutNodeType.Paragraph, X = bbox?.X, Y = bbox?.Y, W = bbox?.Width, H = bbox?.Height, Text = engineResult.Text, TextPolicy = TextPolicy.Own, Order = page.PageIndex, Source = LayoutNodeSource.Ocr, RevisionId = stagingRevisionId.ToString() }, transaction);
                     await UpdatePageResultAsync(connection, transaction, runId, pageId, OcrPageResultState.Succeeded, stagingRevisionId, null, null, _clock.UtcNow);
                 }
                 else
@@ -687,14 +725,26 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             if (selected.Any(p => !succeeded.Contains(p))) return Result<OcrCandidateAdoption>.Failure(AppErrorCodes.ValidationFailed, "Only succeeded OCR pages can be adopted.");
             if (selected.Length == 0) return Result<OcrCandidateAdoption>.Failure(AppErrorCodes.InvalidState, "No succeeded OCR pages are available for adoption.");
 
-            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
             var adoptedRevisionId = selected.Length == succeeded.Length ? run.Value.OutputRevisionId.Value : LayoutRevisionId.New();
             if (selected.Length != succeeded.Length)
             {
-                await connection.ExecuteAsync("insert into layout_revisions (layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at) values (@RevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt);",
-                    new { RevisionId = adoptedRevisionId.ToString(), DocumentInstanceId = run.Value.DocumentInstanceId.ToString(), ParentRevisionId = run.Value.OutputRevisionId.Value.ToString(), Source = LayoutRevisionSource.OcrAdopted, CreatedAt = F(_clock.UtcNow) }, tx);
-                await CopySelectedLayoutNodesAsync(connection, tx, run.Value.OutputRevisionId.Value, adoptedRevisionId, selected);
+                await connection.ExecuteAsync(
+                    "insert into layout_revisions (layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at) values (@RevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt);",
+                    new
+                    {
+                        RevisionId = adoptedRevisionId.ToString(),
+                        DocumentInstanceId = run.Value.DocumentInstanceId.ToString(),
+                        ParentRevisionId = run.Value.OutputRevisionId.Value.ToString(),
+                        Source = LayoutRevisionSource.OcrAdopted,
+                        CreatedAt = F(_clock.UtcNow)
+                    });
+                var copy = await _layoutImporter.CopyPagesAsync(
+                    new OcrLayoutCopyRequest(run.Value.OutputRevisionId.Value, adoptedRevisionId, selected),
+                    cancellationToken);
+                if (copy.IsFailure)
+                    return Result<OcrCandidateAdoption>.Failure(copy.ErrorCode!, copy.ErrorMessage!);
             }
+            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
             await SetCurrentRevisionAsync(connection, tx, run.Value.DocumentInstanceId, adoptedRevisionId);
             var adoption = new OcrCandidateAdoption(OcrCandidateAdoptionId.New(), runId, run.Value.DocumentInstanceId, adoptedRevisionId, JsonSerializer.Serialize(selected.Select(p => p.ToString())), _clock.UtcNow.ToUniversalTime());
             await connection.ExecuteAsync("insert into ocr_candidate_adoptions (adoption_id, ocr_run_id, document_instance_id, adopted_revision_id, adopted_pages_json, created_at) values (@AdoptionId, @RunId, @DocumentInstanceId, @RevisionId, @Pages, @CreatedAt);",
@@ -768,100 +818,45 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     }
     private static string F(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
 
-    private static async Task CopySelectedLayoutNodesAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
-        LayoutRevisionId sourceRevisionId,
-        LayoutRevisionId adoptedRevisionId,
-        IReadOnlyList<PageId> selectedPages)
-    {
-        var sourceRows = (await connection.QueryAsync<CopyLayoutNodeRow>(
-            """
-            select node_id as NodeId, document_instance_id as DocumentInstanceId, page_id as PageId, parent_node_id as ParentNodeId,
-                   node_type as NodeType, bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight,
-                   own_text as OwnText, text_policy as TextPolicy, reading_order as ReadingOrder, source as Source,
-                   confidence as Confidence, ignored as Ignored,
-                   row_index as RowIndex, col_index as ColIndex, row_span as RowSpan, col_span as ColSpan, is_header as IsHeader
-            from layout_nodes
-            where revision_id = @SourceRevisionId
-              and page_id in @PageIds
-            order by page_id, reading_order, node_id;
-            """,
-            new
-            {
-                SourceRevisionId = sourceRevisionId.ToString(),
-                PageIds = selectedPages.Select(p => p.ToString()).ToArray()
-            },
-            transaction)).ToArray();
+    private static OcrLayoutImportRequest CreateRevisionImportRequest(
+        DocumentInstanceId documentInstanceId,
+        LayoutRevisionId revisionId,
+        string? parentRevisionId,
+        string nodeSource,
+        OcrLayoutDocument document)
+        => new(
+            documentInstanceId,
+            document,
+            LayoutRevisionSource.OcrStaging,
+            nodeSource,
+            parentRevisionId is null ? null : LayoutRevisionId.Parse(parentRevisionId),
+            revisionId,
+            MakeCurrent: false);
 
-        var idMap = sourceRows.ToDictionary(row => row.NodeId, _ => LayoutNodeId.New().ToString(), StringComparer.OrdinalIgnoreCase);
-        var remaining = new Queue<CopyLayoutNodeRow>(sourceRows);
-        var inserted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        while (remaining.Count > 0)
-        {
-            var progress = false;
-            var passCount = remaining.Count;
-            for (var i = 0; i < passCount; i++)
-            {
-                var row = remaining.Dequeue();
-                if (row.ParentNodeId is not null && idMap.ContainsKey(row.ParentNodeId) && !inserted.Contains(row.ParentNodeId))
-                {
-                    remaining.Enqueue(row);
-                    continue;
-                }
-
-                await connection.ExecuteAsync(
-                    """
-                    insert into layout_nodes (
-                        node_id, document_instance_id, page_id, parent_node_id, node_type,
-                        bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
-                        reading_order, source, revision_id, confidence, ignored,
-                        row_index, col_index, row_span, col_span, is_header
-                    )
-                    values (
-                        @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
-                        @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
-                        @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
-                        @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
-                    );
-                    """,
-                    new
-                    {
-                        NodeId = idMap[row.NodeId],
-                        row.DocumentInstanceId,
-                        row.PageId,
-                        ParentNodeId = row.ParentNodeId is not null && idMap.TryGetValue(row.ParentNodeId, out var mappedParentId) ? mappedParentId : null,
-                        row.NodeType,
-                        row.BBoxX,
-                        row.BBoxY,
-                        row.BBoxWidth,
-                        row.BBoxHeight,
-                        row.OwnText,
-                        row.TextPolicy,
-                        row.ReadingOrder,
-                        row.Source,
-                        RevisionId = adoptedRevisionId.ToString(),
-                        row.Confidence,
-                        row.Ignored,
-                        row.RowIndex,
-                        row.ColIndex,
-                        row.RowSpan,
-                        row.ColSpan,
-                        row.IsHeader
-                    },
-                    transaction);
-
-                inserted.Add(row.NodeId);
-                progress = true;
-            }
-
-            if (!progress)
-            {
-                throw new InvalidOperationException("Layout node parent cycle prevented OCR partial adoption.");
-            }
-        }
-    }
+    private static OcrLayoutDocument CreateSingleBlockDocument(
+        PageId pageId,
+        int pageIndex,
+        double? pageWidth,
+        double? pageHeight,
+        string? text,
+        NormalizedBBox? bbox,
+        double? confidence)
+        => new([
+            new OcrLayoutPage(
+                pageId,
+                pageIndex,
+                pageWidth,
+                pageHeight,
+                [
+                    new OcrLayoutBlock(
+                        LayoutNodeType.Paragraph,
+                        TextPolicy.Own,
+                        pageIndex,
+                        Text: text,
+                        BBox: bbox,
+                        Confidence: confidence)
+                ])
+        ]);
 
     private async Task<Result<NormalizedBBox?>> NormalizeBBoxAsync(PageId pageId, OcrEnginePageResult result, CancellationToken cancellationToken)
     {
@@ -910,27 +905,4 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
 
     private sealed class RunVisibilityRow { public string DocumentInstanceId { get; set; } = ""; public string? OutputRevisionId { get; set; } public int Hidden { get; set; } }
     private sealed class PageResultRow { public string ResultId { get; set; } = ""; public string OcrRunId { get; set; } = ""; public string PageId { get; set; } = ""; public string State { get; set; } = ""; public string? StagingLayoutRevisionId { get; set; } public string? ErrorCode { get; set; } public string? ErrorMessage { get; set; } public string CreatedAt { get; set; } = ""; public string UpdatedAt { get; set; } = ""; public OcrPageResult ToResult() => new(OcrPageResultId.Parse(ResultId), Core.Ids.OcrRunId.Parse(OcrRunId), Core.Ids.PageId.Parse(PageId), State, StagingLayoutRevisionId is null ? null : LayoutRevisionId.Parse(StagingLayoutRevisionId), ErrorCode, ErrorMessage, DateTimeOffset.Parse(CreatedAt), DateTimeOffset.Parse(UpdatedAt)); }
-    private sealed class CopyLayoutNodeRow
-    {
-        public string NodeId { get; set; } = "";
-        public string DocumentInstanceId { get; set; } = "";
-        public string PageId { get; set; } = "";
-        public string? ParentNodeId { get; set; }
-        public string NodeType { get; set; } = "";
-        public double? BBoxX { get; set; }
-        public double? BBoxY { get; set; }
-        public double? BBoxWidth { get; set; }
-        public double? BBoxHeight { get; set; }
-        public string? OwnText { get; set; }
-        public string TextPolicy { get; set; } = "";
-        public int ReadingOrder { get; set; }
-        public string Source { get; set; } = "";
-        public double? Confidence { get; set; }
-        public int Ignored { get; set; }
-        public int? RowIndex { get; set; }
-        public int? ColIndex { get; set; }
-        public int? RowSpan { get; set; }
-        public int? ColSpan { get; set; }
-        public int IsHeader { get; set; }
-    }
 }

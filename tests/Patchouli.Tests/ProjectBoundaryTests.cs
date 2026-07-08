@@ -30,4 +30,17 @@ public sealed class ProjectBoundaryTests
 
         referencedProjects.Should().NotContain(reference => reference.Contains("Patchouli.UI", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void Ocr_provider_paths_do_not_insert_layout_nodes_outside_shared_importer()
+    {
+        var ocrRoot = TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Ocr");
+        var offenders = Directory.EnumerateFiles(ocrRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.EndsWith("OcrLayoutImporter.cs", StringComparison.OrdinalIgnoreCase))
+            .Where(path => File.ReadAllText(path).Contains("insert into layout_nodes", StringComparison.OrdinalIgnoreCase))
+            .Select(Path.GetFileName)
+            .ToArray();
+
+        offenders.Should().BeEmpty("OCR providers and coordinators should delegate layout node writes to OcrLayoutImporter.");
+    }
 }

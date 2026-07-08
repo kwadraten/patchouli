@@ -105,7 +105,7 @@ public sealed class OcrLifecycleTests
             var layout = new LayoutTreeService(db.ConnectionFactory, clock); await layout.CreateLayoutRevisionAsync(doc.Value.DocumentInstanceId, LayoutRevisionSource.Mock, makeCurrent: true);
             var preset = new OcrPresetService(db.ConnectionFactory, lib, clock);
             var dirtyMarker = withSearchDirtyMarker ? new SearchUnitBuilder(db.ConnectionFactory, clock) : null;
-            var coordinator = new OcrRunCoordinator(db.ConnectionFactory, clock, new MockOcrEngine(), dirtyMarker);
+            var coordinator = new OcrRunCoordinator(db.ConnectionFactory, clock, new MockOcrEngine(), dirtyMarker, new OcrLayoutImporter(db.ConnectionFactory, clock));
             return new OcrTestContext(db, clock, doc.Value.DocumentInstanceId, pages, itemService, documentInstanceService, pageSvc, preset, coordinator, layout);
         }
         public Task<Result<OcrPreset>> CreatePresetAsync(bool apply = false, string parameters = "{}") => PresetService.CreatePresetAsync("Mock", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, parameters, apply);

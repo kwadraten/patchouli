@@ -80,13 +80,14 @@ public sealed class AppServices
         var searchUnitBuilder = new SearchUnitBuilder(ConnectionFactory, Clock);
         SearchUnits = searchUnitBuilder;
         SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock);
+        var ocrLayoutImporter = new OcrLayoutImporter(ConnectionFactory, Clock);
         var searchProfiles = new SearchProfileService(ConnectionFactory, Library, Clock);
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
-        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock);
-        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
+        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrLayoutImporter);
+        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, new MockOcrEngine(), searchUnitBuilder, ocrLayoutImporter, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
         McpSettings = new McpServerSettingsService(ConnectionFactory, Clock, BlockingOperations);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
@@ -151,6 +152,7 @@ public sealed class AppServices
             Clock,
             new MockOcrEngine(),
             new SearchUnitBuilder(ConnectionFactory, Clock),
+            new OcrLayoutImporter(ConnectionFactory, Clock),
             OcrAdapters,
             PageRenders,
             PageCoordinates,
