@@ -12,6 +12,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
         {
             var run = task.TaskKind switch
             {
+                OcrQueueTaskKind.Document => await _coordinator.RunPresetOnDocumentAsync(task.DocumentInstanceId, task.PresetId, cancellationToken),
                 OcrQueueTaskKind.MockPages => await _coordinator.RunPresetOnPagesAsync(task.DocumentInstanceId, task.PresetId, task.PageIds, cancellationToken),
                 OcrQueueTaskKind.ImagePage => await _coordinator.RunPresetOnImagePageAsync(task.DocumentInstanceId, task.PresetId, task.PageIds.Single(), task.ImagePath!, cancellationToken),
                 OcrQueueTaskKind.RenderedPdfPage => await _coordinator.RunPresetOnRenderedPdfPageAsync(task.DocumentInstanceId, task.PresetId, task.PageIds.Single(), task.Dpi ?? 200, cancellationToken),
