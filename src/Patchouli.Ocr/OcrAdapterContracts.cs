@@ -78,8 +78,6 @@ public sealed record OcrInputDescriptor(
     string SourceFileStatus,
     string? Warning);
 
-public sealed record OcrAdapterHealth(string EngineId, string Status, string Message, DateTimeOffset CheckedAt);
-
 public interface IRealOcrAdapter
 {
     string EngineId { get; }

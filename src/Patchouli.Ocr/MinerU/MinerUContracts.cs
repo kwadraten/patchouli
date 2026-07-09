@@ -17,12 +17,6 @@ public sealed record MinerUFileUploadUrl(
     string UploadUrl,
     string FileId);
 
-public sealed record MinerUExtractResult(
-    string BatchId,
-    string Status,
-    string? FullZipUrl,
-    string? ErrorMessage);
-
 public sealed record MinerUPollResult(
     string BatchId,
     string Status,
