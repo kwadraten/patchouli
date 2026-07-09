@@ -78,7 +78,20 @@ public sealed class FirstRunViewModel : ViewModelBase
             {
                 _isImportMode = value;
                 Raise(nameof(IsImportMode));
+                Raise(nameof(IsCreateMode));
                 Raise(nameof(DatabasePickerMode));
+            }
+        }
+    }
+
+    public bool IsCreateMode
+    {
+        get => !IsImportMode;
+        set
+        {
+            if (value)
+            {
+                IsImportMode = false;
             }
         }
     }

@@ -11,6 +11,8 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private string _searchQuery = "";
     private string _statusText = "就绪";
     private string? _defaultStyleId;
+    private bool _loadingCatalogSources;
+    private CslCatalogSourceViewModel? _selectedCatalogSource;
 
     public CslStyleManagerViewModel(MainWindowViewModel main)
     {
@@ -33,6 +35,26 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     public ObservableCollection<CslStyleViewModel> InstalledStyles { get; } = new();
     public ObservableCollection<CslCatalogStyleViewModel> RemoteStyles { get; } = new();
+    public ObservableCollection<CslCatalogSourceViewModel> CatalogSources { get; } = new();
+
+    public CslCatalogSourceViewModel? SelectedCatalogSource
+    {
+        get => _selectedCatalogSource;
+        set
+        {
+            if (ReferenceEquals(_selectedCatalogSource, value))
+            {
+                return;
+            }
+
+            _selectedCatalogSource = value;
+            Raise();
+            if (!_loadingCatalogSources && value is not null)
+            {
+                _ = ChangeCatalogSourceAsync(value);
+            }
+        }
+    }
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SearchCommand { get; }
@@ -40,6 +62,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     public async Task InitializeAsync()
     {
         await LoadInstalledStylesAsync();
+        await LoadCatalogSourcesAsync();
     }
 
     private async Task LoadInstalledStylesAsync()
@@ -69,9 +92,31 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         }
     }
 
+    private async Task LoadCatalogSourcesAsync()
+    {
+        var services = await _main.ServicesAsync();
+        _loadingCatalogSources = true;
+        try
+        {
+            CatalogSources.Clear();
+            foreach (var source in services.CslCatalog.Sources)
+            {
+                CatalogSources.Add(new CslCatalogSourceViewModel(source));
+            }
+
+            _selectedCatalogSource = CatalogSources.FirstOrDefault(
+                source => source.SourceId == services.CslCatalog.CurrentSource.SourceId);
+            Raise(nameof(SelectedCatalogSource));
+        }
+        finally
+        {
+            _loadingCatalogSources = false;
+        }
+    }
+
     private async Task RefreshAsync()
     {
-        StatusText = "正在刷新远程索引...";
+        StatusText = $"正在刷新远程索引：{SelectedCatalogSource?.DisplayName ?? "默认源"}...";
         var services = await _main.ServicesAsync();
         var refreshResult = await services.CslCatalog.RefreshAsync();
         if (refreshResult.IsFailure)
@@ -86,7 +131,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     private async Task SearchAsync()
     {
-        StatusText = "正在搜索远程样式...";
+        StatusText = $"正在搜索远程样式：{SelectedCatalogSource?.DisplayName ?? "默认源"}...";
         var services = await _main.ServicesAsync();
         var searchResult = await services.CslCatalog.SearchAsync(string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery);
         
@@ -105,12 +150,34 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         StatusText = $"找到 {RemoteStyles.Count} 个远程样式。";
     }
 
+    private async Task ChangeCatalogSourceAsync(CslCatalogSourceViewModel source)
+    {
+        var services = await _main.ServicesAsync();
+        var result = services.CslCatalog.SetSource(source.SourceId);
+        if (result.IsFailure)
+        {
+            StatusText = result.ErrorMessage ?? "切换样式源失败。";
+            return;
+        }
+
+        RemoteStyles.Clear();
+        StatusText = $"已切换样式源：{source.DisplayName}。";
+        await SearchAsync();
+    }
+
     internal async Task InstallStyleAsync(CslCatalogStyle catalogStyle)
     {
         StatusText = $"正在下载并安装：{catalogStyle.DisplayName}...";
+        if (string.IsNullOrWhiteSpace(catalogStyle.SourceUrl))
+        {
+            StatusText = "安装失败：样式源没有提供下载地址。";
+            return;
+        }
+
         try
         {
             using var client = new HttpClient();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("Patchouli/1.0");
             var xml = await client.GetStringAsync(catalogStyle.SourceUrl);
             var services = await _main.ServicesAsync();
             var result = await services.CslStore.InstallStyleAsync(catalogStyle, xml);
@@ -176,6 +243,22 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
             StatusText = result.ErrorMessage ?? "移除失败。";
         }
     }
+}
+
+public class CslCatalogSourceViewModel : ViewModelBase
+{
+    public string SourceId { get; }
+    public string DisplayName { get; }
+    public string Description { get; }
+
+    public CslCatalogSourceViewModel(CslCatalogSource source)
+    {
+        SourceId = source.SourceId;
+        DisplayName = source.DisplayName;
+        Description = source.Description;
+    }
+
+    public override string ToString() => DisplayName;
 }
 
 public class CslStyleViewModel : ViewModelBase

@@ -57,7 +57,7 @@
         </StackPanel>
 
         <StackPanel Spacing="16">
-          <RadioButton Content="创建新数据库" IsChecked="{Binding !IsImportMode}" GroupName="DbMode" />
+          <RadioButton Content="创建新数据库" IsChecked="{Binding IsCreateMode}" GroupName="DbMode" />
           <RadioButton Content="导入已有数据库" IsChecked="{Binding IsImportMode}" GroupName="DbMode" />
         </StackPanel>
 
