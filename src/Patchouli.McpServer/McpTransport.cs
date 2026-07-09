@@ -56,7 +56,7 @@ public static class McpOutputSanitizer
 {
     private static readonly Regex Path = new(@"(?:file://\S+|[A-Za-z]:[\\/][^\s\""']+|/[^\s\""']+)", RegexOptions.Compiled);
     private static readonly Regex Secret = new(@"(?i)(?:api[_-]?key|provider[_-]?secret|secret|token|sk-[A-Za-z0-9_-]+)\s*[:=_-]*\s*[A-Za-z0-9_-]+", RegexOptions.Compiled);
-    private static readonly Regex SensitiveToken = new(@"(?i)(?:cache[/\\]|page-renders|manifest\.json|model_path|[/\\]models[/\\]|tesseract|staging)", RegexOptions.Compiled);
+    private static readonly Regex SensitiveToken = new(@"(?i)(?:cache[/\\]|page-renders|manifest\.json|model_path|[/\\]models[/\\]|staging)", RegexOptions.Compiled);
     public static string Sanitize(string value) => SensitiveToken.Replace(Secret.Replace(Path.Replace(value, "[redacted]"), "[redacted]"), "[redacted]");
     public static bool IsSafe(string value) => !Path.IsMatch(value) && !Secret.IsMatch(value) && !SensitiveToken.IsMatch(value);
 }

@@ -155,10 +155,10 @@ v2 必须把 OCR 编辑器从 alpha 预览推进到可用工作台。
 
 ### 3.6 生产 OCR Provider
 
-v2 不再把 Mock、Tesseract、本地占位 OCR 作为用户可见或生产可选 OCR。MinerU 仍然是首选生产 OCR/provider，并且 MinerU content list / layout mapper 仍是 OCR 文本存储、编辑、表格、bbox、布局修订和搜索单元生成的 schema 基准。
+v2 不再把 Mock、历史本地 CLI OCR、本地占位 OCR 作为用户可见或生产可选 OCR。MinerU 仍然是首选生产 OCR/provider，并且 MinerU content list / layout mapper 仍是 OCR 文本存储、编辑、表格、bbox、布局修订和搜索单元生成的 schema 基准。
 
 - Mock OCR 只允许存在于测试工程或明确的开发测试路径。
-- Tesseract CLI 和 local placeholder 不应出现在最终用户 UI、默认设置、首轮初始化或生产 preset 中。
+- 历史本地 CLI OCR 和 local placeholder 不应出现在最终用户 UI、默认设置、首轮初始化或生产 preset 中。
 - v2 可新增多模态 LLM OCR provider，作为 MinerU 之外的生产 OCR 路径之一。
 - 任何新增 OCR provider 都必须把输出规范化为 MinerU-compatible 的中间结构，再进入 `LayoutRevision`、`LayoutNode`、SearchUnit、证据和 MCP。
 - 兼容结构至少需要表达 page、block type、text/latex、bbox、confidence、table/table_row/table_cell、row/column/span/header 信息。
@@ -297,7 +297,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | 冲突 code | UI 不解析错误字符串；CF-01 到 CF-06 必须是结构化 code/DTO。 |
 | 分支导入 | `credential_not_imported` 是非阻塞 warning/conflict item；导入可继续，但相关 preset 必须进入 `credential_missing`。 |
 | 菜单 | v2 需要集中 command descriptor，菜单/右键/快捷键共享。 |
-| Mock/Tesseract | 不删除测试能力；从生产 UI、默认 preset、首轮初始化和用户菜单清除。 |
+| Mock/历史本地 CLI OCR | 不删除测试能力；从生产 UI、默认 preset、首轮初始化和用户菜单清除。 |
 
 ## 6. 明确不做
 
@@ -319,7 +319,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | V2-AC5 | 题录编辑器按 `CslItemTypeProfile` 显示 type-aware 字段，切换 type 不丢字段，creator/date/identifier 可在新建时完整编辑。 | Item editor profile + UI tests |
 | V2-AC6 | 初次 PDF 扫描/导入不把未知题录静默确认为 CSL `document`；未知题录进入 `general`，保存时明确警告需要细分，CSL 复制/导出/MCP 渲染必须阻止 `general` 并返回 warning/error。 | Pdf import classification + CSL warning tests |
 | V2-AC7 | OCR 编辑器支持区域选择、局部 OCR、候选预览、采纳和 bbox 冲突阻止。 | OCR editor UI + layout conflict tests |
-| V2-AC8 | 生产 UI 不再暴露 Mock/Tesseract/local placeholder OCR；测试路径仍可使用 mock。 | UI/menu/settings boundary tests |
+| V2-AC8 | 生产 UI 不再暴露 Mock/历史本地 CLI OCR/local placeholder OCR；测试路径仍可使用 mock。 | UI/menu/settings boundary tests |
 | V2-AC9 | MinerU 是首选生产 OCR；多模态 LLM OCR provider 可以使用保存的 token/secret key 运行，并把输出规范化为 MinerU-compatible schema。 | OCR provider integration + schema compatibility tests |
 | V2-AC10 | 初始化扫描和新增文件搜索根扫描以阻塞式任务表达，完成前状态不可误报为 ready。 | Blocking workflow tests |
 | V2-AC11 | CF-01 到 CF-06 均有 UI 表达、状态 code、推荐动作和测试覆盖。 | Conflict workflow tests |
@@ -345,7 +345,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | PDF 导入与页面 | PDF 扫描、导入 workflow、页数读取、页面记录、页面坐标基准。 | `PdfDiscoveryServiceTests`、`PdfImportWorkflowTests`、`PageLayoutTests` |
 | 页面渲染缓存 | PDF 页面渲染、缓存命名空间 `page_renders`、渲染失败/超时结果化、渲染输出用于 OCR 输入。MCP never returns cached images or image paths. | `PdfPageRenderingTests`、`RealPdfRendererTests` |
 | OCR Preset | OCR Preset 和不可变 Preset Version；模型/路径/参数变更创建新版本；ready/missing/rebind 状态。 | `OcrLifecycleTests`、`OcrAdapterReadinessTests` |
-| OCR 提供程序 | Mock、本地占位/Tesseract、MinerU client/downloader/importer/layout mapper/content list v2 解析已存在；MinerU 是第一产品 OCR/layout 路径的 ADR 已记录。 | `MinerU*Tests`、`LocalImageOcrAdapterTests`、ADR `0014` |
+| OCR 提供程序 | Mock、本地占位、MinerU client/downloader/importer/layout mapper/content list v2 解析已存在；MinerU 是第一产品 OCR/layout 路径的 ADR 已记录。 | `MinerU*Tests`、ADR `0014` |
 | OCR 生命周期 | 运行按页面保存；staging/candidate/current；取消、隐藏、unset current、completed_with_errors、失败页面保留、bbox 硬失败、重试溯源、按页候选采纳。 | `OcrLifecycleTests` |
 | OCR 队列 | 并发限制、优先级、老化、暂停/恢复、取消、瞬时重试、需要人工修复的失败分类。 | `OcrQueueSchedulerTests` |
 | 布局树 | layout revision、layout node、text policy、index policy、阅读顺序、bbox、半开放节点类型、表格 cell 元数据。 | `PageLayoutTests`、迁移 `005`、`014` |

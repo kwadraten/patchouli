@@ -2,17 +2,17 @@
 
 Status: accepted
 
-The first product OCR/layout path uses MinerU precise parsing. Tesseract remains a temporary alpha/developer surface unless explicitly retained for diagnostics. MinerU matches the product need for OCR plus structured layout import into LayoutRevisions and SearchUnits.
+The first product OCR/layout path uses MinerU precise parsing. MinerU matches the product need for OCR plus structured layout import into LayoutRevisions and SearchUnits.
 
 **Consequences**
 
-The product UI and first-run flow should stop presenting Tesseract as the primary OCR path once the MinerU workflow lands.
+The product UI and first-run flow should stop presenting any retired local CLI OCR path once the MinerU workflow lands.
 
 **v2 Update**
 
 The v2 PRD keeps MinerU as the preferred OCR provider and treats MinerU-style output as the compatibility baseline for OCR storage and editing:
 
-- Mock OCR, local placeholder OCR, and Tesseract CLI are not production OCR providers and should not appear in final-user UI.
+- Mock OCR and local placeholder OCR are not production OCR providers and should not appear in final-user UI.
 - MinerU content-list-style output remains the schema basis for OCR text storage, layout editing, table cells, bbox, SearchUnits, and evidence.
 - Additional providers, including multimodal LLM OCR, must normalize their output into a MinerU-compatible intermediate shape before entering LayoutRevisions, LayoutNodes, SearchUnits, or MCP-visible evidence.
 - Provider-specific raw responses may be retained for diagnostics/provenance, but they are not the direct editing/search/MCP data model.
