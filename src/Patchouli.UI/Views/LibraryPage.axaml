@@ -92,7 +92,7 @@
     </Border>
   </Grid>
 </Border>
-<Grid Grid.Column="1" RowDefinitions="44,*">
+<Grid Grid.Column="1">
   <DataGrid x:Name="LibraryGrid" Grid.Row="1" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
             CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="True"
             IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped" Loaded="OnDataGridLoaded"
@@ -102,7 +102,6 @@
         <MenuItem Header="编辑元数据" Command="{ReflectionBinding $parent[Window].DataContext.EditSelectedItemCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.EditSelectedItemCommand.DisabledReason}" />
         <MenuItem Header="打开文档" Command="{ReflectionBinding $parent[Window].DataContext.ShowReadingCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ShowReadingCommand.DisabledReason}" />
         <MenuItem Header="运行 OCR" Command="{ReflectionBinding $parent[Window].DataContext.RunSelectedItemOcrCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.RunSelectedItemOcrCommand.DisabledReason}" />
-        <MenuItem Header="复制证据 Markdown" Command="{ReflectionBinding $parent[Window].DataContext.ExportEvidenceMarkdownCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ExportEvidenceMarkdownCommand.DisabledReason}" />
         <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor.DisabledReason}" />
         <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor.DisabledReason}" />
         <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor.DisabledReason}" />

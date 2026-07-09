@@ -77,7 +77,7 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
-    public async Task CopySearchResultEvidenceMarkdown_generates_pinned_markdown_to_clipboard()
+    public async Task CopySearchResultEvidenceMarkdown_creates_search_unit_evidence_lazily()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-evidence-copy-{Guid.NewGuid():N}.sqlite");
         var clipboard = new FakeClipboard();
@@ -97,11 +97,12 @@ public sealed class UiViewModelTests
             await using var connection = services.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();
             var unitId = await connection.ExecuteScalarAsync<string>("select unit_id from search_units where resolved_text = 'Pinned clipboard text';");
-            var evidence = await services.Evidence.CreateFromSearchUnitAsync(Patchouli.Core.Ids.SearchUnitId.Parse(unitId!));
+            var unit = new SearchMatchedUnitViewModel(unitId!, "Pinned clipboard text", LayoutNodeType.Paragraph, 1, true, null);
 
-            await vm.SearchEvidence.CopyEvidenceMarkdownAsync(evidence.Value.EvidenceRefId);
+            await vm.SearchEvidence.CopyEvidenceMarkdownForSearchUnitAsync(unit);
 
-            clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And.Contain(evidence.Value.EvidenceRefId);
+            unit.EvidenceRef.Should().StartWith("evref:v1:");
+            clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And.Contain(unit.EvidenceRef);
             vm.SearchEvidence.Markdown.Should().Be(clipboard.Text);
             vm.SearchEvidence.Output.Should().Be("Copied Evidence Markdown");
         }
@@ -376,21 +377,24 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
-    public void MainWindow_xaml_wires_evidence_markdown_export_picker()
+    public void SearchResults_xaml_wires_search_unit_evidence_actions_only()
     {
         var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
         var searchXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
         var codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml.cs"));
         var searchCodeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml.cs"));
-        shellXaml.Should().Contain("OnExportEvidenceMarkdownClick");
+        shellXaml.Should().NotContain("复制证据 Markdown");
+        shellXaml.Should().NotContain("导出证据 Markdown");
+        libraryXaml.Should().NotContain("复制证据 Markdown");
         searchXaml.Should().Contain("OnCopySearchUnitEvidenceRefClick");
         searchXaml.Should().Contain("OnCopySearchUnitEvidenceMarkdownClick");
         searchXaml.Should().Contain("OnExportSearchUnitEvidenceMarkdownClick");
         searchXaml.Should().Contain("<ContextMenu>");
-        codeBehind.Should().Contain("SaveFilePickerAsync");
-        codeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
-        searchCodeBehind.Should().Contain("CopyEvidenceRefAsync");
-        searchCodeBehind.Should().Contain("CopyEvidenceMarkdownAsync");
+        codeBehind.Should().NotContain("SaveFilePickerAsync");
+        codeBehind.Should().NotContain("OnExportEvidenceMarkdownClick");
+        searchCodeBehind.Should().Contain("CopyEvidenceRefForSearchUnitAsync");
+        searchCodeBehind.Should().Contain("CopyEvidenceMarkdownForSearchUnitAsync");
         searchCodeBehind.Should().Contain("SaveFilePickerAsync");
         searchCodeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
     }
@@ -413,11 +417,11 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
-    public async Task ExportEvidenceMarkdownCommand_without_evidence_ref_reports_validation_error()
+    public async Task ExportEvidenceMarkdownToFile_without_evidence_ref_reports_validation_error()
     {
         var vm = new MainWindowViewModel(new FakeClipboard());
 
-        await vm.ExportEvidenceMarkdownCommand.ExecuteAsync();
+        await vm.ExportEvidenceMarkdownToFileAsync("", Path.Combine(Path.GetTempPath(), $"evidence-{Guid.NewGuid():N}.md"));
 
         vm.SearchEvidence.Output.Should().Contain("validation_failed");
         vm.Status.Should().Contain("EvidenceRef");

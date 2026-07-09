@@ -17,7 +17,7 @@ public sealed class SearchMatchedUnitViewModel
     public string NodeType { get; }
     public int ReadingOrder { get; }
     public bool IsMatch { get; }
-    public string EvidenceRef { get; }
+    public string EvidenceRef { get; set; }
     public bool HasEvidenceRef => !string.IsNullOrWhiteSpace(EvidenceRef);
 }
 

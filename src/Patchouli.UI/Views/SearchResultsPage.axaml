@@ -50,15 +50,15 @@
                       <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
                         <Border.ContextMenu>
                           <ContextMenu>
-                            <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceRefClick" IsEnabled="{Binding HasEvidenceRef}" />
-                            <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" IsEnabled="{Binding HasEvidenceRef}" />
-                            <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" IsEnabled="{Binding HasEvidenceRef}" />
+                            <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceRefClick" />
+                            <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" />
+                            <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" />
                           </ContextMenu>
                         </Border.ContextMenu>
                         <StackPanel Spacing="6">
                           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                             <TextBlock Text="{Binding Text}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasEvidenceRef}">
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
                               <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceRefClick" ToolTip.Tip="复制证据引用">
                                 <lucide:Lucide Icon="Copy" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                               </Button>

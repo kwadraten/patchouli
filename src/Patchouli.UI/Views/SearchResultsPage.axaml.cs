@@ -19,7 +19,7 @@ public sealed partial class SearchResultsPage : UserControl
             return;
         }
 
-        await main.SearchEvidence.CopyEvidenceRefAsync(unit.EvidenceRef);
+        await main.SearchEvidence.CopyEvidenceRefForSearchUnitAsync(unit);
     }
 
     private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -30,13 +30,12 @@ public sealed partial class SearchResultsPage : UserControl
             return;
         }
 
-        await main.SearchEvidence.CopyEvidenceMarkdownAsync(unit.EvidenceRef);
+        await main.SearchEvidence.CopyEvidenceMarkdownForSearchUnitAsync(unit);
     }
 
     private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
-            string.IsNullOrWhiteSpace(unit.EvidenceRef) ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
         {
             return;
@@ -48,7 +47,9 @@ public sealed partial class SearchResultsPage : UserControl
             return;
         }
 
-        main.SearchEvidence.EvidenceRef = unit.EvidenceRef;
+        var evidenceRef = await main.SearchEvidence.EnsureEvidenceRefAsync(unit);
+        if (string.IsNullOrWhiteSpace(evidenceRef)) return;
+
         var file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "导出证据 Markdown",
@@ -63,7 +64,7 @@ public sealed partial class SearchResultsPage : UserControl
 
         if (file?.Path.LocalPath is { Length: > 0 } path)
         {
-            await main.ExportEvidenceMarkdownToFileAsync(path);
+            await main.ExportEvidenceMarkdownToFileAsync(evidenceRef, path);
         }
     }
 }

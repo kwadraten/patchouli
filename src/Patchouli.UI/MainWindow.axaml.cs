@@ -1,5 +1,4 @@
 using Avalonia.Controls;
-using Avalonia.Platform.Storage;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI;
@@ -38,26 +37,6 @@ public sealed partial class MainWindow : Window
         catch (Exception ex)
         {
             _viewModel.Report($"复制失败: {ex.Message}");
-        }
-    }
-
-    private async void OnExportEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-    {
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
-        {
-            Title = "导出证据 Markdown",
-            SuggestedFileName = "evidence.md",
-            DefaultExtension = "md",
-            FileTypeChoices =
-            [
-                new FilePickerFileType("Markdown 文件") { Patterns = ["*.md"] },
-                FilePickerFileTypes.All
-            ]
-        });
-
-        if (file?.Path.LocalPath is { Length: > 0 } path)
-        {
-            await _viewModel.ExportEvidenceMarkdownToFileAsync(path);
         }
     }
 

@@ -139,7 +139,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand CloseItemEditorTabCommand { get; }
     public AsyncCommand CloseAboutTabCommand { get; }
     public AsyncCommand RebuildSearchIndexCommand { get; }
-    public AsyncCommand ExportEvidenceMarkdownCommand { get; }
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
@@ -244,7 +243,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         CloseItemEditorTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.ItemEditor));
         CloseAboutTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.About));
         RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
-        ExportEvidenceMarkdownCommand = new(() => ExportEvidenceMarkdownToFileAsync(null));
         ToggleInspectorPaneCommand = new(() => { ShowInspectorPane = !ShowInspectorPane; return Task.CompletedTask; });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
@@ -480,7 +478,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         await Shell.RefreshItemsAsync();
     }
 
-    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath, MinerUToken = Shell.MinerUToken, OnError = ReportError };
+    private FirstRunViewModel CreateFirstRunViewModel() => new(OpenFirstRunDatabaseAsync) { DatabasePath = RuntimeDatabasePath, MinerUToken = Shell.MinerUToken, OnError = ReportError, OnProgress = Report };
 
     private async Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)> OpenFirstRunDatabaseAsync(string path)
     {
@@ -835,9 +833,9 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsItemEditorVisible));
     }
 
-    public async Task ExportEvidenceMarkdownToFileAsync(string? targetPath)
+    public async Task ExportEvidenceMarkdownToFileAsync(string evidenceRef, string targetPath)
     {
-        if (string.IsNullOrWhiteSpace(SearchEvidence.EvidenceRef))
+        if (string.IsNullOrWhiteSpace(evidenceRef))
         {
             Report("请先选择一个可导出的 EvidenceRef。");
             SearchEvidence.Output = "ERROR validation_failed: EvidenceRef is required.";
@@ -853,7 +851,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var markdown = await (await ServicesAsync()).Evidence.CreateMarkdownAsync(SearchEvidence.EvidenceRef);
+        var markdown = await (await ServicesAsync()).Evidence.CreateMarkdownAsync(evidenceRef);
         if (markdown.IsFailure)
         {
             var message = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";

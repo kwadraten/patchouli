@@ -129,6 +129,13 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         await _main.LogOperationAsync("copy_evidence_ref", Output);
     }
 
+    public async Task CopyEvidenceRefForSearchUnitAsync(SearchMatchedUnitViewModel unit)
+    {
+        var evidence = await EnsureEvidenceRefAsync(unit);
+        if (string.IsNullOrWhiteSpace(evidence)) return;
+        await CopyEvidenceRefAsync(evidence);
+    }
+
     public async Task CopyEvidenceMarkdownAsync(string? evidenceRef)
     {
         if (string.IsNullOrWhiteSpace(evidenceRef))
@@ -168,6 +175,50 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         await _main.LogOperationAsync("copy_search_result_evidence_markdown", Output);
     }
 
+    public async Task CopyEvidenceMarkdownForSearchUnitAsync(SearchMatchedUnitViewModel unit)
+    {
+        var evidence = await EnsureEvidenceRefAsync(unit);
+        if (string.IsNullOrWhiteSpace(evidence)) return;
+        await CopyEvidenceMarkdownAsync(evidence);
+    }
+
+    public async Task<string?> EnsureEvidenceRefAsync(SearchMatchedUnitViewModel unit)
+    {
+        if (!string.IsNullOrWhiteSpace(unit.EvidenceRef))
+        {
+            EvidenceRef = unit.EvidenceRef;
+            Raise(nameof(EvidenceRef));
+            return unit.EvidenceRef;
+        }
+
+        try
+        {
+            var result = await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(SearchUnitId.Parse(unit.UnitId));
+            if (result.IsFailure)
+            {
+                Output = $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+                Raise(nameof(Output));
+                _main.Report(Output);
+                return null;
+            }
+
+            unit.EvidenceRef = result.Value.EvidenceRefId;
+            EvidenceRef = result.Value.EvidenceRefId;
+            Output = "Created EvidenceRef";
+            Raise(nameof(EvidenceRef));
+            Raise(nameof(Output));
+            await _main.LogOperationAsync("create_evidence_ref", EvidenceRef);
+            return EvidenceRef;
+        }
+        catch (Exception ex)
+        {
+            Output = $"ERROR validation_failed: {ex.Message}";
+            Raise(nameof(Output));
+            _main.Report(Output);
+            return null;
+        }
+    }
+
     public void RaiseMarkdown() => Raise(nameof(Markdown));
     public void RaiseOutput() => Raise(nameof(Output));
 
@@ -200,24 +251,20 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         if (r.IsSuccess)
         {
             var firstMatchedUnit = default(string);
-            var firstEvidenceRef = default(string);
             foreach (var page in r.Value.Results)
             {
                 var matchedUnits = new List<SearchMatchedUnitViewModel>();
                 foreach (var unit in page.MatchedUnits)
                 {
                     SearchUnits.Add($"{unit.UnitId} | {unit.Text}");
-                    var evidence = await services.Evidence.CreateFromSearchUnitAsync(unit.UnitId);
-                    var evidenceRef = evidence.IsSuccess ? evidence.Value.EvidenceRefId : null;
                     matchedUnits.Add(new SearchMatchedUnitViewModel(
                         unit.UnitId.ToString(),
                         unit.Text,
                         unit.NodeType,
                         unit.ReadingOrder,
                         unit.IsMatch,
-                        evidenceRef));
+                        null));
                     firstMatchedUnit ??= unit.UnitId.ToString();
-                    firstEvidenceRef ??= evidenceRef;
                 }
 
                 Results.Add(new SearchPageResultViewModel(
@@ -232,7 +279,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             }
 
             UnitId = firstMatchedUnit ?? "";
-            EvidenceRef = firstEvidenceRef ?? "";
+            EvidenceRef = "";
             IndexStatus = r.Value.IndexStatus;
             AffectedScopesSummary = r.Value.AffectedScopesSummary ?? "";
             EstimatedTotalText = r.Value.EstimatedTotal?.ToString() ?? $"{r.Value.Results.Count} 页";
