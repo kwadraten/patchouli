@@ -228,7 +228,21 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
 
-    public string Status { get; private set; } = "就绪";
+    private string _status = "就绪";
+    public string Status
+    {
+        get => _status;
+        private set
+        {
+            _status = value;
+            Raise();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不能", StringComparison.Ordinal) || value.Contains("无法", StringComparison.Ordinal)) _main.ReportError(value);
+                else _main.Report(value);
+            }
+        }
+    }
     
     public ObservableCollection<string> Identifiers { get; } = new();
     public ObservableCollection<string> LinkedFiles { get; } = new();

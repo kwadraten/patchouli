@@ -15,7 +15,12 @@ public sealed class CslSettingsViewModel : ViewModelBase
     public string Status
     {
         get => _status;
-        private set { _status = value; Raise(); }
+        private set
+        {
+            _status = value;
+            Raise();
+            if (!string.IsNullOrWhiteSpace(value)) _main.Report(value);
+        }
     }
     
     public string Description => "管理 CSL 样式索引、安装本地样式、设置默认样式，并用于题录复制和预览。";

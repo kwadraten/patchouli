@@ -6,7 +6,6 @@
   <Grid RowDefinitions="Auto,*" Margin="32">
     <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
       <TextBlock Text="CSL 样式管理" FontSize="28" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-      <TextBlock Text="{Binding StatusText}" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
     </StackPanel>
 
     <Grid Grid.Row="1" ColumnDefinitions="*,32,*">

@@ -97,7 +97,6 @@
       <!-- Step 5: Complete -->
       <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
         <TextBlock Text="初始化完成" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <TextBlock Text="{Binding ProgressText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
         <Button Classes="Primary Large" Content="进入书库" Command="{ReflectionBinding $parent[Window].DataContext.CompleteFirstRunCommand}" Padding="24,0" />
       </StackPanel>
     </Grid>

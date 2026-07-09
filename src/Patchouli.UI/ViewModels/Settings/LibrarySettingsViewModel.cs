@@ -67,6 +67,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
         {
             _status = value;
             Raise();
+            if (!string.IsNullOrWhiteSpace(value)) _main.Report(value);
         }
     }
 

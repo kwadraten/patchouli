@@ -52,7 +52,7 @@
       <Border Background="{DynamicResource SurfaceContainerLowBrush}">
         <Grid RowDefinitions="Auto,*" Margin="0,10,0,0">
           <TextBlock Text="设置" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" Margin="16,6,16,16"/>
-          
+
           <ListBox Grid.Row="1" Classes="SidebarListBox" ItemsSource="{Binding Categories}" SelectedItem="{Binding ActiveCategory}">
             <ListBox.ItemTemplate>
               <DataTemplate DataType="settings:SettingsCategoryViewModel">
@@ -75,7 +75,6 @@
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="4" VerticalAlignment="Center">
             <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
-            <TextBlock Text="{Binding GlobalStatus}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
              <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger" />
@@ -87,15 +86,14 @@
       <ScrollViewer Grid.Row="1">
         <TransitioningContentControl Content="{Binding ActiveCategory.Content}" Margin="32">
         <TransitioningContentControl.DataTemplates>
-          
+
           <!-- Library Settings -->
           <DataTemplate DataType="settings:LibrarySettingsViewModel">
             <StackPanel Spacing="20" MaxWidth="720">
               <StackPanel Spacing="6">
                 <TextBlock Text="库信息与路径" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
               </StackPanel>
-              
+
               <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
                 <StackPanel Spacing="10">
                   <TextBlock Text="路径信息" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
@@ -136,7 +134,6 @@
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                 <StackPanel Spacing="6">
                   <TextBlock Text="MCP 服务与安全" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-                  <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
                   <Button Content="停止" Command="{Binding StopMcpCommand}" />
@@ -147,8 +144,7 @@
               <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
                 <StackPanel Spacing="10">
                   <TextBlock Text="运行状态" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-                  <TextBlock Text="{Binding McpStatusText}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding McpEndpoint, StringFormat='终结点：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
               </Border>
 
@@ -167,7 +163,7 @@
                   <TextBlock Text="外部访问控制" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
                   <CheckBox Content="允许局域网访问" IsChecked="{Binding AllowExternalAccess}" />
                   <CheckBox Content="JSON-RPC 请求需要 Bearer Token" IsChecked="{Binding AuthRequired}" />
-                  
+
                   <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4" Padding="12" IsVisible="{Binding IsAllowExternalAccessWarningVisible}">
                     <StackPanel Spacing="6">
                       <TextBlock Text="警告：暴露于 0.0.0.0 但未配置鉴权 Token" FontWeight="Bold" Foreground="{DynamicResource OnErrorContainerBrush}" />
@@ -216,7 +212,6 @@
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                 <StackPanel Spacing="6">
                   <TextBlock Text="OCR 引擎" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-                  <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                 </StackPanel>
                 <Button Grid.Column="1" Content="保存" Command="{Binding SaveMinerUSettingsCommand}" Classes="Primary" VerticalAlignment="Top" />
               </Grid>
@@ -239,7 +234,6 @@
               <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
                 <StackPanel Spacing="10">
                   <TextBlock Text="云端版面解析 (MinerU)" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-                  <TextBlock Text="{Binding MinerUCredentialStatus}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBox Text="{Binding MinerUTokenInput}" PasswordChar="•" PlaceholderText="在此输入 Token" />
                 </StackPanel>
               </Border>
@@ -251,9 +245,8 @@
             <StackPanel Spacing="20" MaxWidth="720">
               <StackPanel Spacing="6">
                 <TextBlock Text="CSL 样式管理器" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-                <TextBlock Text="{Binding Status}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
               </StackPanel>
-              
+
               <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
                 <StackPanel Spacing="12">
                   <TextBlock Text="{Binding Description}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />

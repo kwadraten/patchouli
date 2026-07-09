@@ -7,11 +7,13 @@ namespace Patchouli.UI.ViewModels.Settings;
 
 public sealed class SettingsViewModel : ViewModelBase
 {
+    private readonly MainWindowViewModel _main;
     private SettingsCategoryViewModel? _activeCategory;
     private string _globalStatus = "";
 
     public SettingsViewModel(MainWindowViewModel main)
     {
+        _main = main;
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
@@ -79,7 +81,12 @@ public sealed class SettingsViewModel : ViewModelBase
     public string GlobalStatus
     {
         get => _globalStatus;
-        set { _globalStatus = value; Raise(); }
+        set
+        {
+            _globalStatus = value;
+            Raise();
+            if (!string.IsNullOrWhiteSpace(value)) _main.Report(value);
+        }
     }
 
     public AsyncCommand SaveCommand { get; }

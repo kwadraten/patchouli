@@ -30,7 +30,16 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     public string StatusText
     {
         get => _statusText;
-        private set { _statusText = value; Raise(); }
+        private set
+        {
+            _statusText = value;
+            Raise();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("异常", StringComparison.Ordinal)) _main.ReportError(value);
+                else _main.Report(value);
+            }
+        }
     }
 
     public ObservableCollection<CslStyleViewModel> InstalledStyles { get; } = new();

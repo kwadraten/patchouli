@@ -53,7 +53,21 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public bool HasNoImage => Image is null;
     public bool IsBusy { get; private set; }
     private string _status = "选择题录后可预览 PDF。";
-    public string Status { get => _status; set { if (_status == value) return; _status = value; Raise(); } }
+    public string Status
+    {
+        get => _status;
+        set
+        {
+            if (_status == value) return;
+            _status = value;
+            Raise();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不可用", StringComparison.Ordinal) || value.StartsWith("ERROR", StringComparison.Ordinal)) _main.ReportError(value);
+                else _main.Report(value);
+            }
+        }
+    }
     public string PageNumberText => _pageCount == 0 ? "-" : (_pageIndex + 1).ToString();
     public string PageTotalText => _pageCount == 0 ? "/ -" : $"/ {_pageCount}";
     public string ZoomText => $"{Math.Round(Zoom * 100):0}%";

@@ -19,7 +19,16 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase
     public string Status
     {
         get => _status;
-        private set { _status = value; Raise(); }
+        private set
+        {
+            _status = value;
+            Raise();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                if (value.Contains("失败", StringComparison.Ordinal)) _main.ReportError(value);
+                else _main.Report(value);
+            }
+        }
     }
 
     public string MinerUTokenInput

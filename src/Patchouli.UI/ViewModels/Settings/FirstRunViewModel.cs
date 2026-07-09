@@ -11,6 +11,7 @@ public sealed class FirstRunViewModel : ViewModelBase
     private PdfDiscoveryService? _discovery;
     private readonly Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>>? _openDatabase;
     public Action<string>? OnError { get; set; }
+    public Action<string>? OnProgress { get; set; }
     private FirstRunWorkflowState State
     {
         get => _state;
@@ -32,6 +33,7 @@ public sealed class FirstRunViewModel : ViewModelBase
                     newState.IsComplete);
             }
             _state = newState;
+            if (!string.IsNullOrWhiteSpace(newState.ProgressText)) OnProgress?.Invoke(newState.ProgressText);
         }
     }
 
