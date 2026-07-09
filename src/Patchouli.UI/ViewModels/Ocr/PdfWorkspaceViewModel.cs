@@ -3,8 +3,9 @@ using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Ocr;
+using System.Linq;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class PdfWorkspaceViewModel : ViewModelBase
 {
@@ -21,6 +22,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private PdfBBoxViewModel? _selectedBox;
     private string? _currentRevisionId;
     private string? _draftRevisionId;
+    private bool _isDrawing;
+    private Avalonia.Point _selectionStartPoint;
+    private bool _isConflictFlyoutOpen;
+    private string _conflictMessage = "";
 
     public PdfWorkspaceViewModel(MainWindowViewModel main)
     {
@@ -36,6 +41,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         CancelEditModeCommand = new AsyncCommand(CancelEditModeAsync);
         SelectToolCommand = new AsyncCommand(() => { IsDrawToolActive = false; return Task.CompletedTask; });
         DrawToolCommand = new AsyncCommand(() => { IsDrawToolActive = true; return Task.CompletedTask; });
+        ResolveConflictAdjustCommand = new AsyncCommand(ResolveConflictAdjustAsync);
+        ResolveConflictOverwriteCommand = new AsyncCommand(ResolveConflictOverwriteAsync);
+        ResolveConflictSkipCommand = new AsyncCommand(ResolveConflictSkipAsync);
     }
 
     public Bitmap? Image { get; private set; }
@@ -55,7 +63,28 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public bool IsSidebarOpen { get => _isSidebarOpen; set { if (_isSidebarOpen == value) return; _isSidebarOpen = value; Raise(); Raise(nameof(SidebarMaxWidth)); Raise(nameof(SidebarMinWidth)); } }
     public double SidebarMaxWidth => _isSidebarOpen ? 800.0 : 0.0;
     public double SidebarMinWidth => _isSidebarOpen ? 200.0 : 0.0;
+    private double _selectionLeft;
+    private double _selectionTop;
+    private double _selectionWidth;
+    private double _selectionHeight;
+
     public bool IsDrawToolActive { get => _isDrawToolActive; private set { if (_isDrawToolActive == value) return; _isDrawToolActive = value; Raise(); } }
+    
+    public bool IsDrawing { get => _isDrawing; private set { if (_isDrawing == value) return; _isDrawing = value; Raise(); Raise(nameof(SelectionVisible)); } }
+    
+    public double SelectionLeft { get => _selectionLeft; private set { if (_selectionLeft == value) return; _selectionLeft = value; Raise(); } }
+    public double SelectionTop { get => _selectionTop; private set { if (_selectionTop == value) return; _selectionTop = value; Raise(); } }
+    public double SelectionWidth { get => _selectionWidth; private set { if (_selectionWidth == value) return; _selectionWidth = value; Raise(); Raise(nameof(SelectionVisible)); } }
+    public double SelectionHeight { get => _selectionHeight; private set { if (_selectionHeight == value) return; _selectionHeight = value; Raise(); Raise(nameof(SelectionVisible)); } }
+    
+    public bool SelectionVisible => IsDrawing && SelectionWidth > 0 && SelectionHeight > 0;
+    
+    public bool IsConflictFlyoutOpen { get => _isConflictFlyoutOpen; set { if (_isConflictFlyoutOpen == value) return; _isConflictFlyoutOpen = value; Raise(); } }
+    public string ConflictMessage { get => _conflictMessage; set { if (_conflictMessage == value) return; _conflictMessage = value; Raise(); } }
+    public AsyncCommand ResolveConflictAdjustCommand { get; }
+    public AsyncCommand ResolveConflictOverwriteCommand { get; }
+    public AsyncCommand ResolveConflictSkipCommand { get; }
+
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes { get; } = new();
     
     public PdfBBoxViewModel? SelectedBox
@@ -81,6 +110,120 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand CancelEditModeCommand { get; }
     public AsyncCommand SelectToolCommand { get; }
     public AsyncCommand DrawToolCommand { get; }
+
+    public void OnPointerPressed(double x, double y)
+    {
+        if (!IsEditMode || !IsDrawToolActive) return;
+        _selectionStartPoint = new Avalonia.Point(x, y);
+        SelectionLeft = x;
+        SelectionTop = y;
+        SelectionWidth = 0;
+        SelectionHeight = 0;
+        IsDrawing = true;
+    }
+
+    public void OnPointerMoved(double x, double y)
+    {
+        if (!IsDrawing) return;
+        var currentPoint = new Avalonia.Point(x, y);
+        SelectionLeft = Math.Min(_selectionStartPoint.X, currentPoint.X);
+        SelectionTop = Math.Min(_selectionStartPoint.Y, currentPoint.Y);
+        SelectionWidth = Math.Max(_selectionStartPoint.X, currentPoint.X) - SelectionLeft;
+        SelectionHeight = Math.Max(_selectionStartPoint.Y, currentPoint.Y) - SelectionTop;
+    }
+
+    public void OnPointerReleased()
+    {
+        if (!IsDrawing) return;
+        IsDrawing = false;
+        if (SelectionWidth > 5 && SelectionHeight > 5)
+        {
+            CreateBBoxFromSelection();
+        }
+        SelectionWidth = 0;
+        SelectionHeight = 0;
+    }
+
+    private PdfBBoxViewModel? _pendingStagingBox;
+
+    private void CreateBBoxFromSelection()
+    {
+        var box = new PdfBBoxViewModel(_main, this, LayoutNodeId.New(), SelectionLeft, SelectionTop, SelectionWidth, SelectionHeight, "text", Avalonia.Media.Brushes.DarkOrange)
+        {
+            IsStaging = true
+        };
+        
+        if (CheckOverlap(box))
+        {
+            _pendingStagingBox = box;
+            ConflictMessage = "边框发生重叠 (CF-06)。请选择处理方式：";
+            IsConflictFlyoutOpen = true;
+        }
+        else
+        {
+            BoundingBoxes.Add(box);
+            SelectedBox = box;
+        }
+    }
+
+    private Task ResolveConflictAdjustAsync()
+    {
+        IsConflictFlyoutOpen = false;
+        if (_pendingStagingBox != null)
+        {
+            // Just add it but let the user adjust it
+            BoundingBoxes.Add(_pendingStagingBox);
+            SelectedBox = _pendingStagingBox;
+        }
+        _pendingStagingBox = null;
+        return Task.CompletedTask;
+    }
+
+    private Task ResolveConflictOverwriteAsync()
+    {
+        IsConflictFlyoutOpen = false;
+        if (_pendingStagingBox != null)
+        {
+            // Remove any overlapping existing boxes
+            var rect1 = new Avalonia.Rect(_pendingStagingBox.Left, _pendingStagingBox.Top, _pendingStagingBox.Width, _pendingStagingBox.Height);
+            var toRemove = BoundingBoxes.Where(existing => 
+            {
+                var rect2 = new Avalonia.Rect(existing.Left, existing.Top, existing.Width, existing.Height);
+                return rect1.Intersects(rect2);
+            }).ToList();
+            
+            foreach (var box in toRemove)
+            {
+                BoundingBoxes.Remove(box);
+            }
+            
+            BoundingBoxes.Add(_pendingStagingBox);
+            SelectedBox = _pendingStagingBox;
+        }
+        _pendingStagingBox = null;
+        return Task.CompletedTask;
+    }
+
+    private Task ResolveConflictSkipAsync()
+    {
+        IsConflictFlyoutOpen = false;
+        _pendingStagingBox = null;
+        return Task.CompletedTask;
+    }
+
+    private bool CheckOverlap(PdfBBoxViewModel newBox)
+    {
+        var rect1 = new Avalonia.Rect(newBox.Left, newBox.Top, newBox.Width, newBox.Height);
+        foreach (var existing in BoundingBoxes)
+        {
+            var rect2 = new Avalonia.Rect(existing.Left, existing.Top, existing.Width, existing.Height);
+            if (rect1.Intersects(rect2))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
 
     public void RemoveBBox(PdfBBoxViewModel bbox)
     {
@@ -234,7 +377,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 }
             }
 
-            Status = $"{_item.Title} · Page {_pageIndex + 1}/{_pageCount} · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
+            Status = $"{_item.Title} · 第 {_pageIndex + 1}/{_pageCount} 页 · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
         }
         catch (Exception ex)
         {
@@ -279,7 +422,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task EnterEditModeAsync()
     {
-        if (_item is null) return;
+        if (_item is null || string.IsNullOrWhiteSpace(_item.DocumentInstanceId))
+        {
+            Status = "该题录没有可编辑的文档实例。";
+            return;
+        }
+
         var services = await _main.ServicesAsync();
         var docId = DocumentInstanceId.Parse(_item.DocumentInstanceId);
         var rev = await services.Layout.CreateLayoutRevisionAsync(docId, Patchouli.Core.Layout.LayoutRevisionSource.Manual, false);
@@ -299,7 +447,11 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task SaveAndExitAsync()
     {
-        if (_item is null || _draftRevisionId is null) return;
+        if (_item is null || string.IsNullOrWhiteSpace(_item.DocumentInstanceId) || _draftRevisionId is null)
+        {
+            return;
+        }
+
         var services = await _main.ServicesAsync();
         var docId = DocumentInstanceId.Parse(_item.DocumentInstanceId);
         var res = await services.Layout.SetCurrentRevisionAsync(docId, LayoutRevisionId.Parse(_draftRevisionId));

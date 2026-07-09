@@ -1,5 +1,6 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Patchouli.UI;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
 

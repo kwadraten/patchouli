@@ -1,7 +1,7 @@
-using Patchouli.Core.Ids;
+﻿using Patchouli.Core.Ids;
 using Patchouli.Infrastructure.Snapshots;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 public sealed class SnapshotBranchViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main; private SnapshotBranchInspectionInfo? _branch; private BranchImportPlan? _plan;

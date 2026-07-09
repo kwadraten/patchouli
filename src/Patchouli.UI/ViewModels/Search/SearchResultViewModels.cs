@@ -1,4 +1,4 @@
-namespace Patchouli.UI;
+﻿namespace Patchouli.UI.ViewModels;
 
 public sealed class SearchMatchedUnitViewModel
 {

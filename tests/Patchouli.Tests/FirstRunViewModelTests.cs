@@ -1,4 +1,4 @@
-using Dapper;
+﻿using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
@@ -16,6 +16,7 @@ using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Ocr;
 using Patchouli.UI;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
 

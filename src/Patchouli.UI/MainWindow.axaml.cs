@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI;
 
@@ -44,12 +45,12 @@ public sealed partial class MainWindow : Window
     {
         var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
-            Title = "Export Evidence Markdown",
+            Title = "导出证据 Markdown",
             SuggestedFileName = "evidence.md",
             DefaultExtension = "md",
             FileTypeChoices =
             [
-                new FilePickerFileType("Markdown") { Patterns = ["*.md"] },
+                new FilePickerFileType("Markdown 文件") { Patterns = ["*.md"] },
                 FilePickerFileTypes.All
             ]
         });

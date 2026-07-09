@@ -2,8 +2,12 @@
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:views="using:Patchouli.UI.Views"
-        xmlns:local="using:Patchouli.UI"
+        xmlns:local="using:Patchouli.UI.ViewModels"
+        xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+        xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
+        xmlns:csl="using:Patchouli.UI.ViewModels.Csl"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
         Title="Patchouli" Background="{DynamicResource SurfaceBrush}">
 
@@ -14,10 +18,14 @@
     <DataTemplate DataType="{x:Type local:PdfWorkspaceViewModel}">
       <views:PdfWorkspacePage />
     </DataTemplate>
-    <DataTemplate DataType="{x:Type local:ItemEditorViewModel}">
+    <DataTemplate DataType="{x:Type editor:ItemEditorViewModel}">
+      <!-- DataType="{x:Type local:ItemEditorViewModel}" -->
       <views:ItemEditorPage />
     </DataTemplate>
-    <DataTemplate DataType="{x:Type local:SettingsViewModel}">
+    <DataTemplate DataType="{x:Type csl:CslStyleManagerViewModel}">
+      <views:CslStyleManagerPage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type settings:SettingsViewModel}">
       <views:SettingsPage />
     </DataTemplate>
     <DataTemplate DataType="{x:Type local:SearchEvidenceViewModel}">
@@ -50,6 +58,12 @@
       <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
+    <Style Selector="TextBlock.statusBar">
+      <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
+    </Style>
+    <Style Selector="TextBlock.statusBar.error">
+      <Setter Property="Foreground" Value="#ffdad6" />
+    </Style>
 
   </Window.Styles>
 
@@ -57,21 +71,40 @@
     <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
         <Menu VerticalAlignment="Center" Background="Transparent">
-          <MenuItem Header="文件">
-            <MenuItem Header="设置" Command="{Binding OpenSettingsCommand}" />
-            <MenuItem Header="OCR 队列" Command="{Binding OpenOcrQueueCommand}" />
+          <MenuItem Header="书库">
+            <MenuItem Header="切换详情面板" Command="{Binding ToggleInspectorPaneCommand}" />
+            <MenuItem Header="书库列">
+              <MenuItem Header="题录类型" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowItemTypeColumn, Mode=TwoWay}" />
+              <MenuItem Header="年份" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowYearColumn, Mode=TwoWay}" />
+              <MenuItem Header="作者" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowAuthorColumn, Mode=TwoWay}" />
+              <MenuItem Header="标题" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowTitleColumn, Mode=TwoWay}" />
+              <MenuItem Header="来源" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowSourceColumn, Mode=TwoWay}" />
+              <MenuItem Header="OCR/索引状态" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowStatusColumn, Mode=TwoWay}" />
+              <MenuItem Header="页数" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowPagesColumn, Mode=TwoWay}" />
+              <MenuItem Header="关联文件" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowFileColumn, Mode=TwoWay}" />
+            </MenuItem>
           </MenuItem>
-          <MenuItem Header="编辑">
+          <MenuItem Header="同步">
+          </MenuItem>
+          <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
-            <MenuItem Header="查看 PDF" Command="{Binding ShowReadingCommand}" />
-            <MenuItem Header="编辑题录" Command="{Binding EditSelectedItemCommand}" />
-            <MenuItem Header="运行 MinerU OCR" Command="{Binding RunSelectedItemOcrCommand}" />
-            <Separator />
-            <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
+            <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}" />
+            <MenuItem Header="复制证据 Markdown" Command="{Binding ExportEvidenceMarkdownCommand}" />
             <MenuItem Header="导出证据 Markdown" Click="OnExportEvidenceMarkdownClick" />
           </MenuItem>
-          <MenuItem Header="视图">
-            <MenuItem Header="切换详情面板" Command="{Binding ToggleInspectorPaneCommand}" />
+          <MenuItem Header="OCR">
+            <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />
+            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}" />
+          </MenuItem>
+          <MenuItem Header="搜索">
+            <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
+          </MenuItem>
+          <MenuItem Header="MCP">
+            <MenuItem Header="MCP 设置" Command="{Binding OpenSettingsCommand}" />
+          </MenuItem>
+          <MenuItem Header="设置">
+            <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />
+            <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
           </MenuItem>
           <MenuItem Header="帮助">
             <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
@@ -89,7 +122,7 @@
     </Border>
 
     <Grid Grid.Row="1" Background="{DynamicResource SurfaceContainerLowestBrush}">
-      <TabControl ItemsSource="{Binding OpenTabs}" SelectedItem="{Binding ActiveTab}" Theme="{StaticResource {x:Type TabControl}}" Padding="0">
+      <TabControl ItemsSource="{Binding Layout.Tabs}" SelectedItem="{Binding Layout.ActiveTab}" Padding="0">
         <TabControl.ItemTemplate>
           <DataTemplate DataType="{x:Type local:WorkspaceTabViewModel}">
             <Grid>
@@ -118,15 +151,7 @@
 
     <Border Grid.Row="2" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">
       <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center">
-          <TextBlock.Styles>
-            <Style Selector="TextBlock">
-              <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
-            </Style>
-            <Style Selector="TextBlock.error">
-              <Setter Property="Foreground" Value="#ffdad6" />
-            </Style>
-          </TextBlock.Styles>
+        <TextBlock Text="{Binding Status}" Classes="statusBar" FontSize="12" VerticalAlignment="Center">
           <Classes.error>
             <MultiBinding Converter="{x:Static BoolConverters.Or}">
               <Binding Path="StatusIsError" />

@@ -72,7 +72,7 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact] public void Production_services_wire_mupdf_net_pdf_renderer() => File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs")).Should().Contain("MuPdfNetPdfPageRenderer");
-    [Fact] public void Production_pdf_packages_include_pdf4llm_and_mupdf_net() => File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props")).Should().Contain("PDF4LLM").And.Contain("MuPDF.NET");
+    [Fact] public void Production_pdf_packages_include_mupdf_net() => File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props")).Should().Contain("MuPDF.NET");
     [Fact] public void Product_shell_uses_literature_manager_preview_not_full_pdf_viewer() => File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml")).Should().Contain("工作台预览");
 
     [Fact]

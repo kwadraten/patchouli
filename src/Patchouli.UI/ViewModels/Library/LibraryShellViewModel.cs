@@ -4,58 +4,22 @@ using Dapper;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
+using Patchouli.Core.Results;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class LibraryShellViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private bool _isReadingMode;
 
     public LibraryShellViewModel(MainWindowViewModel main)
     {
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshItemsAsync);
         ShowRecentItemsCommand = new AsyncCommand(ShowRecentItemsAsync);
-        SwitchToLibraryListCommand = new AsyncCommand(SwitchToLibraryListAsync);
         SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
-    }
-
-    public bool IsReadingMode
-    {
-        get => _isReadingMode;
-        set
-        {
-            if (_isReadingMode == value) return;
-            _isReadingMode = value;
-            Raise();
-            Raise(nameof(ShowLibraryList));
-            Raise(nameof(ShowPdfWorkspace));
-            _main.RaiseShellSelectionChanged();
-        }
-    }
-
-    public bool ShowLibraryList => !IsReadingMode;
-    public bool ShowPdfWorkspace => IsReadingMode && SelectedItem is not null;
-
-    public AsyncCommand SwitchToLibraryListCommand { get; }
-    public AsyncCommand SwitchToReadingModeCommand { get; }
-
-    public Task SwitchToLibraryListAsync()
-    {
-        IsReadingMode = false;
-        return Task.CompletedTask;
-    }
-
-    public async Task SwitchToReadingModeAsync()
-    {
-        if (SelectedItem is not null)
-        {
-            IsReadingMode = true;
-            await _main.PdfWorkspace.LoadSelectedItemAsync(SelectedItem);
-        }
     }
 
     public string LibraryName { get; set; } = "我的书库";
@@ -87,12 +51,71 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public bool HasSelectedItem => SelectedItem is not null;
     public bool NoSelectedItem => SelectedItem is null;
+    public bool IsReadingMode { get; set; }
+    public bool ShowLibraryList => !IsReadingMode;
+    public bool ShowPdfWorkspace => IsReadingMode;
     public string InspectorTitle => SelectedItem?.Title ?? "未选择题录";
     public string InspectorSubtitle => SelectedItem is null ? "选择一个已导入题录以查看 OCR/索引状态。" : $"{SelectedItem.ItemType} / {SelectedItem.FileName}";
     public string InspectorStatus => SelectedItem?.OcrStatus ?? "未选择文档";
     public string InspectorPath => SelectedItem?.SourcePath ?? "";
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand ShowRecentItemsCommand { get; }
+    public AsyncCommand SwitchToReadingModeCommand { get; }
+
+    public bool ShowItemTypeColumn
+    {
+        get => GetColumnVisibility("ItemType", true);
+        set => SetColumnVisibility("ItemType", value);
+    }
+    public bool ShowYearColumn
+    {
+        get => GetColumnVisibility("Year", true);
+        set => SetColumnVisibility("Year", value);
+    }
+    public bool ShowAuthorColumn
+    {
+        get => GetColumnVisibility("Author", true);
+        set => SetColumnVisibility("Author", value);
+    }
+    public bool ShowTitleColumn
+    {
+        get => GetColumnVisibility("Title", true);
+        set => SetColumnVisibility("Title", value);
+    }
+    public bool ShowSourceColumn
+    {
+        get => GetColumnVisibility("Source", true);
+        set => SetColumnVisibility("Source", value);
+    }
+    public bool ShowStatusColumn
+    {
+        get => GetColumnVisibility("Status", true);
+        set => SetColumnVisibility("Status", value);
+    }
+    public bool ShowPagesColumn
+    {
+        get => GetColumnVisibility("Pages", true);
+        set => SetColumnVisibility("Pages", value);
+    }
+    public bool ShowFileColumn
+    {
+        get => GetColumnVisibility("File", true);
+        set => SetColumnVisibility("File", value);
+    }
+
+    private bool GetColumnVisibility(string key, bool defaultValue)
+    {
+        if (_main.AppOptions.Ui.LibraryGridVisibleColumns.TryGetValue(key, out var visible))
+            return visible;
+        return defaultValue;
+    }
+
+    private void SetColumnVisibility(string key, bool value)
+    {
+        _main.AppOptions.Ui.LibraryGridVisibleColumns[key] = value;
+        _main.AppOptions.Save(_main.SettingsFilePath);
+        Raise($"Show{key}Column");
+    }
 
     public void NotifyMinerUTokenChanged()
     {
@@ -133,7 +156,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
         RecentDocuments.Clear();
         foreach (var row in rowsResult.Value)
         {
-            var source = row.DocumentInstanceId is not null && sourcePaths.TryGetValue(row.DocumentInstanceId.ToString(), out var value)
+            var documentInstanceKey = row.DocumentInstanceId?.ToString();
+            var source = documentInstanceKey is not null && sourcePaths.TryGetValue(documentInstanceKey, out var value)
                 ? value
                 : default;
             var item = new LibraryItemViewModel(
@@ -204,6 +228,18 @@ public sealed class LibraryShellViewModel : ViewModelBase
             await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token", token);
             var presetId = await EnsureMinerUPresetAsync(services);
             var documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
+            if (MinerUClientFactory is null)
+            {
+                var queued = await QueueOcrForItemAsync(services, documentInstanceId, presetId);
+                item.OcrStatus = queued.IsSuccess
+                    ? $"OCR 已加入后台队列：{queued.Value.TaskId}"
+                    : queued.ErrorMessage ?? "OCR 入队失败。";
+                _main.Report(item.OcrStatus);
+                Raise(nameof(InspectorStatus));
+                await _main.OcrQueue.RefreshAsync();
+                return;
+            }
+
             var coordinator = MinerUClientFactory is null
                 ? services.Ocr
                 : services.CreateOcrRunCoordinator(MinerUClientFactory);
@@ -234,6 +270,58 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise(nameof(IsBusy));
             Raise(nameof(InspectorStatus));
         }
+    }
+
+    private async Task<Result<OcrQueueTask>> QueueOcrForItemAsync(AppServices services, DocumentInstanceId documentInstanceId, OcrPresetId presetId)
+    {
+        await using var connection = services.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+
+        var pageIds = (await connection.QueryAsync<string>(
+            """
+            select page_id
+            from pages
+            where document_instance_id = @DocumentInstanceId
+            order by page_index, page_id;
+            """,
+            new { DocumentInstanceId = documentInstanceId.ToString() }))
+            .Select(PageId.Parse)
+            .ToArray();
+
+        if (pageIds.Length == 0)
+        {
+            return Result<OcrQueueTask>.Failure(AppErrorCodes.ValidationFailed, "Document instance has no pages to OCR.");
+        }
+
+        var engineId = await connection.ExecuteScalarAsync<string?>(
+            """
+            select v.engine_id
+            from ocr_presets p
+            join ocr_preset_versions v on v.preset_version_id = p.current_version_id
+            where p.preset_id = @PresetId
+            limit 1;
+            """,
+            new { PresetId = presetId.ToString() });
+        if (string.IsNullOrWhiteSpace(engineId))
+        {
+            return Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidState, "Active OCR preset/version was not found.");
+        }
+
+        var queue = await services.GetOcrQueueAsync();
+        if (queue.IsFailure)
+        {
+            return Result<OcrQueueTask>.Failure(queue.ErrorCode!, queue.ErrorMessage!);
+        }
+
+        var adapterKind = engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
+        var providerId = engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        var enqueued = await queue.Value.EnqueueDocumentAsync(documentInstanceId, presetId, pageIds, engineId, adapterKind, providerId, OcrQueuePriority.UserStartedDocument);
+        if (enqueued.IsSuccess)
+        {
+            await queue.Value.StartAsync();
+        }
+
+        return enqueued;
     }
 
     private async Task<string> ResolveMinerUTokenAsync()
@@ -298,6 +386,15 @@ public sealed class LibraryShellViewModel : ViewModelBase
     {
         await RefreshItemsAsync();
         _main.Report("正在显示最近项目。");
+    }
+
+    private async Task SwitchToReadingModeAsync()
+    {
+        IsReadingMode = true;
+        Raise(nameof(IsReadingMode));
+        Raise(nameof(ShowLibraryList));
+        Raise(nameof(ShowPdfWorkspace));
+        await _main.ShowReadingAsync();
     }
 
     public async void Refresh()

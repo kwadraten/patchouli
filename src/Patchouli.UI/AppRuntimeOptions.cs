@@ -43,7 +43,7 @@ public sealed record McpAppSettings(
     Dictionary<string, bool> DisabledTools)
 {
     public static McpAppSettings Default() =>
-        new(31337, true, string.Empty, new Dictionary<string, bool>());
+        new(4536, true, string.Empty, new Dictionary<string, bool>());
 }
 
 public sealed record UiPreferences(

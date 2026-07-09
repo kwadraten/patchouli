@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.Views;
 
@@ -9,11 +10,11 @@ public sealed partial class LibraryPage : UserControl
         InitializeComponent();
     }
 
-    private async void OnListBoxDoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
+    private async void OnDataGridDoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
     {
-        if (DataContext is MainWindowViewModel { Shell.SelectedItem: not null } viewModel)
+        if (DataContext is LibraryShellViewModel { SelectedItem: not null } shell)
         {
-            await viewModel.ShowReadingCommand.ExecuteAsync();
+            await shell.ViewPdfForItemAsync(shell.SelectedItem);
         }
     }
 }

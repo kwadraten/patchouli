@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.Views;
 
@@ -13,10 +14,36 @@ public sealed partial class PdfWorkspacePage : UserControl
     {
         if (sender is Avalonia.Controls.Control control && control.DataContext is PdfBBoxViewModel bbox)
         {
-            if (DataContext is MainWindowViewModel viewModels)
+            if (DataContext is PdfWorkspaceViewModel pdf)
             {
-                viewModels.PdfWorkspace.SelectedBox = bbox;
+                pdf.SelectedBox = bbox;
             }
+        }
+    }
+
+    private void OnCanvasPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
+    {
+        if (DataContext is PdfWorkspaceViewModel pdf && sender is Avalonia.Controls.Control control)
+        {
+            var p = e.GetPosition(control);
+            pdf.OnPointerPressed(p.X, p.Y);
+        }
+    }
+
+    private void OnCanvasPointerMoved(object? sender, Avalonia.Input.PointerEventArgs e)
+    {
+        if (DataContext is PdfWorkspaceViewModel pdf && sender is Avalonia.Controls.Control control)
+        {
+            var p = e.GetPosition(control);
+            pdf.OnPointerMoved(p.X, p.Y);
+        }
+    }
+
+    private void OnCanvasPointerReleased(object? sender, Avalonia.Input.PointerReleasedEventArgs e)
+    {
+        if (DataContext is PdfWorkspaceViewModel pdf)
+        {
+            pdf.OnPointerReleased();
         }
     }
 }

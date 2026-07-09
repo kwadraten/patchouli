@@ -2,7 +2,7 @@ using Avalonia.Media;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class PdfBBoxViewModel : ViewModelBase
 {
@@ -27,6 +27,13 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         set { if (_isSelected == value) return; _isSelected = value; Raise(); }
     }
 
+    private bool _isStaging;
+    public bool IsStaging
+    {
+        get => _isStaging;
+        set { if (_isStaging == value) return; _isStaging = value; Raise(); }
+    }
+
     public string? Text
     {
         get => _text;
@@ -44,7 +51,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         NodeType = node.NodeType;
         Text = node.OwnText;
         
-        if (node.BBox.HasValue)
+        if (node.BBox != null)
         {
             Left = node.BBox.Value.X * imageWidth;
             Top = node.BBox.Value.Y * imageHeight;
@@ -53,7 +60,21 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         }
 
         BoxColor = GetColorForNodeType(node.NodeType);
+        SaveTextCommand = new AsyncCommand(SaveTextAsync);
+        IgnoreCommand = new AsyncCommand(IgnoreAsync);
+    }
 
+    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNodeId nodeId, double left, double top, double width, double height, string nodeType, IBrush boxColor)
+    {
+        _main = main;
+        _workspace = workspace;
+        NodeId = nodeId;
+        Left = left;
+        Top = top;
+        Width = width;
+        Height = height;
+        NodeType = nodeType;
+        BoxColor = boxColor;
         SaveTextCommand = new AsyncCommand(SaveTextAsync);
         IgnoreCommand = new AsyncCommand(IgnoreAsync);
     }

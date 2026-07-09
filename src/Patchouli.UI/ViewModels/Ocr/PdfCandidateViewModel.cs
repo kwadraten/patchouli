@@ -1,6 +1,6 @@
-using Patchouli.Core.Import;
+﻿using Patchouli.Core.Import;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class PdfCandidateViewModel : ViewModelBase
 {

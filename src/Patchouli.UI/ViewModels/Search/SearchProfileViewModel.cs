@@ -1,8 +1,8 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using Patchouli.Core.Ids;
 using Patchouli.Search;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class SearchProfileViewModel : ViewModelBase
 {

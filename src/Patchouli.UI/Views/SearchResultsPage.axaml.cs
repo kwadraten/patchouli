@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.Views;
 
@@ -50,12 +51,12 @@ public sealed partial class SearchResultsPage : UserControl
         main.SearchEvidence.EvidenceRef = unit.EvidenceRef;
         var file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
         {
-            Title = "Export Evidence Markdown",
+            Title = "导出证据 Markdown",
             SuggestedFileName = "evidence.md",
             DefaultExtension = "md",
             FileTypeChoices =
             [
-                new FilePickerFileType("Markdown") { Patterns = ["*.md"] },
+                new FilePickerFileType("Markdown 文件") { Patterns = ["*.md"] },
                 FilePickerFileTypes.All
             ]
         });

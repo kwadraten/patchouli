@@ -1,7 +1,7 @@
-using Patchouli.Core.Ids;
+﻿using Patchouli.Core.Ids;
 using Patchouli.Ocr;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class PdfRenderViewModel : ViewModelBase
 {

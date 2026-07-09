@@ -1,8 +1,9 @@
+﻿using Patchouli.UI.ViewModels;
 using System.Collections.ObjectModel;
 using Patchouli.Core.Import;
 using Patchouli.Infrastructure.Workflows;
 
-namespace Patchouli.UI;
+namespace Patchouli.UI.ViewModels;
 
 public sealed class FirstRunViewModel : ViewModelBase
 {

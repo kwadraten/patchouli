@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using Avalonia;
 using Avalonia.Headless;
 using Avalonia.Media;
@@ -12,8 +12,10 @@ using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Mcp;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
 
@@ -172,6 +174,58 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public async Task MainWindow_new_item_editor_renders_without_recursive_templates()
+    {
+        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            var window = new MainWindow
+            {
+                Width = 1280,
+                Height = 820
+            };
+            window.Show();
+            try
+            {
+                var vm = (MainWindowViewModel)window.DataContext!;
+
+                await vm.CreateItemMenuCommand.ExecuteAsync();
+
+                window.Measure(new Size(1280, 820));
+                window.Arrange(new Rect(0, 0, 1280, 820));
+
+                var bitmap = new RenderTargetBitmap(new PixelSize(1280, 820), new Vector(96, 96));
+                bitmap.Render(window);
+
+                vm.IsItemEditorVisible.Should().BeTrue();
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public void ItemEditorPage_does_not_template_field_descriptor_with_self_content()
+    {
+        var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
+
+        editorXaml.Should().NotContain("ContentControl Content=\"{Binding}\"");
+    }
+
+    [Fact]
+    public void MainWindow_xaml_avoids_recursive_theme_and_local_self_styles()
+    {
+        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+
+        shellXaml.Should().NotContain("Theme=\"{StaticResource {x:Type TabControl}}\"");
+        shellXaml.Should().NotContain("<TextBlock.Styles>");
+    }
+
+    [Fact]
     public void MainWindow_xaml_uses_local_lucide_svg_control()
     {
         var project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Patchouli.UI.csproj"));
@@ -186,6 +240,60 @@ public sealed class UiViewModelTests
         mainXaml.Should().Contain("using:Patchouli.Lucide.Avalonia").And.NotContain("assembly=LucideAvalonia");
         libraryXaml.Should().Contain("using:Patchouli.Lucide.Avalonia").And.NotContain("assembly=LucideAvalonia");
         pdfXaml.Should().Contain("using:Patchouli.Lucide.Avalonia").And.NotContain("assembly=LucideAvalonia");
+    }
+
+    [Fact]
+    public void All_bound_lucide_icon_names_have_svg_assets()
+    {
+        var assetsPath = TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Assets", "Lucide");
+        var assets = Directory.EnumerateFiles(assetsPath, "*.svg")
+            .Select(path => Path.GetFileNameWithoutExtension(path).ToLowerInvariant())
+            .ToHashSet();
+
+        var iconNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in Directory.EnumerateFiles(TestPaths.FromRepositoryRoot("src", "Patchouli.UI"), "*.axaml", SearchOption.AllDirectories))
+        {
+            var text = File.ReadAllText(file);
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(text, "lucide:Lucide[^>]*\\bIcon=\"([^\"]+)\""))
+            {
+                var icon = match.Groups[1].Value;
+                if (!icon.StartsWith("{Binding", StringComparison.Ordinal))
+                    iconNames.Add(icon);
+            }
+        }
+
+        var settingsText = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels", "Settings", "SettingsViewModel.cs"));
+        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(settingsText, "new\\(\"[^\"]+\",\\s*\"([^\"]+)\""))
+            iconNames.Add(match.Groups[1].Value);
+
+        iconNames.Select(ToKebab).Should().OnlyContain(icon => assets.Contains(icon));
+
+        static string ToKebab(string value)
+        {
+            var builder = new System.Text.StringBuilder(value.Length + 4);
+            for (var i = 0; i < value.Length; i++)
+            {
+                var current = value[i];
+                if (current is '_' or '-' or ' ')
+                {
+                    AppendDash(builder);
+                    continue;
+                }
+
+                if (i > 0 && (char.IsUpper(current) || char.IsDigit(current)) && builder.Length > 0 && builder[^1] != '-')
+                    AppendDash(builder);
+
+                builder.Append(char.ToLowerInvariant(current));
+            }
+
+            return builder.ToString();
+        }
+
+        static void AppendDash(System.Text.StringBuilder builder)
+        {
+            if (builder.Length > 0 && builder[^1] != '-')
+                builder.Append('-');
+        }
     }
 
     [Fact]
@@ -402,6 +510,44 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public async Task Library_run_ocr_enqueues_document_task_visible_on_queue_board()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.sqlite");
+        var pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.pdf");
+        try
+        {
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Queued OCR Item", null, 1));
+            import.Success.Should().BeTrue(import.ErrorMessage);
+            await vm.Shell.RefreshItemsAsync();
+            vm.Shell.MinerUToken = "token";
+            await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
+
+            await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
+            await vm.OcrQueue.RefreshAsync();
+
+            vm.Status.Should().Contain("OCR 已加入后台队列");
+            vm.OcrQueue.StatusSummary.Should().Contain("running");
+            vm.OcrQueue.TaskRows.Should().ContainSingle();
+            var row = vm.OcrQueue.TaskRows.Single();
+            row.DocumentTitle.Should().Be("Queued OCR Item");
+            row.Kind.Should().Be(OcrQueueTaskKind.Document);
+            row.PageCount.Should().Be(1);
+
+            await vm.OcrQueue.StopCommand.ExecuteAsync();
+        }
+        finally
+        {
+            if (File.Exists(pdf)) File.Delete(pdf);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task SearchProfileViewModel_creates_rule_and_previews_plan()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-profile-{Guid.NewGuid():N}.sqlite");
@@ -540,6 +686,55 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public async Task OpenDatabase_remembers_custom_runtime_database_when_enabled()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-remember-db-{Guid.NewGuid():N}.sqlite");
+        var settingsPath = WriteSettingsFile("", rememberLastDatabase: true);
+        try
+        {
+            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+
+            var saved = PatchouliAppSettings.Load(settingsPath);
+            Path.GetFullPath(saved.Runtime.RuntimeDatabasePath).Should().Be(Path.GetFullPath(path));
+
+            var reloaded = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
+            Path.GetFullPath(reloaded.RuntimeDatabasePath).Should().Be(Path.GetFullPath(path));
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task OpenDatabase_does_not_remember_custom_runtime_database_when_disabled()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-do-not-remember-db-{Guid.NewGuid():N}.sqlite");
+        var settingsPath = WriteSettingsFile("", rememberLastDatabase: false);
+        var originalSettings = PatchouliAppSettings.Load(settingsPath);
+        try
+        {
+            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+
+            var saved = PatchouliAppSettings.Load(settingsPath);
+            Path.GetFullPath(saved.Runtime.RuntimeDatabasePath).Should().Be(Path.GetFullPath(originalSettings.Runtime.RuntimeDatabasePath));
+
+            var reloaded = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
+            Path.GetFullPath(reloaded.RuntimeDatabasePath).Should().Be(Path.GetFullPath(AppRuntimeOptions.Default().RuntimeDatabasePath));
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
     public async Task FirstRun_scan_imports_all_pdfs_as_items_without_manual_metadata()
     {
         var path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
@@ -660,11 +855,68 @@ public sealed class UiViewModelTests
             vm.Shell.Items.Single().Authors.Should().Be("Chen, Li");
             vm.Shell.Items.Single().Year.Should().Be("2026");
             vm.Shell.Items.Single().PublicationTitle.Should().Be("Journal of Patchouli");
+            vm.ActiveTab!.Title.Should().Be("编辑题录：Edited Title");
         }
         finally
         {
             if (File.Exists(pdf)) File.Delete(pdf);
             if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task General_item_metadata_editor_renders_from_context_action()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-general-editor-{Guid.NewGuid():N}")).FullName;
+        var path = Path.Combine(root, "runtime.sqlite");
+        var pdf = Path.Combine(root, "general.pdf");
+        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        try
+        {
+            await session.Dispatch(async () =>
+            {
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                var window = new MainWindow
+                {
+                    Width = 1280,
+                    Height = 820
+                };
+                window.Show();
+                try
+                {
+                    var vm = (MainWindowViewModel)window.DataContext!;
+                    vm.RuntimeDatabasePath = path;
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    await vm.Library.CreateCommand.ExecuteAsync();
+                    var services = await vm.ServicesAsync();
+                    var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "General Item", null, 1));
+                    import.Success.Should().BeTrue(import.ErrorMessage);
+                    await vm.Shell.RefreshItemsAsync();
+                    vm.Shell.Items.Single().ItemType.Should().Be("general");
+
+                    await vm.Shell.Items.Single().EditMetadataCommand.ExecuteAsync();
+
+                    window.Measure(new Size(1280, 820));
+                    window.Arrange(new Rect(0, 0, 1280, 820));
+                    var bitmap = new RenderTargetBitmap(new PixelSize(1280, 820), new Vector(96, 96));
+                    bitmap.Render(window);
+
+                    vm.ItemEditor.ItemType.Should().Be("general");
+                    vm.ItemEditor.IsGeneralTypeWarningVisible.Should().BeTrue();
+                    vm.ItemEditor.Fields.Should().Contain(field => field.Key == "Publisher");
+                    vm.ItemEditor.Fields.Should().Contain(field => field.Key == "Pages");
+                }
+                finally
+                {
+                    window.Close();
+                }
+
+                return true;
+            }, CancellationToken.None);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
 
@@ -702,6 +954,84 @@ public sealed class UiViewModelTests
         vm.Shell.ShowLibraryList.Should().BeFalse();
         vm.ShowSidebar.Should().BeFalse();
         vm.IsInspectorVisible.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Workspace_singleton_tabs_reuse_existing_instances()
+    {
+        var vm = new MainWindowViewModel(new FakeClipboard());
+
+        await vm.OpenSettingsAsync("mineru");
+        await vm.OpenSettingsAsync("mineru");
+        await vm.OpenAboutAsync();
+        await vm.OpenAboutAsync();
+
+        vm.Layout.Tabs.Count(tab => tab.Kind == WorkspaceTabKind.Settings).Should().Be(1);
+        vm.Layout.Tabs.Count(tab => tab.Kind == WorkspaceTabKind.About).Should().Be(1);
+        vm.ShowSettingsTab.Should().BeTrue();
+        vm.ActiveTab?.Kind.Should().Be(WorkspaceTabKind.About);
+    }
+
+    [Fact]
+    public async Task Workspace_closing_active_tab_falls_back_to_library_and_keeps_library_open()
+    {
+        var vm = new MainWindowViewModel(new FakeClipboard());
+
+        await vm.OpenAboutAsync();
+        vm.IsLibraryTabActive.Should().BeFalse();
+
+        await vm.CloseAboutTabCommand.ExecuteAsync();
+        vm.IsLibraryTabActive.Should().BeTrue();
+        vm.Layout.Tabs.Count(tab => tab.Kind == WorkspaceTabKind.Library).Should().Be(1);
+
+        vm.Workspace.Close("Library").Should().BeFalse();
+        vm.Layout.Tabs.Count(tab => tab.Kind == WorkspaceTabKind.Library).Should().Be(1);
+        vm.IsLibraryTabActive.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Item_workspace_tabs_use_page_name_item_title_and_truncate_long_titles()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}.sqlite");
+        var firstPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-first.pdf");
+        var secondPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-second.pdf");
+        var longTitle = "非常长的题录标题用于验证标签页会在合理长度之后被截断而不是撑爆标签栏";
+        try
+        {
+            File.Copy(TestFixtures.RealThreePagePdf, firstPdf);
+            File.Copy(TestFixtures.RealThreePagePdf, secondPdf);
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1))).Success.Should().BeTrue();
+            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1))).Success.Should().BeTrue();
+            await vm.Shell.RefreshItemsAsync();
+
+            vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == "短标题");
+            await vm.ShowReadingCommand.ExecuteAsync();
+            var firstTab = vm.ActiveTab!;
+
+            vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == longTitle);
+            await vm.ShowReadingCommand.ExecuteAsync();
+            var secondTab = vm.ActiveTab!;
+
+            firstTab.Title.Should().Be("PDF 工作台：短标题");
+            secondTab.Title.Should().StartWith("PDF 工作台：");
+            secondTab.Title.Should().EndWith("...");
+            secondTab.Title.Length.Should().BeLessThanOrEqualTo(32);
+
+            await vm.EditSelectedItemCommand.ExecuteAsync();
+            vm.ActiveTab!.Title.Should().StartWith("编辑题录：");
+            vm.ActiveTab.Title.Should().EndWith("...");
+            vm.ActiveTab.Title.Length.Should().BeLessThanOrEqualTo(32);
+        }
+        finally
+        {
+            if (File.Exists(firstPdf)) File.Delete(firstPdf);
+            if (File.Exists(secondPdf)) File.Delete(secondPdf);
+            if (File.Exists(path)) File.Delete(path);
+        }
     }
 
     [Fact]
@@ -841,7 +1171,7 @@ public sealed class UiViewModelTests
         return zipPath;
     }
 
-    private static string WriteSettingsFile(string token)
+    private static string WriteSettingsFile(string token, bool rememberLastDatabase = true)
     {
         var path = Path.Combine(Path.GetTempPath(), $"patchouli-appsettings-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, $$"""
@@ -851,6 +1181,7 @@ public sealed class UiViewModelTests
             "DefaultSyncRoot": "{{Path.Combine(Path.GetTempPath(), $"sync-{Guid.NewGuid():N}").Replace("\\", "/")}}",
             "DefaultStagingRoot": "{{Path.Combine(Path.GetTempPath(), $"staging-{Guid.NewGuid():N}").Replace("\\", "/")}}",
             "LogDirectory": "{{Path.Combine(Path.GetTempPath(), $"logs-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+            "RememberLastDatabase": {{rememberLastDatabase.ToString().ToLowerInvariant()}},
             "UseMockOcrOnly": true
           },
           "MinerU": {

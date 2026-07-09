@@ -1,7 +1,8 @@
 <UserControl x:Class="Patchouli.UI.Views.AboutPage"
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:Patchouli.UI">
+             xmlns:vm="using:Patchouli.UI.ViewModels"
+             x:DataType="vm:AboutViewModel">
   <Grid>
     <ScrollViewer>
       <StackPanel Margin="32" Spacing="20" MaxWidth="720">
@@ -10,7 +11,7 @@
         <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
           <StackPanel Spacing="10">
             <TextBlock Text="{Binding VersionInfo, StringFormat='Patchouli \{0\}'}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <TextBlock Text="Patchouli is an open-source literature manager." FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+            <TextBlock Text="Patchouli 是一款开源文献管理工具。" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
             
             <TextBlock Text="Patchouli 基于 GNU General Public License v3.0 (GPL v3) 发布。" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" Margin="0,10,0,0"/>
             <Expander Header="查看许可证全文" Margin="0,10,0,0" HorizontalAlignment="Stretch">
@@ -21,19 +22,19 @@
 
         <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
           <StackPanel Spacing="10">
-            <TextBlock Text="第三方组件鸣谢 (Third-Party Acknowledgments)" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBlock Text="第三方组件鸣谢" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
             <TextBlock Text="本软件的开发离不开以下开源项目的支持：" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
             
             <ItemsControl ItemsSource="{Binding ThirdPartyLibraries}" Margin="0,10,0,0">
                 <ItemsControl.ItemTemplate>
-                    <DataTemplate>
+                    <DataTemplate x:DataType="vm:ThirdPartyLibrary">
                         <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="0,10">
                             <Grid ColumnDefinitions="*, Auto">
                                 <StackPanel Grid.Column="0" VerticalAlignment="Center">
                                     <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="15" />
-                                    <TextBlock Text="{Binding License, StringFormat='License: \{0\}'}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                    <TextBlock Text="{Binding License, StringFormat='许可证：\{0\}'}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                                 </StackPanel>
-                                <Button Grid.Column="1" Content="主页" Command="{Binding $parent[UserControl].DataContext.OpenUrlCommand}" CommandParameter="{Binding Url}" VerticalAlignment="Center" />
+                                <Button Grid.Column="1" Content="主页" Command="{ReflectionBinding $parent[UserControl].DataContext.OpenUrlCommand}" CommandParameter="{Binding Url}" VerticalAlignment="Center" />
                             </Grid>
                         </Border>
                     </DataTemplate>
