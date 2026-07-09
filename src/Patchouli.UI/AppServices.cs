@@ -177,7 +177,7 @@ public sealed class AppServices
             return Result<IOcrQueueScheduler>.Failure(library.ErrorCode!, library.ErrorMessage!);
         }
 
-        var executor = new OcrQueueTaskExecutor(Ocr);
+        var executor = new OcrQueueTaskExecutor(Ocr, SearchUnits, SearchIndex);
         _ocrQueue = new OcrQueueScheduler(library.Value.LibraryId, Clock, executor);
         return Result<IOcrQueueScheduler>.Success(_ocrQueue);
     }
