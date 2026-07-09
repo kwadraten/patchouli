@@ -1,0 +1,53 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        x:Class="Patchouli.UI.Views.ConflictResolutionDialog"
+        x:DataType="vm:ConflictResolutionDialogViewModel"
+        Title="{Binding Title}"
+        Width="800" Height="600"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        Background="{DynamicResource AppBackgroundBrush}">
+
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="20">
+    <!-- 标题区 -->
+    <TextBlock Grid.Row="0" Text="{Binding Title}" FontSize="20" FontWeight="Bold" Margin="0,0,0,10" />
+    <TextBlock Grid.Row="1" Text="{Binding ConflictDescription}" FontSize="14" Margin="0,0,0,20" TextWrapping="Wrap" />
+
+    <!-- 双栏对比区 -->
+    <Grid Grid.Row="2" ColumnDefinitions="*,20,*">
+      
+      <!-- 本地版本 -->
+      <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="1" CornerRadius="4" Padding="10">
+        <Grid RowDefinitions="Auto,*">
+          <TextBlock Grid.Row="0" Text="本地版本" FontWeight="Bold" Margin="0,0,0,10" HorizontalAlignment="Center"/>
+          <ScrollViewer Grid.Row="1">
+            <TextBlock Text="{Binding LocalContent}" TextWrapping="Wrap" FontFamily="Consolas" />
+          </ScrollViewer>
+        </Grid>
+      </Border>
+      
+      <!-- 传入版本 -->
+      <Border Grid.Column="2" BorderBrush="DarkOrange" BorderThickness="1" CornerRadius="4" Padding="10">
+        <Grid RowDefinitions="Auto,*">
+          <TextBlock Grid.Row="0" Text="传入版本" FontWeight="Bold" Margin="0,0,0,10" Foreground="DarkOrange" HorizontalAlignment="Center"/>
+          <ScrollViewer Grid.Row="1">
+            <TextBlock Text="{Binding IncomingContent}" TextWrapping="Wrap" FontFamily="Consolas" />
+          </ScrollViewer>
+        </Grid>
+      </Border>
+      
+    </Grid>
+
+    <!-- 互斥按钮区 -->
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,20,0,0">
+      <Button Content="使用本地版本" Command="{Binding KeepLocalCommand}" />
+      <Button Content="保留并作为副本文档" Command="{Binding KeepIncomingAsCopyCommand}" Classes="accent" />
+      <Button Content="跳过" Command="{Binding SkipCommand}" Foreground="Gray" />
+    </StackPanel>
+
+  </Grid>
+</Window>
