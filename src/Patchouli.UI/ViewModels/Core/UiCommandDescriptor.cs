@@ -13,7 +13,7 @@ public enum CommandDangerLevel
 public class UiCommandDescriptor : ViewModelBase, ICommand
 {
     private readonly ICommand _innerCommand;
-    private bool _enabled;
+    private bool _enabled = true;
     private string _disabledReason = string.Empty;
 
     public UiCommandDescriptor(string id, string label, ICommand innerCommand)

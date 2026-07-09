@@ -85,11 +85,14 @@
             </MenuItem>
           </MenuItem>
           <MenuItem Header="同步">
+            <MenuItem Header="{Binding CheckSyncStateDescriptor.Label}" Command="{Binding CheckSyncStateDescriptor}" ToolTip.Tip="{Binding CheckSyncStateDescriptor.DisabledReason}" />
           </MenuItem>
           <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}" />
             <MenuItem Header="复制证据 Markdown" Command="{Binding ExportEvidenceMarkdownCommand}" />
+            <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}" Command="{Binding CopyCslBibliographyDescriptor}" ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}" ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
             <MenuItem Header="导出证据 Markdown" Click="OnExportEvidenceMarkdownClick" />
           </MenuItem>
           <MenuItem Header="OCR">
@@ -100,7 +103,7 @@
             <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
           </MenuItem>
           <MenuItem Header="MCP">
-            <MenuItem Header="MCP 设置" Command="{Binding OpenSettingsCommand}" />
+            <MenuItem Header="MCP 设置" Command="{Binding OpenMcpSettingsCommand}" />
           </MenuItem>
           <MenuItem Header="设置">
             <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />

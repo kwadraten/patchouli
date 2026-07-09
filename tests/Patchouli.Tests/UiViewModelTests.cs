@@ -10,6 +10,7 @@ using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Mcp;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
@@ -430,7 +431,12 @@ public sealed class UiViewModelTests
         var vm = new MainWindowViewModel(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port) { RuntimeDatabasePath = path };
         try
         {
-            await vm.ServicesAsync();
+            var services = await vm.ServicesAsync();
+            var settings = await services.McpSettings.GetSettingsAsync();
+            settings.IsSuccess.Should().BeTrue();
+            await vm.StopMcpServerAsync();
+            await services.McpSettings.SaveSettingsAsync(settings.Value with { Port = port });
+            await vm.StartMcpServerAsync();
 
             vm.McpEndpoint.Should().Be($"http://localhost:{port}");
             vm.McpStatusText.Should().Be("MCP: 运行中");

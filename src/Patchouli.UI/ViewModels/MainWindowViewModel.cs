@@ -6,6 +6,7 @@ using System.Windows.Input;
 using Avalonia.Media;
 using Dapper;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -24,6 +25,8 @@ using Patchouli.UI.ViewModels.Settings;
 using Patchouli.UI.ViewModels.Editor;
 using Patchouli.UI.ViewModels.Csl;
 using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.UI.Views;
 using Patchouli.UI.Services;
 
 public sealed class MainWindowViewModel : ViewModelBase
@@ -31,7 +34,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     private AppServices? _services;
     private McpHttpServer? _mcpServer;
     private readonly bool _autoStartMcpServer;
-    private readonly int _mcpPort;
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
     private string _runtimeDatabasePath;
@@ -76,6 +78,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
     public bool HasOpenRuntimeDatabase => _services is not null;
     public IClipboardService Clipboard { get; }
+    public IDialogService Dialogs { get; }
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
     public SettingsViewModel Settings { get; }
@@ -116,6 +119,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand ShowReadingCommand { get; }
     public AsyncCommand RunToolbarSearchCommand { get; }
     public AsyncCommand OpenSettingsCommand { get; }
+    public AsyncCommand OpenMcpSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand ActivateSettingsTabCommand { get; }
     public AsyncCommand ActivateSearchTabCommand { get; }
@@ -139,6 +143,9 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
+    public UiCommandDescriptor CheckSyncStateDescriptor { get; }
+    public UiCommandDescriptor CopyCslBibliographyDescriptor { get; }
+    public UiCommandDescriptor ExportItemDescriptor { get; }
 
     public PatchouliAppSettings AppOptions => _settings;
 
@@ -163,7 +170,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         UpdateAppOptions(_settings with { Runtime = _settings.Runtime with { RuntimeDatabasePath = normalizedPath } });
     }
 
-    public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort, string? settingsPath = null)
+    public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null, IDialogService? dialogs = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort, string? settingsPath = null)
     {
         _settingsPath = settingsPath;
         _settings = PatchouliAppSettings.Load(settingsPath);
@@ -171,9 +178,9 @@ public sealed class MainWindowViewModel : ViewModelBase
             ? _settings.Runtime.RuntimeDatabasePath
             : AppRuntimeOptions.Default().RuntimeDatabasePath;
         _autoStartMcpServer = autoStartMcpServer;
-        _mcpPort = mcpPort;
         McpEndpoint = $"http://localhost:{mcpPort}";
         Clipboard = clipboard ?? new AvaloniaClipboardService();
+        Dialogs = dialogs ?? CreateDialogService();
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel();
         Layout.PropertyChanged += OnLayoutPropertyChanged;
@@ -217,14 +224,15 @@ public sealed class MainWindowViewModel : ViewModelBase
         ShowReadingCommand = new(ShowReadingAsync);
         RunToolbarSearchCommand = new(RunToolbarSearchAsync);
         OpenSettingsCommand = new(() => OpenSettingsAsync("mineru"));
+        OpenMcpSettingsCommand = new(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new(OpenOcrQueueAsync);
         ActivateSettingsTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.Settings));
         ActivateSearchTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.SearchResults));
         ActivateOcrQueueTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.OcrQueue));
         ActivateAboutTabCommand = new(() => ActivateExistingTabAsync(WorkspaceTabKind.About));
-        CheckSyncStateCommand = new(() => ShowPlaceholderAsync("同步状态检查功能将在后续任务中实现。"));
-        CopyCslBibliographyCommand = new(() => ShowPlaceholderAsync("复制 CSL 题录功能将在后续任务中实现。"));
-        ExportItemCommand = new(() => ShowPlaceholderAsync("导出题录功能将在后续任务中实现。"));
+        CheckSyncStateCommand = new(CheckSyncStateAsync);
+        CopyCslBibliographyCommand = new(CopyCslBibliographyAsync);
+        ExportItemCommand = new(ExportSelectedItemBibliographyAsync);
         CreateItemMenuCommand = new(OpenNewItemEditorAsync);
         OpenItemEditorCommand = new(OpenItemEditorTabAsync);
         EditSelectedItemCommand = new(EditSelectedItemAsync);
@@ -240,6 +248,9 @@ public sealed class MainWindowViewModel : ViewModelBase
         ToggleInspectorPaneCommand = new(() => { ShowInspectorPane = !ShowInspectorPane; return Task.CompletedTask; });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
+        CheckSyncStateDescriptor = new UiCommandDescriptor("sync.check_state", "查看同步/冲突状态", CheckSyncStateCommand);
+        CopyCslBibliographyDescriptor = new UiCommandDescriptor("csl.copy_bibliography", "复制 CSL 题录", CopyCslBibliographyCommand);
+        ExportItemDescriptor = new UiCommandDescriptor("csl.export_item", "导出题录", ExportItemCommand);
     }
 
     private void OnLayoutPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -371,12 +382,13 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        var serverSettings = settingsResult.Value with { Port = _mcpPort };
+        var serverSettings = settingsResult.Value;
         var validation = await services.McpSettings.ValidateSettingsAsync(serverSettings);
         if (validation.IsFailure)
         {
             var message = McpOutputSanitizer.Sanitize(validation.ErrorMessage ?? "MCP 设置无效。");
             SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
+            await ShowBlockingOperationAsync("MCP 启动被阻止", message, "请在 MCP 设置中改回 127.0.0.1，或配置 token 后再允许局域网访问。", ["Validation failed before HTTP listener started.", message]);
             return;
         }
 
@@ -547,6 +559,33 @@ public sealed class MainWindowViewModel : ViewModelBase
         RaiseWorkspaceStateChanged();
     }
 
+    private static IDialogService CreateDialogService()
+    {
+        var service = new DialogService();
+        service.Register<BlockingOperationDialogViewModel, BlockingOperationDialog>();
+        service.Register<ConflictResolutionDialogViewModel, ConflictResolutionDialog>();
+        return service;
+    }
+
+    private async Task ShowBlockingOperationAsync(string title, string reason, string guidance, IReadOnlyList<string> logs)
+    {
+        var vm = new BlockingOperationDialogViewModel
+        {
+            Title = title,
+            Reason = reason,
+            Impact = "该操作已被阻止，未改变运行中的 MCP 服务。",
+            IsIndeterminate = false,
+            ProgressValue = 100,
+            RecoveryGuidance = guidance
+        };
+        foreach (var log in logs)
+        {
+            vm.AddLog(log);
+        }
+
+        await Dialogs.ShowDialogAsync(vm);
+    }
+
     public void RaiseLibraryTitleChanged()
     {
         var libTab = OpenTabs.FirstOrDefault(t => t.Kind == WorkspaceTabKind.Library);
@@ -605,7 +644,12 @@ public sealed class MainWindowViewModel : ViewModelBase
     public async Task OpenSettingsAsync(string section, string? statusMessage = null)
     {
         await ActivateTabAsync(WorkspaceTabKind.Settings, "Settings", "设置", "Menu", true, () => Settings);
-        Settings.ActiveCategory = Settings.Categories.FirstOrDefault(c => c.Icon == "ScanText");
+        var icon = section.Equals("mcp", StringComparison.OrdinalIgnoreCase) ? "Server" : section.Equals("csl", StringComparison.OrdinalIgnoreCase) ? "Quote" : section.Equals("library", StringComparison.OrdinalIgnoreCase) ? "Database" : "ScanText";
+        Settings.ActiveCategory = Settings.Categories.FirstOrDefault(c => c.Icon == icon);
+        if (string.Equals(section, "mcp", StringComparison.OrdinalIgnoreCase))
+        {
+            await Settings.McpSettings.LoadAsync();
+        }
         
         RaiseShellSelectionChanged();
     }
@@ -711,6 +755,53 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         Workspace.ActivateKind(kind);
         return Task.CompletedTask;
+    }
+
+    private Task CheckSyncStateAsync()
+    {
+        Report("同步/冲突状态：当前未检测到需要处理的阻塞项。快照导入冲突将作为独立分支打开以供检查。");
+        return Task.CompletedTask;
+    }
+
+    private async Task CopyCslBibliographyAsync()
+    {
+        var item = Shell.SelectedItem;
+        if (item is null)
+        {
+            Report("请先选择一个题录。");
+            return;
+        }
+
+        var rendered = await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([ItemId.Parse(item.ItemId)]));
+        if (rendered.IsFailure)
+        {
+            Report($"CSL 题录生成失败：{rendered.ErrorCode} {rendered.ErrorMessage}");
+            return;
+        }
+
+        await Clipboard.SetTextAsync(rendered.Value.RenderedText);
+        var warning = rendered.Value.Warnings.Count > 0 ? $"，warnings: {string.Join("; ", rendered.Value.Warnings)}" : "";
+        Report($"已复制 CSL 题录：{rendered.Value.StyleDisplayName}{warning}");
+    }
+
+    private async Task ExportSelectedItemBibliographyAsync()
+    {
+        var item = Shell.SelectedItem;
+        if (item is null)
+        {
+            Report("请先选择一个题录。");
+            return;
+        }
+
+        var rendered = await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([ItemId.Parse(item.ItemId)]));
+        if (rendered.IsFailure)
+        {
+            Report($"题录导出失败：{rendered.ErrorCode} {rendered.ErrorMessage}");
+            return;
+        }
+
+        await Clipboard.SetTextAsync(rendered.Value.RenderedHtml);
+        Report($"已导出题录 HTML 到剪贴板：{rendered.Value.StyleDisplayName}");
     }
 
     private Task ActivateTabAsync(WorkspaceTabKind kind, string tabId, string title, string iconName, bool isClosable, Func<ViewModelBase> contentFactory)

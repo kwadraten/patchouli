@@ -65,7 +65,15 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingsCategoryViewModel? ActiveCategory
     {
         get => _activeCategory;
-        set { _activeCategory = value; Raise(); }
+        set
+        {
+            _activeCategory = value;
+            Raise();
+            if (ReferenceEquals(value?.Content, McpSettings))
+            {
+                _ = McpSettings.LoadAsync();
+            }
+        }
     }
 
     public string GlobalStatus
