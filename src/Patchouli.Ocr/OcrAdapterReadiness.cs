@@ -95,3 +95,22 @@ public sealed class MinerUOcrAdapter : IRealOcrAdapter
     public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) =>
         Task.FromResult(Result<OcrEnginePageResult>.Failure(AppErrorCodes.UnsupportedOperation, "MinerU OCR runs through RunPresetOnDocumentAsync."));
 }
+
+public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
+{
+    public string EngineId => OcrEngineIds.MultimodalLlm;
+    public string DisplayName => "Multimodal LLM OCR";
+    public string Kind => OcrAdapterKind.CloudApi;
+    public OcrEngineCapability GetCapability() => new(EngineId, DisplayName, false, true, true, false, true, true, false, true, false, [OcrInputKinds.PageImage, OcrInputKinds.RegionImage], "Accepts page or region images from a multimodal LLM endpoint and must normalize output into the MinerU-compatible layout pipeline before adoption.");
+    public Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default)
+    {
+        var ready = !string.IsNullOrWhiteSpace(presetVersion.ModelPath);
+        return Task.FromResult(new OcrEnvironmentCheckResult(EngineId, presetVersion.ModelId, presetVersion.ModelPath, ready ? OcrEnvironmentStatus.Ready : OcrEnvironmentStatus.InvalidEndpoint, ready, ready ? "LLM OCR endpoint/model is configured; credentials are checked when the run starts." : "Configure a multimodal LLM OCR endpoint/model.", ready ? OcrRequiredAction.None : OcrRequiredAction.ConfigureEndpoint, []));
+    }
+    public Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) =>
+        Task.FromResult(string.IsNullOrWhiteSpace(presetVersion.ModelPath) ? Result.Failure(AppErrorCodes.ValidationFailed, "Multimodal LLM OCR requires an endpoint or model id.") : Result.Success());
+    public Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default) =>
+        Task.FromResult(input.InputKind is OcrInputKinds.PageImage or OcrInputKinds.RegionImage ? Result.Success() : Result.Failure(AppErrorCodes.ValidationFailed, "Multimodal LLM OCR expects page or region images."));
+    public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default) =>
+        Task.FromResult(Result<OcrEnginePageResult>.Failure(AppErrorCodes.UnsupportedOperation, "Multimodal LLM OCR transport is not configured yet; provider output must enter through the MinerU-compatible layout importer."));
+}

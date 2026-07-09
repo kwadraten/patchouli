@@ -5,4 +5,5 @@ public static class OcrEngineIds
     public const string Mock = "mock";
     public const string LocalPlaceholder = "local-placeholder";
     public const string MinerU = "mineru";
+    public const string MultimodalLlm = "multimodal-llm";
 }

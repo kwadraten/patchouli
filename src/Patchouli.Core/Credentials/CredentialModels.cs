@@ -9,7 +9,7 @@ public sealed record ProviderCredentialBinding(string BindingId, CredentialId Cr
 public static class ProviderCredentialStatus { public const string Active = "active"; public const string Revoked = "revoked"; public const string Purged = "purged"; }
 public static class ProviderCredentialBindingStatus { public const string Active = "active"; public const string CredentialMissing = "credential_missing"; public const string Revoked = "revoked"; }
 public static class CredentialStoreShardKind { public const string SensitiveMutable = "sensitive_mutable"; }
-public static class ProviderIds { public const string MinerU = "mineru"; }
+public static class ProviderIds { public const string MinerU = "mineru"; public const string MultimodalLlmOcr = "multimodal-llm-ocr"; }
 public interface ICredentialStore
 {
     Task<Result<ProviderCredentialMetadata>> SaveCredentialAsync(string providerId, string displayName, string secretValue, CancellationToken cancellationToken = default);

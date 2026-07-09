@@ -2,6 +2,7 @@ using Avalonia.Media.Imaging;
 using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Ocr;
 using System.Linq;
 
@@ -22,6 +23,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private PdfBBoxViewModel? _selectedBox;
     private string? _currentRevisionId;
     private string? _draftRevisionId;
+    private PageId? _currentPageId;
     private bool _isDrawing;
     private Avalonia.Point _selectionStartPoint;
     private bool _isConflictFlyoutOpen;
@@ -138,7 +140,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IsDrawing = false;
         if (SelectionWidth > 5 && SelectionHeight > 5)
         {
-            CreateBBoxFromSelection();
+            _ = CreateBBoxFromSelectionAsync();
         }
         SelectionWidth = 0;
         SelectionHeight = 0;
@@ -146,9 +148,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private PdfBBoxViewModel? _pendingStagingBox;
 
-    private void CreateBBoxFromSelection()
+    private async Task CreateBBoxFromSelectionAsync()
     {
-        var box = new PdfBBoxViewModel(_main, this, LayoutNodeId.New(), SelectionLeft, SelectionTop, SelectionWidth, SelectionHeight, "text", Avalonia.Media.Brushes.DarkOrange)
+        if (_draftRevisionId is null || _currentPageId is null || _widthPixels <= 0 || _heightPixels <= 0)
+        {
+            Status = "请先进入编辑模式并加载页面。";
+            return;
+        }
+
+        var box = new PdfBBoxViewModel(_main, this, LayoutNodeId.New(), SelectionLeft, SelectionTop, SelectionWidth, SelectionHeight, LayoutNodeType.Paragraph, Avalonia.Media.Brushes.DarkOrange)
         {
             IsStaging = true
         };
@@ -161,25 +169,22 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
         else
         {
-            BoundingBoxes.Add(box);
-            SelectedBox = box;
+            await PersistStagingBoxAsync(box);
         }
     }
 
-    private Task ResolveConflictAdjustAsync()
+    private async Task ResolveConflictAdjustAsync()
     {
         IsConflictFlyoutOpen = false;
         if (_pendingStagingBox != null)
         {
             // Just add it but let the user adjust it
-            BoundingBoxes.Add(_pendingStagingBox);
-            SelectedBox = _pendingStagingBox;
+            await PersistStagingBoxAsync(_pendingStagingBox);
         }
         _pendingStagingBox = null;
-        return Task.CompletedTask;
     }
 
-    private Task ResolveConflictOverwriteAsync()
+    private async Task ResolveConflictOverwriteAsync()
     {
         IsConflictFlyoutOpen = false;
         if (_pendingStagingBox != null)
@@ -197,11 +202,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 BoundingBoxes.Remove(box);
             }
             
-            BoundingBoxes.Add(_pendingStagingBox);
-            SelectedBox = _pendingStagingBox;
+            await PersistStagingBoxAsync(_pendingStagingBox);
         }
         _pendingStagingBox = null;
-        return Task.CompletedTask;
     }
 
     private Task ResolveConflictSkipAsync()
@@ -223,6 +226,40 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
         }
         return false;
+    }
+
+    private async Task PersistStagingBoxAsync(PdfBBoxViewModel box)
+    {
+        if (_draftRevisionId is null || _currentPageId is null) return;
+
+        var x = Math.Clamp(box.Left / _widthPixels, 0, 1);
+        var y = Math.Clamp(box.Top / _heightPixels, 0, 1);
+        var width = Math.Clamp(box.Width / _widthPixels, 0.0001, 1 - x);
+        var height = Math.Clamp(box.Height / _heightPixels, 0.0001, 1 - y);
+        var bbox = new NormalizedBBox(x, y, width, height);
+        var result = await (await _main.ServicesAsync()).Layout.AddNodeAsync(
+            LayoutRevisionId.Parse(_draftRevisionId),
+            _currentPageId.Value,
+            null,
+            LayoutNodeType.Paragraph,
+            bbox,
+            box.Text,
+            TextPolicy.Own,
+            BoundingBoxes.Count + 1,
+            LayoutNodeSource.Manual);
+        if (result.IsFailure)
+        {
+            Status = $"新增 bbox 未写入 layout：{result.ErrorMessage}";
+            return;
+        }
+
+        var persisted = new PdfBBoxViewModel(_main, this, result.Value, _widthPixels, _heightPixels)
+        {
+            IsStaging = true
+        };
+        BoundingBoxes.Add(persisted);
+        SelectedBox = persisted;
+        Status = "已创建局部 OCR 候选 bbox，可在右侧编辑文本并保存草稿。";
     }
 
     public void RemoveBBox(PdfBBoxViewModel bbox)
@@ -335,6 +372,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
             _pageIndex = Math.Clamp(_pageIndex, 0, _pageCount - 1);
             var page = pages.Value[_pageIndex];
+            _currentPageId = page.PageId;
             var resolution = await services.FileResolution.ResolveFileAsync(fileAssetId.Value, ResolveFilePurpose.RenderPage);
             if (resolution.IsFailure)
             {

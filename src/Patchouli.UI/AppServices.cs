@@ -75,6 +75,7 @@ public sealed class AppServices
         }
 
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
+        adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter());
 
         OcrAdapters = adapterRegistry;
         var pdfRenderer = new MuPdfNetPdfPageRenderer();
