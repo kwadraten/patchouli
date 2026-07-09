@@ -47,10 +47,12 @@ public sealed record McpAppSettings(
 }
 
 public sealed record UiPreferences(
-    Dictionary<string, bool> LibraryGridVisibleColumns)
+    Dictionary<string, bool> LibraryGridVisibleColumns,
+    Dictionary<string, double> LibraryGridColumnWidths,
+    Dictionary<string, int> LibraryGridColumnOrder)
 {
     public static UiPreferences Default() =>
-        new(new Dictionary<string, bool>());
+        new(new Dictionary<string, bool>(), new Dictionary<string, double>(), new Dictionary<string, int>());
 }
 
 public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSettings MinerU, McpAppSettings Mcp, UiPreferences Ui)
@@ -100,7 +102,9 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 ReadString(mcp, "ServerToken", defaults.Mcp.ServerToken).Trim(),
                 ReadStringBoolDict(mcp, "DisabledTools", defaults.Mcp.DisabledTools)),
             new UiPreferences(
-                ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns)));
+                ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns),
+                ReadStringDoubleDict(ui, "LibraryGridColumnWidths", defaults.Ui.LibraryGridColumnWidths),
+                ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder)));
     }
 
     public void Save(string? settingsPath = null)
@@ -140,7 +144,9 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
             },
             Ui = new
             {
-                Ui.LibraryGridVisibleColumns
+                Ui.LibraryGridVisibleColumns,
+                Ui.LibraryGridColumnWidths,
+                Ui.LibraryGridColumnOrder
             }
         };
 
@@ -196,6 +202,44 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
             if (property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
                 dict[property.Name] = property.Value.GetBoolean();
+            }
+        }
+        return dict;
+    }
+
+    private static Dictionary<string, double> ReadStringDoubleDict(JsonElement? section, string name, Dictionary<string, double> fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+            return fallback;
+
+        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+            return fallback;
+
+        var dict = new Dictionary<string, double>();
+        foreach (var property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetDouble(out var number))
+            {
+                dict[property.Name] = number;
+            }
+        }
+        return dict;
+    }
+
+    private static Dictionary<string, int> ReadStringIntDict(JsonElement? section, string name, Dictionary<string, int> fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+            return fallback;
+
+        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+            return fallback;
+
+        var dict = new Dictionary<string, int>();
+        foreach (var property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out var number))
+            {
+                dict[property.Name] = number;
             }
         }
         return dict;

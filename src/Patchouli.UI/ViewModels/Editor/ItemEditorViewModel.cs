@@ -84,6 +84,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private readonly MainWindowViewModel _main;
     private ItemId? _itemId;
     private readonly List<ItemIdentifierInput> _pendingIdentifiers = new();
+    private readonly Dictionary<string, string> _fieldValueCache = new(StringComparer.Ordinal);
+    private readonly List<CreatorItemViewModel> _creatorCache = new();
     private readonly ObservableCollection<CreatorItemViewModel> _emptyCreators = new();
     private string _cslPreviewText = "保存题录后可使用默认 CSL 样式预览。";
     private bool _hasCslPreviewWarning;
@@ -98,7 +100,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         AddIdentifierCommand = new AsyncCommand(AddIdentifierAsync);
         RegisterFileCommand = new AsyncCommand(RegisterFileAsync);
 
-        BuildFields();
+        BuildFields(null);
     }
 
     public string Header => _itemId is null ? "新建题录" : "编辑题录";
@@ -115,7 +117,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             _itemType = value; 
             Raise(); 
             Raise(nameof(IsGeneralTypeWarningVisible));
-            BuildFields();
+            _ = BuildFieldsAsync();
             UpdateUnsavedCslPreviewState();
         } 
     }
@@ -124,8 +126,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     public IReadOnlyList<string> AvailableItemTypes { get; } = new[]
     {
-        "book", "article-journal", "chapter", "thesis", "report", "webpage", 
-        "dataset", "manuscript", "patent", "standard", "interview", "general"
+        "general", "book", "article-journal", "chapter", "thesis", "report", "webpage",
+        "manuscript", "paper-conference", "patent", "standard"
     };
 
     public ObservableCollection<ItemFieldDescriptor> Fields { get; } = new();
@@ -171,36 +173,25 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
 
-    private void BuildFields()
+    private void BuildFields(Patchouli.Core.Bibliography.CslItemTypeProfile? itemTypeProfile)
     {
-        // Preserve values before rebuilding
-        var savedValues = new Dictionary<string, string>();
-        var savedCreators = new List<CreatorItemViewModel>();
-        
-        foreach (var field in Fields)
-        {
-            savedValues[field.Key] = field.Value;
-            if (field.Type == "CreatorList")
-            {
-                savedCreators.AddRange(field.Creators);
-            }
-        }
+        CacheCurrentFields();
 
         Fields.Clear();
-        var profile = CslItemTypeProfileService.GetProfile(_itemType);
+        var profile = CslItemTypeProfileService.GetProfile(itemTypeProfile);
 
         foreach (var def in profile)
         {
             var field = new ItemFieldDescriptor(def.Key, def.Label, def.Type);
-            if (savedValues.TryGetValue(def.Key, out var val))
+            if (_fieldValueCache.TryGetValue(def.Key, out var val))
             {
                 field.Value = val;
             }
             if (def.Type == "CreatorList")
             {
-                if (savedCreators.Count > 0)
+                if (_creatorCache.Count > 0)
                 {
-                    foreach (var c in savedCreators) field.Creators.Add(c);
+                    foreach (var c in _creatorCache) field.Creators.Add(c);
                 }
                 else if (field.Creators.Count == 0)
                 {
@@ -216,6 +207,25 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
 
         RaiseEditorFieldProxies();
+    }
+
+    private async Task BuildFieldsAsync()
+    {
+        var profileResult = await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(_itemType);
+        BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
+    }
+
+    private void CacheCurrentFields()
+    {
+        foreach (var field in Fields)
+        {
+            _fieldValueCache[field.Key] = field.Value;
+            if (field.Type == "CreatorList")
+            {
+                _creatorCache.Clear();
+                _creatorCache.AddRange(field.Creators);
+            }
+        }
     }
 
     public string Status { get; private set; } = "就绪";
@@ -255,7 +265,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public Task NewAsync()
     {
         _itemId = null;
-        ItemType = "book";
+        _fieldValueCache.Clear();
+        _creatorCache.Clear();
+        ItemType = "general";
         
         foreach (var f in Fields)
         {
@@ -308,9 +320,34 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Raise(nameof(ItemType));
         Raise(nameof(IsGeneralTypeWarningVisible));
         
-        // Build fields freshly based on type
+        _fieldValueCache.Clear();
+        _creatorCache.Clear();
+        _fieldValueCache["Title"] = item.Value.Title;
+        _fieldValueCache["Subtitle"] = item.Value.Subtitle ?? "";
+        _fieldValueCache["IssuedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Issued, item.Value.Date);
+        _fieldValueCache["PublicationTitle"] = item.Value.PublicationTitle ?? "";
+        _fieldValueCache["Publisher"] = item.Value.Publisher ?? "";
+        _fieldValueCache["Place"] = item.Value.Place ?? "";
+        _fieldValueCache["Volume"] = item.Value.Volume ?? "";
+        _fieldValueCache["Issue"] = item.Value.Issue ?? "";
+        _fieldValueCache["Pages"] = item.Value.Pages ?? "";
+        _fieldValueCache["Language"] = item.Value.Language ?? "";
+        _fieldValueCache["AbstractText"] = item.Value.Abstract ?? "";
+        _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
+        foreach (var creator in item.Value.Creators)
+        {
+            _creatorCache.Add(new CreatorItemViewModel(c => _creatorCache.Remove(c))
+            {
+                Role = creator.Role,
+                Family = creator.Family ?? "",
+                Given = creator.Given ?? "",
+                Literal = creator.Literal ?? ""
+            });
+        }
+
         Fields.Clear();
-        var profile = CslItemTypeProfileService.GetProfile(_itemType);
+        var profileResult = await services.ItemTypeProfiles.GetProfileAsync(_itemType);
+        var profile = CslItemTypeProfileService.GetProfile(profileResult.IsSuccess ? profileResult.Value : null);
 
         foreach (var def in profile)
         {
@@ -324,36 +361,15 @@ public sealed class ItemEditorViewModel : ViewModelBase
                     return Task.CompletedTask;
                 });
                 
-                foreach (var creator in item.Value.Creators)
+                foreach (var creator in _creatorCache)
                 {
-                    field.Creators.Add(new CreatorItemViewModel(c => field.Creators.Remove(c))
-                    {
-                        Role = creator.Role,
-                        Family = creator.Family ?? "",
-                        Given = creator.Given ?? "",
-                        Literal = creator.Literal ?? ""
-                    });
+                    field.Creators.Add(creator);
                 }
 
             }
             else
             {
-                field.Value = def.Key switch
-                {
-                    "Title" => item.Value.Title,
-                    "Subtitle" => item.Value.Subtitle ?? "",
-                    "IssuedDate" => FormatDate(item.Value.Dates, ItemDateRoles.Issued, item.Value.Date),
-                    "PublicationTitle" => item.Value.PublicationTitle ?? "",
-                    "Publisher" => item.Value.Publisher ?? "",
-                    "Place" => item.Value.Place ?? "",
-                    "Volume" => item.Value.Volume ?? "",
-                    "Issue" => item.Value.Issue ?? "",
-                    "Pages" => item.Value.Pages ?? "",
-                    "Language" => item.Value.Language ?? "",
-                    "AbstractText" => item.Value.Abstract ?? "",
-                    "TagsText" => FormatTags(item.Value.TagsJson),
-                    _ => ""
-                };
+                field.Value = _fieldValueCache.GetValueOrDefault(def.Key, "");
             }
             
             Fields.Add(field);
@@ -370,9 +386,16 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private string GetFieldValue(string key) => Fields.FirstOrDefault(f => f.Key == key)?.Value ?? "";
 
+    private string GetSavedFieldValue(string key)
+    {
+        CacheCurrentFields();
+        return _fieldValueCache.GetValueOrDefault(key, "");
+    }
+
     private async Task SaveAsync()
     {
-        var title = GetFieldValue("Title");
+        CacheCurrentFields();
+        var title = GetSavedFieldValue("Title");
         if (string.IsNullOrWhiteSpace(title))
         {
             Status = "标题不能为空。";
@@ -400,15 +423,15 @@ public sealed class ItemEditorViewModel : ViewModelBase
             var created = await services.Items.CreateItemAsync(new CreateItemRequest(
                 ItemType,
                 title,
-                Subtitle: NullIfWhiteSpace(GetFieldValue("Subtitle")),
-                PublicationTitle: NullIfWhiteSpace(GetFieldValue("PublicationTitle")),
-                Publisher: NullIfWhiteSpace(GetFieldValue("Publisher")),
-                Place: NullIfWhiteSpace(GetFieldValue("Place")),
-                Volume: NullIfWhiteSpace(GetFieldValue("Volume")),
-                Issue: NullIfWhiteSpace(GetFieldValue("Issue")),
-                Pages: NullIfWhiteSpace(GetFieldValue("Pages")),
-                Language: NullIfWhiteSpace(GetFieldValue("Language")),
-                AbstractText: NullIfWhiteSpace(GetFieldValue("AbstractText")),
+                Subtitle: NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
+                PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
+                Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
+                Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
+                Volume: NullIfWhiteSpace(GetSavedFieldValue("Volume")),
+                Issue: NullIfWhiteSpace(GetSavedFieldValue("Issue")),
+                Pages: NullIfWhiteSpace(GetSavedFieldValue("Pages")),
+                Language: NullIfWhiteSpace(GetSavedFieldValue("Language")),
+                AbstractText: NullIfWhiteSpace(GetSavedFieldValue("AbstractText")),
                 TagsJson: SerializeTags(),
                 Creators: creators,
                 Dates: dates,
@@ -432,15 +455,15 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 new UpdateItemRequest(
                     ItemType,
                     title,
-                    Subtitle: NullIfWhiteSpace(GetFieldValue("Subtitle")),
-                    PublicationTitle: NullIfWhiteSpace(GetFieldValue("PublicationTitle")),
-                    Publisher: NullIfWhiteSpace(GetFieldValue("Publisher")),
-                    Place: NullIfWhiteSpace(GetFieldValue("Place")),
-                    Volume: NullIfWhiteSpace(GetFieldValue("Volume")),
-                    Issue: NullIfWhiteSpace(GetFieldValue("Issue")),
-                    Pages: NullIfWhiteSpace(GetFieldValue("Pages")),
-                    Language: NullIfWhiteSpace(GetFieldValue("Language")),
-                    AbstractText: NullIfWhiteSpace(GetFieldValue("AbstractText")),
+                    Subtitle: NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
+                    PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
+                    Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
+                    Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
+                    Volume: NullIfWhiteSpace(GetSavedFieldValue("Volume")),
+                    Issue: NullIfWhiteSpace(GetSavedFieldValue("Issue")),
+                    Pages: NullIfWhiteSpace(GetSavedFieldValue("Pages")),
+                    Language: NullIfWhiteSpace(GetSavedFieldValue("Language")),
+                    AbstractText: NullIfWhiteSpace(GetSavedFieldValue("AbstractText")),
                     TagsJson: SerializeTags(),
                     Creators: creators,
                     Dates: dates));
@@ -599,7 +622,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     {
         return new[]
         {
-            BuildDate(ItemDateRoles.Issued, GetFieldValue("IssuedDate"))
+            BuildDate(ItemDateRoles.Issued, GetSavedFieldValue("IssuedDate"))
         }.Where(date => date is not null).Cast<ItemDateInput>().ToArray();
     }
 
@@ -618,7 +641,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private string SerializeTags()
     {
-        return JsonSerializer.Serialize(SplitNames(GetFieldValue("TagsText")).ToArray());
+        return JsonSerializer.Serialize(SplitNames(GetSavedFieldValue("TagsText")).ToArray());
     }
 
     private static IEnumerable<string> SplitNames(string value) =>

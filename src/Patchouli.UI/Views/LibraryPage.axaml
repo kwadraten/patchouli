@@ -93,9 +93,9 @@
   </Grid>
 </Border>
 <Grid Grid.Column="1" RowDefinitions="44,*">
-  <DataGrid Grid.Row="1" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
+  <DataGrid x:Name="LibraryGrid" Grid.Row="1" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
             CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="True"
-            IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped"
+            IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped" Loaded="OnDataGridLoaded"
             RowBackground="Transparent" BorderThickness="0" Background="{DynamicResource SurfaceContainerLowestBrush}">
     <DataGrid.ContextMenu>
       <ContextMenu>
@@ -103,9 +103,9 @@
         <MenuItem Header="打开文档" Command="{ReflectionBinding $parent[Window].DataContext.ShowReadingCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ShowReadingCommand.DisabledReason}" />
         <MenuItem Header="运行 OCR" Command="{ReflectionBinding $parent[Window].DataContext.RunSelectedItemOcrCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.RunSelectedItemOcrCommand.DisabledReason}" />
         <MenuItem Header="复制证据 Markdown" Command="{ReflectionBinding $parent[Window].DataContext.ExportEvidenceMarkdownCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ExportEvidenceMarkdownCommand.DisabledReason}" />
-        <MenuItem Header="复制 CSL 题录" Command="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyCommand.DisabledReason}" />
-        <MenuItem Header="导出题录" Command="{ReflectionBinding $parent[Window].DataContext.ExportItemCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ExportItemCommand.DisabledReason}" />
-        <MenuItem Header="查看同步/冲突状态" Command="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateCommand.DisabledReason}" />
+        <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor.DisabledReason}" />
+        <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor.DisabledReason}" />
+        <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor.DisabledReason}" />
       </ContextMenu>
     </DataGrid.ContextMenu>
     <DataGrid.Columns>

@@ -117,6 +117,24 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise($"Show{key}Column");
     }
 
+    public bool TryGetColumnWidth(string key, out double width) => _main.AppOptions.Ui.LibraryGridColumnWidths.TryGetValue(key, out width);
+
+    public bool TryGetColumnOrder(string key, out int order) => _main.AppOptions.Ui.LibraryGridColumnOrder.TryGetValue(key, out order);
+
+    public void SetColumnWidth(string key, double width)
+    {
+        if (width <= 0) return;
+        _main.AppOptions.Ui.LibraryGridColumnWidths[key] = width;
+        _main.AppOptions.Save(_main.SettingsFilePath);
+    }
+
+    public void SetColumnOrder(string key, int order)
+    {
+        if (order < 0) return;
+        _main.AppOptions.Ui.LibraryGridColumnOrder[key] = order;
+        _main.AppOptions.Save(_main.SettingsFilePath);
+    }
+
     public void NotifyMinerUTokenChanged()
     {
         Raise(nameof(MinerUToken));
