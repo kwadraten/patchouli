@@ -186,7 +186,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         try
         {
             using var client = new HttpClient();
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("Patchouli/1.0");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd($"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
             var xml = await client.GetStringAsync(catalogStyle.SourceUrl);
             var services = await _main.ServicesAsync();
             var result = await services.CslStore.InstallStyleAsync(catalogStyle, xml);

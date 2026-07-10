@@ -127,7 +127,7 @@ public sealed class McpProtocolHandler
         return new
         {
             protocolVersion,
-            serverInfo = new { name = "Patchouli", version = Patchouli.Core.BuildInfo.Version },
+            serverInfo = new { name = Patchouli.Core.BuildInfo.AppName, version = Patchouli.Core.BuildInfo.Version },
             capabilities = new { tools = new { listChanged = true } }
         };
     }
@@ -155,15 +155,15 @@ public sealed class McpProtocolHandler
         }),
         new("get_item_metadata", "Read-only item metadata.", ["item_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["item_id"] = ToolSchemaProperty.String("Patchouli item identifier.")
+            ["item_id"] = ToolSchemaProperty.String("Patchouli.Net item identifier.")
         }),
         new("get_document_status", "Read-only document status.", ["document_instance_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli document instance identifier.")
+            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli.Net document instance identifier.")
         }),
         new("get_page_text", "Read-only page text.", ["document_instance_id", "page_number"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli document instance identifier."),
+            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli.Net document instance identifier."),
             ["page_number"] = ToolSchemaProperty.Integer("Zero-based page index."),
             ["mode"] = ToolSchemaProperty.String("Read mode: current, pinned, or compare."),
             ["evidence_ref"] = ToolSchemaProperty.String("Evidence ref required for pinned or compare mode."),
@@ -171,7 +171,7 @@ public sealed class McpProtocolHandler
         }),
         new("get_page_blocks", "Read-only page blocks.", ["document_instance_id", "page_number"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli document instance identifier."),
+            ["document_instance_id"] = ToolSchemaProperty.String("Patchouli.Net document instance identifier."),
             ["page_number"] = ToolSchemaProperty.Integer("Zero-based page index."),
             ["mode"] = ToolSchemaProperty.String("Read mode: current, pinned, or compare."),
             ["evidence_ref"] = ToolSchemaProperty.String("Evidence ref required for pinned or compare mode."),
@@ -180,7 +180,7 @@ public sealed class McpProtocolHandler
         }),
         new("get_search_result_context", "Read-only search context.", ["search_unit_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["search_unit_id"] = ToolSchemaProperty.String("Patchouli search unit identifier."),
+            ["search_unit_id"] = ToolSchemaProperty.String("Patchouli.Net search unit identifier."),
             ["before"] = ToolSchemaProperty.Integer("How many units before the match to include."),
             ["after"] = ToolSchemaProperty.Integer("How many units after the match to include."),
             ["include_evidence_refs"] = ToolSchemaProperty.Boolean("Whether to materialize evidence refs in the response.")
@@ -192,13 +192,13 @@ public sealed class McpProtocolHandler
         }),
         new("render_item_bibliography", "Render a bibliography entry for one item.", ["item_id"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["item_id"] = ToolSchemaProperty.String("Patchouli item identifier."),
+            ["item_id"] = ToolSchemaProperty.String("Patchouli.Net item identifier."),
             ["style_id"] = ToolSchemaProperty.String("Optional installed CSL style identifier."),
             ["locale"] = ToolSchemaProperty.String("Optional CSL locale override, such as en-US or zh-CN.")
         }),
         new("render_items_bibliography", "Render bibliography entries for multiple items.", ["item_ids"], new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
         {
-            ["item_ids"] = ToolSchemaProperty.Array("Patchouli item identifiers to render.", ToolSchemaProperty.String("Patchouli item identifier.")),
+            ["item_ids"] = ToolSchemaProperty.Array("Patchouli.Net item identifiers to render.", ToolSchemaProperty.String("Patchouli.Net item identifier.")),
             ["style_id"] = ToolSchemaProperty.String("Optional installed CSL style identifier."),
             ["locale"] = ToolSchemaProperty.String("Optional CSL locale override, such as en-US or zh-CN.")
         })

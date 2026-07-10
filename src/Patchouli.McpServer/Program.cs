@@ -13,7 +13,7 @@ using Patchouli.McpServer;
 
 if (args.Contains("--help"))
 {
-    Console.Error.WriteLine("Patchouli MCP HTTP server: --db <runtime.sqlite> [--port <port>]");
+    Console.Error.WriteLine("Patchouli.Net MCP HTTP server: --db <runtime.sqlite> [--port <port>]");
     Console.Error.WriteLine("Default port: 4536");
     return;
 }

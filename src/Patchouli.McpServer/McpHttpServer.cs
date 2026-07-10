@@ -196,7 +196,7 @@ public sealed class McpHttpServer : IAsyncDisposable
             context.Response.StatusCode = StatusCodes.Status406NotAcceptable;
             await context.Response.WriteAsJsonAsync(new
             {
-                name = "Patchouli MCP",
+                name = "Patchouli.Net MCP",
                 transport = "streamable_http",
                 endpoint = "/mcp"
             }, cancellationToken);

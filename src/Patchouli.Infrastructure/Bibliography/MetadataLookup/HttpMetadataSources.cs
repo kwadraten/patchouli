@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using Patchouli.Core;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Results;
@@ -57,7 +58,7 @@ public abstract class HttpMetadataSource : IMetadataSource
         {
             using var request = CreateRequest(identifier);
             request.Headers.Accept.ParseAdd(Accept);
-            request.Headers.UserAgent.ParseAdd("Patchouli/1.0 (bibliographic metadata lookup)");
+            request.Headers.UserAgent.ParseAdd($"{BuildInfo.AppName}/{BuildInfo.Version} (bibliographic metadata lookup)");
             using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             if (response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.NoContent)
                 return Failure(MetadataLookupErrorCodes.NotFound, "The source did not find a matching record.");
@@ -311,7 +312,7 @@ public sealed class CalisMetadataSource : IMetadataSource
             {
                 Content = new StringContent(body, Encoding.UTF8, "application/json")
             };
-            searchRequest.Headers.UserAgent.ParseAdd("Patchouli/1.0 (bibliographic metadata lookup)");
+            searchRequest.Headers.UserAgent.ParseAdd($"{BuildInfo.AppName}/{BuildInfo.Version} (bibliographic metadata lookup)");
             using var searchResponse = await _client.SendAsync(searchRequest, timeout.Token);
             if ((int)searchResponse.StatusCode == 429)
                 return Failure(MetadataLookupErrorCodes.RateLimited, "CALIS Union Catalog rate limit was reached.");
@@ -422,7 +423,7 @@ public sealed class NationalLibraryOfChinaMetadataSource : IMetadataSource
     private async Task<string> GetHtmlAsync(string url, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        request.Headers.UserAgent.ParseAdd("Mozilla/5.0 Patchouli/1.0");
+        request.Headers.UserAgent.ParseAdd($"Mozilla/5.0 {BuildInfo.AppName}/{BuildInfo.Version}");
         request.Headers.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
         using var response = await _client.SendAsync(request, cancellationToken);
         if ((int)response.StatusCode == 429) throw new HttpRequestException("rate limited", null, response.StatusCode);

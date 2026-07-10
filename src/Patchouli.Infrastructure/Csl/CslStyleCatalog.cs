@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Patchouli.Core;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
@@ -53,7 +54,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         _httpClient = httpClient ?? new HttpClient();
         if (!_httpClient.DefaultRequestHeaders.UserAgent.Any())
         {
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Patchouli/1.0");
+            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd($"{BuildInfo.AppName}/{BuildInfo.Version}");
         }
 
         _cacheRoot = CslStoragePaths.GetStylesRoot(connectionFactory.DatabasePath);
