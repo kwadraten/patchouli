@@ -8,6 +8,9 @@
     <OutputType>WinExe</OutputType>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+  </PropertyGroup>
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
@@ -28,6 +31,7 @@
   </ItemGroup>
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+    <AvaloniaResource Include="Assets\AppIcon.ico" />
     <AvaloniaResource Include="Assets\Lucide\*.svg" />
     <EmbeddedResource Include="..\..\LICENSE" Link="LICENSE" />
   </ItemGroup>
