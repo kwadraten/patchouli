@@ -4,6 +4,8 @@ using System;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
+using Patchouli.Core.Files;
+using Patchouli.Core.Ids;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -11,25 +13,38 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private string _status = "";
-    private readonly ObservableCollection<string> _fileSearchRoots = new();
+    private readonly ObservableCollection<FileSearchRootSettingsRowViewModel> _fileSearchRoots = new();
 
     public LibrarySettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
-        LoadFileSearchRoots();
+        RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
+        _ = LoadFileSearchRootsAsync();
     }
 
-    private void LoadFileSearchRoots()
+    public async Task LoadFileSearchRootsAsync()
     {
-        var roots = string.IsNullOrWhiteSpace(_main.AppOptions.Runtime.FileSearchRoot)
-            ? Array.Empty<string>()
-            : _main.AppOptions.Runtime.FileSearchRoot.Split(';', StringSplitOptions.RemoveEmptyEntries);
         _fileSearchRoots.Clear();
-        foreach (var root in roots)
+        if (!_main.HasOpenRuntimeDatabase)
         {
-            _fileSearchRoots.Add(root);
+            Raise(nameof(FileSearchRoots));
+            return;
         }
+
+        var services = await _main.ServicesAsync();
+        var roots = await services.FileResolution.ListSearchRootsAsync();
+        if (roots.IsFailure)
+        {
+            Status = roots.ErrorMessage ?? "无法读取文件搜索根。";
+            return;
+        }
+
+        foreach (var root in roots.Value)
+        {
+            _fileSearchRoots.Add(new FileSearchRootSettingsRowViewModel(this, root));
+        }
+        Raise(nameof(FileSearchRoots));
     }
 
     public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
@@ -58,7 +73,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
     public void NotifyRuntimeDatabasePathChanged() => Raise(nameof(RuntimeDatabasePath));
 
     public string FileSearchRootInput { get; set; } = "";
-    public ObservableCollection<string> FileSearchRoots => _fileSearchRoots;
+    public ObservableCollection<FileSearchRootSettingsRowViewModel> FileSearchRoots => _fileSearchRoots;
 
     public string Status
     {
@@ -72,6 +87,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
     }
 
     public AsyncCommand AddFileSearchRootCommand { get; }
+    public AsyncCommand RescanFileSearchRootsCommand { get; }
 
     private async Task AddFileSearchRootAsync()
     {
@@ -93,22 +109,12 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
                 return;
             }
 
-            var options = _main.AppOptions;
-            var currentRoots = string.IsNullOrWhiteSpace(options.Runtime.FileSearchRoot)
-                ? Array.Empty<string>()
-                : options.Runtime.FileSearchRoot.Split(';', StringSplitOptions.RemoveEmptyEntries);
+            FileSearchRootInput = "";
+            Raise(nameof(FileSearchRootInput));
 
-            if (!currentRoots.Contains(normalizedRoot, StringComparer.OrdinalIgnoreCase))
-            {
-                var newRootString = string.Join(";", currentRoots.Append(normalizedRoot));
-                _main.UpdateAppOptions(options with { Runtime = options.Runtime with { FileSearchRoot = newRootString } });
-                LoadFileSearchRoots();
-
-                FileSearchRootInput = "";
-                Raise(nameof(FileSearchRootInput));
-            }
-
+            await LoadFileSearchRootsAsync();
             await _main.RefreshSidebarPathsAsync();
+            await _main.RescanFileSearchRootsAsync("文件搜索根已登记，重新扫描完成。", showBlockingDialog: true);
             Status = added.IsSuccess ? "文件搜索根已登记，扫描结果已记录。" : "文件搜索根已存在，已刷新状态。";
             _main.Report(Status);
         }
@@ -118,4 +124,46 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
             _main.Report(Status);
         }
     }
+
+    private async Task RescanFileSearchRootsAsync()
+    {
+        var result = await _main.RescanFileSearchRootsAsync("手动重新扫描完成。", showBlockingDialog: true);
+        if (result.IsSuccess)
+        {
+            await LoadFileSearchRootsAsync();
+            Status = $"手动重新扫描完成：新增 {result.Value.ImportedPdfCount} 个，已存在 {result.Value.SkippedKnownPdfCount} 个，失败 {result.Value.FailedPdfCount} 个。";
+        }
+    }
+
+    internal async Task DeleteFileSearchRootAsync(FileSearchRootId rootId, string rootPath)
+    {
+        var services = await _main.ServicesAsync();
+        var deleted = await services.FileResolution.DeleteSearchRootAsync(rootId);
+        if (deleted.IsFailure)
+        {
+            Status = deleted.ErrorMessage ?? "文件搜索根删除失败。";
+            return;
+        }
+
+        await LoadFileSearchRootsAsync();
+        await _main.RefreshSidebarPathsAsync();
+        Status = $"已删除文件搜索根：{rootPath}";
+    }
+}
+
+public sealed class FileSearchRootSettingsRowViewModel : ViewModelBase
+{
+    private readonly LibrarySettingsViewModel _parent;
+
+    public FileSearchRootSettingsRowViewModel(LibrarySettingsViewModel parent, FileSearchRoot root)
+    {
+        _parent = parent;
+        RootId = root.RootId;
+        RootPath = root.RootPath;
+        DeleteCommand = new AsyncCommand(() => _parent.DeleteFileSearchRootAsync(RootId, RootPath));
+    }
+
+    public FileSearchRootId RootId { get; }
+    public string RootPath { get; }
+    public AsyncCommand DeleteCommand { get; }
 }

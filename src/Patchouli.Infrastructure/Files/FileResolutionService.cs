@@ -166,6 +166,33 @@ public sealed class FileResolutionService : IFileResolutionService
         }
     }
 
+    public async Task<Result> DeleteSearchRootAsync(
+        FileSearchRootId rootId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            var affected = await connection.ExecuteAsync(
+                "delete from file_search_roots where root_id = @RootId;",
+                new { RootId = rootId.ToString() });
+
+            return affected == 0
+                ? Result.Failure(AppErrorCodes.NotFound, "Search root was not found.")
+                : Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
     public async Task<Result> SetSearchRootAvailabilityAsync(
         FileSearchRootId rootId,
         bool isAvailable,

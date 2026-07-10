@@ -15,7 +15,7 @@
         Background="{DynamicResource AppBackgroundBrush}">
 
   <Border Padding="20">
-    <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+    <Grid RowDefinitions="Auto,Auto,Auto,*,Auto,Auto">
       
       <!-- 标题 -->
       <TextBlock Grid.Row="0" Text="{Binding Title}" FontSize="20" FontWeight="Bold" Margin="0,0,0,10" />
@@ -42,6 +42,10 @@
         <ProgressBar Grid.Row="0" IsIndeterminate="{Binding IsIndeterminate}" Value="{Binding ProgressValue}" Height="4" Margin="0,0,0,10" />
         <TextBlock Grid.Row="1" Text="{Binding RecoveryGuidance}" FontSize="12" Foreground="DarkOrange" TextWrapping="Wrap" IsVisible="{Binding RecoveryGuidance, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
       </Grid>
+
+      <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+        <Button Classes="Primary" Content="确认" Command="{Binding ConfirmCommand}" MinWidth="96" />
+      </StackPanel>
 
     </Grid>
   </Border>

@@ -12,6 +12,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Snapshots;
@@ -37,6 +38,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
     private string _runtimeDatabasePath;
+    private readonly Dictionary<string, FileSystemWatcher> _fileSearchRootWatchers = new(StringComparer.OrdinalIgnoreCase);
+    private CancellationTokenSource? _fileSearchRootWatchDebounce;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -69,7 +72,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool NoFileSearchRoots => !HasFileSearchRoots;
     public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
     public bool StatusIsError { get; set; }
-    public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}";
+    public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}/mcp";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
@@ -89,6 +92,30 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool ShowInspectorPane { get => Layout.ShowInspectorPane; set => Layout.ShowInspectorPane = value; }
     public bool ShowSidebar => Layout.ShowSidebar && !Shell.IsReadingMode;
     public bool IsInspectorVisible => Layout.IsInspectorVisible && !Shell.IsReadingMode;
+    public bool ShowLibraryLeftSidebarPreference
+    {
+        get => _settings.Ui.ShowLibraryLeftSidebar;
+        set
+        {
+            if (_settings.Ui.ShowLibraryLeftSidebar == value) return;
+            UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryLeftSidebar = value } });
+            Raise();
+            Raise(nameof(IsLibraryLeftSidebarVisible));
+        }
+    }
+    public bool ShowLibraryRightSidebarPreference
+    {
+        get => _settings.Ui.ShowLibraryRightSidebar;
+        set
+        {
+            if (_settings.Ui.ShowLibraryRightSidebar == value) return;
+            UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryRightSidebar = value } });
+            Raise();
+            Raise(nameof(IsLibraryRightSidebarVisible));
+        }
+    }
+    public bool IsLibraryLeftSidebarVisible => ShowLibraryLeftSidebarPreference && ShowSidebar;
+    public bool IsLibraryRightSidebarVisible => ShowLibraryRightSidebarPreference && IsInspectorVisible;
     public bool ShowSelectedDocumentTab => Layout.HasPdfWorkspaceTab;
     public bool ShowSettingsTab => Layout.HasSettingsTab;
     public bool ShowItemEditorTab => Layout.HasItemEditorTab;
@@ -139,6 +166,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand CloseItemEditorTabCommand { get; }
     public AsyncCommand CloseAboutTabCommand { get; }
     public AsyncCommand RebuildSearchIndexCommand { get; }
+    public AsyncCommand RescanFileSearchRootsCommand { get; }
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
@@ -177,7 +205,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             ? _settings.Runtime.RuntimeDatabasePath
             : AppRuntimeOptions.Default().RuntimeDatabasePath;
         _autoStartMcpServer = autoStartMcpServer;
-        McpEndpoint = $"http://localhost:{mcpPort}";
+        McpEndpoint = $"http://localhost:{mcpPort}/mcp";
         Clipboard = clipboard ?? new AvaloniaClipboardService();
         Dialogs = dialogs ?? CreateDialogService();
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
@@ -204,6 +232,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         OpenDatabaseCommand = new(async () =>
         {
             await StopMcpServerAsync("正在切换运行数据库。");
+            ResetFileSearchRootWatchers();
             _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
             PersistRuntimeDatabasePathIfEnabled();
             await LoadPersistedMinerUTokenAsync();
@@ -243,6 +272,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         CloseItemEditorTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.ItemEditor));
         CloseAboutTabCommand = new(() => CloseTabAsync(WorkspaceTabKind.About));
         RebuildSearchIndexCommand = new(() => ShowPlaceholderAsync("重建 FTS 索引入口将在后续任务中接入。"));
+        RescanFileSearchRootsCommand = new(() => RescanFileSearchRootsAsync("手动重新扫描完成。", showBlockingDialog: true));
         ToggleInspectorPaneCommand = new(() => { ShowInspectorPane = !ShowInspectorPane; return Task.CompletedTask; });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
@@ -261,12 +291,15 @@ public sealed class MainWindowViewModel : ViewModelBase
                 break;
             case nameof(WorkspaceLayoutViewModel.ShowInspectorPane):
                 Raise(nameof(ShowInspectorPane));
+                Raise(nameof(IsLibraryRightSidebarVisible));
                 break;
             case nameof(WorkspaceLayoutViewModel.ShowSidebar):
                 Raise(nameof(ShowSidebar));
+                Raise(nameof(IsLibraryLeftSidebarVisible));
                 break;
             case nameof(WorkspaceLayoutViewModel.IsInspectorVisible):
                 Raise(nameof(IsInspectorVisible));
+                Raise(nameof(IsLibraryRightSidebarVisible));
                 break;
             case nameof(WorkspaceLayoutViewModel.HasPdfWorkspaceTab):
                 Raise(nameof(ShowSelectedDocumentTab));
@@ -298,6 +331,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
         await LoadPersistedMinerUTokenAsync();
+        await RefreshSidebarPathsAsync();
         if (_autoStartMcpServer)
         {
             await StartMcpServerAsync(_services);
@@ -332,6 +366,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                         root.UpdatedAt,
                         fileCount));
                 }
+
+                RefreshFileSearchRootWatchers(roots.Value);
             }
         }
         catch
@@ -343,6 +379,205 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(HasFileSearchRoots));
         Raise(nameof(NoFileSearchRoots));
         Raise(nameof(DefaultSyncRootPath));
+    }
+
+    public async Task<Result<FileSearchRootRescanSummary>> RescanFileSearchRootsAsync(string completionMessage = "文件重新扫描完成。", bool showBlockingDialog = false, CancellationToken cancellationToken = default)
+    {
+        BlockingOperationId? operationId = null;
+        var operationLogs = new List<string>();
+        try
+        {
+            var services = await ServicesAsync();
+            var roots = await services.FileResolution.ListSearchRootsAsync(cancellationToken);
+            if (roots.IsFailure)
+            {
+                ReportError(roots.ErrorMessage ?? "无法读取文件搜索根。");
+                return Result<FileSearchRootRescanSummary>.Failure(roots.ErrorCode!, roots.ErrorMessage!);
+            }
+
+            var started = await services.BlockingOperations.StartAsync(
+                BlockingOperationTypes.FileSearchRootScan,
+                BlockingOperationScopeTypes.FileSearchRoot,
+                "all",
+                canCancel: false,
+                progressLabel: "正在重新扫描文件搜索根。",
+                progressCurrent: 0,
+                progressTotal: roots.Value.Count,
+                nextActions: ["等待扫描完成", "检查离线文件搜索根"],
+                cancellationToken: cancellationToken);
+            if (started.IsSuccess)
+            {
+                operationId = started.Value.OperationId;
+                operationLogs.Add("已创建文件搜索根重新扫描阻塞操作。");
+            }
+
+            var knownPaths = await LoadKnownFilePathsAsync(services, cancellationToken);
+            var processedRoots = 0;
+            var scanned = 0;
+            var imported = 0;
+            var skipped = 0;
+            var failed = 0;
+
+            foreach (var root in roots.Value)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                operationLogs.Add($"扫描：{root.RootPath}");
+                var exists = Directory.Exists(root.RootPath);
+                await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, exists, cancellationToken);
+                if (!exists)
+                {
+                    operationLogs.Add($"离线：{root.RootPath}");
+                    continue;
+                }
+
+                var scan = await services.PdfDiscovery.ScanDirectoryAsync(root.RootPath, cancellationToken);
+                scanned += scan.TotalCount;
+                foreach (var candidate in scan.Candidates)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var normalizedPath = Path.GetFullPath(candidate.Path);
+                    if (knownPaths.Contains(normalizedPath))
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    var importedPdf = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null), cancellationToken);
+                    if (importedPdf.Success)
+                    {
+                        imported++;
+                        knownPaths.Add(normalizedPath);
+                        operationLogs.Add($"新增：{normalizedPath}");
+                    }
+                    else
+                    {
+                        failed++;
+                        operationLogs.Add($"失败：{normalizedPath} | {importedPdf.ErrorMessage ?? "unknown"}");
+                    }
+                }
+
+                processedRoots++;
+                if (operationId is not null)
+                {
+                    await services.BlockingOperations.UpdateProgressAsync(
+                        operationId.Value,
+                        progressCurrent: processedRoots,
+                        progressLabel: $"已处理 {processedRoots}/{roots.Value.Count} 个文件搜索根，已扫描 {scanned} 个 PDF。",
+                        cancellationToken: cancellationToken);
+                }
+            }
+
+            await RefreshSidebarPathsAsync();
+            await Shell.RefreshItemsAsync();
+            var summary = new FileSearchRootRescanSummary(scanned, imported, skipped, failed);
+            var message = $"{completionMessage} 扫描 {scanned} 个 PDF，新增 {imported} 个，已存在 {skipped} 个，失败 {failed} 个。";
+            operationLogs.Add(message);
+            if (operationId is not null)
+            {
+                await services.BlockingOperations.CompleteAsync(operationId.Value, message, Array.Empty<string>(), cancellationToken);
+            }
+            if (failed > 0) ReportError(message); else Report(message);
+            if (showBlockingDialog)
+            {
+                await ShowBlockingOperationAsync("文件重新扫描", message, "扫描已完成。若仍缺少文件，请确认文件搜索根在线并再次扫描。", operationLogs, "该操作已完成，书库列表和文件搜索根状态已刷新。");
+            }
+            return Result<FileSearchRootRescanSummary>.Success(summary);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var message = $"文件重新扫描失败：{ex.Message}";
+            operationLogs.Add(message);
+            ReportError(message);
+            if (_services is not null && operationId is not null)
+            {
+                await _services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message, "文件重新扫描失败。", ["检查文件搜索根权限", "重新扫描"], cancellationToken);
+            }
+            if (showBlockingDialog)
+            {
+                await ShowBlockingOperationAsync("文件重新扫描失败", message, "请检查文件搜索根是否存在、是否有访问权限，然后重新扫描。", operationLogs, "该操作失败，未完成所有文件发现。");
+            }
+            return Result<FileSearchRootRescanSummary>.Failure(AppErrorCodes.InvalidState, message);
+        }
+    }
+
+    private static async Task<HashSet<string>> LoadKnownFilePathsAsync(AppServices services, CancellationToken cancellationToken)
+    {
+        await using var connection = services.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        var paths = await connection.QueryAsync<string>("select original_path from file_assets;");
+        return paths.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private void RefreshFileSearchRootWatchers(IReadOnlyList<FileSearchRoot> roots)
+    {
+        var wanted = roots.Where(root => root.IsAvailable && Directory.Exists(root.RootPath)).Select(root => Path.GetFullPath(root.RootPath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in _fileSearchRootWatchers.Keys.Where(path => !wanted.Contains(path)).ToArray())
+        {
+            _fileSearchRootWatchers[path].Dispose();
+            _fileSearchRootWatchers.Remove(path);
+        }
+
+        foreach (var path in wanted)
+        {
+            if (_fileSearchRootWatchers.ContainsKey(path)) continue;
+            try
+            {
+                var watcher = new FileSystemWatcher(path)
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+                    Filter = "*.pdf",
+                    EnableRaisingEvents = true
+                };
+                FileSystemEventHandler changed = (_, _) => ScheduleFileSearchRootRescan();
+                RenamedEventHandler renamed = (_, _) => ScheduleFileSearchRootRescan();
+                ErrorEventHandler error = (_, _) => ScheduleFileSearchRootRescan();
+                watcher.Created += changed;
+                watcher.Changed += changed;
+                watcher.Deleted += changed;
+                watcher.Renamed += renamed;
+                watcher.Error += error;
+                _fileSearchRootWatchers[path] = watcher;
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    private void ScheduleFileSearchRootRescan()
+    {
+        _fileSearchRootWatchDebounce?.Cancel();
+        _fileSearchRootWatchDebounce?.Dispose();
+        var cts = new CancellationTokenSource();
+        _fileSearchRootWatchDebounce = cts;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
+                Avalonia.Threading.Dispatcher.UIThread.Post(async () => await RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。"));
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+    }
+
+    private void ResetFileSearchRootWatchers()
+    {
+        _fileSearchRootWatchDebounce?.Cancel();
+        _fileSearchRootWatchDebounce?.Dispose();
+        _fileSearchRootWatchDebounce = null;
+        foreach (var watcher in _fileSearchRootWatchers.Values)
+        {
+            watcher.Dispose();
+        }
+        _fileSearchRootWatchers.Clear();
     }
 
     public async Task StartMcpServerAsync()
@@ -390,7 +625,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        SetMcpStatus("MCP: 启动中", $"正在监听 http://{serverSettings.BindAddress}:{serverSettings.Port}", Brushes.Goldenrod);
+        SetMcpStatus("MCP: 启动中", $"正在监听 http://{serverSettings.BindAddress}:{serverSettings.Port}/mcp", Brushes.Goldenrod);
         var server = new McpHttpServer(new McpProtocolHandler(services.Mcp, services.ConnectionFactory, serverSettings), serverSettings);
         server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
@@ -565,13 +800,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         return service;
     }
 
-    private async Task ShowBlockingOperationAsync(string title, string reason, string guidance, IReadOnlyList<string> logs)
+    private async Task ShowBlockingOperationAsync(string title, string reason, string guidance, IReadOnlyList<string> logs, string impact = "该操作已被阻止，未改变运行中的 MCP 服务。")
     {
         var vm = new BlockingOperationDialogViewModel
         {
             Title = title,
             Reason = reason,
-            Impact = "该操作已被阻止，未改变运行中的 MCP 服务。",
+            Impact = impact,
             IsIndeterminate = false,
             ProgressValue = 100,
             RecoveryGuidance = guidance
@@ -892,3 +1127,9 @@ public sealed class MainWindowViewModel : ViewModelBase
             : fullPath + Path.DirectorySeparatorChar;
     }
 }
+
+public sealed record FileSearchRootRescanSummary(
+    int ScannedPdfCount,
+    int ImportedPdfCount,
+    int SkippedKnownPdfCount,
+    int FailedPdfCount);

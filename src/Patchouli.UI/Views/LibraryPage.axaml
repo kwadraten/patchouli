@@ -22,7 +22,7 @@
     </Style>
   </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*,Auto" Background="{DynamicResource SurfaceBrush}">
-<Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0" IsVisible="True">
+<Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsLibraryLeftSidebarVisible}">
   <Grid>
     <!-- 1. Library Sidebar (Visible when library is visible) -->
     <Border Background="{DynamicResource SurfaceContainerLowBrush}" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsLibraryVisible}">
@@ -66,7 +66,10 @@
 
             <!-- FileSearchRoot -->
             <StackPanel Classes="SidebarItemContainer">
-              <TextBlock Classes="SidebarSectionHeader" Text="文件搜索根" />
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <TextBlock Classes="SidebarSectionHeader" Text="文件搜索根" />
+                <Button Grid.Column="1" Content="重新扫描" Command="{ReflectionBinding $parent[Window].DataContext.RescanFileSearchRootsCommand}" FontSize="11" Padding="8,2" />
+              </Grid>
               <TextBlock Text="暂无" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{ReflectionBinding $parent[Window].DataContext.NoFileSearchRoots}" />
               <ItemsControl ItemsSource="{ReflectionBinding $parent[Window].DataContext.FileSearchRoots}" IsVisible="{ReflectionBinding $parent[Window].DataContext.HasFileSearchRoots}">
                 <ItemsControl.ItemTemplate>
@@ -135,7 +138,7 @@
   </DataGrid>
 </Grid>
 <!-- Column 2: Details Inspector (Width 340 when visible) -->
-<Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsInspectorVisible}">
+<Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsLibraryRightSidebarVisible}">
   <!-- Visible when not reading mode -->
   <Grid RowDefinitions="40,*" >
     <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Background="{DynamicResource SurfaceContainerLowBrush}">

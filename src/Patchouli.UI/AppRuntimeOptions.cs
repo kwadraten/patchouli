@@ -49,10 +49,12 @@ public sealed record McpAppSettings(
 public sealed record UiPreferences(
     Dictionary<string, bool> LibraryGridVisibleColumns,
     Dictionary<string, double> LibraryGridColumnWidths,
-    Dictionary<string, int> LibraryGridColumnOrder)
+    Dictionary<string, int> LibraryGridColumnOrder,
+    bool ShowLibraryLeftSidebar = true,
+    bool ShowLibraryRightSidebar = true)
 {
     public static UiPreferences Default() =>
-        new(new Dictionary<string, bool>(), new Dictionary<string, double>(), new Dictionary<string, int>());
+        new(new Dictionary<string, bool>(), new Dictionary<string, double>(), new Dictionary<string, int>(), true, true);
 }
 
 public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSettings MinerU, McpAppSettings Mcp, UiPreferences Ui)
@@ -104,7 +106,9 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
             new UiPreferences(
                 ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns),
                 ReadStringDoubleDict(ui, "LibraryGridColumnWidths", defaults.Ui.LibraryGridColumnWidths),
-                ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder)));
+                ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder),
+                ReadBool(ui, "ShowLibraryLeftSidebar", defaults.Ui.ShowLibraryLeftSidebar),
+                ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar)));
     }
 
     public void Save(string? settingsPath = null)
@@ -146,7 +150,9 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
             {
                 Ui.LibraryGridVisibleColumns,
                 Ui.LibraryGridColumnWidths,
-                Ui.LibraryGridColumnOrder
+                Ui.LibraryGridColumnOrder,
+                Ui.ShowLibraryLeftSidebar,
+                Ui.ShowLibraryRightSidebar
             }
         };
 

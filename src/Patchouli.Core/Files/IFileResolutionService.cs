@@ -12,6 +12,10 @@ public interface IFileResolutionService
     Task<Result<IReadOnlyList<FileSearchRoot>>> ListSearchRootsAsync(
         CancellationToken cancellationToken = default);
 
+    Task<Result> DeleteSearchRootAsync(
+        FileSearchRootId rootId,
+        CancellationToken cancellationToken = default);
+
     Task<Result> SetSearchRootAvailabilityAsync(
         FileSearchRootId rootId,
         bool isAvailable,

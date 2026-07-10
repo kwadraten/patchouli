@@ -1,11 +1,17 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
 public sealed class BlockingOperationDialogViewModel : ViewModelBase
 {
+    public BlockingOperationDialogViewModel()
+    {
+        ConfirmCommand = new AsyncCommand(ConfirmAsync);
+    }
+
     private string _title = "正在处理";
     public string Title
     {
@@ -91,9 +97,17 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     }
 
     public ObservableCollection<string> Logs { get; } = new();
+    public AsyncCommand ConfirmCommand { get; }
+    public Action<object?>? RequestClose { get; set; }
 
     public void AddLog(string log)
     {
         Logs.Add($"[{DateTime.Now:HH:mm:ss}] {log}");
+    }
+
+    private Task ConfirmAsync()
+    {
+        RequestClose?.Invoke(null);
+        return Task.CompletedTask;
     }
 }

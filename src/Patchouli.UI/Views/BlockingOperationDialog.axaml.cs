@@ -14,6 +14,7 @@ public partial class BlockingOperationDialog : Window
         {
             if (DataContext is BlockingOperationDialogViewModel vm)
             {
+                vm.RequestClose = result => Close(result);
                 vm.Logs.CollectionChanged += Logs_CollectionChanged;
             }
         };

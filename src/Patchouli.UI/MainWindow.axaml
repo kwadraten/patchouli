@@ -72,7 +72,10 @@
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
         <Menu VerticalAlignment="Center" Background="Transparent">
           <MenuItem Header="书库">
-            <MenuItem Header="切换详情面板" Command="{Binding ToggleInspectorPaneCommand}" />
+            <MenuItem Header="侧边栏">
+              <MenuItem Header="左侧边栏" ToggleType="CheckBox" IsChecked="{Binding ShowLibraryLeftSidebarPreference, Mode=TwoWay}" />
+              <MenuItem Header="右侧边栏" ToggleType="CheckBox" IsChecked="{Binding ShowLibraryRightSidebarPreference, Mode=TwoWay}" />
+            </MenuItem>
             <MenuItem Header="书库列">
               <MenuItem Header="题录类型" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowItemTypeColumn, Mode=TwoWay}" />
               <MenuItem Header="年份" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowYearColumn, Mode=TwoWay}" />

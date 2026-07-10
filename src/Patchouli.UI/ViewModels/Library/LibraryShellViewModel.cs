@@ -54,8 +54,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public bool IsReadingMode { get; set; }
     public bool ShowLibraryList => !IsReadingMode;
     public bool ShowPdfWorkspace => IsReadingMode;
-    public string InspectorTitle => SelectedItem?.Title ?? "未选择题录";
-    public string InspectorSubtitle => SelectedItem is null ? "选择一个已导入题录以查看 OCR/索引状态。" : $"{SelectedItem.ItemType} / {SelectedItem.FileName}";
+    public string InspectorTitle => SelectedItem?.Title ?? "";
+    public string InspectorSubtitle => SelectedItem is null ? "" : $"{SelectedItem.ItemType} / {SelectedItem.FileName}";
     public string InspectorStatus => SelectedItem?.OcrStatus ?? "未选择文档";
     public string InspectorPath => SelectedItem?.SourcePath ?? "";
     public AsyncCommand RefreshCommand { get; }

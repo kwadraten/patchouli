@@ -17,6 +17,7 @@ using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.Tests;
 
@@ -321,6 +322,60 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void Library_shell_exposes_sidebar_menu_and_single_empty_inspector_state()
+    {
+        var mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        var settingsXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+        mainXaml.Should().Contain("Header=\"侧边栏\"");
+        mainXaml.Should().Contain("Header=\"左侧边栏\"");
+        mainXaml.Should().Contain("Header=\"右侧边栏\"");
+        mainXaml.Should().Contain("ShowLibraryLeftSidebarPreference");
+        mainXaml.Should().Contain("ShowLibraryRightSidebarPreference");
+        mainXaml.Should().NotContain("切换详情面板");
+        mainXaml.Should().NotContain("显示左侧边栏");
+        libraryXaml.Split("未选择题录").Length.Should().Be(2);
+        libraryXaml.Should().Contain("RescanFileSearchRootsCommand");
+        libraryXaml.Should().Contain("重新扫描");
+        libraryXaml.Should().NotContain("重新搜索");
+        settingsXaml.Should().Contain("重新扫描");
+        settingsXaml.Should().Contain("DeleteCommand");
+        settingsXaml.Should().Contain("settings:FileSearchRootSettingsRowViewModel");
+        settingsXaml.Should().NotContain("重新搜索");
+    }
+
+    [Fact]
+    public async Task MainWindowViewModel_keeps_sidebar_menu_preferences_when_settings_tab_is_active()
+    {
+        var vm = new MainWindowViewModel(new FakeClipboard());
+        await vm.OpenSettingsCommand.ExecuteAsync();
+
+        vm.ShowLibraryLeftSidebarPreference.Should().BeTrue();
+        vm.ShowLibraryRightSidebarPreference.Should().BeTrue();
+
+        vm.ShowLibraryLeftSidebarPreference = false;
+        vm.ShowLibraryRightSidebarPreference = false;
+
+        vm.ShowLibraryLeftSidebarPreference.Should().BeFalse();
+        vm.ShowLibraryRightSidebarPreference.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task BlockingOperationDialog_exposes_confirm_button_that_closes_modal_window()
+    {
+        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "BlockingOperationDialog.axaml"));
+        var vm = new BlockingOperationDialogViewModel();
+        object? closeResult = new();
+        vm.RequestClose = result => closeResult = result;
+
+        await vm.ConfirmCommand.ExecuteAsync();
+
+        xaml.Should().Contain("Content=\"确认\"");
+        xaml.Should().Contain("ConfirmCommand");
+        closeResult.Should().BeNull();
+    }
+
+    [Fact]
     public async Task MainWindowViewModel_refreshes_sidebar_file_search_roots()
     {
         var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-search-root-{Guid.NewGuid():N}")).FullName;
@@ -344,6 +399,37 @@ public sealed class UiViewModelTests
             vm.FileSearchRoots.Single().AvailabilityText.Should().Be("可用");
             vm.HasFileSearchRoots.Should().BeTrue();
             vm.NoFileSearchRoots.Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task MainWindowViewModel_rescans_file_search_roots_and_imports_new_pdfs_once()
+    {
+        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-rescan-root-{Guid.NewGuid():N}")).FullName;
+        var database = Path.Combine(root, "ui.sqlite");
+        var pdf = Path.Combine(root, "new-source.pdf");
+        try
+        {
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = database };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            await services.FileResolution.AddSearchRootAsync(root);
+
+            var first = await vm.RescanFileSearchRootsAsync();
+            var second = await vm.RescanFileSearchRootsAsync();
+
+            first.IsSuccess.Should().BeTrue();
+            first.Value.ImportedPdfCount.Should().Be(1);
+            second.IsSuccess.Should().BeTrue();
+            second.Value.ImportedPdfCount.Should().Be(0);
+            second.Value.SkippedKnownPdfCount.Should().BeGreaterThanOrEqualTo(1);
+            vm.Shell.Items.Should().ContainSingle(item => item.FileName == "new-source.pdf");
         }
         finally
         {
@@ -414,6 +500,9 @@ public sealed class UiViewModelTests
         settingsXaml.Should().Contain("OCR 预设");
         settingsXaml.Should().Contain("搜索配置");
         settingsXaml.Should().Contain("MCP");
+        settingsXaml.Should().Contain("Streamable HTTP");
+        settingsXaml.Should().NotContain("SSE（默认）");
+        settingsXaml.Should().NotContain("普通 JSON-RPC");
     }
 
     [Fact]
@@ -442,11 +531,11 @@ public sealed class UiViewModelTests
             await services.McpSettings.SaveSettingsAsync(settings.Value with { Port = port });
             await vm.StartMcpServerAsync();
 
-            vm.McpEndpoint.Should().Be($"http://localhost:{port}");
+            vm.McpEndpoint.Should().Be($"http://localhost:{port}/mcp");
             vm.McpStatusText.Should().Be("MCP: 运行中");
             vm.McpStatusDetail.Should().Be("连接数: 0 / 0");
             using var http = new HttpClient();
-            var health = await http.GetStringAsync($"{vm.McpEndpoint}/health");
+            var health = await http.GetStringAsync($"http://localhost:{port}/health");
             health.Should().Contain("ok");
         }
         finally

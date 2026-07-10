@@ -220,6 +220,20 @@ public sealed class FileResolutionServiceTests
     }
 
     [Fact]
+    public async Task DeleteSearchRoot_removes_registered_root()
+    {
+        await using var context = await FileResolutionTestContext.CreateAsync();
+        var root = context.Temp.CreateDirectory("delete-root");
+        var added = await context.FileResolutionService.AddSearchRootAsync(root);
+
+        var deleted = await context.FileResolutionService.DeleteSearchRootAsync(added.Value.RootId);
+        var roots = await context.FileResolutionService.ListSearchRootsAsync();
+
+        deleted.IsSuccess.Should().BeTrue();
+        roots.Value.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task AddSearchRoot_records_completed_scan_operation_for_available_root()
     {
         await using var context = await FileResolutionTestContext.CreateAsync();

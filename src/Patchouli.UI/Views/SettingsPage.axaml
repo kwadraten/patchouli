@@ -116,10 +116,14 @@
                     <controls:PathPickerTextBox Path="{Binding FileSearchRootInput}" PickerMode="Folder" DialogTitle="选择文件搜索根目录" PlaceholderText="目录路径" />
                     <Button Classes="FormFieldAction" Grid.Column="1" Content="添加" Command="{Binding AddFileSearchRootCommand}" Padding="16,0" />
                   </Grid>
+                  <Button Content="重新扫描" Command="{Binding RescanFileSearchRootsCommand}" HorizontalAlignment="Left" />
                   <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                     <ItemsControl.ItemTemplate>
-                      <DataTemplate>
-                        <TextBlock Text="{Binding}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,0,4" />
+                      <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,0,0,4">
+                          <TextBlock Text="{Binding RootPath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
+                          <Button Grid.Column="1" Content="删除" Command="{Binding DeleteCommand}" Classes="Danger" Padding="10,2" />
+                        </Grid>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
@@ -155,6 +159,8 @@
                   <NumericUpDown Value="{Binding Port}" Minimum="1024" Maximum="65535" />
                   <TextBlock Text="Bind 地址" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <TextBox Text="{Binding BindAddress}" PlaceholderText="127.0.0.1 或 0.0.0.0" />
+                  <TextBlock Text="协议：Streamable HTTP" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding TransportDescription}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                 </StackPanel>
               </Border>
 

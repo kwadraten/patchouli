@@ -75,6 +75,10 @@ public sealed class SettingsViewModel : ViewModelBase
             {
                 _ = McpSettings.LoadAsync();
             }
+            if (ReferenceEquals(value?.Content, LibrarySettings))
+            {
+                _ = LibrarySettings.LoadFileSearchRootsAsync();
+            }
         }
     }
 

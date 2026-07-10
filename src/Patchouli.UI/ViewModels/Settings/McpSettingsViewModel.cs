@@ -94,6 +94,8 @@ public sealed class McpSettingsViewModel : ViewModelBase
         }
     }
 
+    public string TransportDescription => "Streamable HTTP：使用同一个 /mcp 地址，POST 发送 JSON-RPC，GET 建立 SSE。";
+
     public string AllowedOriginsText
     {
         get => string.Join("\n", _settings.AllowedOrigins);
@@ -202,7 +204,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
     private void RaiseAllSettings()
     {
-        foreach (var property in new[] { nameof(Port), nameof(BindAddress), nameof(AllowExternalAccess), nameof(CorsEnabled), nameof(AllowedOriginsText), nameof(AuthRequired), nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides) })
+        foreach (var property in new[] { nameof(Port), nameof(BindAddress), nameof(AllowExternalAccess), nameof(CorsEnabled), nameof(TransportDescription), nameof(AllowedOriginsText), nameof(AuthRequired), nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides) })
             Raise(property);
     }
 
