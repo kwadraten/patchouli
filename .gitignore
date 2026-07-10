@@ -10,3 +10,4 @@
 .env
 .tmp/
 tools/patchouli-hayagriva/target/
+artifacts/
