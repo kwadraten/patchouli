@@ -199,7 +199,9 @@ public sealed class ItemService : IItemService
                 DateTimeOffset.Parse(existing.CreatedAt),
                 _clock.UtcNow.ToUniversalTime());
 
-            await connection.ExecuteAsync(
+            var updateParameters = new DynamicParameters(ToParameters(updated));
+            updateParameters.Add("ExpectedUpdatedAt", request.ExpectedUpdatedAt?.ToUniversalTime().ToString("O"));
+            var affected = await connection.ExecuteAsync(
                 """
                 update items
                 set item_type = @ItemType,
@@ -229,10 +231,18 @@ public sealed class ItemService : IItemService
                     collections_json = @CollectionsJson,
                     custom_fields_json = @CustomFieldsJson,
                     updated_at = @UpdatedAt
-                where item_id = @ItemId and deleted_at is null;
+                where item_id = @ItemId
+                  and deleted_at is null
+                  and (@ExpectedUpdatedAt is null or updated_at = @ExpectedUpdatedAt);
                 """,
-                ToParameters(updated),
+                updateParameters,
                 transaction);
+
+            if (affected == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<ItemMetadata>.Failure(AppErrorCodes.Conflict, "Item metadata changed while the update was in progress.");
+            }
 
             await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, updated.UpdatedAt);
             await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, updated.UpdatedAt);
@@ -444,6 +454,9 @@ public sealed class ItemService : IItemService
                 "Identifier scheme and value are required.");
         }
 
+        var normalizedScheme = NormalizeIdentifierScheme(scheme);
+        var normalizedValue = value.Trim();
+
         try
         {
             await using var connection = _connectionFactory.CreateConnection();
@@ -470,8 +483,8 @@ public sealed class ItemService : IItemService
                 new
                 {
                     ItemId = itemId.ToString(),
-                    Scheme = scheme.Trim(),
-                    Value = value.Trim()
+                    Scheme = normalizedScheme,
+                    Value = normalizedValue
                 },
                 transaction);
 
@@ -486,8 +499,8 @@ public sealed class ItemService : IItemService
             var identifier = new ItemIdentifier(
                 IdentifierId.New(),
                 itemId,
-                scheme.Trim(),
-                value.Trim(),
+                normalizedScheme,
+                normalizedValue,
                 NullIfWhiteSpace(note),
                 _clock.UtcNow.ToUniversalTime());
 
@@ -559,6 +572,37 @@ public sealed class ItemService : IItemService
         catch (Exception exception)
         {
             return DatabaseFailure<IReadOnlyList<ItemIdentifier>>(exception);
+        }
+    }
+
+    public async Task<Result> RemoveIdentifierAsync(
+        ItemId itemId,
+        IdentifierId identifierId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            var affected = await connection.ExecuteAsync(
+                """
+                delete from item_identifiers
+                where identifier_id = @IdentifierId and item_id = @ItemId;
+                """,
+                new { IdentifierId = identifierId.ToString(), ItemId = itemId.ToString() });
+
+            return affected == 0
+                ? Result.Failure(AppErrorCodes.NotFound, "Identifier was not found for the item.")
+                : Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var failure = DatabaseFailure<object>(exception);
+            return Result.Failure(failure.ErrorCode!, failure.ErrorMessage!);
         }
     }
 
@@ -991,10 +1035,11 @@ public sealed class ItemService : IItemService
 
             await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, now);
             await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, now);
+            var identifierKeys = new HashSet<string>(StringComparer.Ordinal);
             foreach (var identifier in request.Identifiers ?? Array.Empty<ItemIdentifierInput>())
             {
                 var normalized = NormalizeIdentifier(identifier);
-                if (normalized is null)
+                if (normalized is null || !identifierKeys.Add($"{normalized.Scheme}\0{normalized.Value}"))
                 {
                     continue;
                 }
@@ -1111,8 +1156,10 @@ public sealed class ItemService : IItemService
             return null;
         }
 
-        return new ItemIdentifierInput(scheme, value, NullIfWhiteSpace(identifier.Note));
+        return new ItemIdentifierInput(NormalizeIdentifierScheme(scheme), value, NullIfWhiteSpace(identifier.Note));
     }
+
+    private static string NormalizeIdentifierScheme(string scheme) => scheme.Trim().ToLowerInvariant();
 
     private static async Task InsertIdentifierAsync(
         Microsoft.Data.Sqlite.SqliteConnection connection,
@@ -1412,7 +1459,7 @@ public sealed class ItemService : IItemService
             return new ItemIdentifier(
                 Patchouli.Core.Ids.IdentifierId.Parse(IdentifierId),
                 Patchouli.Core.Ids.ItemId.Parse(ItemId),
-                Scheme,
+                NormalizeIdentifierScheme(Scheme),
                 Value,
                 Note,
                 DateTimeOffset.Parse(CreatedAt));

@@ -28,4 +28,5 @@ public sealed record UpdateItemRequest(
     string? CollectionsJson = null,
     string? CustomFieldsJson = null,
     IReadOnlyList<ItemCreatorInput>? Creators = null,
-    IReadOnlyList<ItemDateInput>? Dates = null);
+    IReadOnlyList<ItemDateInput>? Dates = null,
+    DateTimeOffset? ExpectedUpdatedAt = null);

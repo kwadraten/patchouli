@@ -58,4 +58,32 @@ public sealed class MigrationRunnerTests
         secondRun.Should().BeEmpty();
         appliedCount.Should().Be(expectedMigrationCount);
     }
+
+    [Fact]
+    public async Task Identifier_scheme_migration_enforces_lowercase_for_direct_writes()
+    {
+        await using var database = TemporarySqliteDatabase.Create();
+        var runner = new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        await runner.RunAsync();
+
+        await using var connection = database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        var libraryId = Guid.NewGuid().ToString();
+        var itemId = Guid.NewGuid().ToString();
+        await connection.ExecuteAsync(
+            """
+            insert into library_metadata(library_id, display_name, created_at, updated_at, schema_version)
+            values (@LibraryId, 'Test', @Now, @Now, 1);
+            insert into items(item_id, library_id, item_type, title, creators_json, tags_json, collections_json, custom_fields_json, created_at, updated_at)
+            values (@ItemId, @LibraryId, 'book', 'Test', '[]', '[]', '[]', '{}', @Now, @Now);
+            insert into item_identifiers(identifier_id, item_id, scheme, value, created_at)
+            values (@IdentifierId, @ItemId, 'NDLBibID', '123456', @Now);
+            """,
+            new { LibraryId = libraryId, ItemId = itemId, IdentifierId = Guid.NewGuid().ToString(), Now = now });
+
+        var scheme = await connection.ExecuteScalarAsync<string>("select scheme from item_identifiers where item_id = @ItemId;", new { ItemId = itemId });
+
+        scheme.Should().Be("ndlbibid");
+    }
 }

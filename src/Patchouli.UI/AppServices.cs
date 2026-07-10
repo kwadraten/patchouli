@@ -1,4 +1,5 @@
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
@@ -12,6 +13,7 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Coordinates;
@@ -41,6 +43,8 @@ public sealed class AppServices
 {
     private IOcrQueueScheduler? _ocrQueue;
     private HttpClient? _cslCatalogHttpClient;
+    private HttpClient? _metadataLookupHttpClient;
+    private IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> _metadataLookupPreferences = [];
     private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings)
     {
         RuntimeDatabasePath = runtimeDatabasePath;
@@ -60,6 +64,10 @@ public sealed class AppServices
         CslRenderer = new CslRenderer(Items, CslStore, CslItemMapper);
         ItemTypeProfiles = new CslItemTypeProfileService();
         ItemTypeInference = new ItemTypeInferenceService(ConnectionFactory, Clock, ItemTypeProfiles, Items);
+        _metadataLookupPreferences = ToMetadataLookupPreferences(settings.MetadataLookup);
+        _metadataLookupHttpClient = new HttpClient();
+        MetadataSources = MetadataSourceRegistry.CreateDefault(_metadataLookupHttpClient);
+        MetadataLookup = new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock, blockingOperations: BlockingOperations);
@@ -122,6 +130,8 @@ public sealed class AppServices
     public ICslRenderer CslRenderer { get; }
     public ICslItemTypeProfileService ItemTypeProfiles { get; }
     public IItemTypeInferenceService ItemTypeInference { get; }
+    public IMetadataSourceRegistry MetadataSources { get; }
+    public IMetadataLookupService MetadataLookup { get; }
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
@@ -152,6 +162,11 @@ public sealed class AppServices
     public PdfImportWorkflow PdfImport { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
+    public void UpdateMetadataLookupPreferences(MetadataLookupAppSettings settings) =>
+        _metadataLookupPreferences = ToMetadataLookupPreferences(settings);
+
+    private static IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> ToMetadataLookupPreferences(MetadataLookupAppSettings settings) =>
+        settings.Sources.Select((source, index) => new Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference(source.SourceId, source.Enabled, index)).ToArray();
     public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory) =>
         new OcrRunCoordinator(
             ConnectionFactory,

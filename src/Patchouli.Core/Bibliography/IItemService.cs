@@ -67,4 +67,9 @@ public interface IItemService
     Task<Result<IReadOnlyList<ItemIdentifier>>> ListIdentifiersAsync(
         ItemId itemId,
         CancellationToken cancellationToken = default);
+
+    Task<Result> RemoveIdentifierAsync(
+        ItemId itemId,
+        IdentifierId identifierId,
+        CancellationToken cancellationToken = default);
 }

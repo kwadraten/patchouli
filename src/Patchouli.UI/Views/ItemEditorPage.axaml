@@ -99,14 +99,24 @@
                         <ScrollViewer MaxHeight="150">
                             <ItemsControl ItemsSource="{Binding Identifiers}">
                                 <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" Margin="0,0,0,6" />
+                                    <DataTemplate DataType="editor:IdentifierItemViewModel">
+                                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="0,0,0,8">
+                                            <StackPanel Spacing="2">
+                                                <TextBlock Text="{Binding DisplayText}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" />
+                                                <TextBlock Text="{Binding Status}" IsVisible="{Binding HasStatus}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                                 <TextBlock Text="获取中..." IsVisible="{Binding IsBusy}" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" />
+                                                 <Button Content="获取元数据" Command="{Binding LookupCommand}" IsVisible="{Binding ShowLookup}" />
+                                                 <Button Content="移除" Command="{Binding RemoveCommand}" IsVisible="{Binding ShowRemove}" Classes="Danger" />
+                                            </StackPanel>
+                                        </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </ScrollViewer>
                         <Separator Background="{DynamicResource OutlineVariantBrush}" Margin="0,4" />
-                        <TextBlock Text="类型可自定义；常用值包括 DOI、ISBN、ISSN、URL、PMID、PMC、arXiv。" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                        <TextBlock Text="类型统一保存为小写；常用值包括 doi、isbn、issn、url、pmid、pmcid、arxiv。" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                         <Grid ColumnDefinitions="120,*,*,Auto" ColumnSpacing="8">
                             <TextBox Grid.Column="0" Text="{Binding IdentifierScheme}" PlaceholderText="类型" />
                             <TextBox Grid.Column="1" Text="{Binding IdentifierValue}" PlaceholderText="值" />

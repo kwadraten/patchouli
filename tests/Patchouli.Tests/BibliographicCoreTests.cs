@@ -230,6 +230,40 @@ public sealed class BibliographicCoreTests
     }
 
     [Fact]
+    public async Task AddIdentifier_normalizes_scheme_to_lowercase_and_rejects_case_only_duplicate()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        var item = await context.ItemService.CreateItemAsync("article", "Article");
+
+        var first = await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "NDLBibID", "123456", null);
+        var duplicate = await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "ndlbibid", "123456", null);
+
+        first.IsSuccess.Should().BeTrue();
+        first.Value.Scheme.Should().Be("ndlbibid");
+        duplicate.IsFailure.Should().BeTrue();
+        duplicate.ErrorCode.Should().Be(AppErrorCodes.InvalidState);
+    }
+
+    [Fact]
+    public async Task CreateItem_normalizes_and_deduplicates_identifier_schemes_by_case()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+
+        var item = await context.ItemService.CreateItemAsync(new CreateItemRequest(
+            "book",
+            "Book",
+            Identifiers:
+            [
+                new ItemIdentifierInput("NDLBibID", "123456"),
+                new ItemIdentifierInput("ndlbibid", "123456")
+            ]));
+
+        item.IsSuccess.Should().BeTrue(item.ErrorMessage);
+        item.Value.Identifiers.Should().ContainSingle();
+        item.Value.Identifiers.Single().Scheme.Should().Be("ndlbibid");
+    }
+
+    [Fact]
     public async Task AddIdentifier_allows_custom_scheme()
     {
         await using var context = await BibliographicTestContext.CreateAsync();
@@ -270,6 +304,24 @@ public sealed class BibliographicCoreTests
         first.IsSuccess.Should().BeTrue();
         second.IsFailure.Should().BeTrue();
         second.ErrorCode.Should().Be(AppErrorCodes.InvalidState);
+    }
+
+    [Fact]
+    public async Task RemoveIdentifier_deletes_only_identifier_owned_by_item()
+    {
+        await using var context = await BibliographicTestContext.CreateAsync();
+        var firstItem = await context.ItemService.CreateItemAsync("book", "First");
+        var secondItem = await context.ItemService.CreateItemAsync("book", "Second");
+        var identifier = await context.ItemService.AddIdentifierAsync(firstItem.Value.ItemId, "doi", "10.1/test", null);
+
+        var wrongOwner = await context.ItemService.RemoveIdentifierAsync(secondItem.Value.ItemId, identifier.Value.IdentifierId);
+        var removed = await context.ItemService.RemoveIdentifierAsync(firstItem.Value.ItemId, identifier.Value.IdentifierId);
+        var remaining = await context.ItemService.ListIdentifiersAsync(firstItem.Value.ItemId);
+
+        wrongOwner.IsFailure.Should().BeTrue();
+        wrongOwner.ErrorCode.Should().Be(AppErrorCodes.NotFound);
+        removed.IsSuccess.Should().BeTrue();
+        remaining.Value.Should().BeEmpty();
     }
 
     [Fact]

@@ -4,8 +4,10 @@ using Avalonia.Headless;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Dapper;
 using FluentAssertions;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
@@ -212,11 +214,61 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public async Task MainWindow_returns_to_rendered_library_after_switching_tabs()
+    {
+        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            var window = new MainWindow { Width = 1280, Height = 820 };
+            window.Show();
+            try
+            {
+                var vm = (MainWindowViewModel)window.DataContext!;
+                vm.Shell.IsReadingMode = true;
+                await vm.OpenAboutAsync();
+
+                await vm.ShowLibraryCommand.ExecuteAsync();
+                window.Measure(new Size(1280, 820));
+                window.Arrange(new Rect(0, 0, 1280, 820));
+                using var bitmap = new RenderTargetBitmap(new PixelSize(1280, 820), new Vector(96, 96));
+                bitmap.Render(window);
+
+                vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
+                vm.Shell.IsReadingMode.Should().BeFalse();
+                window.GetVisualDescendants().OfType<Patchouli.UI.Views.LibraryPage>().Should().ContainSingle();
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
     public void ItemEditorPage_does_not_template_field_descriptor_with_self_content()
     {
         var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
 
         editorXaml.Should().NotContain("ContentControl Content=\"{Binding}\"");
+    }
+
+    [Fact]
+    public void Metadata_lookup_ui_wires_identifier_rows_batch_selection_and_progress()
+    {
+        var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
+        var mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        var libraryCode = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml.cs"));
+
+        editorXaml.Should().Contain("editor:IdentifierItemViewModel").And.Contain("LookupCommand").And.Contain("IsBusy");
+        editorXaml.Should().Contain("RemoveCommand").And.Contain("Content=\"移除\"");
+        libraryXaml.Should().Contain("SelectionMode=\"Extended\"").And.Contain("OnDataGridSelectionChanged");
+        libraryXaml.Should().NotContain("<Button Content=\"获取所选元数据\"");
+        mainXaml.Should().Contain("获取所选题录元数据").And.Contain("Shell.LookupMetadataBatchCommand").And.Contain("Shell.CancelMetadataBatchCommand");
+        libraryXaml.Should().Contain("获取所选题录元数据").And.Contain("LookupMetadataBatchCommand").And.Contain("CancelMetadataBatchCommand");
+        libraryCode.Should().Contain("grid.SelectedItems").And.Contain("SetSelectedItems").And.Contain("SyncSelectionFromViewModel");
     }
 
     [Fact]
@@ -347,17 +399,26 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task MainWindowViewModel_keeps_sidebar_menu_preferences_when_settings_tab_is_active()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
-        await vm.OpenSettingsCommand.ExecuteAsync();
+        var settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-sidebar-settings-{Guid.NewGuid():N}.json");
+        try
+        {
+            PatchouliAppSettings.Default().Save(settingsPath);
+            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
+            await vm.OpenSettingsCommand.ExecuteAsync();
 
-        vm.ShowLibraryLeftSidebarPreference.Should().BeTrue();
-        vm.ShowLibraryRightSidebarPreference.Should().BeTrue();
+            vm.ShowLibraryLeftSidebarPreference.Should().BeTrue();
+            vm.ShowLibraryRightSidebarPreference.Should().BeTrue();
 
-        vm.ShowLibraryLeftSidebarPreference = false;
-        vm.ShowLibraryRightSidebarPreference = false;
+            vm.ShowLibraryLeftSidebarPreference = false;
+            vm.ShowLibraryRightSidebarPreference = false;
 
-        vm.ShowLibraryLeftSidebarPreference.Should().BeFalse();
-        vm.ShowLibraryRightSidebarPreference.Should().BeFalse();
+            vm.ShowLibraryLeftSidebarPreference.Should().BeFalse();
+            vm.ShowLibraryRightSidebarPreference.Should().BeFalse();
+        }
+        finally
+        {
+            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+        }
     }
 
     [Fact]
@@ -959,6 +1020,47 @@ public sealed class UiViewModelTests
         finally
         {
             if (File.Exists(pdf)) File.Delete(pdf);
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Item_editor_removes_loaded_creator_after_field_rebuild_and_save()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"ui-creator-remove-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            var services = await vm.ServicesAsync();
+            var created = await services.Items.CreateItemAsync(new CreateItemRequest(
+                "book",
+                "Creator removal",
+                Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Literal: "Fetched Author")]));
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+
+            await vm.Shell.RefreshItemsAsync();
+            await vm.Shell.Items.Single(item => item.ItemId == created.Value.ItemId.ToString()).EditMetadataCommand.ExecuteAsync();
+            var originalCreators = vm.ItemEditor.Creators;
+            vm.ItemEditor.ItemType = "report";
+            for (var attempt = 0; attempt < 100 && ReferenceEquals(originalCreators, vm.ItemEditor.Creators); attempt++)
+                await Task.Delay(20);
+
+            vm.ItemEditor.Creators.Should().ContainSingle(creator => creator.Name == "Fetched Author");
+            await vm.ItemEditor.Creators.Single().RemoveCommand.ExecuteAsync();
+            vm.ItemEditor.Creators.Should().BeEmpty();
+
+            await vm.ItemEditor.SaveCommand.ExecuteAsync();
+            var saved = await services.Items.GetItemAsync(created.Value.ItemId);
+            saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+            saved.Value.Creators.Should().BeEmpty();
+
+            await vm.ItemEditor.LoadAsync(created.Value.ItemId.ToString());
+            vm.ItemEditor.Creators.Should().BeEmpty();
+        }
+        finally
+        {
             if (File.Exists(path)) File.Delete(path);
         }
     }

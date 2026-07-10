@@ -184,6 +184,8 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         _settings.Save(_settingsPath);
 
+        _services?.UpdateMetadataLookupPreferences(_settings.MetadataLookup);
+
     }
 
     private void PersistRuntimeDatabasePathIfEnabled()
@@ -286,6 +288,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         switch (e.PropertyName)
         {
             case nameof(WorkspaceLayoutViewModel.ActiveTab):
+                if (Layout.IsLibraryActive) Shell.ExitReadingMode();
                 Raise(nameof(ActiveTab));
                 RaiseShellSelectionChanged();
                 break;
@@ -850,6 +853,15 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
+    public async Task RefreshOpenItemEditorsAsync(IReadOnlyCollection<ItemId> itemIds)
+    {
+        var wanted = itemIds.Select(itemId => itemId.ToString()).ToHashSet(StringComparer.Ordinal);
+        foreach (var editor in OpenTabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>())
+        {
+            if (wanted.Contains(editor.ItemIdText)) await editor.LoadAsync(editor.ItemIdText);
+        }
+    }
+
     private static string BuildItemWorkspaceTabTitle(string pageName, string itemTitle)
     {
         var title = string.IsNullOrWhiteSpace(itemTitle) ? "未命名题录" : itemTitle.Trim();
@@ -907,6 +919,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task ShowLibraryAsync()
     {
+        Shell.ExitReadingMode();
         await ActivateTabAsync(WorkspaceTabKind.Library, "Library", LibraryTabTitle, "Database", false, () => Shell);
     }
 

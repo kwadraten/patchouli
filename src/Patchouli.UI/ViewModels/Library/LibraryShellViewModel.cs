@@ -7,6 +7,7 @@ using Patchouli.Core.Import;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
+using Avalonia.Threading;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -20,12 +21,15 @@ public sealed class LibraryShellViewModel : ViewModelBase
         RefreshCommand = new AsyncCommand(RefreshItemsAsync);
         ShowRecentItemsCommand = new AsyncCommand(ShowRecentItemsAsync);
         SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
+        LookupMetadataBatchCommand = new AsyncCommand(LookupMetadataBatchAsync);
+        CancelMetadataBatchCommand = new AsyncCommand(CancelMetadataBatchAsync);
     }
 
     public string LibraryName { get; set; } = "我的书库";
     public ObservableCollection<string> RecentItems { get; } = new();
     public ObservableCollection<string> RecentDocuments { get; } = new();
     public ObservableCollection<LibraryItemViewModel> Items { get; } = new();
+    public ObservableCollection<LibraryItemViewModel> SelectedItems { get; } = new();
     public string StatusText => _main.Status;
     public string MinerUToken { get; set; } = "";
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactory { get; set; }
@@ -61,6 +65,41 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand ShowRecentItemsCommand { get; }
     public AsyncCommand SwitchToReadingModeCommand { get; }
+    public AsyncCommand LookupMetadataBatchCommand { get; }
+    public AsyncCommand CancelMetadataBatchCommand { get; }
+
+    private CancellationTokenSource? _metadataBatchCancellation;
+    private bool _isMetadataBatchBusy;
+    private double _metadataBatchProgress;
+    private string _metadataBatchStatus = "";
+    public bool IsMetadataBatchBusy
+    {
+        get => _isMetadataBatchBusy;
+        private set { if (_isMetadataBatchBusy == value) return; _isMetadataBatchBusy = value; Raise(); }
+    }
+    public double MetadataBatchProgress
+    {
+        get => _metadataBatchProgress;
+        private set { if (_metadataBatchProgress == value) return; _metadataBatchProgress = value; Raise(); }
+    }
+    public string MetadataBatchStatus
+    {
+        get => _metadataBatchStatus;
+        private set { if (_metadataBatchStatus == value) return; _metadataBatchStatus = value; Raise(); Raise(nameof(HasMetadataBatchStatus)); }
+    }
+    public bool HasMetadataBatchStatus => !string.IsNullOrWhiteSpace(MetadataBatchStatus);
+    public int SelectedItemCount => SelectedItems.Count;
+    public bool HasBatchSelection => SelectedItems.Count > 0;
+
+    public void SetSelectedItems(IEnumerable<LibraryItemViewModel> items)
+    {
+        var selected = items.Distinct().ToArray();
+        SelectedItems.Clear();
+        foreach (var item in selected) SelectedItems.Add(item);
+        Raise(nameof(SelectedItems));
+        Raise(nameof(SelectedItemCount));
+        Raise(nameof(HasBatchSelection));
+    }
 
     public bool ShowItemTypeColumn
     {
@@ -142,6 +181,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public async Task RefreshItemsAsync()
     {
+        var primaryItemId = SelectedItem?.ItemId;
+        var selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
         var services = await _main.ServicesAsync();
         var library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsSuccess && LibraryName != library.Value.DisplayName)
@@ -169,9 +210,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
             """))
             .ToDictionary(value => value.DocumentInstanceId, value => value, StringComparer.Ordinal);
 
-        Items.Clear();
-        RecentItems.Clear();
-        RecentDocuments.Clear();
+        var refreshedItems = new List<LibraryItemViewModel>();
+        var refreshedRecentItems = new List<string>();
+        var refreshedRecentDocuments = new List<string>();
         foreach (var row in rowsResult.Value)
         {
             var documentInstanceKey = row.DocumentInstanceId?.ToString();
@@ -195,14 +236,21 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 RunOcrForItemAsync,
                 EditMetadataForItemAsync,
                 ViewPdfForItemAsync);
-            Items.Add(item);
-            RecentItems.Add(row.Title);
+            refreshedItems.Add(item);
+            refreshedRecentItems.Add(row.Title);
             if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
-                RecentDocuments.Add(row.LinkedFileName);
+                refreshedRecentDocuments.Add(row.LinkedFileName);
         }
 
-        if (SelectedItem is null || Items.All(item => item.ItemId != SelectedItem.ItemId))
-            SelectedItem = Items.FirstOrDefault();
+        Items.Clear();
+        foreach (var item in refreshedItems) Items.Add(item);
+        RecentItems.Clear();
+        foreach (var item in refreshedRecentItems) RecentItems.Add(item);
+        RecentDocuments.Clear();
+        foreach (var document in refreshedRecentDocuments) RecentDocuments.Add(document);
+
+        SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
+        SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
         Raise(nameof(Items));
         Raise(nameof(RecentItems));
         Raise(nameof(RecentDocuments));
@@ -213,6 +261,26 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(InspectorPath));
         Raise(nameof(HasSelectedItem));
         Raise(nameof(NoSelectedItem));
+    }
+
+    private Task RefreshItemsOnUiThreadAsync()
+    {
+        if (Dispatcher.UIThread.CheckAccess()) return RefreshItemsAsync();
+
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Dispatcher.UIThread.Post(async () =>
+        {
+            try
+            {
+                await RefreshItemsAsync();
+                completion.SetResult();
+            }
+            catch (Exception exception)
+            {
+                completion.SetException(exception);
+            }
+        });
+        return completion.Task;
     }
 
     public async Task RunOcrForItemAsync(LibraryItemViewModel item)
@@ -288,6 +356,66 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise(nameof(IsBusy));
             Raise(nameof(InspectorStatus));
         }
+    }
+
+    private async Task LookupMetadataBatchAsync()
+    {
+        if (IsMetadataBatchBusy || SelectedItems.Count == 0) return;
+
+        var itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
+        _metadataBatchCancellation = new CancellationTokenSource();
+        IsMetadataBatchBusy = true;
+        MetadataBatchProgress = 0;
+        MetadataBatchStatus = $"正在获取 0/{itemIds.Length} 个题录的元数据...";
+        var latest = new MetadataLookupProgressInfo(0, itemIds.Length, 0, 0, null);
+        try
+        {
+            var outcome = await MetadataLookupUiBridge.LookupBatchAsync(
+                await _main.ServicesAsync(),
+                itemIds,
+                progress =>
+                {
+                    latest = progress;
+                    MetadataBatchProgress = progress.Total <= 0 ? 0 : 100d * progress.Completed / progress.Total;
+                    MetadataBatchStatus = $"正在获取 {progress.Completed}/{Math.Max(progress.Total, itemIds.Length)} 个题录的元数据...";
+                },
+                _metadataBatchCancellation.Token);
+
+            await RefreshItemsOnUiThreadAsync();
+            await _main.RefreshOpenItemEditorsAsync(itemIds);
+            var failed = Math.Max(latest.Failed, outcome.FailedCount);
+            var succeeded = Math.Max(latest.Succeeded, outcome.SucceededCount);
+            if (!outcome.IsSuccess && failed == 0) failed = itemIds.Length - succeeded;
+            MetadataBatchProgress = 100;
+            MetadataBatchStatus = failed > 0
+                ? $"批量获取完成：成功 {succeeded} 个，失败 {failed} 个。{outcome.Message}"
+                : $"批量获取完成：成功 {Math.Max(succeeded, itemIds.Length)} 个。";
+            if (failed > 0) _main.ReportError(MetadataBatchStatus); else _main.Report(MetadataBatchStatus);
+        }
+        catch (OperationCanceledException)
+        {
+            await RefreshItemsOnUiThreadAsync();
+            await _main.RefreshOpenItemEditorsAsync(itemIds);
+            MetadataBatchStatus = $"批量获取已取消：已处理 {latest.Completed}/{itemIds.Length} 个。";
+            _main.Report(MetadataBatchStatus);
+        }
+        catch (Exception exception)
+        {
+            MetadataBatchStatus = $"批量获取失败：{exception.Message}";
+            _main.ReportError(MetadataBatchStatus);
+        }
+        finally
+        {
+            IsMetadataBatchBusy = false;
+            _metadataBatchCancellation.Dispose();
+            _metadataBatchCancellation = null;
+        }
+    }
+
+    private Task CancelMetadataBatchAsync()
+    {
+        _metadataBatchCancellation?.Cancel();
+        return Task.CompletedTask;
     }
 
     private async Task<Result<OcrQueueTask>> QueueOcrForItemAsync(AppServices services, DocumentInstanceId documentInstanceId, OcrPresetId presetId)
@@ -415,11 +543,55 @@ public sealed class LibraryShellViewModel : ViewModelBase
         await _main.ShowReadingAsync();
     }
 
+    public void ExitReadingMode()
+    {
+        if (!IsReadingMode) return;
+        IsReadingMode = false;
+        Raise(nameof(IsReadingMode));
+        Raise(nameof(ShowLibraryList));
+        Raise(nameof(ShowPdfWorkspace));
+        _main.RaiseShellSelectionChanged();
+    }
+
     public async void Refresh()
     {
         try { await RefreshItemsAsync(); } catch { }
         Raise(nameof(StatusText));
         Raise(nameof(LibraryName));
+    }
+}
+
+internal sealed record MetadataLookupOutcome(bool IsSuccess, string Message, int SucceededCount = 0, int FailedCount = 0);
+internal sealed record MetadataLookupProgressInfo(int Completed, int Total, int Succeeded, int Failed, string? Message);
+
+internal static class MetadataLookupUiBridge
+{
+    public static bool CanLookup(AppServices services, string scheme) => services.MetadataLookup.CanLookup(scheme);
+
+    public static async Task<MetadataLookupOutcome> LookupAsync(
+        AppServices services,
+        ItemId itemId,
+        Patchouli.Core.Bibliography.ItemIdentifier identifier,
+        CancellationToken cancellationToken)
+    {
+        var result = await services.MetadataLookup.LookupAndApplyAsync(itemId, identifier, cancellationToken);
+        return result.IsFailure
+            ? new MetadataLookupOutcome(false, result.ErrorMessage ?? "元数据获取失败。")
+            : new MetadataLookupOutcome(true, $"已从 {result.Value.Candidate.SourceId} 获取元数据。");
+    }
+
+    public static async Task<MetadataLookupOutcome> LookupBatchAsync(
+        AppServices services,
+        IReadOnlyList<ItemId> itemIds,
+        Action<MetadataLookupProgressInfo> onProgress,
+        CancellationToken cancellationToken)
+    {
+        var progress = new Progress<Patchouli.Core.Bibliography.MetadataLookup.MetadataBatchProgress>(value =>
+            onProgress(new MetadataLookupProgressInfo(value.Completed, value.Total, value.Succeeded, value.Failed, value.Message)));
+        var result = await services.MetadataLookup.LookupAndApplyBatchAsync(itemIds, progress, cancellationToken);
+        return result.IsFailure
+            ? new MetadataLookupOutcome(false, result.ErrorMessage ?? "批量元数据获取失败。")
+            : new MetadataLookupOutcome(true, "", result.Value.SucceededCount, result.Value.FailedCount);
     }
 }
 

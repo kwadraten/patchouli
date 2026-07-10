@@ -221,6 +221,69 @@ public sealed class LinkedDocumentInstanceItemViewModel : ViewModelBase
     public AsyncCommand SetPrimaryCommand { get; }
 }
 
+public sealed class IdentifierItemViewModel : ViewModelBase
+{
+    private bool _isBusy;
+    private string _status = "";
+
+    public IdentifierItemViewModel(
+        ItemIdentifier identifier,
+        bool canLookup,
+        Func<IdentifierItemViewModel, Task> lookup,
+        Func<IdentifierItemViewModel, Task> remove)
+    {
+        ItemIdentifier = identifier;
+        DisplayText = Format(identifier.Scheme, identifier.Value, identifier.Note);
+        CanLookup = canLookup;
+        LookupCommand = new AsyncCommand(() => lookup(this));
+        RemoveCommand = new AsyncCommand(() => remove(this));
+    }
+
+    public IdentifierItemViewModel(ItemIdentifierInput identifier)
+    {
+        DisplayText = $"{Format(identifier.Scheme, identifier.Value, identifier.Note)}（保存题录时写入）";
+        CanLookup = false;
+        LookupCommand = new AsyncCommand(() => Task.CompletedTask);
+        RemoveCommand = new AsyncCommand(() => Task.CompletedTask);
+    }
+
+    public ItemIdentifier? ItemIdentifier { get; }
+    public string DisplayText { get; }
+    public bool CanLookup { get; }
+    public bool ShowLookup => CanLookup && !_isBusy;
+    public bool ShowRemove => ItemIdentifier is not null && !_isBusy;
+    public bool IsBusy
+    {
+        get => _isBusy;
+        set
+        {
+            if (_isBusy == value) return;
+            _isBusy = value;
+            Raise();
+            Raise(nameof(ShowLookup));
+            Raise(nameof(ShowRemove));
+        }
+    }
+    public string Status
+    {
+        get => _status;
+        set
+        {
+            if (_status == value) return;
+            _status = value;
+            Raise();
+            Raise(nameof(HasStatus));
+        }
+    }
+    public bool HasStatus => !string.IsNullOrWhiteSpace(Status);
+    public AsyncCommand LookupCommand { get; }
+    public AsyncCommand RemoveCommand { get; }
+
+    private static string Format(string scheme, string value, string? note) => string.IsNullOrWhiteSpace(note)
+        ? $"{scheme}: {value}"
+        : $"{scheme}: {value} ({note})";
+}
+
 public sealed class ItemEditorViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
@@ -337,11 +400,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 }
                 else if (field.Creators.Count == 0)
                 {
-                    field.Creators.Add(new CreatorItemViewModel(c => field.Creators.Remove(c)));
+                    field.Creators.Add(CreateCreatorItem());
                 }
                 field.AddCreatorCommand = new AsyncCommand(() => 
                 {
-                    field.Creators.Add(new CreatorItemViewModel(c => field.Creators.Remove(c)));
+                    field.Creators.Add(CreateCreatorItem());
                     return Task.CompletedTask;
                 });
             }
@@ -386,7 +449,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
     
-    public ObservableCollection<string> Identifiers { get; } = new();
+    public ObservableCollection<IdentifierItemViewModel> Identifiers { get; } = new();
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
     
     public AsyncCommand NewCommand { get; }
@@ -399,7 +462,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public string FilePath { get; set; } = "";
 
     // Identifier specific bindings
-    private string _identifierScheme = "DOI";
+    private string _identifierScheme = BuiltInIdentifierSchemes.DOI;
     public string IdentifierScheme
     {
         get => _identifierScheme;
@@ -447,7 +510,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             if (f.Type == "CreatorList")
             {
                 f.Creators.Clear();
-                f.Creators.Add(new CreatorItemViewModel(c => f.Creators.Remove(c)));
+                f.Creators.Add(CreateCreatorItem());
             }
         }
 
@@ -508,7 +571,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
         foreach (var creator in item.Value.Creators)
         {
-            var editableCreator = new CreatorItemViewModel(c => _creatorCache.Remove(c));
+            var editableCreator = CreateCreatorItem();
             editableCreator.LoadFrom(creator);
             _creatorCache.Add(editableCreator);
         }
@@ -525,7 +588,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             {
                 field.AddCreatorCommand = new AsyncCommand(() => 
                 {
-                    field.Creators.Add(new CreatorItemViewModel(c => field.Creators.Remove(c)));
+                    field.Creators.Add(CreateCreatorItem());
                     return Task.CompletedTask;
                 });
                 
@@ -672,11 +735,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var input = new ItemIdentifierInput(IdentifierScheme.Trim(), IdentifierValue.Trim(), NullIfWhiteSpace(IdentifierNote));
+        var input = new ItemIdentifierInput(IdentifierScheme.Trim().ToLowerInvariant(), IdentifierValue.Trim(), NullIfWhiteSpace(IdentifierNote));
         if (_itemId is null)
         {
             _pendingIdentifiers.Add(input);
-            Identifiers.Add($"{FormatIdentifier(input)}（保存题录时写入）");
+            Identifiers.Add(new IdentifierItemViewModel(input));
             Status = "标识符已暂存，保存题录时会一并写入。";
             IdentifierValue = "";
             IdentifierNote = "";
@@ -750,18 +813,93 @@ public sealed class ItemEditorViewModel : ViewModelBase
         {
             foreach (var identifier in _pendingIdentifiers)
             {
-                Identifiers.Add($"{FormatIdentifier(identifier)}（保存题录时写入）");
+                Identifiers.Add(new IdentifierItemViewModel(identifier));
             }
             return;
         }
 
-        var identifiers = await (await _main.ServicesAsync()).Items.ListIdentifiersAsync(_itemId.Value);
+        var services = await _main.ServicesAsync();
+        var identifiers = await services.Items.ListIdentifiersAsync(_itemId.Value);
         if (identifiers.IsSuccess)
         {
             foreach (var identifier in identifiers.Value)
             {
-                Identifiers.Add(FormatIdentifier(new ItemIdentifierInput(identifier.Scheme, identifier.Value, identifier.Note)));
+                Identifiers.Add(new IdentifierItemViewModel(
+                    identifier,
+                    MetadataLookupUiBridge.CanLookup(services, identifier.Scheme),
+                    LookupIdentifierAsync,
+                    RemoveIdentifierAsync));
             }
+        }
+    }
+
+    private async Task LookupIdentifierAsync(IdentifierItemViewModel row)
+    {
+        if (_itemId is null || row.ItemIdentifier is null || row.IsBusy) return;
+
+        var targetItemId = _itemId.Value;
+        row.IsBusy = true;
+        row.Status = "正在获取元数据...";
+        try
+        {
+            var outcome = await MetadataLookupUiBridge.LookupAsync(
+                await _main.ServicesAsync(),
+                targetItemId,
+                row.ItemIdentifier,
+                CancellationToken.None);
+            if (!outcome.IsSuccess)
+            {
+                row.Status = outcome.Message;
+                Status = $"元数据获取失败：{outcome.Message}";
+                return;
+            }
+
+            if (_itemId == targetItemId)
+                await LoadAsync(targetItemId.ToString());
+            await _main.Shell.RefreshItemsAsync();
+            Status = "元数据已获取并应用。";
+        }
+        catch (OperationCanceledException)
+        {
+            row.Status = "已取消。";
+            Status = "元数据获取已取消。";
+        }
+        catch (Exception exception)
+        {
+            row.Status = exception.Message;
+            Status = $"元数据获取失败：{exception.Message}";
+        }
+        finally
+        {
+            row.IsBusy = false;
+        }
+    }
+
+    private async Task RemoveIdentifierAsync(IdentifierItemViewModel row)
+    {
+        if (_itemId is null || row.ItemIdentifier is null || row.IsBusy) return;
+
+        row.IsBusy = true;
+        row.Status = "正在移除...";
+        try
+        {
+            var result = await (await _main.ServicesAsync()).Items.RemoveIdentifierAsync(
+                _itemId.Value,
+                row.ItemIdentifier.IdentifierId);
+            if (result.IsFailure)
+            {
+                row.Status = result.ErrorMessage ?? "移除标识符失败。";
+                Status = $"移除标识符失败：{row.Status}";
+                return;
+            }
+
+            await RefreshIdentifiersAsync();
+            await RefreshCslPreviewAsync();
+            Status = "标识符已移除。";
+        }
+        finally
+        {
+            row.IsBusy = false;
         }
     }
 
@@ -878,9 +1016,17 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private Task AddCreatorAsync()
     {
         var creatorField = GetCreatorField();
-        creatorField?.Creators.Add(new CreatorItemViewModel(c => creatorField.Creators.Remove(c)));
+        creatorField?.Creators.Add(CreateCreatorItem());
         Raise(nameof(Creators));
         return Task.CompletedTask;
+    }
+
+    private CreatorItemViewModel CreateCreatorItem() => new(RemoveCreator);
+
+    private void RemoveCreator(CreatorItemViewModel creator)
+    {
+        GetCreatorField()?.Creators.Remove(creator);
+        _creatorCache.Remove(creator);
     }
 
     private ItemFieldDescriptor? GetCreatorField() => Fields.FirstOrDefault(f => f.Type == "CreatorList");
@@ -940,11 +1086,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         HasCslPreviewWarning = rendered.Value.Warnings.Count > 0;
         CslPreviewText = rendered.Value.RenderedText;
     }
-
-    private static string FormatIdentifier(ItemIdentifierInput identifier)
-        => string.IsNullOrWhiteSpace(identifier.Note)
-            ? $"{identifier.Scheme}: {identifier.Value}"
-            : $"{identifier.Scheme}: {identifier.Value} ({identifier.Note})";
 
     private void RaiseAll()
     {

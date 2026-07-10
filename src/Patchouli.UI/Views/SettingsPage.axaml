@@ -246,6 +246,43 @@
             </StackPanel>
           </DataTemplate>
 
+          <!-- Metadata Lookup Settings -->
+          <DataTemplate DataType="settings:MetadataLookupSettingsViewModel">
+            <StackPanel Spacing="20" MaxWidth="720">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="元数据来源" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <TextBlock Text="按顺序尝试已启用的来源。更专业的国家、地区和学科来源默认优先。" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="恢复默认" Command="{Binding RestoreDefaultsCommand}" VerticalAlignment="Top" />
+              </Grid>
+
+              <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+                <StackPanel Spacing="12">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="来源优先级" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                  </Grid>
+                  <ItemsControl ItemsSource="{Binding Sources}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate DataType="settings:MetadataSourceSettingsRowViewModel">
+                        <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10" Margin="0,4">
+                          <CheckBox IsChecked="{Binding Enabled}" VerticalAlignment="Center" />
+                          <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding Description}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                          </StackPanel>
+                          <Button Grid.Column="2" Content="上移" Command="{Binding MoveUpCommand}" IsEnabled="{Binding CanMoveUp}" Padding="10,4" />
+                          <Button Grid.Column="3" Content="下移" Command="{Binding MoveDownCommand}" IsEnabled="{Binding CanMoveDown}" Padding="10,4" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </DataTemplate>
+
           <!-- CSL Settings -->
           <DataTemplate DataType="settings:CslSettingsViewModel">
             <StackPanel Spacing="20" MaxWidth="720">

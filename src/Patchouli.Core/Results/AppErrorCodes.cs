@@ -9,4 +9,5 @@ public static class AppErrorCodes
     public const string InvalidEvidenceReference = "invalid_evidence_reference";
     public const string DatabaseError = "database_error";
     public const string UnsupportedOperation = "unsupported_operation";
+    public const string Conflict = "conflict";
 }

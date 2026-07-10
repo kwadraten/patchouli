@@ -17,6 +17,7 @@ public sealed class SettingsViewModel : ViewModelBase
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
+        MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         CslSettings = new CslSettingsViewModel(main);
 
         Categories = new ObservableCollection<SettingsCategoryViewModel>
@@ -24,6 +25,7 @@ public sealed class SettingsViewModel : ViewModelBase
             new("库信息与路径", "Database", LibrarySettings),
             new("MCP 服务与安全", "Server", McpSettings),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
+            new("元数据来源", "Search", MetadataLookupSettings),
             new("CSL 样式", "Quote", CslSettings)
         };
 
@@ -31,21 +33,27 @@ public sealed class SettingsViewModel : ViewModelBase
 
         SaveCommand = new AsyncCommand(async () =>
         {
-            GlobalStatus = "正在保存设置...";
-            await Task.Delay(300); // Simulate some work
+            if (ReferenceEquals(ActiveCategory?.Content, MetadataLookupSettings))
+            {
+                await MetadataLookupSettings.SaveAsync();
+                GlobalStatus = MetadataLookupSettings.Status;
+                return;
+            }
             GlobalStatus = "所有设置已保存";
         });
 
         DiscardCommand = new AsyncCommand(async () =>
         {
+            if (ReferenceEquals(ActiveCategory?.Content, MetadataLookupSettings))
+                await MetadataLookupSettings.DiscardAsync();
             GlobalStatus = "已放弃当前更改";
-            await Task.CompletedTask;
         });
     }
 
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
+    public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public CslSettingsViewModel CslSettings { get; }
 
     public string MinerUTokenInput

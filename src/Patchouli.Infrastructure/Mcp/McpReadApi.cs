@@ -101,7 +101,7 @@ public sealed class McpReadApi : IMcpReadApi
                 new { ItemId = itemId.ToString() });
             if (item is null) return Result<McpItemMetadataResponse>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             var identifiers = (await connection.QueryAsync<IdentifierRow>(
-                "select scheme as Scheme, value as Value, note as Note from item_identifiers where item_id = @ItemId order by created_at, scheme, value;",
+                "select lower(trim(scheme)) as Scheme, value as Value, note as Note from item_identifiers where item_id = @ItemId order by created_at, scheme, value;",
                 new { ItemId = itemId.ToString() })).Select(i => new McpItemIdentifier(i.Scheme, i.Value, i.Note)).ToArray();
             var creators = (await connection.QueryAsync<CreatorRow>(
                 """

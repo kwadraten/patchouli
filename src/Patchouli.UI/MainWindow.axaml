@@ -93,6 +93,8 @@
           <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}" />
+            <MenuItem Header="获取所选题录元数据" Command="{Binding Shell.LookupMetadataBatchCommand}" IsEnabled="{Binding Shell.HasBatchSelection}" />
+            <MenuItem Header="取消批量获取元数据" Command="{Binding Shell.CancelMetadataBatchCommand}" IsVisible="{Binding Shell.IsMetadataBatchBusy}" />
             <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}" Command="{Binding CopyCslBibliographyDescriptor}" ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
             <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}" ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
           </MenuItem>

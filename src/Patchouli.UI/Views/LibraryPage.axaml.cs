@@ -1,11 +1,17 @@
 using Avalonia.Controls;
 using Avalonia;
+using System.Collections.Specialized;
 using Patchouli.UI.ViewModels;
+using Avalonia.VisualTree;
 
 namespace Patchouli.UI.Views;
 
 public sealed partial class LibraryPage : UserControl
 {
+    private LibraryShellViewModel? _shell;
+    private bool _syncingSelection;
+    private bool _isAttached;
+
     public LibraryPage()
     {
         InitializeComponent();
@@ -17,6 +23,70 @@ public sealed partial class LibraryPage : UserControl
         {
             await shell.ViewPdfForItemAsync(shell.SelectedItem);
         }
+    }
+
+    private void OnDataGridSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (!_syncingSelection && sender is DataGrid grid && DataContext is LibraryShellViewModel shell)
+        {
+            shell.SetSelectedItems(grid.SelectedItems.OfType<LibraryItemViewModel>());
+        }
+    }
+
+    protected override void OnDataContextChanged(EventArgs e)
+    {
+        UnsubscribeFromShell();
+        base.OnDataContextChanged(e);
+        _shell = DataContext as LibraryShellViewModel;
+        if (_isAttached) SubscribeToShell();
+    }
+
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        _isAttached = true;
+        _shell = DataContext as LibraryShellViewModel;
+        SubscribeToShell();
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        _isAttached = false;
+        UnsubscribeFromShell();
+        foreach (var column in LibraryGrid.Columns)
+            column.PropertyChanged -= OnColumnPropertyChanged;
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    private void OnSelectedItemsChanged(object? sender, NotifyCollectionChangedEventArgs e) => SyncSelectionFromViewModel();
+
+    private void SyncSelectionFromViewModel()
+    {
+        if (!_isAttached || _shell is null) return;
+        _syncingSelection = true;
+        try
+        {
+            LibraryGrid.SelectedItems.Clear();
+            foreach (var item in _shell.SelectedItems) LibraryGrid.SelectedItems.Add(item);
+        }
+        finally
+        {
+            _syncingSelection = false;
+        }
+    }
+
+    private void SubscribeToShell()
+    {
+        if (_shell is null) return;
+        _shell.SelectedItems.CollectionChanged -= OnSelectedItemsChanged;
+        _shell.SelectedItems.CollectionChanged += OnSelectedItemsChanged;
+        SyncSelectionFromViewModel();
+    }
+
+    private void UnsubscribeFromShell()
+    {
+        if (_shell is not null)
+            _shell.SelectedItems.CollectionChanged -= OnSelectedItemsChanged;
     }
 
     private bool _restoringColumns;

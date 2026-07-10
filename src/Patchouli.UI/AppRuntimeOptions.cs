@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Patchouli.Core.Import;
 
 namespace Patchouli.UI;
@@ -57,8 +58,55 @@ public sealed record UiPreferences(
         new(new Dictionary<string, bool>(), new Dictionary<string, double>(), new Dictionary<string, int>(), true, true);
 }
 
+public sealed record MetadataSourcePreference(string SourceId, bool Enabled);
+
+public sealed record MetadataLookupAppSettings(IReadOnlyList<MetadataSourcePreference> Sources)
+{
+    public static MetadataLookupAppSettings Default() => new(
+    [
+        new("calis", true),
+        new("nlc", true),
+        new("ndl", true),
+        new("cinii", true),
+        new("library-of-congress", true),
+        new("dnb", true),
+        new("bnf", true),
+        new("pmc-id-converter", true),
+        new("pubmed", true),
+        new("arxiv", true),
+        new("open-library", true),
+        new("datacite", true),
+        new("crossref", true),
+        new("openalex", true),
+        new("semantic-scholar", true),
+        new("google-books", false)
+    ]);
+
+    public static MetadataLookupAppSettings MergeWithDefaults(IEnumerable<MetadataSourcePreference>? saved)
+    {
+        var merged = new List<MetadataSourcePreference>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var source in saved ?? [])
+        {
+            var id = source.SourceId?.Trim();
+            if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
+                merged.Add(new MetadataSourcePreference(id, source.Enabled));
+        }
+
+        foreach (var source in Default().Sources)
+        {
+            if (seen.Add(source.SourceId))
+                merged.Add(source);
+        }
+
+        return new MetadataLookupAppSettings(merged);
+    }
+}
+
 public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSettings MinerU, McpAppSettings Mcp, UiPreferences Ui)
 {
+    public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
+
     public static PatchouliAppSettings Default() =>
         new(AppRuntimeOptions.Default(), MinerUAppSettings.Default(), McpAppSettings.Default(), UiPreferences.Default());
 
@@ -75,40 +123,59 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             return defaults;
 
-        using var document = JsonDocument.Parse(File.ReadAllText(path));
-        var root = document.RootElement;
-        var patchouli = GetSection(root, "Patchouli");
-        var minerU = GetSection(root, "MinerU");
-        var mcp = GetSection(root, "Mcp");
-        var ui = GetSection(root, "Ui");
+        try
+        {
+            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            var root = document.RootElement;
+            var patchouli = GetSection(root, "Patchouli");
+            var minerU = GetSection(root, "MinerU");
+            var mcp = GetSection(root, "Mcp");
+            var ui = GetSection(root, "Ui");
+            var metadataLookup = GetSection(root, "MetadataLookup");
 
-        return new PatchouliAppSettings(
-            new AppRuntimeOptions(
-                ExpandPath(ReadString(patchouli, "RuntimeDatabasePath", defaults.Runtime.RuntimeDatabasePath)),
-                ExpandPath(ReadString(patchouli, "DefaultSyncRoot", defaults.Runtime.DefaultSyncRoot)),
-                ExpandPath(ReadString(patchouli, "DefaultStagingRoot", defaults.Runtime.DefaultStagingRoot)),
-                ExpandPath(ReadString(patchouli, "LogDirectory", defaults.Runtime.LogDirectory)),
-                ExpandPath(ReadString(patchouli, "FileSearchRoot", defaults.Runtime.FileSearchRoot)),
-                ReadBool(patchouli, "RememberLastDatabase", defaults.Runtime.RememberLastDatabase),
-                ReadBool(patchouli, "UseMockOcrOnly", defaults.Runtime.UseMockOcrOnly)),
-            new MinerUAppSettings(
-                ReadString(minerU, "BaseUrl", defaults.MinerU.BaseUrl),
-                ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
-                ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
-                ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
-                ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
-                ReadString(minerU, "Token", defaults.MinerU.Token).Trim()),
-            new McpAppSettings(
-                ReadInt(mcp, "Port", defaults.Mcp.Port),
-                ReadBool(mcp, "BlockExternalAccess", defaults.Mcp.BlockExternalAccess),
-                ReadString(mcp, "ServerToken", defaults.Mcp.ServerToken).Trim(),
-                ReadStringBoolDict(mcp, "DisabledTools", defaults.Mcp.DisabledTools)),
-            new UiPreferences(
-                ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns),
-                ReadStringDoubleDict(ui, "LibraryGridColumnWidths", defaults.Ui.LibraryGridColumnWidths),
-                ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder),
-                ReadBool(ui, "ShowLibraryLeftSidebar", defaults.Ui.ShowLibraryLeftSidebar),
-                ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar)));
+            return new PatchouliAppSettings(
+                new AppRuntimeOptions(
+                    ExpandPath(ReadString(patchouli, "RuntimeDatabasePath", defaults.Runtime.RuntimeDatabasePath)),
+                    ExpandPath(ReadString(patchouli, "DefaultSyncRoot", defaults.Runtime.DefaultSyncRoot)),
+                    ExpandPath(ReadString(patchouli, "DefaultStagingRoot", defaults.Runtime.DefaultStagingRoot)),
+                    ExpandPath(ReadString(patchouli, "LogDirectory", defaults.Runtime.LogDirectory)),
+                    ExpandPath(ReadString(patchouli, "FileSearchRoot", defaults.Runtime.FileSearchRoot)),
+                    ReadBool(patchouli, "RememberLastDatabase", defaults.Runtime.RememberLastDatabase),
+                    ReadBool(patchouli, "UseMockOcrOnly", defaults.Runtime.UseMockOcrOnly)),
+                new MinerUAppSettings(
+                    ReadString(minerU, "BaseUrl", defaults.MinerU.BaseUrl),
+                    ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
+                    ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
+                    ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
+                    ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
+                    ReadString(minerU, "Token", defaults.MinerU.Token).Trim()),
+                new McpAppSettings(
+                    ReadInt(mcp, "Port", defaults.Mcp.Port),
+                    ReadBool(mcp, "BlockExternalAccess", defaults.Mcp.BlockExternalAccess),
+                    ReadString(mcp, "ServerToken", defaults.Mcp.ServerToken).Trim(),
+                    ReadStringBoolDict(mcp, "DisabledTools", defaults.Mcp.DisabledTools)),
+                new UiPreferences(
+                    ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns),
+                    ReadStringDoubleDict(ui, "LibraryGridColumnWidths", defaults.Ui.LibraryGridColumnWidths),
+                    ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder),
+                    ReadBool(ui, "ShowLibraryLeftSidebar", defaults.Ui.ShowLibraryLeftSidebar),
+                    ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar)))
+            {
+                MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup))
+            };
+        }
+        catch (JsonException)
+        {
+            return defaults;
+        }
+        catch (IOException)
+        {
+            return defaults;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return defaults;
+        }
     }
 
     public void Save(string? settingsPath = null)
@@ -118,9 +185,19 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         if (!string.IsNullOrWhiteSpace(directory))
             Directory.CreateDirectory(directory);
 
-        var payload = new
+        JsonObject root;
+        try
         {
-            Patchouli = new
+            root = File.Exists(path) && JsonNode.Parse(File.ReadAllText(path)) is JsonObject existing
+                ? existing
+                : new JsonObject();
+        }
+        catch (JsonException)
+        {
+            root = new JsonObject();
+        }
+
+        root["Patchouli"] = JsonSerializer.SerializeToNode(new
             {
                 Runtime.RuntimeDatabasePath,
                 Runtime.DefaultSyncRoot,
@@ -129,8 +206,8 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 Runtime.FileSearchRoot,
                 Runtime.RememberLastDatabase,
                 Runtime.UseMockOcrOnly
-            },
-            MinerU = new
+            });
+        root["MinerU"] = JsonSerializer.SerializeToNode(new
             {
                 MinerU.BaseUrl,
                 MinerU.ModelVersion,
@@ -138,25 +215,35 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
                 MinerU.EnableTable,
                 MinerU.EnableFormula,
                 MinerU.Token
-            },
-            Mcp = new
+            });
+        root["Mcp"] = JsonSerializer.SerializeToNode(new
             {
                 Mcp.Port,
                 Mcp.BlockExternalAccess,
                 Mcp.ServerToken,
                 Mcp.DisabledTools
-            },
-            Ui = new
+            });
+        root["Ui"] = JsonSerializer.SerializeToNode(new
             {
                 Ui.LibraryGridVisibleColumns,
                 Ui.LibraryGridColumnWidths,
                 Ui.LibraryGridColumnOrder,
                 Ui.ShowLibraryLeftSidebar,
                 Ui.ShowLibraryRightSidebar
-            }
-        };
+            });
+        root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
 
-        File.WriteAllText(path, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+        var temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temporaryPath, path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+                File.Delete(temporaryPath);
+        }
     }
 
     private static JsonElement? GetSection(JsonElement root, string name) =>
@@ -249,6 +336,26 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
             }
         }
         return dict;
+    }
+
+    private static IReadOnlyList<MetadataSourcePreference> ReadMetadataSources(JsonElement? section)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty("Sources", out var sources) ||
+            sources.ValueKind != JsonValueKind.Array)
+            return [];
+
+        var result = new List<MetadataSourcePreference>();
+        foreach (var source in sources.EnumerateArray())
+        {
+            if (source.ValueKind != JsonValueKind.Object)
+                continue;
+
+            var id = ReadString(source, "SourceId", string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(id))
+                result.Add(new MetadataSourcePreference(id, ReadBool(source, "Enabled", true)));
+        }
+        return result;
     }
 
     private static string ExpandPath(string value)
