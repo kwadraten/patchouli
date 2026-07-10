@@ -79,20 +79,67 @@ public sealed class McpProtocolHandler
         var id = "null";
         try
         {
-            using var doc = JsonDocument.Parse(line); var root = doc.RootElement; id = root.TryGetProperty("id", out var i) ? i.GetRawText() : "null"; var method = root.GetProperty("method").GetString(); var pars = root.TryGetProperty("params", out var p) ? p : default;
+            using var doc = JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return Error("null", -32600, "Invalid JSON-RPC request.");
+            }
+
+            id = root.TryGetProperty("id", out var i) ? i.GetRawText() : "null";
+            if (!root.TryGetProperty("method", out var methodElement) || methodElement.ValueKind != JsonValueKind.String)
+            {
+                return Error(id, -32600, "JSON-RPC method is required.");
+            }
+
+            var method = methodElement.GetString();
+            var pars = root.TryGetProperty("params", out var p) ? p : default;
+            if (method == "notifications/initialized")
+            {
+                return string.Empty;
+            }
+
             object result = method switch
             {
-                "initialize" => new { protocolVersion = "2024-11-05", serverInfo = new { name = "Patchouli", version = Patchouli.Core.BuildInfo.Version }, capabilities = new { tools = new { } } },
+                "initialize" => Initialize(pars),
                 "tools/list" => new { tools = Tools().Where(tool => IsToolEnabled(tool.Name)).Select(tool => tool.ToWire()).ToArray() },
                 "tools/call" => await CallAsync(pars, ct),
                 "shutdown" => new { },
-                _ => throw new InvalidOperationException("Unknown MCP method.")
+                _ => throw new MethodNotFoundException($"Method not found: {method}")
             };
             var json = $"{{\"jsonrpc\":\"2.0\",\"id\":{id},\"result\":{JsonSerializer.Serialize(result)}}}";
             return McpOutputSanitizer.Sanitize(json);
         }
-        catch (Exception ex) { return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":-32602,\"message\":\"" + McpOutputSanitizer.Sanitize(ex.Message) + "\"}}"; }
+        catch (JsonException ex) { return Error("null", -32700, ex.Message); }
+        catch (MethodNotFoundException ex) { return Error(id, -32601, ex.Message); }
+        catch (InvalidOperationException ex) { return Error(id, -32602, ex.Message); }
+        catch (Exception ex) { return Error(id, -32603, ex.Message); }
     }
+
+    private static object Initialize(JsonElement parameters)
+    {
+        var clientVersion = parameters.ValueKind == JsonValueKind.Object
+                            && parameters.TryGetProperty("protocolVersion", out var version)
+                            && version.ValueKind == JsonValueKind.String
+            ? version.GetString()
+            : null;
+        var protocolVersion = NegotiateProtocolVersion(clientVersion);
+        return new
+        {
+            protocolVersion,
+            serverInfo = new { name = "Patchouli", version = Patchouli.Core.BuildInfo.Version },
+            capabilities = new { tools = new { listChanged = true } }
+        };
+    }
+
+    private static string NegotiateProtocolVersion(string? clientVersion)
+    {
+        var supported = new[] { "2025-06-18", "2025-03-26", "2024-11-05" };
+        return supported.Contains(clientVersion, StringComparer.Ordinal) ? clientVersion! : supported[0];
+    }
+
+    private static string Error(string id, int code, string message)
+        => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + code + ",\"message\":" + JsonSerializer.Serialize(McpOutputSanitizer.Sanitize(message)) + "}}";
 
     private static ToolDefinition[] Tools() =>
     [
@@ -182,7 +229,7 @@ public sealed class McpProtocolHandler
             "render_items_bibliography" => await RenderItemsBibliographyAsync(a, ct),
             _ => Result<object>.Failure("unknown_tool", "Unknown tool.")
         };
-        return r.IsSuccess ? new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(r.Value) } } } : new { isError = true, content = new[] { new { type = "text", text = $"{r.ErrorCode}: {r.ErrorMessage}" } } };
+        return r.IsSuccess ? new { content = new[] { new { type = "text", text = JsonSerializer.Serialize(r.Value) } }, structuredContent = r.Value } : new { isError = true, content = new[] { new { type = "text", text = $"{r.ErrorCode}: {r.ErrorMessage}" } } };
     }
     private async Task<Result<object>> SearchAsync(JsonElement a, CancellationToken ct) { var q=a.GetProperty("query").GetString()??"";var req=new McpSearchLibraryRequest(q,a.TryGetProperty("limit",out var l)?l.GetInt32():10,a.TryGetProperty("cursor",out var c)?c.GetString():null,null,a.TryGetProperty("include_evidence_refs",out var e)?e.GetBoolean():true,a.TryGetProperty("profile_id",out var p)&&Guid.TryParse(p.GetString(),out var pid)?new SearchProfileId(pid):null,a.TryGetProperty("profile_alias",out var al)?al.GetString():null,a.TryGetProperty("include_rewrite_plan",out var rp)?rp.GetBoolean():true);return Wrap(await _api.SearchLibraryAsync(req,ct)); }
     private async Task<Result<object>> PageTextAsync(JsonElement a,CancellationToken ct){var page=await PageAsync(a,ct);if(page.IsFailure)return Result<object>.Failure(page.ErrorCode!,page.ErrorMessage!);return Wrap(await _api.GetPageTextAsync(new McpPageTextRequest(page.Value,a.TryGetProperty("mode",out var m)?m.GetString()??McpReadMode.Current:McpReadMode.Current,a.TryGetProperty("evidence_ref",out var e)?e.GetString():null,a.TryGetProperty("include_annotations",out var includeAnnotations)&&includeAnnotations.GetBoolean()),ct));}
@@ -210,9 +257,18 @@ public sealed class McpProtocolHandler
                 additionalProperties = false,
                 properties = Properties.ToDictionary(pair => pair.Key, pair => pair.Value.ToWire(), StringComparer.Ordinal),
                 required = Required
+            },
+            annotations = new
+            {
+                readOnlyHint = true,
+                destructiveHint = false,
+                idempotentHint = true,
+                openWorldHint = false
             }
         };
     }
+
+    private sealed class MethodNotFoundException(string message) : Exception(message);
 
     private sealed record ToolSchemaProperty(string Type, string Description, ToolSchemaProperty? Items = null)
     {

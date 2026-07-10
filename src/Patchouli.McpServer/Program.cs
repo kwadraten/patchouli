@@ -30,6 +30,7 @@ try
     var db = new SqliteConnectionFactory(options.Value.DatabasePath);
     var clock = new SystemClock();
     var blockingOperations = new BlockingOperationService(db, clock);
+    await new MigrationRunner(db, Path.Combine(AppContext.BaseDirectory, "migrations")).RunAsync();
     var settingsService = new McpServerSettingsService(db, clock, blockingOperations);
     var loadedSettings = await settingsService.GetSettingsAsync();
     if (loadedSettings.IsFailure)
@@ -52,7 +53,6 @@ try
     }
 
     var library = new LibraryIdentityService(db, clock);
-    await new MigrationRunner(db, Path.Combine(AppContext.BaseDirectory, "migrations")).RunAsync();
     var profiles = new SearchProfileService(db, library, clock);
     var search = new SqliteSearchService(db, profiles);
     var evidence = new EvidenceReferenceService(db, clock);

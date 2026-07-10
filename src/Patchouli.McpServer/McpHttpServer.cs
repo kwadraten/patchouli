@@ -6,6 +6,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Patchouli.Core.Mcp;
 using Patchouli.Mcp;
+using System.Text;
+using System.Text.Json;
 
 namespace Patchouli.McpServer;
 
@@ -26,7 +28,7 @@ public sealed class McpHttpServer : IAsyncDisposable
     {
         _handler = handler;
         _settings = settings;
-        Endpoint = $"http://{DisplayHost(settings.BindAddress)}:{settings.Port}";
+        Endpoint = $"http://{DisplayHost(settings.BindAddress)}:{settings.Port}/mcp";
     }
 
     public string Endpoint { get; }
@@ -112,8 +114,9 @@ public sealed class McpHttpServer : IAsyncDisposable
             });
         }
         app.MapGet("/health", () => Results.Json(new { status = "ok" }));
-        app.MapPost("/", (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, _handler, _settings, ct));
+        app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
         app.MapPost("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, _handler, _settings, ct));
+        app.MapMethods("/mcp", ["OPTIONS"], (HttpContext context) => HandleMcpOptions(context, _settings));
         return app;
     }
 
@@ -154,6 +157,11 @@ public sealed class McpHttpServer : IAsyncDisposable
             return Results.Json(new { error = McpErrorCodes.Unauthorized }, statusCode: StatusCodes.Status401Unauthorized);
         }
 
+        if (!IsJsonRequest(context))
+        {
+            return Results.Text("Unsupported media type. Use application/json.", "text/plain", statusCode: StatusCodes.Status415UnsupportedMediaType);
+        }
+
         using var reader = new StreamReader(context.Request.Body);
         var request = await reader.ReadToEndAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(request))
@@ -161,8 +169,99 @@ public sealed class McpHttpServer : IAsyncDisposable
             return Results.BadRequest(new { error = "Request body is required." });
         }
 
+        if (IsJsonRpcNotification(request))
+        {
+            await handler.HandleAsync(request, cancellationToken);
+            return Results.Accepted();
+        }
+
         var response = await handler.HandleAsync(request, cancellationToken);
         return Results.Text(response, "application/json");
+    }
+
+    private static async Task HandleMcpSseAsync(
+        HttpContext context,
+        McpServerSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (RequiresAuthentication(settings) && !IsAuthorized(context, settings.Token))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await context.Response.WriteAsJsonAsync(new { error = McpErrorCodes.Unauthorized }, cancellationToken);
+            return;
+        }
+
+        if (!AcceptsEventStream(context))
+        {
+            context.Response.StatusCode = StatusCodes.Status406NotAcceptable;
+            await context.Response.WriteAsJsonAsync(new
+            {
+                name = "Patchouli MCP",
+                transport = "streamable_http",
+                endpoint = "/mcp"
+            }, cancellationToken);
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status200OK;
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache";
+        context.Response.Headers.Connection = "keep-alive";
+
+        try
+        {
+            await WriteSseCommentAsync(context, "connected", cancellationToken);
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await WriteSseCommentAsync(context, "keepalive", cancellationToken);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private static IResult HandleMcpOptions(HttpContext context, McpServerSettings settings)
+    {
+        if (settings.CorsEnabled)
+        {
+            var origin = settings.AllowedOrigins.Count == 0 ? "*" : string.Join(", ", settings.AllowedOrigins);
+            context.Response.Headers.AccessControlAllowOrigin = origin;
+            context.Response.Headers.AccessControlAllowMethods = "GET, POST, OPTIONS";
+            context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, Accept";
+        }
+        return Results.NoContent();
+    }
+
+    private static async Task WriteSseCommentAsync(HttpContext context, string comment, CancellationToken cancellationToken)
+    {
+        var builder = new StringBuilder();
+        builder.Append(": ").Append(comment).Append('\n');
+        builder.Append('\n');
+        await context.Response.WriteAsync(builder.ToString(), cancellationToken);
+        await context.Response.Body.FlushAsync(cancellationToken);
+    }
+
+    private static bool AcceptsEventStream(HttpContext context)
+        => context.Request.Headers.Accept.Any(value => value?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
+
+    private static bool IsJsonRequest(HttpContext context)
+        => context.Request.ContentType?.Contains("application/json", StringComparison.OrdinalIgnoreCase) == true;
+
+    private static bool IsJsonRpcNotification(string request)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(request);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                   && document.RootElement.TryGetProperty("method", out _)
+                   && !document.RootElement.TryGetProperty("id", out _);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool RequiresAuthentication(McpServerSettings settings)
