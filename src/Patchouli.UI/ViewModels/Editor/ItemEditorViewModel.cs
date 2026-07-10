@@ -14,6 +14,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
     private string _family = "";
     private string _given = "";
     private string _literal = "";
+    private string _suffix = "";
+    private string _particles = "";
+    private string _name = "";
+    private bool _isLiteral;
+    private bool _isApplyingName;
 
     public string Role
     {
@@ -34,6 +39,20 @@ public sealed class CreatorItemViewModel : ViewModelBase
             if (_literal == value) return;
             _literal = value;
             Raise();
+            if (_isApplyingName) return;
+
+            _isLiteral = !string.IsNullOrWhiteSpace(value);
+            _name = _isLiteral ? value : _name;
+            if (_isLiteral)
+            {
+                _family = "";
+                _given = "";
+                Raise(nameof(Name));
+                Raise(nameof(IsLiteral));
+                Raise(nameof(IsPersonalName));
+                Raise(nameof(Family));
+                Raise(nameof(Given));
+            }
         }
     }
 
@@ -59,6 +78,55 @@ public sealed class CreatorItemViewModel : ViewModelBase
         }
     }
 
+    public string Suffix
+    {
+        get => _suffix;
+        set
+        {
+            if (_suffix == value) return;
+            _suffix = value;
+            Raise();
+        }
+    }
+
+    public string Particles
+    {
+        get => _particles;
+        set
+        {
+            if (_particles == value) return;
+            _particles = value;
+            Raise();
+        }
+    }
+
+    public string Name
+    {
+        get => _name;
+        set
+        {
+            if (_name == value) return;
+            _name = value;
+            Raise();
+            ApplyNameParts();
+        }
+    }
+
+    public bool IsLiteral
+    {
+        get => _isLiteral;
+        set
+        {
+            if (_isLiteral == value) return;
+            _isLiteral = value;
+            Raise();
+            Raise(nameof(IsPersonalName));
+            ApplyNameParts();
+        }
+    }
+
+    public bool IsPersonalName => !_isLiteral;
+
     public IReadOnlyList<string> AvailableRoles { get; } = new[]
     {
         ItemCreatorRoles.Author,
@@ -77,6 +145,80 @@ public sealed class CreatorItemViewModel : ViewModelBase
             return Task.CompletedTask;
         });
     }
+
+    public void LoadFrom(ItemCreator creator)
+    {
+        _isApplyingName = true;
+        _role = creator.Role;
+        _family = creator.Family ?? "";
+        _given = creator.Given ?? "";
+        _literal = creator.Literal ?? "";
+        _suffix = creator.Suffix ?? "";
+        _particles = creator.Particles ?? "";
+        _isLiteral = !string.IsNullOrWhiteSpace(_literal);
+        _name = _isLiteral
+            ? _literal
+            : FormatPersonalName(_family, _given, _particles, _suffix);
+        _isApplyingName = false;
+
+        Raise(nameof(Role));
+        Raise(nameof(Name));
+        Raise(nameof(IsLiteral));
+        Raise(nameof(IsPersonalName));
+        Raise(nameof(Family));
+        Raise(nameof(Given));
+        Raise(nameof(Literal));
+        Raise(nameof(Suffix));
+        Raise(nameof(Particles));
+    }
+
+    private void ApplyNameParts()
+    {
+        var parts = ItemCreatorNameParser.Parse(
+            _name,
+            _isLiteral ? ItemCreatorNameMode.Literal : ItemCreatorNameMode.Personal);
+        _isApplyingName = true;
+        _family = parts.Family ?? "";
+        _given = parts.Given ?? "";
+        _literal = parts.Literal ?? "";
+        _suffix = parts.Suffix ?? "";
+        _particles = parts.Particles ?? "";
+        _isApplyingName = false;
+
+        Raise(nameof(Family));
+        Raise(nameof(Given));
+        Raise(nameof(Literal));
+        Raise(nameof(Suffix));
+        Raise(nameof(Particles));
+    }
+
+    private static string FormatPersonalName(string family, string given, string particles, string suffix)
+        => string.Join(" ", new[] { given, particles, family, suffix }
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+}
+
+public sealed class LinkedDocumentInstanceItemViewModel : ViewModelBase
+{
+    public LinkedDocumentInstanceItemViewModel(
+        DocumentInstance document,
+        string displayName,
+        Func<DocumentInstanceId, Task> setPrimary)
+    {
+        DocumentInstanceId = document.DocumentInstanceId;
+        DisplayName = displayName;
+        InstanceType = document.InstanceType;
+        Status = document.Status;
+        IsPrimary = document.IsPrimary;
+        SetPrimaryCommand = new AsyncCommand(() => setPrimary(DocumentInstanceId));
+    }
+
+    public DocumentInstanceId DocumentInstanceId { get; }
+    public string DisplayName { get; }
+    public string InstanceType { get; }
+    public string Status { get; }
+    public bool IsPrimary { get; }
+    public bool CanSetPrimary => !IsPrimary;
+    public AsyncCommand SetPrimaryCommand { get; }
 }
 
 public sealed class ItemEditorViewModel : ViewModelBase
@@ -245,7 +387,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     }
     
     public ObservableCollection<string> Identifiers { get; } = new();
-    public ObservableCollection<string> LinkedFiles { get; } = new();
+    public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
     
     public AsyncCommand NewCommand { get; }
     public AsyncCommand SaveCommand { get; }
@@ -268,13 +410,29 @@ public sealed class ItemEditorViewModel : ViewModelBase
             Raise();
         }
     }
-    public string IdentifierValue { get; set; } = "";
-    public string IdentifierNote { get; set; } = "";
-
-    public IReadOnlyList<string> AvailableIdentifierSchemes { get; } = new[]
+    private string _identifierValue = "";
+    public string IdentifierValue
     {
-        "DOI", "ISBN", "URL", "ISSN", "PMID", "PMC", "arXiv"
-    };
+        get => _identifierValue;
+        set
+        {
+            if (_identifierValue == value) return;
+            _identifierValue = value;
+            Raise();
+        }
+    }
+
+    private string _identifierNote = "";
+    public string IdentifierNote
+    {
+        get => _identifierNote;
+        set
+        {
+            if (_identifierNote == value) return;
+            _identifierNote = value;
+            Raise();
+        }
+    }
 
     public Task NewAsync()
     {
@@ -350,13 +508,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
         foreach (var creator in item.Value.Creators)
         {
-            _creatorCache.Add(new CreatorItemViewModel(c => _creatorCache.Remove(c))
-            {
-                Role = creator.Role,
-                Family = creator.Family ?? "",
-                Given = creator.Given ?? "",
-                Literal = creator.Literal ?? ""
-            });
+            var editableCreator = new CreatorItemViewModel(c => _creatorCache.Remove(c));
+            editableCreator.LoadFrom(creator);
+            _creatorCache.Add(editableCreator);
         }
 
         Fields.Clear();
@@ -422,11 +576,14 @@ public sealed class ItemEditorViewModel : ViewModelBase
         
         var creatorField = GetCreatorField();
         var creators = creatorField?.Creators
-            .Select(c => new ItemCreatorInput(
-                c.Role,
-                Family: NullIfWhiteSpace(c.Family),
-                Given: NullIfWhiteSpace(c.Given),
-                Literal: NullIfWhiteSpace(c.Literal)))
+            .Select(c => c.IsLiteral
+                ? new ItemCreatorInput(c.Role, Literal: NullIfWhiteSpace(c.Name))
+                : new ItemCreatorInput(
+                    c.Role,
+                    Family: NullIfWhiteSpace(c.Family),
+                    Given: NullIfWhiteSpace(c.Given),
+                    Suffix: NullIfWhiteSpace(c.Suffix),
+                    Particles: NullIfWhiteSpace(c.Particles)))
             .Where(c => c.Family is not null || c.Given is not null || c.Literal is not null)
             .ToList() ?? new List<ItemCreatorInput>();
             
@@ -507,9 +664,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private async Task AddIdentifierAsync()
     {
-        if (string.IsNullOrWhiteSpace(IdentifierValue))
+        if (string.IsNullOrWhiteSpace(IdentifierScheme) || string.IsNullOrWhiteSpace(IdentifierValue))
         {
-            Status = "标识符内容不能为空。";
+            Status = "标识符类型和值不能为空。";
             Raise(nameof(Status));
             _main.Report(Status);
             return;
@@ -575,9 +732,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
             asset.Value.FileAssetId,
             DocumentInstanceType.PrimaryScan,
             GetFieldValue("Title"),
-            makePrimary: true);
+            makePrimary: false);
 
-        Status = document.IsSuccess ? "关联文件已注册并设为主文档。" : document.ErrorMessage ?? "主文档挂载失败。";
+        Status = document.IsSuccess
+            ? document.Value.IsPrimary ? "关联文件已注册并设为主要文件。" : "关联文件已注册。"
+            : document.ErrorMessage ?? "关联文件挂载失败。";
         await RefreshLinkedFilesAsync();
         RaiseAll();
         _main.Report(Status);
@@ -601,7 +760,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         {
             foreach (var identifier in identifiers.Value)
             {
-                Identifiers.Add($"{identifier.Scheme}: {identifier.Value}");
+                Identifiers.Add(FormatIdentifier(new ItemIdentifierInput(identifier.Scheme, identifier.Value, identifier.Note)));
             }
         }
     }
@@ -614,22 +773,49 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        await using var connection = (await _main.ServicesAsync()).ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        var rows = await Dapper.SqlMapper.QueryAsync<string>(
-            connection,
-            """
-            select coalesce(f.file_name, d.title, d.document_instance_id)
-            from document_instances d
-            left join file_assets f on f.file_asset_id = d.file_asset_id
-            where d.item_id = @ItemId
-            order by d.is_primary desc, d.created_at;
-            """,
-            new { ItemId = _itemId.Value.ToString() });
-        foreach (var row in rows)
+        var services = await _main.ServicesAsync();
+        var documents = await services.Documents.ListDocumentInstancesForItemAsync(_itemId.Value);
+        if (documents.IsFailure)
         {
-            LinkedFiles.Add(row);
+            Status = documents.ErrorMessage ?? "无法加载关联文件。";
+            return;
         }
+
+        foreach (var document in documents.Value.OrderByDescending(document => document.IsPrimary).ThenBy(document => document.CreatedAt))
+        {
+            var displayName = document.Title ?? document.DocumentInstanceId.ToString();
+            if (document.FileAssetId is not null)
+            {
+                var fileAsset = await services.Files.GetFileAssetAsync(document.FileAssetId.Value);
+                if (fileAsset.IsSuccess)
+                {
+                    displayName = fileAsset.Value.FileName;
+                }
+            }
+
+            LinkedFiles.Add(new LinkedDocumentInstanceItemViewModel(document, displayName, SetPrimaryDocumentAsync));
+        }
+    }
+
+    private async Task SetPrimaryDocumentAsync(DocumentInstanceId documentInstanceId)
+    {
+        if (_itemId is null)
+        {
+            Status = "请先保存题录，再设置主要文件。";
+            return;
+        }
+
+        var result = await (await _main.ServicesAsync()).Documents.SetPrimaryDocumentInstanceAsync(
+            _itemId.Value,
+            documentInstanceId);
+        Status = result.IsSuccess ? "主要文件已切换。" : result.ErrorMessage ?? "主要文件切换失败。";
+        if (!result.IsSuccess)
+        {
+            return;
+        }
+
+        await RefreshLinkedFilesAsync();
+        await _main.Shell.RefreshItemsAsync();
     }
 
     private IReadOnlyList<ItemDateInput> BuildDates()
@@ -771,7 +957,10 @@ public sealed class ItemEditorViewModel : ViewModelBase
             nameof(Status),
             nameof(IsGeneralTypeWarningVisible),
             nameof(CslPreviewText),
-            nameof(HasCslPreviewWarning)
+            nameof(HasCslPreviewWarning),
+            nameof(IdentifierScheme),
+            nameof(IdentifierValue),
+            nameof(IdentifierNote)
         })
         {
             Raise(property);

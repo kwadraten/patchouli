@@ -54,13 +54,20 @@
                                         <ItemsControl ItemsSource="{Binding Creators}">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate DataType="editor:CreatorItemViewModel">
-                                                    <Grid ColumnDefinitions="110,*,*,*,Auto" ColumnSpacing="8" Margin="0,0,0,8">
-                                                        <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableRoles}" SelectedItem="{Binding Role}" HorizontalAlignment="Stretch" />
-                                                        <TextBox Grid.Column="1" Text="{Binding Family}" PlaceholderText="姓 / 机构名" />
-                                                        <TextBox Grid.Column="2" Text="{Binding Given}" PlaceholderText="名" />
-                                                        <TextBox Grid.Column="3" Text="{Binding Literal}" PlaceholderText="整体署名" />
-                                                        <Button Grid.Column="4" Content="移除" Command="{Binding RemoveCommand}" Width="64" HorizontalContentAlignment="Center" />
-                                                    </Grid>
+                                                    <StackPanel Spacing="6" Margin="0,0,0,8">
+                                                        <Grid ColumnDefinitions="110,*,Auto,Auto" ColumnSpacing="8">
+                                                            <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableRoles}" SelectedItem="{Binding Role}" HorizontalAlignment="Stretch" />
+                                                            <TextBox Grid.Column="1" Text="{Binding Name}" PlaceholderText="姓名" />
+                                                            <CheckBox Grid.Column="2" Content="整体署名" IsChecked="{Binding IsLiteral}" VerticalAlignment="Center" />
+                                                            <Button Grid.Column="3" Content="移除" Command="{Binding RemoveCommand}" Width="64" HorizontalContentAlignment="Center" />
+                                                        </Grid>
+                                                        <Expander Header="修正姓和名" IsVisible="{Binding IsPersonalName}">
+                                                            <Grid ColumnDefinitions="*,*" ColumnSpacing="8" Margin="0,6,0,0">
+                                                                <TextBox Grid.Column="0" Text="{Binding Family}" PlaceholderText="姓" />
+                                                                <TextBox Grid.Column="1" Text="{Binding Given}" PlaceholderText="名" />
+                                                            </Grid>
+                                                        </Expander>
+                                                    </StackPanel>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
                                         </ItemsControl>
@@ -99,10 +106,12 @@
                             </ItemsControl>
                         </ScrollViewer>
                         <Separator Background="{DynamicResource OutlineVariantBrush}" Margin="0,4" />
-                        <Grid ColumnDefinitions="90,*,Auto" ColumnSpacing="8">
-                            <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableIdentifierSchemes}" SelectedItem="{Binding IdentifierScheme}" HorizontalAlignment="Stretch" />
+                        <TextBlock Text="类型可自定义；常用值包括 DOI、ISBN、ISSN、URL、PMID、PMC、arXiv。" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                        <Grid ColumnDefinitions="120,*,*,Auto" ColumnSpacing="8">
+                            <TextBox Grid.Column="0" Text="{Binding IdentifierScheme}" PlaceholderText="类型" />
                             <TextBox Grid.Column="1" Text="{Binding IdentifierValue}" PlaceholderText="值" />
-                            <Button Grid.Column="2" Content="添加" Command="{Binding AddIdentifierCommand}" />
+                            <TextBox Grid.Column="2" Text="{Binding IdentifierNote}" PlaceholderText="备注（可选）" />
+                            <Button Grid.Column="3" Content="添加" Command="{Binding AddIdentifierCommand}" />
                         </Grid>
                     </StackPanel>
                 </Border>
@@ -113,8 +122,15 @@
                         <ScrollViewer MaxHeight="150">
                             <ItemsControl ItemsSource="{Binding LinkedFiles}">
                                 <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" Margin="0,0,0,6" />
+                                    <DataTemplate DataType="editor:LinkedDocumentInstanceItemViewModel">
+                                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,6">
+                                            <StackPanel Spacing="2">
+                                                <TextBlock Text="{Binding DisplayName}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding Status}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1" Text="主要文件" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" VerticalAlignment="Center" IsVisible="{Binding IsPrimary}" />
+                                            <Button Grid.Column="2" Content="设为主要文件" Command="{Binding SetPrimaryCommand}" IsVisible="{Binding CanSetPrimary}" />
+                                        </Grid>
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>

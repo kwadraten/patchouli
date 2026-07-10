@@ -21,8 +21,28 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                 hiddenByDefaultFields: ["container-title-short", "call-number", "archive"],
                 renderableInCsl: false),
             Create("book", "Book", "Monographs and books.", ["title", "author"], ["publisher", "issued", "ISBN"], ["collection-title", "extra_csl"]),
-            Create("article-journal", "Journal Article", "Articles published in journals.", ["title", "author", "container-title"], ["issued", "volume", "issue", "pages", "DOI"], ["extra_csl"]),
-            Create("chapter", "Book Chapter", "Chapters within edited volumes.", ["title", "author", "container-title"], ["publisher", "issued", "pages", "ISBN"], ["extra_csl"]),
+            Create(
+                "article-journal",
+                "Journal Article",
+                "Articles published in journals.",
+                ["title", "author", "container-title"],
+                ["issued", "volume", "issue", "pages", "DOI"],
+                ["extra_csl"],
+                fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["container-title"] = "期刊名"
+                }),
+            Create(
+                "chapter",
+                "Book Chapter",
+                "Chapters within edited volumes.",
+                ["title", "author", "container-title"],
+                ["publisher", "issued", "pages", "ISBN"],
+                ["extra_csl"],
+                fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["container-title"] = "文献出处"
+                }),
             Create("thesis", "Thesis", "Dissertations and theses.", ["title", "author"], ["publisher", "issued"], ["genre", "DOI", "extra_csl"]),
             Create("report", "Report", "Institutional or technical reports.", ["title", "author"], ["publisher", "issued", "number"], ["DOI", "extra_csl"]),
             Create("webpage", "Web Page", "Online web pages.", ["title"], ["author", "issued", "accessed"], ["URL", "extra_csl"]),
@@ -68,18 +88,27 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
         IReadOnlyList<string>? dateRoles = null,
         IReadOnlyList<string>? identifierSchemes = null,
         IReadOnlyList<string>? hiddenByDefaultFields = null,
+        IReadOnlyDictionary<string, string>? fieldLabels = null,
         bool renderableInCsl = true)
     {
         var labels = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["title"] = "Title",
-            ["author"] = "Author",
-            ["issued"] = "Issued",
-            ["publisher"] = "Publisher",
-            ["container-title"] = "Container Title",
-            ["pages"] = "Pages",
-            ["extra_csl"] = "Extra CSL"
+            ["title"] = "标题",
+            ["author"] = "作者/贡献者",
+            ["issued"] = "日期",
+            ["publisher"] = "出版社/机构",
+            ["container-title"] = "文献出处",
+            ["pages"] = "页码",
+            ["extra_csl"] = "更多 CSL 字段"
         };
+
+        if (fieldLabels is not null)
+        {
+            foreach (var (field, label) in fieldLabels)
+            {
+                labels[field] = label;
+            }
+        }
 
         return new CslItemTypeProfile(
             itemType,

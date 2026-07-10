@@ -50,6 +50,24 @@ public static class CslItemTypeProfileService
         if (profile is null || profile.ItemType == "general") return AlwaysVisible;
 
         var keys = profile.PrimaryFields.Concat(profile.RecommendedFields).Concat(profile.AdvancedFields);
-        return keys.Select(field => KnownFields.GetValueOrDefault(field)).Where(field => field is not null).Cast<ItemFieldDefinition>().Concat(AlwaysVisible).DistinctBy(field => field.Key).ToArray();
+        return keys
+            .Select(field => ResolveField(profile, field))
+            .Where(field => field is not null)
+            .Cast<ItemFieldDefinition>()
+            .Concat(AlwaysVisible)
+            .DistinctBy(field => field.Key)
+            .ToArray();
+    }
+
+    private static ItemFieldDefinition? ResolveField(CslItemTypeProfile profile, string cslField)
+    {
+        if (!KnownFields.TryGetValue(cslField, out var field))
+        {
+            return null;
+        }
+
+        return profile.FieldLabels.TryGetValue(cslField, out var label)
+            ? field with { Label = label }
+            : field;
     }
 }
