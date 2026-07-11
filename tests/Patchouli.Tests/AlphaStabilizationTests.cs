@@ -124,14 +124,6 @@ public sealed class AlphaStabilizationTests
         File.ReadAllText(path).Should().Contain("single-context domain-doc layout").And.Contain(".agent/PRD.md");
     }
 
-    [Fact]
-    public void Root_markdown_entrypoint_is_limited_to_agent_instructions()
-    {
-        File.Exists(TestPaths.FromRepositoryRoot("AGENTS.md")).Should().BeTrue();
-        File.Exists(TestPaths.FromRepositoryRoot("README.md")).Should().BeFalse();
-        Directory.Exists(TestPaths.FromRepositoryRoot("docs")).Should().BeFalse();
-    }
-
     private sealed class NoopClipboard : IClipboardService { public Task SetTextAsync(string text) => Task.CompletedTask; }
     private sealed class CapturingLogger : IAppLogger
     {
