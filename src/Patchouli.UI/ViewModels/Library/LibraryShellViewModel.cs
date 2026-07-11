@@ -264,24 +264,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     }
 
     private Task RefreshItemsOnUiThreadAsync()
-    {
-        if (Dispatcher.UIThread.CheckAccess()) return RefreshItemsAsync();
-
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Dispatcher.UIThread.Post(async () =>
-        {
-            try
-            {
-                await RefreshItemsAsync();
-                completion.SetResult();
-            }
-            catch (Exception exception)
-            {
-                completion.SetException(exception);
-            }
-        });
-        return completion.Task;
-    }
+        => DispatcherTasks.RunAsync(RefreshItemsAsync);
 
     public async Task RunOcrForItemAsync(LibraryItemViewModel item)
     {

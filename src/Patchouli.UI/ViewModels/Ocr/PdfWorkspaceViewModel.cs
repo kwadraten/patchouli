@@ -154,7 +154,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IsDrawing = false;
         if (SelectionWidth > 5 && SelectionHeight > 5)
         {
-            _ = CreateBBoxFromSelectionAsync();
+            CreateBBoxFromSelectionAsync().Observe(nameof(PdfWorkspaceViewModel), nameof(CreateBBoxFromSelectionAsync));
         }
         SelectionWidth = 0;
         SelectionHeight = 0;

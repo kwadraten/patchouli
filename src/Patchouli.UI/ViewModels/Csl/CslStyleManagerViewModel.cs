@@ -60,7 +60,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
             Raise();
             if (!_loadingCatalogSources && value is not null)
             {
-                _ = ChangeCatalogSourceAsync(value);
+                ChangeCatalogSourceAsync(value).Observe(nameof(CslStyleManagerViewModel), nameof(ChangeCatalogSourceAsync));
             }
         }
     }

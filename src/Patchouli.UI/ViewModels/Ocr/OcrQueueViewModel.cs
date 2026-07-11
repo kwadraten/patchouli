@@ -294,24 +294,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
     }
 
     private Task RefreshOnUiThreadAsync()
-    {
-        if (Dispatcher.UIThread.CheckAccess()) return RefreshAsync();
-
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Dispatcher.UIThread.Post(async () =>
-        {
-            try
-            {
-                await RefreshAsync();
-                completion.SetResult();
-            }
-            catch (Exception ex)
-            {
-                completion.SetException(ex);
-            }
-        });
-        return completion.Task;
-    }
+        => DispatcherTasks.RunAsync(RefreshAsync);
 
     private void EnsureAutoRefreshLoop()
     {

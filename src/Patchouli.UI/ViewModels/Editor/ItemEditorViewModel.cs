@@ -322,7 +322,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             _itemType = value; 
             Raise(); 
             Raise(nameof(IsGeneralTypeWarningVisible));
-            _ = BuildFieldsAsync();
+            BuildFieldsAsync().Observe(nameof(ItemEditorViewModel), nameof(BuildFieldsAsync));
             UpdateUnsavedCslPreviewState();
         } 
     }

@@ -45,7 +45,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             {
                 _settings = _settings with { Port = value };
                 Raise();
-                _ = SaveAsync();
+                ObserveSave();
             }
         }
     }
@@ -61,7 +61,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             Raise();
             Raise(nameof(AllowExternalAccess));
             Raise(nameof(IsAllowExternalAccessWarningVisible));
-            _ = SaveAsync();
+            ObserveSave();
         }
     }
 
@@ -76,7 +76,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             Raise();
             Raise(nameof(BindAddress));
             Raise(nameof(IsAllowExternalAccessWarningVisible));
-            _ = SaveAsync();
+            ObserveSave();
         }
     }
 
@@ -90,7 +90,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             if (_settings.CorsEnabled == value) return;
             _settings = _settings with { CorsEnabled = value };
             Raise();
-            _ = SaveAsync();
+            ObserveSave();
         }
     }
 
@@ -105,7 +105,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             if (_settings.AllowedOrigins.SequenceEqual(origins, StringComparer.Ordinal)) return;
             _settings = _settings with { AllowedOrigins = origins };
             Raise();
-            _ = SaveAsync();
+            ObserveSave();
         }
     }
 
@@ -117,7 +117,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             if (_settings.AuthRequired == value) return;
             _settings = _settings with { AuthRequired = value };
             Raise();
-            _ = SaveAsync();
+            ObserveSave();
         }
     }
 
@@ -132,7 +132,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
                 _settings = _settings with { Token = next };
                 Raise();
                 Raise(nameof(IsAllowExternalAccessWarningVisible));
-                _ = SaveAsync();
+                ObserveSave();
             }
         }
     }
@@ -184,12 +184,14 @@ public sealed class McpSettingsViewModel : ViewModelBase
         Status = "已保存 (重启服务生效)";
     }
 
+    private void ObserveSave() => SaveAsync().Observe(nameof(McpSettingsViewModel), nameof(SaveAsync));
+
     internal void UpdateToolOverride(string toolName, bool enabled)
     {
         var overrides = _settings.ToolOverrides.Where(value => value.ToolName != toolName).ToList();
         if (!enabled) overrides.Add(new McpToolOverride(toolName, false, "Disabled in Patchouli settings."));
         _settings = _settings with { ToolOverrides = overrides.OrderBy(value => value.ToolName, StringComparer.Ordinal).ToArray() };
-        _ = SaveAsync();
+        ObserveSave();
     }
 
     private void ReloadToolOverrides()

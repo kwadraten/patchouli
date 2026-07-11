@@ -81,11 +81,11 @@ public sealed class SettingsViewModel : ViewModelBase
             Raise();
             if (ReferenceEquals(value?.Content, McpSettings))
             {
-                _ = McpSettings.LoadAsync();
+                McpSettings.LoadAsync().Observe(nameof(SettingsViewModel), nameof(McpSettings.LoadAsync));
             }
             if (ReferenceEquals(value?.Content, LibrarySettings))
             {
-                _ = LibrarySettings.LoadFileSearchRootsAsync();
+                LibrarySettings.LoadFileSearchRootsAsync().Observe(nameof(SettingsViewModel), nameof(LibrarySettings.LoadFileSearchRootsAsync));
             }
         }
     }

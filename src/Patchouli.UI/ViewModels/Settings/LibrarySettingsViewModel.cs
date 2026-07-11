@@ -20,7 +20,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
         _main = main;
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
-        _ = LoadFileSearchRootsAsync();
+        LoadFileSearchRootsAsync().Observe(nameof(LibrarySettingsViewModel), nameof(LoadFileSearchRootsAsync));
     }
 
     public async Task LoadFileSearchRootsAsync()
