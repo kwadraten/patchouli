@@ -217,10 +217,12 @@ public sealed class AppServices
         AppPathGuard.ValidateMutablePath(settings.Runtime.LogDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var logger = new SimpleFileLogger(settings.Runtime.LogDirectory);
-        try { await logger.LogAsync("startup", $"Opening runtime database {path}"); } catch { }
+        try { await logger.LogAsync("startup", $"Opening runtime database {path}"); }
+        catch (Exception exception) { UnexpectedExceptions.Sink.Report(exception, "operation-log", "startup"); }
         var services = new AppServices(path, settings);
         await services.MigrationRunner.RunAsync();
-        try { await logger.LogAsync("migration", "Pending migrations completed."); } catch { }
+        try { await logger.LogAsync("migration", "Pending migrations completed."); }
+        catch (Exception exception) { UnexpectedExceptions.Sink.Report(exception, "operation-log", "migration"); }
         return services;
     }
 }

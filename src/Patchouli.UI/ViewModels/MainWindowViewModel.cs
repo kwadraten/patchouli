@@ -979,7 +979,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public async Task LogOperationAsync(string operation, string message)
     {
         try { await Logger.LogAsync(operation, message); }
-        catch { }
+        catch (Exception exception) { UnexpectedExceptions.Sink.Report(exception, "operation-log", operation); }
     }
 
     private T? GetWorkspaceContent<T>(WorkspaceTabKind kind) where T : ViewModelBase =>

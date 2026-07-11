@@ -538,7 +538,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public async void Refresh()
     {
-        try { await RefreshItemsAsync(); } catch { }
+        await UnexpectedExceptionBoundary.RunAsync(RefreshItemsAsync, "refresh-library-shell");
         Raise(nameof(StatusText));
         Raise(nameof(LibraryName));
     }
