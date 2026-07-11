@@ -599,7 +599,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
             var syncRoot = Directory.GetParent(Directory.GetParent(Path.GetFullPath(request.ManifestPath))!.FullName)!.FullName;
             var firstShard = manifest.Shards.First();
             var stagingPath = Path.Combine(request.StagingRoot, $"{manifest.SnapshotId}.staging.sqlite");
-            File.Copy(Path.Combine(syncRoot, firstShard.FileName), stagingPath, overwrite: true);
+            await CopyFileAsync(Path.Combine(syncRoot, firstShard.FileName), stagingPath, cancellationToken);
             foreach (var shard in manifest.Shards.Skip(1))
             {
                 await MergeDataShardIntoStagingAsync(stagingPath, Path.Combine(syncRoot, shard.FileName), cancellationToken);
@@ -607,7 +607,10 @@ public sealed class SnapshotImporter : ISnapshotImporter
 
             foreach (var shard in manifest.SensitiveMutableShards)
             {
-                File.Copy(Path.Combine(syncRoot, shard.FileName), Path.Combine(request.StagingRoot, Path.GetFileName(shard.FileName)), overwrite: true);
+                await CopyFileAsync(
+                    Path.Combine(syncRoot, shard.FileName),
+                    Path.Combine(request.StagingRoot, Path.GetFileName(shard.FileName)),
+                    cancellationToken);
             }
 
             await TryCompleteValidationOperationAsync(
@@ -618,6 +621,20 @@ public sealed class SnapshotImporter : ISnapshotImporter
         }
         catch (OperationCanceledException)
         {
+            if (_blockingOperations is not null && validationOperationId is not null)
+            {
+                try
+                {
+                    await _blockingOperations.CancelAsync(
+                        validationOperationId.Value,
+                        "Snapshot import was cancelled.",
+                        ["Retry import when ready"],
+                        CancellationToken.None);
+                }
+                catch
+                {
+                }
+            }
             throw;
         }
         catch (Exception exception)
@@ -660,6 +677,27 @@ public sealed class SnapshotImporter : ISnapshotImporter
         }
         await connection.ExecuteAsync("detach database shard;");
         await connection.ExecuteAsync("pragma foreign_keys = on;");
+    }
+
+    private static async Task CopyFileAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
+    {
+        const int bufferSize = 1024 * 128;
+        await using var source = new FileStream(
+            sourcePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize,
+            useAsync: true);
+        await using var destination = new FileStream(
+            destinationPath,
+            FileMode.Create,
+            FileAccess.Write,
+            FileShare.None,
+            bufferSize,
+            useAsync: true);
+        await source.CopyToAsync(destination, bufferSize, cancellationToken);
+        await destination.FlushAsync(cancellationToken);
     }
 
     private static async Task<bool> TableExistsAsync(SqliteConnection connection, string table, string schema)
@@ -706,7 +744,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 BlockingOperationTypes.SnapshotImportValidation,
                 BlockingOperationScopeTypes.SnapshotImport,
                 Path.GetFileName(manifestPath),
-                canCancel: false,
+                canCancel: true,
                 progressLabel: "Validating snapshot import.",
                 nextActions: ["Review snapshot manifest", "Retry import after fixing snapshot files"],
                 cancellationToken: cancellationToken);
