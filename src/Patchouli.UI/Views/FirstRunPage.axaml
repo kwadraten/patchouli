@@ -45,7 +45,7 @@
 </Border>
     <Grid Grid.Column="1" Background="{DynamicResource SurfaceBrush}">
 <Grid IsVisible="{ReflectionBinding $parent[UserControl].DataContext.IsFirstRunVisible}" DataContext="{Binding FirstRun}" x:DataType="vm:FirstRunViewModel">
-  <Grid RowDefinitions="Auto,*,Auto" Margin="40">
+  <Grid RowDefinitions="Auto,*" Margin="40">
     
 
     <Grid Grid.Row="1" VerticalAlignment="Center">
@@ -82,7 +82,7 @@
         <TextBlock Text="选择 PDF 扫描根路径" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
         <TextBlock Text="确认目录后，扫描到的所有 PDF 会直接导入为题录。题录信息可稍后在文献列表中右键编辑。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
         <controls:PathPickerTextBox Path="{Binding ScanRoot}" PickerMode="Folder" DialogTitle="选择 PDF 扫描根目录" PlaceholderText="PDF 目录" />
-        <Button Classes="Primary Large" Content="确认目录并导入" Command="{Binding ScanCommand}" Padding="24,0" />
+        <Button Classes="Primary Large" Content="确认目录并导入" Command="{Binding ScanCommand}" IsEnabled="{Binding !IsBusy}" Padding="24,0" />
       </StackPanel>
 
       <!-- Step 4: MinerU Config -->
@@ -101,10 +101,6 @@
       </StackPanel>
     </Grid>
 
-    <!-- Busy / Error status -->
-    <StackPanel Grid.Row="2" Spacing="8">
-      <ProgressBar IsIndeterminate="True" IsVisible="{Binding IsBusy}" Height="4" />
-    </StackPanel>
   </Grid>
 </Grid>
     </Grid>

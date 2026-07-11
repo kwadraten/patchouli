@@ -10,20 +10,22 @@ public sealed class PdfDiscoveryService
     };
 
     public Task<PdfScanResult> ScanDirectoryAsync(string scanRoot, CancellationToken cancellationToken = default)
+        => Task.Run(() => ScanDirectory(scanRoot, cancellationToken), cancellationToken);
+
+    private static PdfScanResult ScanDirectory(string scanRoot, CancellationToken cancellationToken)
     {
         var candidates = new List<PdfCandidate>();
 
         try
         {
             if (!Directory.Exists(scanRoot))
-                return Task.FromResult(new PdfScanResult([], 0, scanRoot));
+                return new PdfScanResult([], 0, scanRoot);
 
             var pdfFiles = Directory.EnumerateFiles(scanRoot, "*.pdf", SearchOption.AllDirectories);
 
             foreach (var filePath in pdfFiles)
             {
-                if (cancellationToken.IsCancellationRequested)
-                    break;
+                cancellationToken.ThrowIfCancellationRequested();
 
                 var dir = Path.GetDirectoryName(filePath);
                 if (dir is not null && ShouldExclude(dir, scanRoot))
@@ -48,17 +50,17 @@ public sealed class PdfDiscoveryService
         }
         catch (DirectoryNotFoundException)
         {
-            return Task.FromResult(new PdfScanResult([], 0, scanRoot));
+            return new PdfScanResult([], 0, scanRoot);
         }
         catch (UnauthorizedAccessException)
         {
-            return Task.FromResult(new PdfScanResult([], 0, scanRoot));
+            return new PdfScanResult([], 0, scanRoot);
         }
 
-        return Task.FromResult(new PdfScanResult(
+        return new PdfScanResult(
             candidates.OrderBy(c => c.FileName).ToArray(),
             candidates.Count,
-            scanRoot));
+            scanRoot);
     }
 
     private static bool ShouldExclude(string directoryPath, string scanRoot)

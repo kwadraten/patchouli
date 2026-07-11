@@ -67,6 +67,116 @@ public sealed class FirstRunWorkflow
             null, null, null, null, null, null, false);
     }
 
+    public async Task<FirstRunImportResult> ScanAndImportAsync(
+        string scanRoot,
+        string? libraryId,
+        CancellationToken cancellationToken = default,
+        Action<int?, int?, string, string?>? progress = null)
+    {
+        var normalizedRoot = Path.GetFullPath(scanRoot);
+        progress?.Invoke(null, null, "正在扫描 PDF 目录。", $"扫描目录：{normalizedRoot}");
+        var operationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
+        var scan = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
+        if (scan.Candidates.Count == 0)
+        {
+            await TryFailInitialRootScanAsync(
+                operationId,
+                AppErrorCodes.NotFound,
+                "No PDF files were found in the selected folder.",
+                "Initial PDF root scan found no PDFs.",
+                ["Choose a different PDF folder", "Add PDFs to the folder and retry"],
+                cancellationToken);
+            progress?.Invoke(0, 0, "未找到可导入的 PDF。", "扫描完成：所选目录中没有 PDF 文件。");
+            return new FirstRunImportResult(
+                new FirstRunWorkflowState(FirstRunStep.Scan, "未在指定目录中找到 PDF 文件。", null,
+                    libraryId, null, null, null, "未找到 PDF 文件。", false),
+                scan, 0, 0);
+        }
+
+        var importedCount = 0;
+        var failedCount = 0;
+        string? lastDocumentInstanceId = null;
+        string? lastPdfPath = null;
+        progress?.Invoke(0, scan.Candidates.Count, $"已找到 {scan.Candidates.Count} 个 PDF，准备导入。", null);
+
+        for (var index = 0; index < scan.Candidates.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var candidate = scan.Candidates[index];
+            progress?.Invoke(index, scan.Candidates.Count, $"正在导入：{candidate.FileName}", candidate.Path);
+            await TryUpdateInitialRootScanAsync(
+                operationId,
+                index,
+                scan.Candidates.Count,
+                $"Importing {candidate.FileName}.",
+                cancellationToken);
+            var importState = await ImportPdfAsync(
+                new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(importState.LastError))
+            {
+                importedCount++;
+                lastDocumentInstanceId = importState.CreatedDocumentInstanceId;
+                lastPdfPath = candidate.Path;
+            }
+            else
+            {
+                failedCount++;
+            }
+
+            progress?.Invoke(
+                index + 1,
+                scan.Candidates.Count,
+                string.IsNullOrWhiteSpace(importState.LastError)
+                    ? $"已导入：{candidate.FileName}"
+                    : $"导入失败：{candidate.FileName}",
+                importState.LastError);
+        }
+
+        var state = importedCount > 0
+            ? new FirstRunWorkflowState(
+                FirstRunStep.MinerUConfig,
+                failedCount == 0
+                    ? $"已导入 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
+                    : $"已导入 {importedCount} 个 PDF 题录；{failedCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
+                lastPdfPath, libraryId, null, null, lastDocumentInstanceId, null, false)
+            : new FirstRunWorkflowState(
+                FirstRunStep.Scan, "扫描到了 PDF 文件，但没有任何文件成功导入。", null,
+                libraryId, null, null, null, "没有任何 PDF 文件被成功导入。", false);
+
+        if (importedCount > 0)
+        {
+            await TryUpdateInitialRootScanAsync(
+                operationId,
+                scan.Candidates.Count,
+                scan.Candidates.Count,
+                $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).",
+                cancellationToken);
+            await TryCompleteInitialRootScanAsync(
+                operationId,
+                $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).",
+                cancellationToken);
+        }
+        else
+        {
+            await TryFailInitialRootScanAsync(
+                operationId,
+                AppErrorCodes.InvalidState,
+                "No discovered PDF files could be imported.",
+                "Initial PDF import failed.",
+                ["Review the PDF files and retry"],
+                cancellationToken);
+        }
+
+        progress?.Invoke(
+            scan.Candidates.Count,
+            scan.Candidates.Count,
+            importedCount > 0 ? "PDF 导入完成。" : "PDF 导入未完成。",
+            $"成功 {importedCount} 个，失败 {failedCount} 个。");
+
+        return new FirstRunImportResult(state, scan, importedCount, failedCount);
+    }
+
     public async Task<FirstRunWorkflowState> ImportPdfAsync(
         PdfImportRequest request, CancellationToken cancellationToken = default)
     {
@@ -132,6 +242,27 @@ public sealed class FirstRunWorkflow
         }
     }
 
+    private async Task TryUpdateInitialRootScanAsync(
+        BlockingOperationId? operationId,
+        int current,
+        int total,
+        string progressLabel,
+        CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+            return;
+
+        try
+        {
+            await _blockingOperations.UpdateProgressAsync(
+                operationId.Value, current, total, progressLabel,
+                cancellationToken: cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
     private async Task TryFailInitialRootScanAsync(
         BlockingOperationId? operationId,
         string errorCode,
@@ -159,4 +290,14 @@ public sealed class FirstRunWorkflow
         {
         }
     }
+}
+
+public sealed record FirstRunImportResult(
+    FirstRunWorkflowState State,
+    PdfScanResult ScanResult,
+    int ImportedCount,
+    int FailedCount) : IOperationOutcome
+{
+    public bool IsSuccess => string.IsNullOrWhiteSpace(State.LastError);
+    public string? ErrorMessage => State.LastError;
 }

@@ -2,7 +2,13 @@ using Patchouli.Core.Conflicts;
 
 namespace Patchouli.Core.Results;
 
-public sealed record Result
+public interface IOperationOutcome
+{
+    bool IsSuccess { get; }
+    string? ErrorMessage { get; }
+}
+
+public sealed record Result : IOperationOutcome
 {
     private Result(bool isSuccess, string? errorCode, string? errorMessage, IReadOnlyList<ConflictDescriptor> conflicts)
     {
@@ -39,7 +45,7 @@ public sealed record Result
     }
 }
 
-public sealed record Result<T>
+public sealed record Result<T> : IOperationOutcome
 {
     private readonly T? _value;
 

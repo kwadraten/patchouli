@@ -422,7 +422,7 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
-    public async Task BlockingOperationDialog_exposes_confirm_button_that_closes_modal_window()
+    public async Task BlockingOperationDialog_only_closes_after_operation_reaches_terminal_state()
     {
         var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "BlockingOperationDialog.axaml"));
         var vm = new BlockingOperationDialogViewModel();
@@ -430,9 +430,24 @@ public sealed class UiViewModelTests
         vm.RequestClose = result => closeResult = result;
 
         await vm.ConfirmCommand.ExecuteAsync();
+        closeResult.Should().NotBeNull();
 
-        xaml.Should().Contain("Content=\"确认\"");
+        vm.MarkCompleted();
+        await vm.ConfirmCommand.ExecuteAsync();
+
+        xaml.Should().Contain("Content=\"关闭\"");
+        xaml.Should().Contain("CancelCommand");
         xaml.Should().Contain("ConfirmCommand");
+        xaml.Should().Contain("ToggleDetailsCommand");
+        xaml.Should().Contain("Height=\"150\"");
+        xaml.Should().Contain("Text=\"{Binding DetailedResult}\"");
+        xaml.Should().NotContain("RecoveryGuidance");
+        vm.DetailsToggleText.Should().Be("显示详细信息");
+        await vm.ToggleDetailsCommand.ExecuteAsync();
+        vm.IsDetailsVisible.Should().BeTrue();
+        vm.DetailsToggleText.Should().Be("隐藏详细信息");
+        vm.OperationState.Should().Be("已成功");
+        vm.StatusMessage.Should().Be("操作已成功完成。");
         closeResult.Should().BeNull();
     }
 

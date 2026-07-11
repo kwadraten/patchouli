@@ -1,3 +1,5 @@
+using Patchouli.Core.Results;
+
 namespace Patchouli.Core.Import;
 
 public static class FirstRunStep
@@ -22,8 +24,11 @@ public sealed record FirstRunWorkflowState(
     string? CreatedFileAssetId,
     string? CreatedDocumentInstanceId,
     string? LastError,
-    bool IsComplete)
+    bool IsComplete) : IOperationOutcome
 {
+    public bool IsSuccess => string.IsNullOrWhiteSpace(LastError);
+    public string? ErrorMessage => LastError;
+
     public static FirstRunWorkflowState Initial() =>
         new(FirstRunStep.Database, "Select database location", null, null, null, null, null, null, false);
 }

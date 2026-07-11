@@ -6,19 +6,27 @@ namespace Patchouli.Infrastructure.Workflows;
 public sealed class PdfMetadataReader : IPdfMetadataReader
 {
     public Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
+        => Task.Run(() => GetPageCount(pdfPath, cancellationToken), cancellationToken);
+
+    private static int? GetPageCount(string pdfPath, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(pdfPath))
-            return Task.FromResult<int?>(null);
+            return null;
 
         try
         {
             using var document = new Document(pdfPath);
-            return Task.FromResult<int?>(document.PageCount > 0 ? document.PageCount : null);
+            cancellationToken.ThrowIfCancellationRequested();
+            return document.PageCount > 0 ? document.PageCount : null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
-            return Task.FromResult<int?>(null);
+            return null;
         }
     }
 }

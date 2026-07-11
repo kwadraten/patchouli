@@ -2,6 +2,7 @@
 using System.Collections.ObjectModel;
 using Patchouli.Core.Import;
 using Patchouli.Infrastructure.Workflows;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -10,6 +11,7 @@ public sealed class FirstRunViewModel : ViewModelBase
     private FirstRunWorkflow? _workflow;
     private PdfDiscoveryService? _discovery;
     private readonly Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>>? _openDatabase;
+    private readonly IModalOperationRunner? _modalOperations;
     public Action<string>? OnError { get; set; }
     public Action<string>? OnProgress { get; set; }
     private FirstRunWorkflowState State
@@ -52,9 +54,10 @@ public sealed class FirstRunViewModel : ViewModelBase
         FinishSetupCommand = new AsyncCommand(FinishSetupAsync);
     }
 
-    public FirstRunViewModel(Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>> openDatabase)
+    public FirstRunViewModel(Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>> openDatabase, IModalOperationRunner? modalOperations = null)
     {
         _openDatabase = openDatabase;
+        _modalOperations = modalOperations;
         _state = FirstRunWorkflowState.Initial();
         OpenDatabaseCommand = new AsyncCommand(OpenDatabaseAsync);
         CreateLibraryCommand = new AsyncCommand(CreateLibraryAsync);
@@ -236,67 +239,29 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         if (string.IsNullOrWhiteSpace(ScanRoot)) return;
         if (_workflow is null || _discovery is null) { SetWorkflowMissingError(); return; }
+        if (IsBusy) return;
         IsBusy = true; Raise(nameof(IsBusy));
         try
         {
-            var libraryId = _state.CreatedLibraryId;
-            State = await _workflow.ScanDirectoryAsync(ScanRoot);
-            var scanResult = await _discovery.ScanDirectoryAsync(ScanRoot);
+            var result = _modalOperations is null
+                ? await _workflow.ScanAndImportAsync(ScanRoot, _state.CreatedLibraryId)
+                : await _modalOperations.RunAsync(
+                    new ModalOperationOptions(
+                        "初次扫描与导入",
+                        "正在扫描所选目录并导入 PDF 题录。",
+                        CanCancel: true),
+                    context => _workflow.ScanAndImportAsync(
+                        ScanRoot,
+                        _state.CreatedLibraryId,
+                        context.CancellationToken,
+                        context.Report));
+            State = result.State;
             PdfCandidates.Clear();
-            foreach (var c in scanResult.Candidates)
+            foreach (var c in result.ScanResult.Candidates)
                 PdfCandidates.Add(new PdfCandidateViewModel(c));
             Raise(nameof(PdfCandidates));
-
-            if (scanResult.Candidates.Count == 0)
-                return;
-
-            ImportedPdfCount = 0;
-            FailedImportCount = 0;
-            string? lastDocumentInstanceId = null;
-            string? lastPdfPath = null;
-
-            foreach (var candidate in scanResult.Candidates)
-            {
-                var importState = await _workflow.ImportPdfAsync(
-                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
-                    cancellationToken: default);
-
-                if (string.IsNullOrWhiteSpace(importState.LastError))
-                {
-                    ImportedPdfCount++;
-                    lastDocumentInstanceId = importState.CreatedDocumentInstanceId;
-                    lastPdfPath = candidate.Path;
-                }
-                else
-                {
-                    FailedImportCount++;
-                }
-            }
-
-            State = ImportedPdfCount > 0
-                ? new FirstRunWorkflowState(
-                    FirstRunStep.MinerUConfig,
-                    FailedImportCount == 0
-                        ? $"已导入 {ImportedPdfCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
-                        : $"已导入 {ImportedPdfCount} 个 PDF 题录；{FailedImportCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
-                    lastPdfPath,
-                    libraryId,
-                    null,
-                    null,
-                    lastDocumentInstanceId,
-                    null,
-                    false)
-                : new FirstRunWorkflowState(
-                    FirstRunStep.Scan,
-                    "扫描到了 PDF 文件，但没有任何文件成功导入。",
-                    null,
-                    null,
-                    null,
-                    null,
-                    null,
-                    "没有任何 PDF 文件被成功导入。",
-                    false);
-
+            ImportedPdfCount = result.ImportedCount;
+            FailedImportCount = result.FailedCount;
             Raise(nameof(ImportedPdfCount));
             Raise(nameof(FailedImportCount));
         }
@@ -312,7 +277,14 @@ public sealed class FirstRunViewModel : ViewModelBase
         try
         {
             var request = new PdfImportRequest(SelectedPdf.Path, ItemTitle, ItemAuthors, null);
-            State = await _workflow.ImportPdfAsync(request);
+            State = _modalOperations is null
+                ? await _workflow.ImportPdfAsync(request)
+                : await _modalOperations.RunAsync(
+                    new ModalOperationOptions(
+                        "导入 PDF 题录",
+                        "正在读取 PDF 并创建题录。",
+                        CanCancel: true),
+                    context => _workflow.ImportPdfAsync(request, context.CancellationToken));
         }
         finally { IsBusy = false; Raise(nameof(IsBusy)); }
         RaiseAll();

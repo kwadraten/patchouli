@@ -32,8 +32,36 @@ public class DialogService : IDialogService
         var viewType = _mappings[viewModel.GetType()];
         var dialog = (Window)Activator.CreateInstance(viewType)!;
         dialog.DataContext = viewModel;
+        var mainContent = mainWindow.Content as Control;
+        var wasEnabled = mainContent?.IsEnabled ?? true;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        await dialog.ShowDialog(mainWindow);
+        EventHandler? closed = null;
+        closed = (_, _) =>
+        {
+            dialog.Closed -= closed;
+            if (mainContent is not null)
+                mainContent.IsEnabled = wasEnabled;
+            completion.TrySetResult();
+        };
+
+        dialog.Closed += closed;
+        if (mainContent is not null)
+            mainContent.IsEnabled = false;
+
+        try
+        {
+            dialog.Show(mainWindow);
+            dialog.Activate();
+            await completion.Task;
+        }
+        catch
+        {
+            dialog.Closed -= closed;
+            if (mainContent is not null)
+                mainContent.IsEnabled = wasEnabled;
+            throw;
+        }
     }
 
     public async Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
