@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
 
@@ -13,13 +14,24 @@ public sealed partial class App : Application
 
     public override async void OnFrameworkInitializationCompleted()
     {
-        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+        try
         {
-            var mainWindow = new MainWindow();
-            desktop.MainWindow = mainWindow;
-            await mainWindow.ShowFirstRunIfNeededAsync();
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            {
+                var mainWindow = new MainWindow();
+                desktop.MainWindow = mainWindow;
+                await mainWindow.ShowFirstRunIfNeededAsync();
+            }
         }
-
-        base.OnFrameworkInitializationCompleted();
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "application-initialization", "initialize-main-window");
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+                desktop.Shutdown(1);
+        }
+        finally
+        {
+            base.OnFrameworkInitializationCompleted();
+        }
     }
 }

@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
 
@@ -36,13 +37,24 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            UnexpectedExceptions.Sink.Report(ex, "ui-event", "copy-mcp-address");
             _viewModel.Report($"复制失败: {ex.Message}");
         }
     }
 
     protected override async void OnClosed(EventArgs e)
     {
-        await _viewModel.StopMcpServerAsync();
-        base.OnClosed(e);
+        try
+        {
+            await _viewModel.StopMcpServerAsync();
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "window-shutdown", "stop-mcp-server");
+        }
+        finally
+        {
+            base.OnClosed(e);
+        }
     }
 }
