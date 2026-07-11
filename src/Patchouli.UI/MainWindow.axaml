@@ -41,23 +41,6 @@
   </Window.DataTemplates>
 
   <Window.Styles>
-    <Style Selector="Border.step">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="0" />
-    </Style>
-    <Style Selector="Border.step.active">
-      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
-      <Setter Property="BorderThickness" Value="3,0,0,0" />
-    </Style>
-    <Style Selector="Border.step TextBlock">
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
-      <Setter Property="FontWeight" Value="Normal" />
-    </Style>
-    <Style Selector="Border.step.active TextBlock">
-      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-    </Style>
     <Style Selector="TextBlock.statusBar">
       <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
     </Style>
@@ -68,13 +51,16 @@
   </Window.Styles>
 
   <Grid RowDefinitions="30,*,28">
-    <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
+    <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}"
+            BorderThickness="0,0,0,1">
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
         <Menu VerticalAlignment="Center" Background="Transparent">
           <MenuItem Header="书库">
             <MenuItem Header="侧边栏">
-              <MenuItem Header="左侧边栏" ToggleType="CheckBox" IsChecked="{Binding ShowLibraryLeftSidebarPreference, Mode=TwoWay}" />
-              <MenuItem Header="右侧边栏" ToggleType="CheckBox" IsChecked="{Binding ShowLibraryRightSidebarPreference, Mode=TwoWay}" />
+              <MenuItem Header="左侧边栏" ToggleType="CheckBox"
+                        IsChecked="{Binding ShowLibraryLeftSidebarPreference, Mode=TwoWay}" />
+              <MenuItem Header="右侧边栏" ToggleType="CheckBox"
+                        IsChecked="{Binding ShowLibraryRightSidebarPreference, Mode=TwoWay}" />
             </MenuItem>
             <MenuItem Header="书库列">
               <MenuItem Header="题录类型" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowItemTypeColumn, Mode=TwoWay}" />
@@ -82,21 +68,28 @@
               <MenuItem Header="作者" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowAuthorColumn, Mode=TwoWay}" />
               <MenuItem Header="标题" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowTitleColumn, Mode=TwoWay}" />
               <MenuItem Header="来源" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowSourceColumn, Mode=TwoWay}" />
-              <MenuItem Header="OCR/索引状态" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowStatusColumn, Mode=TwoWay}" />
+              <MenuItem Header="OCR/索引状态" ToggleType="CheckBox"
+                        IsChecked="{Binding Shell.ShowStatusColumn, Mode=TwoWay}" />
               <MenuItem Header="页数" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowPagesColumn, Mode=TwoWay}" />
               <MenuItem Header="关联文件" ToggleType="CheckBox" IsChecked="{Binding Shell.ShowFileColumn, Mode=TwoWay}" />
             </MenuItem>
           </MenuItem>
           <MenuItem Header="同步">
-            <MenuItem Header="{Binding CheckSyncStateDescriptor.Label}" Command="{Binding CheckSyncStateDescriptor}" ToolTip.Tip="{Binding CheckSyncStateDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding CheckSyncStateDescriptor.Label}" Command="{Binding CheckSyncStateDescriptor}"
+                      ToolTip.Tip="{Binding CheckSyncStateDescriptor.DisabledReason}" />
           </MenuItem>
           <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}" />
-            <MenuItem Header="获取所选题录元数据" Command="{Binding Shell.LookupMetadataBatchCommand}" IsEnabled="{Binding Shell.HasBatchSelection}" />
-            <MenuItem Header="取消批量获取元数据" Command="{Binding Shell.CancelMetadataBatchCommand}" IsVisible="{Binding Shell.IsMetadataBatchBusy}" />
-            <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}" Command="{Binding CopyCslBibliographyDescriptor}" ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
-            <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}" ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
+            <MenuItem Header="获取所选题录元数据" Command="{Binding Shell.LookupMetadataBatchCommand}"
+                      IsEnabled="{Binding Shell.HasBatchSelection}" />
+            <MenuItem Header="取消批量获取元数据" Command="{Binding Shell.CancelMetadataBatchCommand}"
+                      IsVisible="{Binding Shell.IsMetadataBatchBusy}" />
+            <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
+                      Command="{Binding CopyCslBibliographyDescriptor}"
+                      ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}"
+                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
           </MenuItem>
           <MenuItem Header="OCR">
             <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />
@@ -117,12 +110,18 @@
           </MenuItem>
         </Menu>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <TextBox Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..." IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}" VerticalContentAlignment="Center">
+          <TextBox Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1"
+                   BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..."
+                   IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}"
+                   VerticalContentAlignment="Center">
             <TextBox.InnerLeftContent>
-              <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" Margin="6,0,0,0" VerticalAlignment="Center" />
+              <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
+                             Margin="6,0,0,0" VerticalAlignment="Center" />
             </TextBox.InnerLeftContent>
           </TextBox>
-          <Button Content="搜索" Command="{Binding RunToolbarSearchCommand}" Height="24" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" Padding="8,0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+          <Button Content="搜索" Command="{Binding RunToolbarSearchCommand}" Height="24"
+                  Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
+                  Padding="8,0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
         </StackPanel>
       </Grid>
     </Border>
@@ -133,8 +132,10 @@
           <DataTemplate DataType="{x:Type local:WorkspaceTabViewModel}">
             <Grid>
               <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
-                <lucide:Lucide Icon="{Binding IconName}" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                <TextBlock Text="{Binding Title}" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                <lucide:Lucide Icon="{Binding IconName}" Width="12" Height="12"
+                               StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="{Binding Title}" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                           VerticalAlignment="Center" />
               </StackPanel>
               <Button Command="{Binding CloseCommand}" IsVisible="{Binding IsClosable}"
                       Width="24" Height="24" Padding="0" Background="Transparent" BorderThickness="0"
@@ -176,7 +177,8 @@
           </Button.Styles>
           <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <Ellipse Width="8" Height="8" Fill="{Binding McpStatusBrush}" VerticalAlignment="Center" />
-            <TextBlock Text="{Binding McpStatusText}" FontSize="12" Foreground="{DynamicResource InverseOnSurfaceBrush}" VerticalAlignment="Center" />
+            <TextBlock Text="{Binding McpStatusText}" FontSize="12"
+                       Foreground="{DynamicResource InverseOnSurfaceBrush}" VerticalAlignment="Center" />
           </StackPanel>
           <Button.Flyout>
             <Flyout Placement="TopEdgeAlignedRight" ShowMode="Standard">
@@ -186,13 +188,15 @@
                     <TextBlock Text="状态" FontSize="13" Foreground="#999999" VerticalAlignment="Center" />
                     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                       <Ellipse Width="8" Height="8" Fill="{Binding McpStatusBrush}" VerticalAlignment="Center" />
-                      <TextBlock Text="{Binding McpStatusText}" FontSize="13" Foreground="#FFFFFF" FontWeight="SemiBold" VerticalAlignment="Center" />
+                      <TextBlock Text="{Binding McpStatusText}" FontSize="13" Foreground="#FFFFFF"
+                                 FontWeight="SemiBold" VerticalAlignment="Center" />
                     </StackPanel>
                   </Grid>
                   <StackPanel Spacing="4">
                     <TextBlock Text="服务地址" FontSize="13" Foreground="#999999" />
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="6">
-                      <TextBox Text="{Binding McpEndpoint}" IsReadOnly="True" Background="#1E1E1E" Foreground="#FFFFFF" BorderBrush="#444444" Height="26" FontSize="12" VerticalContentAlignment="Center">
+                      <TextBox Text="{Binding McpEndpoint}" IsReadOnly="True" Background="#1E1E1E" Foreground="#FFFFFF"
+                               BorderBrush="#444444" Height="26" FontSize="12" VerticalContentAlignment="Center">
                         <TextBox.Styles>
                           <Style Selector="TextBox:focus /template/ Border#PART_BorderElement">
                             <Setter Property="Background" Value="#1E1E1E" />
@@ -204,14 +208,16 @@
                           </Style>
                         </TextBox.Styles>
                       </TextBox>
-                      <Button Grid.Column="1" Width="26" Height="26" Padding="0" Background="#3E3E3E" Click="OnCopyMcpAddressClick">
+                      <Button Grid.Column="1" Width="26" Height="26" Padding="0" Background="#3E3E3E"
+                              Click="OnCopyMcpAddressClick">
                         <lucide:Lucide Icon="Copy" Width="12" Height="12" StrokeBrush="#FFFFFF" />
                       </Button>
                     </Grid>
                   </StackPanel>
                   <Grid ColumnDefinitions="*,Auto">
                     <TextBlock Text="详情" FontSize="13" Foreground="#999999" />
-                    <TextBlock Grid.Column="1" Text="{Binding McpStatusDetail}" FontSize="13" Foreground="#FFFFFF" FontWeight="SemiBold" TextWrapping="Wrap" MaxWidth="150" />
+                    <TextBlock Grid.Column="1" Text="{Binding McpStatusDetail}" FontSize="13" Foreground="#FFFFFF"
+                               FontWeight="SemiBold" TextWrapping="Wrap" MaxWidth="150" />
                   </Grid>
                 </StackPanel>
               </Border>

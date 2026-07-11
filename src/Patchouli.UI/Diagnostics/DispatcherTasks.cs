@@ -7,21 +7,11 @@ public static class DispatcherTasks
     public static Task RunAsync(Func<Task> action)
     {
         ArgumentNullException.ThrowIfNull(action);
-        if (Dispatcher.UIThread.CheckAccess()) return action();
-
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        Dispatcher.UIThread.Post(async () =>
+        if (Dispatcher.UIThread.CheckAccess())
         {
-            try
-            {
-                await action();
-                completion.SetResult();
-            }
-            catch (Exception exception)
-            {
-                completion.SetException(exception);
-            }
-        });
-        return completion.Task;
+            return action();
+        }
+
+        return Dispatcher.UIThread.InvokeAsync(action);
     }
 }

@@ -4,6 +4,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
+using Patchouli.Core.Results;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -30,8 +31,14 @@ public sealed class McpSettingsViewModel : ViewModelBase
             Raise();
             if (!string.IsNullOrWhiteSpace(value))
             {
-                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("无法", StringComparison.Ordinal)) _main.ReportError(value);
-                else _main.Report(value);
+                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("无法", StringComparison.Ordinal))
+                {
+                    _main.ReportError(value);
+                }
+                else
+                {
+                    _main.Report(value);
+                }
             }
         }
     }
@@ -55,8 +62,12 @@ public sealed class McpSettingsViewModel : ViewModelBase
         get => _settings.BindAddress;
         set
         {
-            var next = string.IsNullOrWhiteSpace(value) ? "127.0.0.1" : value.Trim();
-            if (_settings.BindAddress == next) return;
+            string next = string.IsNullOrWhiteSpace(value) ? "127.0.0.1" : value.Trim();
+            if (_settings.BindAddress == next)
+            {
+                return;
+            }
+
             _settings = _settings with { BindAddress = next };
             Raise();
             Raise(nameof(AllowExternalAccess));
@@ -70,8 +81,12 @@ public sealed class McpSettingsViewModel : ViewModelBase
         get => string.Equals(_settings.BindAddress, "0.0.0.0", StringComparison.Ordinal);
         set
         {
-            var next = value ? "0.0.0.0" : "127.0.0.1";
-            if (_settings.BindAddress == next) return;
+            string next = value ? "0.0.0.0" : "127.0.0.1";
+            if (_settings.BindAddress == next)
+            {
+                return;
+            }
+
             _settings = _settings with { BindAddress = next };
             Raise();
             Raise(nameof(BindAddress));
@@ -87,7 +102,11 @@ public sealed class McpSettingsViewModel : ViewModelBase
         get => _settings.CorsEnabled;
         set
         {
-            if (_settings.CorsEnabled == value) return;
+            if (_settings.CorsEnabled == value)
+            {
+                return;
+            }
+
             _settings = _settings with { CorsEnabled = value };
             Raise();
             ObserveSave();
@@ -101,8 +120,13 @@ public sealed class McpSettingsViewModel : ViewModelBase
         get => string.Join("\n", _settings.AllowedOrigins);
         set
         {
-            var origins = value.Split(new[] { '\r', '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (_settings.AllowedOrigins.SequenceEqual(origins, StringComparer.Ordinal)) return;
+            string[] origins = value.Split(new[] { '\r', '\n', ',', ';' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (_settings.AllowedOrigins.SequenceEqual(origins, StringComparer.Ordinal))
+            {
+                return;
+            }
+
             _settings = _settings with { AllowedOrigins = origins };
             Raise();
             ObserveSave();
@@ -114,7 +138,11 @@ public sealed class McpSettingsViewModel : ViewModelBase
         get => _settings.AuthRequired;
         set
         {
-            if (_settings.AuthRequired == value) return;
+            if (_settings.AuthRequired == value)
+            {
+                return;
+            }
+
             _settings = _settings with { AuthRequired = value };
             Raise();
             ObserveSave();
@@ -126,7 +154,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
         get => _settings.Token ?? "";
         set
         {
-            var next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+            string? next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
             if (_settings.Token != next)
             {
                 _settings = _settings with { Token = next };
@@ -148,17 +176,25 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
     private Task GenerateTokenAsync()
     {
-        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).Replace("+", "").Replace("/", "").Replace("=", "");
+        string token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).Replace("+", "").Replace("/", "")
+            .Replace("=", "");
         ServerToken = token;
         return Task.CompletedTask;
     }
 
-    private Task StartMcpAsync() => _main.StartMcpServerAsync();
-    private Task StopMcpAsync() => _main.StopMcpServerAsync("用户手动停止");
+    private Task StartMcpAsync()
+    {
+        return _main.StartMcpServerAsync();
+    }
+
+    private Task StopMcpAsync()
+    {
+        return _main.StopMcpServerAsync("用户手动停止");
+    }
 
     public async Task LoadAsync()
     {
-        var result = await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
+        Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
         if (result.IsFailure)
         {
             Status = result.ErrorMessage ?? "无法读取 MCP 设置。";
@@ -173,7 +209,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
     private async Task SaveAsync()
     {
-        var result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(_settings);
+        Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(_settings);
         if (result.IsFailure)
         {
             Status = result.ErrorMessage ?? "MCP 设置保存失败。";
@@ -184,21 +220,32 @@ public sealed class McpSettingsViewModel : ViewModelBase
         Status = "已保存 (重启服务生效)";
     }
 
-    private void ObserveSave() => SaveAsync().Observe(nameof(McpSettingsViewModel), nameof(SaveAsync));
+    private void ObserveSave()
+    {
+        SaveAsync().Observe(nameof(McpSettingsViewModel), nameof(SaveAsync));
+    }
 
     internal void UpdateToolOverride(string toolName, bool enabled)
     {
-        var overrides = _settings.ToolOverrides.Where(value => value.ToolName != toolName).ToList();
-        if (!enabled) overrides.Add(new McpToolOverride(toolName, false, "Disabled in Patchouli settings."));
-        _settings = _settings with { ToolOverrides = overrides.OrderBy(value => value.ToolName, StringComparer.Ordinal).ToArray() };
+        List<McpToolOverride> overrides = _settings.ToolOverrides.Where(value => value.ToolName != toolName).ToList();
+        if (!enabled)
+        {
+            overrides.Add(new McpToolOverride(toolName, false, "Disabled in Patchouli settings."));
+        }
+
+        _settings = _settings with
+        {
+            ToolOverrides = overrides.OrderBy(value => value.ToolName, StringComparer.Ordinal).ToArray()
+        };
         ObserveSave();
     }
 
     private void ReloadToolOverrides()
     {
-        var disabled = _settings.ToolOverrides.Where(value => !value.Enabled).Select(value => value.ToolName).ToHashSet(StringComparer.Ordinal);
+        HashSet<string> disabled = _settings.ToolOverrides.Where(value => !value.Enabled)
+            .Select(value => value.ToolName).ToHashSet(StringComparer.Ordinal);
         ToolOverrides.Clear();
-        foreach (var tool in KnownTools)
+        foreach (string tool in KnownTools)
         {
             ToolOverrides.Add(new McpToolOverrideViewModel(this, tool, !disabled.Contains(tool)));
         }
@@ -206,13 +253,22 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
     private void RaiseAllSettings()
     {
-        foreach (var property in new[] { nameof(Port), nameof(BindAddress), nameof(AllowExternalAccess), nameof(CorsEnabled), nameof(TransportDescription), nameof(AllowedOriginsText), nameof(AuthRequired), nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides) })
+        foreach (string property in new[]
+                 {
+                     nameof(Port), nameof(BindAddress), nameof(AllowExternalAccess), nameof(CorsEnabled),
+                     nameof(TransportDescription), nameof(AllowedOriginsText), nameof(AuthRequired),
+                     nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides)
+                 })
+        {
             Raise(property);
+        }
     }
 
     private static readonly string[] KnownTools =
     [
-        "search_library", "get_item_metadata", "get_document_status", "get_page_text", "get_page_blocks", "get_search_result_context", "list_csl_styles", "get_csl_style", "render_item_bibliography", "render_items_bibliography"
+        "search_library", "get_item_metadata", "get_document_status", "get_page_text", "get_page_blocks",
+        "get_search_result_context", "list_csl_styles", "get_csl_style", "render_item_bibliography",
+        "render_items_bibliography"
     ];
 }
 
@@ -235,7 +291,11 @@ public sealed class McpToolOverrideViewModel : ViewModelBase
         get => _enabled;
         set
         {
-            if (_enabled == value) return;
+            if (_enabled == value)
+            {
+                return;
+            }
+
             _enabled = value;
             Raise();
             _parent.UpdateToolOverride(ToolName, value);

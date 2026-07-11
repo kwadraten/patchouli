@@ -8,7 +8,7 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed class SettingsViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private SettingsCategoryViewModel? _activeCategory;
+    private SettingsCategoryViewModel _activeCategory = null!;
     private string _globalStatus = "";
 
     public SettingsViewModel(MainWindowViewModel main)
@@ -33,19 +33,23 @@ public sealed class SettingsViewModel : ViewModelBase
 
         SaveCommand = new AsyncCommand(async () =>
         {
-            if (ReferenceEquals(ActiveCategory?.Content, MetadataLookupSettings))
+            if (ReferenceEquals(ActiveCategory.Content, MetadataLookupSettings))
             {
                 await MetadataLookupSettings.SaveAsync();
                 GlobalStatus = MetadataLookupSettings.Status;
                 return;
             }
+
             GlobalStatus = "所有设置已保存";
         });
 
         DiscardCommand = new AsyncCommand(async () =>
         {
-            if (ReferenceEquals(ActiveCategory?.Content, MetadataLookupSettings))
+            if (ReferenceEquals(ActiveCategory.Content, MetadataLookupSettings))
+            {
                 await MetadataLookupSettings.DiscardAsync();
+            }
+
             GlobalStatus = "已放弃当前更改";
         });
     }
@@ -72,20 +76,22 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public ObservableCollection<SettingsCategoryViewModel> Categories { get; }
 
-    public SettingsCategoryViewModel? ActiveCategory
+    public SettingsCategoryViewModel ActiveCategory
     {
         get => _activeCategory;
         set
         {
             _activeCategory = value;
             Raise();
-            if (ReferenceEquals(value?.Content, McpSettings))
+            if (ReferenceEquals(value.Content, McpSettings))
             {
                 McpSettings.LoadAsync().Observe(nameof(SettingsViewModel), nameof(McpSettings.LoadAsync));
             }
-            if (ReferenceEquals(value?.Content, LibrarySettings))
+
+            if (ReferenceEquals(value.Content, LibrarySettings))
             {
-                LibrarySettings.LoadFileSearchRootsAsync().Observe(nameof(SettingsViewModel), nameof(LibrarySettings.LoadFileSearchRootsAsync));
+                LibrarySettings.LoadFileSearchRootsAsync().Observe(nameof(SettingsViewModel),
+                    nameof(LibrarySettings.LoadFileSearchRootsAsync));
             }
         }
     }
@@ -97,7 +103,10 @@ public sealed class SettingsViewModel : ViewModelBase
         {
             _globalStatus = value;
             Raise();
-            if (!string.IsNullOrWhiteSpace(value)) _main.Report(value);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                _main.Report(value);
+            }
         }
     }
 

@@ -12,7 +12,10 @@ namespace Patchouli.Infrastructure.Ocr.MinerU;
 public sealed class MinerUClient : IMinerUClient, IDisposable
 {
     private static readonly Regex UrlPattern = new(@"https?://\S+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex BearerPattern = new(@"Bearer\s+[^\s,;]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex BearerPattern =
+        new(@"Bearer\s+[^\s,;]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex WindowsPathPattern = new(@"[A-Za-z]:\\[^\s]+", RegexOptions.Compiled);
     private static readonly Regex WhitespacePattern = new(@"\s+", RegexOptions.Compiled);
 
@@ -41,56 +44,75 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         CancellationToken cancellationToken = default)
     {
         if (!IsConfigured)
-            return Result<MinerUUploadBatch>.Failure(MinerUProviderStatus.NotConfigured, "MinerU token is not configured.");
+        {
+            return Result<MinerUUploadBatch>.Failure(MinerUProviderStatus.NotConfigured,
+                "MinerU token is not configured.");
+        }
 
         if (files.Count == 0)
+        {
             return Result<MinerUUploadBatch>.Failure("invalid_request", "At least one file is required.");
+        }
 
         try
         {
-            var body = new MinerUBatchUrlRequest(
+            MinerUBatchUrlRequest body = new(
                 files.Select(f => new MinerUBatchUrlFile(f.FileName, _options.IsOcr, f.DataId)).ToArray(),
                 _options.ModelVersion,
                 _options.Language,
                 _options.EnableTable,
                 _options.EnableFormula);
 
-            var request = CreateRequest(HttpMethod.Post, "/api/v4/file-urls/batch", body);
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            HttpRequestMessage request = CreateRequest(HttpMethod.Post, "/api/v4/file-urls/batch", body);
+            using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
 
             if (!response.IsSuccessStatusCode)
+            {
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
                     await ReadHttpErrorMessageAsync(response, cancellationToken, _options.Token));
+            }
 
-            var result = await response.Content.ReadFromJsonAsync<MinerUBatchUrlResponse>(cancellationToken: cancellationToken);
+            MinerUBatchUrlResponse? result =
+                await response.Content.ReadFromJsonAsync<MinerUBatchUrlResponse>(cancellationToken);
 
             if (result is null)
+            {
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
                     "Invalid response from MinerU API.");
+            }
 
             if (!IsSuccessCode(result.Code))
+            {
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
                     SanitizeErrorMessage(FormatProviderFailure(result.Code, result.ProviderMessage), _options.Token));
+            }
 
             if (result.Data is null || string.IsNullOrWhiteSpace(result.Data.BatchId))
+            {
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
                     "MinerU API did not return a batch ID.");
+            }
 
-            var uploadUrls = MapUploadUrls(files, result.Data);
+            IReadOnlyList<MinerUFileUploadUrl> uploadUrls = MapUploadUrls(files, result.Data);
             if (uploadUrls.Count == 0)
+            {
                 return Result<MinerUUploadBatch>.Failure(
                     MinerUProviderStatus.UploadUrlFailed,
                     "MinerU API did not return upload URLs.");
+            }
 
-            var batch = new MinerUUploadBatch(result.Data.BatchId, uploadUrls);
+            MinerUUploadBatch batch = new(result.Data.BatchId, uploadUrls);
 
             return Result<MinerUUploadBatch>.Success(batch);
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (HttpRequestException ex)
         {
             return Result<MinerUUploadBatch>.Failure(
@@ -105,25 +127,31 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         }
     }
 
-    public async Task<Result> UploadFileAsync(string uploadUrl, string localPath, CancellationToken cancellationToken = default)
+    public async Task<Result> UploadFileAsync(string uploadUrl, string localPath,
+        CancellationToken cancellationToken = default)
     {
         if (!File.Exists(localPath))
+        {
             return Result.Failure("file_not_found", "Local file was not found.");
+        }
 
         try
         {
-            var fileBytes = await File.ReadAllBytesAsync(localPath, cancellationToken);
-            using var content = new ByteArrayContent(fileBytes);
-            using var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl) { Content = content };
+            byte[] fileBytes = await File.ReadAllBytesAsync(localPath, cancellationToken);
+            using ByteArrayContent content = new(fileBytes);
+            using HttpRequestMessage request = new(HttpMethod.Put, uploadUrl) { Content = content };
 
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
 
             return response.IsSuccessStatusCode
                 ? Result.Success()
                 : Result.Failure(MinerUProviderStatus.UploadFailed,
                     SanitizeErrorMessage($"Upload failed: {response.StatusCode}", _options.Token));
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (HttpRequestException ex)
         {
             return Result.Failure(MinerUProviderStatus.UploadFailed,
@@ -136,41 +164,57 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         }
     }
 
-    public async Task<Result<MinerUPollResult>> PollExtractResultAsync(string batchId, CancellationToken cancellationToken = default)
+    public async Task<Result<MinerUPollResult>> PollExtractResultAsync(string batchId,
+        CancellationToken cancellationToken = default)
     {
         if (!IsConfigured)
-            return Result<MinerUPollResult>.Failure(MinerUProviderStatus.NotConfigured, "MinerU token is not configured.");
+        {
+            return Result<MinerUPollResult>.Failure(MinerUProviderStatus.NotConfigured,
+                "MinerU token is not configured.");
+        }
 
         try
         {
-            var request = CreateRequest(HttpMethod.Get, $"/api/v4/extract-results/batch/{batchId}");
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            HttpRequestMessage request = CreateRequest(HttpMethod.Get, $"/api/v4/extract-results/batch/{batchId}");
+            using HttpResponseMessage response = await _httpClient.SendAsync(request, cancellationToken);
 
             if (!response.IsSuccessStatusCode)
+            {
                 return Result<MinerUPollResult>.Failure(
                     MinerUProviderStatus.Failed,
                     await ReadHttpErrorMessageAsync(response, cancellationToken, _options.Token));
+            }
 
-            var result = await response.Content.ReadFromJsonAsync<MinerUPollResponse>(cancellationToken: cancellationToken);
+            MinerUPollResponse? result =
+                await response.Content.ReadFromJsonAsync<MinerUPollResponse>(cancellationToken);
 
             if (result is null)
+            {
                 return Result<MinerUPollResult>.Failure(
                     MinerUProviderStatus.Failed,
                     "Invalid poll response from MinerU API.");
+            }
 
             if (!IsSuccessCode(result.Code))
+            {
                 return Result<MinerUPollResult>.Failure(
                     MinerUProviderStatus.Failed,
                     SanitizeErrorMessage(FormatProviderFailure(result.Code, result.ProviderMessage), _options.Token));
+            }
 
             if (result.Data is null)
+            {
                 return Result<MinerUPollResult>.Failure(
                     MinerUProviderStatus.Failed,
                     "MinerU API did not return extraction data.");
+            }
 
             return Result<MinerUPollResult>.Success(MapPollResult(batchId, result.Data));
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (HttpRequestException ex)
         {
             return Result<MinerUPollResult>.Failure(MinerUProviderStatus.Failed,
@@ -187,37 +231,48 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         string batchId, string downloadDirectory, CancellationToken cancellationToken = default)
     {
         if (!IsConfigured)
-            return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.NotConfigured, "MinerU token is not configured.");
+        {
+            return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.NotConfigured,
+                "MinerU token is not configured.");
+        }
 
-        var timeoutAt = DateTimeOffset.UtcNow.AddSeconds(_options.PollingTimeoutSeconds);
+        DateTimeOffset timeoutAt = DateTimeOffset.UtcNow.AddSeconds(_options.PollingTimeoutSeconds);
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var poll = await PollExtractResultAsync(batchId, cancellationToken);
+            Result<MinerUPollResult> poll = await PollExtractResultAsync(batchId, cancellationToken);
             if (poll.IsFailure)
+            {
                 return Result<MinerUDownloadedResult>.Failure(poll.ErrorCode!, poll.ErrorMessage!);
+            }
 
-            var status = poll.Value.Status;
+            string status = poll.Value.Status;
 
             if (status == MinerUProviderStatus.Done)
             {
                 if (string.IsNullOrEmpty(poll.Value.FullZipUrl))
+                {
                     return Result<MinerUDownloadedResult>.Failure(
                         MinerUProviderStatus.Failed,
                         "Extraction completed but no result zip URL was provided.");
+                }
 
                 return await DownloadZipAsync(batchId, poll.Value.FullZipUrl, downloadDirectory, cancellationToken);
             }
 
             if (status == MinerUProviderStatus.Failed)
+            {
                 return Result<MinerUDownloadedResult>.Failure(
                     MinerUProviderStatus.Failed,
                     SanitizeErrorMessage(poll.Value.ErrorMessage ?? "MinerU extraction failed.", _options.Token));
+            }
 
             if (DateTimeOffset.UtcNow > timeoutAt)
+            {
                 return Result<MinerUDownloadedResult>.Failure(
                     MinerUProviderStatus.Timeout,
                     "MinerU extraction timed out.");
+            }
 
             await Task.Delay(_options.PollingIntervalMs, cancellationToken);
         }
@@ -231,24 +286,30 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         try
         {
             Directory.CreateDirectory(downloadDirectory);
-            var zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
+            string zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, zipUrl);
-            using var response = await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            using HttpRequestMessage request = new(HttpMethod.Get, zipUrl);
+            using HttpResponseMessage response =
+                await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
             if (!response.IsSuccessStatusCode)
+            {
                 return Result<MinerUDownloadedResult>.Failure(
                     MinerUProviderStatus.Failed,
                     SanitizeErrorMessage($"Download failed: {response.StatusCode}", _options.Token));
+            }
 
-            await using var sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using var destStream = File.Create(zipPath);
+            await using Stream sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using FileStream destStream = File.Create(zipPath);
             await sourceStream.CopyToAsync(destStream, cancellationToken);
 
             return Result<MinerUDownloadedResult>.Success(
                 new MinerUDownloadedResult(batchId, zipPath, MinerUProviderStatus.Done));
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (HttpRequestException ex)
         {
             return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.Failed,
@@ -263,15 +324,16 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
 
     private HttpRequestMessage CreateRequest(HttpMethod method, string path, object? body = null)
     {
-        var request = new HttpRequestMessage(method, $"{_options.BaseUrl.TrimEnd('/')}{path}");
+        HttpRequestMessage request = new(method, $"{_options.BaseUrl.TrimEnd('/')}{path}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.Token);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
         if (body is not null)
         {
-            var json = JsonSerializer.Serialize(body);
+            string json = JsonSerializer.Serialize(body);
             request.Content = new StringContent(json, Encoding.UTF8);
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
         }
+
         return request;
     }
 
@@ -283,30 +345,34 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         {
             return data.FileUrls.Select((url, index) =>
             {
-                var file = requests[Math.Min(index, requests.Count - 1)];
+                MinerUUploadRequest file = requests[Math.Min(index, requests.Count - 1)];
                 return new MinerUFileUploadUrl(file.FileName, url, file.DataId);
             }).ToArray();
         }
 
         if (data.Files is { Count: > 0 })
+        {
             return data.Files.Select(f => new MinerUFileUploadUrl(f.FileName, f.UploadUrl, f.FileId)).ToArray();
+        }
 
         return [];
     }
 
     private static MinerUPollResult MapPollResult(string requestedBatchId, MinerUPollData data)
     {
-        var batchId = string.IsNullOrWhiteSpace(data.BatchId) ? requestedBatchId : data.BatchId;
-        var item = data.ExtractResult?
-            .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.State))
-            ?? data.ExtractResult?.FirstOrDefault();
+        string? batchId = string.IsNullOrWhiteSpace(data.BatchId) ? requestedBatchId : data.BatchId;
+        MinerUPollExtractResultItem? item = data.ExtractResult?
+                                                .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.State))
+                                            ?? data.ExtractResult?.FirstOrDefault();
 
         if (item is not null)
+        {
             return new MinerUPollResult(
                 batchId,
                 MapStatus(item.State),
                 item.FullZipUrl,
                 string.IsNullOrWhiteSpace(item.ErrorMessage) ? null : item.ErrorMessage);
+        }
 
         return new MinerUPollResult(
             batchId,
@@ -315,25 +381,30 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             string.IsNullOrWhiteSpace(data.ErrorMessage) ? null : data.ErrorMessage);
     }
 
-    private static string MapStatus(string? mineruStatus) => mineruStatus switch
+    private static string MapStatus(string? mineruStatus)
     {
-        "waiting-file" => MinerUProviderStatus.WaitingFile,
-        "pending" => MinerUProviderStatus.Pending,
-        "running" => MinerUProviderStatus.Running,
-        "converting" => MinerUProviderStatus.Converting,
-        "done" => MinerUProviderStatus.Done,
-        "failed" => MinerUProviderStatus.Failed,
-        _ => MinerUProviderStatus.Failed
-    };
+        return mineruStatus switch
+        {
+            "waiting-file" => MinerUProviderStatus.WaitingFile,
+            "pending" => MinerUProviderStatus.Pending,
+            "running" => MinerUProviderStatus.Running,
+            "converting" => MinerUProviderStatus.Converting,
+            "done" => MinerUProviderStatus.Done,
+            "failed" => MinerUProviderStatus.Failed,
+            _ => MinerUProviderStatus.Failed
+        };
+    }
 
     private static bool IsSuccessCode(JsonElement code)
     {
         if (code.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
             return false;
+        }
 
         return code.ValueKind switch
         {
-            JsonValueKind.Number => code.TryGetInt32(out var number) && number == 0,
+            JsonValueKind.Number => code.TryGetInt32(out int number) && number == 0,
             JsonValueKind.String => string.Equals(code.GetString(), "0", StringComparison.OrdinalIgnoreCase),
             _ => false
         };
@@ -341,9 +412,11 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
 
     private static string FormatProviderFailure(JsonElement code, string? message)
     {
-        var codeText = FormatProviderCode(code);
+        string? codeText = FormatProviderCode(code);
         if (string.IsNullOrWhiteSpace(message))
+        {
             return codeText is null ? "MinerU API returned an error." : $"MinerU API error {codeText}.";
+        }
 
         return codeText is null
             ? $"MinerU API error: {message}"
@@ -365,8 +438,8 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         CancellationToken cancellationToken,
         string? token)
     {
-        var providerMessage = await TryReadProviderMessageAsync(response, cancellationToken);
-        var message = string.IsNullOrWhiteSpace(providerMessage)
+        string? providerMessage = await TryReadProviderMessageAsync(response, cancellationToken);
+        string message = string.IsNullOrWhiteSpace(providerMessage)
             ? $"MinerU API request failed: {response.StatusCode}."
             : $"MinerU API request failed: {response.StatusCode}. {providerMessage}";
 
@@ -379,26 +452,32 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
     {
         try
         {
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            string body = await response.Content.ReadAsStringAsync(cancellationToken);
             if (string.IsNullOrWhiteSpace(body))
+            {
                 return null;
+            }
 
-            using var document = JsonDocument.Parse(body);
-            var root = document.RootElement;
+            using JsonDocument document = JsonDocument.Parse(body);
+            JsonElement root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
+            {
                 return null;
+            }
 
-            var code = root.TryGetProperty("code", out var codeElement)
+            string? code = root.TryGetProperty("code", out JsonElement codeElement)
                 ? FormatProviderCode(codeElement)
                 : null;
-            var message = root.TryGetProperty("msg", out var msgElement)
+            string? message = root.TryGetProperty("msg", out JsonElement msgElement)
                 ? msgElement.GetString()
-                : root.TryGetProperty("message", out var messageElement)
+                : root.TryGetProperty("message", out JsonElement messageElement)
                     ? messageElement.GetString()
                     : null;
 
             if (string.IsNullOrWhiteSpace(code))
+            {
                 return message;
+            }
 
             return string.IsNullOrWhiteSpace(message)
                 ? $"MinerU API error {code}."
@@ -413,11 +492,15 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
     private static string SanitizeErrorMessage(string message, string? token = null)
     {
         if (string.IsNullOrWhiteSpace(message))
+        {
             return "An unknown error occurred.";
+        }
 
-        var sanitized = message;
+        string sanitized = message;
         if (!string.IsNullOrWhiteSpace(token))
+        {
             sanitized = sanitized.Replace(token, "[redacted]", StringComparison.Ordinal);
+        }
 
         sanitized = BearerPattern.Replace(sanitized, "Bearer [redacted]");
         sanitized = UrlPattern.Replace(sanitized, "[redacted-url]");
@@ -430,6 +513,8 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
     public void Dispose()
     {
         if (_ownsClient)
+        {
             _httpClient.Dispose();
+        }
     }
 }

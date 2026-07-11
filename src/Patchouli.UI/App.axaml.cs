@@ -18,7 +18,7 @@ public sealed partial class App : Application
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
-                var mainWindow = new MainWindow();
+                MainWindow mainWindow = new();
                 desktop.MainWindow = mainWindow;
                 await mainWindow.ShowFirstRunIfNeededAsync();
             }
@@ -27,7 +27,9 @@ public sealed partial class App : Application
         {
             UnexpectedExceptions.Sink.Report(exception, "application-initialization", "initialize-main-window");
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            {
                 desktop.Shutdown(1);
+            }
         }
         finally
         {

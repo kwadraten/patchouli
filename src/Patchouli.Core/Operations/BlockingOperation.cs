@@ -26,7 +26,9 @@ public static class BlockingOperationStatus
     public const string Cancelled = "cancelled";
 
     public static bool IsTerminal(string value)
-        => value is Completed or Failed or Cancelled;
+    {
+        return value is Completed or Failed or Cancelled;
+    }
 }
 
 public static class BlockingOperationTypes

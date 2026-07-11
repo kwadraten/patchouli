@@ -8,9 +8,10 @@ public sealed class ProjectBoundaryTests
     [Fact]
     public void Core_does_not_reference_infrastructure_ui_or_mcp()
     {
-        var project = XDocument.Load(TestPaths.FromRepositoryRoot("src", "Patchouli.Core", "Patchouli.Core.csproj"));
+        XDocument project =
+            XDocument.Load(TestPaths.FromRepositoryRoot("src", "Patchouli.Core", "Patchouli.Core.csproj"));
 
-        var referencedProjects = project
+        string[] referencedProjects = project
             .Descendants("ProjectReference")
             .Select(element => element.Attribute("Include")?.Value ?? string.Empty)
             .ToArray();
@@ -21,26 +22,31 @@ public sealed class ProjectBoundaryTests
     [Fact]
     public void Infrastructure_does_not_reference_ui()
     {
-        var project = XDocument.Load(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Patchouli.Infrastructure.csproj"));
+        XDocument project =
+            XDocument.Load(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure",
+                "Patchouli.Infrastructure.csproj"));
 
-        var referencedProjects = project
+        string[] referencedProjects = project
             .Descendants("ProjectReference")
             .Select(element => element.Attribute("Include")?.Value ?? string.Empty)
             .ToArray();
 
-        referencedProjects.Should().NotContain(reference => reference.Contains("Patchouli.UI", StringComparison.OrdinalIgnoreCase));
+        referencedProjects.Should()
+            .NotContain(reference => reference.Contains("Patchouli.UI", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
     public void Ocr_provider_paths_do_not_insert_layout_nodes_outside_shared_importer()
     {
-        var ocrRoot = TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Ocr");
-        var offenders = Directory.EnumerateFiles(ocrRoot, "*.cs", SearchOption.AllDirectories)
+        string ocrRoot = TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Ocr");
+        string?[] offenders = Directory.EnumerateFiles(ocrRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !path.EndsWith("OcrLayoutImporter.cs", StringComparison.OrdinalIgnoreCase))
-            .Where(path => File.ReadAllText(path).Contains("insert into layout_nodes", StringComparison.OrdinalIgnoreCase))
+            .Where(path =>
+                File.ReadAllText(path).Contains("insert into layout_nodes", StringComparison.OrdinalIgnoreCase))
             .Select(Path.GetFileName)
             .ToArray();
 
-        offenders.Should().BeEmpty("OCR providers and coordinators should delegate layout node writes to OcrLayoutImporter.");
+        offenders.Should()
+            .BeEmpty("OCR providers and coordinators should delegate layout node writes to OcrLayoutImporter.");
     }
 }

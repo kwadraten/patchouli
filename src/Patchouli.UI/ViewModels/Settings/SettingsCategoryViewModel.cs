@@ -1,4 +1,5 @@
 ﻿using Patchouli.UI.ViewModels;
+
 namespace Patchouli.UI.ViewModels.Settings;
 
 public sealed class SettingsCategoryViewModel : ViewModelBase

@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Patchouli.UI.ViewModels;
 
@@ -12,7 +13,7 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnBBoxPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        if (sender is Avalonia.Controls.Control control && control.DataContext is PdfBBoxViewModel bbox)
+        if (sender is Control control && control.DataContext is PdfBBoxViewModel bbox)
         {
             if (DataContext is PdfWorkspaceViewModel pdf)
             {
@@ -23,18 +24,18 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnCanvasPointerPressed(object? sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        if (DataContext is PdfWorkspaceViewModel pdf && sender is Avalonia.Controls.Control control)
+        if (DataContext is PdfWorkspaceViewModel pdf && sender is Control control)
         {
-            var p = e.GetPosition(control);
+            Point p = e.GetPosition(control);
             pdf.OnPointerPressed(p.X, p.Y);
         }
     }
 
     private void OnCanvasPointerMoved(object? sender, Avalonia.Input.PointerEventArgs e)
     {
-        if (DataContext is PdfWorkspaceViewModel pdf && sender is Avalonia.Controls.Control control)
+        if (DataContext is PdfWorkspaceViewModel pdf && sender is Control control)
         {
-            var p = e.GetPosition(control);
+            Point p = e.GetPosition(control);
             pdf.OnPointerMoved(p.X, p.Y);
         }
     }

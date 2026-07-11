@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Migrations;
@@ -21,22 +23,22 @@ public sealed class MigrationRunner
             throw new DirectoryNotFoundException($"Migrations directory was not found: {_migrationsDirectory}");
         }
 
-        var files = Directory
+        MigrationFile[] files = Directory
             .EnumerateFiles(_migrationsDirectory, "*.sql", SearchOption.TopDirectoryOnly)
             .OrderBy(static path => Path.GetFileName(path), StringComparer.Ordinal)
             .Select(MigrationFile.FromPath)
             .ToArray();
 
-        await using var connection = _connectionFactory.CreateConnection();
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
 
         await EnsureSchemaMigrationsTableAsync(connection);
 
-        var applied = new List<AppliedMigration>();
+        List<AppliedMigration> applied = new();
 
-        foreach (var file in files)
+        foreach (MigrationFile file in files)
         {
-            var alreadyApplied = await connection.ExecuteScalarAsync<int>(
+            int alreadyApplied = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from schema_migrations where id = @Id;",
                 new { file.Id });
 
@@ -45,8 +47,8 @@ public sealed class MigrationRunner
                 continue;
             }
 
-            var sql = await File.ReadAllTextAsync(file.Path, cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            string sql = await File.ReadAllTextAsync(file.Path, cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             try
             {
@@ -67,7 +69,8 @@ public sealed class MigrationRunner
                 await transaction.CommitAsync(cancellationToken);
                 applied.Add(new AppliedMigration(file.Id, file.Name));
             }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.migration-runner"))
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                                  "infrastructure.migration-runner"))
             {
                 await transaction.RollbackAsync(cancellationToken);
                 throw new MigrationFailedException(file.Id, file.Name, file.Path, exception);
@@ -77,7 +80,7 @@ public sealed class MigrationRunner
         return applied;
     }
 
-    private static Task EnsureSchemaMigrationsTableAsync(Microsoft.Data.Sqlite.SqliteConnection connection)
+    private static Task EnsureSchemaMigrationsTableAsync(SqliteConnection connection)
     {
         return connection.ExecuteAsync(
             """
@@ -93,8 +96,8 @@ public sealed class MigrationRunner
     {
         public static MigrationFile FromPath(string path)
         {
-            var fileName = System.IO.Path.GetFileNameWithoutExtension(path);
-            var separatorIndex = fileName.IndexOf('_', StringComparison.Ordinal);
+            string fileName = System.IO.Path.GetFileNameWithoutExtension(path);
+            int separatorIndex = fileName.IndexOf('_', StringComparison.Ordinal);
 
             if (separatorIndex <= 0 || separatorIndex == fileName.Length - 1)
             {
@@ -113,7 +116,8 @@ public sealed record AppliedMigration(string Id, string Name);
 
 public sealed class MigrationFailedException : Exception
 {
-    public MigrationFailedException(string migrationId, string migrationName, string migrationPath, Exception innerException)
+    public MigrationFailedException(string migrationId, string migrationName, string migrationPath,
+        Exception innerException)
         : base($"Migration '{migrationName}' ({migrationId}) failed: {migrationPath}", innerException)
     {
         MigrationId = migrationId;

@@ -23,7 +23,7 @@ public sealed class ConflictDescriptorTests
     [Fact]
     public void Same_item_content_conflict_uses_blocking_snapshot_shape()
     {
-        var descriptor = ConflictDescriptorMapper.SameItemDifferentContent(
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.SameItemDifferentContent(
             ItemId.New(),
             "Existing",
             "book",
@@ -41,10 +41,13 @@ public sealed class ConflictDescriptorTests
     [Fact]
     public void File_candidate_conflict_uses_choose_candidate_action()
     {
-        var descriptor = ConflictDescriptorMapper.FileRelocationMultipleCandidates(
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.FileRelocationMultipleCandidates(
             FileAssetId.New(),
             "C:\\library\\missing.pdf",
-            [new FileResolutionCandidate("C:\\roots\\a\\missing.pdf", 12, null, "hash-a", null, FileResolutionConfidence.Exact, "search_root")]);
+            [
+                new FileResolutionCandidate("C:\\roots\\a\\missing.pdf", 12, null, "hash-a", null,
+                    FileResolutionConfidence.Exact, "search_root")
+            ]);
 
         descriptor.Domain.Should().Be(ConflictDomain.FileResolution);
         descriptor.ConflictCode.Should().Be(ConflictCode.FileRelocationMultipleCandidates);
@@ -54,7 +57,7 @@ public sealed class ConflictDescriptorTests
     [Fact]
     public void Layout_overlap_conflict_uses_cf06_and_adjust_bbox_action()
     {
-        var descriptor = ConflictDescriptorMapper.LayoutBBoxOrdinaryOverlap(
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.LayoutBBoxOrdinaryOverlap(
             PageId.New().ToString(),
             LayoutNodeId.New().ToString(),
             LayoutNodeType.Paragraph,

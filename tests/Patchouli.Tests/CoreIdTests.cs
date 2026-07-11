@@ -22,15 +22,15 @@ public sealed class CoreIdTests
     [Fact]
     public void Ids_can_round_trip_through_strings()
     {
-        var libraryId = LibraryId.New();
-        var itemId = ItemId.New();
-        var fileAssetId = FileAssetId.New();
-        var documentInstanceId = DocumentInstanceId.New();
-        var pageId = PageId.New();
-        var layoutRevisionId = LayoutRevisionId.New();
-        var layoutNodeId = LayoutNodeId.New();
-        var searchUnitId = SearchUnitId.New();
-        var evidenceRefId = EvidenceRefId.New();
+        LibraryId libraryId = LibraryId.New();
+        ItemId itemId = ItemId.New();
+        FileAssetId fileAssetId = FileAssetId.New();
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.New();
+        PageId pageId = PageId.New();
+        LayoutRevisionId layoutRevisionId = LayoutRevisionId.New();
+        LayoutNodeId layoutNodeId = LayoutNodeId.New();
+        SearchUnitId searchUnitId = SearchUnitId.New();
+        EvidenceRefId evidenceRefId = EvidenceRefId.New();
 
         LibraryId.Parse(libraryId.ToString()).Should().Be(libraryId);
         ItemId.Parse(itemId.ToString()).Should().Be(itemId);

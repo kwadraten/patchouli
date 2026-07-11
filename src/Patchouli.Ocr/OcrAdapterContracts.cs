@@ -84,15 +84,21 @@ public interface IRealOcrAdapter
     string DisplayName { get; }
     string Kind { get; }
     OcrEngineCapability GetCapability();
-    Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default);
+
+    Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion,
+        CancellationToken cancellationToken = default);
+
     Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion, CancellationToken cancellationToken = default);
     Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default);
-    Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default);
+
+    Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IOcrModelPathValidator
 {
-    Task<OcrEnvironmentCheckResult> ValidateModelPathAsync(string? modelPath, bool required, CancellationToken cancellationToken = default);
+    Task<OcrEnvironmentCheckResult> ValidateModelPathAsync(string? modelPath, bool required,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IOcrAdapterRegistry
@@ -100,5 +106,7 @@ public interface IOcrAdapterRegistry
     void RegisterAdapter(IRealOcrAdapter adapter);
     IRealOcrAdapter? GetAdapter(string engineId);
     IReadOnlyList<OcrEngineCapability> ListCapabilities();
-    Task<Result<OcrEnvironmentCheckResult>> CheckEngineAsync(string engineId, OcrPresetVersion presetVersion, CancellationToken cancellationToken = default);
+
+    Task<Result<OcrEnvironmentCheckResult>> CheckEngineAsync(string engineId, OcrPresetVersion presetVersion,
+        CancellationToken cancellationToken = default);
 }

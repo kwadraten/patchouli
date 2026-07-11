@@ -15,11 +15,13 @@ public sealed partial class FirstRunPage : UserControl
     private MainWindowViewModel? ViewModel => DataContext as MainWindowViewModel;
 
     private async void OnOpenMinerUTokenPageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        => await UnexpectedExceptionBoundary.RunAsync(OpenMinerUTokenPageAsync, "open-mineru-token-page");
+    {
+        await UnexpectedExceptionBoundary.RunAsync(OpenMinerUTokenPageAsync, "open-mineru-token-page");
+    }
 
     private async Task OpenMinerUTokenPageAsync()
     {
-        var launcher = TopLevel.GetTopLevel(this)?.Launcher;
+        ILauncher? launcher = TopLevel.GetTopLevel(this)?.Launcher;
         if (launcher is not null)
         {
             await launcher.LaunchUriAsync(new Uri("https://mineru.net/apiManage/token"));

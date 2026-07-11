@@ -33,4 +33,3 @@ public enum WorkspaceTabKind
     CslStyleManager,
     About
 }
-

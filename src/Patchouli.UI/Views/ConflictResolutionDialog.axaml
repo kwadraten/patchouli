@@ -15,65 +15,78 @@
         WindowDecorations="BorderOnly"
         Background="{DynamicResource SurfaceBrush}">
 
-  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
+  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+          CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
     <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="14">
       <!-- 标题与简要说明 -->
       <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <StackPanel Spacing="6">
-          <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceBrush}" />
-          <TextBlock Text="{Binding ConflictDescription}" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="Bold"
+                     Foreground="{DynamicResource OnSurfaceBrush}" />
+          <TextBlock Text="{Binding ConflictDescription}" FontSize="14"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
         </StackPanel>
-        <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12" Padding="10,3" VerticalAlignment="Top">
-          <TextBlock Text="需要处理" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12"
+                Padding="10,3" VerticalAlignment="Top">
+          <TextBlock Text="需要处理" FontSize="12" FontWeight="SemiBold"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </Border>
       </Grid>
 
       <!-- 双栏对比区 -->
       <Grid Grid.Row="1" ColumnDefinitions="*,20,*">
-      
-      <!-- 本地版本 -->
-      <Border Grid.Column="0" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4" Padding="10">
-        <Grid RowDefinitions="Auto,*">
-          <TextBlock Grid.Row="0" Text="本地版本" FontWeight="Bold" Margin="0,0,0,10" HorizontalAlignment="Center" Foreground="{DynamicResource OnSurfaceBrush}" />
-          <ScrollViewer Grid.Row="1">
-            <TextBlock Text="{Binding LocalContent}" TextWrapping="Wrap" FontFamily="Consolas" />
-          </ScrollViewer>
-        </Grid>
-      </Border>
-      
-      <!-- 传入版本 -->
-      <Border Grid.Column="2" BorderBrush="{DynamicResource PrimaryBrush}" BorderThickness="1" CornerRadius="4" Padding="10">
-        <Grid RowDefinitions="Auto,*">
-          <TextBlock Grid.Row="0" Text="传入版本" FontWeight="Bold" Margin="0,0,0,10" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
-          <ScrollViewer Grid.Row="1">
-            <TextBlock Text="{Binding IncomingContent}" TextWrapping="Wrap" FontFamily="Consolas" />
-          </ScrollViewer>
-        </Grid>
-      </Border>
-      
+
+        <!-- 本地版本 -->
+        <Border Grid.Column="0" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                CornerRadius="4" Padding="10">
+          <Grid RowDefinitions="Auto,*">
+            <TextBlock Grid.Row="0" Text="本地版本" FontWeight="Bold" Margin="0,0,0,10" HorizontalAlignment="Center"
+                       Foreground="{DynamicResource OnSurfaceBrush}" />
+            <ScrollViewer Grid.Row="1">
+              <TextBlock Text="{Binding LocalContent}" TextWrapping="Wrap" FontFamily="Consolas" />
+            </ScrollViewer>
+          </Grid>
+        </Border>
+
+        <!-- 传入版本 -->
+        <Border Grid.Column="2" BorderBrush="{DynamicResource PrimaryBrush}" BorderThickness="1" CornerRadius="4"
+                Padding="10">
+          <Grid RowDefinitions="Auto,*">
+            <TextBlock Grid.Row="0" Text="传入版本" FontWeight="Bold" Margin="0,0,0,10"
+                       Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
+            <ScrollViewer Grid.Row="1">
+              <TextBlock Text="{Binding IncomingContent}" TextWrapping="Wrap" FontFamily="Consolas" />
+            </ScrollViewer>
+          </Grid>
+        </Border>
+
       </Grid>
 
       <ListBox Grid.Row="2" ItemsSource="{Binding Options}" SelectedItem="{Binding SelectedOption}"
                IsVisible="{Binding HasOptions}" MaxHeight="140">
-      <ListBox.ItemTemplate>
-        <DataTemplate x:DataType="vm:ConflictDialogOption">
-          <StackPanel Margin="8,4">
-            <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
-            <TextBlock Text="{Binding Detail}" Foreground="{DynamicResource OnSurfaceVariantBrush}" FontSize="12" TextWrapping="Wrap" />
-          </StackPanel>
-        </DataTemplate>
-      </ListBox.ItemTemplate>
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:ConflictDialogOption">
+            <StackPanel Margin="8,4">
+              <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding Detail}" Foreground="{DynamicResource OnSurfaceVariantBrush}" FontSize="12"
+                         TextWrapping="Wrap" />
+            </StackPanel>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
       </ListBox>
 
       <ItemsControl Grid.Row="3" ItemsSource="{Binding Actions}" HorizontalAlignment="Right">
-      <ItemsControl.ItemsPanel>
-        <ItemsPanelTemplate><WrapPanel Orientation="Horizontal" /></ItemsPanelTemplate>
-      </ItemsControl.ItemsPanel>
-      <ItemsControl.ItemTemplate>
-        <DataTemplate x:DataType="vm:ConflictDialogActionViewModel">
-          <Button Content="{Binding Label}" Command="{Binding SelectCommand}" ToolTip.Tip="{Binding Description}" Margin="4,0" />
-        </DataTemplate>
-      </ItemsControl.ItemTemplate>
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel Orientation="Horizontal" />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:ConflictDialogActionViewModel">
+            <Button Content="{Binding Label}" Command="{Binding SelectCommand}" ToolTip.Tip="{Binding Description}"
+                    Margin="4,0" />
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
       </ItemsControl>
 
     </Grid>

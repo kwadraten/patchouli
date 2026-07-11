@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
@@ -37,11 +39,11 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var existingCount = await connection.ExecuteScalarAsync<int>(
+            int existingCount = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from library_metadata;",
                 transaction: transaction);
 
@@ -53,8 +55,8 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                     "This runtime database already contains a library identity.");
             }
 
-            var now = _clock.UtcNow.ToUniversalTime();
-            var metadata = new LibraryMetadata(
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            LibraryMetadata metadata = new(
                 LibraryId.New(),
                 displayName.Trim(),
                 _schemaVersion,
@@ -88,7 +90,8 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-identity"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-identity"))
         {
             return DatabaseFailure<LibraryMetadata>(exception);
         }
@@ -99,10 +102,10 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var rows = (await connection.QueryAsync<LibraryMetadataRow>(
+            LibraryMetadataRow[] rows = (await connection.QueryAsync<LibraryMetadataRow>(
                 """
                 select
                     library_id as LibraryId,
@@ -120,7 +123,8 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-identity"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-identity"))
         {
             return DatabaseFailure<LibraryMetadata>(exception);
         }
@@ -139,11 +143,11 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var rows = (await connection.QueryAsync<LibraryMetadataRow>(
+            LibraryMetadataRow[] rows = (await connection.QueryAsync<LibraryMetadataRow>(
                 """
                 select
                     library_id as LibraryId,
@@ -156,15 +160,15 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                 """,
                 transaction: transaction)).ToArray();
 
-            var currentResult = FromRows(rows);
+            Result<LibraryMetadata> currentResult = FromRows(rows);
             if (currentResult.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return currentResult;
             }
 
-            var current = currentResult.Value;
-            var updatedAt = _clock.UtcNow.ToUniversalTime();
+            LibraryMetadata current = currentResult.Value;
+            DateTimeOffset updatedAt = _clock.UtcNow.ToUniversalTime();
 
             await connection.ExecuteAsync(
                 """
@@ -193,7 +197,8 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-identity"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-identity"))
         {
             return DatabaseFailure<LibraryMetadata>(exception);
         }
@@ -203,7 +208,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         LibraryId expectedLibraryId,
         CancellationToken cancellationToken = default)
     {
-        var currentResult = await GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> currentResult = await GetCurrentLibraryAsync(cancellationToken);
         if (currentResult.IsFailure)
         {
             return Result.Failure(currentResult.ErrorCode!, currentResult.ErrorMessage!);

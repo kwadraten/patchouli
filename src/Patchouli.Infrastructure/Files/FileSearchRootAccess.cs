@@ -10,8 +10,15 @@ public interface INativeFileAccessAdapter
     ValueTask<NativeFileMaterialization> MaterializeFileAsync(string path, CancellationToken cancellationToken);
 }
 
-public sealed record NativeDirectoryResolution(string? ResolvedPath, string? FailureCode = null, string? FailureReason = null);
-public sealed record NativeFileMaterialization(bool IsAvailable, string? FailureCode = null, string? FailureReason = null);
+public sealed record NativeDirectoryResolution(
+    string? ResolvedPath,
+    string? FailureCode = null,
+    string? FailureReason = null);
+
+public sealed record NativeFileMaterialization(
+    bool IsAvailable,
+    string? FailureCode = null,
+    string? FailureReason = null);
 
 public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
 {
@@ -20,9 +27,10 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            var info = new DirectoryInfo(path);
-            var target = info.ResolveLinkTarget(returnFinalTarget: true);
-            return ValueTask.FromResult(new NativeDirectoryResolution(Path.GetFullPath(target?.FullName ?? info.FullName)));
+            DirectoryInfo info = new(path);
+            FileSystemInfo? target = info.ResolveLinkTarget(true);
+            return ValueTask.FromResult(
+                new NativeDirectoryResolution(Path.GetFullPath(target?.FullName ?? info.FullName)));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -37,12 +45,15 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
         return ValueTask.FromResult(new NativeFileMaterialization(true));
     }
 
-    internal static string Classify(Exception exception) => exception switch
+    internal static string Classify(Exception exception)
     {
-        UnauthorizedAccessException => "access_denied",
-        DirectoryNotFoundException or FileNotFoundException => "offline",
-        _ => "io_error"
-    };
+        return exception switch
+        {
+            UnauthorizedAccessException => "access_denied",
+            DirectoryNotFoundException or FileNotFoundException => "offline",
+            _ => "io_error"
+        };
+    }
 }
 
 public sealed class FileSearchRootAccess : IFileSearchRootAccess
@@ -60,14 +71,17 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
     }
 
     public Task<Result<SelectedFileSearchRoot>> SelectRootAsync(CancellationToken cancellationToken = default)
-        => Task.FromResult(Result<SelectedFileSearchRoot>.Failure(
+    {
+        return Task.FromResult(Result<SelectedFileSearchRoot>.Failure(
             "picker_required",
             "Directory selection must be supplied by the platform picker adapter."));
+    }
 
-    public Task<Result<ResolvedFileSearchRoot>> ReopenAsync(FileSearchRoot root, CancellationToken cancellationToken = default)
+    public Task<Result<ResolvedFileSearchRoot>> ReopenAsync(FileSearchRoot root,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var kind = root.AuthorizationKind ?? FileSearchRootAuthorizationKinds.None;
+        string kind = root.AuthorizationKind ?? FileSearchRootAuthorizationKinds.None;
         if (!string.Equals(kind, FileSearchRootAuthorizationKinds.None, StringComparison.Ordinal))
         {
             return Task.FromResult(Result<ResolvedFileSearchRoot>.Failure(
@@ -79,74 +93,101 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
             root.RootPath, root.RootPath, "filesystem", kind)));
     }
 
-    public async Task<FileSearchRootScanResult> ScanPdfAsync(ResolvedFileSearchRoot root, CancellationToken cancellationToken = default)
+    public async Task<FileSearchRootScanResult> ScanPdfAsync(ResolvedFileSearchRoot root,
+        CancellationToken cancellationToken = default)
     {
-        var traversal = await TraverseAsync(root, cancellationToken);
-        var candidates = new List<PdfCandidate>();
-        var skippedFiles = traversal.SkippedFiles.ToList();
+        FileSearchRootTraversalResult traversal = await TraverseAsync(root, cancellationToken);
+        List<PdfCandidate> candidates = new();
+        List<FileSearchRootIssue> skippedFiles = traversal.SkippedFiles.ToList();
 
-        foreach (var path in traversal.Files.Where(path => string.Equals(Path.GetExtension(path), ".pdf", StringComparison.OrdinalIgnoreCase)))
+        foreach (string path in traversal.Files.Where(path =>
+                     string.Equals(Path.GetExtension(path), ".pdf", StringComparison.OrdinalIgnoreCase)))
         {
             if (cancellationToken.IsCancellationRequested)
-                return BuildScanResult(candidates, traversal.SkippedDirectories, skippedFiles, traversal.RootStatus, FileSearchRootScanStatuses.Cancelled);
+            {
+                return BuildScanResult(candidates, traversal.SkippedDirectories, skippedFiles, traversal.RootStatus,
+                    FileSearchRootScanStatuses.Cancelled);
+            }
 
             try
             {
-                var materialized = await _native.MaterializeFileAsync(path, cancellationToken);
+                NativeFileMaterialization materialized = await _native.MaterializeFileAsync(path, cancellationToken);
                 if (!materialized.IsAvailable)
                 {
-                    skippedFiles.Add(new FileSearchRootIssue(path, materialized.FailureCode ?? "materialization_failed", materialized.FailureReason ?? "The file could not be materialized."));
+                    skippedFiles.Add(new FileSearchRootIssue(path, materialized.FailureCode ?? "materialization_failed",
+                        materialized.FailureReason ?? "The file could not be materialized."));
                     continue;
                 }
 
-                var info = new FileInfo(path);
-                candidates.Add(new PdfCandidate(path, info.Name, info.Length, info.LastWriteTimeUtc, null, "discovered"));
+                FileInfo info = new(path);
+                candidates.Add(
+                    new PdfCandidate(path, info.Name, info.Length, info.LastWriteTimeUtc, null, "discovered"));
             }
             catch (OperationCanceledException)
             {
-                return BuildScanResult(candidates, traversal.SkippedDirectories, skippedFiles, traversal.RootStatus, FileSearchRootScanStatuses.Cancelled);
+                return BuildScanResult(candidates, traversal.SkippedDirectories, skippedFiles, traversal.RootStatus,
+                    FileSearchRootScanStatuses.Cancelled);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                skippedFiles.Add(new FileSearchRootIssue(path, PortableNativeFileAccessAdapter.Classify(exception), exception.Message));
+                skippedFiles.Add(new FileSearchRootIssue(path, PortableNativeFileAccessAdapter.Classify(exception),
+                    exception.Message));
             }
         }
 
-        var status = traversal.ScanStatus == FileSearchRootScanStatuses.Complete && skippedFiles.Count == 0
+        string status = traversal.ScanStatus == FileSearchRootScanStatuses.Complete && skippedFiles.Count == 0
             ? FileSearchRootScanStatuses.Complete
-            : traversal.ScanStatus == FileSearchRootScanStatuses.Failed ? FileSearchRootScanStatuses.Failed : FileSearchRootScanStatuses.Partial;
-        var rootStatus = status == FileSearchRootScanStatuses.Partial && traversal.RootStatus == FileSearchRootStatuses.Available
-            ? FileSearchRootStatuses.Partial : traversal.RootStatus;
+            : traversal.ScanStatus == FileSearchRootScanStatuses.Failed
+                ? FileSearchRootScanStatuses.Failed
+                : FileSearchRootScanStatuses.Partial;
+        string rootStatus = status == FileSearchRootScanStatuses.Partial &&
+                            traversal.RootStatus == FileSearchRootStatuses.Available
+            ? FileSearchRootStatuses.Partial
+            : traversal.RootStatus;
         return BuildScanResult(candidates, traversal.SkippedDirectories, skippedFiles, rootStatus, status);
     }
 
-    public async Task<FileSearchRootTraversalResult> TraverseAsync(ResolvedFileSearchRoot root, CancellationToken cancellationToken = default)
+    public async Task<FileSearchRootTraversalResult> TraverseAsync(ResolvedFileSearchRoot root,
+        CancellationToken cancellationToken = default)
     {
-        var files = new List<string>();
-        var skippedDirectories = new List<FileSearchRootIssue>();
-        var skippedFiles = new List<FileSearchRootIssue>();
-        var pending = new Stack<string>();
-        var visited = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        List<string> files = new();
+        List<FileSearchRootIssue> skippedDirectories = new();
+        List<FileSearchRootIssue> skippedFiles = new();
+        Stack<string> pending = new();
+        HashSet<string> visited =
+            new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         pending.Push(root.ResolvedPath);
-        var started = false;
+        bool started = false;
 
         while (pending.Count > 0)
         {
             if (cancellationToken.IsCancellationRequested)
-                return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles, started ? FileSearchRootStatuses.Partial : FileSearchRootStatuses.Available, FileSearchRootScanStatuses.Cancelled);
+            {
+                return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles,
+                    started ? FileSearchRootStatuses.Partial : FileSearchRootStatuses.Available,
+                    FileSearchRootScanStatuses.Cancelled);
+            }
 
-            var displayPath = pending.Pop();
-            var resolution = await _native.ResolveDirectoryAsync(displayPath, cancellationToken);
+            string displayPath = pending.Pop();
+            NativeDirectoryResolution resolution = await _native.ResolveDirectoryAsync(displayPath, cancellationToken);
             if (resolution.ResolvedPath is null)
             {
-                skippedDirectories.Add(new FileSearchRootIssue(displayPath, resolution.FailureCode ?? "alias_resolution_failed", resolution.FailureReason ?? "The directory target could not be resolved."));
+                skippedDirectories.Add(new FileSearchRootIssue(displayPath,
+                    resolution.FailureCode ?? "alias_resolution_failed",
+                    resolution.FailureReason ?? "The directory target could not be resolved."));
                 if (!started)
-                    return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles, RootStatus(resolution.FailureCode), FileSearchRootScanStatuses.Failed);
+                {
+                    return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles,
+                        RootStatus(resolution.FailureCode), FileSearchRootScanStatuses.Failed);
+                }
+
                 continue;
             }
 
             if (!visited.Add(resolution.ResolvedPath))
+            {
                 continue;
+            }
 
             string[] entries;
             try
@@ -156,24 +197,34 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                var code = PortableNativeFileAccessAdapter.Classify(exception);
+                string code = PortableNativeFileAccessAdapter.Classify(exception);
                 skippedDirectories.Add(new FileSearchRootIssue(displayPath, code, exception.Message));
                 if (!started)
-                    return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles, RootStatus(code), FileSearchRootScanStatuses.Failed);
+                {
+                    return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles, RootStatus(code),
+                        FileSearchRootScanStatuses.Failed);
+                }
+
                 continue;
             }
 
-            foreach (var entry in entries)
+            foreach (string entry in entries)
             {
                 if (cancellationToken.IsCancellationRequested)
-                    return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles, FileSearchRootStatuses.Partial, FileSearchRootScanStatuses.Cancelled);
+                {
+                    return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles,
+                        FileSearchRootStatuses.Partial, FileSearchRootScanStatuses.Cancelled);
+                }
+
                 try
                 {
-                    var attributes = File.GetAttributes(entry);
+                    FileAttributes attributes = File.GetAttributes(entry);
                     if ((attributes & FileAttributes.Directory) != 0)
                     {
                         if (!ExcludedDirectories.Contains(Path.GetFileName(entry)))
+                        {
                             pending.Push(entry);
+                        }
                     }
                     else
                     {
@@ -182,24 +233,34 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    skippedFiles.Add(new FileSearchRootIssue(entry, PortableNativeFileAccessAdapter.Classify(exception), exception.Message));
+                    skippedFiles.Add(new FileSearchRootIssue(entry, PortableNativeFileAccessAdapter.Classify(exception),
+                        exception.Message));
                 }
             }
         }
 
-        var partial = skippedDirectories.Count > 0 || skippedFiles.Count > 0;
+        bool partial = skippedDirectories.Count > 0 || skippedFiles.Count > 0;
         return new FileSearchRootTraversalResult(files, skippedDirectories, skippedFiles,
             partial ? FileSearchRootStatuses.Partial : FileSearchRootStatuses.Available,
             partial ? FileSearchRootScanStatuses.Partial : FileSearchRootScanStatuses.Complete);
     }
 
-    private static FileSearchRootScanResult BuildScanResult(List<PdfCandidate> candidates, IReadOnlyList<FileSearchRootIssue> directories, IReadOnlyList<FileSearchRootIssue> files, string rootStatus, string scanStatus)
-        => new(candidates.OrderBy(candidate => candidate.FileName, StringComparer.OrdinalIgnoreCase).ToArray(), directories, files, rootStatus, scanStatus);
-
-    private static string RootStatus(string? code) => code switch
+    private static FileSearchRootScanResult BuildScanResult(List<PdfCandidate> candidates,
+        IReadOnlyList<FileSearchRootIssue> directories, IReadOnlyList<FileSearchRootIssue> files, string rootStatus,
+        string scanStatus)
     {
-        "access_denied" => FileSearchRootStatuses.AccessDenied,
-        "authorization_required" => FileSearchRootStatuses.AuthorizationRequired,
-        _ => FileSearchRootStatuses.Offline
-    };
+        return new FileSearchRootScanResult(
+            candidates.OrderBy(candidate => candidate.FileName, StringComparer.OrdinalIgnoreCase).ToArray(),
+            directories, files, rootStatus, scanStatus);
+    }
+
+    private static string RootStatus(string? code)
+    {
+        return code switch
+        {
+            "access_denied" => FileSearchRootStatuses.AccessDenied,
+            "authorization_required" => FileSearchRootStatuses.AuthorizationRequired,
+            _ => FileSearchRootStatuses.Offline
+        };
+    }
 }

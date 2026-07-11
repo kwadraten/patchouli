@@ -1,7 +1,10 @@
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
+using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
@@ -18,14 +21,14 @@ public sealed class PdfImportWorkflowTests
     [Fact]
     public async Task ImportPdf_imports_real_fixture_pdf_and_creates_all_pages()
     {
-        await using var context = await CreateContextAsync();
-        var workflow = context.CreateWorkflow(new PdfMetadataReader());
-        var pdf = Path.Combine(Path.GetTempPath(), $"pdf-import-{Guid.NewGuid():N}.pdf");
+        await using ImportContext context = await CreateContextAsync();
+        PdfImportWorkflow workflow = context.CreateWorkflow(new PdfMetadataReader());
+        string pdf = Path.Combine(Path.GetTempPath(), $"pdf-import-{Guid.NewGuid():N}.pdf");
         File.Copy(TestFixtures.RealThreePagePdf, pdf);
 
         try
         {
-            var result = await workflow.ImportPdfAsync(new PdfImportRequest(
+            PdfImportResult result = await workflow.ImportPdfAsync(new PdfImportRequest(
                 pdf, "Real Fixture", "测试作者", null));
 
             result.Success.Should().BeTrue(result.ErrorMessage);
@@ -33,12 +36,12 @@ public sealed class PdfImportWorkflowTests
             result.CreatedFileAssetId.Should().NotBeNullOrWhiteSpace();
             result.CreatedDocumentInstanceId.Should().NotBeNullOrWhiteSpace();
 
-            await using var connection = context.Database.ConnectionFactory.CreateConnection();
+            await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();
-            var pageCount = await connection.ExecuteScalarAsync<int>(
+            int pageCount = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from pages where document_instance_id = @Id;",
                 new { Id = result.CreatedDocumentInstanceId });
-            var itemType = await connection.ExecuteScalarAsync<string>(
+            string? itemType = await connection.ExecuteScalarAsync<string>(
                 "select item_type from items where item_id = @Id;",
                 new { Id = result.CreatedItemId });
             pageCount.Should().Be(3);
@@ -53,14 +56,14 @@ public sealed class PdfImportWorkflowTests
     [Fact]
     public async Task ImportPdf_fails_when_page_count_unavailable()
     {
-        await using var context = await CreateContextAsync();
-        var workflow = context.CreateWorkflow(new MissingPdfMetadataReader());
-        var pdf = Path.Combine(Path.GetTempPath(), $"pdf-{Guid.NewGuid():N}.pdf");
+        await using ImportContext context = await CreateContextAsync();
+        PdfImportWorkflow workflow = context.CreateWorkflow(new MissingPdfMetadataReader());
+        string pdf = Path.Combine(Path.GetTempPath(), $"pdf-{Guid.NewGuid():N}.pdf");
         File.Copy(TestFixtures.RealThreePagePdf, pdf);
 
         try
         {
-            var result = await workflow.ImportPdfAsync(new PdfImportRequest(pdf, "Bad", null, null));
+            PdfImportResult result = await workflow.ImportPdfAsync(new PdfImportRequest(pdf, "Bad", null, null));
 
             result.Success.Should().BeFalse();
             result.ErrorMessage.Should().Contain("page count");
@@ -74,18 +77,19 @@ public sealed class PdfImportWorkflowTests
     [Fact]
     public async Task ImportPdf_creates_type_inference_suggestion_from_filename_when_confident()
     {
-        await using var context = await CreateContextAsync();
-        var workflow = context.CreateWorkflow(new PdfMetadataReader());
-        var pdf = Path.Combine(Path.GetTempPath(), $"thesis-import-{Guid.NewGuid():N}.pdf");
+        await using ImportContext context = await CreateContextAsync();
+        PdfImportWorkflow workflow = context.CreateWorkflow(new PdfMetadataReader());
+        string pdf = Path.Combine(Path.GetTempPath(), $"thesis-import-{Guid.NewGuid():N}.pdf");
         File.Copy(TestFixtures.RealThreePagePdf, pdf);
 
         try
         {
-            var result = await workflow.ImportPdfAsync(new PdfImportRequest(
+            PdfImportResult result = await workflow.ImportPdfAsync(new PdfImportRequest(
                 pdf, "Thesis Fixture", null, null));
 
             result.Success.Should().BeTrue(result.ErrorMessage);
-            var suggestions = await context.ItemTypeInference.ListSuggestionsAsync(Patchouli.Core.Ids.ItemId.Parse(result.CreatedItemId!));
+            Result<IReadOnlyList<ItemTypeInference>> suggestions =
+                await context.ItemTypeInference.ListSuggestionsAsync(Core.Ids.ItemId.Parse(result.CreatedItemId!));
             suggestions.IsSuccess.Should().BeTrue();
             suggestions.Value.Should().ContainSingle();
             suggestions.Value.Single().SuggestedType.Should().Be("thesis");
@@ -99,10 +103,10 @@ public sealed class PdfImportWorkflowTests
 
     private static async Task<ImportContext> CreateContextAsync()
     {
-        var db = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
+        TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
         await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var library = new LibraryIdentityService(db.ConnectionFactory, clock);
+        LibraryIdentityService library = new(db.ConnectionFactory, clock);
         await library.CreateLibraryAsync("Test Library");
         return new ImportContext(db, clock, library);
     }
@@ -138,12 +142,17 @@ public sealed class PdfImportWorkflowTests
                 ItemTypeInference);
         }
 
-        public ValueTask DisposeAsync() => Database.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return Database.DisposeAsync();
+        }
     }
 
     private sealed class MissingPdfMetadataReader : IPdfMetadataReader
     {
-        public Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default) =>
-            Task.FromResult<int?>(null);
+        public Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<int?>(null);
+        }
     }
 }

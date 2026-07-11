@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -23,28 +25,31 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
         OcrLayoutImportRequest request,
         CancellationToken cancellationToken = default)
     {
-        var validation = request.Document.Validate();
+        Result validation = request.Document.Validate();
         if (validation.IsFailure)
+        {
             return Result<OcrLayoutImportResult>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
+        }
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var documentExists = await connection.ExecuteScalarAsync<int>(
+            int documentExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
                 new { DocumentInstanceId = request.DocumentInstanceId.ToString() },
                 transaction);
             if (documentExists == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.NotFound, "Document instance was not found.");
+                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.NotFound,
+                    "Document instance was not found.");
             }
 
-            var pageIds = request.Document.Pages.Select(page => page.PageId.ToString()).Distinct().ToArray();
-            var pageRows = (await connection.QueryAsync<PageScopeRow>(
+            string[] pageIds = request.Document.Pages.Select(page => page.PageId.ToString()).Distinct().ToArray();
+            PageScopeRow[] pageRows = (await connection.QueryAsync<PageScopeRow>(
                 """
                 select page_id as PageId, document_instance_id as DocumentInstanceId
                 from pages
@@ -55,16 +60,19 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
             if (pageRows.Length != pageIds.Length)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.NotFound, "One or more OCR layout pages were not found.");
+                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.NotFound,
+                    "One or more OCR layout pages were not found.");
             }
+
             if (pageRows.Any(row => row.DocumentInstanceId != request.DocumentInstanceId.ToString()))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.ValidationFailed, "OCR layout pages must belong to the document instance.");
+                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR layout pages must belong to the document instance.");
             }
 
-            var revisionId = request.RevisionId ?? LayoutRevisionId.New();
-            var existingRevisionDocumentId = await connection.ExecuteScalarAsync<string?>(
+            LayoutRevisionId revisionId = request.RevisionId ?? LayoutRevisionId.New();
+            string? existingRevisionDocumentId = await connection.ExecuteScalarAsync<string?>(
                 "select document_instance_id from layout_revisions where layout_revision_id = @RevisionId limit 1;",
                 new { RevisionId = revisionId.ToString() },
                 transaction);
@@ -85,14 +93,16 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
                     },
                     transaction);
             }
-            else if (!string.Equals(existingRevisionDocumentId, request.DocumentInstanceId.ToString(), StringComparison.OrdinalIgnoreCase))
+            else if (!string.Equals(existingRevisionDocumentId, request.DocumentInstanceId.ToString(),
+                         StringComparison.OrdinalIgnoreCase))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.ValidationFailed, "OCR layout revision must belong to the document instance.");
+                return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.ValidationFailed,
+                    "OCR layout revision must belong to the document instance.");
             }
 
-            var nodesCreated = 0;
-            foreach (var page in request.Document.Pages.OrderBy(page => page.PageIndex))
+            int nodesCreated = 0;
+            foreach (OcrLayoutPage page in request.Document.Pages.OrderBy(page => page.PageIndex))
             {
                 nodesCreated += await InsertBlocksAsync(
                     connection,
@@ -120,10 +130,14 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
             await transaction.CommitAsync(cancellationToken);
             return Result<OcrLayoutImportResult>.Success(new OcrLayoutImportResult(revisionId, nodesCreated));
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-layout-importer"))
         {
-            return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.DatabaseError, $"OCR layout import failed: {ex.Message}");
+            return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.DatabaseError,
+                $"OCR layout import failed: {ex.Message}");
         }
     }
 
@@ -132,15 +146,18 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
         CancellationToken cancellationToken = default)
     {
         if (request.PageIds.Count == 0)
-            return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.ValidationFailed, "At least one page is required for OCR layout copy.");
+        {
+            return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.ValidationFailed,
+                "At least one page is required for OCR layout copy.");
+        }
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var sourceRows = (await connection.QueryAsync<CopyLayoutNodeRow>(
+            CopyLayoutNodeRow[] sourceRows = (await connection.QueryAsync<CopyLayoutNodeRow>(
                 """
                 select node_id as NodeId, document_instance_id as DocumentInstanceId, page_id as PageId, parent_node_id as ParentNodeId,
                        node_type as NodeType, bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight,
@@ -159,18 +176,20 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
                 },
                 transaction)).ToArray();
 
-            var idMap = sourceRows.ToDictionary(row => row.NodeId, _ => LayoutNodeId.New().ToString(), StringComparer.OrdinalIgnoreCase);
-            var remaining = new Queue<CopyLayoutNodeRow>(sourceRows);
-            var inserted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, string> idMap = sourceRows.ToDictionary(row => row.NodeId,
+                _ => LayoutNodeId.New().ToString(), StringComparer.OrdinalIgnoreCase);
+            Queue<CopyLayoutNodeRow> remaining = new(sourceRows);
+            HashSet<string> inserted = new(StringComparer.OrdinalIgnoreCase);
 
             while (remaining.Count > 0)
             {
-                var progress = false;
-                var passCount = remaining.Count;
-                for (var i = 0; i < passCount; i++)
+                bool progress = false;
+                int passCount = remaining.Count;
+                for (int i = 0; i < passCount; i++)
                 {
-                    var row = remaining.Dequeue();
-                    if (row.ParentNodeId is not null && idMap.ContainsKey(row.ParentNodeId) && !inserted.Contains(row.ParentNodeId))
+                    CopyLayoutNodeRow row = remaining.Dequeue();
+                    if (row.ParentNodeId is not null && idMap.ContainsKey(row.ParentNodeId) &&
+                        !inserted.Contains(row.ParentNodeId))
                     {
                         remaining.Enqueue(row);
                         continue;
@@ -196,7 +215,11 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
                             NodeId = idMap[row.NodeId],
                             row.DocumentInstanceId,
                             row.PageId,
-                            ParentNodeId = row.ParentNodeId is not null && idMap.TryGetValue(row.ParentNodeId, out var mappedParentId) ? mappedParentId : null,
+                            ParentNodeId =
+                                row.ParentNodeId is not null &&
+                                idMap.TryGetValue(row.ParentNodeId, out string? mappedParentId)
+                                    ? mappedParentId
+                                    : null,
                             row.NodeType,
                             row.BBoxX,
                             row.BBoxY,
@@ -224,23 +247,28 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
                 if (!progress)
                 {
                     await transaction.RollbackAsync(cancellationToken);
-                    return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.InvalidState, "Layout node parent cycle prevented OCR partial adoption.");
+                    return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.InvalidState,
+                        "Layout node parent cycle prevented OCR partial adoption.");
                 }
             }
 
             await transaction.CommitAsync(cancellationToken);
             return Result<OcrLayoutCopyResult>.Success(new OcrLayoutCopyResult(inserted.Count));
         }
-        catch (OperationCanceledException) { throw; }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-layout-importer"))
         {
-            return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.DatabaseError, $"OCR layout copy failed: {ex.Message}");
+            return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.DatabaseError,
+                $"OCR layout copy failed: {ex.Message}");
         }
     }
 
     private static async Task<int> InsertBlocksAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         DocumentInstanceId documentInstanceId,
         LayoutRevisionId revisionId,
         PageId pageId,
@@ -248,10 +276,10 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
         LayoutNodeId? parentNodeId,
         IReadOnlyList<OcrLayoutBlock> blocks)
     {
-        var inserted = 0;
-        foreach (var block in blocks.OrderBy(block => block.ReadingOrder))
+        int inserted = 0;
+        foreach (OcrLayoutBlock block in blocks.OrderBy(block => block.ReadingOrder))
         {
-            var nodeId = LayoutNodeId.New();
+            LayoutNodeId nodeId = LayoutNodeId.New();
             await connection.ExecuteAsync(
                 """
                 insert into layout_nodes (
@@ -306,7 +334,10 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
         return inserted;
     }
 
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
+    }
 
     private sealed class PageScopeRow
     {

@@ -20,16 +20,17 @@ public sealed class MetadataSourceRegistry : IMetadataSourceRegistry
         string identifierScheme,
         IReadOnlyList<MetadataSourcePreference>? preferences = null)
     {
-        var configured = (preferences ?? Array.Empty<MetadataSourcePreference>())
+        Dictionary<string, MetadataSourcePreference> configured =
+            (preferences ?? Array.Empty<MetadataSourcePreference>())
             .GroupBy(preference => preference.SourceId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(group => group.Key, group => group.Last(), StringComparer.OrdinalIgnoreCase);
 
         return _sources
             .Where(source => source.Definition.SupportedSchemes.Contains(identifierScheme))
-            .Where(source => configured.TryGetValue(source.Definition.Id, out var preference)
+            .Where(source => configured.TryGetValue(source.Definition.Id, out MetadataSourcePreference? preference)
                 ? preference.Enabled
                 : source.Definition.DefaultEnabled)
-            .OrderBy(source => configured.TryGetValue(source.Definition.Id, out var preference)
+            .OrderBy(source => configured.TryGetValue(source.Definition.Id, out MetadataSourcePreference? preference)
                 ? preference.Priority
                 : source.Definition.DefaultPriority)
             .ThenBy(source => source.Definition.Id, StringComparer.Ordinal)
@@ -37,5 +38,7 @@ public sealed class MetadataSourceRegistry : IMetadataSourceRegistry
     }
 
     public static MetadataSourceRegistry CreateDefault(HttpClient httpClient, TimeSpan? requestTimeout = null)
-        => new(PublicMetadataSources.Create(httpClient, requestTimeout));
+    {
+        return new MetadataSourceRegistry(PublicMetadataSources.Create(httpClient, requestTimeout));
+    }
 }

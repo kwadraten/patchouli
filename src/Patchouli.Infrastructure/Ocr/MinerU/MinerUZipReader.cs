@@ -18,12 +18,14 @@ internal sealed class MinerUZipReader : IDisposable
 
     public string? ReadFileContent(string fileNamePattern)
     {
-        var entry = _archive.Entries.FirstOrDefault(e =>
+        ZipArchiveEntry? entry = _archive.Entries.FirstOrDefault(e =>
             e.Name.EndsWith(fileNamePattern, StringComparison.OrdinalIgnoreCase));
         if (entry is null)
+        {
             return null;
+        }
 
-        using var reader = new StreamReader(entry.Open());
+        using StreamReader reader = new(entry.Open());
         return reader.ReadToEnd();
     }
 

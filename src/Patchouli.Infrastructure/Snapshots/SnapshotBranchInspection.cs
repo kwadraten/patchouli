@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Dapper;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Ids;
@@ -76,13 +77,26 @@ public sealed record BranchImportResult(
 
 public interface ISnapshotBranchInspectionService
 {
-    Task<Result<SnapshotBranchInspectionInfo>> OpenBranchForInspectionAsync(string manifestPath, string stagingRoot, CancellationToken cancellationToken = default);
-    Task<Result<IReadOnlyList<BranchItemSummary>>> ListBranchItemsAsync(SnapshotBranchInspectionInfo branch, CancellationToken cancellationToken = default);
-    Task<Result<IReadOnlyList<BranchDocumentInstanceSummary>>> ListBranchDocumentInstancesAsync(SnapshotBranchInspectionInfo branch, ItemId? itemId = null, CancellationToken cancellationToken = default);
-    Task<Result<BranchImportPlan>> BuildImportPlanAsync(SnapshotBranchInspectionInfo branch, IReadOnlyList<ItemId> itemIds, IReadOnlyList<DocumentInstanceId> documentIds, CancellationToken cancellationToken = default);
-    Task<Result<BranchImportResult>> ApplyImportPlanAsync(BranchImportPlan plan, bool userConfirmed, CancellationToken cancellationToken = default);
+    Task<Result<SnapshotBranchInspectionInfo>> OpenBranchForInspectionAsync(string manifestPath, string stagingRoot,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<BranchItemSummary>>> ListBranchItemsAsync(SnapshotBranchInspectionInfo branch,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<BranchDocumentInstanceSummary>>> ListBranchDocumentInstancesAsync(
+        SnapshotBranchInspectionInfo branch, ItemId? itemId = null, CancellationToken cancellationToken = default);
+
+    Task<Result<BranchImportPlan>> BuildImportPlanAsync(SnapshotBranchInspectionInfo branch,
+        IReadOnlyList<ItemId> itemIds, IReadOnlyList<DocumentInstanceId> documentIds,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<BranchImportResult>> ApplyImportPlanAsync(BranchImportPlan plan, bool userConfirmed,
+        CancellationToken cancellationToken = default);
+
     Task<Result> DiscardBranchAsync(SnapshotBranchInspectionInfo branch, CancellationToken cancellationToken = default);
-    Task<Result<string>> KeepBranchAsSeparateLibraryCopyAsync(SnapshotBranchInspectionInfo branch, string destinationPath, CancellationToken cancellationToken = default);
+
+    Task<Result<string>> KeepBranchAsSeparateLibraryCopyAsync(SnapshotBranchInspectionInfo branch,
+        string destinationPath, CancellationToken cancellationToken = default);
 }
 
 public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionService
@@ -106,13 +120,14 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         string stagingRoot,
         CancellationToken cancellationToken = default)
     {
-        var local = await _library.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> local = await _library.GetCurrentLibraryAsync(cancellationToken);
         if (local.IsFailure)
         {
             return Result<SnapshotBranchInspectionInfo>.Failure(local.ErrorCode!, local.ErrorMessage!);
         }
 
-        var validation = await _importer.ValidateSnapshotAsync(manifestPath, cancellationToken);
+        Result<SnapshotValidationResult> validation =
+            await _importer.ValidateSnapshotAsync(manifestPath, cancellationToken);
         if (validation.IsFailure || !validation.Value.IsValid || validation.Value.Manifest is null)
         {
             return Result<SnapshotBranchInspectionInfo>.Failure(
@@ -120,7 +135,9 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 validation.IsFailure ? validation.ErrorMessage! : string.Join("; ", validation.Value.Errors));
         }
 
-        var imported = await _importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(manifestPath, stagingRoot), cancellationToken);
+        Result<SnapshotImportResult> imported =
+            await _importer.ImportSnapshotToStagingAsync(new SnapshotImportRequest(manifestPath, stagingRoot),
+                cancellationToken);
         if (imported.IsFailure || imported.Value.StagingDatabasePath is null)
         {
             return Result<SnapshotBranchInspectionInfo>.Failure(
@@ -128,8 +145,9 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 imported.IsFailure ? imported.ErrorMessage! : string.Join("; ", imported.Value.Warnings));
         }
 
-        var manifest = validation.Value.Manifest;
-        var mismatch = !string.Equals(manifest.LibraryId, local.Value.LibraryId.ToString(), StringComparison.OrdinalIgnoreCase);
+        SnapshotManifest? manifest = validation.Value.Manifest;
+        bool mismatch = !string.Equals(manifest.LibraryId, local.Value.LibraryId.ToString(),
+            StringComparison.OrdinalIgnoreCase);
         return Result<SnapshotBranchInspectionInfo>.Success(new SnapshotBranchInspectionInfo(
             Guid.NewGuid().ToString("D"),
             LibraryId.Parse(manifest.LibraryId),
@@ -154,8 +172,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         _ = cancellationToken;
         try
         {
-            await using var connection = OpenRead(branch.StagingDatabasePath);
-            var rows = await connection.QueryAsync<ItemRow>(
+            await using SqliteConnection connection = OpenRead(branch.StagingDatabasePath);
+            IEnumerable<ItemRow> rows = await connection.QueryAsync<ItemRow>(
                 """
                 select i.item_id ItemId,
                        i.title Title,
@@ -187,7 +205,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 row.EvidenceCount > 0,
                 null)).ToArray());
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-branch-inspection"))
         {
             return Result<IReadOnlyList<BranchItemSummary>>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -201,8 +220,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         _ = cancellationToken;
         try
         {
-            await using var connection = OpenRead(branch.StagingDatabasePath);
-            var rows = await connection.QueryAsync<DocRow>(
+            await using SqliteConnection connection = OpenRead(branch.StagingDatabasePath);
+            IEnumerable<DocRow> rows = await connection.QueryAsync<DocRow>(
                 """
                 select d.document_instance_id DocumentId,
                        d.item_id ItemId,
@@ -221,22 +240,25 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 """,
                 new { ItemId = itemId?.ToString() });
 
-            return Result<IReadOnlyList<BranchDocumentInstanceSummary>>.Success(rows.Select(row => new BranchDocumentInstanceSummary(
-                DocumentInstanceId.Parse(row.DocumentId),
-                ItemId.Parse(row.ItemId),
-                row.Title,
-                row.InstanceType,
-                row.IsPrimary != 0,
-                row.Pages,
-                row.Revisions,
-                row.Units,
-                row.Evidence,
-                row.SourceStatus,
-                null)).ToArray());
+            return Result<IReadOnlyList<BranchDocumentInstanceSummary>>.Success(rows.Select(row =>
+                new BranchDocumentInstanceSummary(
+                    DocumentInstanceId.Parse(row.DocumentId),
+                    ItemId.Parse(row.ItemId),
+                    row.Title,
+                    row.InstanceType,
+                    row.IsPrimary != 0,
+                    row.Pages,
+                    row.Revisions,
+                    row.Units,
+                    row.Evidence,
+                    row.SourceStatus,
+                    null)).ToArray());
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-branch-inspection"))
         {
-            return Result<IReadOnlyList<BranchDocumentInstanceSummary>>.Failure(AppErrorCodes.DatabaseError, exception.Message);
+            return Result<IReadOnlyList<BranchDocumentInstanceSummary>>.Failure(AppErrorCodes.DatabaseError,
+                exception.Message);
         }
     }
 
@@ -246,7 +268,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         IReadOnlyList<DocumentInstanceId> documentIds,
         CancellationToken cancellationToken = default)
     {
-        var current = await _library.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> current = await _library.GetCurrentLibraryAsync(cancellationToken);
         if (current.IsFailure)
         {
             return Result<BranchImportPlan>.Failure(current.ErrorCode!, current.ErrorMessage!);
@@ -254,18 +276,20 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
         if (!branch.IsLibraryMatch)
         {
-            return Result<BranchImportPlan>.Failure(AppErrorCodes.LibraryMismatch, "Branch library does not match active runtime library.");
+            return Result<BranchImportPlan>.Failure(AppErrorCodes.LibraryMismatch,
+                "Branch library does not match active runtime library.");
         }
 
         try
         {
-            await using var source = OpenRead(branch.StagingDatabasePath);
-            var selectedItems = new HashSet<string>(itemIds.Select(id => id.ToString()), StringComparer.OrdinalIgnoreCase);
-            var selectedDocuments = new HashSet<string>(documentIds.Select(id => id.ToString()), StringComparer.OrdinalIgnoreCase);
+            await using SqliteConnection source = OpenRead(branch.StagingDatabasePath);
+            HashSet<string> selectedItems = new(itemIds.Select(id => id.ToString()), StringComparer.OrdinalIgnoreCase);
+            HashSet<string> selectedDocuments =
+                new(documentIds.Select(id => id.ToString()), StringComparer.OrdinalIgnoreCase);
 
-            foreach (var documentId in documentIds)
+            foreach (DocumentInstanceId documentId in documentIds)
             {
-                var owner = await source.ExecuteScalarAsync<string?>(
+                string? owner = await source.ExecuteScalarAsync<string?>(
                     "select item_id from document_instances where document_instance_id = @Id;",
                     new { Id = documentId.ToString() });
                 if (!string.IsNullOrWhiteSpace(owner))
@@ -274,27 +298,27 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
-            foreach (var item in selectedItems.ToArray())
+            foreach (string item in selectedItems.ToArray())
             {
-                var primaryDocuments = await source.QueryAsync<string>(
+                IEnumerable<string> primaryDocuments = await source.QueryAsync<string>(
                     "select document_instance_id from document_instances where item_id = @Id and is_primary = 1;",
                     new { Id = item });
-                foreach (var documentId in primaryDocuments)
+                foreach (string documentId in primaryDocuments)
                 {
                     selectedDocuments.Add(documentId);
                 }
             }
 
-            var conflicts = new List<ConflictDescriptor>();
-            await using var target = _target.CreateConnection();
+            List<ConflictDescriptor> conflicts = new();
+            await using SqliteConnection target = _target.CreateConnection();
             await target.OpenAsync(cancellationToken);
 
-            foreach (var item in selectedItems)
+            foreach (string item in selectedItems)
             {
-                var sourceItem = await source.QuerySingleOrDefaultAsync<ItemContent>(
+                ItemContent? sourceItem = await source.QuerySingleOrDefaultAsync<ItemContent>(
                     "select item_id Id, title Title, item_type ItemType from items where item_id = @Id;",
                     new { Id = item });
-                var targetItem = await target.QuerySingleOrDefaultAsync<ItemContent>(
+                ItemContent? targetItem = await target.QuerySingleOrDefaultAsync<ItemContent>(
                     "select item_id Id, title Title, item_type ItemType from items where item_id = @Id;",
                     new { Id = item });
 
@@ -311,10 +335,10 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
-            var documentList = selectedDocuments.ToArray();
-            foreach (var documentId in documentList)
+            string[] documentList = selectedDocuments.ToArray();
+            foreach (string documentId in documentList)
             {
-                var branchPrimary = await source.ExecuteScalarAsync<int>(
+                int branchPrimary = await source.ExecuteScalarAsync<int>(
                     "select is_primary from document_instances where document_instance_id = @Id;",
                     new { Id = documentId });
                 if (branchPrimary == 0)
@@ -322,7 +346,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     continue;
                 }
 
-                var ownerItemId = await source.ExecuteScalarAsync<string?>(
+                string? ownerItemId = await source.ExecuteScalarAsync<string?>(
                     "select item_id from document_instances where document_instance_id = @Id;",
                     new { Id = documentId });
                 if (string.IsNullOrWhiteSpace(ownerItemId))
@@ -330,7 +354,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     continue;
                 }
 
-                var existingPrimaryId = await target.ExecuteScalarAsync<string?>(
+                string? existingPrimaryId = await target.ExecuteScalarAsync<string?>(
                     """
                     select document_instance_id
                     from document_instances
@@ -348,13 +372,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
-            var credentialRows = await source.QueryAsync<CredentialRow>(
+            IEnumerable<CredentialRow> credentialRows = await source.QueryAsync<CredentialRow>(
                 """
                 select distinct provider_id as ProviderId, display_name as DisplayName
                 from provider_credentials
                 order by provider_id, display_name;
                 """);
-            var credentialConflicts = credentialRows
+            ConflictDescriptor[] credentialConflicts = credentialRows
                 .Select(row => ConflictDescriptorMapper.CredentialNotImported(row.ProviderId, row.DisplayName))
                 .ToArray();
             if (credentialConflicts.Length == 0)
@@ -366,21 +390,28 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 conflicts.AddRange(credentialConflicts);
             }
 
-            var itemsToImport = selectedItems.Select(ItemId.Parse).ToArray();
-            var documentsToImport = documentList.Select(DocumentInstanceId.Parse).ToArray();
+            ItemId[] itemsToImport = selectedItems.Select(ItemId.Parse).ToArray();
+            DocumentInstanceId[] documentsToImport = documentList.Select(DocumentInstanceId.Parse).ToArray();
 
-            var pagesToImport = documentList.Length == 0
+            int pagesToImport = documentList.Length == 0
                 ? 0
-                : await source.ExecuteScalarAsync<int>("select count(*) from pages where document_instance_id in @Docs;", new { Docs = documentList });
-            var layoutRevisionsToImport = documentList.Length == 0
+                : await source.ExecuteScalarAsync<int>(
+                    "select count(*) from pages where document_instance_id in @Docs;", new { Docs = documentList });
+            int layoutRevisionsToImport = documentList.Length == 0
                 ? 0
-                : await source.ExecuteScalarAsync<int>("select count(*) from layout_revisions where document_instance_id in @Docs;", new { Docs = documentList });
-            var searchUnitsToImport = documentList.Length == 0
+                : await source.ExecuteScalarAsync<int>(
+                    "select count(*) from layout_revisions where document_instance_id in @Docs;",
+                    new { Docs = documentList });
+            int searchUnitsToImport = documentList.Length == 0
                 ? 0
-                : await source.ExecuteScalarAsync<int>("select count(*) from search_units where document_instance_id in @Docs;", new { Docs = documentList });
-            var evidenceRefsToImport = documentList.Length == 0
+                : await source.ExecuteScalarAsync<int>(
+                    "select count(*) from search_units where document_instance_id in @Docs;",
+                    new { Docs = documentList });
+            int evidenceRefsToImport = documentList.Length == 0
                 ? 0
-                : await source.ExecuteScalarAsync<int>("select count(*) from evidence_ref_records where document_instance_id in @Docs;", new { Docs = documentList });
+                : await source.ExecuteScalarAsync<int>(
+                    "select count(*) from evidence_ref_records where document_instance_id in @Docs;",
+                    new { Docs = documentList });
 
             return Result<BranchImportPlan>.Success(new BranchImportPlan(
                 Guid.NewGuid().ToString("D"),
@@ -394,10 +425,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 evidenceRefsToImport,
                 documentList.Length,
                 conflicts,
-                ["Original files, local FTS cache, render cache, and provider secrets are not imported. Rebuild FTS after import."],
+                [
+                    "Original files, local FTS cache, render cache, and provider secrets are not imported. Rebuild FTS after import."
+                ],
                 true));
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-branch-inspection"))
         {
             return Result<BranchImportPlan>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -410,11 +444,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
     {
         if (!userConfirmed)
         {
-            return Result<BranchImportResult>.Failure("requires_confirmation", "Selective import requires explicit user confirmation.");
+            return Result<BranchImportResult>.Failure("requires_confirmation",
+                "Selective import requires explicit user confirmation.");
         }
 
-        var unresolvedBlockingConflicts = plan.Conflicts
-            .Where(conflict => conflict.Severity == ConflictSeverity.Blocking && conflict.ResolutionStatus == ConflictResolutionStatus.Unresolved)
+        ConflictDescriptor[] unresolvedBlockingConflicts = plan.Conflicts
+            .Where(conflict => conflict.Severity == ConflictSeverity.Blocking &&
+                               conflict.ResolutionStatus == ConflictResolutionStatus.Unresolved)
             .ToArray();
         if (unresolvedBlockingConflicts.Length > 0)
         {
@@ -426,13 +462,14 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
         try
         {
-            await using var connection = _target.CreateConnection();
+            await using SqliteConnection connection = _target.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await connection.ExecuteAsync("attach database @Path as branch;", new { Path = plan.SourceBranch.StagingDatabasePath });
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await connection.ExecuteAsync("attach database @Path as branch;",
+                new { Path = plan.SourceBranch.StagingDatabasePath });
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var items = plan.ItemsToImport.Select(itemId => itemId.ToString()).ToArray();
-            var documents = plan.DocumentInstancesToImport.Select(documentId => documentId.ToString()).ToArray();
+            string[] items = plan.ItemsToImport.Select(itemId => itemId.ToString()).ToArray();
+            string[] documents = plan.DocumentInstancesToImport.Select(documentId => documentId.ToString()).ToArray();
 
             if (items.Length > 0)
             {
@@ -466,7 +503,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     new { Docs = documents },
                     transaction);
 
-                foreach (var documentId in documents)
+                foreach (string documentId in documents)
                 {
                     await connection.ExecuteAsync(
                         """
@@ -500,7 +537,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 plan.Warnings,
                 plan.DocumentInstancesToImport));
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-branch-inspection"))
         {
             return Result<BranchImportResult>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -520,7 +558,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
             return Task.FromResult(Result.Success());
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-branch-inspection"))
         {
             return Task.FromResult(Result.Failure(AppErrorCodes.DatabaseError, exception.Message));
         }
@@ -535,10 +574,11 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destinationPath))!);
-            File.Copy(branch.StagingDatabasePath, destinationPath, overwrite: true);
+            File.Copy(branch.StagingDatabasePath, destinationPath, true);
             return Task.FromResult(Result<string>.Success(destinationPath));
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-branch-inspection"))
         {
             return Task.FromResult(Result<string>.Failure(AppErrorCodes.DatabaseError, exception.Message));
         }
@@ -546,7 +586,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
     private static SqliteConnection OpenRead(string path)
     {
-        var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        SqliteConnection connection = new(new SqliteConnectionStringBuilder
         {
             DataSource = path,
             Mode = SqliteOpenMode.ReadOnly,

@@ -8,5 +8,8 @@ public static class LayoutRevisionSource
     public const string OcrStaging = "ocr_staging";
     public const string OcrAdopted = "ocr_adopted";
 
-    public static bool IsKnown(string source) => source is Manual or Import or Mock or OcrStaging or OcrAdopted;
+    public static bool IsKnown(string source)
+    {
+        return source is Manual or Import or Mock or OcrStaging or OcrAdopted;
+    }
 }

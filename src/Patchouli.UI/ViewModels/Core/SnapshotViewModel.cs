@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.UI.Services;
 
@@ -29,12 +30,12 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private async Task PublishAsync()
     {
-        var services = await _main.ServicesAsync();
-        var result = await _main.ModalOperations.RunAsync(
+        AppServices services = await _main.ServicesAsync();
+        Result<SnapshotPublishResult> result = await _main.ModalOperations.RunAsync(
             new ModalOperationOptions(
                 "发布同步快照",
                 "正在创建快照分片并校验内容。",
-                CanCancel: true),
+                true),
             context => services.SnapshotPublisher.PublishSnapshotAsync(
                 new SnapshotPublishRequest(services.RuntimeDatabasePath, SyncRoot, DeviceId),
                 context.CancellationToken));
@@ -45,25 +46,27 @@ public sealed class SnapshotViewModel : ViewModelBase
             LastManifestPath = result.Value.ManifestPath;
             LastSnapshotId = result.Value.SnapshotId;
         }
+
         RaiseAll();
         await _main.LogOperationAsync("publish_snapshot", Output);
     }
 
     private async Task ValidateAsync()
     {
-        var services = await _main.ServicesAsync();
-        var result = await _main.ModalOperations.RunAsync(
+        AppServices services = await _main.ServicesAsync();
+        Result<SnapshotValidationResult> result = await _main.ModalOperations.RunAsync(
             new ModalOperationOptions(
                 "验证同步快照",
                 "正在校验 manifest 与内容分片。",
-                CanCancel: true),
+                true),
             async context =>
             {
-                var validation = await services.SnapshotImporter.ValidateSnapshotAsync(ManifestPath, context.CancellationToken);
+                Result<SnapshotValidationResult> validation =
+                    await services.SnapshotImporter.ValidateSnapshotAsync(ManifestPath, context.CancellationToken);
                 return validation.IsFailure || validation.Value.IsValid
                     ? validation
-                    : Patchouli.Core.Results.Result<SnapshotValidationResult>.Failure(
-                        Patchouli.Core.Results.AppErrorCodes.ValidationFailed,
+                    : Result<SnapshotValidationResult>.Failure(
+                        AppErrorCodes.ValidationFailed,
                         string.Join(" ", validation.Value.Errors));
             });
         Output = Format(result);
@@ -72,21 +75,22 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private async Task ImportAsync()
     {
-        var services = await _main.ServicesAsync();
-        var result = await _main.ModalOperations.RunAsync(
+        AppServices services = await _main.ServicesAsync();
+        Result<SnapshotImportResult> result = await _main.ModalOperations.RunAsync(
             new ModalOperationOptions(
                 "导入同步快照",
                 "正在验证快照并导入 staging 数据库。",
-                CanCancel: true),
+                true),
             async context =>
             {
-                var imported = await services.SnapshotImporter.ImportSnapshotToStagingAsync(
+                Result<SnapshotImportResult> imported = await services.SnapshotImporter.ImportSnapshotToStagingAsync(
                     new SnapshotImportRequest(ManifestPath, StagingRoot),
                     context.CancellationToken);
-                return imported.IsFailure || (imported.Value.IsValid && imported.Value.IsLibraryMatch && imported.Value.StagingDatabasePath is not null)
+                return imported.IsFailure || (imported.Value.IsValid && imported.Value.IsLibraryMatch &&
+                                              imported.Value.StagingDatabasePath is not null)
                     ? imported
-                    : Patchouli.Core.Results.Result<SnapshotImportResult>.Failure(
-                        Patchouli.Core.Results.AppErrorCodes.ValidationFailed,
+                    : Result<SnapshotImportResult>.Failure(
+                        AppErrorCodes.ValidationFailed,
                         string.Join(" ", imported.Value.Warnings));
             });
         Output = Format(result) + "\nImport does not replace active runtime DB.";
@@ -94,10 +98,12 @@ public sealed class SnapshotViewModel : ViewModelBase
         await _main.LogOperationAsync("import_snapshot_staging", Output);
     }
 
-    private static string Format<T>(Patchouli.Core.Results.Result<T> result)
-        => result.IsSuccess
+    private static string Format<T>(Result<T> result)
+    {
+        return result.IsSuccess
             ? JsonSerializer.Serialize(result.Value, new JsonSerializerOptions { WriteIndented = true })
             : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+    }
 
     private void RaiseAll()
     {

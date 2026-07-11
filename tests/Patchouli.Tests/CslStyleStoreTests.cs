@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Operations;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
@@ -13,19 +14,19 @@ public sealed class CslStyleStoreTests
     [Fact]
     public async Task Install_update_disable_remove_and_settings_round_trip()
     {
-        await using var context = await CreateContextAsync();
-        var first = await context.Store.InstallStyleAsync(
+        await using TestContext context = await CreateContextAsync();
+        Result<CslStyle> first = await context.Store.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             StyleXml("apa", "American Psychological Association", "en-US"));
-        var second = await context.Store.InstallStyleAsync(
+        Result<CslStyle> second = await context.Store.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             StyleXml("apa", "APA 7th", "en-US"));
-        var listed = await context.Store.ListInstalledStylesAsync();
-        var content = await context.Store.GetStyleContentAsync("apa");
-        var settings = await context.Store.SaveSettingsAsync("apa", "zh-CN");
-        var disabled = await context.Store.DisableStyleAsync("apa");
-        var remove = await context.Store.RemoveStyleAsync("apa");
-        var afterRemove = await context.Store.ListInstalledStylesAsync();
+        Result<IReadOnlyList<CslStyle>> listed = await context.Store.ListInstalledStylesAsync();
+        Result<string> content = await context.Store.GetStyleContentAsync("apa");
+        Result<CslSettings> settings = await context.Store.SaveSettingsAsync("apa", "zh-CN");
+        Result<CslStyle> disabled = await context.Store.DisableStyleAsync("apa");
+        Result remove = await context.Store.RemoveStyleAsync("apa");
+        Result<IReadOnlyList<CslStyle>> afterRemove = await context.Store.ListInstalledStylesAsync();
 
         first.IsSuccess.Should().BeTrue();
         second.IsSuccess.Should().BeTrue();
@@ -42,13 +43,13 @@ public sealed class CslStyleStoreTests
     [Fact]
     public async Task Disabled_style_cannot_become_default()
     {
-        await using var context = await CreateContextAsync();
+        await using TestContext context = await CreateContextAsync();
         await context.Store.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             StyleXml("apa", "APA", "en-US"));
         await context.Store.DisableStyleAsync("apa");
 
-        var result = await context.Store.SaveSettingsAsync("apa", "en-US");
+        Result<CslSettings> result = await context.Store.SaveSettingsAsync("apa", "en-US");
 
         result.IsFailure.Should().BeTrue();
     }
@@ -56,19 +57,19 @@ public sealed class CslStyleStoreTests
     [Fact]
     public async Task Default_storage_root_isolated_per_database()
     {
-        await using var firstDatabase = TemporarySqliteDatabase.Create();
-        await using var secondDatabase = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        await using TemporarySqliteDatabase firstDatabase = TemporarySqliteDatabase.Create();
+        await using TemporarySqliteDatabase secondDatabase = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(firstDatabase.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         await new MigrationRunner(secondDatabase.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
 
-        var firstLibrary = new LibraryIdentityService(firstDatabase.ConnectionFactory, clock);
-        var secondLibrary = new LibraryIdentityService(secondDatabase.ConnectionFactory, clock);
+        LibraryIdentityService firstLibrary = new(firstDatabase.ConnectionFactory, clock);
+        LibraryIdentityService secondLibrary = new(secondDatabase.ConnectionFactory, clock);
         await firstLibrary.CreateLibraryAsync("First CSL Styles");
         await secondLibrary.CreateLibraryAsync("Second CSL Styles");
 
-        var firstStore = new CslStyleStore(firstDatabase.ConnectionFactory, clock);
-        var secondStore = new CslStyleStore(secondDatabase.ConnectionFactory, clock);
+        CslStyleStore firstStore = new(firstDatabase.ConnectionFactory, clock);
+        CslStyleStore secondStore = new(secondDatabase.ConnectionFactory, clock);
         await firstStore.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             StyleXml("apa", "APA From First", "en-US"));
@@ -76,8 +77,8 @@ public sealed class CslStyleStoreTests
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             StyleXml("apa", "APA From Second", "zh-CN"));
 
-        var firstContent = await firstStore.GetStyleContentAsync("apa");
-        var secondContent = await secondStore.GetStyleContentAsync("apa");
+        Result<string> firstContent = await firstStore.GetStyleContentAsync("apa");
+        Result<string> secondContent = await secondStore.GetStyleContentAsync("apa");
 
         firstContent.IsSuccess.Should().BeTrue();
         secondContent.IsSuccess.Should().BeTrue();
@@ -88,16 +89,16 @@ public sealed class CslStyleStoreTests
     [Fact]
     public async Task Invalid_install_records_failed_blocking_operation()
     {
-        await using var context = await CreateContextAsync();
+        await using TestContext context = await CreateContextAsync();
 
-        var result = await context.Store.InstallStyleAsync(
+        Result<CslStyle> result = await context.Store.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             "");
-        var operations = await context.BlockingOperations.ListAsync(
-            status: BlockingOperationStatus.Failed,
-            operationType: BlockingOperationTypes.CslStyleInstall,
-            scopeType: BlockingOperationScopeTypes.CslStyle,
-            scopeId: "apa");
+        Result<IReadOnlyList<BlockingOperation>> operations = await context.BlockingOperations.ListAsync(
+            BlockingOperationStatus.Failed,
+            BlockingOperationTypes.CslStyleInstall,
+            BlockingOperationScopeTypes.CslStyle,
+            "apa");
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be("validation_failed");
@@ -110,16 +111,16 @@ public sealed class CslStyleStoreTests
     [Fact]
     public async Task Successful_install_records_completed_blocking_operation()
     {
-        await using var context = await CreateContextAsync();
+        await using TestContext context = await CreateContextAsync();
 
-        var installed = await context.Store.InstallStyleAsync(
+        Result<CslStyle> installed = await context.Store.InstallStyleAsync(
             new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
             StyleXml("apa", "APA", "en-US"));
-        var operations = await context.BlockingOperations.ListAsync(
-            status: BlockingOperationStatus.Completed,
-            operationType: BlockingOperationTypes.CslStyleInstall,
-            scopeType: BlockingOperationScopeTypes.CslStyle,
-            scopeId: "apa");
+        Result<IReadOnlyList<BlockingOperation>> operations = await context.BlockingOperations.ListAsync(
+            BlockingOperationStatus.Completed,
+            BlockingOperationTypes.CslStyleInstall,
+            BlockingOperationScopeTypes.CslStyle,
+            "apa");
 
         installed.IsSuccess.Should().BeTrue();
         operations.IsSuccess.Should().BeTrue();
@@ -135,9 +136,9 @@ public sealed class CslStyleStoreTests
     [InlineData("nested\\style")]
     public async Task Style_ids_cannot_escape_the_installed_directory(string styleId)
     {
-        await using var context = await CreateContextAsync();
+        await using TestContext context = await CreateContextAsync();
 
-        var installed = await context.Store.InstallStyleAsync(
+        Result<CslStyle> installed = await context.Store.InstallStyleAsync(
             new CslCatalogStyle(styleId, "Bad Style", "https://example.test/bad.csl", "test"),
             StyleXml("bad-style", "Bad Style", "en-US"));
 
@@ -147,12 +148,12 @@ public sealed class CslStyleStoreTests
 
     private static async Task<TestContext> CreateContextAsync()
     {
-        var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var library = new LibraryIdentityService(database.ConnectionFactory, clock);
+        LibraryIdentityService library = new(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("CSL Styles");
-        var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
+        BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
         return new TestContext(
             database,
             new CslStyleStore(database.ConnectionFactory, clock, blockingOperations: blockingOperations),
@@ -160,35 +161,37 @@ public sealed class CslStyleStoreTests
     }
 
     private static string StyleXml(string id, string title, string locale)
-        => $"""
-           <?xml version="1.0" encoding="utf-8"?>
-           <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="{locale}">
-             <info>
-               <title>{title}</title>
-               <id>https://example.test/styles/{id}</id>
-             </info>
-             <citation>
-               <layout prefix="(" suffix=")" delimiter="; ">
-                 <names variable="author">
-                   <name and="text" delimiter=", " initialize-with=". "/>
-                 </names>
-               </layout>
-             </citation>
-             <bibliography>
-               <layout suffix=".">
-                 <group delimiter=" ">
-                   <names variable="author">
-                     <name and="text" delimiter=", " sort-separator=", " initialize-with=". "/>
-                   </names>
-                   <date variable="issued" prefix=" (" suffix=")">
-                     <date-part name="year"/>
-                   </date>
-                   <text variable="title" font-style="italic"/>
-                 </group>
-               </layout>
-             </bibliography>
-           </style>
-           """;
+    {
+        return $"""
+                <?xml version="1.0" encoding="utf-8"?>
+                <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="{locale}">
+                  <info>
+                    <title>{title}</title>
+                    <id>https://example.test/styles/{id}</id>
+                  </info>
+                  <citation>
+                    <layout prefix="(" suffix=")" delimiter="; ">
+                      <names variable="author">
+                        <name and="text" delimiter=", " initialize-with=". "/>
+                      </names>
+                    </layout>
+                  </citation>
+                  <bibliography>
+                    <layout suffix=".">
+                      <group delimiter=" ">
+                        <names variable="author">
+                          <name and="text" delimiter=", " sort-separator=", " initialize-with=". "/>
+                        </names>
+                        <date variable="issued" prefix=" (" suffix=")">
+                          <date-part name="year"/>
+                        </date>
+                        <text variable="title" font-style="italic"/>
+                      </group>
+                    </layout>
+                  </bibliography>
+                </style>
+                """;
+    }
 
     private sealed class TestContext : IAsyncDisposable
     {
@@ -206,6 +209,9 @@ public sealed class CslStyleStoreTests
         public CslStyleStore Store { get; }
         public IBlockingOperationService BlockingOperations { get; }
 
-        public ValueTask DisposeAsync() => Database.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return Database.DisposeAsync();
+        }
     }
 }

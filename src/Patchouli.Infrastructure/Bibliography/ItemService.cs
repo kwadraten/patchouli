@@ -1,6 +1,8 @@
+using System.Data.Common;
 using System.Text;
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
@@ -103,18 +105,21 @@ public sealed class ItemService : IItemService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var row = await QueryItemRowAsync(connection, itemId, cancellationToken);
+            ItemRow? row = await QueryItemRowAsync(connection, itemId, cancellationToken);
             if (row is null)
             {
                 return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
-            var creators = await LoadCreatorsAsync(connection, new[] { itemId }, cancellationToken);
-            var dates = await LoadDatesAsync(connection, new[] { itemId }, cancellationToken);
-            var identifiers = await LoadIdentifiersAsync(connection, new[] { itemId }, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemCreator>> creators =
+                await LoadCreatorsAsync(connection, new[] { itemId }, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemDate>> dates =
+                await LoadDatesAsync(connection, new[] { itemId }, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemIdentifier>> identifiers =
+                await LoadIdentifiersAsync(connection, new[] { itemId }, cancellationToken);
             return Result<ItemMetadata>.Success(row.ToMetadata(
                 creators.GetValueOrDefault(itemId) ?? LegacyCreators(row),
                 dates.GetValueOrDefault(itemId) ?? LegacyDates(row),
@@ -124,7 +129,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }
@@ -147,23 +153,24 @@ public sealed class ItemService : IItemService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var existing = await QueryItemRowAsync(connection, itemId, cancellationToken, transaction);
+            ItemRow? existing = await QueryItemRowAsync(connection, itemId, cancellationToken, transaction);
             if (existing is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
-            var creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
-            var dateInputs = request.Dates ?? ParseDateInputs(request.Date);
-            var customFieldsJson = request.CustomFieldsJson is null
+            IReadOnlyList<ItemCreatorInput>
+                creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
+            IReadOnlyList<ItemDateInput> dateInputs = request.Dates ?? ParseDateInputs(request.Date);
+            string customFieldsJson = request.CustomFieldsJson is null
                 ? existing.CustomFieldsJson
                 : DefaultJsonObject(request.CustomFieldsJson);
-            var updated = new ItemMetadata(
+            ItemMetadata updated = new(
                 existing.ToItemId(),
                 existing.ToLibraryId(),
                 request.ItemType.Trim(),
@@ -171,7 +178,9 @@ public sealed class ItemService : IItemService
                 request.Title.Trim(),
                 NullIfWhiteSpace(request.Subtitle),
                 NullIfWhiteSpace(request.TitleShort),
-                request.Creators is null ? DefaultJsonArray(request.CreatorsJson) : SerializeCreatorCache(creatorInputs),
+                request.Creators is null
+                    ? DefaultJsonArray(request.CreatorsJson)
+                    : SerializeCreatorCache(creatorInputs),
                 Array.Empty<ItemCreator>(),
                 request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
                 Array.Empty<ItemDate>(),
@@ -199,9 +208,9 @@ public sealed class ItemService : IItemService
                 DateTimeOffset.Parse(existing.CreatedAt),
                 _clock.UtcNow.ToUniversalTime());
 
-            var updateParameters = new DynamicParameters(ToParameters(updated));
+            DynamicParameters updateParameters = new(ToParameters(updated));
             updateParameters.Add("ExpectedUpdatedAt", request.ExpectedUpdatedAt?.ToUniversalTime().ToString("O"));
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 """
                 update items
                 set item_type = @ItemType,
@@ -241,7 +250,8 @@ public sealed class ItemService : IItemService
             if (affected == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<ItemMetadata>.Failure(AppErrorCodes.Conflict, "Item metadata changed while the update was in progress.");
+                return Result<ItemMetadata>.Failure(AppErrorCodes.Conflict,
+                    "Item metadata changed while the update was in progress.");
             }
 
             await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, updated.UpdatedAt);
@@ -253,7 +263,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }
@@ -263,10 +274,10 @@ public sealed class ItemService : IItemService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 """
                 update items
                 set deleted_at = @DeletedAt,
@@ -288,7 +299,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -298,13 +310,13 @@ public sealed class ItemService : IItemService
         ListItemsRequest request,
         CancellationToken cancellationToken = default)
     {
-        var pageSize = Math.Clamp(request.PageSize, 1, MaxPageSize);
-        if (!TryParseCursor(request.Cursor, out var cursorCreatedAt, out var cursorItemId))
+        int pageSize = Math.Clamp(request.PageSize, 1, MaxPageSize);
+        if (!TryParseCursor(request.Cursor, out string? cursorCreatedAt, out string? cursorItemId))
         {
             return Result<ItemListPage>.Failure(AppErrorCodes.ValidationFailed, "Item list cursor is invalid.");
         }
 
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
             return Result<ItemListPage>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
@@ -312,12 +324,12 @@ public sealed class ItemService : IItemService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var query = NullIfWhiteSpace(request.Query);
-            var itemType = NullIfWhiteSpace(request.ItemType);
-            var pattern = query is null ? null : $"%{query}%";
+            string? query = NullIfWhiteSpace(request.Query);
+            string? itemType = NullIfWhiteSpace(request.ItemType);
+            string? pattern = query is null ? null : $"%{query}%";
             var parameters = new
             {
                 LibraryId = libraryResult.Value.LibraryId.ToString(),
@@ -329,7 +341,7 @@ public sealed class ItemService : IItemService
                 Take = pageSize + 1
             };
 
-            var totalCount = await connection.ExecuteScalarAsync<int>(
+            int totalCount = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
                 from items
@@ -352,7 +364,7 @@ public sealed class ItemService : IItemService
                 """,
                 parameters);
 
-            var rows = (await connection.QueryAsync<ItemRow>(
+            ItemRow[] rows = (await connection.QueryAsync<ItemRow>(
                 """
                 select
                     item_id as ItemId,
@@ -414,13 +426,16 @@ public sealed class ItemService : IItemService
                 """,
                 parameters)).ToArray();
 
-            var hasMore = rows.Length > pageSize;
-            var pageRows = hasMore ? rows[..pageSize] : rows;
-            var nextCursor = hasMore ? CreateCursor(pageRows[^1]) : null;
-            var itemIds = pageRows.Select(row => row.ToItemId()).ToArray();
-            var creators = await LoadCreatorsAsync(connection, itemIds, cancellationToken);
-            var dates = await LoadDatesAsync(connection, itemIds, cancellationToken);
-            var identifiers = await LoadIdentifiersAsync(connection, itemIds, cancellationToken);
+            bool hasMore = rows.Length > pageSize;
+            ItemRow[] pageRows = hasMore ? rows[..pageSize] : rows;
+            string? nextCursor = hasMore ? CreateCursor(pageRows[^1]) : null;
+            ItemId[] itemIds = pageRows.Select(row => row.ToItemId()).ToArray();
+            Dictionary<ItemId, IReadOnlyList<ItemCreator>> creators =
+                await LoadCreatorsAsync(connection, itemIds, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemDate>> dates =
+                await LoadDatesAsync(connection, itemIds, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemIdentifier>> identifiers =
+                await LoadIdentifiersAsync(connection, itemIds, cancellationToken);
 
             return Result<ItemListPage>.Success(new ItemListPage(
                 pageRows.Select(row => row.ToMetadata(
@@ -434,7 +449,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemListPage>(exception);
         }
@@ -454,16 +470,16 @@ public sealed class ItemService : IItemService
                 "Identifier scheme and value are required.");
         }
 
-        var normalizedScheme = NormalizeIdentifierScheme(scheme);
-        var normalizedValue = value.Trim();
+        string normalizedScheme = NormalizeIdentifierScheme(scheme);
+        string normalizedValue = value.Trim();
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var itemExists = await connection.ExecuteScalarAsync<int>(
+            int itemExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from items where item_id = @ItemId and deleted_at is null;",
                 new { ItemId = itemId.ToString() },
                 transaction);
@@ -474,7 +490,7 @@ public sealed class ItemService : IItemService
                 return Result<ItemIdentifier>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
-            var duplicateCount = await connection.ExecuteScalarAsync<int>(
+            int duplicateCount = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
                 from item_identifiers
@@ -496,7 +512,7 @@ public sealed class ItemService : IItemService
                     "This identifier already exists for the item.");
             }
 
-            var identifier = new ItemIdentifier(
+            ItemIdentifier identifier = new(
                 IdentifierId.New(),
                 itemId,
                 normalizedScheme,
@@ -527,7 +543,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemIdentifier>(exception);
         }
@@ -539,16 +556,16 @@ public sealed class ItemService : IItemService
     {
         try
         {
-            var itemResult = await GetItemAsync(itemId, cancellationToken);
+            Result<ItemMetadata> itemResult = await GetItemAsync(itemId, cancellationToken);
             if (itemResult.IsFailure)
             {
                 return Result<IReadOnlyList<ItemIdentifier>>.Failure(itemResult.ErrorCode!, itemResult.ErrorMessage!);
             }
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var rows = await connection.QueryAsync<IdentifierRow>(
+            IEnumerable<IdentifierRow> rows = await connection.QueryAsync<IdentifierRow>(
                 """
                 select
                     identifier_id as IdentifierId,
@@ -569,7 +586,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return DatabaseFailure<IReadOnlyList<ItemIdentifier>>(exception);
         }
@@ -582,9 +600,9 @@ public sealed class ItemService : IItemService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 """
                 delete from item_identifiers
                 where identifier_id = @IdentifierId and item_id = @ItemId;
@@ -599,9 +617,10 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
-            var failure = DatabaseFailure<object>(exception);
+            Result<object> failure = DatabaseFailure<object>(exception);
             return Result.Failure(failure.ErrorCode!, failure.ErrorMessage!);
         }
     }
@@ -645,7 +664,7 @@ public sealed class ItemService : IItemService
     }
 
     private static async Task<Dictionary<ItemId, IReadOnlyList<ItemCreator>>> LoadCreatorsAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
+        SqliteConnection connection,
         IReadOnlyList<ItemId> itemIds,
         CancellationToken cancellationToken)
     {
@@ -655,7 +674,7 @@ public sealed class ItemService : IItemService
             return new Dictionary<ItemId, IReadOnlyList<ItemCreator>>();
         }
 
-        var rows = await connection.QueryAsync<CreatorRow>(
+        IEnumerable<CreatorRow> rows = await connection.QueryAsync<CreatorRow>(
             """
             select
                 creator_id as CreatorId,
@@ -676,11 +695,12 @@ public sealed class ItemService : IItemService
 
         return rows
             .GroupBy(row => ItemId.Parse(row.ItemId))
-            .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemCreator>)group.Select(row => row.ToCreator()).ToArray());
+            .ToDictionary(group => group.Key,
+                group => (IReadOnlyList<ItemCreator>)group.Select(row => row.ToCreator()).ToArray());
     }
 
     private static async Task<Dictionary<ItemId, IReadOnlyList<ItemDate>>> LoadDatesAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
+        SqliteConnection connection,
         IReadOnlyList<ItemId> itemIds,
         CancellationToken cancellationToken)
     {
@@ -690,7 +710,7 @@ public sealed class ItemService : IItemService
             return new Dictionary<ItemId, IReadOnlyList<ItemDate>>();
         }
 
-        var rows = await connection.QueryAsync<DateRow>(
+        IEnumerable<DateRow> rows = await connection.QueryAsync<DateRow>(
             """
             select
                 date_id as DateId,
@@ -711,11 +731,12 @@ public sealed class ItemService : IItemService
 
         return rows
             .GroupBy(row => ItemId.Parse(row.ItemId))
-            .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemDate>)group.Select(row => row.ToDate()).ToArray());
+            .ToDictionary(group => group.Key,
+                group => (IReadOnlyList<ItemDate>)group.Select(row => row.ToDate()).ToArray());
     }
 
     private static async Task<Dictionary<ItemId, IReadOnlyList<ItemIdentifier>>> LoadIdentifiersAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
+        SqliteConnection connection,
         IReadOnlyList<ItemId> itemIds,
         CancellationToken cancellationToken)
     {
@@ -725,7 +746,7 @@ public sealed class ItemService : IItemService
             return new Dictionary<ItemId, IReadOnlyList<ItemIdentifier>>();
         }
 
-        var rows = await connection.QueryAsync<IdentifierRow>(
+        IEnumerable<IdentifierRow> rows = await connection.QueryAsync<IdentifierRow>(
             """
             select
                 identifier_id as IdentifierId,
@@ -742,21 +763,23 @@ public sealed class ItemService : IItemService
 
         return rows
             .GroupBy(row => ItemId.Parse(row.ItemId))
-            .ToDictionary(group => group.Key, group => (IReadOnlyList<ItemIdentifier>)group.Select(row => row.ToIdentifier()).ToArray());
+            .ToDictionary(group => group.Key,
+                group => (IReadOnlyList<ItemIdentifier>)group.Select(row => row.ToIdentifier()).ToArray());
     }
 
     private static async Task ReplaceCreatorsAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         ItemId itemId,
         IReadOnlyList<ItemCreatorInput> creators,
         DateTimeOffset now)
     {
-        await connection.ExecuteAsync("delete from item_creators where item_id = @ItemId;", new { ItemId = itemId.ToString() }, transaction);
+        await connection.ExecuteAsync("delete from item_creators where item_id = @ItemId;",
+            new { ItemId = itemId.ToString() }, transaction);
 
-        for (var index = 0; index < creators.Count; index++)
+        for (int index = 0; index < creators.Count; index++)
         {
-            var creator = NormalizeCreator(creators[index]);
+            ItemCreatorInput? creator = NormalizeCreator(creators[index]);
             if (creator is null)
             {
                 continue;
@@ -789,17 +812,18 @@ public sealed class ItemService : IItemService
     }
 
     private static async Task ReplaceDatesAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         ItemId itemId,
         IReadOnlyList<ItemDateInput> dates,
         DateTimeOffset now)
     {
-        await connection.ExecuteAsync("delete from item_dates where item_id = @ItemId;", new { ItemId = itemId.ToString() }, transaction);
+        await connection.ExecuteAsync("delete from item_dates where item_id = @ItemId;",
+            new { ItemId = itemId.ToString() }, transaction);
 
-        foreach (var rawDate in dates)
+        foreach (ItemDateInput rawDate in dates)
         {
-            var date = NormalizeDate(rawDate);
+            ItemDateInput? date = NormalizeDate(rawDate);
             if (date is null)
             {
                 continue;
@@ -835,7 +859,7 @@ public sealed class ItemService : IItemService
     }
 
     private static async Task<ItemRow?> QueryItemRowAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
+        SqliteConnection connection,
         ItemId itemId,
         CancellationToken cancellationToken,
         System.Data.IDbTransaction? transaction = null)
@@ -883,16 +907,31 @@ public sealed class ItemService : IItemService
             transaction);
     }
 
-    private static string DefaultJsonArray(string? value) => string.IsNullOrWhiteSpace(value) ? "[]" : value.Trim();
-    private static string DefaultJsonObject(string? value) => string.IsNullOrWhiteSpace(value) ? "{}" : value.Trim();
-    private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
+    private static string DefaultJsonArray(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "[]" : value.Trim();
+    }
+
+    private static string DefaultJsonObject(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "{}" : value.Trim();
+    }
+
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
+    }
 
     private static string GenerateCitationKey(string title, ItemId itemId)
     {
-        var builder = new StringBuilder();
-        var appendDash = false;
-        foreach (var ch in title.Trim().ToLowerInvariant())
+        StringBuilder builder = new();
+        bool appendDash = false;
+        foreach (char ch in title.Trim().ToLowerInvariant())
         {
             if (char.IsLetterOrDigit(ch))
             {
@@ -911,13 +950,13 @@ public sealed class ItemService : IItemService
             }
         }
 
-        var slug = builder.ToString().Trim('-');
+        string slug = builder.ToString().Trim('-');
         if (string.IsNullOrWhiteSpace(slug))
         {
             slug = "item";
         }
 
-        var suffix = itemId.Value.ToString("N")[..8].ToLowerInvariant();
+        string suffix = itemId.Value.ToString("N")[..8].ToLowerInvariant();
         return $"{slug}-{suffix}";
     }
 
@@ -931,7 +970,7 @@ public sealed class ItemService : IItemService
             return true;
         }
 
-        var parts = cursor.Split('|', 2, StringSplitOptions.None);
+        string[] parts = cursor.Split('|', 2, StringSplitOptions.None);
         if (parts.Length != 2 || string.IsNullOrWhiteSpace(parts[0]) || string.IsNullOrWhiteSpace(parts[1]))
         {
             return false;
@@ -942,7 +981,10 @@ public sealed class ItemService : IItemService
         return true;
     }
 
-    private static string CreateCursor(ItemRow row) => $"{row.CreatedAt}|{row.ItemId}";
+    private static string CreateCursor(ItemRow row)
+    {
+        return $"{row.CreatedAt}|{row.ItemId}";
+    }
 
     private static Result<T> DatabaseFailure<T>(Exception exception)
     {
@@ -963,7 +1005,7 @@ public sealed class ItemService : IItemService
             return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item type is required.");
         }
 
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
             return Result<ItemMetadata>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
@@ -971,11 +1013,12 @@ public sealed class ItemService : IItemService
 
         try
         {
-            var now = _clock.UtcNow.ToUniversalTime();
-            var itemId = ItemId.New();
-            var creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
-            var dateInputs = request.Dates ?? ParseDateInputs(request.Date);
-            var item = new ItemMetadata(
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            ItemId itemId = ItemId.New();
+            IReadOnlyList<ItemCreatorInput>
+                creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
+            IReadOnlyList<ItemDateInput> dateInputs = request.Dates ?? ParseDateInputs(request.Date);
+            ItemMetadata item = new(
                 itemId,
                 libraryResult.Value.LibraryId,
                 request.ItemType.Trim(),
@@ -983,7 +1026,9 @@ public sealed class ItemService : IItemService
                 request.Title.Trim(),
                 NullIfWhiteSpace(request.Subtitle),
                 NullIfWhiteSpace(request.TitleShort),
-                request.Creators is null ? DefaultJsonArray(request.CreatorsJson) : SerializeCreatorCache(creatorInputs),
+                request.Creators is null
+                    ? DefaultJsonArray(request.CreatorsJson)
+                    : SerializeCreatorCache(creatorInputs),
                 Array.Empty<ItemCreator>(),
                 request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
                 Array.Empty<ItemDate>(),
@@ -1011,9 +1056,9 @@ public sealed class ItemService : IItemService
                 now,
                 now);
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             await connection.ExecuteAsync(
                 """
@@ -1035,10 +1080,10 @@ public sealed class ItemService : IItemService
 
             await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, now);
             await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, now);
-            var identifierKeys = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var identifier in request.Identifiers ?? Array.Empty<ItemIdentifierInput>())
+            HashSet<string> identifierKeys = new(StringComparer.Ordinal);
+            foreach (ItemIdentifierInput identifier in request.Identifiers ?? Array.Empty<ItemIdentifierInput>())
             {
-                var normalized = NormalizeIdentifier(identifier);
+                ItemIdentifierInput? normalized = NormalizeIdentifier(identifier);
                 if (normalized is null || !identifierKeys.Add($"{normalized.Scheme}\0{normalized.Value}"))
                 {
                     continue;
@@ -1054,7 +1099,8 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }
@@ -1069,29 +1115,29 @@ public sealed class ItemService : IItemService
 
         try
         {
-            using var document = JsonDocument.Parse(creatorsJson);
+            using JsonDocument document = JsonDocument.Parse(creatorsJson);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
             {
                 return Array.Empty<ItemCreatorInput>();
             }
 
-            var creators = new List<ItemCreatorInput>();
-            foreach (var element in document.RootElement.EnumerateArray())
+            List<ItemCreatorInput> creators = new();
+            foreach (JsonElement element in document.RootElement.EnumerateArray())
             {
                 if (element.ValueKind != JsonValueKind.Object)
                 {
                     continue;
                 }
 
-                var role = ReadString(element, "role") ?? ReadString(element, "Role") ?? ItemCreatorRoles.Author;
-                var family = ReadString(element, "family") ?? ReadString(element, "Family");
-                var given = ReadString(element, "given") ?? ReadString(element, "Given");
-                var literal = ReadString(element, "literal")
-                    ?? ReadString(element, "Literal")
-                    ?? ReadString(element, "name")
-                    ?? ReadString(element, "Name");
-                var suffix = ReadString(element, "suffix") ?? ReadString(element, "Suffix");
-                var particles = ReadString(element, "particles") ?? ReadString(element, "Particles");
+                string role = ReadString(element, "role") ?? ReadString(element, "Role") ?? ItemCreatorRoles.Author;
+                string? family = ReadString(element, "family") ?? ReadString(element, "Family");
+                string? given = ReadString(element, "given") ?? ReadString(element, "Given");
+                string? literal = ReadString(element, "literal")
+                                  ?? ReadString(element, "Literal")
+                                  ?? ReadString(element, "name")
+                                  ?? ReadString(element, "Name");
+                string? suffix = ReadString(element, "suffix") ?? ReadString(element, "Suffix");
+                string? particles = ReadString(element, "particles") ?? ReadString(element, "Particles");
                 creators.Add(new ItemCreatorInput(role, family, given, literal, suffix, particles));
             }
 
@@ -1105,7 +1151,7 @@ public sealed class ItemService : IItemService
 
     private static IReadOnlyList<ItemDateInput> ParseDateInputs(string? date)
     {
-        var trimmed = NullIfWhiteSpace(date);
+        string? trimmed = NullIfWhiteSpace(date);
         return trimmed is null
             ? Array.Empty<ItemDateInput>()
             : new[] { new ItemDateInput(ItemDateRoles.Issued, Literal: trimmed) };
@@ -1113,12 +1159,12 @@ public sealed class ItemService : IItemService
 
     private static ItemCreatorInput? NormalizeCreator(ItemCreatorInput creator)
     {
-        var role = ItemCreatorRoles.Supported.Contains(creator.Role) ? creator.Role : ItemCreatorRoles.Author;
-        var family = NullIfWhiteSpace(creator.Family);
-        var given = NullIfWhiteSpace(creator.Given);
-        var literal = NullIfWhiteSpace(creator.Literal);
-        var suffix = NullIfWhiteSpace(creator.Suffix);
-        var particles = NullIfWhiteSpace(creator.Particles);
+        string role = ItemCreatorRoles.Supported.Contains(creator.Role) ? creator.Role : ItemCreatorRoles.Author;
+        string? family = NullIfWhiteSpace(creator.Family);
+        string? given = NullIfWhiteSpace(creator.Given);
+        string? literal = NullIfWhiteSpace(creator.Literal);
+        string? suffix = NullIfWhiteSpace(creator.Suffix);
+        string? particles = NullIfWhiteSpace(creator.Particles);
         return family is null && given is null && literal is null
             ? null
             : new ItemCreatorInput(role, family, given, literal, suffix, particles);
@@ -1131,14 +1177,14 @@ public sealed class ItemService : IItemService
             return null;
         }
 
-        var datePartsJson = string.IsNullOrWhiteSpace(date.DatePartsJson) ? "[]" : date.DatePartsJson.Trim();
+        string datePartsJson = string.IsNullOrWhiteSpace(date.DatePartsJson) ? "[]" : date.DatePartsJson.Trim();
         if (!IsJsonArray(datePartsJson))
         {
             datePartsJson = "[]";
         }
 
-        var literal = NullIfWhiteSpace(date.Literal);
-        var season = NullIfWhiteSpace(date.Season);
+        string? literal = NullIfWhiteSpace(date.Literal);
+        string? season = NullIfWhiteSpace(date.Season);
         if (literal is null && season is null && datePartsJson == "[]")
         {
             return null;
@@ -1149,8 +1195,8 @@ public sealed class ItemService : IItemService
 
     private static ItemIdentifierInput? NormalizeIdentifier(ItemIdentifierInput identifier)
     {
-        var scheme = NullIfWhiteSpace(identifier.Scheme);
-        var value = NullIfWhiteSpace(identifier.Value);
+        string? scheme = NullIfWhiteSpace(identifier.Scheme);
+        string? value = NullIfWhiteSpace(identifier.Value);
         if (scheme is null || value is null)
         {
             return null;
@@ -1159,11 +1205,14 @@ public sealed class ItemService : IItemService
         return new ItemIdentifierInput(NormalizeIdentifierScheme(scheme), value, NullIfWhiteSpace(identifier.Note));
     }
 
-    private static string NormalizeIdentifierScheme(string scheme) => scheme.Trim().ToLowerInvariant();
+    private static string NormalizeIdentifierScheme(string scheme)
+    {
+        return scheme.Trim().ToLowerInvariant();
+    }
 
     private static async Task InsertIdentifierAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         ItemId itemId,
         ItemIdentifierInput identifier,
         DateTimeOffset now)
@@ -1212,7 +1261,7 @@ public sealed class ItemService : IItemService
 
     private static IReadOnlyList<ItemDate> LegacyDates(ItemRow row)
     {
-        var date = NullIfWhiteSpace(row.Date);
+        string? date = NullIfWhiteSpace(row.Date);
         return date is null
             ? Array.Empty<ItemDate>()
             : new[]
@@ -1251,7 +1300,7 @@ public sealed class ItemService : IItemService
 
     private static string? DisplayIssuedDate(IReadOnlyList<ItemDateInput> dates)
     {
-        var issued = dates
+        ItemDateInput? issued = dates
             .Select(NormalizeDate)
             .FirstOrDefault(date => date?.Role == ItemDateRoles.Issued);
 
@@ -1267,19 +1316,20 @@ public sealed class ItemService : IItemService
 
         try
         {
-            using var document = JsonDocument.Parse(issued.DatePartsJson);
+            using JsonDocument document = JsonDocument.Parse(issued.DatePartsJson);
             if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
             {
                 return null;
             }
 
-            var firstPart = document.RootElement[0];
+            JsonElement firstPart = document.RootElement[0];
             if (firstPart.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }
 
-            return string.Join("-", firstPart.EnumerateArray().Select(part => part.GetInt32().ToString("D2"))).TrimStart('0');
+            return string.Join("-", firstPart.EnumerateArray().Select(part => part.GetInt32().ToString("D2")))
+                .TrimStart('0');
         }
         catch
         {
@@ -1301,7 +1351,7 @@ public sealed class ItemService : IItemService
 
     private static string? ReadString(JsonElement element, string propertyName)
     {
-        return element.TryGetProperty(propertyName, out var value) && value.ValueKind == JsonValueKind.String
+        return element.TryGetProperty(propertyName, out JsonElement value) && value.ValueKind == JsonValueKind.String
             ? NullIfWhiteSpace(value.GetString())
             : null;
     }
@@ -1310,7 +1360,7 @@ public sealed class ItemService : IItemService
     {
         try
         {
-            using var document = JsonDocument.Parse(value);
+            using JsonDocument document = JsonDocument.Parse(value);
             return document.RootElement.ValueKind == JsonValueKind.Array;
         }
         catch
@@ -1354,10 +1404,18 @@ public sealed class ItemService : IItemService
         public string UpdatedAt { get; set; } = string.Empty;
         public string? DeletedAt { get; set; }
 
-        public Patchouli.Core.Ids.ItemId ToItemId() => Patchouli.Core.Ids.ItemId.Parse(ItemId);
-        public Patchouli.Core.Ids.LibraryId ToLibraryId() => Patchouli.Core.Ids.LibraryId.Parse(LibraryId);
+        public ItemId ToItemId()
+        {
+            return Patchouli.Core.Ids.ItemId.Parse(ItemId);
+        }
 
-        public ItemMetadata ToMetadata(IReadOnlyList<ItemCreator> creators, IReadOnlyList<ItemDate> dates, IReadOnlyList<ItemIdentifier> identifiers)
+        public LibraryId ToLibraryId()
+        {
+            return Patchouli.Core.Ids.LibraryId.Parse(LibraryId);
+        }
+
+        public ItemMetadata ToMetadata(IReadOnlyList<ItemCreator> creators, IReadOnlyList<ItemDate> dates,
+            IReadOnlyList<ItemIdentifier> identifiers)
         {
             return new ItemMetadata(
                 Patchouli.Core.Ids.ItemId.Parse(ItemId),
@@ -1410,17 +1468,20 @@ public sealed class ItemService : IItemService
         public int SequenceIndex { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
 
-        public ItemCreator ToCreator() => new(
-            CreatorId,
-            Patchouli.Core.Ids.ItemId.Parse(ItemId),
-            Role,
-            Family,
-            Given,
-            Literal,
-            Suffix,
-            Particles,
-            SequenceIndex,
-            DateTimeOffset.Parse(CreatedAt));
+        public ItemCreator ToCreator()
+        {
+            return new ItemCreator(
+                CreatorId,
+                Patchouli.Core.Ids.ItemId.Parse(ItemId),
+                Role,
+                Family,
+                Given,
+                Literal,
+                Suffix,
+                Particles,
+                SequenceIndex,
+                DateTimeOffset.Parse(CreatedAt));
+        }
     }
 
     private sealed class DateRow
@@ -1434,15 +1495,18 @@ public sealed class ItemService : IItemService
         public string? Literal { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
 
-        public ItemDate ToDate() => new(
-            DateId,
-            Patchouli.Core.Ids.ItemId.Parse(ItemId),
-            Role,
-            DatePartsJson,
-            Circa != 0,
-            Season,
-            Literal,
-            DateTimeOffset.Parse(CreatedAt));
+        public ItemDate ToDate()
+        {
+            return new ItemDate(
+                DateId,
+                Patchouli.Core.Ids.ItemId.Parse(ItemId),
+                Role,
+                DatePartsJson,
+                Circa != 0,
+                Season,
+                Literal,
+                DateTimeOffset.Parse(CreatedAt));
+        }
     }
 
     private sealed class IdentifierRow

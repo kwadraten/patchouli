@@ -9,14 +9,20 @@ namespace Patchouli.Infrastructure.Csl;
 
 public sealed class CslStyleCatalog : ICslStyleCatalog
 {
-    private const string GitHubChineseTreeUrl = "https://api.github.com/repos/zotero-chinese/styles/git/trees/main?recursive=1";
+    private const string GitHubChineseTreeUrl =
+        "https://api.github.com/repos/zotero-chinese/styles/git/trees/main?recursive=1";
+
     private const string GitHubChineseRawRoot = "https://raw.githubusercontent.com/zotero-chinese/styles/main/";
-    private const string GiteeChineseTreeUrl = "https://gitee.com/api/v5/repos/zotero-chinese-x/styles/git/trees/main?recursive=1";
+
+    private const string GiteeChineseTreeUrl =
+        "https://gitee.com/api/v5/repos/zotero-chinese-x/styles/git/trees/main?recursive=1";
+
     private const string GiteeChineseRawRoot = "https://gitee.com/zotero-chinese-x/styles/raw/main/";
     private const string ZoteroOfficialStylesJsonUrl = "https://www.zotero.org/styles-files/styles.json";
     private const string ZoteroOfficialStyleRoot = "https://www.zotero.org/styles/";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
+
     private static readonly SourceDefinition[] SourceDefinitions =
     [
         new(
@@ -61,7 +67,8 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         Directory.CreateDirectory(_cacheRoot);
     }
 
-    public IReadOnlyList<CslCatalogSource> Sources { get; } = SourceDefinitions.Select(source => source.Source).ToArray();
+    public IReadOnlyList<CslCatalogSource> Sources { get; } =
+        SourceDefinitions.Select(source => source.Source).ToArray();
 
     public CslCatalogSource CurrentSource => _currentSource.Source;
 
@@ -72,8 +79,8 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
             return Result.Failure(AppErrorCodes.ValidationFailed, "CSL catalog source is required.");
         }
 
-        var source = SourceDefinitions.FirstOrDefault(
-            definition => definition.Source.SourceId.Equals(sourceId.Trim(), StringComparison.OrdinalIgnoreCase));
+        SourceDefinition? source = SourceDefinitions.FirstOrDefault(definition =>
+            definition.Source.SourceId.Equals(sourceId.Trim(), StringComparison.OrdinalIgnoreCase));
         if (source is null)
         {
             return Result.Failure(AppErrorCodes.ValidationFailed, $"Unknown CSL catalog source: {sourceId}.");
@@ -83,9 +90,10 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         return Result.Success();
     }
 
-    public async Task<Result<IReadOnlyList<CslCatalogStyle>>> RefreshAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<CslCatalogStyle>>> RefreshAsync(
+        CancellationToken cancellationToken = default)
     {
-        var source = _currentSource;
+        SourceDefinition source = _currentSource;
         try
         {
             return await RefreshSourceAsync(source, cancellationToken);
@@ -94,7 +102,8 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-catalog"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-catalog"))
         {
             return Result<IReadOnlyList<CslCatalogStyle>>.Failure(
                 AppErrorCodes.DatabaseError,
@@ -102,24 +111,27 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         }
     }
 
-    public async Task<Result<IReadOnlyList<CslCatalogStyle>>> SearchAsync(string? query = null, CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<CslCatalogStyle>>> SearchAsync(string? query = null,
+        CancellationToken cancellationToken = default)
     {
-        var source = _currentSource;
+        SourceDefinition source = _currentSource;
         try
         {
-            var stylesResult = await LoadCachedStylesAsync(source, cancellationToken);
+            Result<IReadOnlyList<CslCatalogStyle>>
+                stylesResult = await LoadCachedStylesAsync(source, cancellationToken);
             if (stylesResult.IsFailure)
             {
-                return Result<IReadOnlyList<CslCatalogStyle>>.Failure(stylesResult.ErrorCode!, stylesResult.ErrorMessage!);
+                return Result<IReadOnlyList<CslCatalogStyle>>.Failure(stylesResult.ErrorCode!,
+                    stylesResult.ErrorMessage!);
             }
 
-            var styles = stylesResult.Value;
+            IReadOnlyList<CslCatalogStyle> styles = stylesResult.Value;
             if (string.IsNullOrWhiteSpace(query))
             {
                 return Result<IReadOnlyList<CslCatalogStyle>>.Success(styles);
             }
 
-            var needle = query.Trim();
+            string needle = query.Trim();
             return Result<IReadOnlyList<CslCatalogStyle>>.Success(styles
                 .Where(style =>
                     style.StyleId.Contains(needle, StringComparison.OrdinalIgnoreCase)
@@ -130,7 +142,8 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-catalog"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-catalog"))
         {
             return Result<IReadOnlyList<CslCatalogStyle>>.Failure(
                 AppErrorCodes.DatabaseError,
@@ -142,7 +155,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         SourceDefinition source,
         CancellationToken cancellationToken)
     {
-        var styles = await LoadStylesFromSourceAsync(source, cancellationToken);
+        IReadOnlyList<CslCatalogStyle> styles = await LoadStylesFromSourceAsync(source, cancellationToken);
         await File.WriteAllTextAsync(
             GetCachePath(source),
             JsonSerializer.Serialize(styles, new JsonSerializerOptions { WriteIndented = true }),
@@ -154,7 +167,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         SourceDefinition source,
         CancellationToken cancellationToken)
     {
-        var cachePath = GetCachePath(source);
+        string cachePath = GetCachePath(source);
         if (!File.Exists(cachePath))
         {
             return await RefreshSourceAsync(source, cancellationToken);
@@ -162,7 +175,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
 
         try
         {
-            var json = await File.ReadAllTextAsync(cachePath, cancellationToken);
+            string json = await File.ReadAllTextAsync(cachePath, cancellationToken);
             return Result<IReadOnlyList<CslCatalogStyle>>.Success(
                 JsonSerializer.Deserialize<CslCatalogStyle[]>(json) ?? Array.Empty<CslCatalogStyle>());
         }
@@ -176,7 +189,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         SourceDefinition source,
         CancellationToken cancellationToken)
     {
-        var json = await _httpClient.GetStringAsync(source.IndexUri, cancellationToken);
+        string json = await _httpClient.GetStringAsync(source.IndexUri, cancellationToken);
         return source.Kind switch
         {
             CatalogSourceKind.RepositoryTree => ParseRepositoryTreeStyles(source, json),
@@ -187,9 +200,9 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
 
     private static IReadOnlyList<CslCatalogStyle> ParseRepositoryTreeStyles(SourceDefinition source, string json)
     {
-        var response = JsonSerializer.Deserialize<GitTreeResponse>(json, JsonOptions);
-        var styles = new Dictionary<string, CslCatalogStyle>(StringComparer.OrdinalIgnoreCase);
-        foreach (var node in response?.Tree ?? [])
+        GitTreeResponse? response = JsonSerializer.Deserialize<GitTreeResponse>(json, JsonOptions);
+        Dictionary<string, CslCatalogStyle> styles = new(StringComparer.OrdinalIgnoreCase);
+        foreach (GitTreeNode node in response?.Tree ?? [])
         {
             if (!node.Type.Equals("blob", StringComparison.OrdinalIgnoreCase)
                 || !node.Path.StartsWith("src/", StringComparison.OrdinalIgnoreCase)
@@ -198,15 +211,15 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
                 continue;
             }
 
-            var fileName = GetLastPathSegment(node.Path);
-            var styleId = StripExtension(fileName);
+            string fileName = GetLastPathSegment(node.Path);
+            string styleId = StripExtension(fileName);
             if (string.IsNullOrWhiteSpace(styleId))
             {
                 continue;
             }
 
-            var displayName = styleId;
-            var sourceUrl = source.RawRoot is null ? null : $"{source.RawRoot}{EscapePath(node.Path)}";
+            string displayName = styleId;
+            string? sourceUrl = source.RawRoot is null ? null : $"{source.RawRoot}{EscapePath(node.Path)}";
             styles[styleId] = new CslCatalogStyle(styleId, displayName, sourceUrl, source.Source.SourceId);
         }
 
@@ -215,18 +228,21 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
 
     private static IReadOnlyList<CslCatalogStyle> ParseZoteroOfficialStyles(string json)
     {
-        var records = JsonSerializer.Deserialize<ZoteroOfficialStyleData[]>(json, JsonOptions) ?? [];
-        var styles = new Dictionary<string, CslCatalogStyle>(StringComparer.OrdinalIgnoreCase);
-        foreach (var record in records)
+        ZoteroOfficialStyleData[] records =
+            JsonSerializer.Deserialize<ZoteroOfficialStyleData[]>(json, JsonOptions) ?? [];
+        Dictionary<string, CslCatalogStyle> styles = new(StringComparer.OrdinalIgnoreCase);
+        foreach (ZoteroOfficialStyleData record in records)
         {
             if (string.IsNullOrWhiteSpace(record.Name))
             {
                 continue;
             }
 
-            var styleId = record.Name.Trim();
-            var displayName = string.IsNullOrWhiteSpace(record.Title) ? HumanizeStyleId(styleId) : record.Title.Trim();
-            var sourceUrl = string.IsNullOrWhiteSpace(record.Href)
+            string styleId = record.Name.Trim();
+            string displayName = string.IsNullOrWhiteSpace(record.Title)
+                ? HumanizeStyleId(styleId)
+                : record.Title.Trim();
+            string sourceUrl = string.IsNullOrWhiteSpace(record.Href)
                 ? $"{ZoteroOfficialStyleRoot}{EscapePathSegment(styleId)}"
                 : record.Href.Trim();
             styles[styleId] = new CslCatalogStyle(styleId, displayName, sourceUrl, CslCatalogSourceIds.ZoteroOfficial);
@@ -236,22 +252,35 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
     }
 
     private string GetCachePath(SourceDefinition source)
-        => Path.Combine(_cacheRoot, $"catalog-cache-{source.Source.SourceId}.json");
+    {
+        return Path.Combine(_cacheRoot, $"catalog-cache-{source.Source.SourceId}.json");
+    }
 
     private static string EscapePath(string path)
-        => string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(EscapePathSegment));
+    {
+        return string.Join("/", path.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(EscapePathSegment));
+    }
 
-    private static string EscapePathSegment(string segment) => Uri.EscapeDataString(segment.Trim());
+    private static string EscapePathSegment(string segment)
+    {
+        return Uri.EscapeDataString(segment.Trim());
+    }
 
     private static string GetLastPathSegment(string path)
-        => path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+    {
+        return path.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault() ?? "";
+    }
 
     private static string StripExtension(string fileName)
-        => fileName.EndsWith(".csl", StringComparison.OrdinalIgnoreCase) ? fileName[..^4] : fileName;
+    {
+        return fileName.EndsWith(".csl", StringComparison.OrdinalIgnoreCase) ? fileName[..^4] : fileName;
+    }
 
     private static string HumanizeStyleId(string styleId)
-        => string.Join(" ", styleId.Split(['-', '_'], StringSplitOptions.RemoveEmptyEntries)
+    {
+        return string.Join(" ", styleId.Split(['-', '_'], StringSplitOptions.RemoveEmptyEntries)
             .Select(part => char.ToUpperInvariant(part[0]) + part[1..]));
+    }
 
     private enum CatalogSourceKind
     {
@@ -282,7 +311,6 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         public string? Name { get; set; }
         public string? Href { get; set; }
 
-        [JsonPropertyName("titleShort")]
-        public string? TitleShort { get; set; }
+        [JsonPropertyName("titleShort")] public string? TitleShort { get; set; }
     }
 }

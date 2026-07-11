@@ -8,7 +8,7 @@ public sealed class ResultTests
     [Fact]
     public void Success_result_has_no_error()
     {
-        var result = Result.Success();
+        Result result = Result.Success();
 
         result.IsSuccess.Should().BeTrue();
         result.IsFailure.Should().BeFalse();
@@ -19,7 +19,7 @@ public sealed class ResultTests
     [Fact]
     public void Failure_result_contains_error_code_and_message()
     {
-        var result = Result.Failure(AppErrorCodes.NotFound, "The requested record was not found.");
+        Result result = Result.Failure(AppErrorCodes.NotFound, "The requested record was not found.");
 
         result.IsSuccess.Should().BeFalse();
         result.IsFailure.Should().BeTrue();

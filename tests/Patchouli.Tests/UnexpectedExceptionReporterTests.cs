@@ -5,17 +5,23 @@ namespace Patchouli.Tests;
 
 public sealed class UnexpectedExceptionReporterTests : IDisposable
 {
-    public UnexpectedExceptionReporterTests() => UnexpectedExceptionReporter.Reset();
+    public UnexpectedExceptionReporterTests()
+    {
+        UnexpectedExceptionReporter.Reset();
+    }
 
-    public void Dispose() => UnexpectedExceptionReporter.Reset();
+    public void Dispose()
+    {
+        UnexpectedExceptionReporter.Reset();
+    }
 
     [Fact]
     public void Configure_forwards_exception_context_and_reset_restores_no_op()
     {
-        var reports = new List<(Exception Exception, string Boundary, string? Operation)>();
+        List<(Exception Exception, string Boundary, string? Operation)> reports = new();
         UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
             reports.Add((exception, boundary, operation)));
-        var exception = new InvalidOperationException("failure");
+        InvalidOperationException exception = new("failure");
 
         UnexpectedExceptionReporter.Report(exception, "test-boundary", "test-operation");
         UnexpectedExceptionReporter.Reset();
@@ -27,7 +33,7 @@ public sealed class UnexpectedExceptionReporterTests : IDisposable
     [Fact]
     public void Report_does_not_forward_cancellation_or_reporter_failures()
     {
-        var calls = 0;
+        int calls = 0;
         UnexpectedExceptionReporter.Configure((_, _, _) =>
         {
             calls++;
@@ -35,7 +41,7 @@ public sealed class UnexpectedExceptionReporterTests : IDisposable
         });
 
         UnexpectedExceptionReporter.Report(new OperationCanceledException(), "test-boundary");
-        var act = () => UnexpectedExceptionReporter.Report(new Exception("failure"), "test-boundary");
+        Action act = () => UnexpectedExceptionReporter.Report(new Exception("failure"), "test-boundary");
 
         act.Should().NotThrow();
         calls.Should().Be(1);

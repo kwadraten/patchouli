@@ -1,4 +1,5 @@
 ﻿using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
 using Patchouli.Ocr;
 
 namespace Patchouli.UI.ViewModels;
@@ -11,7 +12,10 @@ public sealed class PdfRenderViewModel : ViewModelBase
     public string PresetId { get; set; } = "";
     public string Dpi { get; set; } = "200";
     public bool ForceRerender { get; set; }
-    public string Output { get; set; } = "PDF rendering is MVP-only. Cache images are local and never synced or returned by MCP.";
+
+    public string Output { get; set; } =
+        "PDF rendering is MVP-only. Cache images are local and never synced or returned by MCP.";
+
     public string RendererStatus { get; set; } = "Renderer status has not been checked.";
     public AsyncCommand RenderCommand { get; }
     public AsyncCommand RunOcrCommand { get; }
@@ -23,30 +27,57 @@ public sealed class PdfRenderViewModel : ViewModelBase
         _main = main;
         CheckRendererCommand = new AsyncCommand(async () =>
         {
-            var status = await (await _main.ServicesAsync()).PageRenders.GetRendererAvailabilityAsync();
-            RendererStatus = $"{status.RendererName}: {(status.IsAvailable ? "available" : "renderer_unavailable")} - {status.Message}";
+            PdfRendererAvailability status =
+                await (await _main.ServicesAsync()).PageRenders.GetRendererAvailabilityAsync();
+            RendererStatus =
+                $"{status.RendererName}: {(status.IsAvailable ? "available" : "renderer_unavailable")} - {status.Message}";
             Raise(nameof(RendererStatus));
         });
         CheckBBoxWarningsCommand = new AsyncCommand(async () =>
         {
-            var page = Patchouli.Core.Ids.PageId.Parse(PageId);
-            var basis = await (await _main.ServicesAsync()).PageCoordinates.GetPageCoordinateBasisAsync(page);
-            var warnings = await (await _main.ServicesAsync()).PageCoordinates.DetectBBoxWarningsAsync(page);
-            Output = basis.IsSuccess ? $"basis={basis.Value.CoordinateBasis}; size={basis.Value.BasisWidth}x{basis.Value.BasisHeight}; rotation={basis.Value.Rotation}; renderer={basis.Value.RendererBasisVersion}; sourceHash={(basis.Value.SourceFileHash is null ? "absent" : "present")}\nWarnings: {(warnings.Count == 0 ? BBoxWarning.None : string.Join(", ", warnings))}" : $"ERROR {basis.ErrorCode}: {basis.ErrorMessage}";
+            PageId page = Patchouli.Core.Ids.PageId.Parse(PageId);
+            Result<PageCoordinateBasis> basis =
+                await (await _main.ServicesAsync()).PageCoordinates.GetPageCoordinateBasisAsync(page);
+            IReadOnlyList<string> warnings =
+                await (await _main.ServicesAsync()).PageCoordinates.DetectBBoxWarningsAsync(page);
+            Output = basis.IsSuccess
+                ? $"basis={basis.Value.CoordinateBasis}; size={basis.Value.BasisWidth}x{basis.Value.BasisHeight}; rotation={basis.Value.Rotation}; renderer={basis.Value.RendererBasisVersion}; sourceHash={(basis.Value.SourceFileHash is null ? "absent" : "present")}\nWarnings: {(warnings.Count == 0 ? BBoxWarning.None : string.Join(", ", warnings))}"
+                : $"ERROR {basis.ErrorCode}: {basis.ErrorMessage}";
             Raise(nameof(Output));
         });
         RenderCommand = new AsyncCommand(async () =>
         {
-            if (!int.TryParse(Dpi, out var dpi)) { Output = "ERROR validation_failed: DPI must be an integer."; Raise(nameof(Output)); return; }
-            var result = await (await _main.ServicesAsync()).PageRenders.RenderPageAsync(new PageRenderRequest(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), Patchouli.Core.Ids.PageId.Parse(PageId), Dpi: dpi, Purpose: PageRenderPurpose.Preview, ForceRerender: ForceRerender));
-            Output = result.IsSuccess ? $"{result.Value.Status}\n{result.Value.WidthPixels}x{result.Value.HeightPixels} @ {result.Value.Dpi} dpi\n{result.Value.CacheImagePath ?? result.Value.Warning}" : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+            if (!int.TryParse(Dpi, out int dpi))
+            {
+                Output = "ERROR validation_failed: DPI must be an integer.";
+                Raise(nameof(Output));
+                return;
+            }
+
+            Result<PageRenderResult> result = await (await _main.ServicesAsync()).PageRenders.RenderPageAsync(
+                new PageRenderRequest(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
+                    Patchouli.Core.Ids.PageId.Parse(PageId), Dpi: dpi, Purpose: PageRenderPurpose.Preview,
+                    ForceRerender: ForceRerender));
+            Output = result.IsSuccess
+                ? $"{result.Value.Status}\n{result.Value.WidthPixels}x{result.Value.HeightPixels} @ {result.Value.Dpi} dpi\n{result.Value.CacheImagePath ?? result.Value.Warning}"
+                : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
             Raise(nameof(Output));
         });
         RunOcrCommand = new AsyncCommand(async () =>
         {
-            if (!int.TryParse(Dpi, out var dpi)) { Output = "ERROR validation_failed: DPI must be an integer."; Raise(nameof(Output)); return; }
-            var result = await (await _main.ServicesAsync()).Ocr.RunPresetOnRenderedPdfPageAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), OcrPresetId.Parse(PresetId), Patchouli.Core.Ids.PageId.Parse(PageId), dpi);
-            Output = result.IsSuccess ? $"Rendered PDF OCR run: {result.Value.OcrRunId}\n{result.Value.State}" : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+            if (!int.TryParse(Dpi, out int dpi))
+            {
+                Output = "ERROR validation_failed: DPI must be an integer.";
+                Raise(nameof(Output));
+                return;
+            }
+
+            Result<OcrRun> result = await (await _main.ServicesAsync()).Ocr.RunPresetOnRenderedPdfPageAsync(
+                Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), OcrPresetId.Parse(PresetId),
+                Patchouli.Core.Ids.PageId.Parse(PageId), dpi);
+            Output = result.IsSuccess
+                ? $"Rendered PDF OCR run: {result.Value.OcrRunId}\n{result.Value.State}"
+                : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
             Raise(nameof(Output));
             await _main.LogOperationAsync("run_rendered_pdf_ocr", Output);
         });

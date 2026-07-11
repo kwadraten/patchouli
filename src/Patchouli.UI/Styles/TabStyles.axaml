@@ -43,7 +43,7 @@
     <Style Selector="^:pointerover /template/ Border#PART_LayoutRoot">
       <Setter Property="Background" Value="#1A000000" />
     </Style>
-    
+
     <Style Selector="^:selected:pointerover /template/ Border#PART_LayoutRoot">
       <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
     </Style>
@@ -54,14 +54,15 @@
     <Setter Property="Template">
       <ControlTemplate>
         <Grid RowDefinitions="Auto,*">
-          <Border Background="{DynamicResource SurfaceContainerLowBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
+          <Border Background="{DynamicResource SurfaceContainerLowBrush}"
+                  BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
             <!-- We use a ScrollViewer so the tabs can scroll horizontally if they overflow -->
             <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
               <ItemsPresenter Name="PART_ItemsPresenter"
                               ItemsPanel="{TemplateBinding ItemsPanel}" />
             </ScrollViewer>
           </Border>
-          
+
           <ContentPresenter Name="PART_SelectedContentHost"
                             Grid.Row="1"
                             Margin="{TemplateBinding Padding}"

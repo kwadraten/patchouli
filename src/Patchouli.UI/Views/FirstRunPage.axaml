@@ -4,105 +4,154 @@
              xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:MainWindowViewModel">
+  <UserControl.Styles>
+    <Style Selector="Border.step">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Border.step.active">
+      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderThickness" Value="3,0,0,0" />
+    </Style>
+    <Style Selector="Border.step TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+      <Setter Property="FontWeight" Value="Normal" />
+    </Style>
+    <Style Selector="Border.step.active TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+  </UserControl.Styles>
   <Grid ColumnDefinitions="260,*" Background="{DynamicResource SurfaceBrush}">
-<Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
-<!-- 2. FirstRun Sidebar (Visible when first run is active) -->
-<Border Background="{DynamicResource SurfaceContainerLowBrush}" IsVisible="{Binding IsFirstRunVisible}">
-  <Grid RowDefinitions="Auto,*,Auto" Margin="20">
-    <!-- Header -->
-    <StackPanel Spacing="4">
-      <TextBlock Text="初始化向导" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceBrush}" />
-      <TextBlock Text="首次配置" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-    </StackPanel>
+    <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
+      <!-- 2. FirstRun Sidebar (Visible when first run is active) -->
+      <Border Background="{DynamicResource SurfaceContainerLowBrush}" IsVisible="{Binding IsFirstRunVisible}">
+        <Grid RowDefinitions="Auto,*,Auto" Margin="20">
+          <!-- Header -->
+          <StackPanel Spacing="4">
+            <TextBlock Text="初始化向导" FontSize="16" FontWeight="Bold" Foreground="{DynamicResource OnSurfaceBrush}" />
+            <TextBlock Text="首次配置" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          </StackPanel>
 
-    <!-- Steps list -->
-    <StackPanel Grid.Row="1" Spacing="8" Margin="0,32,0,0">
-      <!-- Step 1: Database -->
-      <Border Classes="step" Classes.active="{Binding FirstRun.ShowInitStep}" Padding="12,8">
-        <TextBlock Text="数据库源" FontSize="13" />
-      </Border>
-      <!-- Step 2: Library -->
-      <Border Classes="step" Classes.active="{Binding FirstRun.ShowLibraryStep}" Padding="12,8">
-        <TextBlock Text="资料库名称" FontSize="13" />
-      </Border>
-      <!-- Step 3: Scan Root -->
-      <Border Classes="step" Classes.active="{Binding FirstRun.ShowScanStep}" Padding="12,8">
-        <TextBlock Text="PDF 目录" FontSize="13" />
-      </Border>
-      <!-- Step 4: MinerU Config -->
-      <Border Classes="step" Classes.active="{Binding FirstRun.ShowMinerUConfigStep}" Padding="12,8">
-        <TextBlock Text="MinerU 配置" FontSize="13" />
-      </Border>
-    </StackPanel>
+          <!-- Steps list -->
+          <StackPanel Grid.Row="1" Spacing="8" Margin="0,32,0,0">
+            <!-- Step 1: Database -->
+            <Border Classes="step" Classes.active="{Binding FirstRun.ShowInitStep}" Padding="12,8">
+              <TextBlock Text="数据库源" FontSize="13" />
+            </Border>
+            <!-- Step 2: Library -->
+            <Border Classes="step" Classes.active="{Binding FirstRun.ShowLibraryStep}" Padding="12,8">
+              <TextBlock Text="资料库名称" FontSize="13" />
+            </Border>
+            <!-- Step 3: Scan Root -->
+            <Border Classes="step" Classes.active="{Binding FirstRun.ShowScanStep}" Padding="12,8">
+              <TextBlock Text="PDF 目录" FontSize="13" />
+            </Border>
+            <!-- Step 4: MinerU Config -->
+            <Border Classes="step" Classes.active="{Binding FirstRun.ShowMinerUConfigStep}" Padding="12,8">
+              <TextBlock Text="MinerU 配置" FontSize="13" />
+            </Border>
+          </StackPanel>
 
-    <!-- Progress bar at bottom of sidebar -->
-    <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,10">
-      <TextBlock Text="{Binding FirstRun.StepProgressText}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-      <ProgressBar Height="4" Maximum="100" Value="{Binding FirstRun.ProgressPercent}" Background="{DynamicResource SurfaceContainerHighestBrush}" Foreground="{DynamicResource PrimaryBrush}" />
-    </StackPanel>
-  </Grid>
-</Border>
-</Border>
+          <!-- Progress bar at bottom of sidebar -->
+          <StackPanel Grid.Row="2" Spacing="6" Margin="0,0,0,10">
+            <TextBlock Text="{Binding FirstRun.StepProgressText}" FontSize="12"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <ProgressBar Height="4" Maximum="100" Value="{Binding FirstRun.ProgressPercent}"
+                         Background="{DynamicResource SurfaceContainerHighestBrush}"
+                         Foreground="{DynamicResource PrimaryBrush}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Border>
     <Grid Grid.Column="1" Background="{DynamicResource SurfaceBrush}">
-<Grid IsVisible="{ReflectionBinding $parent[UserControl].DataContext.IsFirstRunVisible}" DataContext="{Binding FirstRun}" x:DataType="vm:FirstRunViewModel">
-  <Grid RowDefinitions="Auto,*" Margin="40">
-    
+      <ContentControl Content="{Binding FirstRun}" IsVisible="{Binding IsFirstRunVisible}">
+        <ContentControl.ContentTemplate>
+          <DataTemplate x:DataType="vm:FirstRunViewModel">
+            <Grid RowDefinitions="Auto,*" Margin="40">
 
-    <Grid Grid.Row="1" VerticalAlignment="Center">
-      <!-- Step 1: Database Source (Cards selection) -->
-      <StackPanel IsVisible="{Binding ShowInitStep}" Spacing="24">
-        <StackPanel Spacing="8">
-          <TextBlock Text="选择新建或已有数据库目录" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-          <TextBlock Text="设置 Patchouli 存储其核心参考数据库文件的位置。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-        </StackPanel>
 
-        <StackPanel Spacing="16">
-          <RadioButton Content="创建新数据库" IsChecked="{Binding IsCreateMode}" GroupName="DbMode" />
-          <RadioButton Content="导入已有数据库" IsChecked="{Binding IsImportMode}" GroupName="DbMode" />
-        </StackPanel>
+              <Grid Grid.Row="1" VerticalAlignment="Center">
+                <!-- Step 1: Database Source (Cards selection) -->
+                <StackPanel IsVisible="{Binding ShowInitStep}" Spacing="24">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="选择新建或已有数据库目录" FontSize="24" FontWeight="SemiBold"
+                               Foreground="{DynamicResource OnSurfaceBrush}" />
+                    <TextBlock Text="设置 Patchouli 存储其核心参考数据库文件的位置。" FontSize="13"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
 
-        <StackPanel Spacing="8">
-          <TextBlock Text="选择路径：" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-            <controls:PathPickerTextBox Path="{Binding DatabasePath}" PickerMode="{Binding DatabasePickerMode}" DialogTitle="选择数据库位置" FileFilterName="SQLite 数据库" FileFilterPatterns="*.sqlite,*.db" PlaceholderText="数据库路径" />
-            <Button Classes="Primary FormFieldAction" Grid.Column="1" Content="下一步" Command="{Binding OpenDatabaseCommand}" Padding="16,0" />
-          </Grid>
-        </StackPanel>
-      </StackPanel>
+                  <StackPanel Spacing="16">
+                    <RadioButton Content="创建新数据库" IsChecked="{Binding IsCreateMode}" GroupName="DbMode" />
+                    <RadioButton Content="导入已有数据库" IsChecked="{Binding IsImportMode}" GroupName="DbMode" />
+                  </StackPanel>
 
-      <!-- Step 2: Library Name -->
-      <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
-        <TextBlock Text="命名您的资料库" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <TextBox Classes="FormField" Text="{Binding LibraryName}" PlaceholderText="输入资料库名称" />
-        <Button Classes="Primary Large" Content="创建资料库" Command="{Binding CreateLibraryCommand}" Padding="20,0" />
-      </StackPanel>
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="选择路径：" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                      <controls:PathPickerTextBox Path="{Binding DatabasePath}"
+                                                  PickerMode="{Binding DatabasePickerMode}"
+                                                  DialogTitle="选择数据库位置" FileFilterName="SQLite 数据库"
+                                                  FileFilterPatterns="*.sqlite,*.db" PlaceholderText="数据库路径" />
+                      <Button Classes="Primary FormFieldAction" Grid.Column="1" Content="下一步"
+                              Command="{Binding OpenDatabaseCommand}" Padding="16,0" />
+                    </Grid>
+                  </StackPanel>
+                </StackPanel>
 
-      <!-- Step 3: PDF Directory -->
-      <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
-        <TextBlock Text="选择 PDF 扫描根路径" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <TextBlock Text="确认目录后，扫描到的所有 PDF 会直接导入为题录。题录信息可稍后在文献列表中右键编辑。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-        <controls:PathPickerTextBox Path="{Binding ScanRoot}" SelectedRoot="{Binding SelectedScanRoot}" PickerMode="Folder" DialogTitle="选择 PDF 扫描根目录" PlaceholderText="PDF 目录" />
-        <Button Classes="Primary Large" Content="确认目录并导入" Command="{Binding ScanCommand}" IsEnabled="{Binding !IsBusy}" Padding="24,0" />
-      </StackPanel>
+                <!-- Step 2: Library Name -->
+                <StackPanel IsVisible="{Binding ShowLibraryStep}" Spacing="16" MaxWidth="600"
+                            HorizontalAlignment="Left">
+                  <TextBlock Text="命名您的资料库" FontSize="24" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <TextBox Classes="FormField" Text="{Binding LibraryName}" PlaceholderText="输入资料库名称" />
+                  <Button Classes="Primary Large" Content="创建资料库" Command="{Binding CreateLibraryCommand}"
+                          Padding="20,0" />
+                </StackPanel>
 
-      <!-- Step 4: MinerU Config -->
-      <StackPanel IsVisible="{Binding ShowMinerUConfigStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
-        <TextBlock Text="MinerU Token" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <TextBlock Text="连接 MinerU 账户以启用高精度 OCR。完成初始化后，请在文献列表中右键选择单个题录进行识别。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-        <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick" Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0" Padding="0" HorizontalAlignment="Left" />
-        <TextBox Classes="FormField" Text="{Binding MinerUToken}" PlaceholderText="在这里输入您的 Token..." PasswordChar="*" />
-        <Button Classes="Primary Large" Content="完成并进入" Command="{ReflectionBinding $parent[Window].DataContext.CompleteFirstRunCommand}" Padding="24,0" />
-      </StackPanel>
+                <!-- Step 3: PDF Directory -->
+                <StackPanel IsVisible="{Binding ShowScanStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
+                  <TextBlock Text="选择 PDF 扫描根路径" FontSize="24" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <TextBlock Text="确认目录后，扫描到的所有 PDF 会直接导入为题录。题录信息可稍后在文献列表中右键编辑。" FontSize="13"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <controls:PathPickerTextBox Path="{Binding ScanRoot}" SelectedRoot="{Binding SelectedScanRoot}"
+                                              PickerMode="Folder" DialogTitle="选择 PDF 扫描根目录" PlaceholderText="PDF 目录" />
+                  <Button Classes="Primary Large" Content="确认目录并导入" Command="{Binding ScanCommand}"
+                          IsEnabled="{Binding !IsBusy}" Padding="24,0" />
+                </StackPanel>
 
-      <!-- Step 5: Complete -->
-      <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="16" MaxWidth="600" HorizontalAlignment="Left">
-        <TextBlock Text="初始化完成" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <Button Classes="Primary Large" Content="进入书库" Command="{ReflectionBinding $parent[Window].DataContext.CompleteFirstRunCommand}" Padding="24,0" />
-      </StackPanel>
-    </Grid>
+                <!-- Step 4: MinerU Config -->
+                <StackPanel IsVisible="{Binding ShowMinerUConfigStep}" Spacing="16" MaxWidth="600"
+                            HorizontalAlignment="Left">
+                  <TextBlock Text="MinerU Token" FontSize="24" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <TextBlock Text="连接 MinerU 账户以启用高精度 OCR。完成初始化后，请在文献列表中右键选择单个题录进行识别。" FontSize="13"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <Button Content="获取 MinerU API Token (mineru.net)" Click="OnOpenMinerUTokenPageClick"
+                          Foreground="{DynamicResource PrimaryBrush}" Background="Transparent" BorderThickness="0"
+                          Padding="0" HorizontalAlignment="Left" />
+                  <TextBox Classes="FormField" Text="{Binding MinerUToken}" PlaceholderText="在这里输入您的 Token..."
+                           PasswordChar="*" />
+                  <Button Classes="Primary Large" Content="完成并进入"
+                          Command="{Binding CompleteCommand}" Padding="24,0" />
+                </StackPanel>
 
-  </Grid>
-</Grid>
+                <!-- Step 5: Complete -->
+                <StackPanel IsVisible="{Binding ShowCompleteStep}" Spacing="16" MaxWidth="600"
+                            HorizontalAlignment="Left">
+                  <TextBlock Text="初始化完成" FontSize="24" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <Button Classes="Primary Large" Content="进入书库"
+                          Command="{Binding CompleteCommand}" Padding="24,0" />
+                </StackPanel>
+              </Grid>
+
+            </Grid>
+          </DataTemplate>
+        </ContentControl.ContentTemplate>
+      </ContentControl>
     </Grid>
   </Grid>
 </UserControl>

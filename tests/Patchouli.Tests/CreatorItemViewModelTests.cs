@@ -8,7 +8,7 @@ public sealed class CreatorItemViewModelTests
     [Fact]
     public void Entering_personal_name_auto_populates_parts_and_keeps_manual_corrections()
     {
-        var creator = new CreatorItemViewModel(_ => { });
+        CreatorItemViewModel creator = new(_ => { });
 
         creator.Name = "Ada Lovelace";
         creator.Family.Should().Be("Lovelace");
@@ -25,7 +25,7 @@ public sealed class CreatorItemViewModelTests
     [Fact]
     public void Selecting_literal_mode_preserves_an_organisation_name_without_parts()
     {
-        var creator = new CreatorItemViewModel(_ => { }) { IsLiteral = true };
+        CreatorItemViewModel creator = new(_ => { }) { IsLiteral = true };
 
         creator.Name = "Royal Society";
 

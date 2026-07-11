@@ -39,7 +39,7 @@ public sealed record ItemCreator(
                 return Literal.Trim();
             }
 
-            var pieces = new[] { Given, Particles, Family, Suffix }
+            IEnumerable<string> pieces = new[] { Given, Particles, Family, Suffix }
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Select(value => value!.Trim());
             return string.Join(" ", pieces);

@@ -15,7 +15,7 @@ public partial class BlockingOperationDialog : Window
     public BlockingOperationDialog()
     {
         InitializeComponent();
-        
+
         DataContextChanged += (_, _) =>
         {
             DetachViewModel();
@@ -38,16 +38,22 @@ public partial class BlockingOperationDialog : Window
         {
             Dispatcher.UIThread.Post(() =>
             {
-                var textBox = this.FindControl<TextBox>("LogTextBox");
+                TextBox? textBox = this.FindControl<TextBox>("LogTextBox");
                 if (textBox is not null)
+                {
                     textBox.CaretIndex = textBox.Text?.Length ?? 0;
+                }
             });
         }
     }
 
     private void DetachViewModel()
     {
-        if (_viewModel is null) return;
+        if (_viewModel is null)
+        {
+            return;
+        }
+
         _viewModel.Logs.CollectionChanged -= Logs_CollectionChanged;
         _viewModel.PropertyChanged -= ViewModel_PropertyChanged;
         _viewModel.RequestClose = null;
@@ -57,7 +63,9 @@ public partial class BlockingOperationDialog : Window
     private void OnClosing(object? sender, WindowClosingEventArgs e)
     {
         if (_viewModel?.IsRunning == true)
+        {
             e.Cancel = true;
+        }
     }
 
     private void ViewModel_PropertyChanged(object? sender, PropertyChangedEventArgs e)

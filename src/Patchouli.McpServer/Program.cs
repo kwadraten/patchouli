@@ -1,5 +1,6 @@
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Csl;
@@ -19,7 +20,7 @@ if (args.Contains("--help"))
     return;
 }
 
-var options = McpServerOptions.Parse(args);
+McpServerOptionsParseResult options = McpServerOptions.Parse(args);
 if (options.IsFailure)
 {
     Console.Error.WriteLine(options.Error);
@@ -28,49 +29,57 @@ if (options.IsFailure)
 
 UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
 {
-    var context = operation is null ? boundary : $"{boundary}/{operation}";
-    Console.Error.WriteLine(McpOutputSanitizer.Sanitize($"Unexpected error in {context}:{Environment.NewLine}{exception}"));
+    string context = operation is null ? boundary : $"{boundary}/{operation}";
+    Console.Error.WriteLine(
+        McpOutputSanitizer.Sanitize($"Unexpected error in {context}:{Environment.NewLine}{exception}"));
 });
 
 try
 {
-    var db = new SqliteConnectionFactory(options.Value.DatabasePath);
-    var clock = new SystemClock();
-    var blockingOperations = new BlockingOperationService(db, clock);
+    SqliteConnectionFactory db = new(options.Value.DatabasePath);
+    SystemClock clock = new();
+    BlockingOperationService blockingOperations = new(db, clock);
     await new MigrationRunner(db, Path.Combine(AppContext.BaseDirectory, "migrations")).RunAsync();
-    var settingsService = new McpServerSettingsService(db, clock, blockingOperations);
-    var loadedSettings = await settingsService.GetSettingsAsync();
+    McpServerSettingsService settingsService = new(db, clock, blockingOperations);
+    Result<McpServerSettings> loadedSettings = await settingsService.GetSettingsAsync();
     if (loadedSettings.IsFailure)
     {
-        Console.Error.WriteLine(McpOutputSanitizer.Sanitize(loadedSettings.ErrorMessage ?? "Failed to load MCP settings."));
+        Console.Error.WriteLine(
+            McpOutputSanitizer.Sanitize(loadedSettings.ErrorMessage ?? "Failed to load MCP settings."));
         return;
     }
 
-    var effectiveSettings = loadedSettings.Value;
+    McpServerSettings effectiveSettings = loadedSettings.Value;
     if (options.Value.PortWasExplicitlySet)
     {
         effectiveSettings = effectiveSettings with { Port = options.Value.Port };
     }
 
-    var settingsValidation = await settingsService.ValidateSettingsAsync(effectiveSettings);
+    Result settingsValidation = await settingsService.ValidateSettingsAsync(effectiveSettings);
     if (settingsValidation.IsFailure)
     {
-        Console.Error.WriteLine(McpOutputSanitizer.Sanitize(settingsValidation.ErrorMessage ?? "Invalid MCP settings."));
+        Console.Error.WriteLine(
+            McpOutputSanitizer.Sanitize(settingsValidation.ErrorMessage ?? "Invalid MCP settings."));
         return;
     }
 
-    var library = new LibraryIdentityService(db, clock);
-    var profiles = new SearchProfileService(db, library, clock);
-    var search = new SqliteSearchService(db, profiles);
-    var evidence = new EvidenceReferenceService(db, clock);
-    var items = new ItemService(db, library, clock);
-    var cslStore = new CslStyleStore(db, clock, blockingOperations: blockingOperations);
-    var cslRenderer = new CslRenderer(items, cslStore, new CslItemMapper());
-    var api = new McpReadApi(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
-    static void ReportUnexpected(Exception exception, string operation) =>
-        Console.Error.WriteLine(McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
-    var handler = new McpProtocolHandler(api, db, effectiveSettings, ReportUnexpected);
-    await using var server = new McpHttpServer(handler, effectiveSettings, ReportUnexpected);
+    LibraryIdentityService library = new(db, clock);
+    SearchProfileService profiles = new(db, library, clock);
+    SqliteSearchService search = new(db, profiles);
+    EvidenceReferenceService evidence = new(db, clock);
+    ItemService items = new(db, library, clock);
+    CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations);
+    CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
+    McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
+
+    static void ReportUnexpected(Exception exception, string operation)
+    {
+        Console.Error.WriteLine(
+            McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
+    }
+
+    McpProtocolHandler handler = new(api, db, effectiveSettings, ReportUnexpected);
+    await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected);
     await server.RunAsync();
 }
 catch (Exception ex)

@@ -9,27 +9,32 @@ internal sealed class MinerULayoutNodeMapper
 
     public OcrLayoutDocument MapDocument(
         MinerUContentListDocument document,
-        IReadOnlyList<Core.Layout.Page> pages)
+        IReadOnlyList<Page> pages)
     {
         _globalOrder = 0;
-        var mappedPages = new List<OcrLayoutPage>();
-        var pageLookup = pages.ToDictionary(page => page.PageIndex);
+        List<OcrLayoutPage> mappedPages = new();
+        Dictionary<int, Page> pageLookup = pages.ToDictionary(page => page.PageIndex);
 
-        foreach (var mineruPage in document.Pages)
+        foreach (MinerUContentListPage mineruPage in document.Pages)
         {
-            var pageIndex = mineruPage.PageNum - 1;
-            if (!pageLookup.TryGetValue(pageIndex, out var page))
+            int pageIndex = mineruPage.PageNum - 1;
+            if (!pageLookup.TryGetValue(pageIndex, out Page? page))
+            {
                 continue;
+            }
 
-            var blocks = mineruPage.Blocks
+            OcrLayoutBlock[] blocks = mineruPage.Blocks
                 .Select(block => MapBlock(block, mineruPage.Width, mineruPage.Height))
                 .Where(block => block is not null)
                 .Cast<OcrLayoutBlock>()
                 .ToArray();
             if (blocks.Length == 0)
+            {
                 continue;
+            }
 
-            mappedPages.Add(new OcrLayoutPage(page.PageId, page.PageIndex, mineruPage.Width, mineruPage.Height, blocks));
+            mappedPages.Add(new OcrLayoutPage(page.PageId, page.PageIndex, mineruPage.Width, mineruPage.Height,
+                blocks));
         }
 
         return new OcrLayoutDocument(mappedPages);
@@ -40,38 +45,41 @@ internal sealed class MinerULayoutNodeMapper
         double pageWidth,
         double pageHeight)
     {
-        var (nodeType, textPolicy, text) = MapTypeAndText(block);
+        (string? nodeType, string textPolicy, string? text) = MapTypeAndText(block);
         if (nodeType is null)
+        {
             return null;
+        }
 
-        var bbox = ToNormalizedBBox(block.Bbox, pageWidth, pageHeight);
-        var readingOrder = Interlocked.Increment(ref _globalOrder);
+        NormalizedBBox? bbox = ToNormalizedBBox(block.Bbox, pageWidth, pageHeight);
+        int readingOrder = Interlocked.Increment(ref _globalOrder);
         if (nodeType != LayoutNodeType.Table)
         {
             return new OcrLayoutBlock(
                 nodeType,
                 textPolicy,
                 readingOrder,
-                Text: text,
-                LaTex: block.LaTex,
-                BBox: bbox,
-                Confidence: block.Confidence);
+                text,
+                block.LaTex,
+                bbox,
+                block.Confidence);
         }
 
-        var cells = (block.TableCells is { Count: > 0 } ? block.TableCells : block.Cells) ?? [];
+        IReadOnlyList<MinerUTableCell> cells = (block.TableCells is { Count: > 0 } ? block.TableCells : block.Cells) ??
+                                               [];
         if (cells.Count == 0)
         {
             return new OcrLayoutBlock(
                 nodeType,
                 textPolicy,
                 readingOrder,
-                Text: text,
-                LaTex: block.LaTex,
-                BBox: bbox,
-                Confidence: block.Confidence);
+                text,
+                block.LaTex,
+                bbox,
+                block.Confidence);
         }
 
-        var rowBlocks = cells
+        OcrLayoutBlock[] rowBlocks = cells
             .Where(cell => cell.RowIndex is not null && cell.ColIndex is not null)
             .GroupBy(cell => cell.RowIndex!.Value)
             .OrderBy(group => group.Key)
@@ -85,7 +93,7 @@ internal sealed class MinerULayoutNodeMapper
                         LayoutNodeType.TableCell,
                         TextPolicy.Own,
                         Interlocked.Increment(ref _globalOrder),
-                        Text: cell.Text,
+                        cell.Text,
                         BBox: ToNormalizedBBox(cell.Bbox, pageWidth, pageHeight),
                         TableCell: new OcrTableCell(
                             group.Key,
@@ -108,28 +116,31 @@ internal sealed class MinerULayoutNodeMapper
     private static NormalizedBBox? ToNormalizedBBox(double[]? bbox, double pageWidth, double pageHeight)
     {
         if (bbox is not { Length: 4 } || pageWidth <= 0 || pageHeight <= 0)
+        {
             return null;
+        }
 
-        var x = Math.Clamp(bbox[0] / pageWidth, 0, 1);
-        var y = Math.Clamp(bbox[1] / pageHeight, 0, 1);
-        var w = Math.Clamp((bbox[2] - bbox[0]) / pageWidth, 0, 1 - x);
-        var h = Math.Clamp((bbox[3] - bbox[1]) / pageHeight, 0, 1 - y);
+        double x = Math.Clamp(bbox[0] / pageWidth, 0, 1);
+        double y = Math.Clamp(bbox[1] / pageHeight, 0, 1);
+        double w = Math.Clamp((bbox[2] - bbox[0]) / pageWidth, 0, 1 - x);
+        double h = Math.Clamp((bbox[3] - bbox[1]) / pageHeight, 0, 1 - y);
         return new NormalizedBBox(x, y, w, h);
     }
 
     private static (string? NodeType, string TextPolicy, string? Text) MapTypeAndText(
         MinerUContentBlock block)
     {
-        var blockType = block.Type?.ToLowerInvariant() ?? "";
-        var text = block.Text;
-        var latex = block.LaTex;
+        string blockType = block.Type?.ToLowerInvariant() ?? "";
+        string? text = block.Text;
+        string? latex = block.LaTex;
 
         return blockType switch
         {
             "text" or "paragraph" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),
             "title" or "heading" => (LayoutNodeType.Heading, TextPolicy.Own, text),
             "table" => (LayoutNodeType.Table, TextPolicy.Own, text ?? latex),
-            "formula" or "equation" when !string.IsNullOrWhiteSpace(latex) => (LayoutNodeType.Paragraph, TextPolicy.Own, latex),
+            "formula" or "equation" when !string.IsNullOrWhiteSpace(latex) => (LayoutNodeType.Paragraph, TextPolicy.Own,
+                latex),
             "formula" or "equation" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),
             "image" or "figure" when string.IsNullOrWhiteSpace(text) => (null, TextPolicy.None, null),
             "image" or "figure" => (LayoutNodeType.Paragraph, TextPolicy.Own, text),

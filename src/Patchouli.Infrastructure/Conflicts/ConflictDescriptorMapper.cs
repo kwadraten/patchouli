@@ -25,8 +25,10 @@ public static class ConflictDescriptorMapper
             Serialize(new { title = localTitle, item_type = localItemType }),
             Serialize(new { title = incomingTitle, item_type = incomingItemType }),
             [
-                new ConflictAction("keep_local", "Keep local", "Keep the local item metadata. Resolution is not yet executable in branch import."),
-                new ConflictAction("import_as_new_item", "Import as new item", "Import with a new identity. Resolution is not yet executable in branch import.", false),
+                new ConflictAction("keep_local", "Keep local",
+                    "Keep the local item metadata. Resolution is not yet executable in branch import."),
+                new ConflictAction("import_as_new_item", "Import as new item",
+                    "Import with a new identity. Resolution is not yet executable in branch import.", false),
                 new ConflictAction("skip", "Skip incoming item", "Do not import this incoming item.", false)
             ]);
     }
@@ -46,9 +48,13 @@ public static class ConflictDescriptorMapper
             Serialize(new { item_id = itemId.ToString(), primary_document_id = existingDocumentId.ToString() }),
             Serialize(new { item_id = itemId.ToString(), primary_document_id = incomingDocumentId.ToString() }),
             [
-                new ConflictAction("keep_local_primary", "Keep local primary", "Keep the local primary document. Resolution is not yet executable in branch import."),
-                new ConflictAction("import_as_secondary", "Import as secondary", "Import the incoming document as non-primary. Resolution is not yet executable in branch import.", false),
-                new ConflictAction("replace_primary", "Replace primary", "Use the incoming document as primary. Resolution is not yet executable in branch import.", false),
+                new ConflictAction("keep_local_primary", "Keep local primary",
+                    "Keep the local primary document. Resolution is not yet executable in branch import."),
+                new ConflictAction("import_as_secondary", "Import as secondary",
+                    "Import the incoming document as non-primary. Resolution is not yet executable in branch import.",
+                    false),
+                new ConflictAction("replace_primary", "Replace primary",
+                    "Use the incoming document as primary. Resolution is not yet executable in branch import.", false),
                 new ConflictAction("skip", "Skip incoming document", "Do not import this incoming document.", false)
             ]);
     }
@@ -64,7 +70,10 @@ public static class ConflictDescriptorMapper
             "Provider credentials are intentionally excluded from snapshot branch import.",
             null,
             Serialize(new { provider_id = providerId, display_name = displayName }),
-            [new ConflictAction("reenter_credential", "Re-enter credential", "Recreate the provider credential locally after import.")]);
+            [
+                new ConflictAction("reenter_credential", "Re-enter credential",
+                    "Recreate the provider credential locally after import.")
+            ]);
     }
 
     public static ConflictDescriptor FileRelocationMultipleCandidates(
@@ -89,7 +98,10 @@ public static class ConflictDescriptorMapper
                     quick_hash = candidate.QuickHash
                 }).ToArray()
             }),
-            [new ConflictAction("choose_candidate", "Choose candidate", "Pick the correct relocated source file before continuing.")]);
+            [
+                new ConflictAction("choose_candidate", "Choose candidate",
+                    "Pick the correct relocated source file before continuing.")
+            ]);
     }
 
     public static ConflictDescriptor SourceFileChanged(
@@ -115,7 +127,10 @@ public static class ConflictDescriptorMapper
                     quick_hash = candidate.QuickHash
                 }).ToArray()
             }),
-            [new ConflictAction("confirm_changed_file", "Confirm changed file", "Confirm that the changed source file should replace the previous fingerprint.")]);
+            [
+                new ConflictAction("confirm_changed_file", "Confirm changed file",
+                    "Confirm that the changed source file should replace the previous fingerprint.")
+            ]);
     }
 
     public static ConflictDescriptor LayoutBBoxOrdinaryOverlap(
@@ -147,11 +162,17 @@ public static class ConflictDescriptorMapper
                 bbox = proposedBBox
             }),
             [
-                new ConflictAction("adjust_bbox", "Adjust bbox", "Change the node bbox or structure so ordinary siblings no longer overlap."),
-                new ConflictAction("change_to_allowed_type", "Use an overlapping node type", "Change the candidate to an explicitly overlap-compatible node type.", false),
-                new ConflictAction("skip_candidate", "Skip candidate", "Discard this candidate without changing the current layout.", false)
+                new ConflictAction("adjust_bbox", "Adjust bbox",
+                    "Change the node bbox or structure so ordinary siblings no longer overlap."),
+                new ConflictAction("change_to_allowed_type", "Use an overlapping node type",
+                    "Change the candidate to an explicitly overlap-compatible node type.", false),
+                new ConflictAction("skip_candidate", "Skip candidate",
+                    "Discard this candidate without changing the current layout.", false)
             ]);
     }
 
-    private static string Serialize(object value) => JsonSerializer.Serialize(value);
+    private static string Serialize(object value)
+    {
+        return JsonSerializer.Serialize(value);
+    }
 }

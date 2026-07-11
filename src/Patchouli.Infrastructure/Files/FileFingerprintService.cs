@@ -1,3 +1,4 @@
+using Blake3;
 using Patchouli.Core.Files;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Hashing;
@@ -19,20 +20,20 @@ public sealed class FileFingerprintService : IFileFingerprintService
 
         try
         {
-            var normalizedPath = Path.GetFullPath(path);
-            var fileInfo = new FileInfo(normalizedPath);
+            string normalizedPath = Path.GetFullPath(path);
+            FileInfo fileInfo = new(normalizedPath);
             if (!fileInfo.Exists)
             {
                 return Result<FileFingerprint>.Failure(AppErrorCodes.NotFound, "File was not found.");
             }
 
-            var quickHash = await ComputeQuickHashAsync(normalizedPath, cancellationToken);
+            Result<string> quickHash = await ComputeQuickHashAsync(normalizedPath, cancellationToken);
             if (quickHash.IsFailure)
             {
                 return Result<FileFingerprint>.Failure(quickHash.ErrorCode!, quickHash.ErrorMessage!);
             }
 
-            var fullBlake3 = await Blake3Hash.ComputeFileAsync(normalizedPath, cancellationToken);
+            string fullBlake3 = await Blake3Hash.ComputeFileAsync(normalizedPath, cancellationToken);
 
             return Result<FileFingerprint>.Success(new FileFingerprint(
                 normalizedPath,
@@ -46,7 +47,8 @@ public sealed class FileFingerprintService : IFileFingerprintService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-fingerprint"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-fingerprint"))
         {
             return Result<FileFingerprint>.Failure(
                 AppErrorCodes.DatabaseError,
@@ -65,34 +67,34 @@ public sealed class FileFingerprintService : IFileFingerprintService
 
         try
         {
-            var normalizedPath = Path.GetFullPath(path);
-            var fileInfo = new FileInfo(normalizedPath);
+            string normalizedPath = Path.GetFullPath(path);
+            FileInfo fileInfo = new(normalizedPath);
             if (!fileInfo.Exists)
             {
                 return Result<string>.Failure(AppErrorCodes.NotFound, "File was not found.");
             }
 
-            await using var stream = new FileStream(
+            await using FileStream stream = new(
                 normalizedPath,
                 FileMode.Open,
                 FileAccess.Read,
                 FileShare.ReadWrite,
-                bufferSize: SampleSize,
-                useAsync: true);
+                SampleSize,
+                true);
 
-            using var hasher = global::Blake3.Hasher.New();
+            using Hasher hasher = Hasher.New();
             hasher.Update(BitConverter.GetBytes(fileInfo.Length));
             await HashWindowAsync(stream, hasher, 0, cancellationToken);
 
             if (fileInfo.Length > SampleSize)
             {
-                var middle = Math.Max(0, (fileInfo.Length / 2) - (SampleSize / 2));
+                long middle = Math.Max(0, fileInfo.Length / 2 - SampleSize / 2);
                 await HashWindowAsync(stream, hasher, middle, cancellationToken);
             }
 
             if (fileInfo.Length > SampleSize * 2)
             {
-                var tail = Math.Max(0, fileInfo.Length - SampleSize);
+                long tail = Math.Max(0, fileInfo.Length - SampleSize);
                 await HashWindowAsync(stream, hasher, tail, cancellationToken);
             }
 
@@ -102,7 +104,8 @@ public sealed class FileFingerprintService : IFileFingerprintService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-fingerprint"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-fingerprint"))
         {
             return Result<string>.Failure(
                 AppErrorCodes.DatabaseError,
@@ -112,13 +115,13 @@ public sealed class FileFingerprintService : IFileFingerprintService
 
     private static async Task HashWindowAsync(
         FileStream stream,
-        global::Blake3.Hasher hasher,
+        Hasher hasher,
         long offset,
         CancellationToken cancellationToken)
     {
         stream.Seek(offset, SeekOrigin.Begin);
-        var buffer = new byte[SampleSize];
-        var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+        byte[] buffer = new byte[SampleSize];
+        int read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
         if (read > 0)
         {
             hasher.Update(buffer.AsSpan(0, read));

@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -33,11 +35,11 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var documentExists = await connection.ExecuteScalarAsync<int>(
+            int documentExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
                 new { DocumentInstanceId = documentInstanceId.ToString() },
                 transaction);
@@ -50,7 +52,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             if (parentRevisionId is not null)
             {
-                var parentMatches = await connection.ExecuteScalarAsync<int>(
+                int parentMatches = await connection.ExecuteScalarAsync<int>(
                     """
                     select count(1)
                     from layout_revisions
@@ -73,7 +75,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 }
             }
 
-            var revision = new LayoutRevision(
+            LayoutRevision revision = new(
                 LayoutRevisionId.New(),
                 documentInstanceId,
                 parentRevisionId,
@@ -103,7 +105,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutRevision>(exception);
         }
@@ -115,10 +118,10 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var rows = (await connection.QueryAsync<LayoutRevisionRow>(
+            LayoutRevisionRow[] rows = (await connection.QueryAsync<LayoutRevisionRow>(
                 SelectRevisionsSql + " where document_instance_id = @DocumentInstanceId and is_current = 1;",
                 new { DocumentInstanceId = documentInstanceId.ToString() })).ToArray();
 
@@ -129,7 +132,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             if (rows.Length > 1)
             {
-                return Result<LayoutRevision>.Failure(AppErrorCodes.InvalidState, "More than one current layout revision exists.");
+                return Result<LayoutRevision>.Failure(AppErrorCodes.InvalidState,
+                    "More than one current layout revision exists.");
             }
 
             return Result<LayoutRevision>.Success(rows[0].ToRevision());
@@ -138,7 +142,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutRevision>(exception);
         }
@@ -151,11 +156,11 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var revisionMatches = await connection.ExecuteScalarAsync<int>(
+            int revisionMatches = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
                 from layout_revisions
@@ -167,7 +172,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
             if (revisionMatches == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(AppErrorCodes.NotFound, "Layout revision was not found for the document instance.");
+                return Result.Failure(AppErrorCodes.NotFound,
+                    "Layout revision was not found for the document instance.");
             }
 
             await ClearCurrentRevisionAsync(connection, transaction, documentInstanceId);
@@ -183,7 +189,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -208,7 +215,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         bool isHeader = false,
         CancellationToken cancellationToken = default)
     {
-        var validation = ValidateNodeInput(nodeType, bbox, textPolicy, source, rowIndex, colIndex, rowSpan, colSpan, isHeader);
+        Result validation = ValidateNodeInput(nodeType, bbox, textPolicy, source, rowIndex, colIndex, rowSpan, colSpan,
+            isHeader);
         if (validation.IsFailure)
         {
             return Result<LayoutNode>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -216,18 +224,18 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var revision = await GetRevisionRowAsync(connection, transaction, revisionId);
+            LayoutRevisionRow? revision = await GetRevisionRowAsync(connection, transaction, revisionId);
             if (revision is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout revision was not found.");
             }
 
-            var page = await GetPageRowAsync(connection, transaction, pageId);
+            PageRow? page = await GetPageRowAsync(connection, transaction, pageId);
             if (page is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -237,12 +245,13 @@ public sealed class LayoutTreeService : ILayoutTreeService
             if (page.DocumentInstanceId != revision.DocumentInstanceId)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Page must belong to the same document instance as the revision.");
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed,
+                    "Page must belong to the same document instance as the revision.");
             }
 
             if (parentNodeId is not null)
             {
-                var parent = await GetNodeRowAsync(connection, transaction, parentNodeId.Value);
+                LayoutNodeRow? parent = await GetNodeRowAsync(connection, transaction, parentNodeId.Value);
                 if (parent is null || parent.RevisionId != revision.LayoutRevisionId || parent.PageId != page.PageId)
                 {
                     await transaction.RollbackAsync(cancellationToken);
@@ -254,7 +263,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             if (bbox is not null)
             {
-                var overlap = await ValidateSiblingBBoxAsync(
+                Result overlap = await ValidateSiblingBBoxAsync(
                     connection,
                     transaction,
                     revisionId.ToString(),
@@ -270,7 +279,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 }
             }
 
-            var node = new LayoutNode(
+            LayoutNode node = new(
                 LayoutNodeId.New(),
                 DocumentInstanceId.Parse(revision.DocumentInstanceId),
                 pageId,
@@ -299,7 +308,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -312,11 +322,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var rows = await connection.QueryAsync<LayoutNodeRow>(
-                SelectNodesSql + " where page_id = @PageId and revision_id = @RevisionId order by reading_order, node_id;",
+            IEnumerable<LayoutNodeRow> rows = await connection.QueryAsync<LayoutNodeRow>(
+                SelectNodesSql +
+                " where page_id = @PageId and revision_id = @RevisionId order by reading_order, node_id;",
                 new { PageId = pageId.ToString(), RevisionId = revisionId.ToString() });
 
             return Result<IReadOnlyList<LayoutNode>>.Success(rows.Select(row => row.ToNode()).ToArray());
@@ -325,7 +336,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<IReadOnlyList<LayoutNode>>(exception);
         }
@@ -338,10 +350,10 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 "update layout_nodes set own_text = @OwnText where node_id = @NodeId;",
                 new { NodeId = nodeId.ToString(), OwnText = ownText });
 
@@ -353,7 +365,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -371,21 +384,22 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            LayoutNodeRow? node = await GetNodeRowAsync(connection, transaction, nodeId);
             if (node is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
             }
 
-            var bbox = node.ToNode().BBox;
+            NormalizedBBox? bbox = node.ToNode().BBox;
             if (bbox is not null)
             {
-                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, node.RevisionId, node.PageId, node.ParentNodeId, bbox.Value, nodeType.Trim(), [node.NodeId]);
+                Result overlap = await ValidateSiblingBBoxAsync(connection, transaction, node.RevisionId, node.PageId,
+                    node.ParentNodeId, bbox.Value, nodeType.Trim(), [node.NodeId]);
                 if (overlap.IsFailure)
                 {
                     await transaction.RollbackAsync(cancellationToken);
@@ -405,7 +419,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -416,7 +431,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         NormalizedBBox? bbox,
         CancellationToken cancellationToken = default)
     {
-        var validation = bbox?.Validate() ?? Result.Success();
+        Result validation = bbox?.Validate() ?? Result.Success();
         if (validation.IsFailure)
         {
             return validation;
@@ -424,11 +439,11 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            LayoutNodeRow? node = await GetNodeRowAsync(connection, transaction, nodeId);
             if (node is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -437,7 +452,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             if (bbox is not null)
             {
-                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, node.RevisionId, node.PageId, node.ParentNodeId, bbox.Value, node.NodeType, [node.NodeId]);
+                Result overlap = await ValidateSiblingBBoxAsync(connection, transaction, node.RevisionId, node.PageId,
+                    node.ParentNodeId, bbox.Value, node.NodeType, [node.NodeId]);
                 if (overlap.IsFailure)
                 {
                     await transaction.RollbackAsync(cancellationToken);
@@ -447,7 +463,10 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             await connection.ExecuteAsync(
                 "update layout_nodes set bbox_x = @X, bbox_y = @Y, bbox_width = @Width, bbox_height = @Height where node_id = @NodeId;",
-                new { NodeId = nodeId.ToString(), X = bbox?.X, Y = bbox?.Y, Width = bbox?.Width, Height = bbox?.Height },
+                new
+                {
+                    NodeId = nodeId.ToString(), X = bbox?.X, Y = bbox?.Y, Width = bbox?.Width, Height = bbox?.Height
+                },
                 transaction);
 
             await transaction.CommitAsync(cancellationToken);
@@ -457,7 +476,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -472,7 +492,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         bool isHeader,
         CancellationToken cancellationToken = default)
     {
-        var validation = ValidateTableCellMetadata(rowIndex, colIndex, rowSpan, colSpan);
+        Result validation = ValidateTableCellMetadata(rowIndex, colIndex, rowSpan, colSpan);
         if (validation.IsFailure)
         {
             return validation;
@@ -480,20 +500,22 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            LayoutNodeRow? node = await GetNodeRowAsync(connection, transaction, nodeId);
             if (node is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
             }
+
             if (node.NodeType != LayoutNodeType.TableCell)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(AppErrorCodes.ValidationFailed, "Only table_cell nodes can store table cell metadata.");
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "Only table_cell nodes can store table cell metadata.");
             }
 
             await connection.ExecuteAsync(
@@ -506,7 +528,11 @@ public sealed class LayoutTreeService : ILayoutTreeService
                     is_header = @IsHeader
                 where node_id = @NodeId;
                 """,
-                new { NodeId = nodeId.ToString(), RowIndex = rowIndex, ColIndex = colIndex, RowSpan = rowSpan, ColSpan = colSpan, IsHeader = isHeader ? 1 : 0 },
+                new
+                {
+                    NodeId = nodeId.ToString(), RowIndex = rowIndex, ColIndex = colIndex, RowSpan = rowSpan,
+                    ColSpan = colSpan, IsHeader = isHeader ? 1 : 0
+                },
                 transaction);
 
             await transaction.CommitAsync(cancellationToken);
@@ -516,7 +542,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -529,37 +556,43 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var row = await GetNodeRowAsync(connection, transaction, nodeId);
+            LayoutNodeRow? row = await GetNodeRowAsync(connection, transaction, nodeId);
             if (row is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
             }
-            if (row.TextPolicy != TextPolicy.Own || string.IsNullOrEmpty(row.OwnText) || splitOffset <= 0 || splitOffset >= row.OwnText.Length)
+
+            if (row.TextPolicy != TextPolicy.Own || string.IsNullOrEmpty(row.OwnText) || splitOffset <= 0 ||
+                splitOffset >= row.OwnText.Length)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only own-text nodes can be split, and split offset must be inside the text.");
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed,
+                    "Only own-text nodes can be split, and split offset must be inside the text.");
             }
+
             if (await HasChildrenAsync(connection, transaction, row.NodeId))
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only leaf text nodes can be split.");
             }
 
-            var left = row.OwnText[..splitOffset].TrimEnd();
-            var right = row.OwnText[splitOffset..].TrimStart();
+            string left = row.OwnText[..splitOffset].TrimEnd();
+            string right = row.OwnText[splitOffset..].TrimStart();
             if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Split must leave text on both sides.");
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed,
+                    "Split must leave text on both sides.");
             }
 
-            await connection.ExecuteAsync("update layout_nodes set own_text = @Text where node_id = @NodeId;", new { NodeId = nodeId.ToString(), Text = left }, transaction);
-            var newNode = new LayoutNode(
+            await connection.ExecuteAsync("update layout_nodes set own_text = @Text where node_id = @NodeId;",
+                new { NodeId = nodeId.ToString(), Text = left }, transaction);
+            LayoutNode newNode = new(
                 LayoutNodeId.New(),
                 DocumentInstanceId.Parse(row.DocumentInstanceId),
                 PageId.Parse(row.PageId),
@@ -582,7 +615,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -600,39 +634,49 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var first = await GetNodeRowAsync(connection, transaction, firstNodeId);
-            var second = await GetNodeRowAsync(connection, transaction, secondNodeId);
+            LayoutNodeRow? first = await GetNodeRowAsync(connection, transaction, firstNodeId);
+            LayoutNodeRow? second = await GetNodeRowAsync(connection, transaction, secondNodeId);
             if (first is null || second is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout node was not found.");
             }
-            if (first.RevisionId != second.RevisionId || first.PageId != second.PageId || first.ParentNodeId != second.ParentNodeId || first.TextPolicy != TextPolicy.Own || second.TextPolicy != TextPolicy.Own)
+
+            if (first.RevisionId != second.RevisionId || first.PageId != second.PageId ||
+                first.ParentNodeId != second.ParentNodeId || first.TextPolicy != TextPolicy.Own ||
+                second.TextPolicy != TextPolicy.Own)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only own-text sibling nodes on the same page and revision can be merged.");
-            }
-            if (await HasChildrenAsync(connection, transaction, first.NodeId) || await HasChildrenAsync(connection, transaction, second.NodeId))
-            {
-                await transaction.RollbackAsync(cancellationToken);
-                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Only leaf text nodes can be merged.");
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed,
+                    "Only own-text sibling nodes on the same page and revision can be merged.");
             }
 
-            var text = string.Join("\n", new[] { first.OwnText, second.OwnText }.Where(t => !string.IsNullOrWhiteSpace(t)).Select(t => t!.Trim()));
+            if (await HasChildrenAsync(connection, transaction, first.NodeId) ||
+                await HasChildrenAsync(connection, transaction, second.NodeId))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed,
+                    "Only leaf text nodes can be merged.");
+            }
+
+            string text = string.Join("\n",
+                new[] { first.OwnText, second.OwnText }.Where(t => !string.IsNullOrWhiteSpace(t))
+                    .Select(t => t!.Trim()));
             if (string.IsNullOrWhiteSpace(text))
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Merged text cannot be empty.");
             }
 
-            var mergedBBox = Union(first.ToNode().BBox, second.ToNode().BBox);
+            NormalizedBBox? mergedBBox = Union(first.ToNode().BBox, second.ToNode().BBox);
             if (mergedBBox is not null)
             {
-                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, first.RevisionId, first.PageId, first.ParentNodeId, mergedBBox.Value, first.NodeType, [first.NodeId, second.NodeId]);
+                Result overlap = await ValidateSiblingBBoxAsync(connection, transaction, first.RevisionId, first.PageId,
+                    first.ParentNodeId, mergedBBox.Value, first.NodeType, [first.NodeId, second.NodeId]);
                 if (overlap.IsFailure)
                 {
                     await transaction.RollbackAsync(cancellationToken);
@@ -642,11 +686,16 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             await connection.ExecuteAsync(
                 "update layout_nodes set own_text = @Text, bbox_x = @X, bbox_y = @Y, bbox_width = @Width, bbox_height = @Height where node_id = @NodeId;",
-                new { NodeId = firstNodeId.ToString(), Text = text, X = mergedBBox?.X, Y = mergedBBox?.Y, Width = mergedBBox?.Width, Height = mergedBBox?.Height },
+                new
+                {
+                    NodeId = firstNodeId.ToString(), Text = text, X = mergedBBox?.X, Y = mergedBBox?.Y,
+                    Width = mergedBBox?.Width, Height = mergedBBox?.Height
+                },
                 transaction);
-            await connection.ExecuteAsync("delete from layout_nodes where node_id = @NodeId;", new { NodeId = secondNodeId.ToString() }, transaction);
+            await connection.ExecuteAsync("delete from layout_nodes where node_id = @NodeId;",
+                new { NodeId = secondNodeId.ToString() }, transaction);
 
-            var updated = (await GetNodeRowAsync(connection, transaction, firstNodeId))!.ToNode();
+            LayoutNode updated = (await GetNodeRowAsync(connection, transaction, firstNodeId))!.ToNode();
             await transaction.CommitAsync(cancellationToken);
             return Result<LayoutNode>.Success(updated);
         }
@@ -654,7 +703,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -672,7 +722,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "At least one child node is required.");
         }
-        var validation = ValidateNodeInput(nodeType, bbox, textPolicy, LayoutRevisionSource.Manual);
+
+        Result validation = ValidateNodeInput(nodeType, bbox, textPolicy, LayoutRevisionSource.Manual);
         if (validation.IsFailure)
         {
             return Result<LayoutNode>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -680,34 +731,39 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var rows = new List<LayoutNodeRow>();
-            foreach (var childId in childNodeIds.Distinct())
+            List<LayoutNodeRow> rows = new();
+            foreach (LayoutNodeId childId in childNodeIds.Distinct())
             {
-                var row = await GetNodeRowAsync(connection, transaction, childId);
+                LayoutNodeRow? row = await GetNodeRowAsync(connection, transaction, childId);
                 if (row is null)
                 {
                     await transaction.RollbackAsync(cancellationToken);
                     return Result<LayoutNode>.Failure(AppErrorCodes.NotFound, "Layout child node was not found.");
                 }
+
                 rows.Add(row);
             }
 
-            var first = rows[0];
-            if (rows.Any(row => row.RevisionId != first.RevisionId || row.PageId != first.PageId || row.ParentNodeId != first.ParentNodeId))
+            LayoutNodeRow first = rows[0];
+            if (rows.Any(row =>
+                    row.RevisionId != first.RevisionId || row.PageId != first.PageId ||
+                    row.ParentNodeId != first.ParentNodeId))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed, "Selected nodes must share the same page, revision, and parent.");
+                return Result<LayoutNode>.Failure(AppErrorCodes.ValidationFailed,
+                    "Selected nodes must share the same page, revision, and parent.");
             }
 
-            var parentBBox = bbox ?? Union(rows.Select(row => row.ToNode().BBox));
+            NormalizedBBox? parentBBox = bbox ?? Union(rows.Select(row => row.ToNode().BBox));
             if (parentBBox is not null)
             {
-                var excluded = rows.Select(row => row.NodeId).ToArray();
-                var overlap = await ValidateSiblingBBoxAsync(connection, transaction, first.RevisionId, first.PageId, first.ParentNodeId, parentBBox.Value, nodeType.Trim(), excluded);
+                string[] excluded = rows.Select(row => row.NodeId).ToArray();
+                Result overlap = await ValidateSiblingBBoxAsync(connection, transaction, first.RevisionId, first.PageId,
+                    first.ParentNodeId, parentBBox.Value, nodeType.Trim(), excluded);
                 if (overlap.IsFailure)
                 {
                     await transaction.RollbackAsync(cancellationToken);
@@ -715,7 +771,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 }
             }
 
-            var parent = new LayoutNode(
+            LayoutNode parent = new(
                 LayoutNodeId.New(),
                 DocumentInstanceId.Parse(first.DocumentInstanceId),
                 PageId.Parse(first.PageId),
@@ -730,7 +786,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
                 null,
                 false);
             await InsertNodeAsync(connection, transaction, parent);
-            for (var i = 0; i < rows.Count; i++)
+            for (int i = 0; i < rows.Count; i++)
             {
                 await connection.ExecuteAsync(
                     "update layout_nodes set parent_node_id = @ParentNodeId, reading_order = @ReadingOrder where node_id = @NodeId;",
@@ -745,7 +801,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -759,11 +816,11 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var node = await GetNodeRowAsync(connection, transaction, nodeId);
+            LayoutNodeRow? node = await GetNodeRowAsync(connection, transaction, nodeId);
             if (node is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -772,17 +829,20 @@ public sealed class LayoutTreeService : ILayoutTreeService
 
             if (newParentNodeId is not null)
             {
-                if (newParentNodeId.Value == nodeId || await IsDescendantAsync(connection, transaction, newParentNodeId.Value, nodeId))
+                if (newParentNodeId.Value == nodeId ||
+                    await IsDescendantAsync(connection, transaction, newParentNodeId.Value, nodeId))
                 {
                     await transaction.RollbackAsync(cancellationToken);
-                    return Result.Failure(AppErrorCodes.ValidationFailed, "Cannot move a node under itself or its descendant.");
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "Cannot move a node under itself or its descendant.");
                 }
 
-                var parent = await GetNodeRowAsync(connection, transaction, newParentNodeId.Value);
+                LayoutNodeRow? parent = await GetNodeRowAsync(connection, transaction, newParentNodeId.Value);
                 if (parent is null || parent.PageId != node.PageId || parent.RevisionId != node.RevisionId)
                 {
                     await transaction.RollbackAsync(cancellationToken);
-                    return Result.Failure(AppErrorCodes.ValidationFailed, "New parent must belong to the same page and revision.");
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "New parent must belong to the same page and revision.");
                 }
             }
 
@@ -803,7 +863,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -816,10 +877,10 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 "update layout_nodes set ignored = @Ignored where node_id = @NodeId;",
                 new { NodeId = nodeId.ToString(), Ignored = ignored ? 1 : 0 });
 
@@ -831,7 +892,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -844,23 +906,25 @@ public sealed class LayoutTreeService : ILayoutTreeService
     {
         try
         {
-            var nodesResult = await ListNodesForPageAsync(pageId, revisionId, cancellationToken);
+            Result<IReadOnlyList<LayoutNode>> nodesResult =
+                await ListNodesForPageAsync(pageId, revisionId, cancellationToken);
             if (nodesResult.IsFailure)
             {
                 return Result<PlainTextPage>.Failure(nodesResult.ErrorCode!, nodesResult.ErrorMessage!);
             }
 
-            var nodes = nodesResult.Value
+            LayoutNode[] nodes = nodesResult.Value
                 .Where(node => !node.Ignored)
                 .ToArray();
-            var byParent = nodes
+            Dictionary<string, LayoutNode[]> byParent = nodes
                 .GroupBy(node => Key(node.ParentNodeId))
-                .ToDictionary(group => group.Key, group => group.OrderBy(n => n.ReadingOrder).ThenBy(n => n.NodeId.ToString()).ToArray());
+                .ToDictionary(group => group.Key,
+                    group => group.OrderBy(n => n.ReadingOrder).ThenBy(n => n.NodeId.ToString()).ToArray());
 
-            var fragments = new List<string>();
-            foreach (var root in byParent.GetValueOrDefault(string.Empty, []))
+            List<string> fragments = new();
+            foreach (LayoutNode root in byParent.GetValueOrDefault(string.Empty, []))
             {
-                var text = BuildNodeText(root, byParent);
+                string text = BuildNodeText(root, byParent);
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     fragments.Add(text.Trim());
@@ -873,7 +937,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.layout-tree"))
         {
             return DatabaseFailure<PlainTextPage>(exception);
         }
@@ -916,48 +981,55 @@ public sealed class LayoutTreeService : ILayoutTreeService
         LayoutNode table,
         IReadOnlyDictionary<string, LayoutNode[]> byParent)
     {
-        var cells = CollectTableCells(table, byParent).ToArray();
+        LayoutNode[] cells = CollectTableCells(table, byParent).ToArray();
         if (cells.Length == 0
-            || cells.Any(cell => cell.RowIndex is null || cell.ColIndex is null || (cell.RowSpan ?? 1) != 1 || (cell.ColSpan ?? 1) != 1))
+            || cells.Any(cell =>
+                cell.RowIndex is null || cell.ColIndex is null || (cell.RowSpan ?? 1) != 1 || (cell.ColSpan ?? 1) != 1))
         {
             return null;
         }
 
-        var maxRow = cells.Max(cell => cell.RowIndex!.Value);
-        var maxCol = cells.Max(cell => cell.ColIndex!.Value);
+        int maxRow = cells.Max(cell => cell.RowIndex!.Value);
+        int maxCol = cells.Max(cell => cell.ColIndex!.Value);
         if (maxRow < 1 || maxCol < 0)
         {
             return null;
         }
 
-        var map = new Dictionary<(int Row, int Col), LayoutNode>();
-        foreach (var cell in cells)
+        Dictionary<(int Row, int Col), LayoutNode> map = new();
+        foreach (LayoutNode cell in cells)
         {
-            var key = (cell.RowIndex!.Value, cell.ColIndex!.Value);
+            (int, int) key = (cell.RowIndex!.Value, cell.ColIndex!.Value);
             if (!map.TryAdd(key, cell))
             {
                 return null;
             }
         }
 
-        for (var row = 0; row <= maxRow; row++)
-        for (var col = 0; col <= maxCol; col++)
+        for (int row = 0; row <= maxRow; row++)
+        for (int col = 0; col <= maxCol; col++)
+        {
             if (!map.ContainsKey((row, col)))
+            {
                 return null;
+            }
+        }
 
         if (Enumerable.Range(0, maxCol + 1).Any(col => !map[(0, col)].IsHeader))
         {
             return null;
         }
 
-        var lines = new List<string>
+        List<string> lines = new()
         {
             BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(0, col)], byParent))),
             BuildMarkdownRow(Enumerable.Repeat("---", maxCol + 1))
         };
-        for (var row = 1; row <= maxRow; row++)
+        for (int row = 1; row <= maxRow; row++)
         {
-            lines.Add(BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(row, col)], byParent))));
+            int currentRow = row;
+            lines.Add(BuildMarkdownRow(Enumerable.Range(0, maxCol + 1)
+                .Select(col => CellText(map[(currentRow, col)], byParent))));
         }
 
         return string.Join("\n", lines);
@@ -967,19 +1039,20 @@ public sealed class LayoutTreeService : ILayoutTreeService
         LayoutNode node,
         IReadOnlyDictionary<string, LayoutNode[]> byParent)
     {
-        foreach (var child in byParent.GetValueOrDefault(Key(node.NodeId), []))
+        foreach (LayoutNode child in byParent.GetValueOrDefault(Key(node.NodeId), []))
         {
             if (child.Ignored)
             {
                 continue;
             }
+
             if (child.NodeType == LayoutNodeType.TableCell)
             {
                 yield return child;
             }
             else if (child.NodeType == LayoutNodeType.TableRow)
             {
-                foreach (var cell in CollectTableCells(child, byParent))
+                foreach (LayoutNode cell in CollectTableCells(child, byParent))
                 {
                     yield return cell;
                 }
@@ -991,7 +1064,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         LayoutNode cell,
         IReadOnlyDictionary<string, LayoutNode[]> byParent)
     {
-        var text = cell.TextPolicy switch
+        string text = cell.TextPolicy switch
         {
             TextPolicy.Own => cell.OwnText ?? string.Empty,
             TextPolicy.AggregateChildren => string.Join(
@@ -1006,16 +1079,23 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static string BuildMarkdownRow(IEnumerable<string> cells)
-        => "| " + string.Join(" | ", cells) + " |";
+    {
+        return "| " + string.Join(" | ", cells) + " |";
+    }
 
     private static string EscapeMarkdownCell(string text)
-        => text.Replace("\\", "\\\\").Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
+    {
+        return text.Replace("\\", "\\\\").Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
+    }
 
-    private static string Key(LayoutNodeId? nodeId) => nodeId?.ToString() ?? string.Empty;
+    private static string Key(LayoutNodeId? nodeId)
+    {
+        return nodeId?.ToString() ?? string.Empty;
+    }
 
     private static async Task InsertNodeAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         LayoutNode node)
     {
         await connection.ExecuteAsync(
@@ -1038,8 +1118,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static async Task<Result> ValidateSiblingBBoxAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         string revisionId,
         string pageId,
         string? parentNodeId,
@@ -1047,12 +1127,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
         string nodeType,
         IReadOnlyCollection<string> excludedNodeIds)
     {
-        var siblingRows = await connection.QueryAsync<LayoutNodeRow>(
+        IEnumerable<LayoutNodeRow> siblingRows = await connection.QueryAsync<LayoutNodeRow>(
             SelectNodesSql + """
-             where revision_id = @RevisionId
-               and page_id = @PageId
-               and ((parent_node_id is null and @ParentNodeId is null) or parent_node_id = @ParentNodeId);
-            """,
+                              where revision_id = @RevisionId
+                                and page_id = @PageId
+                                and ((parent_node_id is null and @ParentNodeId is null) or parent_node_id = @ParentNodeId);
+                             """,
             new
             {
                 RevisionId = revisionId,
@@ -1061,17 +1141,20 @@ public sealed class LayoutTreeService : ILayoutTreeService
             },
             transaction);
 
-        foreach (var sibling in siblingRows)
+        foreach (LayoutNodeRow sibling in siblingRows)
         {
             if (excludedNodeIds.Contains(sibling.NodeId))
             {
                 continue;
             }
-            var siblingNode = sibling.ToNode();
-            if (siblingNode.BBox is null || LayoutNodeType.AllowsOverlap(nodeType.Trim()) || LayoutNodeType.AllowsOverlap(siblingNode.NodeType))
+
+            LayoutNode siblingNode = sibling.ToNode();
+            if (siblingNode.BBox is null || LayoutNodeType.AllowsOverlap(nodeType.Trim()) ||
+                LayoutNodeType.AllowsOverlap(siblingNode.NodeType))
             {
                 continue;
             }
+
             if (bbox.Overlaps(siblingNode.BBox.Value))
             {
                 return Result.Failure(
@@ -1088,36 +1171,48 @@ public sealed class LayoutTreeService : ILayoutTreeService
                     ]);
             }
         }
+
         return Result.Success();
     }
 
     private static async Task<bool> HasChildrenAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         string nodeId)
-        => await connection.ExecuteScalarAsync<int>(
+    {
+        return await connection.ExecuteScalarAsync<int>(
             "select count(1) from layout_nodes where parent_node_id = @NodeId;",
             new { NodeId = nodeId },
             transaction) > 0;
+    }
 
     private static NormalizedBBox? Union(NormalizedBBox? first, NormalizedBBox? second)
     {
-        if (first is null) return second;
-        if (second is null) return first;
-        var x1 = Math.Min(first.Value.X, second.Value.X);
-        var y1 = Math.Min(first.Value.Y, second.Value.Y);
-        var x2 = Math.Max(first.Value.X + first.Value.Width, second.Value.X + second.Value.Width);
-        var y2 = Math.Max(first.Value.Y + first.Value.Height, second.Value.Y + second.Value.Height);
+        if (first is null)
+        {
+            return second;
+        }
+
+        if (second is null)
+        {
+            return first;
+        }
+
+        double x1 = Math.Min(first.Value.X, second.Value.X);
+        double y1 = Math.Min(first.Value.Y, second.Value.Y);
+        double x2 = Math.Max(first.Value.X + first.Value.Width, second.Value.X + second.Value.Width);
+        double y2 = Math.Max(first.Value.Y + first.Value.Height, second.Value.Y + second.Value.Height);
         return new NormalizedBBox(x1, y1, x2 - x1, y2 - y1);
     }
 
     private static NormalizedBBox? Union(IEnumerable<NormalizedBBox?> boxes)
     {
         NormalizedBBox? result = null;
-        foreach (var box in boxes)
+        foreach (NormalizedBBox? box in boxes)
         {
             result = Union(result, box);
         }
+
         return result;
     }
 
@@ -1152,12 +1247,17 @@ public sealed class LayoutTreeService : ILayoutTreeService
             return bbox.Value.Validate();
         }
 
-        var metadataValidation = ValidateTableCellMetadata(rowIndex, colIndex, rowSpan, colSpan);
+        Result metadataValidation = ValidateTableCellMetadata(rowIndex, colIndex, rowSpan, colSpan);
         if (metadataValidation.IsFailure)
-            return metadataValidation;
-        if (nodeType.Trim() != LayoutNodeType.TableCell && (rowIndex is not null || colIndex is not null || rowSpan is not null || colSpan is not null || isHeader))
         {
-            return Result.Failure(AppErrorCodes.ValidationFailed, "Only table_cell nodes can store table cell metadata.");
+            return metadataValidation;
+        }
+
+        if (nodeType.Trim() != LayoutNodeType.TableCell && (rowIndex is not null || colIndex is not null ||
+                                                            rowSpan is not null || colSpan is not null || isHeader))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Only table_cell nodes can store table cell metadata.");
         }
 
         return Result.Success();
@@ -1166,19 +1266,31 @@ public sealed class LayoutTreeService : ILayoutTreeService
     private static Result ValidateTableCellMetadata(int? rowIndex, int? colIndex, int? rowSpan, int? colSpan)
     {
         if (rowIndex is not null && rowIndex < 0)
+        {
             return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell row_index must be zero or greater.");
+        }
+
         if (colIndex is not null && colIndex < 0)
+        {
             return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell col_index must be zero or greater.");
+        }
+
         if (rowSpan is not null && rowSpan <= 0)
+        {
             return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell row_span must be positive.");
+        }
+
         if (colSpan is not null && colSpan <= 0)
+        {
             return Result.Failure(AppErrorCodes.ValidationFailed, "Table cell col_span must be positive.");
+        }
+
         return Result.Success();
     }
 
     private static async Task ClearCurrentRevisionAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         DocumentInstanceId documentInstanceId)
     {
         await connection.ExecuteAsync(
@@ -1188,12 +1300,12 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static async Task<bool> IsDescendantAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         LayoutNodeId possibleDescendantId,
         LayoutNodeId ancestorId)
     {
-        var current = await GetNodeRowAsync(connection, transaction, possibleDescendantId);
+        LayoutNodeRow? current = await GetNodeRowAsync(connection, transaction, possibleDescendantId);
         while (current?.ParentNodeId is not null)
         {
             if (current.ParentNodeId == ancestorId.ToString())
@@ -1208,8 +1320,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static Task<LayoutRevisionRow?> GetRevisionRowAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         LayoutRevisionId revisionId)
     {
         return connection.QuerySingleOrDefaultAsync<LayoutRevisionRow>(
@@ -1219,8 +1331,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static Task<PageRow?> GetPageRowAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         PageId pageId)
     {
         return connection.QuerySingleOrDefaultAsync<PageRow>(
@@ -1234,8 +1346,8 @@ public sealed class LayoutTreeService : ILayoutTreeService
     }
 
     private static Task<LayoutNodeRow?> GetNodeRowAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         LayoutNodeId nodeId)
     {
         return connection.QuerySingleOrDefaultAsync<LayoutNodeRow>(
@@ -1324,7 +1436,10 @@ public sealed class LayoutTreeService : ILayoutTreeService
         };
     }
 
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
+    }
 
     private static Result<T> DatabaseFailure<T>(Exception exception)
     {
@@ -1385,17 +1500,19 @@ public sealed class LayoutTreeService : ILayoutTreeService
         public LayoutNode ToNode()
         {
             return new LayoutNode(
-                Patchouli.Core.Ids.LayoutNodeId.Parse(NodeId),
+                LayoutNodeId.Parse(NodeId),
                 Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
                 Patchouli.Core.Ids.PageId.Parse(PageId),
-                ParentNodeId is null ? null : Patchouli.Core.Ids.LayoutNodeId.Parse(ParentNodeId),
+                ParentNodeId is null ? null : LayoutNodeId.Parse(ParentNodeId),
                 NodeType,
-                BBoxX is null ? null : new NormalizedBBox(BBoxX.Value, BBoxY!.Value, BBoxWidth!.Value, BBoxHeight!.Value),
+                BBoxX is null
+                    ? null
+                    : new NormalizedBBox(BBoxX.Value, BBoxY!.Value, BBoxWidth!.Value, BBoxHeight!.Value),
                 OwnText,
                 TextPolicy,
                 ReadingOrder,
                 Source,
-                Patchouli.Core.Ids.LayoutRevisionId.Parse(RevisionId),
+                LayoutRevisionId.Parse(RevisionId),
                 Confidence,
                 Ignored == 1,
                 RowIndex,

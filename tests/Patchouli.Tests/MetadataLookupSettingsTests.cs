@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Patchouli.UI;
+using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
@@ -16,21 +17,21 @@ public sealed class MetadataLookupSettingsTests
     [Fact]
     public void Load_merges_new_defaults_after_saved_order_and_ignores_bad_entries()
     {
-        var path = TemporarySettings("""
-        {
-          "MetadataLookup": {
-            "Sources": [
-              { "SourceId": "crossref", "Enabled": false },
-              { "SourceId": "crossref", "Enabled": true },
-              { "Enabled": true },
-              "invalid"
-            ]
-          }
-        }
-        """);
+        string path = TemporarySettings("""
+                                        {
+                                          "MetadataLookup": {
+                                            "Sources": [
+                                              { "SourceId": "crossref", "Enabled": false },
+                                              { "SourceId": "crossref", "Enabled": true },
+                                              { "Enabled": true },
+                                              "invalid"
+                                            ]
+                                          }
+                                        }
+                                        """);
         try
         {
-            var settings = PatchouliAppSettings.Load(path);
+            PatchouliAppSettings settings = PatchouliAppSettings.Load(path);
 
             settings.MetadataLookup.Sources.First().Should().Be(new MetadataSourcePreference("crossref", false));
             settings.MetadataLookup.Sources.Select(source => source.SourceId).Should().OnlyHaveUniqueItems();
@@ -45,20 +46,20 @@ public sealed class MetadataLookupSettingsTests
     [Fact]
     public void Save_round_trips_preferences_and_preserves_forward_sections()
     {
-        var path = TemporarySettings("""{ "FutureFeature": { "Version": 3 } }""");
+        string path = TemporarySettings("""{ "FutureFeature": { "Version": 3 } }""");
         try
         {
-            var settings = PatchouliAppSettings.Load(path) with
+            PatchouliAppSettings settings = PatchouliAppSettings.Load(path) with
             {
                 MetadataLookup = new MetadataLookupAppSettings(
                 [
-                    new("pubmed", false),
-                    new("crossref", true)
+                    new MetadataSourcePreference("pubmed", false),
+                    new MetadataSourcePreference("crossref", true)
                 ])
             };
 
             settings.Save(path);
-            var reloaded = PatchouliAppSettings.Load(path);
+            PatchouliAppSettings reloaded = PatchouliAppSettings.Load(path);
 
             reloaded.MetadataLookup.Sources.Take(2).Should().Equal(
                 new MetadataSourcePreference("pubmed", false),
@@ -74,19 +75,21 @@ public sealed class MetadataLookupSettingsTests
     [Fact]
     public async Task Metadata_settings_save_and_discard_are_real()
     {
-        var path = TemporarySettings("{}");
+        string path = TemporarySettings("{}");
         try
         {
-            var main = new Patchouli.UI.ViewModels.MainWindowViewModel(settingsPath: path);
-            var viewModel = main.Settings.MetadataLookupSettings;
-            main.Settings.ActiveCategory = main.Settings.Categories.Single(category => ReferenceEquals(category.Content, viewModel));
-            var first = viewModel.Sources[0];
+            MainWindowViewModel main = new(settingsPath: path);
+            MetadataLookupSettingsViewModel viewModel = main.Settings.MetadataLookupSettings;
+            main.Settings.ActiveCategory =
+                main.Settings.Categories.Single(category => ReferenceEquals(category.Content, viewModel));
+            MetadataSourceSettingsRowViewModel first = viewModel.Sources[0];
             first.Enabled = false;
             viewModel.Sources[1].MoveUpCommand.Execute(null);
 
             viewModel.IsDirty.Should().BeTrue();
             await main.Settings.SaveCommand.ExecuteAsync();
-            PatchouliAppSettings.Load(path).MetadataLookup.Sources.First().SourceId.Should().Be(viewModel.Sources[0].SourceId);
+            PatchouliAppSettings.Load(path).MetadataLookup.Sources.First().SourceId.Should()
+                .Be(viewModel.Sources[0].SourceId);
             viewModel.Status.Should().Be("已保存");
 
             viewModel.Sources[0].Enabled = !viewModel.Sources[0].Enabled;
@@ -103,7 +106,7 @@ public sealed class MetadataLookupSettingsTests
     [Fact]
     public void Malformed_json_loads_defaults()
     {
-        var path = TemporarySettings("{ not-json");
+        string path = TemporarySettings("{ not-json");
         try
         {
             PatchouliAppSettings.Load(path).MetadataLookup.Sources.Should().NotBeEmpty();
@@ -117,11 +120,13 @@ public sealed class MetadataLookupSettingsTests
     [Fact]
     public async Task Save_failure_keeps_changes_dirty_and_reports_failure()
     {
-        var settingsPath = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-metadata-settings-{Guid.NewGuid():N}")).FullName;
+        string settingsPath = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-metadata-settings-{Guid.NewGuid():N}"))
+            .FullName;
         try
         {
-            var main = new Patchouli.UI.ViewModels.MainWindowViewModel(settingsPath: settingsPath);
-            var viewModel = main.Settings.MetadataLookupSettings;
+            MainWindowViewModel main = new(settingsPath: settingsPath);
+            MetadataLookupSettingsViewModel viewModel = main.Settings.MetadataLookupSettings;
             viewModel.Sources[0].Enabled = !viewModel.Sources[0].Enabled;
 
             await viewModel.SaveAsync();
@@ -137,7 +142,7 @@ public sealed class MetadataLookupSettingsTests
 
     private static string TemporarySettings(string contents)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"patchouli-metadata-settings-{Guid.NewGuid():N}.json");
+        string path = Path.Combine(Path.GetTempPath(), $"patchouli-metadata-settings-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, contents);
         return path;
     }

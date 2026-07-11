@@ -8,13 +8,13 @@ public sealed class UnexpectedExceptionSinkTests
     [Fact]
     public void File_sink_writes_context_stack_and_redacts_secrets()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"patchouli-crash-{Guid.NewGuid():N}");
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-crash-{Guid.NewGuid():N}");
         try
         {
-            var sink = new FileUnexpectedExceptionSink(root);
+            FileUnexpectedExceptionSink sink = new(root);
             ThrowAndReport(sink);
 
-            var log = File.ReadAllText(Path.Combine(root, "patchouli-crash.log"));
+            string log = File.ReadAllText(Path.Combine(root, "patchouli-crash.log"));
             log.Should().Contain("Boundary: test-boundary")
                 .And.Contain("Operation: test-operation")
                 .And.Contain(nameof(InvalidOperationException))
@@ -25,26 +25,32 @@ public sealed class UnexpectedExceptionSinkTests
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 
     [Fact]
     public void File_sink_serializes_concurrent_records()
     {
-        var root = Path.Combine(Path.GetTempPath(), $"patchouli-crash-{Guid.NewGuid():N}");
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-crash-{Guid.NewGuid():N}");
         try
         {
-            var sink = new FileUnexpectedExceptionSink(root);
+            FileUnexpectedExceptionSink sink = new(root);
             Parallel.For(0, 20, i => sink.Report(new Exception($"failure-{i}"), "parallel"));
 
-            var log = File.ReadAllText(Path.Combine(root, "patchouli-crash.log"));
+            string log = File.ReadAllText(Path.Combine(root, "patchouli-crash.log"));
             Enumerable.Range(0, 20).Should().OnlyContain(i => log.Contains($"failure-{i}", StringComparison.Ordinal));
             log.Split("ErrorId:", StringSplitOptions.None).Length.Should().Be(21);
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 

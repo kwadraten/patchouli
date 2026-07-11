@@ -22,5 +22,4 @@ using Patchouli.Search;
 
 namespace Patchouli.UI.ViewModels;
 
-public record ThirdPartyLibrary(string Name, string License, string Url);
-
+public sealed record ThirdPartyLibrary(string Name, string License, string Url, RelayCommand OpenUrlCommand);

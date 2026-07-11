@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
@@ -34,13 +36,14 @@ public sealed class CslStyleStore : ICslStyleStore
         Directory.CreateDirectory(_installedRoot);
     }
 
-    public async Task<Result<IReadOnlyList<CslStyle>>> ListInstalledStylesAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<CslStyle>>> ListInstalledStylesAsync(
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var rows = await connection.QueryAsync<Row>(
+            IEnumerable<Row> rows = await connection.QueryAsync<Row>(
                 """
                 select style_id as StyleId,
                        display_name as DisplayName,
@@ -62,9 +65,11 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
-            return Result<IReadOnlyList<CslStyle>>.Failure(AppErrorCodes.DatabaseError, $"CSL style listing failed: {exception.Message}");
+            return Result<IReadOnlyList<CslStyle>>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL style listing failed: {exception.Message}");
         }
     }
 
@@ -77,9 +82,9 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await connection.QuerySingleOrDefaultAsync<Row>(
+            Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """
                 select style_id as StyleId,
                        display_name as DisplayName,
@@ -103,27 +108,30 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
-            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError, $"CSL style lookup failed: {exception.Message}");
+            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL style lookup failed: {exception.Message}");
         }
     }
 
-    public async Task<Result<string>> GetStyleContentAsync(string styleId, CancellationToken cancellationToken = default)
+    public async Task<Result<string>> GetStyleContentAsync(string styleId,
+        CancellationToken cancellationToken = default)
     {
-        var style = await GetStyleAsync(styleId, cancellationToken);
+        Result<CslStyle> style = await GetStyleAsync(styleId, cancellationToken);
         if (style.IsFailure)
         {
             return Result<string>.Failure(style.ErrorCode!, style.ErrorMessage!);
         }
 
-        var resolvedPath = ResolveStylePath(style.Value.StyleId);
+        Result<string> resolvedPath = ResolveStylePath(style.Value.StyleId);
         if (resolvedPath.IsFailure)
         {
             return Result<string>.Failure(resolvedPath.ErrorCode!, resolvedPath.ErrorMessage!);
         }
 
-        var path = resolvedPath.Value;
+        string path = resolvedPath.Value;
         if (!File.Exists(path))
         {
             return Result<string>.Failure(AppErrorCodes.NotFound, "CSL style content file was not found.");
@@ -132,9 +140,11 @@ public sealed class CslStyleStore : ICslStyleStore
         return Result<string>.Success(await File.ReadAllTextAsync(path, cancellationToken));
     }
 
-    public async Task<Result<CslStyle>> InstallStyleAsync(CslCatalogStyle catalogStyle, string contentXml, CancellationToken cancellationToken = default)
+    public async Task<Result<CslStyle>> InstallStyleAsync(CslCatalogStyle catalogStyle, string contentXml,
+        CancellationToken cancellationToken = default)
     {
-        var installOperationId = await TryStartInstallOperationAsync(catalogStyle.StyleId, cancellationToken);
+        BlockingOperationId? installOperationId =
+            await TryStartInstallOperationAsync(catalogStyle.StyleId, cancellationToken);
         if (string.IsNullOrWhiteSpace(catalogStyle.StyleId))
         {
             await TryFailInstallOperationAsync(
@@ -155,8 +165,9 @@ public sealed class CslStyleStore : ICslStyleStore
             return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed, "CSL style content is required.");
         }
 
-        var metadata = ParseMetadata(catalogStyle.StyleId, catalogStyle.DisplayName, catalogStyle.SourceUrl, catalogStyle.SourceKind, contentXml);
-        var resolvedPath = ResolveStylePath(metadata.StyleId);
+        CslStyle metadata = ParseMetadata(catalogStyle.StyleId, catalogStyle.DisplayName, catalogStyle.SourceUrl,
+            catalogStyle.SourceKind, contentXml);
+        Result<string> resolvedPath = ResolveStylePath(metadata.StyleId);
         if (resolvedPath.IsFailure)
         {
             await TryFailInstallOperationAsync(
@@ -172,7 +183,7 @@ public sealed class CslStyleStore : ICslStyleStore
             Directory.CreateDirectory(_installedRoot);
             await File.WriteAllTextAsync(resolvedPath.Value, contentXml, cancellationToken);
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync(
                 """
@@ -216,20 +227,22 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
             await TryFailInstallOperationAsync(
                 installOperationId,
                 AppErrorCodes.DatabaseError,
                 $"CSL style install failed: {exception.Message}",
                 cancellationToken);
-            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError, $"CSL style install failed: {exception.Message}");
+            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL style install failed: {exception.Message}");
         }
     }
 
     public async Task<Result<CslStyle>> DisableStyleAsync(string styleId, CancellationToken cancellationToken = default)
     {
-        var style = await GetStyleAsync(styleId, cancellationToken);
+        Result<CslStyle> style = await GetStyleAsync(styleId, cancellationToken);
         if (style.IsFailure)
         {
             return Result<CslStyle>.Failure(style.ErrorCode!, style.ErrorMessage!);
@@ -237,26 +250,31 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync(
                 "update csl_styles set enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
                 new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") });
-            return Result<CslStyle>.Success(style.Value with { Enabled = false, UpdatedAt = _clock.UtcNow.ToUniversalTime() });
+            return Result<CslStyle>.Success(style.Value with
+            {
+                Enabled = false, UpdatedAt = _clock.UtcNow.ToUniversalTime()
+            });
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
-            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError, $"CSL style disable failed: {exception.Message}");
+            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL style disable failed: {exception.Message}");
         }
     }
 
     public async Task<Result> RemoveStyleAsync(string styleId, CancellationToken cancellationToken = default)
     {
-        var style = await GetStyleAsync(styleId, cancellationToken);
+        Result<CslStyle> style = await GetStyleAsync(styleId, cancellationToken);
         if (style.IsFailure)
         {
             return Result.Failure(style.ErrorCode!, style.ErrorMessage!);
@@ -264,29 +282,31 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync(
                 "update csl_styles set deleted = 1, enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
                 new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") });
-            var resolvedPath = ResolveStylePath(style.Value.StyleId);
+            Result<string> resolvedPath = ResolveStylePath(style.Value.StyleId);
             if (resolvedPath.IsFailure)
             {
                 return Result.Failure(resolvedPath.ErrorCode!, resolvedPath.ErrorMessage!);
             }
 
-            var path = resolvedPath.Value;
+            string path = resolvedPath.Value;
             if (File.Exists(path))
             {
                 File.Delete(path);
             }
+
             return Result.Success();
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"CSL style removal failed: {exception.Message}");
         }
@@ -296,9 +316,9 @@ public sealed class CslStyleStore : ICslStyleStore
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await connection.QuerySingleOrDefaultAsync<SettingsRow>(
+            SettingsRow? row = await connection.QuerySingleOrDefaultAsync<SettingsRow>(
                 """
                 select default_style_id as DefaultStyleId,
                        locale as Locale,
@@ -306,23 +326,27 @@ public sealed class CslStyleStore : ICslStyleStore
                 from csl_settings
                 limit 1;
                 """);
-            return Result<CslSettings>.Success(row?.ToModel() ?? new CslSettings(null, null, _clock.UtcNow.ToUniversalTime()));
+            return Result<CslSettings>.Success(row?.ToModel() ??
+                                               new CslSettings(null, null, _clock.UtcNow.ToUniversalTime()));
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
-            return Result<CslSettings>.Failure(AppErrorCodes.DatabaseError, $"CSL settings load failed: {exception.Message}");
+            return Result<CslSettings>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL settings load failed: {exception.Message}");
         }
     }
 
-    public async Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale, CancellationToken cancellationToken = default)
+    public async Task<Result<CslSettings>> SaveSettingsAsync(string? defaultStyleId, string? locale,
+        CancellationToken cancellationToken = default)
     {
         if (!string.IsNullOrWhiteSpace(defaultStyleId))
         {
-            var style = await GetStyleAsync(defaultStyleId, cancellationToken);
+            Result<CslStyle> style = await GetStyleAsync(defaultStyleId, cancellationToken);
             if (style.IsFailure)
             {
                 return Result<CslSettings>.Failure(style.ErrorCode!, style.ErrorMessage!);
@@ -330,14 +354,15 @@ public sealed class CslStyleStore : ICslStyleStore
 
             if (!style.Value.Enabled)
             {
-                return Result<CslSettings>.Failure(AppErrorCodes.ValidationFailed, "Disabled CSL styles cannot become the default style.");
+                return Result<CslSettings>.Failure(AppErrorCodes.ValidationFailed,
+                    "Disabled CSL styles cannot become the default style.");
             }
         }
 
         try
         {
-            var updatedAt = _clock.UtcNow.ToUniversalTime();
-            await using var connection = _connectionFactory.CreateConnection();
+            DateTimeOffset updatedAt = _clock.UtcNow.ToUniversalTime();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync("delete from csl_settings;");
             await connection.ExecuteAsync(
@@ -360,9 +385,11 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store"))
         {
-            return Result<CslSettings>.Failure(AppErrorCodes.DatabaseError, $"CSL settings save failed: {exception.Message}");
+            return Result<CslSettings>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL settings save failed: {exception.Message}");
         }
     }
 
@@ -373,7 +400,7 @@ public sealed class CslStyleStore : ICslStyleStore
             return Result<string>.Failure(AppErrorCodes.ValidationFailed, "CSL style id is required.");
         }
 
-        var normalized = styleId.Trim();
+        string normalized = styleId.Trim();
         if (normalized.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
             || normalized.Contains(Path.DirectorySeparatorChar)
             || normalized.Contains(Path.AltDirectorySeparatorChar)
@@ -381,30 +408,34 @@ public sealed class CslStyleStore : ICslStyleStore
             || normalized is "." or ".."
             || normalized.Contains("..", StringComparison.Ordinal))
         {
-            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "CSL style id contains an invalid path segment.");
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                "CSL style id contains an invalid path segment.");
         }
 
-        var installedRoot = Path.GetFullPath(_installedRoot).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var candidate = Path.GetFullPath(Path.Combine(installedRoot, $"{normalized}.csl"));
+        string installedRoot = Path.GetFullPath(_installedRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string candidate = Path.GetFullPath(Path.Combine(installedRoot, $"{normalized}.csl"));
         if (!candidate.StartsWith(installedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
         {
-            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "CSL style id resolves outside the installed style directory.");
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                "CSL style id resolves outside the installed style directory.");
         }
 
         return Result<string>.Success(candidate);
     }
 
-    private CslStyle ParseMetadata(string styleId, string displayName, string? sourceUrl, string sourceKind, string contentXml)
+    private CslStyle ParseMetadata(string styleId, string displayName, string? sourceUrl, string sourceKind,
+        string contentXml)
     {
-        var now = _clock.UtcNow.ToUniversalTime();
+        DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
         try
         {
-            var document = XDocument.Parse(contentXml);
-            var style = document.Root;
-            var ns = style?.Name.Namespace ?? XNamespace.None;
-            var info = style?.Element(ns + "info");
-            var title = info?.Element(ns + "title")?.Value?.Trim();
-            var locale = style?.Attribute("default-locale")?.Value?.Trim();
+            XDocument document = XDocument.Parse(contentXml);
+            XElement? style = document.Root;
+            XNamespace ns = style?.Name.Namespace ?? XNamespace.None;
+            XElement? info = style?.Element(ns + "info");
+            string? title = info?.Element(ns + "title")?.Value?.Trim();
+            string? locale = style?.Attribute("default-locale")?.Value?.Trim();
             return new CslStyle(
                 styleId.Trim(),
                 string.IsNullOrWhiteSpace(title) ? displayName.Trim() : title,
@@ -417,7 +448,8 @@ public sealed class CslStyleStore : ICslStyleStore
                 true,
                 false);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store", "complete-install-operation"))
         {
             return new CslStyle(
                 styleId.Trim(),
@@ -435,11 +467,12 @@ public sealed class CslStyleStore : ICslStyleStore
 
     private static string ComputeHash(string content)
     {
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
+        byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(content));
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    private async Task<BlockingOperationId?> TryStartInstallOperationAsync(string? styleId, CancellationToken cancellationToken)
+    private async Task<BlockingOperationId?> TryStartInstallOperationAsync(string? styleId,
+        CancellationToken cancellationToken)
     {
         if (_blockingOperations is null)
         {
@@ -448,17 +481,18 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            var started = await _blockingOperations.StartAsync(
+            Result<BlockingOperation> started = await _blockingOperations.StartAsync(
                 BlockingOperationTypes.CslStyleInstall,
                 BlockingOperationScopeTypes.CslStyle,
                 string.IsNullOrWhiteSpace(styleId) ? null : styleId.Trim(),
-                canCancel: false,
-                progressLabel: "Installing CSL style.",
+                false,
+                "Installing CSL style.",
                 nextActions: ["Retry style installation", "Choose a different style source"],
                 cancellationToken: cancellationToken);
             return started.IsSuccess ? started.Value.OperationId : null;
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store", "fail-install-operation"))
         {
             return null;
         }
@@ -482,8 +516,10 @@ public sealed class CslStyleStore : ICslStyleStore
                 Array.Empty<string>(),
                 cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store", "complete-install-operation"))
         {
+            _ = exception;
         }
     }
 
@@ -508,8 +544,10 @@ public sealed class CslStyleStore : ICslStyleStore
                 ["Retry style installation", "Keep the existing default style"],
                 cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.csl-style-store", "fail-install-operation"))
         {
+            _ = exception;
         }
     }
 
@@ -527,7 +565,8 @@ public sealed class CslStyleStore : ICslStyleStore
         public int Deleted { get; set; }
 
         public CslStyle ToModel()
-            => new(
+        {
+            return new CslStyle(
                 StyleId,
                 DisplayName,
                 DefaultLocale,
@@ -538,6 +577,7 @@ public sealed class CslStyleStore : ICslStyleStore
                 DateTimeOffset.Parse(UpdatedAt),
                 Enabled != 0,
                 Deleted != 0);
+        }
     }
 
     private sealed class SettingsRow
@@ -546,6 +586,9 @@ public sealed class CslStyleStore : ICslStyleStore
         public string? Locale { get; set; }
         public string UpdatedAt { get; set; } = "";
 
-        public CslSettings ToModel() => new(DefaultStyleId, Locale, DateTimeOffset.Parse(UpdatedAt));
+        public CslSettings ToModel()
+        {
+            return new CslSettings(DefaultStyleId, Locale, DateTimeOffset.Parse(UpdatedAt));
+        }
     }
 }

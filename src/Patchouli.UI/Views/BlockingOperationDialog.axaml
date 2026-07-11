@@ -15,25 +15,36 @@
         WindowDecorations="Full"
         Background="{DynamicResource SurfaceBrush}">
 
-  <Border Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
+  <Border Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
+          Background="{DynamicResource SurfaceBrush}">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="14">
       <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-        <TextBlock Text="{Binding StatusMessage}" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
-        <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12" Padding="10,3">
-          <TextBlock Text="{Binding OperationState}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <TextBlock Text="{Binding StatusMessage}" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                   TextWrapping="Wrap" VerticalAlignment="Center" />
+        <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12"
+                Padding="10,3">
+          <TextBlock Text="{Binding OperationState}" FontSize="12" FontWeight="SemiBold"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </Border>
       </Grid>
 
-      <ProgressBar Grid.Row="1" Maximum="100" IsIndeterminate="{Binding IsIndeterminate}" Value="{Binding ProgressValue}" Height="6" />
+      <ProgressBar Grid.Row="1" Maximum="100" IsIndeterminate="{Binding IsIndeterminate}"
+                   Value="{Binding ProgressValue}" Height="6" />
 
-      <Border Grid.Row="2" Height="150" Padding="8" IsVisible="{Binding IsDetailsVisible}" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4">
-        <TextBox Name="LogTextBox" Text="{Binding DetailedResult}" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas, Courier New, monospace" FontSize="12" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" />
+      <Border Grid.Row="2" Height="150" Padding="8" IsVisible="{Binding IsDetailsVisible}"
+              Background="{DynamicResource SurfaceContainerLowestBrush}"
+              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4">
+        <TextBox Name="LogTextBox" Text="{Binding DetailedResult}" IsReadOnly="True" AcceptsReturn="True"
+                 TextWrapping="NoWrap" FontFamily="Consolas, Courier New, monospace" FontSize="12"
+                 Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto" />
       </Border>
 
       <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
         <Button Content="{Binding DetailsToggleText}" Command="{Binding ToggleDetailsCommand}" MinWidth="128" />
         <Button Content="取消" Command="{Binding CancelCommand}" IsVisible="{Binding CanCancel}" MinWidth="96" />
-        <Button Classes="Primary" Content="关闭" Command="{Binding ConfirmCommand}" IsVisible="{Binding IsTerminal}" MinWidth="96" />
+        <Button Classes="Primary" Content="关闭" Command="{Binding ConfirmCommand}" IsVisible="{Binding IsTerminal}"
+                MinWidth="96" />
       </StackPanel>
     </Grid>
   </Border>

@@ -32,42 +32,44 @@ public sealed class CslRenderer : ICslRenderer
         _hayagriva = hayagriva;
     }
 
-    public async Task<Result<CslRenderResult>> RenderAsync(CslRenderRequest request, CancellationToken cancellationToken = default)
+    public async Task<Result<CslRenderResult>> RenderAsync(CslRenderRequest request,
+        CancellationToken cancellationToken = default)
     {
         if (request.ItemIds.Count == 0)
         {
-            return Result<CslRenderResult>.Failure(AppErrorCodes.ValidationFailed, "At least one item id is required for CSL rendering.");
+            return Result<CslRenderResult>.Failure(AppErrorCodes.ValidationFailed,
+                "At least one item id is required for CSL rendering.");
         }
 
-        var style = await ResolveStyleAsync(request.StyleId, cancellationToken);
+        Result<CslStyle> style = await ResolveStyleAsync(request.StyleId, cancellationToken);
         if (style.IsFailure)
         {
             return Result<CslRenderResult>.Failure(style.ErrorCode!, style.ErrorMessage!);
         }
 
-        var styleContent = await _styleStore.GetStyleContentAsync(style.Value.StyleId, cancellationToken);
+        Result<string> styleContent = await _styleStore.GetStyleContentAsync(style.Value.StyleId, cancellationToken);
         if (styleContent.IsFailure)
         {
             return Result<CslRenderResult>.Failure(styleContent.ErrorCode!, styleContent.ErrorMessage!);
         }
 
-        var locale = await ResolveLocaleAsync(request.Locale, style.Value, cancellationToken);
+        Result<string?> locale = await ResolveLocaleAsync(request.Locale, style.Value, cancellationToken);
         if (locale.IsFailure)
         {
             return Result<CslRenderResult>.Failure(locale.ErrorCode!, locale.ErrorMessage!);
         }
 
-        var warnings = new List<string>();
-        var mappedItems = new List<Dictionary<string, object?>>();
-        foreach (var itemId in request.ItemIds)
+        List<string> warnings = new();
+        List<Dictionary<string, object?>> mappedItems = new();
+        foreach (ItemId itemId in request.ItemIds)
         {
-            var item = await _itemService.GetItemAsync(itemId, cancellationToken);
+            Result<ItemMetadata> item = await _itemService.GetItemAsync(itemId, cancellationToken);
             if (item.IsFailure)
             {
                 return Result<CslRenderResult>.Failure(item.ErrorCode!, item.ErrorMessage!);
             }
 
-            var mapped = await _itemMapper.MapAsync(item.Value, cancellationToken);
+            Result<CslMappedItem> mapped = await _itemMapper.MapAsync(item.Value, cancellationToken);
             if (mapped.IsFailure)
             {
                 return Result<CslRenderResult>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
@@ -76,7 +78,7 @@ public sealed class CslRenderer : ICslRenderer
             mappedItems.Add(HayagrivaCslJsonAdapter.ToItem(mapped.Value, warnings));
         }
 
-        var rendered = await _hayagriva.RenderAsync(
+        Result<HayagrivaRenderResponse> rendered = await _hayagriva.RenderAsync(
             new HayagrivaRenderRequest(style.Value.StyleId, styleContent.Value, locale.Value, mappedItems),
             cancellationToken);
         if (rendered.IsFailure)
@@ -84,7 +86,8 @@ public sealed class CslRenderer : ICslRenderer
             return Result<CslRenderResult>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
         }
 
-        if (string.IsNullOrWhiteSpace(rendered.Value.RenderedText) || string.IsNullOrWhiteSpace(rendered.Value.RenderedHtml))
+        if (string.IsNullOrWhiteSpace(rendered.Value.RenderedText) ||
+            string.IsNullOrWhiteSpace(rendered.Value.RenderedHtml))
         {
             return Result<CslRenderResult>.Failure("csl_render_failed", "CSL renderer produced an empty bibliography.");
         }
@@ -101,14 +104,15 @@ public sealed class CslRenderer : ICslRenderer
             rendered.Value.Errors));
     }
 
-    private async Task<Result<CslStyle>> ResolveStyleAsync(string? requestedStyleId, CancellationToken cancellationToken)
+    private async Task<Result<CslStyle>> ResolveStyleAsync(string? requestedStyleId,
+        CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(requestedStyleId))
         {
             return await _styleStore.GetStyleAsync(requestedStyleId, cancellationToken);
         }
 
-        var settings = await _styleStore.GetSettingsAsync(cancellationToken);
+        Result<CslSettings> settings = await _styleStore.GetSettingsAsync(cancellationToken);
         if (settings.IsFailure)
         {
             return Result<CslStyle>.Failure(settings.ErrorCode!, settings.ErrorMessage!);
@@ -119,26 +123,27 @@ public sealed class CslRenderer : ICslRenderer
             return await _styleStore.GetStyleAsync(settings.Value.DefaultStyleId, cancellationToken);
         }
 
-        var styles = await _styleStore.ListInstalledStylesAsync(cancellationToken);
+        Result<IReadOnlyList<CslStyle>> styles = await _styleStore.ListInstalledStylesAsync(cancellationToken);
         if (styles.IsFailure)
         {
             return Result<CslStyle>.Failure(styles.ErrorCode!, styles.ErrorMessage!);
         }
 
-        var firstEnabled = styles.Value.FirstOrDefault(style => style.Enabled);
+        CslStyle? firstEnabled = styles.Value.FirstOrDefault(style => style.Enabled);
         return firstEnabled is null
             ? Result<CslStyle>.Failure(AppErrorCodes.NotFound, "No installed CSL style is available.")
             : Result<CslStyle>.Success(firstEnabled);
     }
 
-    private async Task<Result<string?>> ResolveLocaleAsync(string? requestedLocale, CslStyle style, CancellationToken cancellationToken)
+    private async Task<Result<string?>> ResolveLocaleAsync(string? requestedLocale, CslStyle style,
+        CancellationToken cancellationToken)
     {
         if (!string.IsNullOrWhiteSpace(requestedLocale))
         {
             return Result<string?>.Success(requestedLocale.Trim());
         }
 
-        var settings = await _styleStore.GetSettingsAsync(cancellationToken);
+        Result<CslSettings> settings = await _styleStore.GetSettingsAsync(cancellationToken);
         if (settings.IsFailure)
         {
             return Result<string?>.Failure(settings.ErrorCode!, settings.ErrorMessage!);
@@ -151,5 +156,4 @@ public sealed class CslRenderer : ICslRenderer
 
         return Result<string?>.Success(style.DefaultLocale);
     }
-
 }

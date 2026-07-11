@@ -28,7 +28,11 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
         get => _isDirty;
         private set
         {
-            if (_isDirty == value) return;
+            if (_isDirty == value)
+            {
+                return;
+            }
+
             _isDirty = value;
             Raise();
         }
@@ -39,7 +43,11 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
         get => _status;
         private set
         {
-            if (_status == value) return;
+            if (_status == value)
+            {
+                return;
+            }
+
             _status = value;
             Raise();
         }
@@ -48,10 +56,10 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
     public async Task SaveAsync()
     {
         Status = "正在保存...";
-        var previous = _main.AppOptions;
+        PatchouliAppSettings previous = _main.AppOptions;
         try
         {
-            var settings = new MetadataLookupAppSettings(Sources
+            MetadataLookupAppSettings settings = new(Sources
                 .Select(source => new MetadataSourcePreference(source.SourceId, source.Enabled))
                 .ToArray());
             _main.UpdateAppOptions(_main.AppOptions with { MetadataLookup = settings });
@@ -68,8 +76,10 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
             {
                 // Keep the in-memory settings consistent even when the file remains unwritable.
             }
+
             Status = $"保存失败：{ex.Message}";
         }
+
         await Task.CompletedTask;
     }
 
@@ -88,9 +98,13 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
 
     internal void Move(MetadataSourceSettingsRowViewModel source, int offset)
     {
-        var current = Sources.IndexOf(source);
-        var destination = current + offset;
-        if (current < 0 || destination < 0 || destination >= Sources.Count) return;
+        int current = Sources.IndexOf(source);
+        int destination = current + offset;
+        if (current < 0 || destination < 0 || destination >= Sources.Count)
+        {
+            return;
+        }
+
         Sources.Move(current, destination);
         RefreshPositions();
         MarkDirty();
@@ -99,13 +113,17 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
     private void Load(MetadataLookupAppSettings settings, bool dirty)
     {
         Sources.Clear();
-        foreach (var preference in MetadataLookupAppSettings.MergeWithDefaults(settings.Sources).Sources)
+        foreach (MetadataSourcePreference preference in MetadataLookupAppSettings.MergeWithDefaults(settings.Sources)
+                     .Sources)
         {
-            var descriptor = Definitions.TryGetValue(preference.SourceId, out var definition)
-                ? definition
-                : new MetadataSourceDescriptor(preference.SourceId, "其他标识符来源");
-            Sources.Add(new MetadataSourceSettingsRowViewModel(this, preference.SourceId, descriptor.Name, descriptor.Description, preference.Enabled));
+            MetadataSourceDescriptor descriptor =
+                Definitions.TryGetValue(preference.SourceId, out MetadataSourceDescriptor? definition)
+                    ? definition
+                    : new MetadataSourceDescriptor(preference.SourceId, "其他标识符来源");
+            Sources.Add(new MetadataSourceSettingsRowViewModel(this, preference.SourceId, descriptor.Name,
+                descriptor.Description, preference.Enabled));
         }
+
         RefreshPositions();
         IsDirty = dirty;
         Status = dirty ? "有未保存的更改" : "已保存";
@@ -113,8 +131,10 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
 
     private void RefreshPositions()
     {
-        for (var index = 0; index < Sources.Count; index++)
+        for (int index = 0; index < Sources.Count; index++)
+        {
             Sources[index].SetPosition(index == 0, index == Sources.Count - 1);
+        }
     }
 
     private sealed record MetadataSourceDescriptor(string Name, string Description);
@@ -148,7 +168,8 @@ public sealed class MetadataSourceSettingsRowViewModel : ViewModelBase
     private bool _isFirst;
     private bool _isLast;
 
-    internal MetadataSourceSettingsRowViewModel(MetadataLookupSettingsViewModel parent, string sourceId, string name, string description, bool enabled)
+    internal MetadataSourceSettingsRowViewModel(MetadataLookupSettingsViewModel parent, string sourceId, string name,
+        string description, bool enabled)
     {
         _parent = parent;
         SourceId = sourceId;
@@ -170,7 +191,11 @@ public sealed class MetadataSourceSettingsRowViewModel : ViewModelBase
         get => _enabled;
         set
         {
-            if (_enabled == value) return;
+            if (_enabled == value)
+            {
+                return;
+            }
+
             _enabled = value;
             Raise();
             _parent.MarkDirty();

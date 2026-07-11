@@ -8,7 +8,7 @@ public sealed class ResultGenericTests
     [Fact]
     public void Success_result_can_return_value()
     {
-        var result = Result<string>.Success("source text");
+        Result<string> result = Result<string>.Success("source text");
 
         result.IsSuccess.Should().BeTrue();
         result.IsFailure.Should().BeFalse();
@@ -20,7 +20,7 @@ public sealed class ResultGenericTests
     [Fact]
     public void Failure_result_contains_error_code_and_message()
     {
-        var result = Result<int>.Failure(AppErrorCodes.ValidationFailed, "The page number is invalid.");
+        Result<int> result = Result<int>.Failure(AppErrorCodes.ValidationFailed, "The page number is invalid.");
 
         result.IsSuccess.Should().BeFalse();
         result.IsFailure.Should().BeTrue();
@@ -31,7 +31,7 @@ public sealed class ResultGenericTests
     [Fact]
     public void Failure_result_throws_when_value_is_accessed()
     {
-        var result = Result<int>.Failure(AppErrorCodes.NotFound, "The requested page was not found.");
+        Result<int> result = Result<int>.Failure(AppErrorCodes.NotFound, "The requested page was not found.");
 
         Action action = () => _ = result.Value;
 

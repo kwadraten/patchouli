@@ -17,7 +17,7 @@ public sealed class WorkspaceManager
         bool isClosable,
         Func<ViewModelBase> contentFactory)
     {
-        var tab = Find(tabId);
+        WorkspaceTabViewModel? tab = Find(tabId);
         if (tab is null)
         {
             tab = new WorkspaceTabViewModel(
@@ -37,8 +37,11 @@ public sealed class WorkspaceManager
 
     public bool Activate(string tabId)
     {
-        var tab = Find(tabId);
-        if (tab is null) return false;
+        WorkspaceTabViewModel? tab = Find(tabId);
+        if (tab is null)
+        {
+            return false;
+        }
 
         Layout.ActiveTab = tab;
         return true;
@@ -46,8 +49,11 @@ public sealed class WorkspaceManager
 
     public bool ActivateKind(WorkspaceTabKind kind)
     {
-        var tab = FindKind(kind);
-        if (tab is null) return false;
+        WorkspaceTabViewModel? tab = FindKind(kind);
+        if (tab is null)
+        {
+            return false;
+        }
 
         Layout.ActiveTab = tab;
         return true;
@@ -55,10 +61,13 @@ public sealed class WorkspaceManager
 
     public bool Close(string tabId)
     {
-        var tab = Find(tabId);
-        if (tab is null || !tab.IsClosable) return false;
+        WorkspaceTabViewModel? tab = Find(tabId);
+        if (tab is null || !tab.IsClosable)
+        {
+            return false;
+        }
 
-        var wasActive = Layout.ActiveTab == tab;
+        bool wasActive = Layout.ActiveTab == tab;
         Layout.Tabs.Remove(tab);
         Cleanup(tab);
 
@@ -72,21 +81,28 @@ public sealed class WorkspaceManager
 
     public int CloseKind(WorkspaceTabKind kind)
     {
-        var tabs = Layout.Tabs.Where(tab => tab.Kind == kind).ToList();
-        var closed = 0;
-        foreach (var tab in tabs)
+        List<WorkspaceTabViewModel> tabs = Layout.Tabs.Where(tab => tab.Kind == kind).ToList();
+        int closed = 0;
+        foreach (WorkspaceTabViewModel tab in tabs)
         {
-            if (Close(tab.TabId)) closed++;
+            if (Close(tab.TabId))
+            {
+                closed++;
+            }
         }
 
         return closed;
     }
 
-    public WorkspaceTabViewModel? Find(string tabId) =>
-        Layout.Tabs.FirstOrDefault(tab => tab.TabId == tabId);
+    public WorkspaceTabViewModel? Find(string tabId)
+    {
+        return Layout.Tabs.FirstOrDefault(tab => tab.TabId == tabId);
+    }
 
-    public WorkspaceTabViewModel? FindKind(WorkspaceTabKind kind) =>
-        Layout.Tabs.FirstOrDefault(tab => tab.Kind == kind);
+    public WorkspaceTabViewModel? FindKind(WorkspaceTabKind kind)
+    {
+        return Layout.Tabs.FirstOrDefault(tab => tab.Kind == kind);
+    }
 
     private Task CloseAsync(string tabId)
     {

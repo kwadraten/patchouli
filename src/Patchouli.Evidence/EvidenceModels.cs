@@ -102,7 +102,7 @@ public static class EvidenceReferenceCodec
             return Result<string>.Failure(AppErrorCodes.ValidationFailed, "Evidence revision ids are required.");
         }
 
-        var payload = new Payload(
+        Payload payload = new(
             1,
             reference.LibraryId.ToString(),
             reference.DocumentInstanceId.ToString(),
@@ -112,7 +112,7 @@ public static class EvidenceReferenceCodec
             reference.BboxRevisionId,
             reference.LayoutRevisionId.ToString(),
             reference.SnapshotId);
-        var json = JsonSerializer.Serialize(payload);
+        string json = JsonSerializer.Serialize(payload);
         return Result<string>.Success(Prefix + Base64UrlEncode(Encoding.UTF8.GetBytes(json)));
     }
 
@@ -125,16 +125,16 @@ public static class EvidenceReferenceCodec
 
         try
         {
-            var json = Encoding.UTF8.GetString(Base64UrlDecode(evidenceRefId[Prefix.Length..]));
-            var payload = JsonSerializer.Deserialize<Payload>(json);
+            string json = Encoding.UTF8.GetString(Base64UrlDecode(evidenceRefId[Prefix.Length..]));
+            Payload? payload = JsonSerializer.Deserialize<Payload>(json);
             if (payload is null || payload.V != 1
-                || string.IsNullOrWhiteSpace(payload.LibraryId)
-                || string.IsNullOrWhiteSpace(payload.DocumentInstanceId)
-                || string.IsNullOrWhiteSpace(payload.PageId)
-                || string.IsNullOrWhiteSpace(payload.UnitId)
-                || string.IsNullOrWhiteSpace(payload.TextRevisionId)
-                || string.IsNullOrWhiteSpace(payload.BboxRevisionId)
-                || string.IsNullOrWhiteSpace(payload.LayoutRevisionId))
+                                || string.IsNullOrWhiteSpace(payload.LibraryId)
+                                || string.IsNullOrWhiteSpace(payload.DocumentInstanceId)
+                                || string.IsNullOrWhiteSpace(payload.PageId)
+                                || string.IsNullOrWhiteSpace(payload.UnitId)
+                                || string.IsNullOrWhiteSpace(payload.TextRevisionId)
+                                || string.IsNullOrWhiteSpace(payload.BboxRevisionId)
+                                || string.IsNullOrWhiteSpace(payload.LayoutRevisionId))
             {
                 return Invalid("Evidence reference payload is incomplete.");
             }
@@ -156,14 +156,18 @@ public static class EvidenceReferenceCodec
     }
 
     private static Result<EvidenceReference> Invalid(string message)
-        => Result<EvidenceReference>.Failure(AppErrorCodes.InvalidEvidenceReference, message);
+    {
+        return Result<EvidenceReference>.Failure(AppErrorCodes.InvalidEvidenceReference, message);
+    }
 
     private static string Base64UrlEncode(byte[] bytes)
-        => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    {
+        return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
 
     private static byte[] Base64UrlDecode(string value)
     {
-        var padded = value.Replace('-', '+').Replace('_', '/');
+        string padded = value.Replace('-', '+').Replace('_', '/');
         padded += new string('=', (4 - padded.Length % 4) % 4);
         return Convert.FromBase64String(padded);
     }

@@ -44,7 +44,8 @@ public interface IBlockingOperationService
         IReadOnlyList<string>? nextActions = null,
         CancellationToken cancellationToken = default);
 
-    Task<Result<BlockingOperation>> GetAsync(BlockingOperationId operationId, CancellationToken cancellationToken = default);
+    Task<Result<BlockingOperation>> GetAsync(BlockingOperationId operationId,
+        CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<BlockingOperation>>> ListAsync(
         string? status = null,

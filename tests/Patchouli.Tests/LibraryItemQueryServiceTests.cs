@@ -1,6 +1,10 @@
 using FluentAssertions;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
@@ -16,22 +20,28 @@ public sealed class LibraryItemQueryServiceTests
     [Fact]
     public async Task Rows_include_ocr_index_status_page_count_and_linked_file_name()
     {
-        await using var context = await CreateContextAsync();
-        var filePath = Path.Combine(Path.GetTempPath(), $"patchouli-row-{Guid.NewGuid():N}.pdf");
+        await using TestContext context = await CreateContextAsync();
+        string filePath = Path.Combine(Path.GetTempPath(), $"patchouli-row-{Guid.NewGuid():N}.pdf");
         await File.WriteAllTextAsync(filePath, "fake pdf payload");
 
         try
         {
-            var item = await context.Items.CreateItemAsync("book", "Row Test");
-            var asset = await context.Files.RegisterFileAsync(filePath);
-            var document = await context.Documents.AttachDocumentInstanceAsync(item.Value.ItemId, asset.Value.FileAssetId, DocumentInstanceType.PrimaryScan, makePrimary: true);
-            await context.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
-            var revision = await context.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId, LayoutRevisionSource.Mock, makeCurrent: true);
-            await context.Layout.AddNodeAsync(revision.Value.LayoutRevisionId, (await context.Pages.ListPagesAsync(document.Value.DocumentInstanceId)).Value.Single().PageId, null, LayoutNodeType.Paragraph, null, "searchable text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
+            Result<ItemMetadata> item = await context.Items.CreateItemAsync("book", "Row Test");
+            Result<FileAsset> asset = await context.Files.RegisterFileAsync(filePath);
+            Result<DocumentInstance> document = await context.Documents.AttachDocumentInstanceAsync(item.Value.ItemId,
+                asset.Value.FileAssetId, DocumentInstanceType.PrimaryScan, makePrimary: true);
+            await context.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0,
+                CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
+            Result<LayoutRevision> revision =
+                await context.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId,
+                    LayoutRevisionSource.Mock, true);
+            await context.Layout.AddNodeAsync(revision.Value.LayoutRevisionId,
+                (await context.Pages.ListPagesAsync(document.Value.DocumentInstanceId)).Value.Single().PageId, null,
+                LayoutNodeType.Paragraph, null, "searchable text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
             await context.SearchUnits.RebuildForDocumentInstanceAsync(document.Value.DocumentInstanceId);
             await context.SearchIndex.RebuildFtsForDocumentInstanceAsync(document.Value.DocumentInstanceId);
 
-            var rows = await context.Query.ListRowsAsync();
+            Result<IReadOnlyList<LibraryItemRow>> rows = await context.Query.ListRowsAsync();
 
             rows.IsSuccess.Should().BeTrue();
             rows.Value.Should().ContainSingle();
@@ -48,10 +58,10 @@ public sealed class LibraryItemQueryServiceTests
 
     private static async Task<TestContext> CreateContextAsync()
     {
-        var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var library = new LibraryIdentityService(database.ConnectionFactory, clock);
+        LibraryIdentityService library = new(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("Row Test");
         return new TestContext(
             database,
@@ -67,7 +77,9 @@ public sealed class LibraryItemQueryServiceTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(TemporarySqliteDatabase database, ItemService items, FileAssetService files, DocumentInstanceService documents, PageService pages, LayoutTreeService layout, SearchUnitBuilder searchUnits, SearchIndexRebuilder searchIndex, LibraryItemQueryService query)
+        public TestContext(TemporarySqliteDatabase database, ItemService items, FileAssetService files,
+            DocumentInstanceService documents, PageService pages, LayoutTreeService layout,
+            SearchUnitBuilder searchUnits, SearchIndexRebuilder searchIndex, LibraryItemQueryService query)
         {
             Database = database;
             Items = items;
@@ -90,6 +102,9 @@ public sealed class LibraryItemQueryServiceTests
         public SearchIndexRebuilder SearchIndex { get; }
         public LibraryItemQueryService Query { get; }
 
-        public ValueTask DisposeAsync() => Database.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return Database.DisposeAsync();
+        }
     }
 }

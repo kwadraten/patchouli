@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.MinerU;
@@ -11,18 +12,18 @@ public sealed class MinerUResultDownloaderTests
     [Fact]
     public async Task UploadAndExtract_uses_blake3_data_id_instead_of_long_file_name()
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
-        var longFileName = $"[031807404]{new string('程', 140)}.pdf";
-        var pdfPath = Path.Combine(tempDir, longFileName);
+        string longFileName = $"[031807404]{new string('程', 140)}.pdf";
+        string pdfPath = Path.Combine(tempDir, longFileName);
         await File.WriteAllBytesAsync(pdfPath, [1, 2, 3, 4]);
-        var client = new CapturingMinerUClient();
+        CapturingMinerUClient client = new();
 
         try
         {
-            var downloader = new MinerUResultDownloader(client);
+            MinerUResultDownloader downloader = new(client);
 
-            var result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
+            Result<MinerUDownloadedResult> result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
 
             result.IsSuccess.Should().BeTrue();
             client.UploadRequest.Should().NotBeNull();
@@ -32,46 +33,47 @@ public sealed class MinerUResultDownloaderTests
         }
         finally
         {
-            Directory.Delete(tempDir, recursive: true);
+            Directory.Delete(tempDir, true);
         }
     }
 
     [Fact]
     public async Task UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded()
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-split-{Guid.NewGuid():N}");
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-split-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
-        var pdfPath = Path.Combine(tempDir, "three-pages.pdf");
+        string pdfPath = Path.Combine(tempDir, "three-pages.pdf");
         File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
-        var client = new CapturingMinerUClient();
+        CapturingMinerUClient client = new();
 
         try
         {
-            var downloader = new MinerUResultDownloader(
+            MinerUResultDownloader downloader = new(
                 client,
-                new MinerUUploadLimits(maxPagesPerFile: 1, maxBytesPerFile: 200 * 1024 * 1024));
+                new MinerUUploadLimits(1, 200 * 1024 * 1024));
 
-            var result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
+            Result<MinerUDownloadedResult> result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
 
             result.IsSuccess.Should().BeTrue();
             client.UploadRequests.Should().HaveCount(3);
             client.UploadedLocalPaths.Should().HaveCount(3);
             client.UploadedLocalPaths.Should().OnlyContain(path => path != pdfPath && File.Exists(path));
-            client.UploadRequests.Select(r => r.FileName).Should().OnlyContain(name => name.StartsWith("three-pages.part-", StringComparison.Ordinal));
+            client.UploadRequests.Select(r => r.FileName).Should().OnlyContain(name =>
+                name.StartsWith("three-pages.part-", StringComparison.Ordinal));
         }
         finally
         {
-            Directory.Delete(tempDir, recursive: true);
+            Directory.Delete(tempDir, true);
         }
     }
 
     [Fact]
     public void PlanChunks_obeys_estimated_file_size_limit_as_well_as_page_limit()
     {
-        var chunks = MinerUPdfChunkPlanner.PlanChunks(
-            pageCount: 100,
-            sourceSizeBytes: 260L * 1024 * 1024,
-            limits: new MinerUUploadLimits(maxPagesPerFile: 200, maxBytesPerFile: 200L * 1024 * 1024));
+        IReadOnlyList<MinerUPdfChunk> chunks = MinerUPdfChunkPlanner.PlanChunks(
+            100,
+            260L * 1024 * 1024,
+            new MinerUUploadLimits(200, 200L * 1024 * 1024));
 
         chunks.Should().HaveCountGreaterThan(1);
         chunks.Should().OnlyContain(chunk => chunk.PageCount <= 200);
@@ -82,62 +84,65 @@ public sealed class MinerUResultDownloaderTests
     [Fact]
     public async Task UploadAndExtract_merges_split_content_lists_with_original_page_indexes()
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-merge-{Guid.NewGuid():N}");
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-merge-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
-        var pdfPath = Path.Combine(tempDir, "three-pages.pdf");
+        string pdfPath = Path.Combine(tempDir, "three-pages.pdf");
         File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
-        var client = new CapturingMinerUClient { WriteContentList = true };
+        CapturingMinerUClient client = new() { WriteContentList = true };
 
         try
         {
-            var downloader = new MinerUResultDownloader(
+            MinerUResultDownloader downloader = new(
                 client,
-                new MinerUUploadLimits(maxPagesPerFile: 1, maxBytesPerFile: 200 * 1024 * 1024));
+                new MinerUUploadLimits(1, 200 * 1024 * 1024));
 
-            var result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
+            Result<MinerUDownloadedResult> result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
 
             result.IsSuccess.Should().BeTrue();
-            using var archive = System.IO.Compression.ZipFile.OpenRead(result.Value.ZipPath);
-            var entry = archive.Entries.Single(e => e.Name.EndsWith("_content_list.json", StringComparison.OrdinalIgnoreCase));
-            using var reader = new StreamReader(entry.Open());
-            var items = JsonNode.Parse(await reader.ReadToEndAsync())!.AsArray();
+            using ZipArchive archive = ZipFile.OpenRead(result.Value.ZipPath);
+            ZipArchiveEntry entry = archive.Entries.Single(e =>
+                e.Name.EndsWith("_content_list.json", StringComparison.OrdinalIgnoreCase));
+            using StreamReader reader = new(entry.Open());
+            JsonArray items = JsonNode.Parse(await reader.ReadToEndAsync())!.AsArray();
             items.Select(item => item!["page_idx"]!.GetValue<int>()).Should().Equal(0, 1, 2);
         }
         finally
         {
-            Directory.Delete(tempDir, recursive: true);
+            Directory.Delete(tempDir, true);
         }
     }
 
     [Fact]
     public async Task UploadAndExtract_merges_split_content_list_v2_page_arrays()
     {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-merge-v2-{Guid.NewGuid():N}");
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-merge-v2-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
-        var pdfPath = Path.Combine(tempDir, "three-pages.pdf");
+        string pdfPath = Path.Combine(tempDir, "three-pages.pdf");
         File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
-        var client = new CapturingMinerUClient { WriteContentListV2 = true };
+        CapturingMinerUClient client = new() { WriteContentListV2 = true };
 
         try
         {
-            var downloader = new MinerUResultDownloader(
+            MinerUResultDownloader downloader = new(
                 client,
-                new MinerUUploadLimits(maxPagesPerFile: 1, maxBytesPerFile: 200 * 1024 * 1024));
+                new MinerUUploadLimits(1, 200 * 1024 * 1024));
 
-            var result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
+            Result<MinerUDownloadedResult> result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
 
             result.IsSuccess.Should().BeTrue();
-            using var archive = System.IO.Compression.ZipFile.OpenRead(result.Value.ZipPath);
-            var entry = archive.Entries.Single(e => e.Name.EndsWith("_content_list_v2.json", StringComparison.OrdinalIgnoreCase));
-            using var reader = new StreamReader(entry.Open());
-            var pages = JsonNode.Parse(await reader.ReadToEndAsync())!.AsArray();
+            using ZipArchive archive = ZipFile.OpenRead(result.Value.ZipPath);
+            ZipArchiveEntry entry = archive.Entries.Single(e =>
+                e.Name.EndsWith("_content_list_v2.json", StringComparison.OrdinalIgnoreCase));
+            using StreamReader reader = new(entry.Open());
+            JsonArray pages = JsonNode.Parse(await reader.ReadToEndAsync())!.AsArray();
             pages.Should().HaveCount(3);
-            pages.Select(page => page!.AsArray()[0]!["content"]!["paragraph_content"]![0]!["content"]!.GetValue<string>())
+            pages.Select(page =>
+                    page!.AsArray()[0]!["content"]!["paragraph_content"]![0]!["content"]!.GetValue<string>())
                 .Should().Equal("chunk 1", "chunk 2", "chunk 3");
         }
         finally
         {
-            Directory.Delete(tempDir, recursive: true);
+            Directory.Delete(tempDir, true);
         }
     }
 
@@ -157,18 +162,25 @@ public sealed class MinerUResultDownloaderTests
             UploadRequest = files.Single();
             UploadRequests.AddRange(files);
             return Task.FromResult(Result<MinerUUploadBatch>.Success(
-                new MinerUUploadBatch("batch-1", [new MinerUFileUploadUrl(UploadRequest.FileName, "https://upload.example.test/file", UploadRequest.DataId)])));
+                new MinerUUploadBatch("batch-1",
+                [
+                    new MinerUFileUploadUrl(UploadRequest.FileName, "https://upload.example.test/file",
+                        UploadRequest.DataId)
+                ])));
         }
 
-        public Task<Result> UploadFileAsync(string uploadUrl, string localPath, CancellationToken cancellationToken = default)
+        public Task<Result> UploadFileAsync(string uploadUrl, string localPath,
+            CancellationToken cancellationToken = default)
         {
             UploadedLocalPaths.Add(localPath);
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result<MinerUPollResult>> PollExtractResultAsync(string batchId, CancellationToken cancellationToken = default)
+        public Task<Result<MinerUPollResult>> PollExtractResultAsync(string batchId,
+            CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(Result<MinerUPollResult>.Success(new MinerUPollResult(batchId, MinerUProviderStatus.Done, null, null)));
+            return Task.FromResult(
+                Result<MinerUPollResult>.Success(new MinerUPollResult(batchId, MinerUProviderStatus.Done, null, null)));
         }
 
         public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
@@ -177,27 +189,28 @@ public sealed class MinerUResultDownloaderTests
             CancellationToken cancellationToken = default)
         {
             Directory.CreateDirectory(downloadDirectory);
-            var zipPath = Path.Combine(downloadDirectory, $"{Guid.NewGuid():N}.zip");
-            using (var archive = System.IO.Compression.ZipFile.Open(zipPath, System.IO.Compression.ZipArchiveMode.Create))
+            string zipPath = Path.Combine(downloadDirectory, $"{Guid.NewGuid():N}.zip");
+            using (ZipArchive archive =
+                   ZipFile.Open(zipPath, ZipArchiveMode.Create))
             {
                 if (WriteContentList)
                 {
-                    var entry = archive.CreateEntry("sample_content_list.json");
-                    using var writer = new StreamWriter(entry.Open());
+                    ZipArchiveEntry entry = archive.CreateEntry("sample_content_list.json");
+                    using StreamWriter writer = new(entry.Open());
                     writer.Write("""[{"type":"text","page_idx":0,"text":"chunk text","bbox":[0,0,100,100]}]""");
                 }
                 else if (WriteContentListV2)
                 {
-                    var entry = archive.CreateEntry("sample_content_list_v2.json");
-                    using var writer = new StreamWriter(entry.Open());
+                    ZipArchiveEntry entry = archive.CreateEntry("sample_content_list_v2.json");
+                    using StreamWriter writer = new(entry.Open());
                     writer.Write($$"""
-                    [[{"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"chunk {{UploadRequests.Count}}"}]},"bbox":[0,0,100,100]}]]
-                    """);
+                                   [[{"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"chunk {{UploadRequests.Count}}"}]},"bbox":[0,0,100,100]}]]
+                                   """);
                 }
                 else
                 {
-                    var entry = archive.CreateEntry("full.md");
-                    using var writer = new StreamWriter(entry.Open());
+                    ZipArchiveEntry entry = archive.CreateEntry("full.md");
+                    using StreamWriter writer = new(entry.Open());
                     writer.Write("downloaded markdown");
                 }
             }

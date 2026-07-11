@@ -14,14 +14,14 @@ public sealed class MockOcrEngine : IOcrEngine
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        var options = MockOcrOptions.Parse(presetVersion.ParametersJson);
+        MockOcrOptions options = MockOcrOptions.Parse(presetVersion.ParametersJson);
         if (options.BBoxFailurePages.Contains(page.PageIndex))
         {
             return Task.FromResult(new OcrEnginePageResult(
                 page.PageId,
-                Succeeded: false,
-                Text: null,
-                BBox: null,
+                false,
+                null,
+                null,
                 OcrFailureCode.BBoxCoordinateTransformFailed,
                 "Mock bbox coordinate transform failed."));
         }
@@ -30,14 +30,14 @@ public sealed class MockOcrEngine : IOcrEngine
         {
             return Task.FromResult(new OcrEnginePageResult(
                 page.PageId,
-                Succeeded: false,
-                Text: null,
-                BBox: null,
+                false,
+                null,
+                null,
                 OcrFailureCode.MockPageFailure,
                 "Mock OCR page failure."));
         }
 
-        var text = page.PageIndex switch
+        string text = page.PageIndex switch
         {
             0 => "这是 OCR 测试文本。",
             1 => "这是第二页 OCR 文本。",
@@ -46,12 +46,13 @@ public sealed class MockOcrEngine : IOcrEngine
 
         return Task.FromResult(new OcrEnginePageResult(
             page.PageId,
-            Succeeded: true,
+            true,
             text,
             new NormalizedBBox(0.1, 0.1, 0.8, 0.2),
-            ErrorCode: null,
-            ErrorMessage: null,
-            SourceBBox: new SourceBBox(0.1, 0.1, 0.8, 0.2, SourceBBoxCoordinateSystem.NormalizedPage, EngineName: OcrEngineIds.Mock)));
+            null,
+            null,
+            new SourceBBox(0.1, 0.1, 0.8, 0.2, SourceBBoxCoordinateSystem.NormalizedPage,
+                EngineName: OcrEngineIds.Mock)));
     }
 
     private sealed record MockOcrOptions(IReadOnlySet<int> FailPages, IReadOnlySet<int> BBoxFailurePages)
@@ -63,7 +64,7 @@ public sealed class MockOcrEngine : IOcrEngine
                 return new MockOcrOptions(new HashSet<int>(), new HashSet<int>());
             }
 
-            using var document = JsonDocument.Parse(parametersJson);
+            using JsonDocument document = JsonDocument.Parse(parametersJson);
             return new MockOcrOptions(
                 ReadIntSet(document.RootElement, "failPages"),
                 ReadIntSet(document.RootElement, "bboxFailurePages"));
@@ -71,7 +72,7 @@ public sealed class MockOcrEngine : IOcrEngine
 
         private static IReadOnlySet<int> ReadIntSet(JsonElement root, string name)
         {
-            if (!root.TryGetProperty(name, out var property) || property.ValueKind != JsonValueKind.Array)
+            if (!root.TryGetProperty(name, out JsonElement property) || property.ValueKind != JsonValueKind.Array)
             {
                 return new HashSet<int>();
             }

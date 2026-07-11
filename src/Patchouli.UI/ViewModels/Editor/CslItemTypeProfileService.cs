@@ -10,22 +10,22 @@ public static class CslItemTypeProfileService
 {
     private static readonly Dictionary<string, ItemFieldDefinition> KnownFields = new(StringComparer.Ordinal)
     {
-        ["title"] = new("Title", "标题", "String"),
-        ["author"] = new("Creators", "作者/贡献者", "CreatorList"),
-        ["editor"] = new("Creators", "作者/贡献者", "CreatorList"),
-        ["issued"] = new("IssuedDate", "日期", "Date"),
-        ["publisher"] = new("Publisher", "出版社/机构", "String"),
-        ["container-title"] = new("PublicationTitle", "期刊/出处", "String"),
-        ["publication-title"] = new("PublicationTitle", "期刊/出处", "String"),
-        ["volume"] = new("Volume", "卷", "String"),
-        ["issue"] = new("Issue", "期", "String"),
-        ["pages"] = new("Pages", "页码", "String"),
-        ["language"] = new("Language", "语言", "String"),
-        ["abstract"] = new("AbstractText", "摘要", "MultilineString"),
-        ["ISBN"] = new("IdentifierInput", "ISBN", "String"),
-        ["DOI"] = new("IdentifierInput", "DOI", "String"),
-        ["URL"] = new("IdentifierInput", "URL", "String"),
-        ["extra_csl"] = new("ExtraCsl", "更多 CSL 字段", "MultilineString")
+        ["title"] = new ItemFieldDefinition("Title", "标题", "String"),
+        ["author"] = new ItemFieldDefinition("Creators", "作者/贡献者", "CreatorList"),
+        ["editor"] = new ItemFieldDefinition("Creators", "作者/贡献者", "CreatorList"),
+        ["issued"] = new ItemFieldDefinition("IssuedDate", "日期", "Date"),
+        ["publisher"] = new ItemFieldDefinition("Publisher", "出版社/机构", "String"),
+        ["container-title"] = new ItemFieldDefinition("PublicationTitle", "期刊/出处", "String"),
+        ["publication-title"] = new ItemFieldDefinition("PublicationTitle", "期刊/出处", "String"),
+        ["volume"] = new ItemFieldDefinition("Volume", "卷", "String"),
+        ["issue"] = new ItemFieldDefinition("Issue", "期", "String"),
+        ["pages"] = new ItemFieldDefinition("Pages", "页码", "String"),
+        ["language"] = new ItemFieldDefinition("Language", "语言", "String"),
+        ["abstract"] = new ItemFieldDefinition("AbstractText", "摘要", "MultilineString"),
+        ["ISBN"] = new ItemFieldDefinition("IdentifierInput", "ISBN", "String"),
+        ["DOI"] = new ItemFieldDefinition("IdentifierInput", "DOI", "String"),
+        ["URL"] = new ItemFieldDefinition("IdentifierInput", "URL", "String"),
+        ["extra_csl"] = new ItemFieldDefinition("ExtraCsl", "更多 CSL 字段", "MultilineString")
     };
 
     private static readonly ItemFieldDefinition[] AlwaysVisible =
@@ -47,9 +47,13 @@ public static class CslItemTypeProfileService
 
     public static IReadOnlyList<ItemFieldDefinition> GetProfile(CslItemTypeProfile? profile)
     {
-        if (profile is null || profile.ItemType == "general") return AlwaysVisible;
+        if (profile is null || profile.ItemType == "general")
+        {
+            return AlwaysVisible;
+        }
 
-        var keys = profile.PrimaryFields.Concat(profile.RecommendedFields).Concat(profile.AdvancedFields);
+        IEnumerable<string> keys = profile.PrimaryFields.Concat(profile.RecommendedFields)
+            .Concat(profile.AdvancedFields);
         return keys
             .Select(field => ResolveField(profile, field))
             .Where(field => field is not null)
@@ -61,12 +65,12 @@ public static class CslItemTypeProfileService
 
     private static ItemFieldDefinition? ResolveField(CslItemTypeProfile profile, string cslField)
     {
-        if (!KnownFields.TryGetValue(cslField, out var field))
+        if (!KnownFields.TryGetValue(cslField, out ItemFieldDefinition? field))
         {
             return null;
         }
 
-        return profile.FieldLabels.TryGetValue(cslField, out var label)
+        return profile.FieldLabels.TryGetValue(cslField, out string? label)
             ? field with { Label = label }
             : field;
     }

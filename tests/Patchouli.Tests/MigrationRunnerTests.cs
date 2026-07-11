@@ -1,5 +1,6 @@
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Migrations;
 
@@ -10,15 +11,15 @@ public sealed class MigrationRunnerTests
     [Fact]
     public async Task RunAsync_creates_schema_migrations_table()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var runner = new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
 
         await runner.RunAsync();
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
 
-        var tableCount = await connection.ExecuteScalarAsync<int>(
+        int tableCount = await connection.ExecuteScalarAsync<int>(
             """
             select count(1)
             from sqlite_master
@@ -31,19 +32,19 @@ public sealed class MigrationRunnerTests
     [Fact]
     public async Task RunAsync_is_idempotent_for_already_applied_migrations()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var runner = new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory);
-        var expectedMigrationCount = Directory
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        int expectedMigrationCount = Directory
             .EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql", SearchOption.TopDirectoryOnly)
             .Count();
 
-        var firstRun = await runner.RunAsync();
-        var secondRun = await runner.RunAsync();
+        IReadOnlyList<AppliedMigration> firstRun = await runner.RunAsync();
+        IReadOnlyList<AppliedMigration> secondRun = await runner.RunAsync();
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
 
-        var appliedCount = await connection.ExecuteScalarAsync<int>("select count(1) from schema_migrations;");
+        int appliedCount = await connection.ExecuteScalarAsync<int>("select count(1) from schema_migrations;");
 
         firstRun.Should().Contain(m => m.Id == "0001" && m.Name == "0001_create_schema_migrations");
         firstRun.Should().Contain(m => m.Id == "002" && m.Name == "002_create_library_metadata");
@@ -62,15 +63,15 @@ public sealed class MigrationRunnerTests
     [Fact]
     public async Task Identifier_scheme_migration_enforces_lowercase_for_direct_writes()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var runner = new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
         await runner.RunAsync();
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-        var now = DateTimeOffset.UtcNow.ToString("O");
-        var libraryId = Guid.NewGuid().ToString();
-        var itemId = Guid.NewGuid().ToString();
+        string now = DateTimeOffset.UtcNow.ToString("O");
+        string libraryId = Guid.NewGuid().ToString();
+        string itemId = Guid.NewGuid().ToString();
         await connection.ExecuteAsync(
             """
             insert into library_metadata(library_id, display_name, created_at, updated_at, schema_version)
@@ -82,7 +83,9 @@ public sealed class MigrationRunnerTests
             """,
             new { LibraryId = libraryId, ItemId = itemId, IdentifierId = Guid.NewGuid().ToString(), Now = now });
 
-        var scheme = await connection.ExecuteScalarAsync<string>("select scheme from item_identifiers where item_id = @ItemId;", new { ItemId = itemId });
+        string? scheme =
+            await connection.ExecuteScalarAsync<string>("select scheme from item_identifiers where item_id = @ItemId;",
+                new { ItemId = itemId });
 
         scheme.Should().Be("ndlbibid");
     }
@@ -90,18 +93,19 @@ public sealed class MigrationRunnerTests
     [Fact]
     public async Task File_search_root_authorization_migration_adds_device_local_columns()
     {
-        await using var database = TemporarySqliteDatabase.Create();
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-        var columns = (await connection.QueryAsync<string>(
+        string[] columns = (await connection.QueryAsync<string>(
             "select name from pragma_table_info('file_search_roots');")).ToArray();
 
         columns.Should().Contain([
             "authorization_kind",
             "authorization_payload",
             "authorization_payload_version",
-            "authorization_updated_at"]);
+            "authorization_updated_at"
+        ]);
     }
 }

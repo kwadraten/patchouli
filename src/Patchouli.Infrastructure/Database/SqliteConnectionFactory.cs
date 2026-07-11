@@ -20,7 +20,7 @@ public sealed class SqliteConnectionFactory
 
     public SqliteConnection CreateConnection()
     {
-        var builder = new SqliteConnectionStringBuilder
+        SqliteConnectionStringBuilder builder = new()
         {
             DataSource = _databasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,

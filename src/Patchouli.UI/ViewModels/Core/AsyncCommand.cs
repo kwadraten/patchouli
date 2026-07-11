@@ -23,7 +23,7 @@ using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class AsyncCommand : System.Windows.Input.ICommand
+public sealed class AsyncCommand : ICommand
 {
     private readonly Func<Task> _run;
     private readonly string _operation;
@@ -32,14 +32,25 @@ public sealed class AsyncCommand : System.Windows.Input.ICommand
     public AsyncCommand(
         Func<Task> run,
         IUnexpectedExceptionSink? unexpectedExceptions = null,
-        [CallerArgumentExpression(nameof(run))] string? operation = null)
+        [CallerArgumentExpression(nameof(run))]
+        string? operation = null)
     {
         _run = run;
         _operation = string.IsNullOrWhiteSpace(operation) ? "unknown-command" : operation;
         _unexpectedExceptions = unexpectedExceptions ?? UnexpectedExceptions.Sink;
     }
 
-    public event EventHandler? CanExecuteChanged { add { } remove { } } public bool CanExecute(object? parameter) => true;
+    public event EventHandler? CanExecuteChanged
+    {
+        add { }
+        remove { }
+    }
+
+    public bool CanExecute(object? parameter)
+    {
+        return true;
+    }
+
     public async void Execute(object? parameter)
     {
         try
@@ -51,6 +62,9 @@ public sealed class AsyncCommand : System.Windows.Input.ICommand
             _unexpectedExceptions.Report(exception, "ui-command", _operation);
         }
     }
-    public Task ExecuteAsync() => _run();
-}
 
+    public Task ExecuteAsync()
+    {
+        return _run();
+    }
+}

@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -29,16 +31,17 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         if (string.IsNullOrWhiteSpace(instanceType))
         {
-            return Result<DocumentInstance>.Failure(AppErrorCodes.ValidationFailed, "Document instance type is required.");
+            return Result<DocumentInstance>.Failure(AppErrorCodes.ValidationFailed,
+                "Document instance type is required.");
         }
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var item = await connection.QuerySingleOrDefaultAsync<ItemProbeRow>(
+            ItemProbeRow? item = await connection.QuerySingleOrDefaultAsync<ItemProbeRow>(
                 "select item_id as ItemId, library_id as LibraryId from items where item_id = @ItemId;",
                 new { ItemId = itemId.ToString() },
                 transaction);
@@ -79,17 +82,17 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                 }
             }
 
-            var existingCount = await connection.ExecuteScalarAsync<int>(
+            int existingCount = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances where item_id = @ItemId;",
                 new { ItemId = itemId.ToString() },
                 transaction);
 
-            var shouldBePrimary = existingCount == 0 || makePrimary;
-            var status = fileAsset?.Status == FileAssetStatus.Missing
+            bool shouldBePrimary = existingCount == 0 || makePrimary;
+            string status = fileAsset?.Status == FileAssetStatus.Missing
                 ? DocumentInstanceStatus.MissingSource
                 : DocumentInstanceStatus.Active;
-            var now = _clock.UtcNow.ToUniversalTime();
-            var instance = new DocumentInstance(
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            DocumentInstance instance = new(
                 DocumentInstanceId.New(),
                 itemId,
                 fileAssetId,
@@ -129,7 +132,8 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-instance"))
         {
             return DatabaseFailure<DocumentInstance>(exception);
         }
@@ -141,10 +145,10 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var row = await connection.QuerySingleOrDefaultAsync<DocumentInstanceRow>(
+            DocumentInstanceRow? row = await connection.QuerySingleOrDefaultAsync<DocumentInstanceRow>(
                 SelectDocumentInstancesSql + " where document_instance_id = @DocumentInstanceId;",
                 new { DocumentInstanceId = documentInstanceId.ToString() });
 
@@ -156,7 +160,8 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-instance"))
         {
             return DatabaseFailure<DocumentInstance>(exception);
         }
@@ -168,10 +173,10 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var itemExists = await connection.ExecuteScalarAsync<int>(
+            int itemExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from items where item_id = @ItemId;",
                 new { ItemId = itemId.ToString() });
 
@@ -180,17 +185,19 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                 return Result<IReadOnlyList<DocumentInstance>>.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
-            var rows = await connection.QueryAsync<DocumentInstanceRow>(
+            IEnumerable<DocumentInstanceRow> rows = await connection.QueryAsync<DocumentInstanceRow>(
                 SelectDocumentInstancesSql + " where item_id = @ItemId order by created_at, document_instance_id;",
                 new { ItemId = itemId.ToString() });
 
-            return Result<IReadOnlyList<DocumentInstance>>.Success(rows.Select(row => row.ToDocumentInstance()).ToArray());
+            return Result<IReadOnlyList<DocumentInstance>>.Success(rows.Select(row => row.ToDocumentInstance())
+                .ToArray());
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-instance"))
         {
             return DatabaseFailure<IReadOnlyList<DocumentInstance>>(exception);
         }
@@ -203,11 +210,11 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var itemExists = await connection.ExecuteScalarAsync<int>(
+            int itemExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from items where item_id = @ItemId;",
                 new { ItemId = itemId.ToString() },
                 transaction);
@@ -218,7 +225,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                 return Result.Failure(AppErrorCodes.NotFound, "Item was not found.");
             }
 
-            var belongsToItem = await connection.ExecuteScalarAsync<int>(
+            int belongsToItem = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
                 from document_instances
@@ -239,7 +246,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                     "Document instance does not belong to the item.");
             }
 
-            var now = FormatUtc(_clock.UtcNow.ToUniversalTime());
+            string now = FormatUtc(_clock.UtcNow.ToUniversalTime());
             await connection.ExecuteAsync(
                 "update document_instances set is_primary = 0, updated_at = @UpdatedAt where item_id = @ItemId;",
                 new { UpdatedAt = now, ItemId = itemId.ToString() },
@@ -260,7 +267,8 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-instance"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -297,7 +305,10 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         };
     }
 
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
+    }
 
     private static Result<T> DatabaseFailure<T>(Exception exception)
     {

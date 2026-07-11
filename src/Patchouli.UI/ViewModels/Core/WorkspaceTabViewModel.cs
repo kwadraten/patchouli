@@ -9,12 +9,17 @@ public sealed class WorkspaceTabViewModel : ViewModelBase
 
     public string TabId { get; }
     public WorkspaceTabKind Kind { get; }
+
     public string Title
     {
         get => _title;
         set
         {
-            if (_title == value) return;
+            if (_title == value)
+            {
+                return;
+            }
+
             _title = value;
             Raise();
         }
@@ -25,16 +30,22 @@ public sealed class WorkspaceTabViewModel : ViewModelBase
         get => _iconName;
         set
         {
-            if (_iconName == value) return;
+            if (_iconName == value)
+            {
+                return;
+            }
+
             _iconName = value;
             Raise();
         }
     }
+
     public bool IsClosable { get; }
     public ICommand? CloseCommand { get; }
     public ViewModelBase Content { get; }
 
-    public WorkspaceTabViewModel(WorkspaceTabKind kind, string tabId, string title, string iconName, bool isClosable, ICommand? closeCommand, ViewModelBase content)
+    public WorkspaceTabViewModel(WorkspaceTabKind kind, string tabId, string title, string iconName, bool isClosable,
+        ICommand? closeCommand, ViewModelBase content)
     {
         Kind = kind;
         TabId = tabId;
@@ -45,5 +56,3 @@ public sealed class WorkspaceTabViewModel : ViewModelBase
         Content = content;
     }
 }
-
-

@@ -1,6 +1,7 @@
 using Avalonia.Media;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -10,9 +11,9 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     private readonly PdfWorkspaceViewModel _workspace;
     private bool _isSelected;
     private string? _text;
-    
+
     public PdfWorkspaceViewModel Workspace => _workspace;
-    
+
     public LayoutNodeId NodeId { get; }
     public double Left { get; }
     public double Top { get; }
@@ -24,33 +25,62 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public bool IsSelected
     {
         get => _isSelected;
-        set { if (_isSelected == value) return; _isSelected = value; Raise(); }
+        set
+        {
+            if (_isSelected == value)
+            {
+                return;
+            }
+
+            _isSelected = value;
+            Raise();
+        }
     }
 
     private bool _isStaging;
+
     public bool IsStaging
     {
         get => _isStaging;
-        set { if (_isStaging == value) return; _isStaging = value; Raise(); }
+        set
+        {
+            if (_isStaging == value)
+            {
+                return;
+            }
+
+            _isStaging = value;
+            Raise();
+        }
     }
 
     public string? Text
     {
         get => _text;
-        set { if (_text == value) return; _text = value; Raise(); }
+        set
+        {
+            if (_text == value)
+            {
+                return;
+            }
+
+            _text = value;
+            Raise();
+        }
     }
 
     public AsyncCommand SaveTextCommand { get; }
     public AsyncCommand IgnoreCommand { get; }
 
-    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNode node, double imageWidth, double imageHeight)
+    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNode node,
+        double imageWidth, double imageHeight)
     {
         _main = main;
         _workspace = workspace;
         NodeId = node.NodeId;
         NodeType = node.NodeType;
         Text = node.OwnText;
-        
+
         if (node.BBox != null)
         {
             Left = node.BBox.Value.X * imageWidth;
@@ -64,7 +94,8 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         IgnoreCommand = new AsyncCommand(IgnoreAsync);
     }
 
-    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNodeId nodeId, double left, double top, double width, double height, string nodeType, IBrush boxColor)
+    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNodeId nodeId, double left,
+        double top, double width, double height, string nodeType, IBrush boxColor)
     {
         _main = main;
         _workspace = workspace;
@@ -94,8 +125,8 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 
     private async Task SaveTextAsync()
     {
-        var services = await _main.ServicesAsync();
-        var result = await services.Layout.UpdateNodeTextAsync(NodeId, Text);
+        AppServices services = await _main.ServicesAsync();
+        Result result = await services.Layout.UpdateNodeTextAsync(NodeId, Text);
         if (result.IsFailure)
         {
             _workspace.Status = $"更新文本失败: {result.ErrorMessage}";
@@ -104,8 +135,8 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 
     private async Task IgnoreAsync()
     {
-        var services = await _main.ServicesAsync();
-        var result = await services.Layout.MarkIgnoredAsync(NodeId, true);
+        AppServices services = await _main.ServicesAsync();
+        Result result = await services.Layout.MarkIgnoredAsync(NodeId, true);
         if (result.IsSuccess)
         {
             _workspace.RemoveBBox(this);

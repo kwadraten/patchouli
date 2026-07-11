@@ -26,24 +26,24 @@ internal sealed class HayagrivaCli
         HayagrivaRenderRequest request,
         CancellationToken cancellationToken = default)
     {
-        var executable = await ResolveExecutablePathAsync(cancellationToken);
+        Result<string> executable = await ResolveExecutablePathAsync(cancellationToken);
         if (executable.IsFailure)
         {
             return Result<HayagrivaRenderResponse>.Failure(executable.ErrorCode!, executable.ErrorMessage!);
         }
 
-        var requestPath = Path.Combine(Path.GetTempPath(), $"patchouli-hayagriva-{Guid.NewGuid():N}.json");
+        string requestPath = Path.Combine(Path.GetTempPath(), $"patchouli-hayagriva-{Guid.NewGuid():N}.json");
         try
         {
-            var payload = JsonSerializer.Serialize(request, JsonOptions);
+            string payload = JsonSerializer.Serialize(request, JsonOptions);
             await File.WriteAllTextAsync(requestPath, payload, cancellationToken);
 
-            var run = await _processRunner.RunAsync(
+            ProcessRunResult run = await _processRunner.RunAsync(
                 new ProcessRunRequest(
                     executable.Value,
                     [requestPath],
-                    WorkingDirectory: Path.GetDirectoryName(executable.Value),
-                    Timeout: TimeSpan.FromSeconds(60)),
+                    Path.GetDirectoryName(executable.Value),
+                    TimeSpan.FromSeconds(60)),
                 cancellationToken);
 
             if (run.TimedOut)
@@ -63,18 +63,22 @@ internal sealed class HayagrivaCli
                 return Result<HayagrivaRenderResponse>.Failure("csl_render_failed", "hayagriva returned no output.");
             }
 
-            var response = JsonSerializer.Deserialize<HayagrivaRenderResponse>(run.StandardOutput, JsonOptions);
+            HayagrivaRenderResponse? response =
+                JsonSerializer.Deserialize<HayagrivaRenderResponse>(run.StandardOutput, JsonOptions);
             return response is null
-                ? Result<HayagrivaRenderResponse>.Failure("csl_render_failed", "hayagriva returned an unreadable response.")
+                ? Result<HayagrivaRenderResponse>.Failure("csl_render_failed",
+                    "hayagriva returned an unreadable response.")
                 : Result<HayagrivaRenderResponse>.Success(response);
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.hayagriva-cli"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.hayagriva-cli"))
         {
-            return Result<HayagrivaRenderResponse>.Failure("csl_render_failed", $"hayagriva execution failed: {exception.Message}");
+            return Result<HayagrivaRenderResponse>.Failure("csl_render_failed",
+                $"hayagriva execution failed: {exception.Message}");
         }
         finally
         {
@@ -88,10 +92,11 @@ internal sealed class HayagrivaCli
         {
             return File.Exists(_executablePath)
                 ? Result<string>.Success(_executablePath)
-                : Result<string>.Failure(AppErrorCodes.NotFound, $"hayagriva executable was not found at '{_executablePath}'.");
+                : Result<string>.Failure(AppErrorCodes.NotFound,
+                    $"hayagriva executable was not found at '{_executablePath}'.");
         }
 
-        foreach (var candidate in CandidateExecutablePaths())
+        foreach (string candidate in CandidateExecutablePaths())
         {
             if (File.Exists(candidate))
             {
@@ -99,7 +104,7 @@ internal sealed class HayagrivaCli
             }
         }
 
-        var toolDirectory = FindToolDirectory();
+        string? toolDirectory = FindToolDirectory();
         if (toolDirectory is null)
         {
             return Result<string>.Failure(
@@ -110,7 +115,7 @@ internal sealed class HayagrivaCli
         await BuildLock.WaitAsync(cancellationToken);
         try
         {
-            foreach (var candidate in ToolBinaryCandidates(toolDirectory))
+            foreach (string candidate in ToolBinaryCandidates(toolDirectory))
             {
                 if (File.Exists(candidate))
                 {
@@ -118,13 +123,13 @@ internal sealed class HayagrivaCli
                 }
             }
 
-            var manifestPath = Path.Combine(toolDirectory, "Cargo.toml");
-            var build = await _processRunner.RunAsync(
+            string manifestPath = Path.Combine(toolDirectory, "Cargo.toml");
+            ProcessRunResult build = await _processRunner.RunAsync(
                 new ProcessRunRequest(
                     "cargo",
                     ["build", "--locked", "--manifest-path", manifestPath],
-                    WorkingDirectory: toolDirectory,
-                    Timeout: TimeSpan.FromMinutes(5)),
+                    toolDirectory,
+                    TimeSpan.FromMinutes(5)),
                 cancellationToken);
 
             if (build.TimedOut)
@@ -136,10 +141,11 @@ internal sealed class HayagrivaCli
             {
                 return Result<string>.Failure(
                     "csl_render_failed",
-                    CompactError(build.StandardError, build.StandardOutput, "Building the embedded hayagriva tool failed."));
+                    CompactError(build.StandardError, build.StandardOutput,
+                        "Building the embedded hayagriva tool failed."));
             }
 
-            foreach (var candidate in ToolBinaryCandidates(toolDirectory))
+            foreach (string candidate in ToolBinaryCandidates(toolDirectory))
             {
                 if (File.Exists(candidate))
                 {
@@ -147,7 +153,8 @@ internal sealed class HayagrivaCli
                 }
             }
 
-            return Result<string>.Failure("csl_render_failed", "The hayagriva tool build completed, but no executable was produced.");
+            return Result<string>.Failure("csl_render_failed",
+                "The hayagriva tool build completed, but no executable was produced.");
         }
         finally
         {
@@ -157,16 +164,16 @@ internal sealed class HayagrivaCli
 
     private static IEnumerable<string> CandidateExecutablePaths()
     {
-        var executableName = ExecutableFileName();
+        string executableName = ExecutableFileName();
         yield return Path.Combine(AppContext.BaseDirectory, executableName);
 
-        var toolDirectory = FindToolDirectory();
+        string? toolDirectory = FindToolDirectory();
         if (toolDirectory is null)
         {
             yield break;
         }
 
-        foreach (var candidate in ToolBinaryCandidates(toolDirectory))
+        foreach (string candidate in ToolBinaryCandidates(toolDirectory))
         {
             yield return candidate;
         }
@@ -174,26 +181,26 @@ internal sealed class HayagrivaCli
 
     private static IEnumerable<string> ToolBinaryCandidates(string toolDirectory)
     {
-        var executableName = ExecutableFileName();
+        string executableName = ExecutableFileName();
         yield return Path.Combine(toolDirectory, "target", "debug", executableName);
         yield return Path.Combine(toolDirectory, "target", "release", executableName);
     }
 
     private static string? FindToolDirectory()
     {
-        foreach (var start in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory })
+        foreach (string start in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory })
         {
             if (string.IsNullOrWhiteSpace(start))
             {
                 continue;
             }
 
-            var directory = new DirectoryInfo(start);
+            DirectoryInfo? directory = new(start);
             while (directory is not null)
             {
                 if (File.Exists(Path.Combine(directory.FullName, "Patchouli.sln")))
                 {
-                    var candidate = Path.Combine(directory.FullName, "tools", "patchouli-hayagriva");
+                    string candidate = Path.Combine(directory.FullName, "tools", "patchouli-hayagriva");
                     if (File.Exists(Path.Combine(candidate, "Cargo.toml")))
                     {
                         return candidate;
@@ -208,11 +215,13 @@ internal sealed class HayagrivaCli
     }
 
     private static string ExecutableFileName()
-        => OperatingSystem.IsWindows() ? "patchouli-hayagriva.exe" : "patchouli-hayagriva";
+    {
+        return OperatingSystem.IsWindows() ? "patchouli-hayagriva.exe" : "patchouli-hayagriva";
+    }
 
     private static string CompactError(string standardError, string standardOutput, string fallback)
     {
-        var message = string.IsNullOrWhiteSpace(standardError) ? standardOutput : standardError;
+        string message = string.IsNullOrWhiteSpace(standardError) ? standardOutput : standardError;
         message = string.IsNullOrWhiteSpace(message) ? fallback : message.Trim();
         return message.ReplaceLineEndings(" ");
     }
@@ -226,22 +235,31 @@ internal sealed class HayagrivaCli
                 File.Delete(path);
             }
         }
-        catch
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
         {
         }
     }
 }
 
 internal sealed record HayagrivaRenderRequest(
-    [property: JsonPropertyName("style_id")] string StyleId,
-    [property: JsonPropertyName("style_xml")] string StyleXml,
+    [property: JsonPropertyName("style_id")]
+    string StyleId,
+    [property: JsonPropertyName("style_xml")]
+    string StyleXml,
     [property: JsonPropertyName("locale")] string? Locale,
     [property: JsonPropertyName("items")] IReadOnlyList<Dictionary<string, object?>> Items);
 
 internal sealed record HayagrivaRenderResponse(
-    [property: JsonPropertyName("styleId")] string StyleId,
+    [property: JsonPropertyName("styleId")]
+    string StyleId,
     [property: JsonPropertyName("locale")] string? Locale,
-    [property: JsonPropertyName("renderedText")] string RenderedText,
-    [property: JsonPropertyName("renderedHtml")] string RenderedHtml,
-    [property: JsonPropertyName("warnings")] IReadOnlyList<string> Warnings,
+    [property: JsonPropertyName("renderedText")]
+    string RenderedText,
+    [property: JsonPropertyName("renderedHtml")]
+    string RenderedHtml,
+    [property: JsonPropertyName("warnings")]
+    IReadOnlyList<string> Warnings,
     [property: JsonPropertyName("errors")] IReadOnlyList<string> Errors);

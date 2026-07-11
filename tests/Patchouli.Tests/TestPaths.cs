@@ -14,7 +14,7 @@ internal static class TestPaths
 
     private static string FindRepositoryRoot()
     {
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
 
         while (directory is not null)
         {

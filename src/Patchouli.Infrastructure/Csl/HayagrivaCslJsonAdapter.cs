@@ -8,8 +8,8 @@ internal static partial class HayagrivaCslJsonAdapter
 {
     public static Dictionary<string, object?> ToItem(CslMappedItem item, ICollection<string> warnings)
     {
-        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var pair in item.Variables)
+        Dictionary<string, object?> result = new(StringComparer.Ordinal);
+        foreach (KeyValuePair<string, object?> pair in item.Variables)
         {
             if (string.Equals(pair.Key, "extra_csl", StringComparison.Ordinal))
             {
@@ -17,7 +17,7 @@ internal static partial class HayagrivaCslJsonAdapter
                 continue;
             }
 
-            if (TryNormalizeValue(pair.Key, pair.Value, warnings, out var normalized))
+            if (TryNormalizeValue(pair.Key, pair.Value, warnings, out object? normalized))
             {
                 result[pair.Key] = normalized;
             }
@@ -46,14 +46,14 @@ internal static partial class HayagrivaCslJsonAdapter
             return;
         }
 
-        foreach (var pair in extraFields)
+        foreach (KeyValuePair<string, object?> pair in extraFields)
         {
             if (target.ContainsKey(pair.Key))
             {
                 continue;
             }
 
-            if (TryNormalizeValue(pair.Key, pair.Value, warnings, out var normalized))
+            if (TryNormalizeValue(pair.Key, pair.Value, warnings, out object? normalized))
             {
                 target[pair.Key] = normalized;
             }
@@ -86,7 +86,9 @@ internal static partial class HayagrivaCslJsonAdapter
             case IReadOnlyDictionary<string, object?> dictionary:
                 return TryNormalizeDictionary(variable, dictionary, warnings, out normalized);
             case IDictionary<string, object?> mutableDictionary:
-                return TryNormalizeDictionary(variable, new Dictionary<string, object?>(mutableDictionary, StringComparer.Ordinal), warnings, out normalized);
+                return TryNormalizeDictionary(variable,
+                    new Dictionary<string, object?>(mutableDictionary, StringComparer.Ordinal), warnings,
+                    out normalized);
             case IEnumerable<object?> values when value is not string:
                 return TryNormalizeSequence(values, warnings, out normalized);
             case IEnumerable<string> strings:
@@ -112,7 +114,7 @@ internal static partial class HayagrivaCslJsonAdapter
         ICollection<string> warnings,
         out object? normalized)
     {
-        var items = values.ToArray();
+        object?[] items = values.ToArray();
         normalized = null;
         if (items.Length == 0)
         {
@@ -125,7 +127,7 @@ internal static partial class HayagrivaCslJsonAdapter
             return !string.IsNullOrWhiteSpace(normalized as string);
         }
 
-        var names = NormalizeNames(items, warnings);
+        List<Dictionary<string, object?>> names = NormalizeNames(items, warnings);
         if (names.Count > 0)
         {
             normalized = names;
@@ -139,13 +141,14 @@ internal static partial class HayagrivaCslJsonAdapter
         IEnumerable<object?> values,
         ICollection<string> warnings)
     {
-        var names = new List<Dictionary<string, object?>>();
-        foreach (var value in values)
+        List<Dictionary<string, object?>> names = new();
+        foreach (object? value in values)
         {
             IReadOnlyDictionary<string, object?>? dictionary = value switch
             {
                 IReadOnlyDictionary<string, object?> readOnly => readOnly,
-                IDictionary<string, object?> mutable => new Dictionary<string, object?>(mutable, StringComparer.Ordinal),
+                IDictionary<string, object?> mutable =>
+                    new Dictionary<string, object?>(mutable, StringComparer.Ordinal),
                 _ => null
             };
             if (dictionary is null)
@@ -153,7 +156,7 @@ internal static partial class HayagrivaCslJsonAdapter
                 continue;
             }
 
-            var literal = ReadString(dictionary, "literal");
+            string? literal = ReadString(dictionary, "literal");
             if (!string.IsNullOrWhiteSpace(literal))
             {
                 names.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -163,7 +166,7 @@ internal static partial class HayagrivaCslJsonAdapter
                 continue;
             }
 
-            var person = new Dictionary<string, object?>(StringComparer.Ordinal);
+            Dictionary<string, object?> person = new(StringComparer.Ordinal);
             AddIfNotBlank(person, "family", ReadString(dictionary, "family"));
             AddIfNotBlank(person, "given", ReadString(dictionary, "given"));
             AddIfNotBlank(person, "suffix", ReadString(dictionary, "suffix"));
@@ -185,9 +188,9 @@ internal static partial class HayagrivaCslJsonAdapter
         string variable,
         ICollection<string> warnings)
     {
-        if (TryReadDateParts(value, out var dateParts))
+        if (TryReadDateParts(value, out List<List<int>> dateParts))
         {
-            var normalized = new Dictionary<string, object?>(StringComparer.Ordinal)
+            Dictionary<string, object?> normalized = new(StringComparer.Ordinal)
             {
                 ["date-parts"] = dateParts
             };
@@ -201,13 +204,13 @@ internal static partial class HayagrivaCslJsonAdapter
             return normalized;
         }
 
-        var literal = ReadString(value, "literal");
+        string? literal = ReadString(value, "literal");
         if (string.IsNullOrWhiteSpace(literal))
         {
             return null;
         }
 
-        var raw = literal.Trim();
+        string raw = literal.Trim();
         if (TryReadBoolean(value, "circa") && !raw.EndsWith("~", StringComparison.Ordinal))
         {
             raw += "~";
@@ -215,11 +218,12 @@ internal static partial class HayagrivaCslJsonAdapter
 
         if (!SupportedRawDateRegex().IsMatch(raw))
         {
-            warnings.Add($"CSL date variable '{variable}' uses a literal-only value that hayagriva cannot parse, so it was skipped.");
+            warnings.Add(
+                $"CSL date variable '{variable}' uses a literal-only value that hayagriva cannot parse, so it was skipped.");
             return null;
         }
 
-        var rawDate = new Dictionary<string, object?>(StringComparer.Ordinal)
+        Dictionary<string, object?> rawDate = new(StringComparer.Ordinal)
         {
             ["raw"] = raw,
             ["literal"] = literal.Trim()
@@ -233,12 +237,12 @@ internal static partial class HayagrivaCslJsonAdapter
         out List<List<int>> dateParts)
     {
         dateParts = new List<List<int>>();
-        if (!value.TryGetValue("date-parts", out var raw) || raw is not IEnumerable<object?> parts)
+        if (!value.TryGetValue("date-parts", out object? raw) || raw is not IEnumerable<object?> parts)
         {
             return false;
         }
 
-        foreach (var part in parts)
+        foreach (object? part in parts)
         {
             IEnumerable<object?>? components = part switch
             {
@@ -252,8 +256,8 @@ internal static partial class HayagrivaCslJsonAdapter
                 continue;
             }
 
-            var row = new List<int>();
-            foreach (var component in components)
+            List<int> row = new();
+            foreach (object? component in components)
             {
                 if (component is int intValue)
                 {
@@ -276,12 +280,12 @@ internal static partial class HayagrivaCslJsonAdapter
 
     private static bool TryReadBoolean(IReadOnlyDictionary<string, object?> value, string key)
     {
-        return value.TryGetValue(key, out var raw) && raw is bool boolean && boolean;
+        return value.TryGetValue(key, out object? raw) && raw is bool boolean && boolean;
     }
 
     private static string? ReadString(IReadOnlyDictionary<string, object?> value, string key)
     {
-        return value.TryGetValue(key, out var raw) && !string.IsNullOrWhiteSpace(raw?.ToString())
+        return value.TryGetValue(key, out object? raw) && !string.IsNullOrWhiteSpace(raw?.ToString())
             ? raw!.ToString()!.Trim()
             : null;
     }

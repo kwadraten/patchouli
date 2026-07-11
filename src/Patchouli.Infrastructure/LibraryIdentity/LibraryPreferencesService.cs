@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
@@ -23,9 +24,10 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
         _clock = clock;
     }
 
-    public async Task<Result<LibraryPreferences>> GetPreferencesAsync(string scope = "default", CancellationToken cancellationToken = default)
+    public async Task<Result<LibraryPreferences>> GetPreferencesAsync(string scope = "default",
+        CancellationToken cancellationToken = default)
     {
-        var library = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> library = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (library.IsFailure)
         {
             return Result<LibraryPreferences>.Failure(library.ErrorCode!, library.ErrorMessage!);
@@ -33,9 +35,9 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await connection.QuerySingleOrDefaultAsync<Row>(
+            Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """
                 select library_id as LibraryId,
                        scope as Scope,
@@ -55,15 +57,18 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-preferences"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-preferences"))
         {
-            return Result<LibraryPreferences>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<LibraryPreferences>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result<LibraryPreferences>> SavePreferencesAsync(IReadOnlyList<LibraryColumnPreference> columns, string scope = "default", CancellationToken cancellationToken = default)
+    public async Task<Result<LibraryPreferences>> SavePreferencesAsync(IReadOnlyList<LibraryColumnPreference> columns,
+        string scope = "default", CancellationToken cancellationToken = default)
     {
-        var library = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> library = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (library.IsFailure)
         {
             return Result<LibraryPreferences>.Failure(library.ErrorCode!, library.ErrorMessage!);
@@ -71,8 +76,9 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
 
         try
         {
-            var saved = new LibraryPreferences(library.Value.LibraryId, scope, columns.OrderBy(column => column.Order).ToArray(), _clock.UtcNow.ToUniversalTime());
-            await using var connection = _connectionFactory.CreateConnection();
+            LibraryPreferences saved = new(library.Value.LibraryId, scope,
+                columns.OrderBy(column => column.Order).ToArray(), _clock.UtcNow.ToUniversalTime());
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync(
                 """
@@ -96,9 +102,11 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-preferences"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-preferences"))
         {
-            return Result<LibraryPreferences>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<LibraryPreferences>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -110,10 +118,12 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
         public string UpdatedAt { get; set; } = "";
 
         public LibraryPreferences ToModel()
-            => new(
-                Patchouli.Core.Ids.LibraryId.Parse(LibraryId),
+        {
+            return new LibraryPreferences(
+                Core.Ids.LibraryId.Parse(LibraryId),
                 Scope,
                 JsonSerializer.Deserialize<LibraryColumnPreference[]>(ColumnsJson) ?? [],
                 DateTimeOffset.Parse(UpdatedAt));
+        }
     }
 }

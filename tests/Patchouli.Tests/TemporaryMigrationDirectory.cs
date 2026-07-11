@@ -11,7 +11,7 @@ internal sealed class TemporaryMigrationDirectory : IDisposable
 
     public static TemporaryMigrationDirectory Create()
     {
-        var path = System.IO.Path.Combine(
+        string path = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
             $"patchouli-migrations-{Guid.NewGuid():N}");
 
@@ -28,7 +28,7 @@ internal sealed class TemporaryMigrationDirectory : IDisposable
     {
         if (Directory.Exists(Path))
         {
-            Directory.Delete(Path, recursive: true);
+            Directory.Delete(Path, true);
         }
     }
 }

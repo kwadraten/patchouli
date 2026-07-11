@@ -24,7 +24,10 @@ public sealed record Result : IOperationOutcome
     public string? ErrorMessage { get; }
     public IReadOnlyList<ConflictDescriptor> Conflicts { get; }
 
-    public static Result Success() => new(true, null, null, Array.Empty<ConflictDescriptor>());
+    public static Result Success()
+    {
+        return new Result(true, null, null, Array.Empty<ConflictDescriptor>());
+    }
 
     public static Result Failure(
         string errorCode,
@@ -83,7 +86,10 @@ public sealed record Result<T> : IOperationOutcome
     public string? ErrorMessage { get; }
     public IReadOnlyList<ConflictDescriptor> Conflicts { get; }
 
-    public static Result<T> Success(T value) => new(true, value, null, null, Array.Empty<ConflictDescriptor>());
+    public static Result<T> Success(T value)
+    {
+        return new Result<T>(true, value, null, null, Array.Empty<ConflictDescriptor>());
+    }
 
     public static Result<T> Failure(
         string errorCode,

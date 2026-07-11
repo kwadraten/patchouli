@@ -10,13 +10,15 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
-        UnexpectedExceptionReporter.Configure(
-            (exception, boundary, operation) => UnexpectedExceptions.Sink.Report(exception, boundary, operation));
-        var sink = UnexpectedExceptions.Sink;
+        UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
+            UnexpectedExceptions.Sink.Report(exception, boundary, operation));
+        IUnexpectedExceptionSink sink = UnexpectedExceptions.Sink;
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
         {
             if (eventArgs.ExceptionObject is Exception exception)
+            {
                 sink.Report(exception, "app-domain", "unhandled-exception");
+            }
         };
         TaskScheduler.UnobservedTaskException += (_, eventArgs) =>
         {

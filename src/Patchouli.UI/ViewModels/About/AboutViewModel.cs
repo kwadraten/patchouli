@@ -29,17 +29,18 @@ public class AboutViewModel : ViewModelBase
 
     public string LicenseText { get; }
     public ObservableCollection<ThirdPartyLibrary> ThirdPartyLibraries { get; }
-    public System.Windows.Input.ICommand OpenUrlCommand { get; }
+    public ICommand OpenUrlCommand { get; }
 
     public AboutViewModel(MainWindowViewModel parent)
     {
         _parent = parent;
         try
         {
-            using var stream = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("Patchouli.UI.LICENSE");
+            using Stream? stream = System.Reflection.Assembly.GetExecutingAssembly()
+                .GetManifestResourceStream("Patchouli.UI.LICENSE");
             if (stream != null)
             {
-                using var reader = new System.IO.StreamReader(stream);
+                using StreamReader reader = new(stream);
                 LicenseText = reader.ReadToEnd();
             }
             else
@@ -52,17 +53,7 @@ public class AboutViewModel : ViewModelBase
             LicenseText = "加载许可证失败：" + ex.Message;
         }
 
-        ThirdPartyLibraries = new()
-        {
-            new("Avalonia", "MIT", "https://github.com/AvaloniaUI/Avalonia"),
-            new("Dapper", "Apache 2.0", "https://github.com/DapperLib/Dapper"),
-            new("Microsoft.Data.Sqlite", "MIT", "https://github.com/dotnet/efcore"),
-            new("Blake3", "CC0 / Apache 2.0", "https://github.com/BLAKE3-team/BLAKE3"),
-            new("MuPDF.NET", "AGPL v3.0", "https://github.com/ArtifexSoftware/mupdf.net"),
-            new("Hayagriva", "Apache 2.0 / MIT", "https://github.com/typst/hayagriva")
-        };
-
-        OpenUrlCommand = new RelayCommand(url => 
+        RelayCommand openUrlCommand = new(url =>
         {
             if (url is string s && !string.IsNullOrWhiteSpace(s))
             {
@@ -73,5 +64,15 @@ public class AboutViewModel : ViewModelBase
                 });
             }
         });
+        OpenUrlCommand = openUrlCommand;
+        ThirdPartyLibraries = new ObservableCollection<ThirdPartyLibrary>
+        {
+            new("Avalonia", "MIT", "https://github.com/AvaloniaUI/Avalonia", openUrlCommand),
+            new("Dapper", "Apache 2.0", "https://github.com/DapperLib/Dapper", openUrlCommand),
+            new("Microsoft.Data.Sqlite", "MIT", "https://github.com/dotnet/efcore", openUrlCommand),
+            new("Blake3", "CC0 / Apache 2.0", "https://github.com/BLAKE3-team/BLAKE3", openUrlCommand),
+            new("MuPDF.NET", "AGPL v3.0", "https://github.com/ArtifexSoftware/mupdf.net", openUrlCommand),
+            new("Hayagriva", "Apache 2.0 / MIT", "https://github.com/typst/hayagriva", openUrlCommand)
+        };
     }
 }

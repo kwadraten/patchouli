@@ -21,33 +21,42 @@ public class DialogService : IDialogService
         {
             return desktop.MainWindow;
         }
+
         return null;
     }
 
     public async Task ShowDialogAsync(object viewModel)
     {
-        var mainWindow = GetMainWindow();
-        if (mainWindow == null) return;
+        Window? mainWindow = GetMainWindow();
+        if (mainWindow == null)
+        {
+            return;
+        }
 
-        var viewType = _mappings[viewModel.GetType()];
-        var dialog = (Window)Activator.CreateInstance(viewType)!;
+        Type viewType = _mappings[viewModel.GetType()];
+        Window dialog = (Window)Activator.CreateInstance(viewType)!;
         dialog.DataContext = viewModel;
-        var mainContent = mainWindow.Content as Control;
-        var wasEnabled = mainContent?.IsEnabled ?? true;
-        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Control? mainContent = mainWindow.Content as Control;
+        bool wasEnabled = mainContent?.IsEnabled ?? true;
+        TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         EventHandler? closed = null;
         closed = (_, _) =>
         {
             dialog.Closed -= closed;
             if (mainContent is not null)
+            {
                 mainContent.IsEnabled = wasEnabled;
+            }
+
             completion.TrySetResult();
         };
 
         dialog.Closed += closed;
         if (mainContent is not null)
+        {
             mainContent.IsEnabled = false;
+        }
 
         try
         {
@@ -59,18 +68,24 @@ public class DialogService : IDialogService
         {
             dialog.Closed -= closed;
             if (mainContent is not null)
+            {
                 mainContent.IsEnabled = wasEnabled;
+            }
+
             throw;
         }
     }
 
     public async Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
     {
-        var mainWindow = GetMainWindow();
-        if (mainWindow == null) return default;
+        Window? mainWindow = GetMainWindow();
+        if (mainWindow == null)
+        {
+            return default;
+        }
 
-        var viewType = _mappings[viewModel.GetType()];
-        var dialog = (Window)Activator.CreateInstance(viewType)!;
+        Type viewType = _mappings[viewModel.GetType()];
+        Window dialog = (Window)Activator.CreateInstance(viewType)!;
         dialog.DataContext = viewModel;
 
         return await dialog.ShowDialog<TResult>(mainWindow);

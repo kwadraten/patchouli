@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -32,7 +34,7 @@ public sealed class PageService : IPageService
         string? sourceFileHash,
         CancellationToken cancellationToken = default)
     {
-        var validation = ValidatePageInput(pageIndex, rotation, coordinateBasis, rendererBasisVersion);
+        Result validation = ValidatePageInput(pageIndex, rotation, coordinateBasis, rendererBasisVersion);
         if (validation.IsFailure)
         {
             return Result<Page>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -40,11 +42,11 @@ public sealed class PageService : IPageService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var documentExists = await connection.ExecuteScalarAsync<int>(
+            int documentExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
                 new { DocumentInstanceId = documentInstanceId.ToString() },
                 transaction);
@@ -55,7 +57,7 @@ public sealed class PageService : IPageService
                 return Result<Page>.Failure(AppErrorCodes.NotFound, "Document instance was not found.");
             }
 
-            var duplicate = await connection.ExecuteScalarAsync<int>(
+            int duplicate = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
                 from pages
@@ -72,8 +74,8 @@ public sealed class PageService : IPageService
                     "A page with this page_index already exists for the document instance.");
             }
 
-            var now = _clock.UtcNow.ToUniversalTime();
-            var page = new Page(
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            Page page = new(
                 PageId.New(),
                 documentInstanceId,
                 pageIndex,
@@ -112,7 +114,8 @@ public sealed class PageService : IPageService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.page-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.page-service"))
         {
             return DatabaseFailure<Page>(exception);
         }
@@ -124,10 +127,10 @@ public sealed class PageService : IPageService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var documentExists = await connection.ExecuteScalarAsync<int>(
+            int documentExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
                 new { DocumentInstanceId = documentInstanceId.ToString() });
 
@@ -136,7 +139,7 @@ public sealed class PageService : IPageService
                 return Result<IReadOnlyList<Page>>.Failure(AppErrorCodes.NotFound, "Document instance was not found.");
             }
 
-            var rows = await connection.QueryAsync<PageRow>(
+            IEnumerable<PageRow> rows = await connection.QueryAsync<PageRow>(
                 SelectPagesSql + " where document_instance_id = @DocumentInstanceId order by page_index;",
                 new { DocumentInstanceId = documentInstanceId.ToString() });
 
@@ -146,7 +149,8 @@ public sealed class PageService : IPageService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.page-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.page-service"))
         {
             return DatabaseFailure<IReadOnlyList<Page>>(exception);
         }
@@ -156,10 +160,10 @@ public sealed class PageService : IPageService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var row = await connection.QuerySingleOrDefaultAsync<PageRow>(
+            PageRow? row = await connection.QuerySingleOrDefaultAsync<PageRow>(
                 SelectPagesSql + " where page_id = @PageId;",
                 new { PageId = pageId.ToString() });
 
@@ -171,7 +175,8 @@ public sealed class PageService : IPageService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.page-service"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.page-service"))
         {
             return DatabaseFailure<Page>(exception);
         }
@@ -247,8 +252,15 @@ public sealed class PageService : IPageService
         };
     }
 
-    private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
+    }
 
     private static Result<T> DatabaseFailure<T>(Exception exception)
     {

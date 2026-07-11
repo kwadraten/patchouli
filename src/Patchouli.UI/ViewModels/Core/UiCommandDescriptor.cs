@@ -21,7 +21,7 @@ public class UiCommandDescriptor : ViewModelBase, ICommand
         Id = id;
         Label = label;
         _innerCommand = innerCommand ?? throw new ArgumentNullException(nameof(innerCommand));
-        
+
         _innerCommand.CanExecuteChanged += (s, e) => CanExecuteChanged?.Invoke(this, e);
     }
 
@@ -74,10 +74,11 @@ public class UiCommandDescriptor : ViewModelBase, ICommand
 
     public Task ExecuteAsync()
     {
-        if (CanExecute(null) && _innerCommand is Patchouli.UI.ViewModels.AsyncCommand ac)
+        if (CanExecute(null) && _innerCommand is AsyncCommand ac)
         {
             return ac.ExecuteAsync();
         }
+
         return Task.CompletedTask;
     }
 }

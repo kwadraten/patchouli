@@ -1,4 +1,5 @@
 ﻿using Patchouli.UI.ViewModels;
+
 namespace Patchouli.UI.ViewModels.Settings;
 
 public sealed class CslSettingsViewModel : ViewModelBase
@@ -19,10 +20,13 @@ public sealed class CslSettingsViewModel : ViewModelBase
         {
             _status = value;
             Raise();
-            if (!string.IsNullOrWhiteSpace(value)) _main.Report(value);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                _main.Report(value);
+            }
         }
     }
-    
+
     public string Description => "管理 CSL 样式索引、安装本地样式、设置默认样式，并用于题录复制和预览。";
     public AsyncCommand OpenManagerCommand { get; }
 

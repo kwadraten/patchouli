@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -36,7 +38,8 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
     {
         if (confidence is < 0 or > 1)
         {
-            return Result<ItemTypeInference>.Failure(AppErrorCodes.ValidationFailed, "Confidence must be between 0 and 1.");
+            return Result<ItemTypeInference>.Failure(AppErrorCodes.ValidationFailed,
+                "Confidence must be between 0 and 1.");
         }
 
         if (string.IsNullOrWhiteSpace(source))
@@ -44,13 +47,13 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
             return Result<ItemTypeInference>.Failure(AppErrorCodes.ValidationFailed, "Inference source is required.");
         }
 
-        var typeValidation = await _profiles.ValidateItemTypeAsync(suggestedType, cancellationToken);
+        Result typeValidation = await _profiles.ValidateItemTypeAsync(suggestedType, cancellationToken);
         if (typeValidation.IsFailure)
         {
             return Result<ItemTypeInference>.Failure(typeValidation.ErrorCode!, typeValidation.ErrorMessage!);
         }
 
-        var item = await _items.GetItemAsync(itemId, cancellationToken);
+        Result<ItemMetadata> item = await _items.GetItemAsync(itemId, cancellationToken);
         if (item.IsFailure)
         {
             return Result<ItemTypeInference>.Failure(item.ErrorCode!, item.ErrorMessage!);
@@ -58,7 +61,7 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
 
         try
         {
-            var inference = new ItemTypeInference(
+            ItemTypeInference inference = new(
                 Guid.NewGuid().ToString("D"),
                 itemId,
                 suggestedType.Trim(),
@@ -68,7 +71,7 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
                 _clock.UtcNow.ToUniversalTime(),
                 null);
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync(
                 """
@@ -96,9 +99,11 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-type-inference"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-type-inference"))
         {
-            return Result<ItemTypeInference>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<ItemTypeInference>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -108,9 +113,9 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var rows = await connection.QueryAsync<Row>(
+            IEnumerable<Row> rows = await connection.QueryAsync<Row>(
                 """
                 select inference_id as InferenceId,
                        item_id as ItemId,
@@ -132,9 +137,11 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-type-inference"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-type-inference"))
         {
-            return Result<IReadOnlyList<ItemTypeInference>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<IReadOnlyList<ItemTypeInference>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -149,11 +156,11 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var row = await connection.QuerySingleOrDefaultAsync<Row>(
+            Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """
                 select inference_id as InferenceId,
                        item_id as ItemId,
@@ -175,9 +182,9 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
                 return Result<ItemTypeInference>.Failure(AppErrorCodes.NotFound, "Item type inference was not found.");
             }
 
-            var acceptedAt = _clock.UtcNow.ToUniversalTime();
-            var itemId = ItemId.Parse(row.ItemId);
-            var updated = await connection.ExecuteAsync(
+            DateTimeOffset acceptedAt = _clock.UtcNow.ToUniversalTime();
+            ItemId itemId = ItemId.Parse(row.ItemId);
+            int updated = await connection.ExecuteAsync(
                 """
                 update items
                 set item_type = @ItemType,
@@ -194,7 +201,8 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
             if (updated == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<ItemTypeInference>.Failure(AppErrorCodes.NotFound, "Item for the inference was not found.");
+                return Result<ItemTypeInference>.Failure(AppErrorCodes.NotFound,
+                    "Item for the inference was not found.");
             }
 
             await connection.ExecuteAsync(
@@ -209,9 +217,11 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-type-inference"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-type-inference"))
         {
-            return Result<ItemTypeInference>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<ItemTypeInference>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -227,7 +237,8 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         public string? AcceptedAt { get; set; }
 
         public ItemTypeInference ToModel()
-            => new(
+        {
+            return new ItemTypeInference(
                 InferenceId,
                 Patchouli.Core.Ids.ItemId.Parse(ItemId),
                 SuggestedType,
@@ -236,5 +247,6 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
                 EvidenceSummary,
                 DateTimeOffset.Parse(CreatedAt),
                 string.IsNullOrWhiteSpace(AcceptedAt) ? null : DateTimeOffset.Parse(AcceptedAt));
+        }
     }
 }

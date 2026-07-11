@@ -6,5 +6,8 @@ public static class TextPolicy
     public const string AggregateChildren = "aggregate_children";
     public const string None = "none";
 
-    public static bool IsKnown(string policy) => policy is Own or AggregateChildren or None;
+    public static bool IsKnown(string policy)
+    {
+        return policy is Own or AggregateChildren or None;
+    }
 }

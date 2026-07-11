@@ -20,10 +20,12 @@ public enum PathPickerMode
 public sealed partial class PathPickerTextBox : UserControl
 {
     public static readonly StyledProperty<string?> PathProperty =
-        AvaloniaProperty.Register<PathPickerTextBox, string?>(nameof(Path), defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
+        AvaloniaProperty.Register<PathPickerTextBox, string?>(nameof(Path),
+            defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
 
     public static readonly StyledProperty<SelectedFileSearchRoot?> SelectedRootProperty =
-        AvaloniaProperty.Register<PathPickerTextBox, SelectedFileSearchRoot?>(nameof(SelectedRoot), defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
+        AvaloniaProperty.Register<PathPickerTextBox, SelectedFileSearchRoot?>(nameof(SelectedRoot),
+            defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
 
     public static readonly StyledProperty<string?> PlaceholderTextProperty =
         AvaloniaProperty.Register<PathPickerTextBox, string?>(nameof(PlaceholderText));
@@ -91,8 +93,13 @@ public sealed partial class PathPickerTextBox : UserControl
         private set => SetValue(IconDataProperty, value);
     }
 
-    private static readonly StreamGeometry _folderIcon = StreamGeometry.Parse("M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z");
-    private static readonly StreamGeometry _fileIcon = StreamGeometry.Parse("M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8V4h5v5h5v11z");
+    private static readonly StreamGeometry _folderIcon =
+        StreamGeometry.Parse(
+            "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z");
+
+    private static readonly StreamGeometry _fileIcon =
+        StreamGeometry.Parse(
+            "M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8V4h5v5h5v11z");
 
     public PathPickerTextBox()
     {
@@ -110,16 +117,21 @@ public sealed partial class PathPickerTextBox : UserControl
     }
 
     private async void OnBrowseClick(object? sender, RoutedEventArgs e)
-        => await UnexpectedExceptionBoundary.RunAsync(BrowseAsync, "path-picker-browse");
+    {
+        await UnexpectedExceptionBoundary.RunAsync(BrowseAsync, "path-picker-browse");
+    }
 
     private async Task BrowseAsync()
     {
-        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
-        if (storage is null) return;
+        IStorageProvider? storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        if (storage is null)
+        {
+            return;
+        }
 
         if (PickerMode == PathPickerMode.Folder)
         {
-            var folders = await storage.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            IReadOnlyList<IStorageFolder> folders = await storage.OpenFolderPickerAsync(new FolderPickerOpenOptions
             {
                 Title = DialogTitle ?? "选择文件夹",
                 AllowMultiple = false
@@ -139,22 +151,23 @@ public sealed partial class PathPickerTextBox : UserControl
         }
         else if (PickerMode == PathPickerMode.OpenFile)
         {
-            var options = new FilePickerOpenOptions
+            FilePickerOpenOptions options = new()
             {
                 Title = DialogTitle ?? "选择文件",
                 AllowMultiple = false
             };
-            
+
             if (!string.IsNullOrWhiteSpace(FileFilterName) && !string.IsNullOrWhiteSpace(FileFilterPatterns))
             {
                 options.FileTypeFilter = new[]
                 {
-                    new FilePickerFileType(FileFilterName) { Patterns = FileFilterPatterns.Split(',').Select(x => x.Trim()).ToArray() },
+                    new FilePickerFileType(FileFilterName)
+                        { Patterns = FileFilterPatterns.Split(',').Select(x => x.Trim()).ToArray() },
                     FilePickerFileTypes.All
                 };
             }
 
-            var files = await storage.OpenFilePickerAsync(options);
+            IReadOnlyList<IStorageFile> files = await storage.OpenFilePickerAsync(options);
             if (files.Count > 0 && files[0].Path.LocalPath is { Length: > 0 } path)
             {
                 Path = path;
@@ -162,14 +175,14 @@ public sealed partial class PathPickerTextBox : UserControl
         }
         else if (PickerMode == PathPickerMode.SaveFile)
         {
-            var options = new FilePickerSaveOptions
+            FilePickerSaveOptions options = new()
             {
                 Title = DialogTitle ?? "保存文件"
             };
 
             if (!string.IsNullOrWhiteSpace(FileFilterName) && !string.IsNullOrWhiteSpace(FileFilterPatterns))
             {
-                var patterns = FileFilterPatterns.Split(',').Select(x => x.Trim()).ToArray();
+                string[] patterns = FileFilterPatterns.Split(',').Select(x => x.Trim()).ToArray();
                 options.FileTypeChoices = new[]
                 {
                     new FilePickerFileType(FileFilterName) { Patterns = patterns },
@@ -181,7 +194,7 @@ public sealed partial class PathPickerTextBox : UserControl
                 }
             }
 
-            var file = await storage.SaveFilePickerAsync(options);
+            IStorageFile? file = await storage.SaveFilePickerAsync(options);
             if (file?.Path.LocalPath is { Length: > 0 } path)
             {
                 Path = path;

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http;
 using FluentAssertions;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Database;
 
@@ -12,8 +13,8 @@ public sealed class CslStyleCatalogTests
     [Fact]
     public async Task Default_source_refreshes_chinese_styles_from_github_repository_tree()
     {
-        await using var db = TemporarySqliteDatabase.Create();
-        using var httpClient = new HttpClient(new FakeHandler(new Dictionary<string, string>
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        using HttpClient httpClient = new(new FakeHandler(new Dictionary<string, string>
         {
             ["https://api.github.com/repos/zotero-chinese/styles/git/trees/main?recursive=1"] =
                 """
@@ -27,10 +28,10 @@ public sealed class CslStyleCatalogTests
                 }
                 """
         }));
-        var catalog = new CslStyleCatalog(db.ConnectionFactory, httpClient);
+        CslStyleCatalog catalog = new(db.ConnectionFactory, httpClient);
 
-        var refreshed = await catalog.RefreshAsync();
-        var search = await catalog.SearchAsync("社会科学");
+        Result<IReadOnlyList<CslCatalogStyle>> refreshed = await catalog.RefreshAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> search = await catalog.SearchAsync("社会科学");
 
         catalog.CurrentSource.SourceId.Should().Be(CslCatalogSourceIds.ZoteroChineseGitHub);
         catalog.Sources.Select(source => source.SourceId).Should().Contain([
@@ -45,14 +46,16 @@ public sealed class CslStyleCatalogTests
         search.Value.Single().StyleId.Should().Be("中国社会科学");
         search.Value.Single().DisplayName.Should().Be("中国社会科学");
         search.Value.Single().SourceKind.Should().Be(CslCatalogSourceIds.ZoteroChineseGitHub);
-        search.Value.Single().SourceUrl.Should().Be("https://raw.githubusercontent.com/zotero-chinese/styles/main/src/%E4%B8%AD%E5%9B%BD%E7%A4%BE%E4%BC%9A%E7%A7%91%E5%AD%A6/%E4%B8%AD%E5%9B%BD%E7%A4%BE%E4%BC%9A%E7%A7%91%E5%AD%A6.csl");
+        search.Value.Single().SourceUrl.Should()
+            .Be(
+                "https://raw.githubusercontent.com/zotero-chinese/styles/main/src/%E4%B8%AD%E5%9B%BD%E7%A4%BE%E4%BC%9A%E7%A7%91%E5%AD%A6/%E4%B8%AD%E5%9B%BD%E7%A4%BE%E4%BC%9A%E7%A7%91%E5%AD%A6.csl");
     }
 
     [Fact]
     public async Task Can_switch_to_gitee_chinese_repository_source()
     {
-        await using var db = TemporarySqliteDatabase.Create();
-        using var httpClient = new HttpClient(new FakeHandler(new Dictionary<string, string>
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        using HttpClient httpClient = new(new FakeHandler(new Dictionary<string, string>
         {
             ["https://gitee.com/api/v5/repos/zotero-chinese-x/styles/git/trees/main?recursive=1"] =
                 """
@@ -63,24 +66,26 @@ public sealed class CslStyleCatalogTests
                 }
                 """
         }));
-        var catalog = new CslStyleCatalog(db.ConnectionFactory, httpClient);
+        CslStyleCatalog catalog = new(db.ConnectionFactory, httpClient);
 
-        var selected = catalog.SetSource(CslCatalogSourceIds.ZoteroChineseGitee);
-        var refreshed = await catalog.RefreshAsync();
+        Result selected = catalog.SetSource(CslCatalogSourceIds.ZoteroChineseGitee);
+        Result<IReadOnlyList<CslCatalogStyle>> refreshed = await catalog.RefreshAsync();
 
         selected.IsSuccess.Should().BeTrue();
         catalog.CurrentSource.DisplayName.Should().Contain("Gitee");
         refreshed.IsSuccess.Should().BeTrue();
         refreshed.Value.Should().ContainSingle();
         refreshed.Value.Single().SourceKind.Should().Be(CslCatalogSourceIds.ZoteroChineseGitee);
-        refreshed.Value.Single().SourceUrl.Should().Be("https://gitee.com/zotero-chinese-x/styles/raw/main/src/%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E7%A0%94%E7%A9%B6/%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E7%A0%94%E7%A9%B6.csl");
+        refreshed.Value.Single().SourceUrl.Should()
+            .Be(
+                "https://gitee.com/zotero-chinese-x/styles/raw/main/src/%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E7%A0%94%E7%A9%B6/%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E7%A0%94%E7%A9%B6.csl");
     }
 
     [Fact]
     public async Task Can_switch_to_official_zotero_style_repository_source()
     {
-        await using var db = TemporarySqliteDatabase.Create();
-        using var httpClient = new HttpClient(new FakeHandler(new Dictionary<string, string>
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        using HttpClient httpClient = new(new FakeHandler(new Dictionary<string, string>
         {
             ["https://www.zotero.org/styles-files/styles.json"] =
                 """
@@ -104,11 +109,11 @@ public sealed class CslStyleCatalogTests
                 ]
                 """
         }));
-        var catalog = new CslStyleCatalog(db.ConnectionFactory, httpClient);
+        CslStyleCatalog catalog = new(db.ConnectionFactory, httpClient);
 
         catalog.SetSource(CslCatalogSourceIds.ZoteroOfficial).IsSuccess.Should().BeTrue();
-        var refreshed = await catalog.RefreshAsync();
-        var search = await catalog.SearchAsync("apa");
+        Result<IReadOnlyList<CslCatalogStyle>> refreshed = await catalog.RefreshAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> search = await catalog.SearchAsync("apa");
 
         refreshed.IsSuccess.Should().BeTrue();
         refreshed.Value.Should().HaveCount(2);
@@ -123,8 +128,8 @@ public sealed class CslStyleCatalogTests
     [Fact]
     public async Task Search_uses_cache_for_the_selected_source()
     {
-        await using var db = TemporarySqliteDatabase.Create();
-        var responses = new Dictionary<string, string>
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        Dictionary<string, string> responses = new()
         {
             ["https://api.github.com/repos/zotero-chinese/styles/git/trees/main?recursive=1"] =
                 """
@@ -141,16 +146,16 @@ public sealed class CslStyleCatalogTests
                 ]
                 """
         };
-        using var httpClient = new HttpClient(new FakeHandler(responses));
-        var catalog = new CslStyleCatalog(db.ConnectionFactory, httpClient);
+        using HttpClient httpClient = new(new FakeHandler(responses));
+        CslStyleCatalog catalog = new(db.ConnectionFactory, httpClient);
         await catalog.RefreshAsync();
         catalog.SetSource(CslCatalogSourceIds.ZoteroOfficial).IsSuccess.Should().BeTrue();
         await catalog.RefreshAsync();
 
         catalog.SetSource(CslCatalogSourceIds.ZoteroChineseGitHub).IsSuccess.Should().BeTrue();
-        var chineseSearch = await catalog.SearchAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> chineseSearch = await catalog.SearchAsync();
         catalog.SetSource(CslCatalogSourceIds.ZoteroOfficial).IsSuccess.Should().BeTrue();
-        var officialSearch = await catalog.SearchAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> officialSearch = await catalog.SearchAsync();
 
         chineseSearch.Value.Should().ContainSingle(style => style.StyleId == "中国社会科学");
         officialSearch.Value.Should().ContainSingle(style => style.StyleId == "apa");
@@ -159,10 +164,11 @@ public sealed class CslStyleCatalogTests
     [Fact]
     public async Task Unknown_source_is_rejected()
     {
-        await using var db = TemporarySqliteDatabase.Create();
-        var catalog = new CslStyleCatalog(db.ConnectionFactory, new HttpClient(new FakeHandler(new Dictionary<string, string>())));
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        CslStyleCatalog catalog = new(db.ConnectionFactory,
+            new HttpClient(new FakeHandler(new Dictionary<string, string>())));
 
-        var result = catalog.SetSource("missing");
+        Result result = catalog.SetSource("missing");
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be("validation_failed");
@@ -177,10 +183,11 @@ public sealed class CslStyleCatalogTests
             _responses = responses;
         }
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
         {
-            var uri = request.RequestUri?.ToString() ?? "";
-            if (!_responses.TryGetValue(uri, out var body))
+            string uri = request.RequestUri?.ToString() ?? "";
+            if (!_responses.TryGetValue(uri, out string? body))
             {
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)
                 {

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
@@ -16,13 +17,14 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         _connectionFactory = connectionFactory;
     }
 
-    public async Task<Result<IReadOnlyList<LibraryItemRow>>> ListRowsAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<LibraryItemRow>>> ListRowsAsync(
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var rows = await connection.QueryAsync<Row>(
+            IEnumerable<Row> rows = await connection.QueryAsync<Row>(
                 """
                 select
                     i.item_id as ItemId,
@@ -62,9 +64,11 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-item-query"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-item-query"))
         {
-            return Result<IReadOnlyList<LibraryItemRow>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<IReadOnlyList<LibraryItemRow>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -85,26 +89,31 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         public int SearchUnitCount { get; set; }
 
         public LibraryItemRow ToModel()
-            => new(
+        {
+            return new LibraryItemRow(
                 Patchouli.Core.Ids.ItemId.Parse(ItemId),
                 Title,
                 ItemType,
                 string.IsNullOrWhiteSpace(Authors) ? FormatCreators(CreatorsJson) : Authors,
                 string.IsNullOrWhiteSpace(Year) ? null : Year,
                 PublicationTitle,
-                string.IsNullOrWhiteSpace(DocumentInstanceId) ? null : Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
+                string.IsNullOrWhiteSpace(DocumentInstanceId)
+                    ? null
+                    : Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
                 LinkedFileName,
                 PageCount,
                 SearchUnitCount,
                 SearchUnitCount > 0 ? $"indexed ({SearchUnitCount})" : $"not_indexed ({DocumentStatus})",
                 IndexStatus);
+        }
     }
 
     private static string FormatCreators(string creatorsJson)
     {
         try
         {
-            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(creatorsJson) ? "[]" : creatorsJson);
+            using JsonDocument document =
+                JsonDocument.Parse(string.IsNullOrWhiteSpace(creatorsJson) ? "[]" : creatorsJson);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
             {
                 return string.Empty;
@@ -112,8 +121,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
 
             return string.Join(", ", document.RootElement.EnumerateArray()
                 .Select(element =>
-                    element.TryGetProperty("name", out var name) ? name.GetString() :
-                    element.TryGetProperty("Name", out var upperName) ? upperName.GetString() :
+                    element.TryGetProperty("name", out JsonElement name) ? name.GetString() :
+                    element.TryGetProperty("Name", out JsonElement upperName) ? upperName.GetString() :
                     null)
                 .Where(value => !string.IsNullOrWhiteSpace(value)));
         }

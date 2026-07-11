@@ -44,6 +44,7 @@ public sealed record McpMatchedUnit(
     bool IsMatch);
 
 public sealed record McpItemIdentifier(string Scheme, string Value, string? Note);
+
 public sealed record McpItemCreator(
     string Role,
     string? Family,

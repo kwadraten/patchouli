@@ -1,5 +1,6 @@
 ﻿using Patchouli.UI.ViewModels;
 using System.Collections.ObjectModel;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Import;
 using Patchouli.Core.Files;
 using Patchouli.Infrastructure.Workflows;
@@ -15,12 +16,13 @@ public sealed class FirstRunViewModel : ViewModelBase
     private readonly IModalOperationRunner? _modalOperations;
     public Action<string>? OnError { get; set; }
     public Action<string>? OnProgress { get; set; }
+
     private FirstRunWorkflowState State
     {
         get => _state;
         set
         {
-            var newState = value;
+            FirstRunWorkflowState newState = value;
             if (!string.IsNullOrWhiteSpace(newState.LastError))
             {
                 OnError?.Invoke(newState.LastError);
@@ -35,8 +37,12 @@ public sealed class FirstRunViewModel : ViewModelBase
                     newState.LastError,
                     newState.IsComplete);
             }
+
             _state = newState;
-            if (!string.IsNullOrWhiteSpace(newState.ProgressText)) OnProgress?.Invoke(newState.ProgressText);
+            if (!string.IsNullOrWhiteSpace(newState.ProgressText))
+            {
+                OnProgress?.Invoke(newState.ProgressText);
+            }
         }
     }
 
@@ -47,15 +53,20 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         _workflow = workflow;
         _discovery = discovery;
-        _state = new FirstRunWorkflowState(FirstRunStep.Library, "Create a library identity.", null, null, null, null, null, null, false);
+        _state = new FirstRunWorkflowState(FirstRunStep.Library, "Create a library identity.", null, null, null, null,
+            null, null, false);
         OpenDatabaseCommand = new AsyncCommand(OpenDatabaseAsync);
         CreateLibraryCommand = new AsyncCommand(CreateLibraryAsync);
         ScanCommand = new AsyncCommand(ScanDirectoryAsync);
         ImportCommand = new AsyncCommand(ImportPdfAsync);
         FinishSetupCommand = new AsyncCommand(FinishSetupAsync);
+        CompleteCommand = FinishSetupCommand;
     }
 
-    public FirstRunViewModel(Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>> openDatabase, IModalOperationRunner? modalOperations = null)
+    public FirstRunViewModel(
+        Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>> openDatabase,
+        IModalOperationRunner? modalOperations = null,
+        Func<Task>? complete = null)
     {
         _openDatabase = openDatabase;
         _modalOperations = modalOperations;
@@ -65,6 +76,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         ScanCommand = new AsyncCommand(ScanDirectoryAsync);
         ImportCommand = new AsyncCommand(ImportPdfAsync);
         FinishSetupCommand = new AsyncCommand(FinishSetupAsync);
+        CompleteCommand = new AsyncCommand(complete ?? FinishSetupAsync);
     }
 
     public string CurrentStep => _state.CurrentStep;
@@ -75,6 +87,7 @@ public sealed class FirstRunViewModel : ViewModelBase
 
     private string? _databasePath = "";
     private bool _isImportMode;
+
     public bool IsImportMode
     {
         get => _isImportMode;
@@ -102,14 +115,19 @@ public sealed class FirstRunViewModel : ViewModelBase
         }
     }
 
-    public Controls.PathPickerMode DatabasePickerMode => _isImportMode ? Controls.PathPickerMode.OpenFile : Controls.PathPickerMode.SaveFile;
+    public Controls.PathPickerMode DatabasePickerMode =>
+        _isImportMode ? Controls.PathPickerMode.OpenFile : Controls.PathPickerMode.SaveFile;
 
     public string? DatabasePath
     {
         get => _databasePath;
         set
         {
-            if (_databasePath == value) return;
+            if (_databasePath == value)
+            {
+                return;
+            }
+
             _databasePath = value;
             Raise();
         }
@@ -118,16 +136,22 @@ public sealed class FirstRunViewModel : ViewModelBase
     public string LibraryName { get; set; } = "My Library";
 
     private string _scanRoot = "";
+
     public string ScanRoot
     {
         get => _scanRoot;
         set
         {
-            if (_scanRoot == value) return;
+            if (_scanRoot == value)
+            {
+                return;
+            }
+
             _scanRoot = value;
             Raise();
         }
     }
+
     public SelectedFileSearchRoot? SelectedScanRoot { get; set; }
 
     public ObservableCollection<PdfCandidateViewModel> PdfCandidates { get; } = new();
@@ -153,11 +177,31 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         get
         {
-            if (_state.CurrentStep == FirstRunStep.Database) return 25;
-            if (_state.CurrentStep == FirstRunStep.Library) return 50;
-            if (_state.CurrentStep == FirstRunStep.Scan) return 75;
-            if (_state.CurrentStep == FirstRunStep.MinerUConfig) return 90;
-            if (_state.CurrentStep == FirstRunStep.Complete) return 100;
+            if (_state.CurrentStep == FirstRunStep.Database)
+            {
+                return 25;
+            }
+
+            if (_state.CurrentStep == FirstRunStep.Library)
+            {
+                return 50;
+            }
+
+            if (_state.CurrentStep == FirstRunStep.Scan)
+            {
+                return 75;
+            }
+
+            if (_state.CurrentStep == FirstRunStep.MinerUConfig)
+            {
+                return 90;
+            }
+
+            if (_state.CurrentStep == FirstRunStep.Complete)
+            {
+                return 100;
+            }
+
             return 0;
         }
     }
@@ -166,11 +210,31 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         get
         {
-            if (_state.CurrentStep == FirstRunStep.Database) return "Step 1 of 4";
-            if (_state.CurrentStep == FirstRunStep.Library) return "Step 2 of 4";
-            if (_state.CurrentStep == FirstRunStep.Scan) return "Step 3 of 4";
-            if (_state.CurrentStep == FirstRunStep.MinerUConfig) return "Step 4 of 4";
-            if (_state.CurrentStep == FirstRunStep.Complete) return "Step 4 of 4";
+            if (_state.CurrentStep == FirstRunStep.Database)
+            {
+                return "Step 1 of 4";
+            }
+
+            if (_state.CurrentStep == FirstRunStep.Library)
+            {
+                return "Step 2 of 4";
+            }
+
+            if (_state.CurrentStep == FirstRunStep.Scan)
+            {
+                return "Step 3 of 4";
+            }
+
+            if (_state.CurrentStep == FirstRunStep.MinerUConfig)
+            {
+                return "Step 4 of 4";
+            }
+
+            if (_state.CurrentStep == FirstRunStep.Complete)
+            {
+                return "Step 4 of 4";
+            }
+
             return "Step 1 of 4";
         }
     }
@@ -180,78 +244,123 @@ public sealed class FirstRunViewModel : ViewModelBase
     public AsyncCommand ScanCommand { get; }
     public AsyncCommand ImportCommand { get; }
     public AsyncCommand FinishSetupCommand { get; }
+    public AsyncCommand CompleteCommand { get; }
 
     public async Task OpenDatabaseAsync()
     {
-        if (_openDatabase is null || string.IsNullOrWhiteSpace(DatabasePath)) return;
+        if (_openDatabase is null || string.IsNullOrWhiteSpace(DatabasePath))
+        {
+            return;
+        }
+
         _existingDatabaseSetup = null;
 
         if (IsImportMode)
         {
-            if (!System.IO.File.Exists(DatabasePath) || new System.IO.FileInfo(DatabasePath).Length == 0)
+            if (!File.Exists(DatabasePath) || new FileInfo(DatabasePath).Length == 0)
             {
-                State = new FirstRunWorkflowState(FirstRunStep.Database, "所选数据库文件不存在或为空。", null, null, null, null, null, "所选数据库文件不存在或为空。", false);
+                State = new FirstRunWorkflowState(FirstRunStep.Database, "所选数据库文件不存在或为空。", null, null, null, null, null,
+                    "所选数据库文件不存在或为空。", false);
                 RaiseAll();
                 return;
             }
+
             try
             {
                 _existingDatabaseSetup = await InspectExistingDatabaseAsync(DatabasePath);
             }
             catch (Exception ex)
             {
-                State = new FirstRunWorkflowState(FirstRunStep.Database, "无效的 Patchouli.Net 数据库格式。", null, null, null, null, null, $"验证失败：{ex.Message}", false);
+                State = new FirstRunWorkflowState(FirstRunStep.Database, "无效的 Patchouli.Net 数据库格式。", null, null, null,
+                    null, null, $"验证失败：{ex.Message}", false);
                 RaiseAll();
                 return;
             }
         }
 
-        IsBusy = true; Raise(nameof(IsBusy));
+        IsBusy = true;
+        Raise(nameof(IsBusy));
         try
         {
-            var opened = await _openDatabase(DatabasePath);
+            (FirstRunWorkflow Workflow, PdfDiscoveryService Discovery) opened = await _openDatabase(DatabasePath);
             _workflow = opened.Workflow;
             _discovery = opened.Discovery;
             State = _existingDatabaseSetup is null
-                ? new FirstRunWorkflowState(FirstRunStep.Library, "数据库已就绪。请创建资料库身份。", null, null, null, null, null, null, false)
+                ? new FirstRunWorkflowState(FirstRunStep.Library, "数据库已就绪。请创建资料库身份。", null, null, null, null, null,
+                    null, false)
                 : _existingDatabaseSetup.ToWorkflowState();
         }
         catch (Exception ex)
         {
-            State = new FirstRunWorkflowState(FirstRunStep.Database, "无法打开数据库。", null, null, null, null, null, ex.Message, false);
+            State = new FirstRunWorkflowState(FirstRunStep.Database, "无法打开数据库。", null, null, null, null, null,
+                ex.Message, false);
         }
-        finally { IsBusy = false; Raise(nameof(IsBusy)); }
+        finally
+        {
+            IsBusy = false;
+            Raise(nameof(IsBusy));
+        }
+
         RaiseAll();
     }
 
     public async Task CreateLibraryAsync()
     {
-        if (string.IsNullOrWhiteSpace(LibraryName)) return;
-        if (_workflow is null) { SetWorkflowMissingError(); return; }
-        IsBusy = true; Raise(nameof(IsBusy));
+        if (string.IsNullOrWhiteSpace(LibraryName))
+        {
+            return;
+        }
+
+        if (_workflow is null)
+        {
+            SetWorkflowMissingError();
+            return;
+        }
+
+        IsBusy = true;
+        Raise(nameof(IsBusy));
         try
         {
             State = await _workflow.CreateLibraryAsync(LibraryName);
         }
-        finally { IsBusy = false; Raise(nameof(IsBusy)); }
+        finally
+        {
+            IsBusy = false;
+            Raise(nameof(IsBusy));
+        }
+
         RaiseAll();
     }
 
     public async Task ScanDirectoryAsync()
     {
-        if (string.IsNullOrWhiteSpace(ScanRoot)) return;
-        if (_workflow is null || _discovery is null) { SetWorkflowMissingError(); return; }
-        if (IsBusy) return;
-        IsBusy = true; Raise(nameof(IsBusy));
+        if (string.IsNullOrWhiteSpace(ScanRoot))
+        {
+            return;
+        }
+
+        if (_workflow is null || _discovery is null)
+        {
+            SetWorkflowMissingError();
+            return;
+        }
+
+        if (IsBusy)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        Raise(nameof(IsBusy));
         try
         {
-            var result = _modalOperations is null
+            FirstRunImportResult result = _modalOperations is null
                 ? await _workflow.ScanAndImportAsync(ScanRoot, _state.CreatedLibraryId)
                 : await _modalOperations.RunAsync(
                     new ModalOperationOptions(
                         "初次扫描与导入",
                         "正在扫描所选目录并导入 PDF 题录。",
-                        CanCancel: true),
+                        true),
                     context => _workflow.ScanAndImportAsync(
                         ScanRoot,
                         _state.CreatedLibraryId,
@@ -259,36 +368,59 @@ public sealed class FirstRunViewModel : ViewModelBase
                         context.Report));
             State = result.State;
             PdfCandidates.Clear();
-            foreach (var c in result.ScanResult.Candidates)
+            foreach (PdfCandidate c in result.ScanResult.Candidates)
+            {
                 PdfCandidates.Add(new PdfCandidateViewModel(c));
+            }
+
             Raise(nameof(PdfCandidates));
             ImportedPdfCount = result.ImportedCount;
             FailedImportCount = result.FailedCount;
             Raise(nameof(ImportedPdfCount));
             Raise(nameof(FailedImportCount));
         }
-        finally { IsBusy = false; Raise(nameof(IsBusy)); }
+        finally
+        {
+            IsBusy = false;
+            Raise(nameof(IsBusy));
+        }
+
         RaiseAll();
     }
 
     public async Task ImportPdfAsync()
     {
-        if (SelectedPdf is null) return;
-        if (_workflow is null) { SetWorkflowMissingError(); return; }
-        IsBusy = true; Raise(nameof(IsBusy));
+        if (SelectedPdf is null)
+        {
+            return;
+        }
+
+        if (_workflow is null)
+        {
+            SetWorkflowMissingError();
+            return;
+        }
+
+        IsBusy = true;
+        Raise(nameof(IsBusy));
         try
         {
-            var request = new PdfImportRequest(SelectedPdf.Path, ItemTitle, ItemAuthors, null);
+            PdfImportRequest request = new(SelectedPdf.Path, ItemTitle, ItemAuthors, null);
             State = _modalOperations is null
                 ? await _workflow.ImportPdfAsync(request)
                 : await _modalOperations.RunAsync(
                     new ModalOperationOptions(
                         "导入 PDF 题录",
                         "正在读取 PDF 并创建题录。",
-                        CanCancel: true),
+                        true),
                     context => _workflow.ImportPdfAsync(request, context.CancellationToken));
         }
-        finally { IsBusy = false; Raise(nameof(IsBusy)); }
+        finally
+        {
+            IsBusy = false;
+            Raise(nameof(IsBusy));
+        }
+
         RaiseAll();
     }
 
@@ -326,30 +458,49 @@ public sealed class FirstRunViewModel : ViewModelBase
 
     private static async Task<ExistingDatabaseSetupState> InspectExistingDatabaseAsync(string databasePath)
     {
-        using var conn = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={databasePath}");
+        using SqliteConnection conn = new($"Data Source={databasePath}");
         await conn.OpenAsync();
 
         if (!await TableExistsAsync(conn, "library_metadata"))
+        {
             throw new InvalidOperationException("缺少 library_metadata 表。");
+        }
 
-        var library = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<LibraryMetadataRow>(
+        LibraryMetadataRow? library = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<LibraryMetadataRow>(
             conn,
             "select library_id as LibraryId, display_name as DisplayName from library_metadata limit 1;");
-        if (library is null || string.IsNullOrWhiteSpace(library.LibraryId) || string.IsNullOrWhiteSpace(library.DisplayName))
+        if (library is null || string.IsNullOrWhiteSpace(library.LibraryId) ||
+            string.IsNullOrWhiteSpace(library.DisplayName))
+        {
             throw new InvalidOperationException("缺少 library_metadata 资料库身份数据。");
+        }
 
-        var hasSearchRoots = await CountRowsIfTableExistsAsync(conn, "file_search_roots") > 0;
-        var hasOcrPresets = await CountRowsIfTableExistsAsync(conn, "ocr_presets") > 0;
+        bool hasSearchRoots = await CountRowsIfTableExistsAsync(conn, "file_search_roots") > 0;
+        bool hasOcrPresets = await CountRowsIfTableExistsAsync(conn, "ocr_presets") > 0;
 
-        var skipped = new List<string> { $"已检测到资料库「{library.DisplayName}」，跳过资料库身份步骤" };
-        if (hasSearchRoots) skipped.Add("已检测到 file_search_roots，跳过文件搜索根配置步骤");
-        if (hasOcrPresets) skipped.Add("已检测到 ocr_presets，跳过 OCR Preset 配置步骤");
+        List<string> skipped = new() { $"已检测到资料库「{library.DisplayName}」，跳过资料库身份步骤" };
+        if (hasSearchRoots)
+        {
+            skipped.Add("已检测到 file_search_roots，跳过文件搜索根配置步骤");
+        }
 
-        var missing = new List<string>();
-        if (!hasSearchRoots) missing.Add("缺少 file_search_roots，请在向导中选择 PDF 扫描目录");
-        if (!hasOcrPresets) missing.Add("缺少 ocr_presets，请在向导中完成 OCR Preset 配置");
+        if (hasOcrPresets)
+        {
+            skipped.Add("已检测到 ocr_presets，跳过 OCR Preset 配置步骤");
+        }
 
-        var step = !hasSearchRoots
+        List<string> missing = new();
+        if (!hasSearchRoots)
+        {
+            missing.Add("缺少 file_search_roots，请在向导中选择 PDF 扫描目录");
+        }
+
+        if (!hasOcrPresets)
+        {
+            missing.Add("缺少 ocr_presets，请在向导中完成 OCR Preset 配置");
+        }
+
+        string step = !hasSearchRoots
             ? FirstRunStep.Scan
             : !hasOcrPresets
                 ? FirstRunStep.MinerUConfig
@@ -362,19 +513,22 @@ public sealed class FirstRunViewModel : ViewModelBase
             step == FirstRunStep.Complete);
     }
 
-    private static async Task<bool> TableExistsAsync(Microsoft.Data.Sqlite.SqliteConnection conn, string tableName)
+    private static async Task<bool> TableExistsAsync(SqliteConnection conn, string tableName)
     {
-        var count = await Dapper.SqlMapper.ExecuteScalarAsync<int>(
+        int count = await Dapper.SqlMapper.ExecuteScalarAsync<int>(
             conn,
             "select count(1) from sqlite_master where type = 'table' and name = @TableName;",
             new { TableName = tableName });
         return count > 0;
     }
 
-    private static async Task<int> CountRowsIfTableExistsAsync(Microsoft.Data.Sqlite.SqliteConnection conn, string tableName)
+    private static async Task<int> CountRowsIfTableExistsAsync(SqliteConnection conn,
+        string tableName)
     {
         if (!await TableExistsAsync(conn, tableName))
+        {
             return 0;
+        }
 
         return await Dapper.SqlMapper.ExecuteScalarAsync<int>(conn, $"select count(1) from {tableName};");
     }
@@ -391,13 +545,17 @@ public sealed class FirstRunViewModel : ViewModelBase
         string ProgressText,
         bool IsComplete)
     {
-        public FirstRunWorkflowState ToWorkflowState() =>
-            new(CurrentStep, ProgressText, null, LibraryId, null, null, null, null, IsComplete);
+        public FirstRunWorkflowState ToWorkflowState()
+        {
+            return new FirstRunWorkflowState(CurrentStep, ProgressText, null, LibraryId, null, null, null, null,
+                IsComplete);
+        }
     }
 
     private void SetWorkflowMissingError()
     {
-        State = new FirstRunWorkflowState(FirstRunStep.Database, "请先打开一个运行时数据库。", null, null, null, null, null, "请先打开一个运行时数据库。", false);
+        State = new FirstRunWorkflowState(FirstRunStep.Database, "请先打开一个运行时数据库。", null, null, null, null, null,
+            "请先打开一个运行时数据库。", false);
         RaiseAll();
     }
 

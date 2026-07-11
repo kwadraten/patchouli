@@ -14,7 +14,8 @@ public sealed class ModalOperationContext
     private readonly BlockingOperationDialogViewModel _viewModel;
     private readonly bool _dispatchToUi;
 
-    internal ModalOperationContext(BlockingOperationDialogViewModel viewModel, CancellationToken cancellationToken, bool dispatchToUi)
+    internal ModalOperationContext(BlockingOperationDialogViewModel viewModel, CancellationToken cancellationToken,
+        bool dispatchToUi)
     {
         _viewModel = viewModel;
         CancellationToken = cancellationToken;
@@ -24,7 +25,9 @@ public sealed class ModalOperationContext
     public CancellationToken CancellationToken { get; }
 
     public void Report(int? current, int? total, string label, string? detail = null)
-        => Dispatcher.UIThread.Post(() => ApplyProgress(current, total, label, detail));
+    {
+        Dispatcher.UIThread.Post(() => ApplyProgress(current, total, label, detail));
+    }
 
     public Task ReportAsync(int? current, int? total, string label, string? detail = null)
     {
@@ -33,6 +36,7 @@ public sealed class ModalOperationContext
             ApplyProgress(current, total, label, detail);
             return Task.CompletedTask;
         }
+
         return Dispatcher.UIThread.InvokeAsync(() => ApplyProgress(current, total, label, detail)).GetTask();
     }
 
@@ -43,18 +47,28 @@ public sealed class ModalOperationContext
             _viewModel.AddLog(message);
             return Task.CompletedTask;
         }
+
         return Dispatcher.UIThread.InvokeAsync(() => _viewModel.AddLog(message)).GetTask();
     }
 
     private void ApplyProgress(int? current, int? total, string label, string? detail)
     {
-        if (!_viewModel.IsRunning) return;
+        if (!_viewModel.IsRunning)
+        {
+            return;
+        }
+
         _viewModel.StatusMessage = label;
         _viewModel.IsIndeterminate = current is null || total is null || total <= 0;
         if (!_viewModel.IsIndeterminate)
+        {
             _viewModel.ProgressValue = Math.Clamp(current!.Value * 100d / total!.Value, 0, 100);
+        }
+
         if (!string.IsNullOrWhiteSpace(detail))
+        {
             _viewModel.AddLog(detail);
+        }
     }
 }
 
@@ -80,8 +94,8 @@ public sealed class ModalOperationRunner : IModalOperationRunner
         Func<ModalOperationContext, Task<T>> operation,
         CancellationToken cancellationToken = default)
     {
-        using var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var viewModel = new BlockingOperationDialogViewModel(source.Cancel)
+        using CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        BlockingOperationDialogViewModel viewModel = new(source.Cancel)
         {
             Title = options.Title,
             StatusMessage = options.InitialStatus,
@@ -89,21 +103,29 @@ public sealed class ModalOperationRunner : IModalOperationRunner
         };
         viewModel.AddLog(options.InitialStatus);
 
-        var dialogTask = _dialogs.ShowDialogAsync(viewModel);
+        Task dialogTask = _dialogs.ShowDialogAsync(viewModel);
         if (!dialogTask.IsCompleted)
+        {
             await Dispatcher.UIThread.InvokeAsync(() => { });
+        }
+
         try
         {
-            var context = new ModalOperationContext(viewModel, source.Token, !dialogTask.IsCompleted);
-            var result = dialogTask.IsCompleted
+            ModalOperationContext context = new(viewModel, source.Token, !dialogTask.IsCompleted);
+            T result = dialogTask.IsCompleted
                 ? await operation(context)
                 : await Task.Run(
                     async () => await operation(context).ConfigureAwait(false),
                     source.Token);
             if (result is IOperationOutcome { IsSuccess: false } outcome)
+            {
                 viewModel.MarkFailed(outcome.ErrorMessage ?? "操作未完成。");
+            }
             else
+            {
                 viewModel.MarkCompleted();
+            }
+
             await dialogTask;
             return result;
         }

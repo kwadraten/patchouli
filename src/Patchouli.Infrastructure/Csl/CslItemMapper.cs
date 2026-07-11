@@ -11,10 +11,11 @@ public sealed class CslItemMapper : ICslItemMapper
     {
         if (string.Equals(item.ItemType, "general", StringComparison.Ordinal))
         {
-            return Task.FromResult(Result<CslMappedItem>.Failure("general_type_not_renderable", "Patchouli item type 'general' cannot be rendered as CSL bibliography."));
+            return Task.FromResult(Result<CslMappedItem>.Failure("general_type_not_renderable",
+                "Patchouli item type 'general' cannot be rendered as CSL bibliography."));
         }
 
-        var variables = new Dictionary<string, object?>(StringComparer.Ordinal)
+        Dictionary<string, object?> variables = new(StringComparer.Ordinal)
         {
             ["id"] = item.ItemId.ToString(),
             ["type"] = item.ItemType,
@@ -43,7 +44,7 @@ public sealed class CslItemMapper : ICslItemMapper
             ["collection"] = ParseJsonArray(item.CollectionsJson)
         };
 
-        var creators = item.Creators
+        Dictionary<string, object?> creators = item.Creators
             .GroupBy(creator => creator.Role, StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
@@ -54,27 +55,29 @@ public sealed class CslItemMapper : ICslItemMapper
                     ["literal"] = creator.Literal
                 }).ToArray(),
                 StringComparer.Ordinal);
-        foreach (var creatorGroup in creators)
+        foreach (KeyValuePair<string, object?> creatorGroup in creators)
         {
             variables[creatorGroup.Key] = creatorGroup.Value;
         }
 
-        foreach (var date in item.Dates)
+        foreach (ItemDate date in item.Dates)
         {
             variables[date.Role] = CreateDateObject(date);
         }
 
-        foreach (var identifier in item.Identifiers)
+        foreach (ItemIdentifier identifier in item.Identifiers)
         {
             if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.DOI, StringComparison.OrdinalIgnoreCase))
             {
                 variables["DOI"] = identifier.Value;
             }
-            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ISBN, StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ISBN,
+                         StringComparison.OrdinalIgnoreCase))
             {
                 variables["ISBN"] = identifier.Value;
             }
-            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ISSN, StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ISSN,
+                         StringComparison.OrdinalIgnoreCase))
             {
                 variables["ISSN"] = identifier.Value;
             }
@@ -86,7 +89,7 @@ public sealed class CslItemMapper : ICslItemMapper
 
     private static object CreateDateObject(ItemDate date)
     {
-        var dictionary = new Dictionary<string, object?>(StringComparer.Ordinal)
+        Dictionary<string, object?> dictionary = new(StringComparer.Ordinal)
         {
             ["literal"] = date.Literal,
             ["circa"] = date.Circa,
@@ -97,7 +100,7 @@ public sealed class CslItemMapper : ICslItemMapper
         {
             if (!string.IsNullOrWhiteSpace(date.DatePartsJson))
             {
-                var parts = JsonSerializer.Deserialize<List<List<int>>>(date.DatePartsJson);
+                List<List<int>>? parts = JsonSerializer.Deserialize<List<List<int>>>(date.DatePartsJson);
                 if (parts is { Count: > 0 })
                 {
                     dictionary["date-parts"] = parts;
@@ -121,7 +124,7 @@ public sealed class CslItemMapper : ICslItemMapper
 
         try
         {
-            using var document = JsonDocument.Parse(json);
+            using JsonDocument document = JsonDocument.Parse(json);
             return document.RootElement.ValueKind != JsonValueKind.Array
                 ? Array.Empty<string>()
                 : document.RootElement.EnumerateArray()
@@ -145,19 +148,19 @@ public sealed class CslItemMapper : ICslItemMapper
 
         try
         {
-            using var document = JsonDocument.Parse(json);
+            using JsonDocument document = JsonDocument.Parse(json);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
                 return new Dictionary<string, object?>(StringComparer.Ordinal);
             }
 
-            var result = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var property in document.RootElement.EnumerateObject())
+            Dictionary<string, object?> result = new(StringComparer.Ordinal);
+            foreach (JsonProperty property in document.RootElement.EnumerateObject())
             {
                 result[property.Name] = property.Value.ValueKind switch
                 {
                     JsonValueKind.String => property.Value.GetString(),
-                    JsonValueKind.Number when property.Value.TryGetInt64(out var longValue) => longValue,
+                    JsonValueKind.Number when property.Value.TryGetInt64(out long longValue) => longValue,
                     JsonValueKind.Number => property.Value.GetDouble(),
                     JsonValueKind.True => true,
                     JsonValueKind.False => false,

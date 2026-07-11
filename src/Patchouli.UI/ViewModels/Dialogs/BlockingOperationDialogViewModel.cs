@@ -18,6 +18,7 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     }
 
     private string _title = "正在处理";
+
     public string Title
     {
         get => _title;
@@ -32,6 +33,7 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     }
 
     private string _statusMessage = "请等待操作完成...";
+
     public string StatusMessage
     {
         get => _statusMessage;
@@ -46,6 +48,7 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     }
 
     private bool _isIndeterminate = true;
+
     public bool IsIndeterminate
     {
         get => _isIndeterminate;
@@ -60,6 +63,7 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     }
 
     private double _progressValue = 0.0;
+
     public double ProgressValue
     {
         get => _progressValue;
@@ -74,6 +78,7 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     }
 
     private bool _isDetailsVisible;
+
     public bool IsDetailsVisible
     {
         get => _isDetailsVisible;
@@ -92,12 +97,17 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
 
     public ObservableCollection<string> Logs { get; } = new();
     private string _detailedResult = "";
+
     public string DetailedResult
     {
         get => _detailedResult;
         private set
         {
-            if (_detailedResult == value) return;
+            if (_detailedResult == value)
+            {
+                return;
+            }
+
             _detailedResult = value;
             Raise();
         }
@@ -113,22 +123,32 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
     public bool IsTerminal => !_isRunning;
 
     private string _operationState = "运行中";
+
     public string OperationState
     {
         get => _operationState;
         private set
         {
-            if (_operationState == value) return;
+            if (_operationState == value)
+            {
+                return;
+            }
+
             _operationState = value;
             Raise();
         }
     }
 
     private bool _canCancel;
+
     public bool CanCancel
     {
         get => _canCancel && _isRunning;
-        set { _canCancel = value; Raise(); }
+        set
+        {
+            _canCancel = value;
+            Raise();
+        }
     }
 
     public void AddLog(string log)
@@ -139,14 +159,22 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
 
     private Task ConfirmAsync()
     {
-        if (_isRunning) return Task.CompletedTask;
+        if (_isRunning)
+        {
+            return Task.CompletedTask;
+        }
+
         RequestClose?.Invoke(null);
         return Task.CompletedTask;
     }
 
     private Task CancelAsync()
     {
-        if (!CanCancel) return Task.CompletedTask;
+        if (!CanCancel)
+        {
+            return Task.CompletedTask;
+        }
+
         _canCancel = false;
         StatusMessage = "正在取消操作...";
         AddLog("已请求取消操作。");

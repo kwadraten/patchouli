@@ -1,7 +1,9 @@
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
@@ -13,11 +15,11 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task CreateLibrary_creates_stable_library_id()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var clock = new FixedClock(new DateTimeOffset(2026, 6, 19, 1, 0, 0, TimeSpan.Zero));
-        var service = new LibraryIdentityService(database.ConnectionFactory, clock);
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        FixedClock clock = new(new DateTimeOffset(2026, 6, 19, 1, 0, 0, TimeSpan.Zero));
+        LibraryIdentityService service = new(database.ConnectionFactory, clock);
 
-        var result = await service.CreateLibraryAsync("Qing archives");
+        Result<LibraryMetadata> result = await service.CreateLibraryAsync("Qing archives");
 
         result.IsSuccess.Should().BeTrue();
         result.Value.LibraryId.Value.Should().NotBe(Guid.Empty);
@@ -30,14 +32,14 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task RenameLibrary_does_not_change_library_id()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var createdAt = new DateTimeOffset(2026, 6, 19, 1, 0, 0, TimeSpan.Zero);
-        var clock = new FixedClock(createdAt);
-        var service = new LibraryIdentityService(database.ConnectionFactory, clock);
-        var created = await service.CreateLibraryAsync("Draft name");
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        DateTimeOffset createdAt = new(2026, 6, 19, 1, 0, 0, TimeSpan.Zero);
+        FixedClock clock = new(createdAt);
+        LibraryIdentityService service = new(database.ConnectionFactory, clock);
+        Result<LibraryMetadata> created = await service.CreateLibraryAsync("Draft name");
 
         clock.UtcNow = createdAt.AddMinutes(5);
-        var renamed = await service.RenameLibraryAsync("Archive notes");
+        Result<LibraryMetadata> renamed = await service.RenameLibraryAsync("Archive notes");
 
         renamed.IsSuccess.Should().BeTrue();
         renamed.Value.LibraryId.Should().Be(created.Value.LibraryId);
@@ -50,12 +52,12 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task GetCurrentLibrary_returns_not_found_when_missing()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
 
-        var result = await service.GetCurrentLibraryAsync();
+        Result<LibraryMetadata> result = await service.GetCurrentLibraryAsync();
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be(AppErrorCodes.NotFound);
@@ -64,12 +66,12 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task CreateLibrary_rejects_blank_display_name()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
 
-        var result = await service.CreateLibraryAsync("   ");
+        Result<LibraryMetadata> result = await service.CreateLibraryAsync("   ");
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
@@ -78,12 +80,12 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task RenameLibrary_rejects_blank_display_name()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
 
-        var result = await service.RenameLibraryAsync("   ");
+        Result<LibraryMetadata> result = await service.RenameLibraryAsync("   ");
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
@@ -92,17 +94,17 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task CreateLibrary_rejects_second_library_in_same_runtime_db()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
 
-        var first = await service.CreateLibraryAsync("First library");
-        var second = await service.CreateLibraryAsync("Second library");
+        Result<LibraryMetadata> first = await service.CreateLibraryAsync("First library");
+        Result<LibraryMetadata> second = await service.CreateLibraryAsync("Second library");
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-        var count = await connection.ExecuteScalarAsync<int>("select count(1) from library_metadata;");
+        int count = await connection.ExecuteScalarAsync<int>("select count(1) from library_metadata;");
 
         first.IsSuccess.Should().BeTrue();
         second.IsFailure.Should().BeTrue();
@@ -113,13 +115,13 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task ValidateLibraryId_returns_success_for_same_id()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
-        var created = await service.CreateLibraryAsync("Library");
+        Result<LibraryMetadata> created = await service.CreateLibraryAsync("Library");
 
-        var result = await service.ValidateLibraryIdAsync(created.Value.LibraryId);
+        Result result = await service.ValidateLibraryIdAsync(created.Value.LibraryId);
 
         result.IsSuccess.Should().BeTrue();
     }
@@ -127,13 +129,13 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task ValidateLibraryId_returns_library_mismatch_for_different_id()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
         await service.CreateLibraryAsync("Library");
 
-        var result = await service.ValidateLibraryIdAsync(LibraryId.New());
+        Result result = await service.ValidateLibraryIdAsync(LibraryId.New());
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be(AppErrorCodes.LibraryMismatch);
@@ -142,25 +144,25 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task Library_id_survives_database_file_move()
     {
-        await using var database = await CreateMigratedDatabaseAsync();
-        var service = new LibraryIdentityService(
+        await using TemporarySqliteDatabase database = await CreateMigratedDatabaseAsync();
+        LibraryIdentityService service = new(
             database.ConnectionFactory,
             new FixedClock(DateTimeOffset.UnixEpoch));
-        var created = await service.CreateLibraryAsync("Portable library");
+        Result<LibraryMetadata> created = await service.CreateLibraryAsync("Portable library");
 
-        var movedPath = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
+        string movedPath = Path.Combine(
+            Path.GetTempPath(),
             $"patchouli-moved-{Guid.NewGuid():N}.sqlite");
 
         try
         {
             File.Move(database.Path, movedPath);
-            var movedDatabase = new TemporarySqliteDatabaseHandle(movedPath);
-            var movedService = new LibraryIdentityService(
+            TemporarySqliteDatabaseHandle movedDatabase = new(movedPath);
+            LibraryIdentityService movedService = new(
                 movedDatabase.ConnectionFactory,
                 new FixedClock(DateTimeOffset.UnixEpoch));
 
-            var current = await movedService.GetCurrentLibraryAsync();
+            Result<LibraryMetadata> current = await movedService.GetCurrentLibraryAsync();
 
             current.IsSuccess.Should().BeTrue();
             current.Value.LibraryId.Should().Be(created.Value.LibraryId);
@@ -177,15 +179,15 @@ public sealed class LibraryIdentityServiceTests
     [Fact]
     public async Task MigrationRunner_applies_library_metadata_migration()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var runner = new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
 
         await runner.RunAsync();
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
 
-        var tableCount = await connection.ExecuteScalarAsync<int>(
+        int tableCount = await connection.ExecuteScalarAsync<int>(
             """
             select count(1)
             from sqlite_master
@@ -197,8 +199,8 @@ public sealed class LibraryIdentityServiceTests
 
     private static async Task<TemporarySqliteDatabase> CreateMigratedDatabaseAsync()
     {
-        var database = TemporarySqliteDatabase.Create();
-        var runner = new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
         await runner.RunAsync();
         return database;
     }
@@ -207,9 +209,9 @@ public sealed class LibraryIdentityServiceTests
     {
         public TemporarySqliteDatabaseHandle(string path)
         {
-            ConnectionFactory = new Patchouli.Infrastructure.Database.SqliteConnectionFactory(path);
+            ConnectionFactory = new Infrastructure.Database.SqliteConnectionFactory(path);
         }
 
-        public Patchouli.Infrastructure.Database.SqliteConnectionFactory ConnectionFactory { get; }
+        public Infrastructure.Database.SqliteConnectionFactory ConnectionFactory { get; }
     }
 }

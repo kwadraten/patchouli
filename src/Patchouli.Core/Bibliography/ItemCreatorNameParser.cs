@@ -27,7 +27,7 @@ public static partial class ItemCreatorNameParser
         string? name,
         ItemCreatorNameMode mode = ItemCreatorNameMode.Personal)
     {
-        var normalized = NormalizeWhitespace(name);
+        string? normalized = NormalizeWhitespace(name);
         if (normalized is null)
         {
             return new ItemCreatorNameParts(null, null, null);
@@ -38,7 +38,8 @@ public static partial class ItemCreatorNameParser
             return new ItemCreatorNameParts(null, null, normalized);
         }
 
-        var commaParts = normalized.Split([',', '，'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        string[] commaParts = normalized.Split([',', '，'],
+            StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (commaParts.Length >= 2)
         {
             return new ItemCreatorNameParts(commaParts[0], string.Join(" ", commaParts.Skip(1)), null);
@@ -46,13 +47,14 @@ public static partial class ItemCreatorNameParser
 
         if (IsHanName(normalized))
         {
-            var family = CommonChineseCompoundSurnames.FirstOrDefault(
-                    surname => normalized.StartsWith(surname, StringComparison.Ordinal))
+            string family =
+                CommonChineseCompoundSurnames.FirstOrDefault(surname =>
+                    normalized.StartsWith(surname, StringComparison.Ordinal))
                 ?? normalized[..1];
             return new ItemCreatorNameParts(family, normalized[family.Length..], null);
         }
 
-        var parts = normalized.Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        string[] parts = normalized.Split(' ', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         return parts.Length == 1
             ? new ItemCreatorNameParts(parts[0], null, null)
             : new ItemCreatorNameParts(parts[^1], string.Join(" ", parts[..^1]), null);
@@ -69,7 +71,9 @@ public static partial class ItemCreatorNameParser
     }
 
     private static bool IsHanName(string value)
-        => value.Length > 1 && value.All(character => character is >= '\u3400' and <= '\u9fff');
+    {
+        return value.Length > 1 && value.All(character => character is >= '\u3400' and <= '\u9fff');
+    }
 
     [GeneratedRegex("\\s+")]
     private static partial Regex WhitespaceRegex();

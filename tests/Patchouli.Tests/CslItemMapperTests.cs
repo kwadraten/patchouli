@@ -1,5 +1,7 @@
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Csl;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -12,8 +14,8 @@ public sealed class CslItemMapperTests
     [Fact]
     public async Task Maps_core_fields_creators_dates_identifiers_and_extra_csl()
     {
-        await using var context = await CreateContextAsync();
-        var created = await context.Items.CreateItemAsync(
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> created = await context.Items.CreateItemAsync(
             new CreateItemRequest(
                 "article-journal",
                 "Mapped Item",
@@ -22,7 +24,7 @@ public sealed class CslItemMapperTests
                 CustomFieldsJson: """{"archive":"local-file","original-publisher":"Patchouli Press"}""",
                 Creators:
                 [
-                    new ItemCreatorInput(ItemCreatorRoles.Author, Family: "Lovelace", Given: "Ada"),
+                    new ItemCreatorInput(ItemCreatorRoles.Author, "Lovelace", "Ada"),
                     new ItemCreatorInput(ItemCreatorRoles.Editor, Literal: "Royal Society")
                 ],
                 Dates:
@@ -30,10 +32,11 @@ public sealed class CslItemMapperTests
                     new ItemDateInput(ItemDateRoles.Issued, """[[1843]]"""),
                     new ItemDateInput(ItemDateRoles.Accessed, Literal: "2026-07-08")
                 ]));
-        await context.Items.AddIdentifierAsync(created.Value.ItemId, BuiltInIdentifierSchemes.DOI, "10.1234/example", null);
-        var fetched = await context.Items.GetItemAsync(created.Value.ItemId);
+        await context.Items.AddIdentifierAsync(created.Value.ItemId, BuiltInIdentifierSchemes.DOI, "10.1234/example",
+            null);
+        Result<ItemMetadata> fetched = await context.Items.GetItemAsync(created.Value.ItemId);
 
-        var mapped = await context.Mapper.MapAsync(fetched.Value);
+        Result<CslMappedItem> mapped = await context.Mapper.MapAsync(fetched.Value);
 
         mapped.IsSuccess.Should().BeTrue();
         mapped.Value.ItemType.Should().Be("article-journal");
@@ -41,7 +44,8 @@ public sealed class CslItemMapperTests
         mapped.Value.Variables["container-title"].Should().Be("Journal of Tests");
         mapped.Value.Variables["DOI"].Should().Be("10.1234/example");
         mapped.Value.Variables["extra_csl"].Should().BeAssignableTo<IReadOnlyDictionary<string, object?>>();
-        var authors = mapped.Value.Variables["author"].Should().BeAssignableTo<IEnumerable<object?>>().Subject.ToArray();
+        object?[] authors = mapped.Value.Variables["author"].Should().BeAssignableTo<IEnumerable<object?>>().Subject
+            .ToArray();
         authors.Should().HaveCount(1);
         mapped.Value.Variables["issued"].Should().NotBeNull();
     }
@@ -49,11 +53,11 @@ public sealed class CslItemMapperTests
     [Fact]
     public async Task General_type_is_blocked_from_renderable_csl_mapping()
     {
-        await using var context = await CreateContextAsync();
-        var created = await context.Items.CreateItemAsync("general", "Needs Classification");
-        var fetched = await context.Items.GetItemAsync(created.Value.ItemId);
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> created = await context.Items.CreateItemAsync("general", "Needs Classification");
+        Result<ItemMetadata> fetched = await context.Items.GetItemAsync(created.Value.ItemId);
 
-        var mapped = await context.Mapper.MapAsync(fetched.Value);
+        Result<CslMappedItem> mapped = await context.Mapper.MapAsync(fetched.Value);
 
         mapped.IsFailure.Should().BeTrue();
         mapped.ErrorCode.Should().Be("general_type_not_renderable");
@@ -61,12 +65,13 @@ public sealed class CslItemMapperTests
 
     private static async Task<TestContext> CreateContextAsync()
     {
-        var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var library = new LibraryIdentityService(database.ConnectionFactory, clock);
+        LibraryIdentityService library = new(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("CSL Mapper");
-        return new TestContext(database, new ItemService(database.ConnectionFactory, library, clock), new CslItemMapper());
+        return new TestContext(database, new ItemService(database.ConnectionFactory, library, clock),
+            new CslItemMapper());
     }
 
     private sealed class TestContext : IAsyncDisposable
@@ -82,6 +87,9 @@ public sealed class CslItemMapperTests
         public ItemService Items { get; }
         public CslItemMapper Mapper { get; }
 
-        public ValueTask DisposeAsync() => Database.DisposeAsync();
+        public ValueTask DisposeAsync()
+        {
+            return Database.DisposeAsync();
+        }
     }
 }

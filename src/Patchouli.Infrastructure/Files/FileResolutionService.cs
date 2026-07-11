@@ -1,5 +1,8 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Files;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
@@ -59,11 +62,18 @@ public sealed class FileResolutionService : IFileResolutionService
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(selectedRoot.DisplayPath))
+        {
             return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed, "Search root path is required.");
-        if (string.IsNullOrWhiteSpace(selectedRoot.ProviderIdentity) || string.IsNullOrWhiteSpace(selectedRoot.AuthorizationKind))
-            return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed, "Search root picker provenance and authorization kind are required.");
+        }
 
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(selectedRoot.ProviderIdentity) ||
+            string.IsNullOrWhiteSpace(selectedRoot.AuthorizationKind))
+        {
+            return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed,
+                "Search root picker provenance and authorization kind are required.");
+        }
+
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
             return Result<FileSearchRoot>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
@@ -71,10 +81,10 @@ public sealed class FileResolutionService : IFileResolutionService
 
         try
         {
-            var now = _clock.UtcNow.ToUniversalTime();
-            var normalizedRootPath = Path.GetFullPath(selectedRoot.DisplayPath);
-            var isRootAvailable = Directory.Exists(normalizedRootPath);
-            var root = new FileSearchRoot(
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            string normalizedRootPath = Path.GetFullPath(selectedRoot.DisplayPath);
+            bool isRootAvailable = Directory.Exists(normalizedRootPath);
+            FileSearchRoot root = new(
                 FileSearchRootId.New(),
                 libraryResult.Value.LibraryId,
                 normalizedRootPath,
@@ -85,13 +95,13 @@ public sealed class FileResolutionService : IFileResolutionService
                 selectedRoot.AuthorizationPayload,
                 selectedRoot.AuthorizationPayloadVersion,
                 selectedRoot.SelectedAt.ToUniversalTime());
-            var scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
+            BlockingOperationId? scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var duplicate = await connection.ExecuteScalarAsync<int>(
+            int duplicate = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from file_search_roots where library_id = @LibraryId and root_path = @RootPath;",
                 new { LibraryId = root.LibraryId.ToString(), root.RootPath },
                 transaction);
@@ -121,12 +131,16 @@ public sealed class FileResolutionService : IFileResolutionService
                 ToParameters(root),
                 transaction);
 
-            var reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
-            var scanSummary = reopened.IsSuccess
+            Result<ResolvedFileSearchRoot> reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
+            FileSearchRootTraversalResult scanSummary = reopened.IsSuccess
                 ? await _rootAccess.TraverseAsync(reopened.Value, cancellationToken)
-                : new FileSearchRootTraversalResult([], [], [], FileSearchRootStatuses.AuthorizationRequired, FileSearchRootScanStatuses.Failed);
+                : new FileSearchRootTraversalResult([], [], [], FileSearchRootStatuses.AuthorizationRequired,
+                    FileSearchRootScanStatuses.Failed);
             if (reopened.IsSuccess)
+            {
                 reopened.Value.AccessLease?.Dispose();
+            }
+
             await transaction.CommitAsync(cancellationToken);
 
             if (!root.IsAvailable)
@@ -153,7 +167,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileSearchRoot>(exception);
         }
@@ -162,7 +177,7 @@ public sealed class FileResolutionService : IFileResolutionService
     public async Task<Result<IReadOnlyList<FileSearchRoot>>> ListSearchRootsAsync(
         CancellationToken cancellationToken = default)
     {
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
             return Result<IReadOnlyList<FileSearchRoot>>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
@@ -170,10 +185,10 @@ public sealed class FileResolutionService : IFileResolutionService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var rows = await connection.QueryAsync<SearchRootRow>(
+            IEnumerable<SearchRootRow> rows = await connection.QueryAsync<SearchRootRow>(
                 """
                 select root_id as RootId, library_id as LibraryId, root_path as RootPath,
                        is_available as IsAvailable, created_at as CreatedAt, updated_at as UpdatedAt,
@@ -191,7 +206,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return DatabaseFailure<IReadOnlyList<FileSearchRoot>>(exception);
         }
@@ -203,10 +219,10 @@ public sealed class FileResolutionService : IFileResolutionService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 "delete from file_search_roots where root_id = @RootId;",
                 new { RootId = rootId.ToString() });
 
@@ -218,7 +234,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -231,10 +248,10 @@ public sealed class FileResolutionService : IFileResolutionService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 """
                 update file_search_roots
                 set is_available = @IsAvailable, updated_at = @UpdatedAt
@@ -255,7 +272,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -267,10 +285,10 @@ public sealed class FileResolutionService : IFileResolutionService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var assetExists = await connection.ExecuteScalarAsync<int>(
+            int assetExists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from file_assets where file_asset_id = @FileAssetId;",
                 new { FileAssetId = fileAssetId.ToString() });
             if (assetExists == 0)
@@ -280,7 +298,7 @@ public sealed class FileResolutionService : IFileResolutionService
                     "File asset was not found.");
             }
 
-            var rows = await connection.QueryAsync<KnownLocationRow>(
+            IEnumerable<KnownLocationRow> rows = await connection.QueryAsync<KnownLocationRow>(
                 """
                 select location_id as LocationId, file_asset_id as FileAssetId, path as Path,
                        last_seen_at as LastSeenAt, status as Status
@@ -290,13 +308,15 @@ public sealed class FileResolutionService : IFileResolutionService
                 """,
                 new { FileAssetId = fileAssetId.ToString() });
 
-            return Result<IReadOnlyList<KnownFileLocation>>.Success(rows.Select(row => row.ToKnownLocation()).ToArray());
+            return Result<IReadOnlyList<KnownFileLocation>>.Success(rows.Select(row => row.ToKnownLocation())
+                .ToArray());
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return DatabaseFailure<IReadOnlyList<KnownFileLocation>>(exception);
         }
@@ -309,7 +329,7 @@ public sealed class FileResolutionService : IFileResolutionService
     {
         _ = purpose;
 
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
             return Result<FileResolutionResult>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
@@ -317,10 +337,10 @@ public sealed class FileResolutionService : IFileResolutionService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var asset = await GetFileAssetRowAsync(connection, fileAssetId);
+            FileAssetRow? asset = await GetFileAssetRowAsync(connection, fileAssetId);
             if (asset is null)
             {
                 return Result<FileResolutionResult>.Failure(AppErrorCodes.NotFound, "File asset was not found.");
@@ -333,7 +353,8 @@ public sealed class FileResolutionService : IFileResolutionService
                     "File asset belongs to a different library.");
             }
 
-            var original = await EvaluatePathAsync(asset, asset.OriginalPath, "original_path", cancellationToken);
+            PathEvaluation? original =
+                await EvaluatePathAsync(asset, asset.OriginalPath, "original_path", cancellationToken);
             if (original?.Status == FileAssetStatus.Available)
             {
                 return SuccessResolution(asset.FileAssetId, FileAssetStatus.Available, original.Path, [original]);
@@ -348,7 +369,7 @@ public sealed class FileResolutionService : IFileResolutionService
                     "Original path exists, but size or quick_hash changed.");
             }
 
-            var knownLocations = (await connection.QueryAsync<KnownLocationRow>(
+            KnownLocationRow[] knownLocations = (await connection.QueryAsync<KnownLocationRow>(
                 """
                 select location_id as LocationId, file_asset_id as FileAssetId, path as Path,
                        last_seen_at as LastSeenAt, status as Status
@@ -358,15 +379,16 @@ public sealed class FileResolutionService : IFileResolutionService
                 """,
                 new { FileAssetId = fileAssetId.ToString() })).ToArray();
 
-            var knownCandidates = new List<PathEvaluation>();
-            foreach (var known in knownLocations)
+            List<PathEvaluation> knownCandidates = new();
+            foreach (KnownLocationRow known in knownLocations)
             {
                 if (Path.GetFullPath(known.Path) == Path.GetFullPath(asset.OriginalPath))
                 {
                     continue;
                 }
 
-                var candidate = await EvaluatePathAsync(asset, known.Path, "known_location", cancellationToken);
+                PathEvaluation? candidate =
+                    await EvaluatePathAsync(asset, known.Path, "known_location", cancellationToken);
                 if (candidate is null)
                 {
                     continue;
@@ -395,7 +417,7 @@ public sealed class FileResolutionService : IFileResolutionService
                     "Known location exists, but size or quick_hash changed.");
             }
 
-            var roots = (await connection.QueryAsync<SearchRootRow>(
+            FileSearchRoot[] roots = (await connection.QueryAsync<SearchRootRow>(
                 """
                 select root_id as RootId, library_id as LibraryId, root_path as RootPath,
                        is_available as IsAvailable, created_at as CreatedAt, updated_at as UpdatedAt,
@@ -411,14 +433,15 @@ public sealed class FileResolutionService : IFileResolutionService
                 return Result<FileResolutionResult>.Success(new FileResolutionResult(
                     fileAssetId,
                     FileAssetStatus.OfflineRoot,
-                    ResolvedPath: null,
-                    Candidates: [],
+                    null,
+                    [],
                     FileResolutionConfidence.None,
                     FileResolutionRequiredAction.ReconnectOfflineRoot,
                     "All configured file search roots are offline."));
             }
 
-            var scannedCandidates = await ScanSearchRootsAsync(asset, roots.Where(root => root.IsAvailable), cancellationToken);
+            List<FileResolutionCandidate> scannedCandidates =
+                await ScanSearchRootsAsync(asset, roots.Where(root => root.IsAvailable), cancellationToken);
             if (scannedCandidates.Count == 1)
             {
                 return Result<FileResolutionResult>.Success(new FileResolutionResult(
@@ -436,7 +459,7 @@ public sealed class FileResolutionService : IFileResolutionService
                 return Result<FileResolutionResult>.Success(new FileResolutionResult(
                     fileAssetId,
                     FileAssetStatus.Conflict,
-                    ResolvedPath: null,
+                    null,
                     scannedCandidates,
                     FileResolutionConfidence.High,
                     FileResolutionRequiredAction.ChooseCandidate,
@@ -455,8 +478,8 @@ public sealed class FileResolutionService : IFileResolutionService
             return Result<FileResolutionResult>.Success(new FileResolutionResult(
                 fileAssetId,
                 FileAssetStatus.Missing,
-                ResolvedPath: null,
-                Candidates: [],
+                null,
+                [],
                 FileResolutionConfidence.None,
                 FileResolutionRequiredAction.LocateManually,
                 "No matching file was found."));
@@ -465,7 +488,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileResolutionResult>(exception);
         }
@@ -481,7 +505,8 @@ public sealed class FileResolutionService : IFileResolutionService
             return Result<FileAsset>.Failure(AppErrorCodes.ValidationFailed, "Selected path is required.");
         }
 
-        var fingerprint = await _fingerprintService.GetFileMetadataAsync(selectedPath, cancellationToken);
+        Result<FileFingerprint> fingerprint =
+            await _fingerprintService.GetFileMetadataAsync(selectedPath, cancellationToken);
         if (fingerprint.IsFailure)
         {
             return Result<FileAsset>.Failure(fingerprint.ErrorCode!, fingerprint.ErrorMessage!);
@@ -489,18 +514,18 @@ public sealed class FileResolutionService : IFileResolutionService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            var asset = await GetFileAssetRowAsync(connection, fileAssetId, transaction);
+            FileAssetRow? asset = await GetFileAssetRowAsync(connection, fileAssetId, transaction);
             if (asset is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<FileAsset>.Failure(AppErrorCodes.NotFound, "File asset was not found.");
             }
 
-            var now = _clock.UtcNow.ToUniversalTime();
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
             await connection.ExecuteAsync(
                 """
                 update file_assets
@@ -540,7 +565,7 @@ public sealed class FileResolutionService : IFileResolutionService
 
             return Result<FileAsset>.Success(new FileAsset(
                 fileAssetId,
-                Patchouli.Core.Ids.LibraryId.Parse(asset.LibraryId),
+                LibraryId.Parse(asset.LibraryId),
                 fingerprint.Value.Path,
                 fingerprint.Value.FileName,
                 fingerprint.Value.SizeBytes,
@@ -557,7 +582,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileAsset>(exception);
         }
@@ -569,10 +595,10 @@ public sealed class FileResolutionService : IFileResolutionService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var affected = await connection.ExecuteAsync(
+            int affected = await connection.ExecuteAsync(
                 """
                 update file_assets
                 set status = @Status, updated_at = @UpdatedAt
@@ -593,7 +619,8 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -604,30 +631,32 @@ public sealed class FileResolutionService : IFileResolutionService
         IEnumerable<FileSearchRoot> roots,
         CancellationToken cancellationToken)
     {
-        var candidates = new List<FileResolutionCandidate>();
-        foreach (var root in roots)
+        List<FileResolutionCandidate> candidates = new();
+        foreach (FileSearchRoot root in roots)
         {
-            var reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
+            Result<ResolvedFileSearchRoot> reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
             if (reopened.IsFailure)
             {
                 continue;
             }
 
             using (reopened.Value.AccessLease)
-            foreach (var path in (await _rootAccess.TraverseAsync(reopened.Value, cancellationToken)).Files)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var fileInfo = new FileInfo(path);
-                if (!string.Equals(fileInfo.Name, asset.FileName, StringComparison.OrdinalIgnoreCase) ||
-                    fileInfo.Length != asset.SizeBytes)
+                foreach (string path in (await _rootAccess.TraverseAsync(reopened.Value, cancellationToken)).Files)
                 {
-                    continue;
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    FileInfo fileInfo = new(path);
+                    if (!string.Equals(fileInfo.Name, asset.FileName, StringComparison.OrdinalIgnoreCase) ||
+                        fileInfo.Length != asset.SizeBytes)
+                    {
+                        continue;
+                    }
 
-                var candidate = await EvaluatePathAsync(asset, path, "search_root", cancellationToken);
-                if (candidate?.Status == FileAssetStatus.Available)
-                {
-                    candidates.Add(candidate);
+                    PathEvaluation? candidate = await EvaluatePathAsync(asset, path, "search_root", cancellationToken);
+                    if (candidate?.Status == FileAssetStatus.Available)
+                    {
+                        candidates.Add(candidate);
+                    }
                 }
             }
         }
@@ -646,16 +675,16 @@ public sealed class FileResolutionService : IFileResolutionService
             return null;
         }
 
-        var fingerprint = await _fingerprintService.GetFileMetadataAsync(path, cancellationToken);
+        Result<FileFingerprint> fingerprint = await _fingerprintService.GetFileMetadataAsync(path, cancellationToken);
         if (fingerprint.IsFailure)
         {
             return null;
         }
 
-        var quickHashMatches = string.Equals(fingerprint.Value.QuickHash, asset.QuickHash, StringComparison.Ordinal);
-        var sizeMatches = fingerprint.Value.SizeBytes == asset.SizeBytes;
-        var status = sizeMatches && quickHashMatches ? FileAssetStatus.Available : FileAssetStatus.Changed;
-        var confidence = status == FileAssetStatus.Available
+        bool quickHashMatches = string.Equals(fingerprint.Value.QuickHash, asset.QuickHash, StringComparison.Ordinal);
+        bool sizeMatches = fingerprint.Value.SizeBytes == asset.SizeBytes;
+        string status = sizeMatches && quickHashMatches ? FileAssetStatus.Available : FileAssetStatus.Changed;
+        string confidence = status == FileAssetStatus.Available
             ? FileResolutionConfidence.Exact
             : FileResolutionConfidence.Low;
 
@@ -683,7 +712,7 @@ public sealed class FileResolutionService : IFileResolutionService
             candidates,
             FileResolutionConfidence.Exact,
             FileResolutionRequiredAction.None,
-            Warning: null));
+            null));
     }
 
     private static Result<FileResolutionResult> ChangedResolution(
@@ -695,7 +724,7 @@ public sealed class FileResolutionService : IFileResolutionService
         return Result<FileResolutionResult>.Success(new FileResolutionResult(
             fileAssetId,
             FileAssetStatus.Changed,
-            ResolvedPath: null,
+            null,
             candidates,
             FileResolutionConfidence.Low,
             FileResolutionRequiredAction.ConfirmChangedFile,
@@ -713,9 +742,9 @@ public sealed class FileResolutionService : IFileResolutionService
     }
 
     private static Task<FileAssetRow?> GetFileAssetRowAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
+        SqliteConnection connection,
         FileAssetId fileAssetId,
-        System.Data.Common.DbTransaction? transaction = null)
+        DbTransaction? transaction = null)
     {
         return connection.QuerySingleOrDefaultAsync<FileAssetRow>(
             """
@@ -749,15 +778,17 @@ public sealed class FileResolutionService : IFileResolutionService
             root.RootPath,
             IsAvailable = root.IsAvailable ? 1 : 0,
             CreatedAt = FormatUtc(root.CreatedAt),
-            UpdatedAt = FormatUtc(root.UpdatedAt)
-            ,root.AuthorizationKind
-            ,root.AuthorizationPayload
-            ,root.AuthorizationPayloadVersion
-            ,AuthorizationUpdatedAt = root.AuthorizationUpdatedAt is null ? null : FormatUtc(root.AuthorizationUpdatedAt.Value)
+            UpdatedAt = FormatUtc(root.UpdatedAt), root.AuthorizationKind, root.AuthorizationPayload,
+            root.AuthorizationPayloadVersion,
+            AuthorizationUpdatedAt =
+                root.AuthorizationUpdatedAt is null ? null : FormatUtc(root.AuthorizationUpdatedAt.Value)
         };
     }
 
-    private static string FormatUtc(DateTimeOffset value) => value.ToUniversalTime().ToString("O");
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
+    }
 
     private static Result<T> DatabaseFailure<T>(Exception exception)
     {
@@ -775,17 +806,18 @@ public sealed class FileResolutionService : IFileResolutionService
 
         try
         {
-            var started = await _blockingOperations.StartAsync(
+            Result<BlockingOperation> started = await _blockingOperations.StartAsync(
                 BlockingOperationTypes.FileSearchRootScan,
                 BlockingOperationScopeTypes.FileSearchRoot,
                 rootPath,
-                canCancel: true,
-                progressLabel: "Scanning file search root.",
+                true,
+                "Scanning file search root.",
                 nextActions: ["Reconnect the search root", "Retry registering the search root"],
                 cancellationToken: cancellationToken);
             return started.IsSuccess ? started.Value.OperationId : null;
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution", "complete-root-scan-operation"))
         {
             return null;
         }
@@ -809,7 +841,8 @@ public sealed class FileResolutionService : IFileResolutionService
                 Array.Empty<string>(),
                 cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution", "fail-root-scan-operation"))
         {
         }
     }
@@ -837,8 +870,10 @@ public sealed class FileResolutionService : IFileResolutionService
                 nextActions,
                 cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution", "fail-root-scan-operation"))
         {
+            _ = exception;
         }
     }
 
@@ -917,5 +952,4 @@ public sealed class FileResolutionService : IFileResolutionService
         string Reason,
         string Status)
         : FileResolutionCandidate(Path, SizeBytes, MtimeUtc, QuickHash, FullBlake3, Confidence, Reason);
-
 }

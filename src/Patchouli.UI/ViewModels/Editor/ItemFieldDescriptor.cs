@@ -28,7 +28,11 @@ public sealed class ItemFieldDescriptor : ViewModelBase
         get => _value;
         set
         {
-            if (_value == value) return;
+            if (_value == value)
+            {
+                return;
+            }
+
             _value = value;
             Raise();
         }

@@ -20,7 +20,11 @@ public sealed class WorkspaceLayoutViewModel : ViewModelBase
         get => _activeTab;
         set
         {
-            if (_activeTab == value) return;
+            if (_activeTab == value)
+            {
+                return;
+            }
+
             _activeTab = value;
             Raise();
             RaiseActiveDerivedProperties();
@@ -32,7 +36,11 @@ public sealed class WorkspaceLayoutViewModel : ViewModelBase
         get => _showInspectorPane;
         set
         {
-            if (_showInspectorPane == value) return;
+            if (_showInspectorPane == value)
+            {
+                return;
+            }
+
             _showInspectorPane = value;
             Raise();
             Raise(nameof(IsInspectorVisible));

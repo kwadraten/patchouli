@@ -1,7 +1,10 @@
-﻿using Dapper;
+﻿using System.Reflection;
+using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
+using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
@@ -25,11 +28,12 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task OpenDatabaseCommand_moves_from_database_to_library_step()
     {
-        var openedPath = "";
-        var viewModel = new FirstRunViewModel(path =>
+        string openedPath = "";
+        FirstRunViewModel viewModel = new(path =>
         {
             openedPath = path;
-            return Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!, new PdfDiscoveryService()));
+            return Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
+                new PdfDiscoveryService()));
         })
         {
             DatabasePath = @"C:\temp\runtime.sqlite"
@@ -46,8 +50,9 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task CreateLibrary_without_open_database_stays_recoverable()
     {
-        var viewModel = new FirstRunViewModel(_ =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!, new PdfDiscoveryService())));
+        FirstRunViewModel viewModel = new(_ =>
+            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
+                new PdfDiscoveryService())));
 
         await viewModel.CreateLibraryCommand.ExecuteAsync();
 
@@ -59,15 +64,16 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task OpenDatabaseCommand_import_mode_checks_library_metadata_and_shows_missing_setup_steps()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         await new LibraryIdentityService(database.ConnectionFactory, clock).CreateLibraryAsync("Existing Library");
-        var openedPath = "";
-        var viewModel = new FirstRunViewModel(path =>
+        string openedPath = "";
+        FirstRunViewModel viewModel = new(path =>
         {
             openedPath = path;
-            return Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!, new PdfDiscoveryService()));
+            return Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
+                new PdfDiscoveryService()));
         })
         {
             DatabasePath = database.Path,
@@ -87,21 +93,28 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task OpenDatabaseCommand_import_mode_skips_existing_roots_and_presets_with_status_feedback()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var library = new LibraryIdentityService(database.ConnectionFactory, clock);
-        var created = await library.CreateLibraryAsync("Configured Library");
-        await using (var connection = database.ConnectionFactory.CreateConnection())
+        LibraryIdentityService library = new(database.ConnectionFactory, clock);
+        Result<LibraryMetadata> created = await library.CreateLibraryAsync("Configured Library");
+        await using (SqliteConnection connection = database.ConnectionFactory.CreateConnection())
         {
             await connection.OpenAsync();
             await connection.ExecuteAsync(
                 "insert into file_search_roots (root_id, library_id, root_path, is_available, created_at, updated_at) values (@Id, @LibraryId, @Path, 1, @Now, @Now);",
-                new { Id = Guid.NewGuid().ToString("D"), LibraryId = created.Value.LibraryId.ToString(), Path = Path.GetTempPath(), Now = clock.UtcNow.ToString("O") });
+                new
+                {
+                    Id = Guid.NewGuid().ToString("D"), LibraryId = created.Value.LibraryId.ToString(),
+                    Path = Path.GetTempPath(), Now = clock.UtcNow.ToString("O")
+                });
         }
-        await new OcrPresetService(database.ConnectionFactory, library, clock).CreatePresetAsync("MinerU", null, OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true);
-        var viewModel = new FirstRunViewModel(path =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!, new PdfDiscoveryService())))
+
+        await new OcrPresetService(database.ConnectionFactory, library, clock).CreatePresetAsync("MinerU", null,
+            OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true);
+        FirstRunViewModel viewModel = new(path =>
+            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
+                new PdfDiscoveryService())))
         {
             DatabasePath = database.Path,
             IsImportMode = true
@@ -119,9 +132,9 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task ScanDirectoryCommand_imports_all_pages_from_real_pdf_fixture()
     {
-        await using var context = await ScanImportContext.CreateAsync();
+        await using ScanImportContext context = await ScanImportContext.CreateAsync();
         TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "full-document.pdf");
-        var viewModel = new FirstRunViewModel(context.Workflow, new PdfDiscoveryService())
+        FirstRunViewModel viewModel = new(context.Workflow, new PdfDiscoveryService())
         {
             ScanRoot = context.ScanRoot
         };
@@ -130,29 +143,29 @@ public sealed class FirstRunViewModelTests
 
         viewModel.HasError.Should().BeFalse();
         viewModel.ImportedPdfCount.Should().Be(1);
-        await using var connection = context.Database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-        var pageCount = await connection.ExecuteScalarAsync<int>("select count(1) from pages;");
+        int pageCount = await connection.ExecuteScalarAsync<int>("select count(1) from pages;");
         pageCount.Should().Be(3);
     }
 
     [Fact]
     public async Task ScanDirectoryCommand_records_completed_initial_root_scan()
     {
-        await using var context = await ScanImportContext.CreateAsync();
+        await using ScanImportContext context = await ScanImportContext.CreateAsync();
         TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "full-document.pdf");
-        var viewModel = new FirstRunViewModel(context.Workflow, new PdfDiscoveryService())
+        FirstRunViewModel viewModel = new(context.Workflow, new PdfDiscoveryService())
         {
             ScanRoot = context.ScanRoot
         };
 
         await viewModel.ScanCommand.ExecuteAsync();
 
-        var operations = await context.BlockingOperations.ListAsync(
-            status: BlockingOperationStatus.Completed,
-            operationType: BlockingOperationTypes.InitialRootScan,
-            scopeType: BlockingOperationScopeTypes.FileSearchRoot,
-            scopeId: Path.GetFullPath(context.ScanRoot));
+        Result<IReadOnlyList<BlockingOperation>> operations = await context.BlockingOperations.ListAsync(
+            BlockingOperationStatus.Completed,
+            BlockingOperationTypes.InitialRootScan,
+            BlockingOperationScopeTypes.FileSearchRoot,
+            Path.GetFullPath(context.ScanRoot));
 
         operations.IsSuccess.Should().BeTrue();
         operations.Value.Should().ContainSingle();
@@ -162,19 +175,19 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task ScanDirectoryCommand_records_failed_initial_root_scan_when_no_pdfs_are_found()
     {
-        await using var context = await ScanImportContext.CreateAsync();
-        var viewModel = new FirstRunViewModel(context.Workflow, new PdfDiscoveryService())
+        await using ScanImportContext context = await ScanImportContext.CreateAsync();
+        FirstRunViewModel viewModel = new(context.Workflow, new PdfDiscoveryService())
         {
             ScanRoot = context.ScanRoot
         };
 
         await viewModel.ScanCommand.ExecuteAsync();
 
-        var operations = await context.BlockingOperations.ListAsync(
-            status: BlockingOperationStatus.Failed,
-            operationType: BlockingOperationTypes.InitialRootScan,
-            scopeType: BlockingOperationScopeTypes.FileSearchRoot,
-            scopeId: Path.GetFullPath(context.ScanRoot));
+        Result<IReadOnlyList<BlockingOperation>> operations = await context.BlockingOperations.ListAsync(
+            BlockingOperationStatus.Failed,
+            BlockingOperationTypes.InitialRootScan,
+            BlockingOperationScopeTypes.FileSearchRoot,
+            Path.GetFullPath(context.ScanRoot));
 
         viewModel.CurrentStep.Should().Be(FirstRunStep.Scan);
         viewModel.HasError.Should().BeTrue();
@@ -186,8 +199,9 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task FinishSetupCommand_requires_token()
     {
-        var viewModel = new FirstRunViewModel(_ =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!, new PdfDiscoveryService())));
+        FirstRunViewModel viewModel = new(_ =>
+            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
+                new PdfDiscoveryService())));
         SetState(viewModel, new FirstRunWorkflowState(
             FirstRunStep.MinerUConfig,
             "Configure MinerU OCR.",
@@ -209,8 +223,9 @@ public sealed class FirstRunViewModelTests
     [Fact]
     public async Task FinishSetupCommand_completes_after_token()
     {
-        var viewModel = new FirstRunViewModel(_ =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!, new PdfDiscoveryService())))
+        FirstRunViewModel viewModel = new(_ =>
+            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
+                new PdfDiscoveryService())))
         {
             MinerUToken = "token"
         };
@@ -233,7 +248,8 @@ public sealed class FirstRunViewModelTests
 
     private static void SetState(FirstRunViewModel viewModel, FirstRunWorkflowState state)
     {
-        var field = typeof(FirstRunViewModel).GetField("_state", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        FieldInfo? field = typeof(FirstRunViewModel).GetField("_state",
+            BindingFlags.Instance | BindingFlags.NonPublic);
         field!.SetValue(viewModel, state);
     }
 
@@ -258,28 +274,32 @@ public sealed class FirstRunViewModelTests
 
         public static async Task<ScanImportContext> CreateAsync()
         {
-            var database = TemporarySqliteDatabase.Create();
-            var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
+            TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+            FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
             await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-            var library = new LibraryIdentityService(database.ConnectionFactory, clock);
+            LibraryIdentityService library = new(database.ConnectionFactory, clock);
             await library.CreateLibraryAsync("Scan Import");
-            var pdfImport = new PdfImportWorkflow(
+            PdfImportWorkflow pdfImport = new(
                 new FileAssetService(database.ConnectionFactory, library, clock),
                 new ItemService(database.ConnectionFactory, library, clock),
                 new DocumentInstanceService(database.ConnectionFactory, clock),
                 new PageService(database.ConnectionFactory, clock),
                 new PdfMetadataReader(),
                 clock);
-            var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
-            var workflow = new FirstRunWorkflow(library, new PdfDiscoveryService(), pdfImport, blockingOperations);
-            var scanRoot = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-scan-{Guid.NewGuid():N}")).FullName;
+            BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
+            FirstRunWorkflow workflow = new(library, new PdfDiscoveryService(), pdfImport, blockingOperations);
+            string scanRoot = Directory
+                .CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-scan-{Guid.NewGuid():N}")).FullName;
             return new ScanImportContext(database, scanRoot, workflow, blockingOperations);
         }
 
         public async ValueTask DisposeAsync()
         {
             if (Directory.Exists(ScanRoot))
-                Directory.Delete(ScanRoot, recursive: true);
+            {
+                Directory.Delete(ScanRoot, true);
+            }
+
             await Database.DisposeAsync();
         }
     }

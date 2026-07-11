@@ -16,7 +16,7 @@ internal sealed class TemporarySqliteDatabase : IAsyncDisposable
 
     public static TemporarySqliteDatabase Create()
     {
-        var path = System.IO.Path.Combine(
+        string path = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
             $"patchouli-{Guid.NewGuid():N}.sqlite");
 
@@ -31,8 +31,16 @@ internal sealed class TemporarySqliteDatabase : IAsyncDisposable
 
         if (File.Exists(Path))
         {
-            try { File.Delete(Path); }
-            catch { }
+            try
+            {
+                File.Delete(Path);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
         }
 
         return ValueTask.CompletedTask;

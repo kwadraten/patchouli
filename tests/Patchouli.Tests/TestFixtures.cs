@@ -8,8 +8,8 @@ internal static class TestFixtures
     public static string CopyRealThreePagePdfTo(string directory, string fileName = "real-three-page-sample.pdf")
     {
         Directory.CreateDirectory(directory);
-        var destination = Path.Combine(directory, fileName);
-        File.Copy(RealThreePagePdf, destination, overwrite: true);
+        string destination = Path.Combine(directory, fileName);
+        File.Copy(RealThreePagePdf, destination, true);
         return destination;
     }
 }

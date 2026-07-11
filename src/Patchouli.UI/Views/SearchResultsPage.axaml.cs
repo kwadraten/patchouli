@@ -13,9 +13,11 @@ public sealed partial class SearchResultsPage : UserControl
     }
 
     private async void OnCopySearchUnitEvidenceRefClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        => await UnexpectedExceptionBoundary.RunAsync(
+    {
+        await UnexpectedExceptionBoundary.RunAsync(
             () => CopySearchUnitEvidenceRefAsync(sender),
             "copy-search-unit-evidence-ref");
+    }
 
     private async Task CopySearchUnitEvidenceRefAsync(object? sender)
     {
@@ -29,9 +31,11 @@ public sealed partial class SearchResultsPage : UserControl
     }
 
     private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        => await UnexpectedExceptionBoundary.RunAsync(
+    {
+        await UnexpectedExceptionBoundary.RunAsync(
             () => CopySearchUnitEvidenceMarkdownAsync(sender),
             "copy-search-unit-evidence-markdown");
+    }
 
     private async Task CopySearchUnitEvidenceMarkdownAsync(object? sender)
     {
@@ -45,9 +49,11 @@ public sealed partial class SearchResultsPage : UserControl
     }
 
     private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
-        => await UnexpectedExceptionBoundary.RunAsync(
+    {
+        await UnexpectedExceptionBoundary.RunAsync(
             () => ExportSearchUnitEvidenceMarkdownAsync(sender),
             "export-search-unit-evidence-markdown");
+    }
 
     private async Task ExportSearchUnitEvidenceMarkdownAsync(object? sender)
     {
@@ -57,16 +63,19 @@ public sealed partial class SearchResultsPage : UserControl
             return;
         }
 
-        var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
+        IStorageProvider? storage = TopLevel.GetTopLevel(this)?.StorageProvider;
         if (storage is null)
         {
             return;
         }
 
-        var evidenceRef = await main.SearchEvidence.EnsureEvidenceRefAsync(unit);
-        if (string.IsNullOrWhiteSpace(evidenceRef)) return;
+        string? evidenceRef = await main.SearchEvidence.EnsureEvidenceRefAsync(unit);
+        if (string.IsNullOrWhiteSpace(evidenceRef))
+        {
+            return;
+        }
 
-        var file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
+        IStorageFile? file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "导出证据 Markdown",
             SuggestedFileName = "evidence.md",

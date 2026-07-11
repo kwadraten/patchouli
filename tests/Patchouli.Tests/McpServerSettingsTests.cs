@@ -1,7 +1,9 @@
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Mcp;
@@ -15,12 +17,12 @@ public sealed class McpServerSettingsTests
     [Fact]
     public async Task Save_and_load_round_trip_preserves_non_secret_fields_and_overrides()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var service = new McpServerSettingsService(database.ConnectionFactory, clock);
+        McpServerSettingsService service = new(database.ConnectionFactory, clock);
 
-        var saved = await service.SaveSettingsAsync(new McpServerSettings(
+        Result<McpServerSettings> saved = await service.SaveSettingsAsync(new McpServerSettings(
             4540,
             "127.0.0.1",
             true,
@@ -29,7 +31,7 @@ public sealed class McpServerSettingsTests
             "redacted-token",
             [new McpToolOverride("search_library", false, "disabled for tests")],
             clock.UtcNow));
-        var loaded = await service.GetSettingsAsync();
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
 
         saved.IsSuccess.Should().BeTrue();
         loaded.IsSuccess.Should().BeTrue();
@@ -43,13 +45,13 @@ public sealed class McpServerSettingsTests
     [Fact]
     public async Task Validate_rejects_unsafe_bind_without_token()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var blockingOperations = new BlockingOperationService(database.ConnectionFactory, clock);
-        var service = new McpServerSettingsService(database.ConnectionFactory, clock, blockingOperations);
+        BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
+        McpServerSettingsService service = new(database.ConnectionFactory, clock, blockingOperations);
 
-        var result = await service.ValidateSettingsAsync(new McpServerSettings(
+        Result result = await service.ValidateSettingsAsync(new McpServerSettings(
             4536,
             "0.0.0.0",
             false,
@@ -58,11 +60,11 @@ public sealed class McpServerSettingsTests
             null,
             [],
             clock.UtcNow));
-        var operations = await blockingOperations.ListAsync(
-            status: BlockingOperationStatus.Failed,
-            operationType: BlockingOperationTypes.McpStartValidation,
-            scopeType: BlockingOperationScopeTypes.McpServerSettings,
-            scopeId: "default");
+        Result<IReadOnlyList<BlockingOperation>> operations = await blockingOperations.ListAsync(
+            BlockingOperationStatus.Failed,
+            BlockingOperationTypes.McpStartValidation,
+            BlockingOperationScopeTypes.McpServerSettings,
+            "default");
 
         result.IsFailure.Should().BeTrue();
         result.ErrorCode.Should().Be("unsafe_configuration");
@@ -76,12 +78,12 @@ public sealed class McpServerSettingsTests
     [Fact]
     public async Task Snapshot_shard_excludes_mcp_settings_and_token()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        var clock = new FixedClock(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        var library = new LibraryIdentityService(database.ConnectionFactory, clock);
+        LibraryIdentityService library = new(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("Snapshot-safe MCP");
-        var service = new McpServerSettingsService(database.ConnectionFactory, clock);
+        McpServerSettingsService service = new(database.ConnectionFactory, clock);
         await service.SaveSettingsAsync(new McpServerSettings(
             4540,
             "127.0.0.1",
@@ -92,17 +94,22 @@ public sealed class McpServerSettingsTests
             [],
             clock.UtcNow));
 
-        var syncRoot = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-mcp-settings-{Guid.NewGuid():N}")).FullName;
+        string syncRoot = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-mcp-settings-{Guid.NewGuid():N}")).FullName;
         try
         {
-            var published = await new SnapshotPublisher(clock).PublishSnapshotAsync(new SnapshotPublishRequest(database.Path, syncRoot, "device-a"));
+            Result<SnapshotPublishResult> published =
+                await new SnapshotPublisher(clock).PublishSnapshotAsync(
+                    new SnapshotPublishRequest(database.Path, syncRoot, "device-a"));
             published.IsSuccess.Should().BeTrue();
-            var shardPath = Path.Combine(syncRoot, published.Value.Shards.Single().FileName);
-            await using (var shard = new Microsoft.Data.Sqlite.SqliteConnection(new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder { DataSource = shardPath, Pooling = false }.ToString()))
+            string shardPath = Path.Combine(syncRoot, published.Value.Shards.Single().FileName);
+            await using (SqliteConnection shard = new(new SqliteConnectionStringBuilder
+                             { DataSource = shardPath, Pooling = false }.ToString()))
             {
                 await shard.OpenAsync();
                 (await shard.ExecuteScalarAsync<int>("select count(1) from mcp_server_settings;")).Should().Be(0);
             }
+
             (await File.ReadAllTextAsync(shardPath)).Should().NotContain("super-secret-token");
         }
         finally

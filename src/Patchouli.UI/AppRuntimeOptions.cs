@@ -5,16 +5,25 @@ using Patchouli.Core.Import;
 
 namespace Patchouli.UI;
 
-public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string DefaultSyncRoot, string DefaultStagingRoot, string LogDirectory, string FileSearchRoot, bool RememberLastDatabase = true, bool UseMockOcrOnly = false)
+public sealed record AppRuntimeOptions(
+    string RuntimeDatabasePath,
+    string DefaultSyncRoot,
+    string DefaultStagingRoot,
+    string LogDirectory,
+    string FileSearchRoot,
+    bool RememberLastDatabase = true,
+    bool UseMockOcrOnly = false)
 {
-    public static AppRuntimeOptions FromAppSettings(string? settingsPath = null) =>
-        PatchouliAppSettings.Load(settingsPath).Runtime;
+    public static AppRuntimeOptions FromAppSettings(string? settingsPath = null)
+    {
+        return PatchouliAppSettings.Load(settingsPath).Runtime;
+    }
 
     public static AppRuntimeOptions Default(IAppPaths? appPaths = null)
     {
-        var locations = (appPaths ?? new PlatformAppPaths()).Resolve();
-        var root = locations.DataDirectory;
-        return new(
+        AppStorageLocations locations = (appPaths ?? new PlatformAppPaths()).Resolve();
+        string root = locations.DataDirectory;
+        return new AppRuntimeOptions(
             Path.Combine(root, "patchouli-runtime.sqlite"),
             Path.Combine(root, "sync"),
             Path.Combine(root, "staging"),
@@ -31,11 +40,15 @@ public sealed record MinerUAppSettings(
     bool EnableFormula,
     string Token = "")
 {
-    public static MinerUAppSettings Default() =>
-        new("https://mineru.net", "vlm", true, true, true);
+    public static MinerUAppSettings Default()
+    {
+        return new MinerUAppSettings("https://mineru.net", "vlm", true, true, true);
+    }
 
-    public MinerUConfiguration ToConfiguration(string token) =>
-        new(token, BaseUrl, ModelVersion, IsOcr, EnableTable, EnableFormula);
+    public MinerUConfiguration ToConfiguration(string token)
+    {
+        return new MinerUConfiguration(token, BaseUrl, ModelVersion, IsOcr, EnableTable, EnableFormula);
+    }
 }
 
 public sealed record McpAppSettings(
@@ -44,8 +57,10 @@ public sealed record McpAppSettings(
     string ServerToken,
     Dictionary<string, bool> DisabledTools)
 {
-    public static McpAppSettings Default() =>
-        new(4536, true, string.Empty, new Dictionary<string, bool>());
+    public static McpAppSettings Default()
+    {
+        return new McpAppSettings(4536, true, string.Empty, new Dictionary<string, bool>());
+    }
 }
 
 public sealed record UiPreferences(
@@ -55,93 +70,121 @@ public sealed record UiPreferences(
     bool ShowLibraryLeftSidebar = true,
     bool ShowLibraryRightSidebar = true)
 {
-    public static UiPreferences Default() =>
-        new(new Dictionary<string, bool>(), new Dictionary<string, double>(), new Dictionary<string, int>(), true, true);
+    public static UiPreferences Default()
+    {
+        return new UiPreferences(new Dictionary<string, bool>(), new Dictionary<string, double>(),
+            new Dictionary<string, int>(),
+            true, true);
+    }
 }
 
 public sealed record MetadataSourcePreference(string SourceId, bool Enabled);
 
 public sealed record MetadataLookupAppSettings(IReadOnlyList<MetadataSourcePreference> Sources)
 {
-    public static MetadataLookupAppSettings Default() => new(
-    [
-        new("calis", true),
-        new("nlc", true),
-        new("ndl", true),
-        new("cinii", true),
-        new("library-of-congress", true),
-        new("dnb", true),
-        new("bnf", true),
-        new("pmc-id-converter", true),
-        new("pubmed", true),
-        new("arxiv", true),
-        new("open-library", true),
-        new("datacite", true),
-        new("crossref", true),
-        new("openalex", true),
-        new("semantic-scholar", true),
-        new("google-books", false)
-    ]);
+    public static MetadataLookupAppSettings Default()
+    {
+        return new MetadataLookupAppSettings(
+        [
+            new MetadataSourcePreference("calis", true),
+            new MetadataSourcePreference("nlc", true),
+            new MetadataSourcePreference("ndl", true),
+            new MetadataSourcePreference("cinii", true),
+            new MetadataSourcePreference("library-of-congress", true),
+            new MetadataSourcePreference("dnb", true),
+            new MetadataSourcePreference("bnf", true),
+            new MetadataSourcePreference("pmc-id-converter", true),
+            new MetadataSourcePreference("pubmed", true),
+            new MetadataSourcePreference("arxiv", true),
+            new MetadataSourcePreference("open-library", true),
+            new MetadataSourcePreference("datacite", true),
+            new MetadataSourcePreference("crossref", true),
+            new MetadataSourcePreference("openalex", true),
+            new MetadataSourcePreference("semantic-scholar", true),
+            new MetadataSourcePreference("google-books", false)
+        ]);
+    }
 
     public static MetadataLookupAppSettings MergeWithDefaults(IEnumerable<MetadataSourcePreference>? saved)
     {
-        var merged = new List<MetadataSourcePreference>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var source in saved ?? [])
+        List<MetadataSourcePreference> merged = new();
+        HashSet<string> seen = new(StringComparer.OrdinalIgnoreCase);
+        foreach (MetadataSourcePreference source in saved ?? [])
         {
-            var id = source.SourceId?.Trim();
+            string? id = source.SourceId?.Trim();
             if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
+            {
                 merged.Add(new MetadataSourcePreference(id, source.Enabled));
+            }
         }
 
-        foreach (var source in Default().Sources)
+        foreach (MetadataSourcePreference source in Default().Sources)
         {
             if (seen.Add(source.SourceId))
+            {
                 merged.Add(source);
+            }
         }
 
         return new MetadataLookupAppSettings(merged);
     }
 }
 
-public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSettings MinerU, McpAppSettings Mcp, UiPreferences Ui)
+public sealed record PatchouliAppSettings(
+    AppRuntimeOptions Runtime,
+    MinerUAppSettings MinerU,
+    McpAppSettings Mcp,
+    UiPreferences Ui)
 {
     public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
 
-    public static PatchouliAppSettings Default(IAppPaths? appPaths = null) =>
-        new(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(), McpAppSettings.Default(), UiPreferences.Default());
+    public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
+    {
+        return new PatchouliAppSettings(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(),
+            McpAppSettings.Default(),
+            UiPreferences.Default());
+    }
 
-    public static string ResolvePath(string? settingsPath = null) =>
-        string.IsNullOrWhiteSpace(settingsPath) ? new PlatformAppPaths().Resolve().UserSettingsPath : Path.GetFullPath(settingsPath);
+    public static string ResolvePath(string? settingsPath = null)
+    {
+        return string.IsNullOrWhiteSpace(settingsPath)
+            ? new PlatformAppPaths().Resolve().UserSettingsPath
+            : Path.GetFullPath(settingsPath);
+    }
 
     public static PatchouliAppSettings Load(string? settingsPath = null)
     {
-        if (!string.IsNullOrWhiteSpace(settingsPath)) return LoadFile(Default(), Path.GetFullPath(settingsPath));
+        if (!string.IsNullOrWhiteSpace(settingsPath))
+        {
+            return LoadFile(Default(), Path.GetFullPath(settingsPath));
+        }
+
         return Load(new PlatformAppPaths());
     }
 
     public static PatchouliAppSettings Load(IAppPaths appPaths)
     {
-        var locations = appPaths.Resolve();
-        var bundled = LoadFile(Default(appPaths), locations.BundledDefaultsPath);
+        AppStorageLocations locations = appPaths.Resolve();
+        PatchouliAppSettings bundled = LoadFile(Default(appPaths), locations.BundledDefaultsPath);
         return LoadFile(bundled, locations.UserSettingsPath);
     }
 
     private static PatchouliAppSettings LoadFile(PatchouliAppSettings defaults, string path)
     {
-
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        {
             return defaults;
+        }
 
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
-            var root = document.RootElement;
-            var patchouli = GetSection(root, "Patchouli");
-            var minerU = GetSection(root, "MinerU");
-            var mcp = GetSection(root, "Mcp");
-            var ui = GetSection(root, "Ui");
-            var metadataLookup = GetSection(root, "MetadataLookup");
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            JsonElement root = document.RootElement;
+            JsonElement? patchouli = GetSection(root, "Patchouli");
+            JsonElement? minerU = GetSection(root, "MinerU");
+            JsonElement? mcp = GetSection(root, "Mcp");
+            JsonElement? ui = GetSection(root, "Ui");
+            JsonElement? metadataLookup = GetSection(root, "MetadataLookup");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -190,11 +233,13 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
 
     public void Save(string? settingsPath = null)
     {
-        var path = ResolvePath(settingsPath);
+        string path = ResolvePath(settingsPath);
         AppPathGuard.ValidateMutablePath(path);
-        var directory = Path.GetDirectoryName(path);
+        string? directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
+        {
             Directory.CreateDirectory(directory);
+        }
 
         JsonObject root;
         try
@@ -209,42 +254,42 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         }
 
         root["Patchouli"] = JsonSerializer.SerializeToNode(new
-            {
-                Runtime.RuntimeDatabasePath,
-                Runtime.DefaultSyncRoot,
-                Runtime.DefaultStagingRoot,
-                Runtime.LogDirectory,
-                Runtime.FileSearchRoot,
-                Runtime.RememberLastDatabase,
-                Runtime.UseMockOcrOnly
-            });
+        {
+            Runtime.RuntimeDatabasePath,
+            Runtime.DefaultSyncRoot,
+            Runtime.DefaultStagingRoot,
+            Runtime.LogDirectory,
+            Runtime.FileSearchRoot,
+            Runtime.RememberLastDatabase,
+            Runtime.UseMockOcrOnly
+        });
         root["MinerU"] = JsonSerializer.SerializeToNode(new
-            {
-                MinerU.BaseUrl,
-                MinerU.ModelVersion,
-                MinerU.IsOcr,
-                MinerU.EnableTable,
-                MinerU.EnableFormula,
-                MinerU.Token
-            });
+        {
+            MinerU.BaseUrl,
+            MinerU.ModelVersion,
+            MinerU.IsOcr,
+            MinerU.EnableTable,
+            MinerU.EnableFormula,
+            MinerU.Token
+        });
         root["Mcp"] = JsonSerializer.SerializeToNode(new
-            {
-                Mcp.Port,
-                Mcp.BlockExternalAccess,
-                Mcp.ServerToken,
-                Mcp.DisabledTools
-            });
+        {
+            Mcp.Port,
+            Mcp.BlockExternalAccess,
+            Mcp.ServerToken,
+            Mcp.DisabledTools
+        });
         root["Ui"] = JsonSerializer.SerializeToNode(new
-            {
-                Ui.LibraryGridVisibleColumns,
-                Ui.LibraryGridColumnWidths,
-                Ui.LibraryGridColumnOrder,
-                Ui.ShowLibraryLeftSidebar,
-                Ui.ShowLibraryRightSidebar
-            });
+        {
+            Ui.LibraryGridVisibleColumns,
+            Ui.LibraryGridColumnWidths,
+            Ui.LibraryGridColumnOrder,
+            Ui.ShowLibraryLeftSidebar,
+            Ui.ShowLibraryRightSidebar
+        });
         root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
 
-        var temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
+        string temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
         try
         {
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -253,21 +298,27 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         finally
         {
             if (File.Exists(temporaryPath))
+            {
                 File.Delete(temporaryPath);
+            }
         }
     }
 
-    private static JsonElement? GetSection(JsonElement root, string name) =>
-        root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out var section)
+    private static JsonElement? GetSection(JsonElement root, string name)
+    {
+        return root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out JsonElement section)
             ? section
             : null;
+    }
 
     private static string ReadString(JsonElement? section, string name, string fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
             return fallback;
+        }
 
-        return element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+        return element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
             ? value.GetString() ?? fallback
             : fallback;
     }
@@ -275,9 +326,12 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
     private static bool ReadBool(JsonElement? section, string name, bool fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
             return fallback;
+        }
 
-        return element.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+        return element.TryGetProperty(name, out JsonElement value) &&
+               value.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? value.GetBoolean()
             : fallback;
     }
@@ -285,93 +339,121 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
     private static int ReadInt(JsonElement? section, string name, int fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
             return fallback;
+        }
 
-        return element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var result)
+        return element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number &&
+               value.TryGetInt32(out int result)
             ? result
             : fallback;
     }
 
-    private static Dictionary<string, bool> ReadStringBoolDict(JsonElement? section, string name, Dictionary<string, bool> fallback)
+    private static Dictionary<string, bool> ReadStringBoolDict(JsonElement? section, string name,
+        Dictionary<string, bool> fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
             return fallback;
+        }
 
-        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+        if (!element.TryGetProperty(name, out JsonElement value) || value.ValueKind != JsonValueKind.Object)
+        {
             return fallback;
+        }
 
-        var dict = new Dictionary<string, bool>();
-        foreach (var property in value.EnumerateObject())
+        Dictionary<string, bool> dict = new();
+        foreach (JsonProperty property in value.EnumerateObject())
         {
             if (property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
             {
                 dict[property.Name] = property.Value.GetBoolean();
             }
         }
+
         return dict;
     }
 
-    private static Dictionary<string, double> ReadStringDoubleDict(JsonElement? section, string name, Dictionary<string, double> fallback)
+    private static Dictionary<string, double> ReadStringDoubleDict(JsonElement? section, string name,
+        Dictionary<string, double> fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
-            return fallback;
-
-        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
-            return fallback;
-
-        var dict = new Dictionary<string, double>();
-        foreach (var property in value.EnumerateObject())
         {
-            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetDouble(out var number))
+            return fallback;
+        }
+
+        if (!element.TryGetProperty(name, out JsonElement value) || value.ValueKind != JsonValueKind.Object)
+        {
+            return fallback;
+        }
+
+        Dictionary<string, double> dict = new();
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetDouble(out double number))
             {
                 dict[property.Name] = number;
             }
         }
+
         return dict;
     }
 
-    private static Dictionary<string, int> ReadStringIntDict(JsonElement? section, string name, Dictionary<string, int> fallback)
+    private static Dictionary<string, int> ReadStringIntDict(JsonElement? section, string name,
+        Dictionary<string, int> fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
-            return fallback;
-
-        if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
-            return fallback;
-
-        var dict = new Dictionary<string, int>();
-        foreach (var property in value.EnumerateObject())
         {
-            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out var number))
+            return fallback;
+        }
+
+        if (!element.TryGetProperty(name, out JsonElement value) || value.ValueKind != JsonValueKind.Object)
+        {
+            return fallback;
+        }
+
+        Dictionary<string, int> dict = new();
+        foreach (JsonProperty property in value.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt32(out int number))
             {
                 dict[property.Name] = number;
             }
         }
+
         return dict;
     }
 
     private static IReadOnlyList<MetadataSourcePreference> ReadMetadataSources(JsonElement? section)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element ||
-            !element.TryGetProperty("Sources", out var sources) ||
+            !element.TryGetProperty("Sources", out JsonElement sources) ||
             sources.ValueKind != JsonValueKind.Array)
+        {
             return [];
+        }
 
-        var result = new List<MetadataSourcePreference>();
-        foreach (var source in sources.EnumerateArray())
+        List<MetadataSourcePreference> result = new();
+        foreach (JsonElement source in sources.EnumerateArray())
         {
             if (source.ValueKind != JsonValueKind.Object)
+            {
                 continue;
+            }
 
-            var id = ReadString(source, "SourceId", string.Empty).Trim();
+            string id = ReadString(source, "SourceId", string.Empty).Trim();
             if (!string.IsNullOrWhiteSpace(id))
+            {
                 result.Add(new MetadataSourcePreference(id, ReadBool(source, "Enabled", true)));
+            }
         }
+
         return result;
     }
 
     private static string ExpandPath(string value)
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         return value
             .Replace("{LocalAppData}", localAppData, StringComparison.OrdinalIgnoreCase)
             .Replace('/', Path.DirectorySeparatorChar);

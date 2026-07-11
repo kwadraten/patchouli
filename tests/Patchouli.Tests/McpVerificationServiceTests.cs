@@ -1,8 +1,11 @@
 using Dapper;
 using FluentAssertions;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Database;
@@ -24,10 +27,10 @@ public sealed class McpVerificationServiceTests
     [Fact]
     public async Task VerifyAsync_reports_searchable_when_fts_contains_term()
     {
-        await using var context = await VerificationContext.CreateAsync();
+        await using VerificationContext context = await VerificationContext.CreateAsync();
         await context.SeedSearchDataAsync("important research content");
 
-        var result = await context.Verification.VerifyAsync(
+        Result<McpVerificationResult> result = await context.Verification.VerifyAsync(
             context.DocumentInstanceId.ToString(), "important");
 
         result.IsSuccess.Should().BeTrue();
@@ -38,9 +41,9 @@ public sealed class McpVerificationServiceTests
     [Fact]
     public async Task VerifyAsync_reports_not_searchable_when_fts_empty()
     {
-        await using var context = await VerificationContext.CreateAsync();
+        await using VerificationContext context = await VerificationContext.CreateAsync();
 
-        var result = await context.Verification.VerifyAsync(
+        Result<McpVerificationResult> result = await context.Verification.VerifyAsync(
             context.DocumentInstanceId.ToString(), "anything");
 
         result.IsSuccess.Should().BeTrue();
@@ -50,14 +53,14 @@ public sealed class McpVerificationServiceTests
     [Fact]
     public async Task VerifyAsync_result_contains_no_local_path_or_secret()
     {
-        await using var context = await VerificationContext.CreateAsync();
+        await using VerificationContext context = await VerificationContext.CreateAsync();
         await context.SeedSearchDataAsync("sample text for verification");
 
-        var result = await context.Verification.VerifyAsync(
+        Result<McpVerificationResult> result = await context.Verification.VerifyAsync(
             context.DocumentInstanceId.ToString(), "sample");
 
         result.IsSuccess.Should().BeTrue();
-        var json = System.Text.Json.JsonSerializer.Serialize(result.Value);
+        string json = System.Text.Json.JsonSerializer.Serialize(result.Value);
         json.Should().NotContain(":\\");
         json.Should().NotContain("token");
         json.Should().NotContain("secret");
@@ -72,7 +75,8 @@ public sealed class McpVerificationServiceTests
         public LibraryIdentityService Library { get; }
         public IClock Clock { get; }
 
-        private VerificationContext(TemporarySqliteDatabase db, McpVerificationService verification, DocumentInstanceId docId, LibraryIdentityService library, IClock clock)
+        private VerificationContext(TemporarySqliteDatabase db, McpVerificationService verification,
+            DocumentInstanceId docId, LibraryIdentityService library, IClock clock)
         {
             Database = db;
             Verification = verification;
@@ -83,39 +87,46 @@ public sealed class McpVerificationServiceTests
 
         public static async Task<VerificationContext> CreateAsync()
         {
-            var db = TemporarySqliteDatabase.Create();
-            var clock = new FixedClock(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
+            TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+            FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
             await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-            var library = new LibraryIdentityService(db.ConnectionFactory, clock);
+            LibraryIdentityService library = new(db.ConnectionFactory, clock);
             await library.CreateLibraryAsync("Test Lib");
-            var items = new ItemService(db.ConnectionFactory, library, clock);
-            var item = await items.CreateItemAsync("document", "Test Doc");
-            var docs = new DocumentInstanceService(db.ConnectionFactory, clock);
-            var doc = await docs.AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
-            var pages = new PageService(db.ConnectionFactory, clock);
-            var page = await pages.CreatePageAsync(doc.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test", null);
+            ItemService items = new(db.ConnectionFactory, library, clock);
+            Result<ItemMetadata> item = await items.CreateItemAsync("document", "Test Doc");
+            DocumentInstanceService docs = new(db.ConnectionFactory, clock);
+            Result<DocumentInstance> doc =
+                await docs.AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
+            PageService pages = new(db.ConnectionFactory, clock);
+            Result<Page> page = await pages.CreatePageAsync(doc.Value.DocumentInstanceId, 0, "1", null, null, 0,
+                CoordinateBasis.NormalizedPage, null, null, "test", null);
 
             // Create a layout revision
-            var layout = new LayoutTreeService(db.ConnectionFactory, clock);
-            var rev = await layout.CreateLayoutRevisionAsync(doc.Value.DocumentInstanceId, LayoutRevisionSource.Import, true);
-            await layout.AddNodeAsync(rev.Value.LayoutRevisionId, page.Value.PageId, null, LayoutNodeType.Paragraph, null, "test text", TextPolicy.Own, 1, LayoutNodeSource.Import);
+            LayoutTreeService layout = new(db.ConnectionFactory, clock);
+            Result<LayoutRevision> rev =
+                await layout.CreateLayoutRevisionAsync(doc.Value.DocumentInstanceId, LayoutRevisionSource.Import, true);
+            await layout.AddNodeAsync(rev.Value.LayoutRevisionId, page.Value.PageId, null, LayoutNodeType.Paragraph,
+                null, "test text", TextPolicy.Own, 1, LayoutNodeSource.Import);
 
-            var search = new SqliteSearchService(db.ConnectionFactory);
-            var evidence = new EvidenceReferenceService(db.ConnectionFactory, clock);
-            var mcp = new McpReadApi(db.ConnectionFactory, search, evidence);
-            var verification = new McpVerificationService(db.ConnectionFactory, mcp);
+            SqliteSearchService search = new(db.ConnectionFactory);
+            EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);
+            McpReadApi mcp = new(db.ConnectionFactory, search, evidence);
+            McpVerificationService verification = new(db.ConnectionFactory, mcp);
 
             return new VerificationContext(db, verification, doc.Value.DocumentInstanceId, library, clock);
         }
 
         public async Task SeedSearchDataAsync(string text)
         {
-            var builder = new SearchUnitBuilder(Database.ConnectionFactory, Clock);
-            var index = new SearchIndexRebuilder(Database.ConnectionFactory, Clock);
+            SearchUnitBuilder builder = new(Database.ConnectionFactory, Clock);
+            SearchIndexRebuilder index = new(Database.ConnectionFactory, Clock);
             await builder.RebuildForDocumentInstanceAsync(DocumentInstanceId);
             await index.RebuildFtsForDocumentInstanceAsync(DocumentInstanceId);
         }
 
-        public async ValueTask DisposeAsync() => await Database.DisposeAsync();
+        public async ValueTask DisposeAsync()
+        {
+            await Database.DisposeAsync();
+        }
     }
 }

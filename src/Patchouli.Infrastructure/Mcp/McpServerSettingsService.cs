@@ -1,6 +1,9 @@
+using System.Data.Common;
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
@@ -30,9 +33,9 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await connection.QuerySingleOrDefaultAsync<Row>(
+            Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """
                 select port as Port,
                        bind_address as BindAddress,
@@ -50,7 +53,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 return Result<McpServerSettings>.Success(DefaultSettings(_clock.UtcNow));
             }
 
-            var overrides = await connection.QueryAsync<OverrideRow>(
+            IEnumerable<OverrideRow> overrides = await connection.QueryAsync<OverrideRow>(
                 """
                 select tool_name as ToolName,
                        enabled as Enabled,
@@ -64,15 +67,18 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.mcp-server-settings"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.mcp-server-settings"))
         {
-            return Result<McpServerSettings>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<McpServerSettings>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result<McpServerSettings>> SaveSettingsAsync(McpServerSettings settings, CancellationToken cancellationToken = default)
+    public async Task<Result<McpServerSettings>> SaveSettingsAsync(McpServerSettings settings,
+        CancellationToken cancellationToken = default)
     {
-        var validation = await ValidateSettingsAsync(settings, cancellationToken);
+        Result validation = await ValidateSettingsAsync(settings, cancellationToken);
         if (validation.IsFailure)
         {
             return Result<McpServerSettings>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -80,10 +86,10 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
 
         try
         {
-            var saved = settings with { UpdatedAt = _clock.UtcNow.ToUniversalTime() };
-            await using var connection = _connectionFactory.CreateConnection();
+            McpServerSettings saved = settings with { UpdatedAt = _clock.UtcNow.ToUniversalTime() };
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             await connection.ExecuteAsync("delete from mcp_server_settings;", transaction: transaction);
             await connection.ExecuteAsync(
@@ -109,7 +115,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 transaction);
 
             await connection.ExecuteAsync("delete from mcp_tool_overrides;", transaction: transaction);
-            foreach (var toolOverride in saved.ToolOverrides)
+            foreach (McpToolOverride toolOverride in saved.ToolOverrides)
             {
                 await connection.ExecuteAsync(
                     """
@@ -132,13 +138,16 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.mcp-server-settings"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.mcp-server-settings"))
         {
-            return Result<McpServerSettings>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<McpServerSettings>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result> ValidateSettingsAsync(McpServerSettings settings, CancellationToken cancellationToken = default)
+    public async Task<Result> ValidateSettingsAsync(McpServerSettings settings,
+        CancellationToken cancellationToken = default)
     {
         if (settings.Port is < 1 or > 65535)
         {
@@ -150,7 +159,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             return Result.Failure(AppErrorCodes.ValidationFailed, "MCP bind address is required.");
         }
 
-        var bindAddress = settings.BindAddress.Trim();
+        string bindAddress = settings.BindAddress.Trim();
         if (string.Equals(bindAddress, "0.0.0.0", StringComparison.Ordinal)
             && string.IsNullOrWhiteSpace(settings.Token))
         {
@@ -174,25 +183,29 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             return Result<bool>.Failure(AppErrorCodes.ValidationFailed, "Tool name is required.");
         }
 
-        var settings = await GetSettingsAsync(cancellationToken);
+        Result<McpServerSettings> settings = await GetSettingsAsync(cancellationToken);
         if (settings.IsFailure)
         {
             return Result<bool>.Failure(settings.ErrorCode!, settings.ErrorMessage!);
         }
 
-        var toolOverride = settings.Value.ToolOverrides.FirstOrDefault(value => string.Equals(value.ToolName, toolName.Trim(), StringComparison.Ordinal));
+        McpToolOverride? toolOverride = settings.Value.ToolOverrides.FirstOrDefault(value =>
+            string.Equals(value.ToolName, toolName.Trim(), StringComparison.Ordinal));
         return Result<bool>.Success(toolOverride?.Enabled ?? true);
     }
 
-    public static McpServerSettings DefaultSettings(DateTimeOffset now) => new(
-        DefaultPort,
-        "127.0.0.1",
-        false,
-        [],
-        false,
-        null,
-        [],
-        now.ToUniversalTime());
+    public static McpServerSettings DefaultSettings(DateTimeOffset now)
+    {
+        return new McpServerSettings(
+            DefaultPort,
+            "127.0.0.1",
+            false,
+            [],
+            false,
+            null,
+            [],
+            now.ToUniversalTime());
+    }
 
     private async Task RecordUnsafeBindFailureAsync(string failureMessage, CancellationToken cancellationToken)
     {
@@ -203,12 +216,12 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
 
         try
         {
-            var started = await _blockingOperations.StartAsync(
+            Result<BlockingOperation> started = await _blockingOperations.StartAsync(
                 BlockingOperationTypes.McpStartValidation,
                 BlockingOperationScopeTypes.McpServerSettings,
                 "default",
-                canCancel: false,
-                progressLabel: "Validating MCP startup configuration.",
+                false,
+                "Validating MCP startup configuration.",
                 nextActions: ["Bind to 127.0.0.1", "Configure a bearer token"],
                 cancellationToken: cancellationToken);
             if (started.IsSuccess)
@@ -222,7 +235,9 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                     cancellationToken);
             }
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.mcp-server-settings",
+                                              "record-unsafe-bind-failure"))
         {
         }
     }
@@ -238,7 +253,8 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         public string UpdatedAt { get; set; } = "";
 
         public McpServerSettings ToModel(IReadOnlyList<McpToolOverride> overrides)
-            => new(
+        {
+            return new McpServerSettings(
                 Port,
                 BindAddress,
                 CorsEnabled != 0,
@@ -247,6 +263,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 Token,
                 overrides,
                 DateTimeOffset.Parse(UpdatedAt));
+        }
     }
 
     private sealed class OverrideRow
@@ -255,7 +272,10 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         public int Enabled { get; set; }
         public string? DisabledReason { get; set; }
 
-        public McpToolOverride ToModel() => new(ToolName, Enabled != 0, DisabledReason);
+        public McpToolOverride ToModel()
+        {
+            return new McpToolOverride(ToolName, Enabled != 0, DisabledReason);
+        }
     }
 
     private static IReadOnlyList<string> ParseAllowedOrigins(string? json)

@@ -1,4 +1,6 @@
 using Avalonia.Controls;
+using Patchouli.Core.Library;
+using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
 
@@ -17,15 +19,15 @@ public sealed partial class MainWindow : Window
 
     public async Task ShowFirstRunIfNeededAsync()
     {
-        var services = await _viewModel.ServicesAsync();
-        var library = await services.Library.GetCurrentLibraryAsync();
+        AppServices services = await _viewModel.ServicesAsync();
+        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsFailure)
         {
             await _viewModel.ShowInlineFirstRunAsync();
             return;
         }
 
-        _viewModel.Shell.Refresh();
+        await _viewModel.Shell.RefreshAsync();
     }
 
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)

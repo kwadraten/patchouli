@@ -20,25 +20,39 @@ public sealed class SystemProcessRunner : IProcessRunner
 {
     public bool UsesShellExecute => false;
 
-    public async Task<ProcessRunResult> RunAsync(ProcessRunRequest request, CancellationToken cancellationToken = default)
+    public async Task<ProcessRunResult> RunAsync(ProcessRunRequest request,
+        CancellationToken cancellationToken = default)
     {
-        var info = new ProcessStartInfo(request.FileName)
+        ProcessStartInfo info = new(request.FileName)
         {
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true
         };
-        if (!string.IsNullOrWhiteSpace(request.WorkingDirectory)) info.WorkingDirectory = request.WorkingDirectory;
-        foreach (var argument in request.Arguments) info.ArgumentList.Add(argument);
-        if (request.Environment is not null)
-            foreach (var pair in request.Environment) info.Environment[pair.Key] = pair.Value;
+        if (!string.IsNullOrWhiteSpace(request.WorkingDirectory))
+        {
+            info.WorkingDirectory = request.WorkingDirectory;
+        }
 
-        using var process = new Process { StartInfo = info };
+        foreach (string argument in request.Arguments)
+        {
+            info.ArgumentList.Add(argument);
+        }
+
+        if (request.Environment is not null)
+        {
+            foreach (KeyValuePair<string, string> pair in request.Environment)
+            {
+                info.Environment[pair.Key] = pair.Value;
+            }
+        }
+
+        using Process process = new() { StartInfo = info };
         process.Start();
-        var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var error = process.StandardError.ReadToEndAsync(cancellationToken);
-        var timeout = request.Timeout ?? TimeSpan.FromSeconds(60);
+        Task<string> output = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        Task<string> error = process.StandardError.ReadToEndAsync(cancellationToken);
+        TimeSpan timeout = request.Timeout ?? TimeSpan.FromSeconds(60);
         try
         {
             await process.WaitForExitAsync(cancellationToken).WaitAsync(timeout, cancellationToken);
@@ -46,7 +60,11 @@ public sealed class SystemProcessRunner : IProcessRunner
         }
         catch (TimeoutException)
         {
-            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            if (!process.HasExited)
+            {
+                process.Kill(true);
+            }
+
             await process.WaitForExitAsync(CancellationToken.None);
             return new ProcessRunResult(-1, await output, await error, true);
         }

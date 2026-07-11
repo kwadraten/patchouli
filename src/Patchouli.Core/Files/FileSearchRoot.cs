@@ -55,7 +55,7 @@ public static class FileSearchRootScanStatuses
 public sealed record FileSearchRootIssue(string Path, string Code, string Reason);
 
 public sealed record FileSearchRootScanResult(
-    IReadOnlyList<Patchouli.Core.Import.PdfCandidate> Candidates,
+    IReadOnlyList<Import.PdfCandidate> Candidates,
     IReadOnlyList<FileSearchRootIssue> SkippedDirectories,
     IReadOnlyList<FileSearchRootIssue> SkippedFiles,
     string RootStatus,

@@ -4,48 +4,51 @@ namespace Patchouli.Core.Bibliography.MetadataLookup;
 
 public static class IdentifierNormalizer
 {
-    private static readonly IReadOnlyDictionary<string, string> Schemes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-    {
-        ["doi"] = BuiltInIdentifierSchemes.DOI,
-        ["isbn"] = BuiltInIdentifierSchemes.ISBN,
-        ["pmid"] = BuiltInIdentifierSchemes.Pmid,
-        ["pmcid"] = BuiltInIdentifierSchemes.Pmcid,
-        ["pmc"] = BuiltInIdentifierSchemes.Pmcid,
-        ["mid"] = BuiltInIdentifierSchemes.Mid,
-        ["arxiv"] = BuiltInIdentifierSchemes.ArXiv,
-        ["openalex"] = BuiltInIdentifierSchemes.OpenAlex,
-        ["mag"] = BuiltInIdentifierSchemes.Mag,
-        ["semantic_scholar"] = BuiltInIdentifierSchemes.SemanticScholar,
-        ["s2"] = BuiltInIdentifierSchemes.SemanticScholar,
-        ["oclc"] = BuiltInIdentifierSchemes.Oclc,
-        ["lccn"] = BuiltInIdentifierSchemes.Lccn,
-        ["olid"] = BuiltInIdentifierSchemes.OpenLibrary,
-        ["google_books"] = BuiltInIdentifierSchemes.GoogleBooks,
-        ["googlebooks"] = BuiltInIdentifierSchemes.GoogleBooks,
-        ["jpno"] = BuiltInIdentifierSchemes.Jpno,
-        ["ndlbibid"] = BuiltInIdentifierSchemes.Ndlbibid,
-        ["ndljp"] = BuiltInIdentifierSchemes.Ndljp,
-        ["ncid"] = BuiltInIdentifierSchemes.Ncid,
-        ["naid"] = BuiltInIdentifierSchemes.Naid,
-        ["crid"] = BuiltInIdentifierSchemes.Crid,
-        ["dnb"] = BuiltInIdentifierSchemes.Dnb,
-        ["gnd"] = BuiltInIdentifierSchemes.Gnd,
-        ["urn_nbn_de"] = BuiltInIdentifierSchemes.UrnNbnDe,
-        ["urn:nbn:de"] = BuiltInIdentifierSchemes.UrnNbnDe,
-        ["ark"] = BuiltInIdentifierSchemes.Ark,
-        ["frbnf"] = BuiltInIdentifierSchemes.Frbnf
-    };
+    private static readonly IReadOnlyDictionary<string, string> Schemes =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["doi"] = BuiltInIdentifierSchemes.DOI,
+            ["isbn"] = BuiltInIdentifierSchemes.ISBN,
+            ["pmid"] = BuiltInIdentifierSchemes.Pmid,
+            ["pmcid"] = BuiltInIdentifierSchemes.Pmcid,
+            ["pmc"] = BuiltInIdentifierSchemes.Pmcid,
+            ["mid"] = BuiltInIdentifierSchemes.Mid,
+            ["arxiv"] = BuiltInIdentifierSchemes.ArXiv,
+            ["openalex"] = BuiltInIdentifierSchemes.OpenAlex,
+            ["mag"] = BuiltInIdentifierSchemes.Mag,
+            ["semantic_scholar"] = BuiltInIdentifierSchemes.SemanticScholar,
+            ["s2"] = BuiltInIdentifierSchemes.SemanticScholar,
+            ["oclc"] = BuiltInIdentifierSchemes.Oclc,
+            ["lccn"] = BuiltInIdentifierSchemes.Lccn,
+            ["olid"] = BuiltInIdentifierSchemes.OpenLibrary,
+            ["google_books"] = BuiltInIdentifierSchemes.GoogleBooks,
+            ["googlebooks"] = BuiltInIdentifierSchemes.GoogleBooks,
+            ["jpno"] = BuiltInIdentifierSchemes.Jpno,
+            ["ndlbibid"] = BuiltInIdentifierSchemes.Ndlbibid,
+            ["ndljp"] = BuiltInIdentifierSchemes.Ndljp,
+            ["ncid"] = BuiltInIdentifierSchemes.Ncid,
+            ["naid"] = BuiltInIdentifierSchemes.Naid,
+            ["crid"] = BuiltInIdentifierSchemes.Crid,
+            ["dnb"] = BuiltInIdentifierSchemes.Dnb,
+            ["gnd"] = BuiltInIdentifierSchemes.Gnd,
+            ["urn_nbn_de"] = BuiltInIdentifierSchemes.UrnNbnDe,
+            ["urn:nbn:de"] = BuiltInIdentifierSchemes.UrnNbnDe,
+            ["ark"] = BuiltInIdentifierSchemes.Ark,
+            ["frbnf"] = BuiltInIdentifierSchemes.Frbnf
+        };
 
     public static Result<NormalizedIdentifier> Normalize(string scheme, string value)
     {
         if (string.IsNullOrWhiteSpace(scheme) || string.IsNullOrWhiteSpace(value))
         {
-            return Result<NormalizedIdentifier>.Failure(AppErrorCodes.ValidationFailed, "Identifier scheme and value are required.");
+            return Result<NormalizedIdentifier>.Failure(AppErrorCodes.ValidationFailed,
+                "Identifier scheme and value are required.");
         }
 
-        if (!TryCanonicalizeScheme(scheme, out var canonicalScheme))
+        if (!TryCanonicalizeScheme(scheme, out string canonicalScheme))
         {
-            return Result<NormalizedIdentifier>.Failure(MetadataLookupErrorCodes.UnsupportedIdentifier, $"Identifier scheme '{scheme.Trim()}' is not supported.");
+            return Result<NormalizedIdentifier>.Failure(MetadataLookupErrorCodes.UnsupportedIdentifier,
+                $"Identifier scheme '{scheme.Trim()}' is not supported.");
         }
 
         string normalized;
@@ -55,11 +58,14 @@ public static class IdentifierNormalizer
         }
         catch (UriFormatException)
         {
-            return Result<NormalizedIdentifier>.Failure(AppErrorCodes.ValidationFailed, $"The {canonicalScheme} identifier is invalid.");
+            return Result<NormalizedIdentifier>.Failure(AppErrorCodes.ValidationFailed,
+                $"The {canonicalScheme} identifier is invalid.");
         }
+
         if (string.IsNullOrWhiteSpace(normalized) || !IsValid(canonicalScheme, normalized))
         {
-            return Result<NormalizedIdentifier>.Failure(AppErrorCodes.ValidationFailed, $"The {canonicalScheme} identifier is invalid.");
+            return Result<NormalizedIdentifier>.Failure(AppErrorCodes.ValidationFailed,
+                $"The {canonicalScheme} identifier is invalid.");
         }
 
         return Result<NormalizedIdentifier>.Success(new NormalizedIdentifier(canonicalScheme, normalized));
@@ -67,7 +73,7 @@ public static class IdentifierNormalizer
 
     public static bool TryCanonicalizeScheme(string scheme, out string canonicalScheme)
     {
-        if (!string.IsNullOrWhiteSpace(scheme) && Schemes.TryGetValue(scheme.Trim(), out var resolved))
+        if (!string.IsNullOrWhiteSpace(scheme) && Schemes.TryGetValue(scheme.Trim(), out string? resolved))
         {
             canonicalScheme = resolved;
             return true;
@@ -79,7 +85,7 @@ public static class IdentifierNormalizer
 
     private static string NormalizeValue(string scheme, string raw)
     {
-        var value = Uri.UnescapeDataString(raw.Trim()).Trim();
+        string value = Uri.UnescapeDataString(raw.Trim()).Trim();
         if (scheme == BuiltInIdentifierSchemes.DOI)
         {
             value = StripPrefix(value, "https://doi.org/", "http://doi.org/", "doi:");
@@ -100,7 +106,7 @@ public static class IdentifierNormalizer
         if (scheme == BuiltInIdentifierSchemes.ArXiv)
         {
             value = StripPrefix(value, "https://arxiv.org/abs/", "http://arxiv.org/abs/", "arxiv:");
-            var version = value.LastIndexOf('v');
+            int version = value.LastIndexOf('v');
             return version > 0 && value[(version + 1)..].All(char.IsDigit) ? value[..version] : value;
         }
 
@@ -153,26 +159,35 @@ public static class IdentifierNormalizer
     {
         if (value.Length == 10)
         {
-            var sum = 0;
-            for (var i = 0; i < 10; i++)
+            int sum = 0;
+            for (int i = 0; i < 10; i++)
             {
-                var digit = value[i] == 'X' && i == 9 ? 10 : value[i] - '0';
-                if (digit is < 0 or > 10) return false;
+                int digit = value[i] == 'X' && i == 9 ? 10 : value[i] - '0';
+                if (digit is < 0 or > 10)
+                {
+                    return false;
+                }
+
                 sum += digit * (10 - i);
             }
+
             return sum % 11 == 0;
         }
 
-        var total = value.Select((ch, index) => (ch - '0') * (index % 2 == 0 ? 1 : 3)).Sum();
+        int total = value.Select((ch, index) => (ch - '0') * (index % 2 == 0 ? 1 : 3)).Sum();
         return value.All(char.IsDigit) && total % 10 == 0;
     }
 
     private static string StripPrefix(string value, params string[] prefixes)
     {
-        foreach (var prefix in prefixes)
+        foreach (string prefix in prefixes)
         {
-            if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return value[prefix.Length..];
+            if (value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return value[prefix.Length..];
+            }
         }
+
         return value;
     }
 }

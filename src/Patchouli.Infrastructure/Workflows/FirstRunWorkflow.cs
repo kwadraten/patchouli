@@ -1,4 +1,5 @@
 using Patchouli.Core.Import;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
@@ -28,10 +29,13 @@ public sealed class FirstRunWorkflow
     public async Task<FirstRunWorkflowState> CreateLibraryAsync(
         string displayName, CancellationToken cancellationToken = default)
     {
-        var result = await _libraryIdentityService.CreateLibraryAsync(displayName, cancellationToken);
+        Result<LibraryMetadata> result =
+            await _libraryIdentityService.CreateLibraryAsync(displayName, cancellationToken);
         if (result.IsFailure)
+        {
             return new FirstRunWorkflowState(FirstRunStep.Library, result.ErrorMessage!, null,
                 null, null, null, null, result.ErrorMessage, false);
+        }
 
         return new FirstRunWorkflowState(FirstRunStep.Scan, "资料库已创建。请选择要扫描的 PDF 文件夹。",
             null, result.Value.LibraryId.ToString(), null, null, null, null, false);
@@ -40,9 +44,9 @@ public sealed class FirstRunWorkflow
     public async Task<FirstRunWorkflowState> ScanDirectoryAsync(
         string scanRoot, CancellationToken cancellationToken = default)
     {
-        var normalizedRoot = Path.GetFullPath(scanRoot);
-        var scanOperationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
-        var result = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
+        string normalizedRoot = Path.GetFullPath(scanRoot);
+        BlockingOperationId? scanOperationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
+        PdfScanResult result = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
         if (result.Candidates.Count == 0)
         {
             await TryFailInitialRootScanAsync(
@@ -73,10 +77,10 @@ public sealed class FirstRunWorkflow
         CancellationToken cancellationToken = default,
         Action<int?, int?, string, string?>? progress = null)
     {
-        var normalizedRoot = Path.GetFullPath(scanRoot);
+        string normalizedRoot = Path.GetFullPath(scanRoot);
         progress?.Invoke(null, null, "正在扫描 PDF 目录。", $"扫描目录：{normalizedRoot}");
-        var operationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
-        var scan = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
+        BlockingOperationId? operationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
+        PdfScanResult scan = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
         if (scan.Candidates.Count == 0)
         {
             await TryFailInitialRootScanAsync(
@@ -93,16 +97,16 @@ public sealed class FirstRunWorkflow
                 scan, 0, 0);
         }
 
-        var importedCount = 0;
-        var failedCount = 0;
+        int importedCount = 0;
+        int failedCount = 0;
         string? lastDocumentInstanceId = null;
         string? lastPdfPath = null;
         progress?.Invoke(0, scan.Candidates.Count, $"已找到 {scan.Candidates.Count} 个 PDF，准备导入。", null);
 
-        for (var index = 0; index < scan.Candidates.Count; index++)
+        for (int index = 0; index < scan.Candidates.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var candidate = scan.Candidates[index];
+            PdfCandidate candidate = scan.Candidates[index];
             progress?.Invoke(index, scan.Candidates.Count, $"正在导入：{candidate.FileName}", candidate.Path);
             await TryUpdateInitialRootScanAsync(
                 operationId,
@@ -110,7 +114,7 @@ public sealed class FirstRunWorkflow
                 scan.Candidates.Count,
                 $"Importing {candidate.FileName}.",
                 cancellationToken);
-            var importState = await ImportPdfAsync(
+            FirstRunWorkflowState importState = await ImportPdfAsync(
                 new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(importState.LastError))
@@ -133,7 +137,7 @@ public sealed class FirstRunWorkflow
                 importState.LastError);
         }
 
-        var state = importedCount > 0
+        FirstRunWorkflowState state = importedCount > 0
             ? new FirstRunWorkflowState(
                 FirstRunStep.MinerUConfig,
                 failedCount == 0
@@ -180,10 +184,12 @@ public sealed class FirstRunWorkflow
     public async Task<FirstRunWorkflowState> ImportPdfAsync(
         PdfImportRequest request, CancellationToken cancellationToken = default)
     {
-        var importResult = await _pdfImportWorkflow.ImportPdfAsync(request, cancellationToken);
+        PdfImportResult importResult = await _pdfImportWorkflow.ImportPdfAsync(request, cancellationToken);
         if (!importResult.Success)
+        {
             return new FirstRunWorkflowState(FirstRunStep.Import, importResult.ErrorMessage ?? "导入失败。",
                 request.PdfPath, null, null, null, null, importResult.ErrorMessage, false);
+        }
 
         return new FirstRunWorkflowState(FirstRunStep.MinerUConfig,
             "PDF 已导入。请配置 OCR Preset 后从题录菜单运行 OCR。",
@@ -203,17 +209,18 @@ public sealed class FirstRunWorkflow
 
         try
         {
-            var started = await _blockingOperations.StartAsync(
+            Result<BlockingOperation> started = await _blockingOperations.StartAsync(
                 BlockingOperationTypes.InitialRootScan,
                 BlockingOperationScopeTypes.FileSearchRoot,
                 scanRoot,
-                canCancel: true,
-                progressLabel: "Scanning initial PDF root.",
+                true,
+                "Scanning initial PDF root.",
                 nextActions: ["Choose a different PDF folder", "Add PDFs to the folder and retry"],
                 cancellationToken: cancellationToken);
             return started.IsSuccess ? started.Value.OperationId : null;
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.first-run-workflow", "complete-initial-root-scan"))
         {
             return null;
         }
@@ -237,7 +244,8 @@ public sealed class FirstRunWorkflow
                 Array.Empty<string>(),
                 cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.first-run-workflow", "update-initial-root-scan"))
         {
         }
     }
@@ -250,7 +258,9 @@ public sealed class FirstRunWorkflow
         CancellationToken cancellationToken)
     {
         if (_blockingOperations is null || operationId is null)
+        {
             return;
+        }
 
         try
         {
@@ -258,7 +268,8 @@ public sealed class FirstRunWorkflow
                 operationId.Value, current, total, progressLabel,
                 cancellationToken: cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.first-run-workflow", "fail-initial-root-scan"))
         {
         }
     }
@@ -286,8 +297,10 @@ public sealed class FirstRunWorkflow
                 nextActions,
                 cancellationToken);
         }
-        catch
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.first-run-workflow", "fail-initial-root-scan"))
         {
+            _ = exception;
         }
     }
 }

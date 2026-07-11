@@ -1,5 +1,7 @@
+using System.Data.Common;
 using System.Text.Json;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
@@ -30,7 +32,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         IReadOnlyList<string>? nextActions = null,
         CancellationToken cancellationToken = default)
     {
-        var validation = ValidateStart(operationType, scopeType, progressCurrent, progressTotal);
+        Result validation = ValidateStart(operationType, scopeType, progressCurrent, progressTotal);
         if (validation.IsFailure)
         {
             return Result<BlockingOperation>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -38,8 +40,8 @@ public sealed class BlockingOperationService : IBlockingOperationService
 
         try
         {
-            var now = _clock.UtcNow.ToUniversalTime();
-            var operation = new BlockingOperation(
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            BlockingOperation operation = new(
                 BlockingOperationId.New(),
                 operationType.Trim(),
                 scopeType.Trim(),
@@ -55,9 +57,9 @@ public sealed class BlockingOperationService : IBlockingOperationService
                 now,
                 now);
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
             await InsertOperationAsync(connection, transaction, operation);
             await InsertLogEntryAsync(
                 connection,
@@ -78,9 +80,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -92,7 +96,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         IReadOnlyList<string>? nextActions = null,
         CancellationToken cancellationToken = default)
     {
-        var validation = ValidateProgress(progressCurrent, progressTotal);
+        Result validation = ValidateProgress(progressCurrent, progressTotal);
         if (validation.IsFailure)
         {
             return Result<BlockingOperation>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -100,10 +104,10 @@ public sealed class BlockingOperationService : IBlockingOperationService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-            var current = await GetRowAsync(connection, transaction, operationId);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            Row? current = await GetRowAsync(connection, transaction, operationId);
             if (current is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -113,10 +117,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
             if (BlockingOperationStatus.IsTerminal(current.Status))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState, "Terminal blocking operations cannot update progress.");
+                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState,
+                    "Terminal blocking operations cannot update progress.");
             }
 
-            var updated = current.ToModel() with
+            BlockingOperation updated = current.ToModel() with
             {
                 ProgressCurrent = progressCurrent ?? current.ProgressCurrent,
                 ProgressTotal = progressTotal ?? current.ProgressTotal,
@@ -133,9 +138,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -167,7 +174,8 @@ public sealed class BlockingOperationService : IBlockingOperationService
     {
         if (string.IsNullOrWhiteSpace(failureCode) || string.IsNullOrWhiteSpace(failureMessage))
         {
-            return Result<BlockingOperation>.Failure(AppErrorCodes.ValidationFailed, "Failure code and failure message are required.");
+            return Result<BlockingOperation>.Failure(AppErrorCodes.ValidationFailed,
+                "Failure code and failure message are required.");
         }
 
         return await TransitionAsync(
@@ -190,10 +198,10 @@ public sealed class BlockingOperationService : IBlockingOperationService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-            var current = await GetRowAsync(connection, transaction, operationId);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            Row? current = await GetRowAsync(connection, transaction, operationId);
             if (current is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -203,16 +211,18 @@ public sealed class BlockingOperationService : IBlockingOperationService
             if (current.CanCancel == 0)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState, "This blocking operation cannot be cancelled.");
+                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState,
+                    "This blocking operation cannot be cancelled.");
             }
 
             if (BlockingOperationStatus.IsTerminal(current.Status))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState, "Terminal blocking operations cannot be cancelled.");
+                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState,
+                    "Terminal blocking operations cannot be cancelled.");
             }
 
-            var updated = current.ToModel() with
+            BlockingOperation updated = current.ToModel() with
             {
                 Status = BlockingOperationStatus.Cancelled,
                 ProgressLabel = NullIfWhiteSpace(progressLabel) ?? current.ProgressLabel,
@@ -240,19 +250,22 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result<BlockingOperation>> GetAsync(BlockingOperationId operationId, CancellationToken cancellationToken = default)
+    public async Task<Result<BlockingOperation>> GetAsync(BlockingOperationId operationId,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await GetRowAsync(connection, null, operationId);
+            Row? row = await GetRowAsync(connection, null, operationId);
             return row is null
                 ? Result<BlockingOperation>.Failure(AppErrorCodes.NotFound, "Blocking operation was not found.")
                 : Result<BlockingOperation>.Success(row.ToModel());
@@ -261,9 +274,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -276,9 +291,9 @@ public sealed class BlockingOperationService : IBlockingOperationService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var rows = await connection.QueryAsync<Row>(
+            IEnumerable<Row> rows = await connection.QueryAsync<Row>(
                 """
                 select operation_id as OperationId,
                        operation_type as OperationType,
@@ -314,9 +329,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<IReadOnlyList<BlockingOperation>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<IReadOnlyList<BlockingOperation>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -331,18 +348,19 @@ public sealed class BlockingOperationService : IBlockingOperationService
     {
         if (string.IsNullOrWhiteSpace(level) || string.IsNullOrWhiteSpace(message))
         {
-            return Result<BlockingOperationLogEntry>.Failure(AppErrorCodes.ValidationFailed, "Log level and message are required.");
+            return Result<BlockingOperationLogEntry>.Failure(AppErrorCodes.ValidationFailed,
+                "Log level and message are required.");
         }
 
         try
         {
-            var operation = await GetAsync(operationId, cancellationToken);
+            Result<BlockingOperation> operation = await GetAsync(operationId, cancellationToken);
             if (operation.IsFailure)
             {
                 return Result<BlockingOperationLogEntry>.Failure(operation.ErrorCode!, operation.ErrorMessage!);
             }
 
-            var entry = new BlockingOperationLogEntry(
+            BlockingOperationLogEntry entry = new(
                 BlockingOperationLogEntryId.New(),
                 operationId,
                 level.Trim(),
@@ -352,7 +370,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
                 NullIfWhiteSpace(scopeId),
                 _clock.UtcNow.ToUniversalTime());
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await InsertLogEntryAsync(connection, null, entry);
             return Result<BlockingOperationLogEntry>.Success(entry);
@@ -361,9 +379,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<BlockingOperationLogEntry>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<BlockingOperationLogEntry>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -373,9 +393,9 @@ public sealed class BlockingOperationService : IBlockingOperationService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var rows = await connection.QueryAsync<LogRow>(
+            IEnumerable<LogRow> rows = await connection.QueryAsync<LogRow>(
                 """
                 select entry_id as EntryId,
                        operation_id as OperationId,
@@ -390,15 +410,18 @@ public sealed class BlockingOperationService : IBlockingOperationService
                 order by created_at, rowid;
                 """,
                 new { OperationId = operationId.ToString() });
-            return Result<IReadOnlyList<BlockingOperationLogEntry>>.Success(rows.Select(row => row.ToModel()).ToArray());
+            return Result<IReadOnlyList<BlockingOperationLogEntry>>.Success(rows.Select(row => row.ToModel())
+                .ToArray());
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<IReadOnlyList<BlockingOperationLogEntry>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<IReadOnlyList<BlockingOperationLogEntry>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -415,10 +438,10 @@ public sealed class BlockingOperationService : IBlockingOperationService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
-            var current = await GetRowAsync(connection, transaction, operationId);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            Row? current = await GetRowAsync(connection, transaction, operationId);
             if (current is null)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -428,10 +451,11 @@ public sealed class BlockingOperationService : IBlockingOperationService
             if (BlockingOperationStatus.IsTerminal(current.Status))
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState, "Terminal blocking operations cannot transition again.");
+                return Result<BlockingOperation>.Failure(AppErrorCodes.InvalidState,
+                    "Terminal blocking operations cannot transition again.");
             }
 
-            var updated = current.ToModel() with
+            BlockingOperation updated = current.ToModel() with
             {
                 Status = targetStatus,
                 FailureCode = failureCode,
@@ -461,13 +485,16 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.blocking-operation"))
         {
-            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
-    private static Result ValidateStart(string operationType, string scopeType, int? progressCurrent, int? progressTotal)
+    private static Result ValidateStart(string operationType, string scopeType, int? progressCurrent,
+        int? progressTotal)
     {
         if (string.IsNullOrWhiteSpace(operationType) || string.IsNullOrWhiteSpace(scopeType))
         {
@@ -493,8 +520,8 @@ public sealed class BlockingOperationService : IBlockingOperationService
     }
 
     private static async Task InsertOperationAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         BlockingOperation operation)
     {
         await connection.ExecuteAsync(
@@ -531,8 +558,8 @@ public sealed class BlockingOperationService : IBlockingOperationService
     }
 
     private static async Task UpdateOperationAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         BlockingOperation operation)
     {
         await connection.ExecuteAsync(
@@ -566,8 +593,8 @@ public sealed class BlockingOperationService : IBlockingOperationService
     }
 
     private static Task<Row?> GetRowAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction? transaction,
+        SqliteConnection connection,
+        DbTransaction? transaction,
         BlockingOperationId operationId)
     {
         return connection.QuerySingleOrDefaultAsync<Row>(
@@ -594,8 +621,8 @@ public sealed class BlockingOperationService : IBlockingOperationService
     }
 
     private static Task InsertLogEntryAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction? transaction,
+        SqliteConnection connection,
+        DbTransaction? transaction,
         BlockingOperationLogEntry entry)
     {
         return connection.ExecuteAsync(
@@ -622,12 +649,17 @@ public sealed class BlockingOperationService : IBlockingOperationService
     }
 
     private static IReadOnlyList<string> CleanActions(IReadOnlyList<string>? actions)
-        => actions is null
+    {
+        return actions is null
             ? Array.Empty<string>()
-            : actions.Where(action => !string.IsNullOrWhiteSpace(action)).Select(action => action.Trim()).Distinct(StringComparer.Ordinal).ToArray();
+            : actions.Where(action => !string.IsNullOrWhiteSpace(action)).Select(action => action.Trim())
+                .Distinct(StringComparer.Ordinal).ToArray();
+    }
 
     private static string? NullIfWhiteSpace(string? value)
-        => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
 
     private sealed class Row
     {
@@ -646,21 +678,24 @@ public sealed class BlockingOperationService : IBlockingOperationService
         public string CreatedAt { get; set; } = "";
         public string UpdatedAt { get; set; } = "";
 
-        public BlockingOperation ToModel() => new(
-            BlockingOperationId.Parse(OperationId),
-            OperationType,
-            ScopeType,
-            ScopeId,
-            Status,
-            ProgressCurrent,
-            ProgressTotal,
-            ProgressLabel,
-            CanCancel != 0,
-            FailureCode,
-            FailureMessage,
-            ParseActions(NextActionsJson),
-            DateTimeOffset.Parse(CreatedAt),
-            DateTimeOffset.Parse(UpdatedAt));
+        public BlockingOperation ToModel()
+        {
+            return new BlockingOperation(
+                BlockingOperationId.Parse(OperationId),
+                OperationType,
+                ScopeType,
+                ScopeId,
+                Status,
+                ProgressCurrent,
+                ProgressTotal,
+                ProgressLabel,
+                CanCancel != 0,
+                FailureCode,
+                FailureMessage,
+                ParseActions(NextActionsJson),
+                DateTimeOffset.Parse(CreatedAt),
+                DateTimeOffset.Parse(UpdatedAt));
+        }
     }
 
     private sealed class LogRow
@@ -674,15 +709,18 @@ public sealed class BlockingOperationService : IBlockingOperationService
         public string? ScopeId { get; set; }
         public string CreatedAt { get; set; } = "";
 
-        public BlockingOperationLogEntry ToModel() => new(
-            BlockingOperationLogEntryId.Parse(EntryId),
-            BlockingOperationId.Parse(OperationId),
-            Level,
-            Message,
-            Detail,
-            ScopeType,
-            ScopeId,
-            DateTimeOffset.Parse(CreatedAt));
+        public BlockingOperationLogEntry ToModel()
+        {
+            return new BlockingOperationLogEntry(
+                BlockingOperationLogEntryId.Parse(EntryId),
+                BlockingOperationId.Parse(OperationId),
+                Level,
+                Message,
+                Detail,
+                ScopeType,
+                ScopeId,
+                DateTimeOffset.Parse(CreatedAt));
+        }
     }
 
     private static IReadOnlyList<string> ParseActions(string? json)

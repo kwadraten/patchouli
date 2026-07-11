@@ -8,6 +8,10 @@ using Patchouli.Core.Results;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Avalonia.Threading;
+using Microsoft.Data.Sqlite;
+using Patchouli.Core.Bibliography.MetadataLookup;
+using Patchouli.Core.Library;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -35,12 +39,17 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactory { get; set; }
     public bool IsBusy { get; set; }
     private LibraryItemViewModel? _selectedItem;
+
     public LibraryItemViewModel? SelectedItem
     {
         get => _selectedItem;
         set
         {
-            if (_selectedItem == value) return;
+            if (_selectedItem == value)
+            {
+                return;
+            }
+
             _selectedItem = value;
             Raise();
             Raise(nameof(InspectorTitle));
@@ -55,6 +64,21 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public bool HasSelectedItem => SelectedItem is not null;
     public bool NoSelectedItem => SelectedItem is null;
+    public bool IsLibraryLeftSidebarVisible => _main.IsLibraryLeftSidebarVisible;
+    public bool IsLibraryRightSidebarVisible => _main.IsLibraryRightSidebarVisible;
+    public bool IsLibraryVisible => _main.IsLibraryVisible;
+    public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
+    public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
+    public ObservableCollection<SidebarFileSearchRootViewModel> FileSearchRoots => _main.FileSearchRoots;
+    public bool HasFileSearchRoots => _main.HasFileSearchRoots;
+    public bool NoFileSearchRoots => _main.NoFileSearchRoots;
+    public AsyncCommand RescanFileSearchRootsCommand => _main.RescanFileSearchRootsCommand;
+    public AsyncCommand EditSelectedItemCommand => _main.EditSelectedItemCommand;
+    public AsyncCommand ShowReadingCommand => _main.ShowReadingCommand;
+    public AsyncCommand RunSelectedItemOcrCommand => _main.RunSelectedItemOcrCommand;
+    public UiCommandDescriptor CopyCslBibliographyDescriptor => _main.CopyCslBibliographyDescriptor;
+    public UiCommandDescriptor ExportItemDescriptor => _main.ExportItemDescriptor;
+    public UiCommandDescriptor CheckSyncStateDescriptor => _main.CheckSyncStateDescriptor;
     public bool IsReadingMode { get; set; }
     public bool ShowLibraryList => !IsReadingMode;
     public bool ShowPdfWorkspace => IsReadingMode;
@@ -72,30 +96,66 @@ public sealed class LibraryShellViewModel : ViewModelBase
     private bool _isMetadataBatchBusy;
     private double _metadataBatchProgress;
     private string _metadataBatchStatus = "";
+
     public bool IsMetadataBatchBusy
     {
         get => _isMetadataBatchBusy;
-        private set { if (_isMetadataBatchBusy == value) return; _isMetadataBatchBusy = value; Raise(); }
+        private set
+        {
+            if (_isMetadataBatchBusy == value)
+            {
+                return;
+            }
+
+            _isMetadataBatchBusy = value;
+            Raise();
+        }
     }
+
     public double MetadataBatchProgress
     {
         get => _metadataBatchProgress;
-        private set { if (_metadataBatchProgress == value) return; _metadataBatchProgress = value; Raise(); }
+        private set
+        {
+            if (_metadataBatchProgress == value)
+            {
+                return;
+            }
+
+            _metadataBatchProgress = value;
+            Raise();
+        }
     }
+
     public string MetadataBatchStatus
     {
         get => _metadataBatchStatus;
-        private set { if (_metadataBatchStatus == value) return; _metadataBatchStatus = value; Raise(); Raise(nameof(HasMetadataBatchStatus)); }
+        private set
+        {
+            if (_metadataBatchStatus == value)
+            {
+                return;
+            }
+
+            _metadataBatchStatus = value;
+            Raise();
+            Raise(nameof(HasMetadataBatchStatus));
+        }
     }
+
     public bool HasMetadataBatchStatus => !string.IsNullOrWhiteSpace(MetadataBatchStatus);
     public int SelectedItemCount => SelectedItems.Count;
     public bool HasBatchSelection => SelectedItems.Count > 0;
 
     public void SetSelectedItems(IEnumerable<LibraryItemViewModel> items)
     {
-        var selected = items.Distinct().ToArray();
+        LibraryItemViewModel[] selected = items.Distinct().ToArray();
         SelectedItems.Clear();
-        foreach (var item in selected) SelectedItems.Add(item);
+        foreach (LibraryItemViewModel item in selected)
+        {
+            SelectedItems.Add(item);
+        }
+
         Raise(nameof(SelectedItems));
         Raise(nameof(SelectedItemCount));
         Raise(nameof(HasBatchSelection));
@@ -106,36 +166,43 @@ public sealed class LibraryShellViewModel : ViewModelBase
         get => GetColumnVisibility("ItemType", true);
         set => SetColumnVisibility("ItemType", value);
     }
+
     public bool ShowYearColumn
     {
         get => GetColumnVisibility("Year", true);
         set => SetColumnVisibility("Year", value);
     }
+
     public bool ShowAuthorColumn
     {
         get => GetColumnVisibility("Author", true);
         set => SetColumnVisibility("Author", value);
     }
+
     public bool ShowTitleColumn
     {
         get => GetColumnVisibility("Title", true);
         set => SetColumnVisibility("Title", value);
     }
+
     public bool ShowSourceColumn
     {
         get => GetColumnVisibility("Source", true);
         set => SetColumnVisibility("Source", value);
     }
+
     public bool ShowStatusColumn
     {
         get => GetColumnVisibility("Status", true);
         set => SetColumnVisibility("Status", value);
     }
+
     public bool ShowPagesColumn
     {
         get => GetColumnVisibility("Pages", true);
         set => SetColumnVisibility("Pages", value);
     }
+
     public bool ShowFileColumn
     {
         get => GetColumnVisibility("File", true);
@@ -144,8 +211,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private bool GetColumnVisibility(string key, bool defaultValue)
     {
-        if (_main.AppOptions.Ui.LibraryGridVisibleColumns.TryGetValue(key, out var visible))
+        if (_main.AppOptions.Ui.LibraryGridVisibleColumns.TryGetValue(key, out bool visible))
+        {
             return visible;
+        }
+
         return defaultValue;
     }
 
@@ -156,20 +226,34 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise($"Show{key}Column");
     }
 
-    public bool TryGetColumnWidth(string key, out double width) => _main.AppOptions.Ui.LibraryGridColumnWidths.TryGetValue(key, out width);
+    public bool TryGetColumnWidth(string key, out double width)
+    {
+        return _main.AppOptions.Ui.LibraryGridColumnWidths.TryGetValue(key, out width);
+    }
 
-    public bool TryGetColumnOrder(string key, out int order) => _main.AppOptions.Ui.LibraryGridColumnOrder.TryGetValue(key, out order);
+    public bool TryGetColumnOrder(string key, out int order)
+    {
+        return _main.AppOptions.Ui.LibraryGridColumnOrder.TryGetValue(key, out order);
+    }
 
     public void SetColumnWidth(string key, double width)
     {
-        if (width <= 0) return;
+        if (width <= 0)
+        {
+            return;
+        }
+
         _main.AppOptions.Ui.LibraryGridColumnWidths[key] = width;
         _main.AppOptions.Save(_main.SettingsFilePath);
     }
 
     public void SetColumnOrder(string key, int order)
     {
-        if (order < 0) return;
+        if (order < 0)
+        {
+            return;
+        }
+
         _main.AppOptions.Ui.LibraryGridColumnOrder[key] = order;
         _main.AppOptions.Save(_main.SettingsFilePath);
     }
@@ -181,10 +265,10 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public async Task RefreshItemsAsync()
     {
-        var primaryItemId = SelectedItem?.ItemId;
-        var selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
-        var services = await _main.ServicesAsync();
-        var library = await services.Library.GetCurrentLibraryAsync();
+        string? primaryItemId = SelectedItem?.ItemId;
+        HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
+        AppServices services = await _main.ServicesAsync();
+        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsSuccess && LibraryName != library.Value.DisplayName)
         {
             LibraryName = library.Value.DisplayName;
@@ -192,34 +276,37 @@ public sealed class LibraryShellViewModel : ViewModelBase
             _main.RaiseLibraryTitleChanged();
         }
 
-        var rowsResult = await services.LibraryItems.ListRowsAsync();
+        Result<IReadOnlyList<LibraryItemRow>> rowsResult = await services.LibraryItems.ListRowsAsync();
         if (rowsResult.IsFailure)
         {
             throw new InvalidOperationException(rowsResult.ErrorMessage);
         }
 
-        await using var connection = services.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-        var sourcePaths = (await connection.QueryAsync<(string DocumentInstanceId, string SourcePath, string? FileAssetId)>(
-            """
-            select di.document_instance_id as DocumentInstanceId,
-                   coalesce(fa.original_path, '') as SourcePath,
-                   fa.file_asset_id as FileAssetId
-            from document_instances di
-            left join file_assets fa on fa.file_asset_id = di.file_asset_id;
-            """))
+        Dictionary<string, (string DocumentInstanceId, string SourcePath, string? FileAssetId)> sourcePaths =
+            (await connection.QueryAsync<(string DocumentInstanceId, string SourcePath, string? FileAssetId)>(
+                """
+                select di.document_instance_id as DocumentInstanceId,
+                       coalesce(fa.original_path, '') as SourcePath,
+                       fa.file_asset_id as FileAssetId
+                from document_instances di
+                left join file_assets fa on fa.file_asset_id = di.file_asset_id;
+                """))
             .ToDictionary(value => value.DocumentInstanceId, value => value, StringComparer.Ordinal);
 
-        var refreshedItems = new List<LibraryItemViewModel>();
-        var refreshedRecentItems = new List<string>();
-        var refreshedRecentDocuments = new List<string>();
-        foreach (var row in rowsResult.Value)
+        List<LibraryItemViewModel> refreshedItems = new();
+        List<string> refreshedRecentItems = new();
+        List<string> refreshedRecentDocuments = new();
+        foreach (LibraryItemRow row in rowsResult.Value)
         {
-            var documentInstanceKey = row.DocumentInstanceId?.ToString();
-            var source = documentInstanceKey is not null && sourcePaths.TryGetValue(documentInstanceKey, out var value)
-                ? value
-                : default;
-            var item = new LibraryItemViewModel(
+            string? documentInstanceKey = row.DocumentInstanceId?.ToString();
+            (string DocumentInstanceId, string SourcePath, string? FileAssetId) source =
+                documentInstanceKey is not null && sourcePaths.TryGetValue(documentInstanceKey,
+                    out (string DocumentInstanceId, string SourcePath, string? FileAssetId) value)
+                    ? value
+                    : default;
+            LibraryItemViewModel item = new(
                 row.ItemId.ToString(),
                 row.Title,
                 row.ItemType,
@@ -239,15 +326,28 @@ public sealed class LibraryShellViewModel : ViewModelBase
             refreshedItems.Add(item);
             refreshedRecentItems.Add(row.Title);
             if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
+            {
                 refreshedRecentDocuments.Add(row.LinkedFileName);
+            }
         }
 
         Items.Clear();
-        foreach (var item in refreshedItems) Items.Add(item);
+        foreach (LibraryItemViewModel item in refreshedItems)
+        {
+            Items.Add(item);
+        }
+
         RecentItems.Clear();
-        foreach (var item in refreshedRecentItems) RecentItems.Add(item);
+        foreach (string item in refreshedRecentItems)
+        {
+            RecentItems.Add(item);
+        }
+
         RecentDocuments.Clear();
-        foreach (var document in refreshedRecentDocuments) RecentDocuments.Add(document);
+        foreach (string document in refreshedRecentDocuments)
+        {
+            RecentDocuments.Add(document);
+        }
 
         SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
         SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
@@ -264,12 +364,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
     }
 
     private Task RefreshItemsOnUiThreadAsync()
-        => DispatcherTasks.RunAsync(RefreshItemsAsync);
+    {
+        return DispatcherTasks.RunAsync(RefreshItemsAsync);
+    }
 
     public async Task RunOcrForItemAsync(LibraryItemViewModel item)
     {
         SelectedItem = item;
-        var token = await ResolveMinerUTokenAsync();
+        string token = await ResolveMinerUTokenAsync();
         if (string.IsNullOrWhiteSpace(token))
         {
             item.OcrStatus = "需要 MinerU API token。请先在设置中完成配置后再重试 OCR。";
@@ -293,13 +395,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(InspectorStatus));
         try
         {
-            var services = await _main.ServicesAsync();
-            await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token", token);
-            var presetId = await EnsureMinerUPresetAsync(services);
-            var documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
+            AppServices services = await _main.ServicesAsync();
+            await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token",
+                token);
+            OcrPresetId presetId = await EnsureMinerUPresetAsync(services);
+            DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
             if (MinerUClientFactory is null)
             {
-                var queued = await QueueOcrForItemAsync(services, documentInstanceId, presetId);
+                Result<OcrQueueTask> queued = await QueueOcrForItemAsync(services, documentInstanceId, presetId);
                 item.OcrStatus = queued.IsSuccess
                     ? $"OCR 已加入后台队列：{queued.Value.TaskId}"
                     : queued.ErrorMessage ?? "OCR 入队失败。";
@@ -309,11 +412,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 return;
             }
 
-            var coordinator = MinerUClientFactory is null
+            IOcrRunCoordinator coordinator = MinerUClientFactory is null
                 ? services.Ocr
                 : services.CreateOcrRunCoordinator(MinerUClientFactory);
 
-            var run = await coordinator.RunPresetOnDocumentAsync(documentInstanceId, presetId);
+            Result<OcrRun> run = await coordinator.RunPresetOnDocumentAsync(documentInstanceId, presetId);
             if (run.IsFailure)
             {
                 item.OcrStatus = run.ErrorMessage ?? "OCR 运行失败。";
@@ -322,8 +425,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 return;
             }
 
-            var units = await services.SearchUnits.RebuildForDocumentInstanceAsync(documentInstanceId);
-            var index = units.IsSuccess
+            Result units = await services.SearchUnits.RebuildForDocumentInstanceAsync(documentInstanceId);
+            Result index = units.IsSuccess
                 ? await services.SearchIndex.RebuildFtsForDocumentInstanceAsync(documentInstanceId)
                 : units;
 
@@ -343,37 +446,52 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private async Task LookupMetadataBatchAsync()
     {
-        if (IsMetadataBatchBusy || SelectedItems.Count == 0) return;
+        if (IsMetadataBatchBusy || SelectedItems.Count == 0)
+        {
+            return;
+        }
 
-        var itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
+        ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
         _metadataBatchCancellation = new CancellationTokenSource();
         IsMetadataBatchBusy = true;
         MetadataBatchProgress = 0;
         MetadataBatchStatus = $"正在获取 0/{itemIds.Length} 个题录的元数据...";
-        var latest = new MetadataLookupProgressInfo(0, itemIds.Length, 0, 0, null);
+        MetadataLookupProgressInfo latest = new(0, itemIds.Length, 0, 0, null);
         try
         {
-            var outcome = await MetadataLookupUiBridge.LookupBatchAsync(
+            MetadataLookupOutcome outcome = await MetadataLookupUiBridge.LookupBatchAsync(
                 await _main.ServicesAsync(),
                 itemIds,
                 progress =>
                 {
                     latest = progress;
                     MetadataBatchProgress = progress.Total <= 0 ? 0 : 100d * progress.Completed / progress.Total;
-                    MetadataBatchStatus = $"正在获取 {progress.Completed}/{Math.Max(progress.Total, itemIds.Length)} 个题录的元数据...";
+                    MetadataBatchStatus =
+                        $"正在获取 {progress.Completed}/{Math.Max(progress.Total, itemIds.Length)} 个题录的元数据...";
                 },
                 _metadataBatchCancellation.Token);
 
             await RefreshItemsOnUiThreadAsync();
             await _main.RefreshOpenItemEditorsAsync(itemIds);
-            var failed = Math.Max(latest.Failed, outcome.FailedCount);
-            var succeeded = Math.Max(latest.Succeeded, outcome.SucceededCount);
-            if (!outcome.IsSuccess && failed == 0) failed = itemIds.Length - succeeded;
+            int failed = Math.Max(latest.Failed, outcome.FailedCount);
+            int succeeded = Math.Max(latest.Succeeded, outcome.SucceededCount);
+            if (!outcome.IsSuccess && failed == 0)
+            {
+                failed = itemIds.Length - succeeded;
+            }
+
             MetadataBatchProgress = 100;
             MetadataBatchStatus = failed > 0
                 ? $"批量获取完成：成功 {succeeded} 个，失败 {failed} 个。{outcome.Message}"
                 : $"批量获取完成：成功 {Math.Max(succeeded, itemIds.Length)} 个。";
-            if (failed > 0) _main.ReportError(MetadataBatchStatus); else _main.Report(MetadataBatchStatus);
+            if (failed > 0)
+            {
+                _main.ReportError(MetadataBatchStatus);
+            }
+            else
+            {
+                _main.Report(MetadataBatchStatus);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -401,28 +519,30 @@ public sealed class LibraryShellViewModel : ViewModelBase
         return Task.CompletedTask;
     }
 
-    private async Task<Result<OcrQueueTask>> QueueOcrForItemAsync(AppServices services, DocumentInstanceId documentInstanceId, OcrPresetId presetId)
+    private async Task<Result<OcrQueueTask>> QueueOcrForItemAsync(AppServices services,
+        DocumentInstanceId documentInstanceId, OcrPresetId presetId)
     {
-        await using var connection = services.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
 
-        var pageIds = (await connection.QueryAsync<string>(
-            """
-            select page_id
-            from pages
-            where document_instance_id = @DocumentInstanceId
-            order by page_index, page_id;
-            """,
-            new { DocumentInstanceId = documentInstanceId.ToString() }))
+        PageId[] pageIds = (await connection.QueryAsync<string>(
+                """
+                select page_id
+                from pages
+                where document_instance_id = @DocumentInstanceId
+                order by page_index, page_id;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() }))
             .Select(PageId.Parse)
             .ToArray();
 
         if (pageIds.Length == 0)
         {
-            return Result<OcrQueueTask>.Failure(AppErrorCodes.ValidationFailed, "Document instance has no pages to OCR.");
+            return Result<OcrQueueTask>.Failure(AppErrorCodes.ValidationFailed,
+                "Document instance has no pages to OCR.");
         }
 
-        var engineId = await connection.ExecuteScalarAsync<string?>(
+        string? engineId = await connection.ExecuteScalarAsync<string?>(
             """
             select v.engine_id
             from ocr_presets p
@@ -436,15 +556,16 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidState, "Active OCR preset/version was not found.");
         }
 
-        var queue = await services.GetOcrQueueAsync();
+        Result<IOcrQueueScheduler> queue = await services.GetOcrQueueAsync();
         if (queue.IsFailure)
         {
             return Result<OcrQueueTask>.Failure(queue.ErrorCode!, queue.ErrorMessage!);
         }
 
-        var adapterKind = engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
-        var providerId = engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
-        var enqueued = await queue.Value.EnqueueDocumentAsync(documentInstanceId, presetId, pageIds, engineId, adapterKind, providerId, OcrQueuePriority.UserStartedDocument);
+        string adapterKind = engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
+        string? providerId = engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        Result<OcrQueueTask> enqueued = await queue.Value.EnqueueDocumentAsync(documentInstanceId, presetId, pageIds,
+            engineId, adapterKind, providerId, OcrQueuePriority.UserStartedDocument);
         if (enqueued.IsSuccess)
         {
             await queue.Value.StartAsync();
@@ -456,12 +577,16 @@ public sealed class LibraryShellViewModel : ViewModelBase
     private async Task<string> ResolveMinerUTokenAsync()
     {
         if (!string.IsNullOrWhiteSpace(MinerUToken))
+        {
             return MinerUToken.Trim();
+        }
 
         if (!_main.HasOpenRuntimeDatabase)
+        {
             return "";
+        }
 
-        var persisted = await _main.GetPersistedMinerUTokenAsync();
+        string persisted = await _main.GetPersistedMinerUTokenAsync();
         MinerUToken = persisted;
         NotifyMinerUTokenChanged();
         return persisted;
@@ -469,9 +594,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private static async Task<OcrPresetId> EnsureMinerUPresetAsync(AppServices services)
     {
-        await using var connection = services.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
-        var existing = await connection.ExecuteScalarAsync<string?>(
+        string? existing = await connection.ExecuteScalarAsync<string?>(
             """
             select p.preset_id
             from ocr_presets p
@@ -483,9 +608,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
             """,
             new { EngineId = OcrEngineIds.MinerU });
         if (!string.IsNullOrWhiteSpace(existing))
+        {
             return OcrPresetId.Parse(existing);
+        }
 
-        var created = await services.OcrPresets.CreatePresetAsync(
+        Result<OcrPreset> created = await services.OcrPresets.CreatePresetAsync(
             "MinerU OCR",
             "MinerU document OCR preset",
             OcrEngineIds.MinerU,
@@ -494,7 +621,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
             """{"isOcr":true,"enableTable":true,"enableFormula":true}""",
             true);
         if (created.IsFailure)
+        {
             throw new InvalidOperationException(created.ErrorMessage);
+        }
 
         return created.Value.PresetId;
     }
@@ -507,8 +636,19 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public Task ViewPdfForItemAsync(LibraryItemViewModel item)
     {
-        SelectedItem = item;
-        return _main.ShowReadingCommand.ExecuteAsync();
+        return _main.ShowReadingAsync(item);
+    }
+
+    public void RaisePageStateChanged()
+    {
+        Raise(nameof(IsLibraryLeftSidebarVisible));
+        Raise(nameof(IsLibraryRightSidebarVisible));
+        Raise(nameof(IsLibraryVisible));
+        Raise(nameof(RuntimeDatabasePath));
+        Raise(nameof(DefaultSyncRootPath));
+        Raise(nameof(FileSearchRoots));
+        Raise(nameof(HasFileSearchRoots));
+        Raise(nameof(NoFileSearchRoots));
     }
 
     public async Task ShowRecentItemsAsync()
@@ -528,7 +668,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public void ExitReadingMode()
     {
-        if (!IsReadingMode) return;
+        if (!IsReadingMode)
+        {
+            return;
+        }
+
         IsReadingMode = false;
         Raise(nameof(IsReadingMode));
         Raise(nameof(ShowLibraryList));
@@ -536,7 +680,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         _main.RaiseShellSelectionChanged();
     }
 
-    public async void Refresh()
+    public async Task RefreshAsync()
     {
         await UnexpectedExceptionBoundary.RunAsync(RefreshItemsAsync, "refresh-library-shell");
         Raise(nameof(StatusText));
@@ -544,12 +688,20 @@ public sealed class LibraryShellViewModel : ViewModelBase
     }
 }
 
-internal sealed record MetadataLookupOutcome(bool IsSuccess, string Message, int SucceededCount = 0, int FailedCount = 0);
+internal sealed record MetadataLookupOutcome(
+    bool IsSuccess,
+    string Message,
+    int SucceededCount = 0,
+    int FailedCount = 0);
+
 internal sealed record MetadataLookupProgressInfo(int Completed, int Total, int Succeeded, int Failed, string? Message);
 
 internal static class MetadataLookupUiBridge
 {
-    public static bool CanLookup(AppServices services, string scheme) => services.MetadataLookup.CanLookup(scheme);
+    public static bool CanLookup(AppServices services, string scheme)
+    {
+        return services.MetadataLookup.CanLookup(scheme);
+    }
 
     public static async Task<MetadataLookupOutcome> LookupAsync(
         AppServices services,
@@ -557,7 +709,8 @@ internal static class MetadataLookupUiBridge
         Patchouli.Core.Bibliography.ItemIdentifier identifier,
         CancellationToken cancellationToken)
     {
-        var result = await services.MetadataLookup.LookupAndApplyAsync(itemId, identifier, cancellationToken);
+        Result<Patchouli.Core.Bibliography.MetadataLookup.MetadataLookupOutcome> result =
+            await services.MetadataLookup.LookupAndApplyAsync(itemId, identifier, cancellationToken);
         return result.IsFailure
             ? new MetadataLookupOutcome(false, result.ErrorMessage ?? "元数据获取失败。")
             : new MetadataLookupOutcome(true, $"已从 {result.Value.Candidate.SourceId} 获取元数据。");
@@ -569,9 +722,11 @@ internal static class MetadataLookupUiBridge
         Action<MetadataLookupProgressInfo> onProgress,
         CancellationToken cancellationToken)
     {
-        var progress = new Progress<Patchouli.Core.Bibliography.MetadataLookup.MetadataBatchProgress>(value =>
-            onProgress(new MetadataLookupProgressInfo(value.Completed, value.Total, value.Succeeded, value.Failed, value.Message)));
-        var result = await services.MetadataLookup.LookupAndApplyBatchAsync(itemIds, progress, cancellationToken);
+        Progress<MetadataBatchProgress> progress = new(value =>
+            onProgress(new MetadataLookupProgressInfo(value.Completed, value.Total, value.Succeeded, value.Failed,
+                value.Message)));
+        Result<MetadataBatchResult> result =
+            await services.MetadataLookup.LookupAndApplyBatchAsync(itemIds, progress, cancellationToken);
         return result.IsFailure
             ? new MetadataLookupOutcome(false, result.ErrorMessage ?? "批量元数据获取失败。")
             : new MetadataLookupOutcome(true, "", result.Value.SucceededCount, result.Value.FailedCount);
@@ -642,7 +797,11 @@ public sealed class LibraryItemViewModel : ViewModelBase
         get => _ocrStatus;
         set
         {
-            if (_ocrStatus == value) return;
+            if (_ocrStatus == value)
+            {
+                return;
+            }
+
             _ocrStatus = value;
             Raise();
         }

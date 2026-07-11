@@ -47,40 +47,48 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
     public SearchEvidenceViewModel(MainWindowViewModel m)
     {
         _main = m;
-        RebuildCommand = new(async () =>
+        RebuildCommand = new AsyncCommand(async () =>
         {
-            var s = await _main.ServicesAsync();
-            var a = await s.SearchUnits.RebuildForDocumentInstanceAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
-            var b = await s.SearchIndex.RebuildFtsForDocumentInstanceAsync(Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
+            AppServices s = await _main.ServicesAsync();
+            Result a = await s.SearchUnits.RebuildForDocumentInstanceAsync(
+                Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
+            Result b = await s.SearchIndex.RebuildFtsForDocumentInstanceAsync(
+                Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
             Output = a.IsSuccess && b.IsSuccess ? "搜索单元和 FTS 已重建。" : $"ERROR {a.ErrorCode ?? b.ErrorCode}";
             Raise(nameof(Output));
             await _main.LogOperationAsync("rebuild_search_fts", Output);
         });
-        SearchCommand = new(SearchAsync);
-        CreateEvidenceCommand = new(async () =>
+        SearchCommand = new AsyncCommand(SearchAsync);
+        CreateEvidenceCommand = new AsyncCommand(async () =>
         {
-            var r = await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(Patchouli.Core.Ids.SearchUnitId.Parse(UnitId));
+            Result<EvidenceRefRecord> r =
+                await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(SearchUnitId.Parse(UnitId));
             Output = r.IsSuccess ? r.Value.EvidenceRefId : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
             if (r.IsSuccess)
             {
                 EvidenceRef = r.Value.EvidenceRefId;
-                var markdown = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
-                if (markdown.IsSuccess) Markdown = markdown.Value.Markdown;
+                Result<EvidenceMarkdown> markdown =
+                    await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
+                if (markdown.IsSuccess)
+                {
+                    Markdown = markdown.Value.Markdown;
+                }
             }
+
             Raise(nameof(Output));
             Raise(nameof(EvidenceRef));
             Raise(nameof(Markdown));
             await _main.LogOperationAsync("create_evidence_ref", Output);
         });
-        MarkdownCommand = new(async () =>
+        MarkdownCommand = new AsyncCommand(async () =>
         {
-            var r = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
+            Result<EvidenceMarkdown> r = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
             Markdown = r.IsSuccess ? r.Value.Markdown : "";
             Output = r.IsSuccess ? Markdown : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
             Raise(nameof(Markdown));
             Raise(nameof(Output));
         });
-        CopyMarkdownCommand = new(async () =>
+        CopyMarkdownCommand = new AsyncCommand(async () =>
         {
             if (string.IsNullOrWhiteSpace(Markdown))
             {
@@ -98,6 +106,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
                     Output = $"ERROR clipboard_unavailable: {ex.Message}";
                 }
             }
+
             Raise(nameof(Output));
             await _main.LogOperationAsync("copy_evidence_markdown", Output);
         });
@@ -131,8 +140,12 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
 
     public async Task CopyEvidenceRefForSearchUnitAsync(SearchMatchedUnitViewModel unit)
     {
-        var evidence = await EnsureEvidenceRefAsync(unit);
-        if (string.IsNullOrWhiteSpace(evidence)) return;
+        string? evidence = await EnsureEvidenceRefAsync(unit);
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            return;
+        }
+
         await CopyEvidenceRefAsync(evidence);
     }
 
@@ -146,7 +159,8 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             return;
         }
 
-        var markdown = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(evidenceRef);
+        Result<EvidenceMarkdown> markdown =
+            await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(evidenceRef);
         if (markdown.IsFailure)
         {
             Output = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";
@@ -177,8 +191,12 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
 
     public async Task CopyEvidenceMarkdownForSearchUnitAsync(SearchMatchedUnitViewModel unit)
     {
-        var evidence = await EnsureEvidenceRefAsync(unit);
-        if (string.IsNullOrWhiteSpace(evidence)) return;
+        string? evidence = await EnsureEvidenceRefAsync(unit);
+        if (string.IsNullOrWhiteSpace(evidence))
+        {
+            return;
+        }
+
         await CopyEvidenceMarkdownAsync(evidence);
     }
 
@@ -193,7 +211,8 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
 
         try
         {
-            var result = await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(SearchUnitId.Parse(unit.UnitId));
+            Result<EvidenceRefRecord> result =
+                await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(SearchUnitId.Parse(unit.UnitId));
             if (result.IsFailure)
             {
                 Output = $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
@@ -219,8 +238,15 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         }
     }
 
-    public void RaiseMarkdown() => Raise(nameof(Markdown));
-    public void RaiseOutput() => Raise(nameof(Output));
+    public void RaiseMarkdown()
+    {
+        Raise(nameof(Markdown));
+    }
+
+    public void RaiseOutput()
+    {
+        Raise(nameof(Output));
+    }
 
     private async Task SearchAsync()
     {
@@ -243,18 +269,18 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             return;
         }
 
-        var services = await _main.ServicesAsync();
-        var r = await services.Search.SearchLibraryAsync(new SearchRequest(Query));
+        AppServices services = await _main.ServicesAsync();
+        Result<SearchResultPage> r = await services.Search.SearchLibraryAsync(new SearchRequest(Query));
         Results.Clear();
         SearchUnits.Clear();
 
         if (r.IsSuccess)
         {
-            var firstMatchedUnit = default(string);
-            foreach (var page in r.Value.Results)
+            string? firstMatchedUnit = default;
+            foreach (SearchPageResult page in r.Value.Results)
             {
-                var matchedUnits = new List<SearchMatchedUnitViewModel>();
-                foreach (var unit in page.MatchedUnits)
+                List<SearchMatchedUnitViewModel> matchedUnits = new();
+                foreach (SearchMatchedUnit unit in page.MatchedUnits)
                 {
                     SearchUnits.Add($"{unit.UnitId} | {unit.Text}");
                     matchedUnits.Add(new SearchMatchedUnitViewModel(

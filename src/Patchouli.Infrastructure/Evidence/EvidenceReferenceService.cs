@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
@@ -17,20 +19,22 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
     private readonly IClock _clock;
     private readonly IPageCoordinateService? _coordinates;
 
-    public EvidenceReferenceService(SqliteConnectionFactory connectionFactory, IClock clock, IPageCoordinateService? coordinates = null)
+    public EvidenceReferenceService(SqliteConnectionFactory connectionFactory, IClock clock,
+        IPageCoordinateService? coordinates = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _coordinates = coordinates;
     }
 
-    public async Task<Result<EvidenceRefRecord>> CreateFromSearchUnitAsync(SearchUnitId unitId, CancellationToken cancellationToken = default)
+    public async Task<Result<EvidenceRefRecord>> CreateFromSearchUnitAsync(SearchUnitId unitId,
+        CancellationToken cancellationToken = default)
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var row = await connection.QuerySingleOrDefaultAsync<CreateRow>(
+            CreateRow? row = await connection.QuerySingleOrDefaultAsync<CreateRow>(
                 """
                 select lm.library_id as LibraryId, su.document_instance_id as DocumentInstanceId, su.page_id as PageId,
                        su.unit_id as UnitId, su.text_revision_id as TextRevisionId, su.bbox_revision_id as BboxRevisionId,
@@ -49,7 +53,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 return Result<EvidenceRefRecord>.Failure(AppErrorCodes.NotFound, "Search unit was not found.");
             }
 
-            var reference = new EvidenceReference(
+            EvidenceReference reference = new(
                 LibraryId.Parse(row.LibraryId),
                 DocumentInstanceId.Parse(row.DocumentInstanceId),
                 PageId.Parse(row.PageId),
@@ -57,20 +61,20 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 row.TextRevisionId,
                 row.BboxRevisionId,
                 LayoutRevisionId.Parse(row.LayoutRevisionId));
-            var encoded = EvidenceReferenceCodec.Encode(reference);
+            Result<string> encoded = EvidenceReferenceCodec.Encode(reference);
             if (encoded.IsFailure)
             {
                 return Result<EvidenceRefRecord>.Failure(encoded.ErrorCode!, encoded.ErrorMessage!);
             }
 
-            var existing = await GetRecordAsync(connection, encoded.Value);
+            RecordRow? existing = await GetRecordAsync(connection, encoded.Value);
             if (existing is not null)
             {
                 return Result<EvidenceRefRecord>.Success(existing.ToRecord());
             }
 
-            var now = _clock.UtcNow.ToUniversalTime().ToString("O");
-            var recordId = Guid.NewGuid().ToString("D");
+            string now = _clock.UtcNow.ToUniversalTime().ToString("O");
+            string recordId = Guid.NewGuid().ToString("D");
             await connection.ExecuteAsync(
                 """
                 insert into evidence_ref_records (
@@ -103,51 +107,68 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                     CreatedAt = now
                 });
 
-            var inserted = await GetRecordAsync(connection, encoded.Value);
+            RecordRow? inserted = await GetRecordAsync(connection, encoded.Value);
             return Result<EvidenceRefRecord>.Success(inserted!.ToRecord());
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result<EvidenceRefRecord>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference"))
+        {
+            return Result<EvidenceRefRecord>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
     }
 
-    public async Task<Result<EvidenceResolutionResult>> ResolveAsync(string evidenceRefId, string mode = EvidenceResolutionMode.Pinned, CancellationToken cancellationToken = default)
+    public async Task<Result<EvidenceResolutionResult>> ResolveAsync(string evidenceRefId,
+        string mode = EvidenceResolutionMode.Pinned, CancellationToken cancellationToken = default)
     {
-        var decoded = EvidenceReferenceCodec.Decode(evidenceRefId);
+        Result<EvidenceReference> decoded = EvidenceReferenceCodec.Decode(evidenceRefId);
         if (decoded.IsFailure)
         {
-            return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.InvalidRef, evidenceRefId, decoded.ErrorMessage));
+            return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.InvalidRef, evidenceRefId,
+                decoded.ErrorMessage));
         }
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var libraryId = await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
+            string? libraryId =
+                await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
             if (libraryId is null)
             {
-                return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.NotFound, evidenceRefId, "Current library was not found."));
-            }
-            if (!string.Equals(libraryId, decoded.Value.LibraryId.ToString(), StringComparison.OrdinalIgnoreCase))
-            {
-                return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.LibraryMismatch, evidenceRefId, "Evidence reference belongs to another library."));
+                return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.NotFound, evidenceRefId,
+                    "Current library was not found."));
             }
 
-            var record = await GetRecordAsync(connection, evidenceRefId);
+            if (!string.Equals(libraryId, decoded.Value.LibraryId.ToString(), StringComparison.OrdinalIgnoreCase))
+            {
+                return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.LibraryMismatch,
+                    evidenceRefId, "Evidence reference belongs to another library."));
+            }
+
+            RecordRow? record = await GetRecordAsync(connection, evidenceRefId);
             if (record is null)
             {
-                return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.NotFound, evidenceRefId, "Evidence record was not found."));
+                return Result<EvidenceResolutionResult>.Success(Empty(EvidenceResolutionStatus.NotFound, evidenceRefId,
+                    "Evidence record was not found."));
             }
 
             if (record.Status == EvidenceRecordStatus.Tombstoned)
             {
-                return Result<EvidenceResolutionResult>.Success(FromRecord(EvidenceResolutionStatus.Tombstoned, record, null, false, false, false, Array.Empty<string>(), null, "Evidence reference is tombstoned."));
-            }
-            if (record.Status == EvidenceRecordStatus.Purged)
-            {
-                return Result<EvidenceResolutionResult>.Success(FromRecord(EvidenceResolutionStatus.Purged, record, null, false, false, false, Array.Empty<string>(), null, "Evidence reference is purged."));
+                return Result<EvidenceResolutionResult>.Success(FromRecord(EvidenceResolutionStatus.Tombstoned, record,
+                    null, false, false, false, Array.Empty<string>(), null, "Evidence reference is tombstoned."));
             }
 
-            var resolved = mode switch
+            if (record.Status == EvidenceRecordStatus.Purged)
+            {
+                return Result<EvidenceResolutionResult>.Success(FromRecord(EvidenceResolutionStatus.Purged, record,
+                    null, false, false, false, Array.Empty<string>(), null, "Evidence reference is purged."));
+            }
+
+            EvidenceResolutionResult resolved = mode switch
             {
                 EvidenceResolutionMode.Current => await ResolveCurrentAsync(connection, record),
                 EvidenceResolutionMode.Compare => await ResolveCompareAsync(connection, record),
@@ -155,78 +176,137 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             };
             if (_coordinates is not null)
             {
-                var warnings = await _coordinates.DetectBBoxWarningsAsync(PageId.Parse(record.PageId), cancellationToken: cancellationToken);
-                if (warnings.Count > 0) resolved = resolved with { Warning = string.Join("; ", new[] { resolved.Warning }.Where(x => !string.IsNullOrWhiteSpace(x)).Concat(warnings)) };
+                IReadOnlyList<string> warnings = await _coordinates.DetectBBoxWarningsAsync(PageId.Parse(record.PageId),
+                    cancellationToken: cancellationToken);
+                if (warnings.Count > 0)
+                {
+                    resolved = resolved with
+                    {
+                        Warning = string.Join("; ",
+                            new[] { resolved.Warning }.Where(x => !string.IsNullOrWhiteSpace(x)).Concat(warnings))
+                    };
+                }
             }
+
             return Result<EvidenceResolutionResult>.Success(resolved);
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result<EvidenceResolutionResult>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference"))
+        {
+            return Result<EvidenceResolutionResult>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
     }
 
-    public async Task<Result<EvidenceMarkdown>> CreateMarkdownAsync(string evidenceRefId, CancellationToken cancellationToken = default)
+    public async Task<Result<EvidenceMarkdown>> CreateMarkdownAsync(string evidenceRefId,
+        CancellationToken cancellationToken = default)
     {
-        var resolved = await ResolveAsync(evidenceRefId, EvidenceResolutionMode.Pinned, cancellationToken);
-        if (resolved.IsFailure) return Result<EvidenceMarkdown>.Failure(resolved.ErrorCode!, resolved.ErrorMessage!);
-        if (resolved.Value.Status is not EvidenceResolutionStatus.FoundPinned)
+        Result<EvidenceResolutionResult> resolved =
+            await ResolveAsync(evidenceRefId, EvidenceResolutionMode.Pinned, cancellationToken);
+        if (resolved.IsFailure)
         {
-            return Result<EvidenceMarkdown>.Failure(AppErrorCodes.InvalidState, $"Evidence reference resolved as {resolved.Value.Status}.");
+            return Result<EvidenceMarkdown>.Failure(resolved.ErrorCode!, resolved.ErrorMessage!);
         }
 
-        var page = string.IsNullOrWhiteSpace(resolved.Value.PageLabel) ? (resolved.Value.PageIndex!.Value + 1).ToString() : resolved.Value.PageLabel!;
-        var sourceLine = $"Source: 《{resolved.Value.SourceTitle}》, p. {page}";
-        var markdown = $"{resolved.Value.PinnedText}\n\n{sourceLine}\nEvidence: {evidenceRefId}";
-        return Result<EvidenceMarkdown>.Success(new EvidenceMarkdown(markdown, evidenceRefId, resolved.Value.PinnedText!, sourceLine));
+        if (resolved.Value.Status is not EvidenceResolutionStatus.FoundPinned)
+        {
+            return Result<EvidenceMarkdown>.Failure(AppErrorCodes.InvalidState,
+                $"Evidence reference resolved as {resolved.Value.Status}.");
+        }
+
+        string page = string.IsNullOrWhiteSpace(resolved.Value.PageLabel)
+            ? (resolved.Value.PageIndex!.Value + 1).ToString()
+            : resolved.Value.PageLabel!;
+        string sourceLine = $"Source: 《{resolved.Value.SourceTitle}》, p. {page}";
+        string markdown = $"{resolved.Value.PinnedText}\n\n{sourceLine}\nEvidence: {evidenceRefId}";
+        return Result<EvidenceMarkdown>.Success(new EvidenceMarkdown(markdown, evidenceRefId,
+            resolved.Value.PinnedText!, sourceLine));
     }
 
-    public async Task<Result> MarkSupersededAsync(string evidenceRefId, string successorEvidenceRefId, string reason, CancellationToken cancellationToken = default)
+    public async Task<Result> MarkSupersededAsync(string evidenceRefId, string successorEvidenceRefId, string reason,
+        CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(reason))
         {
             return Result.Failure(AppErrorCodes.ValidationFailed, "Successor reason is required.");
         }
+
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var predecessor = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
-            if (predecessor.IsFailure) return Result.Failure(predecessor.ErrorCode!, predecessor.ErrorMessage!);
-            var successor = await ValidateCurrentLibraryRecordAsync(connection, successorEvidenceRefId);
-            if (successor.IsFailure) return Result.Failure(successor.ErrorCode!, successor.ErrorMessage!);
+            Result<RecordRow> predecessor = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
+            if (predecessor.IsFailure)
+            {
+                return Result.Failure(predecessor.ErrorCode!, predecessor.ErrorMessage!);
+            }
+
+            Result<RecordRow> successor = await ValidateCurrentLibraryRecordAsync(connection, successorEvidenceRefId);
+            if (successor.IsFailure)
+            {
+                return Result.Failure(successor.ErrorCode!, successor.ErrorMessage!);
+            }
+
             if (successor.Value.Status != EvidenceRecordStatus.Active)
             {
                 return Result.Failure(AppErrorCodes.InvalidState, "Successor evidence record must be active.");
             }
-            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
-            await connection.ExecuteAsync("update evidence_ref_records set status = @Status where evidence_record_id = @Id;", new { Status = EvidenceRecordStatus.Superseded, Id = predecessor.Value.EvidenceRecordId }, tx);
+
+            await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
+            await connection.ExecuteAsync(
+                "update evidence_ref_records set status = @Status where evidence_record_id = @Id;",
+                new { Status = EvidenceRecordStatus.Superseded, Id = predecessor.Value.EvidenceRecordId }, tx);
             await connection.ExecuteAsync(
                 "insert or ignore into evidence_successors (predecessor_record_id, successor_record_id, reason, created_at) values (@Predecessor, @Successor, @Reason, @CreatedAt);",
-                new { Predecessor = predecessor.Value.EvidenceRecordId, Successor = successor.Value.EvidenceRecordId, Reason = reason.Trim(), CreatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") },
+                new
+                {
+                    Predecessor = predecessor.Value.EvidenceRecordId, Successor = successor.Value.EvidenceRecordId,
+                    Reason = reason.Trim(), CreatedAt = _clock.UtcNow.ToUniversalTime().ToString("O")
+                },
                 tx);
             await tx.CommitAsync(cancellationToken);
             return Result.Success();
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
+        }
     }
 
-    public Task<Result> TombstoneAsync(string evidenceRefId, string reason, CancellationToken cancellationToken = default)
-        => SetRecordStatusAsync(evidenceRefId, EvidenceRecordStatus.Tombstoned, null, cancellationToken);
+    public Task<Result> TombstoneAsync(string evidenceRefId, string reason,
+        CancellationToken cancellationToken = default)
+    {
+        return SetRecordStatusAsync(evidenceRefId, EvidenceRecordStatus.Tombstoned, null, cancellationToken);
+    }
 
     public Task<Result> PurgeAsync(string evidenceRefId, string reason, CancellationToken cancellationToken = default)
-        => SetRecordStatusAsync(evidenceRefId, EvidenceRecordStatus.Purged, "[purged]", cancellationToken);
+    {
+        return SetRecordStatusAsync(evidenceRefId, EvidenceRecordStatus.Purged, "[purged]", cancellationToken);
+    }
 
-    private async Task<Result> SetRecordStatusAsync(string evidenceRefId, string status, string? pinnedText, CancellationToken cancellationToken)
+    private async Task<Result> SetRecordStatusAsync(string evidenceRefId, string status, string? pinnedText,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var record = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
-            if (record.IsFailure) return Result.Failure(record.ErrorCode!, record.ErrorMessage!);
-            var isPurge = status == EvidenceRecordStatus.Purged;
-            var isDeletionMarker = isPurge || status == EvidenceRecordStatus.Tombstoned;
-            await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+            Result<RecordRow> record = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
+            if (record.IsFailure)
+            {
+                return Result.Failure(record.ErrorCode!, record.ErrorMessage!);
+            }
+
+            bool isPurge = status == EvidenceRecordStatus.Purged;
+            bool isDeletionMarker = isPurge || status == EvidenceRecordStatus.Tombstoned;
+            await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
             if (isPurge)
             {
                 await connection.ExecuteAsync(
@@ -250,22 +330,36 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                     new { Status = status, PinnedText = pinnedText, Id = record.Value.EvidenceRecordId },
                     tx);
             }
+
             if (isDeletionMarker)
             {
-                await PropagateDeletionMarkerAsync(connection, tx, record.Value, isPurge, _clock.UtcNow.ToUniversalTime().ToString("O"));
+                await PropagateDeletionMarkerAsync(connection, tx, record.Value, isPurge,
+                    _clock.UtcNow.ToUniversalTime().ToString("O"));
             }
+
             await tx.CommitAsync(cancellationToken);
             if (isDeletionMarker)
             {
-                await MarkSearchStaleAsync(connection, record.Value, isPurge ? "Evidence purge changed OCR/layout/search payloads." : "Evidence tombstone hid OCR/layout/search payloads.", cancellationToken);
+                await MarkSearchStaleAsync(connection, record.Value,
+                    isPurge
+                        ? "Evidence purge changed OCR/layout/search payloads."
+                        : "Evidence tombstone hid OCR/layout/search payloads.", cancellationToken);
             }
+
             return Result.Success();
         }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
+        }
     }
 
-    private static async Task PropagateDeletionMarkerAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Data.Common.DbTransaction tx, RecordRow record, bool purge, string now)
+    private static async Task PropagateDeletionMarkerAsync(SqliteConnection connection,
+        DbTransaction tx, RecordRow record, bool purge, string now)
     {
         await connection.ExecuteAsync(
             """
@@ -285,7 +379,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 record.UnitId
             },
             tx);
-        await connection.ExecuteAsync("delete from search_units_fts where unit_id = @UnitId;", new { record.UnitId }, tx);
+        await connection.ExecuteAsync("delete from search_units_fts where unit_id = @UnitId;", new { record.UnitId },
+            tx);
         await connection.ExecuteAsync(
             """
             with recursive affected(node_id) as (
@@ -309,77 +404,120 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             tx);
     }
 
-    private static async Task MarkSearchStaleAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record, string reason, CancellationToken cancellationToken)
+    private static async Task MarkSearchStaleAsync(SqliteConnection connection, RecordRow record,
+        string reason, CancellationToken cancellationToken)
     {
-        var affected = $"document_instance:{record.DocumentInstanceId}";
-        await SearchUnitBuilder.UpsertStatusAsync(connection, SearchIndexScopeType.DocumentInstance, record.DocumentInstanceId, SearchIndexStatusValue.Stale, 0, 0, affected, reason, cancellationToken);
-        await SearchUnitBuilder.UpsertStatusAsync(connection, SearchIndexScopeType.Library, record.LibraryId, SearchIndexStatusValue.Stale, 0, 0, affected, reason, cancellationToken);
+        string affected = $"document_instance:{record.DocumentInstanceId}";
+        await SearchUnitBuilder.UpsertStatusAsync(connection, SearchIndexScopeType.DocumentInstance,
+            record.DocumentInstanceId, SearchIndexStatusValue.Stale, 0, 0, affected, reason, cancellationToken);
+        await SearchUnitBuilder.UpsertStatusAsync(connection, SearchIndexScopeType.Library, record.LibraryId,
+            SearchIndexStatusValue.Stale, 0, 0, affected, reason, cancellationToken);
     }
 
-    private static async Task<EvidenceResolutionResult> ResolvePinnedAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record)
+    private static async Task<EvidenceResolutionResult> ResolvePinnedAsync(
+        SqliteConnection connection, RecordRow record)
     {
         if (record.Status == EvidenceRecordStatus.Superseded)
         {
-            var successors = await SuccessorRefsAsync(connection, record.EvidenceRecordId);
-            return FromRecord(EvidenceResolutionStatus.Superseded, record, null, false, false, false, successors, $"successors:{successors.Count}", null);
+            IReadOnlyList<string> successors = await SuccessorRefsAsync(connection, record.EvidenceRecordId);
+            return FromRecord(EvidenceResolutionStatus.Superseded, record, null, false, false, false, successors,
+                $"successors:{successors.Count}", null);
         }
-        return FromRecord(EvidenceResolutionStatus.FoundPinned, record, record.PinnedText, false, false, false, Array.Empty<string>(), null, null);
+
+        return FromRecord(EvidenceResolutionStatus.FoundPinned, record, record.PinnedText, false, false, false,
+            Array.Empty<string>(), null, null);
     }
 
-    private static async Task<EvidenceResolutionResult> ResolveCurrentAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record)
+    private static async Task<EvidenceResolutionResult> ResolveCurrentAsync(
+        SqliteConnection connection, RecordRow record)
     {
-        var final = await FollowChainAsync(connection, record);
+        (RecordRow Record, string? Summary, string? Warning) final = await FollowChainAsync(connection, record);
         if (final.Warning is not null)
         {
-            var successors = await SuccessorRefsAsync(connection, record.EvidenceRecordId);
-            return FromRecord(EvidenceResolutionStatus.Superseded, record, null, false, false, false, successors, final.Summary, final.Warning);
+            IReadOnlyList<string> successors = await SuccessorRefsAsync(connection, record.EvidenceRecordId);
+            return FromRecord(EvidenceResolutionStatus.Superseded, record, null, false, false, false, successors,
+                final.Summary, final.Warning);
         }
-        var unit = await CurrentUnitAsync(connection, final.Record);
-        return FromRecord(EvidenceResolutionStatus.FoundCurrent, final.Record, unit?.ResolvedText ?? final.Record.PinnedText, unit?.ResolvedText != final.Record.PinnedText, unit?.LayoutRevisionId != final.Record.LayoutRevisionId, unit?.BboxRevisionId != final.Record.BboxRevisionId, Array.Empty<string>(), final.Summary, null);
+
+        UnitRow? unit = await CurrentUnitAsync(connection, final.Record);
+        return FromRecord(EvidenceResolutionStatus.FoundCurrent, final.Record,
+            unit?.ResolvedText ?? final.Record.PinnedText, unit?.ResolvedText != final.Record.PinnedText,
+            unit?.LayoutRevisionId != final.Record.LayoutRevisionId,
+            unit?.BboxRevisionId != final.Record.BboxRevisionId, Array.Empty<string>(), final.Summary, null);
     }
 
-    private static async Task<EvidenceResolutionResult> ResolveCompareAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record)
+    private static async Task<EvidenceResolutionResult> ResolveCompareAsync(
+        SqliteConnection connection, RecordRow record)
     {
-        var final = await FollowChainAsync(connection, record);
-        var unit = await CurrentUnitAsync(connection, final.Record);
-        var currentText = unit?.ResolvedText ?? final.Record.PinnedText;
-        return FromRecord(EvidenceResolutionStatus.Compared, record, currentText, currentText != record.PinnedText, (unit?.LayoutRevisionId ?? final.Record.LayoutRevisionId) != record.LayoutRevisionId, (unit?.BboxRevisionId ?? final.Record.BboxRevisionId) != record.BboxRevisionId, Array.Empty<string>(), final.Summary, final.Warning);
+        (RecordRow Record, string? Summary, string? Warning) final = await FollowChainAsync(connection, record);
+        UnitRow? unit = await CurrentUnitAsync(connection, final.Record);
+        string currentText = unit?.ResolvedText ?? final.Record.PinnedText;
+        return FromRecord(EvidenceResolutionStatus.Compared, record, currentText, currentText != record.PinnedText,
+            (unit?.LayoutRevisionId ?? final.Record.LayoutRevisionId) != record.LayoutRevisionId,
+            (unit?.BboxRevisionId ?? final.Record.BboxRevisionId) != record.BboxRevisionId, Array.Empty<string>(),
+            final.Summary, final.Warning);
     }
 
-    private async Task<Result<RecordRow>> ValidateCurrentLibraryRecordAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string evidenceRefId)
+    private async Task<Result<RecordRow>> ValidateCurrentLibraryRecordAsync(
+        SqliteConnection connection, string evidenceRefId)
     {
-        var decoded = EvidenceReferenceCodec.Decode(evidenceRefId);
-        if (decoded.IsFailure) return Result<RecordRow>.Failure(AppErrorCodes.InvalidEvidenceReference, decoded.ErrorMessage!);
-        var libraryId = await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
-        if (libraryId is null) return Result<RecordRow>.Failure(AppErrorCodes.NotFound, "Current library was not found.");
+        Result<EvidenceReference> decoded = EvidenceReferenceCodec.Decode(evidenceRefId);
+        if (decoded.IsFailure)
+        {
+            return Result<RecordRow>.Failure(AppErrorCodes.InvalidEvidenceReference, decoded.ErrorMessage!);
+        }
+
+        string? libraryId =
+            await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
+        if (libraryId is null)
+        {
+            return Result<RecordRow>.Failure(AppErrorCodes.NotFound, "Current library was not found.");
+        }
+
         if (!string.Equals(libraryId, decoded.Value.LibraryId.ToString(), StringComparison.OrdinalIgnoreCase))
-            return Result<RecordRow>.Failure(AppErrorCodes.LibraryMismatch, "Evidence reference belongs to another library.");
-        var record = await GetRecordAsync(connection, evidenceRefId);
-        return record is null ? Result<RecordRow>.Failure(AppErrorCodes.NotFound, "Evidence record was not found.") : Result<RecordRow>.Success(record);
+        {
+            return Result<RecordRow>.Failure(AppErrorCodes.LibraryMismatch,
+                "Evidence reference belongs to another library.");
+        }
+
+        RecordRow? record = await GetRecordAsync(connection, evidenceRefId);
+        return record is null
+            ? Result<RecordRow>.Failure(AppErrorCodes.NotFound, "Evidence record was not found.")
+            : Result<RecordRow>.Success(record);
     }
 
-    private static async Task<RecordRow?> GetRecordAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string evidenceRefId)
-        => await connection.QuerySingleOrDefaultAsync<RecordRow>(
+    private static async Task<RecordRow?> GetRecordAsync(SqliteConnection connection,
+        string evidenceRefId)
+    {
+        return await connection.QuerySingleOrDefaultAsync<RecordRow>(
             "select evidence_record_id as EvidenceRecordId, evidence_ref_id as EvidenceRefId, library_id as LibraryId, document_instance_id as DocumentInstanceId, page_id as PageId, unit_id as UnitId, text_revision_id as TextRevisionId, bbox_revision_id as BboxRevisionId, layout_revision_id as LayoutRevisionId, snapshot_id as SnapshotId, pinned_text as PinnedText, source_title as SourceTitle, page_label as PageLabel, page_index as PageIndex, status as Status, created_at as CreatedAt from evidence_ref_records where evidence_ref_id = @EvidenceRefId;",
             new { EvidenceRefId = evidenceRefId });
+    }
 
-    private static async Task<UnitRow?> CurrentUnitAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record)
-        => await connection.QuerySingleOrDefaultAsync<UnitRow>(
+    private static async Task<UnitRow?> CurrentUnitAsync(SqliteConnection connection,
+        RecordRow record)
+    {
+        return await connection.QuerySingleOrDefaultAsync<UnitRow>(
             "select resolved_text as ResolvedText, layout_revision_id as LayoutRevisionId, bbox_revision_id as BboxRevisionId from search_units where unit_id = @UnitId and status = 'current';",
             new { record.UnitId });
+    }
 
-    private static async Task<IReadOnlyList<string>> SuccessorRefsAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string recordId)
-        => (await connection.QueryAsync<string>(
+    private static async Task<IReadOnlyList<string>> SuccessorRefsAsync(
+        SqliteConnection connection, string recordId)
+    {
+        return (await connection.QueryAsync<string>(
             "select r.evidence_ref_id from evidence_successors s join evidence_ref_records r on r.evidence_record_id = s.successor_record_id where s.predecessor_record_id = @Id order by s.created_at, r.evidence_ref_id;",
             new { Id = recordId })).ToArray();
+    }
 
-    private static async Task<(RecordRow Record, string? Summary, string? Warning)> FollowChainAsync(Microsoft.Data.Sqlite.SqliteConnection connection, RecordRow record)
+    private static async Task<(RecordRow Record, string? Summary, string? Warning)> FollowChainAsync(
+        SqliteConnection connection, RecordRow record)
     {
-        var current = record;
-        var seen = new List<string> { record.EvidenceRefId };
-        for (var depth = 0; depth < MaxChainDepth && current.Status == EvidenceRecordStatus.Superseded; depth++)
+        RecordRow current = record;
+        List<string> seen = new() { record.EvidenceRefId };
+        for (int depth = 0; depth < MaxChainDepth && current.Status == EvidenceRecordStatus.Superseded; depth++)
         {
-            var successors = (await connection.QueryAsync<RecordRow>(
+            RecordRow[] successors = (await connection.QueryAsync<RecordRow>(
                 """
                 select r.evidence_record_id as EvidenceRecordId, r.evidence_ref_id as EvidenceRefId, r.library_id as LibraryId,
                        r.document_instance_id as DocumentInstanceId, r.page_id as PageId, r.unit_id as UnitId,
@@ -394,23 +532,37 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 new { Id = current.EvidenceRecordId })).ToArray();
             if (successors.Length != 1)
             {
-                return (current, string.Join(" -> ", seen), successors.Length > 1 ? "Multiple current candidates are not implemented in this MVP." : null);
+                return (current, string.Join(" -> ", seen),
+                    successors.Length > 1 ? "Multiple current candidates are not implemented in this MVP." : null);
             }
+
             current = successors[0];
             seen.Add(current.EvidenceRefId);
         }
+
         if (current.Status == EvidenceRecordStatus.Superseded)
         {
             return (current, string.Join(" -> ", seen), "Successor chain exceeded the maximum depth.");
         }
+
         return (current, seen.Count > 1 ? string.Join(" -> ", seen) : null, null);
     }
 
     private static EvidenceResolutionResult Empty(string status, string evidenceRefId, string? warning)
-        => new(status, evidenceRefId, null, null, false, false, false, null, null, null, Array.Empty<string>(), null, warning);
+    {
+        return new EvidenceResolutionResult(status, evidenceRefId, null, null, false, false, false, null, null, null,
+            Array.Empty<string>(),
+            null, warning);
+    }
 
-    private static EvidenceResolutionResult FromRecord(string status, RecordRow record, string? currentText, bool textChanged, bool layoutChanged, bool bboxChanged, IReadOnlyList<string> successors, string? chain, string? warning)
-        => new(status, record.EvidenceRefId, record.PinnedText, currentText, textChanged, layoutChanged, bboxChanged, record.SourceTitle, record.PageLabel, record.PageIndex, successors, chain, warning);
+    private static EvidenceResolutionResult FromRecord(string status, RecordRow record, string? currentText,
+        bool textChanged, bool layoutChanged, bool bboxChanged, IReadOnlyList<string> successors, string? chain,
+        string? warning)
+    {
+        return new EvidenceResolutionResult(status, record.EvidenceRefId, record.PinnedText, currentText, textChanged,
+            layoutChanged,
+            bboxChanged, record.SourceTitle, record.PageLabel, record.PageIndex, successors, chain, warning);
+    }
 
     private sealed class CreateRow
     {
@@ -452,6 +604,14 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         public int PageIndex { get; set; }
         public string Status { get; set; } = "";
         public string CreatedAt { get; set; } = "";
-        public EvidenceRefRecord ToRecord() => new(EvidenceRecordId, EvidenceRefId, Core.Ids.LibraryId.Parse(LibraryId), Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), Core.Ids.PageId.Parse(PageId), Core.Ids.SearchUnitId.Parse(UnitId), TextRevisionId, BboxRevisionId, Core.Ids.LayoutRevisionId.Parse(LayoutRevisionId), SnapshotId, PinnedText, SourceTitle, PageLabel, PageIndex, Status, DateTimeOffset.Parse(CreatedAt));
+
+        public EvidenceRefRecord ToRecord()
+        {
+            return new EvidenceRefRecord(EvidenceRecordId, EvidenceRefId, Core.Ids.LibraryId.Parse(LibraryId),
+                Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), Core.Ids.PageId.Parse(PageId),
+                SearchUnitId.Parse(UnitId), TextRevisionId, BboxRevisionId,
+                Core.Ids.LayoutRevisionId.Parse(LayoutRevisionId), SnapshotId, PinnedText, SourceTitle, PageLabel,
+                PageIndex, Status, DateTimeOffset.Parse(CreatedAt));
+        }
     }
 }

@@ -45,7 +45,10 @@ public sealed class AppServices
     private IOcrQueueScheduler? _ocrQueue;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
-    private IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> _metadataLookupPreferences = [];
+
+    private IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>
+        _metadataLookupPreferences = [];
+
     private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings)
     {
         RuntimeDatabasePath = runtimeDatabasePath;
@@ -68,16 +71,18 @@ public sealed class AppServices
         _metadataLookupPreferences = ToMetadataLookupPreferences(settings.MetadataLookup);
         _metadataLookupHttpClient = new HttpClient();
         MetadataSources = MetadataSourceRegistry.CreateDefault(_metadataLookupHttpClient);
-        MetadataLookup = new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
+        MetadataLookup =
+            new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
         FileSearchRootAccess = new FileSearchRootAccess();
-        FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock, blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
+        FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
+            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
         Pages = new PageService(ConnectionFactory, Clock);
         Layout = new LayoutTreeService(ConnectionFactory, Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
-        var adapterRegistry = new OcrAdapterRegistry();
+        OcrAdapterRegistry adapterRegistry = new();
         if (settings.Runtime.UseMockOcrOnly)
         {
             adapterRegistry.RegisterAdapter(new MockOcrAdapter());
@@ -88,22 +93,24 @@ public sealed class AppServices
         adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter());
 
         OcrAdapters = adapterRegistry;
-        var pdfRenderer = new MuPdfNetPdfPageRenderer();
+        MuPdfNetPdfPageRenderer pdfRenderer = new();
         PdfPreviewRenderer = pdfRenderer;
-        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock, Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"));
+        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
+            Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"));
         PageCoordinates = new PageCoordinateService(ConnectionFactory);
-        var searchUnitBuilder = new SearchUnitBuilder(ConnectionFactory, Clock);
+        SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock);
         SearchUnits = searchUnitBuilder;
         SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock);
-        var ocrLayoutImporter = new OcrLayoutImporter(ConnectionFactory, Clock);
-        var searchProfiles = new SearchProfileService(ConnectionFactory, Library, Clock);
+        OcrLayoutImporter ocrLayoutImporter = new(ConnectionFactory, Clock);
+        SearchProfileService searchProfiles = new(ConnectionFactory, Library, Clock);
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrLayoutImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
-        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, pageOcrEngine, searchUnitBuilder, ocrLayoutImporter, adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
+        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, pageOcrEngine, searchUnitBuilder, ocrLayoutImporter,
+            adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
         McpSettings = new McpServerSettingsService(ConnectionFactory, Clock, BlockingOperations);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
@@ -116,6 +123,7 @@ public sealed class AppServices
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
     }
+
     public string RuntimeDatabasePath { get; }
     public PatchouliAppSettings Settings { get; }
     public SqliteConnectionFactory ConnectionFactory { get; }
@@ -165,13 +173,23 @@ public sealed class AppServices
     public PdfImportWorkflow PdfImport { get; }
     public McpVerificationService McpVerification { get; }
     public FirstRunWorkflow FirstRunWorkflow { get; }
-    public void UpdateMetadataLookupPreferences(MetadataLookupAppSettings settings) =>
-        _metadataLookupPreferences = ToMetadataLookupPreferences(settings);
 
-    private static IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> ToMetadataLookupPreferences(MetadataLookupAppSettings settings) =>
-        settings.Sources.Select((source, index) => new Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference(source.SourceId, source.Enabled, index)).ToArray();
-    public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory) =>
-        new OcrRunCoordinator(
+    public void UpdateMetadataLookupPreferences(MetadataLookupAppSettings settings)
+    {
+        _metadataLookupPreferences = ToMetadataLookupPreferences(settings);
+    }
+
+    private static IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>
+        ToMetadataLookupPreferences(MetadataLookupAppSettings settings)
+    {
+        return settings.Sources.Select((source, index) =>
+            new Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference(source.SourceId, source.Enabled,
+                index)).ToArray();
+    }
+
+    public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory)
+    {
+        return new OcrRunCoordinator(
             ConnectionFactory,
             Clock,
             Settings.Runtime.UseMockOcrOnly ? (IOcrEngine)new MockOcrEngine() : new UnavailableOcrEngine(),
@@ -182,6 +200,8 @@ public sealed class AppServices
             PageCoordinates,
             MinerUImporter,
             minerUClientFactory);
+    }
+
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)
     {
         if (_ocrQueue is not null)
@@ -189,40 +209,57 @@ public sealed class AppServices
             return Result<IOcrQueueScheduler>.Success(_ocrQueue);
         }
 
-        var library = await Library.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> library = await Library.GetCurrentLibraryAsync(cancellationToken);
         if (library.IsFailure)
         {
             return Result<IOcrQueueScheduler>.Failure(library.ErrorCode!, library.ErrorMessage!);
         }
 
-        var executor = new OcrQueueTaskExecutor(Ocr, SearchUnits, SearchIndex);
+        OcrQueueTaskExecutor executor = new(Ocr, SearchUnits, SearchIndex);
         _ocrQueue = new OcrQueueScheduler(
             library.Value.LibraryId,
             Clock,
             executor,
-            loopErrorLogger: exception => UnexpectedExceptions.Sink.Report(exception, "ocr-scheduler", "scheduler-loop"));
+            loopErrorLogger: exception =>
+                UnexpectedExceptions.Sink.Report(exception, "ocr-scheduler", "scheduler-loop"));
         return Result<IOcrQueueScheduler>.Success(_ocrQueue);
     }
+
     public async Task<Result<IOcrQueueRowService>> GetOcrQueueRowsAsync(CancellationToken cancellationToken = default)
     {
-        var queue = await GetOcrQueueAsync(cancellationToken);
+        Result<IOcrQueueScheduler> queue = await GetOcrQueueAsync(cancellationToken);
         return queue.IsFailure
             ? Result<IOcrQueueRowService>.Failure(queue.ErrorCode!, queue.ErrorMessage!)
             : Result<IOcrQueueRowService>.Success(new OcrQueueRowService(queue.Value, ConnectionFactory));
     }
+
     public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null)
     {
         settings ??= PatchouliAppSettings.Load();
         AppPathGuard.ValidateDatabasePath(path, settings.Runtime.DefaultSyncRoot);
         AppPathGuard.ValidateMutablePath(settings.Runtime.LogDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        var logger = new SimpleFileLogger(settings.Runtime.LogDirectory);
-        try { await logger.LogAsync("startup", $"Opening runtime database {path}"); }
-        catch (Exception exception) { UnexpectedExceptions.Sink.Report(exception, "operation-log", "startup"); }
-        var services = new AppServices(path, settings);
+        SimpleFileLogger logger = new(settings.Runtime.LogDirectory);
+        try
+        {
+            await logger.LogAsync("startup", $"Opening runtime database {path}");
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "operation-log", "startup");
+        }
+
+        AppServices services = new(path, settings);
         await services.MigrationRunner.RunAsync();
-        try { await logger.LogAsync("migration", "Pending migrations completed."); }
-        catch (Exception exception) { UnexpectedExceptions.Sink.Report(exception, "operation-log", "migration"); }
+        try
+        {
+            await logger.LogAsync("migration", "Pending migrations completed.");
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "operation-log", "migration");
+        }
+
         return services;
     }
 }

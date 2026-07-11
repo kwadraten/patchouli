@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Results;
 using Patchouli.Ocr;
 
 namespace Patchouli.Tests;
@@ -10,7 +11,7 @@ public sealed class OcrLayoutDocumentTests
     [Fact]
     public void Validate_accepts_table_cell_metadata_on_table_cell_blocks()
     {
-        var document = new OcrLayoutDocument([
+        OcrLayoutDocument document = new([
             new OcrLayoutPage(
                 PageId.New(),
                 0,
@@ -33,7 +34,7 @@ public sealed class OcrLayoutDocumentTests
                                         LayoutNodeType.TableCell,
                                         TextPolicy.Own,
                                         3,
-                                        Text: "Header",
+                                        "Header",
                                         TableCell: new OcrTableCell(0, 0, 1, 1, true))
                                 ])
                         ])
@@ -47,7 +48,7 @@ public sealed class OcrLayoutDocumentTests
     [Fact]
     public void Validate_rejects_non_positive_table_spans()
     {
-        var document = new OcrLayoutDocument([
+        OcrLayoutDocument document = new([
             new OcrLayoutPage(
                 PageId.New(),
                 0,
@@ -58,14 +59,14 @@ public sealed class OcrLayoutDocumentTests
                         LayoutNodeType.TableCell,
                         TextPolicy.Own,
                         1,
-                        Text: "Broken",
+                        "Broken",
                         TableCell: new OcrTableCell(0, 0, 0, 1, false))
                 ])
         ]);
 
-        var validation = document.Validate();
+        Result validation = document.Validate();
 
         validation.IsFailure.Should().BeTrue();
-        validation.ErrorCode.Should().Be(Patchouli.Core.Results.AppErrorCodes.ValidationFailed);
+        validation.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
     }
 }

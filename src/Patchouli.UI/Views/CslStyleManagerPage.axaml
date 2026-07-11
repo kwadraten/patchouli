@@ -10,23 +10,30 @@
 
     <Grid Grid.Row="1" ColumnDefinitions="*,32,*">
       <!-- Local Installed Styles -->
-      <Border Grid.Column="0" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+      <Border Grid.Column="0" Background="{DynamicResource SurfaceContainerLowestBrush}"
+              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
         <Grid RowDefinitions="Auto,16,*">
           <TextBlock Text="已安装样式" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-          
+
           <ScrollViewer Grid.Row="2">
             <ItemsControl ItemsSource="{Binding InstalledStyles}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="csl:CslStyleViewModel">
-                  <Border Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                  <Border Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="12"
+                          Margin="0,0,0,8">
                     <Grid ColumnDefinitions="*,Auto,Auto">
                       <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
-                        <TextBlock Text="{Binding StyleId}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
-                        <TextBlock Text="{Binding FormattedUpdated, StringFormat='更新时间：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        <TextBlock Text="{Binding StyleId}" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap"
+                                   Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding FormattedUpdated, StringFormat='更新时间：\{0\}'}" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                       </StackPanel>
-                      
-                      <Border Grid.Column="1" Background="{DynamicResource PrimaryBrush}" CornerRadius="4" Padding="6,2" VerticalAlignment="Center" Margin="0,0,12,0" IsVisible="{Binding IsDefault}">
+
+                      <Border Grid.Column="1" Background="{DynamicResource PrimaryBrush}" CornerRadius="4"
+                              Padding="6,2" VerticalAlignment="Center" Margin="0,0,12,0"
+                              IsVisible="{Binding IsDefault}">
                         <TextBlock Text="默认" Foreground="{DynamicResource OnPrimaryBrush}" FontSize="12" />
                       </Border>
 
@@ -44,10 +51,12 @@
       </Border>
 
       <!-- Remote Catalog -->
-      <Border Grid.Column="2" Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+      <Border Grid.Column="2" Background="{DynamicResource SurfaceContainerLowestBrush}"
+              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
         <Grid RowDefinitions="Auto,8,Auto,16,*">
           <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-            <TextBlock Grid.Column="0" Text="样式源" VerticalAlignment="Center" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Grid.Column="0" Text="样式源" VerticalAlignment="Center" FontSize="14"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
             <ComboBox Grid.Column="1"
                       ItemsSource="{Binding CatalogSources}"
                       SelectedItem="{Binding SelectedCatalogSource}"
@@ -64,29 +73,38 @@
           </Grid>
 
           <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="12">
-            <TextBox Grid.Column="0" Text="{Binding SearchQuery}" PlaceholderText="搜索在线样式，留空加载当前源" VerticalContentAlignment="Center">
+            <TextBox Grid.Column="0" Text="{Binding SearchQuery}" PlaceholderText="搜索在线样式，留空加载当前源"
+                     VerticalContentAlignment="Center">
               <TextBox.KeyBindings>
                 <KeyBinding Gesture="Enter" Command="{Binding SearchCommand}" />
               </TextBox.KeyBindings>
             </TextBox>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-              <Button Content="搜索" Command="{Binding SearchCommand}" Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+              <Button Content="搜索" Command="{Binding SearchCommand}"
+                      Background="{DynamicResource PrimaryContainerBrush}"
+                      Foreground="{DynamicResource OnPrimaryBrush}" />
             </StackPanel>
           </Grid>
-          
+
           <ScrollViewer Grid.Row="4">
             <ItemsControl ItemsSource="{Binding RemoteStyles}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="csl:CslCatalogStyleViewModel">
-                  <Border Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                  <Border Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="12"
+                          Margin="0,0,0,8">
                     <Grid ColumnDefinitions="*,Auto">
                       <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
-                        <TextBlock Text="{Binding StyleId}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding StyleId}" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap"
+                                   Margin="0,4,0,0" />
                       </StackPanel>
-                      
-                      <Button Grid.Column="1" Content="安装" Command="{Binding InstallCommand}" IsVisible="{Binding IsNotInstalled}" VerticalAlignment="Center" />
-                      <TextBlock Grid.Column="1" Text="已安装" Foreground="{DynamicResource PrimaryBrush}" FontWeight="SemiBold" IsVisible="{Binding IsInstalled}" VerticalAlignment="Center" Margin="8,0" />
+
+                      <Button Grid.Column="1" Content="安装" Command="{Binding InstallCommand}"
+                              IsVisible="{Binding IsNotInstalled}" VerticalAlignment="Center" />
+                      <TextBlock Grid.Column="1" Text="已安装" Foreground="{DynamicResource PrimaryBrush}"
+                                 FontWeight="SemiBold" IsVisible="{Binding IsInstalled}" VerticalAlignment="Center"
+                                 Margin="8,0" />
                     </Grid>
                   </Border>
                 </DataTemplate>

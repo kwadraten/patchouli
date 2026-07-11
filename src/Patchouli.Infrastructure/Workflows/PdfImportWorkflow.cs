@@ -42,28 +42,36 @@ public sealed class PdfImportWorkflow
         CancellationToken cancellationToken = default)
     {
         if (!File.Exists(request.PdfPath))
+        {
             return new PdfImportResult(false, "PDF file was not found at the specified path.", null, null, null, null);
+        }
 
-        var pageCount = request.PageCount ?? await _pdfMetadataReader.GetPageCountAsync(request.PdfPath, cancellationToken);
+        int? pageCount = request.PageCount ??
+                         await _pdfMetadataReader.GetPageCountAsync(request.PdfPath, cancellationToken);
 
         if (pageCount is null or <= 0)
+        {
             return new PdfImportResult(false, "Could not determine page count for this PDF.", null, null, null, null);
+        }
 
-        var fileAssetResult = await _fileAssetService.RegisterFileAsync(request.PdfPath, cancellationToken);
+        Result<FileAsset> fileAssetResult =
+            await _fileAssetService.RegisterFileAsync(request.PdfPath, cancellationToken);
         if (fileAssetResult.IsFailure)
+        {
             return new PdfImportResult(false, fileAssetResult.ErrorMessage, null, null, null, null);
+        }
 
-        var fileAsset = fileAssetResult.Value;
+        FileAsset fileAsset = fileAssetResult.Value;
 
-        var title = !string.IsNullOrWhiteSpace(request.Title)
+        string title = !string.IsNullOrWhiteSpace(request.Title)
             ? request.Title.Trim()
             : Path.GetFileNameWithoutExtension(request.PdfPath);
 
-        var creatorsJson = !string.IsNullOrWhiteSpace(request.Authors)
+        string? creatorsJson = !string.IsNullOrWhiteSpace(request.Authors)
             ? $@"[{{""name"":""{request.Authors.Trim()}""}}]"
             : null;
 
-        var itemResult = await _itemService.CreateItemAsync(
+        Result<ItemMetadata> itemResult = await _itemService.CreateItemAsync(
             new CreateItemRequest(
                 "general",
                 title,
@@ -71,33 +79,40 @@ public sealed class PdfImportWorkflow
             cancellationToken);
 
         if (itemResult.IsFailure)
+        {
             return new PdfImportResult(false, itemResult.ErrorMessage, null, null, null, null);
+        }
 
-        var item = itemResult.Value;
+        ItemMetadata item = itemResult.Value;
 
-        var docResult = await _documentInstanceService.AttachDocumentInstanceAsync(
-            item.ItemId, fileAsset.FileAssetId, DocumentInstanceType.PrimaryScan, title: title, makePrimary: true, cancellationToken: cancellationToken);
+        Result<DocumentInstance> docResult = await _documentInstanceService.AttachDocumentInstanceAsync(
+            item.ItemId, fileAsset.FileAssetId, DocumentInstanceType.PrimaryScan, title, true, cancellationToken);
 
         if (docResult.IsFailure)
-            return new PdfImportResult(false, docResult.ErrorMessage, null, null, null, null);
-
-        var documentInstance = docResult.Value;
-
-        for (var i = 0; i < pageCount.Value; i++)
         {
-            var pageResult = await _pageService.CreatePageAsync(
+            return new PdfImportResult(false, docResult.ErrorMessage, null, null, null, null);
+        }
+
+        DocumentInstance documentInstance = docResult.Value;
+
+        for (int i = 0; i < pageCount.Value; i++)
+        {
+            Result<Page> pageResult = await _pageService.CreatePageAsync(
                 documentInstance.DocumentInstanceId, i, $"Page {i + 1}",
                 null, null, 0, "normalized", null, null, "import", null,
-                cancellationToken: cancellationToken);
+                cancellationToken);
 
             if (pageResult.IsFailure)
+            {
                 return new PdfImportResult(false, $"Failed to create page {i}: {pageResult.ErrorMessage}",
                     null, null, null, null);
+            }
         }
 
         if (_itemTypeInferenceService is not null)
         {
-            var inferredType = InferTypeFromFileName(request.PdfPath);
+            (string SuggestedType, double Confidence, string EvidenceSummary)? inferredType =
+                InferTypeFromFileName(request.PdfPath);
             if (inferredType is not null)
             {
                 await _itemTypeInferenceService.SuggestAsync(
@@ -117,15 +132,16 @@ public sealed class PdfImportWorkflow
             documentInstance.DocumentInstanceId.ToString());
     }
 
-    private static (string SuggestedType, double Confidence, string EvidenceSummary)? InferTypeFromFileName(string pdfPath)
+    private static (string SuggestedType, double Confidence, string EvidenceSummary)? InferTypeFromFileName(
+        string pdfPath)
     {
-        var fileName = Path.GetFileNameWithoutExtension(pdfPath);
+        string fileName = Path.GetFileNameWithoutExtension(pdfPath);
         if (string.IsNullOrWhiteSpace(fileName))
         {
             return null;
         }
 
-        var normalized = fileName.Trim().ToLowerInvariant();
+        string normalized = fileName.Trim().ToLowerInvariant();
         if (normalized.Contains("thesis", StringComparison.Ordinal))
         {
             return ("thesis", 0.92, "Filename contains 'thesis'.");

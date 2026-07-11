@@ -9,13 +9,17 @@ public sealed class AsyncCommandExceptionTests
     [Fact]
     public async Task ICommand_execute_reports_unexpected_exception()
     {
-        var reported = new TaskCompletionSource<(Exception Exception, string Boundary, string? Operation)>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var sink = new RecordingUnexpectedExceptionSink((exception, boundary, operation) => reported.TrySetResult((exception, boundary, operation)));
-        var command = new AsyncCommand(() => Task.FromException(new InvalidOperationException("boom")), sink, "test-command");
+        TaskCompletionSource<(Exception Exception, string Boundary, string? Operation)> reported =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingUnexpectedExceptionSink sink = new((exception, boundary, operation) =>
+            reported.TrySetResult((exception, boundary, operation)));
+        AsyncCommand command = new(() => Task.FromException(new InvalidOperationException("boom")), sink,
+            "test-command");
 
         command.Execute(null);
 
-        var result = await reported.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        (Exception Exception, string Boundary, string? Operation) result =
+            await reported.Task.WaitAsync(TimeSpan.FromSeconds(5));
         result.Exception.Should().BeOfType<InvalidOperationException>();
         result.Boundary.Should().Be("ui-command");
         result.Operation.Should().Be("test-command");
@@ -24,11 +28,12 @@ public sealed class AsyncCommandExceptionTests
     [Fact]
     public async Task ExecuteAsync_preserves_exception_for_awaiting_caller()
     {
-        var reports = 0;
-        var sink = new RecordingUnexpectedExceptionSink((_, _, _) => reports++);
-        var command = new AsyncCommand(() => Task.FromException(new InvalidOperationException("boom")), sink, "test-command");
+        int reports = 0;
+        RecordingUnexpectedExceptionSink sink = new((_, _, _) => reports++);
+        AsyncCommand command = new(() => Task.FromException(new InvalidOperationException("boom")), sink,
+            "test-command");
 
-        var action = command.ExecuteAsync;
+        Func<Task> action = command.ExecuteAsync;
         await action.Should().ThrowAsync<InvalidOperationException>();
         reports.Should().Be(0);
     }

@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -20,12 +21,15 @@ public sealed class McpHttpServer : IAsyncDisposable
     private long _totalConnectionCount;
     private WebApplication? _app;
 
-    public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort, Action<Exception, string>? unexpectedException = null)
-        : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow), unexpectedException)
+    public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort,
+        Action<Exception, string>? unexpectedException = null)
+        : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow),
+            unexpectedException)
     {
     }
 
-    public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings, Action<Exception, string>? unexpectedException = null)
+    public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings,
+        Action<Exception, string>? unexpectedException = null)
     {
         _handler = handler;
         _settings = settings;
@@ -41,9 +45,12 @@ public sealed class McpHttpServer : IAsyncDisposable
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
-        if (_app is not null) return;
+        if (_app is not null)
+        {
+            return;
+        }
 
-        var app = CreateApplication();
+        WebApplication app = CreateApplication();
         try
         {
             await app.StartAsync(cancellationToken);
@@ -64,9 +71,12 @@ public sealed class McpHttpServer : IAsyncDisposable
 
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
-        if (_app is null) return;
+        if (_app is null)
+        {
+            return;
+        }
 
-        var app = _app;
+        WebApplication? app = _app;
         try
         {
             await app.StopAsync(cancellationToken);
@@ -85,12 +95,13 @@ public sealed class McpHttpServer : IAsyncDisposable
 
     private WebApplication CreateApplication()
     {
-        var builder = WebApplication.CreateSlimBuilder(Array.Empty<string>());
+        WebApplicationBuilder builder = WebApplication.CreateSlimBuilder(Array.Empty<string>());
         builder.Logging.ClearProviders();
         if (_settings.CorsEnabled)
         {
             builder.Services.AddCors();
         }
+
         builder.WebHost.ConfigureKestrel(options =>
         {
             ConfigureListen(options, listenOptions =>
@@ -113,10 +124,10 @@ public sealed class McpHttpServer : IAsyncDisposable
             });
         });
 
-        var app = builder.Build();
+        WebApplication app = builder.Build();
         if (_settings.CorsEnabled)
         {
-            var allowedOrigins = _settings.AllowedOrigins.Count == 0 ? ["*"] : _settings.AllowedOrigins.ToArray();
+            string[] allowedOrigins = _settings.AllowedOrigins.Count == 0 ? ["*"] : _settings.AllowedOrigins.ToArray();
             app.UseCors(policy =>
             {
                 if (allowedOrigins.Length == 1 && allowedOrigins[0] == "*")
@@ -129,9 +140,11 @@ public sealed class McpHttpServer : IAsyncDisposable
                 }
             });
         }
+
         app.MapGet("/health", () => Results.Json(new { status = "ok" }));
         app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
-        app.MapPost("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, _handler, _settings, ct));
+        app.MapPost("/mcp",
+            (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, _handler, _settings, ct));
         app.MapMethods("/mcp", ["OPTIONS"], (HttpContext context) => HandleMcpOptions(context, _settings));
         return app;
     }
@@ -140,17 +153,29 @@ public sealed class McpHttpServer : IAsyncDisposable
     {
         foreach (EventHandler subscriber in ConnectionCountsChanged?.GetInvocationList() ?? [])
         {
-            try { subscriber(this, EventArgs.Empty); }
+            try
+            {
+                subscriber(this, EventArgs.Empty);
+            }
             catch (Exception exception)
             {
-                try { _unexpectedException?.Invoke(exception, "mcp-connection-count-subscriber"); } catch { }
+                try
+                {
+                    _unexpectedException?.Invoke(exception, "mcp-connection-count-subscriber");
+                }
+                // The external diagnostic callback must not break connection handling or later subscribers.
+                // ReSharper disable once EmptyGeneralCatchClause
+                catch
+                {
+                }
             }
         }
     }
 
-    private void ConfigureListen(Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions options, Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configure)
+    private void ConfigureListen(Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions options,
+        Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configure)
     {
-        var bindAddress = _settings.BindAddress.Trim();
+        string bindAddress = _settings.BindAddress.Trim();
         if (string.Equals(bindAddress, "0.0.0.0", StringComparison.Ordinal))
         {
             options.ListenAnyIP(_settings.Port, configure);
@@ -164,7 +189,7 @@ public sealed class McpHttpServer : IAsyncDisposable
             return;
         }
 
-        if (System.Net.IPAddress.TryParse(bindAddress, out var ipAddress))
+        if (IPAddress.TryParse(bindAddress, out IPAddress? ipAddress))
         {
             options.Listen(ipAddress, _settings.Port, configure);
             return;
@@ -182,16 +207,18 @@ public sealed class McpHttpServer : IAsyncDisposable
         if (RequiresAuthentication(settings) && !IsAuthorized(context, settings.Token))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            return Results.Json(new { error = McpErrorCodes.Unauthorized }, statusCode: StatusCodes.Status401Unauthorized);
+            return Results.Json(new { error = McpErrorCodes.Unauthorized },
+                statusCode: StatusCodes.Status401Unauthorized);
         }
 
         if (!IsJsonRequest(context))
         {
-            return Results.Text("Unsupported media type. Use application/json.", "text/plain", statusCode: StatusCodes.Status415UnsupportedMediaType);
+            return Results.Text("Unsupported media type. Use application/json.", "text/plain",
+                statusCode: StatusCodes.Status415UnsupportedMediaType);
         }
 
-        using var reader = new StreamReader(context.Request.Body);
-        var request = await reader.ReadToEndAsync(cancellationToken);
+        using StreamReader reader = new(context.Request.Body);
+        string request = await reader.ReadToEndAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(request))
         {
             return Results.BadRequest(new { error = "Request body is required." });
@@ -203,7 +230,7 @@ public sealed class McpHttpServer : IAsyncDisposable
             return Results.Accepted();
         }
 
-        var response = await handler.HandleAsync(request, cancellationToken);
+        string response = await handler.HandleAsync(request, cancellationToken);
         return Results.Text(response, "application/json");
     }
 
@@ -239,7 +266,7 @@ public sealed class McpHttpServer : IAsyncDisposable
         try
         {
             await WriteSseCommentAsync(context, "connected", cancellationToken);
-            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+            using PeriodicTimer timer = new(TimeSpan.FromSeconds(30));
             while (await timer.WaitForNextTickAsync(cancellationToken))
             {
                 await WriteSseCommentAsync(context, "keepalive", cancellationToken);
@@ -254,17 +281,19 @@ public sealed class McpHttpServer : IAsyncDisposable
     {
         if (settings.CorsEnabled)
         {
-            var origin = settings.AllowedOrigins.Count == 0 ? "*" : string.Join(", ", settings.AllowedOrigins);
+            string origin = settings.AllowedOrigins.Count == 0 ? "*" : string.Join(", ", settings.AllowedOrigins);
             context.Response.Headers.AccessControlAllowOrigin = origin;
             context.Response.Headers.AccessControlAllowMethods = "GET, POST, OPTIONS";
             context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, Accept";
         }
+
         return Results.NoContent();
     }
 
-    private static async Task WriteSseCommentAsync(HttpContext context, string comment, CancellationToken cancellationToken)
+    private static async Task WriteSseCommentAsync(HttpContext context, string comment,
+        CancellationToken cancellationToken)
     {
-        var builder = new StringBuilder();
+        StringBuilder builder = new();
         builder.Append(": ").Append(comment).Append('\n');
         builder.Append('\n');
         await context.Response.WriteAsync(builder.ToString(), cancellationToken);
@@ -272,16 +301,21 @@ public sealed class McpHttpServer : IAsyncDisposable
     }
 
     private static bool AcceptsEventStream(HttpContext context)
-        => context.Request.Headers.Accept.Any(value => value?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
+    {
+        return context.Request.Headers.Accept.Any(value =>
+            value?.Contains("text/event-stream", StringComparison.OrdinalIgnoreCase) == true);
+    }
 
     private static bool IsJsonRequest(HttpContext context)
-        => context.Request.ContentType?.Contains("application/json", StringComparison.OrdinalIgnoreCase) == true;
+    {
+        return context.Request.ContentType?.Contains("application/json", StringComparison.OrdinalIgnoreCase) == true;
+    }
 
     private static bool IsJsonRpcNotification(string request)
     {
         try
         {
-            using var document = JsonDocument.Parse(request);
+            using JsonDocument document = JsonDocument.Parse(request);
             return document.RootElement.ValueKind == JsonValueKind.Object
                    && document.RootElement.TryGetProperty("method", out _)
                    && !document.RootElement.TryGetProperty("id", out _);
@@ -293,11 +327,15 @@ public sealed class McpHttpServer : IAsyncDisposable
     }
 
     private static bool RequiresAuthentication(McpServerSettings settings)
-        => settings.AuthRequired || !IsLoopback(settings.BindAddress);
+    {
+        return settings.AuthRequired || !IsLoopback(settings.BindAddress);
+    }
 
     private static bool IsLoopback(string bindAddress)
-        => string.Equals(bindAddress, "127.0.0.1", StringComparison.Ordinal)
-           || string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase);
+    {
+        return string.Equals(bindAddress, "127.0.0.1", StringComparison.Ordinal)
+               || string.Equals(bindAddress, "localhost", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static bool IsAuthorized(HttpContext context, string? token)
     {
@@ -311,10 +349,12 @@ public sealed class McpHttpServer : IAsyncDisposable
             return false;
         }
 
-        var header = context.Request.Headers.Authorization.ToString();
+        string header = context.Request.Headers.Authorization.ToString();
         return string.Equals(header, $"Bearer {token}", StringComparison.Ordinal);
     }
 
     private static string DisplayHost(string bindAddress)
-        => IsLoopback(bindAddress) ? "localhost" : bindAddress;
+    {
+        return IsLoopback(bindAddress) ? "localhost" : bindAddress;
+    }
 }

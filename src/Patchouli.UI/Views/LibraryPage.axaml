@@ -22,180 +22,257 @@
     </Style>
   </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*,Auto" Background="{DynamicResource SurfaceBrush}">
-<Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsLibraryLeftSidebarVisible}">
-  <Grid>
-    <!-- 1. Library Sidebar (Visible when library is visible) -->
-    <Border Background="{DynamicResource SurfaceContainerLowBrush}" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsLibraryVisible}">
-      <Grid RowDefinitions="*,Auto" Margin="0,10,0,0">
-        <ScrollViewer>
-          <StackPanel Spacing="16">
-            <!-- Main navigation -->
-            <StackPanel Spacing="2">
-              <!-- 我的书库 (Selected/Plank style) -->
-              <Border Background="{DynamicResource TertiaryBrush}" BorderBrush="{DynamicResource PrimaryBrush}" BorderThickness="3,0,0,0" Padding="16,8">
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <lucide:Lucide Icon="Database" Width="13" Height="13" StrokeBrush="{DynamicResource PrimaryBrush}" />
-                  <TextBlock Text="我的书库" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+    <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0"
+            IsVisible="{Binding IsLibraryLeftSidebarVisible}">
+      <Grid>
+        <!-- 1. Library Sidebar (Visible when library is visible) -->
+        <Border Background="{DynamicResource SurfaceContainerLowBrush}"
+                IsVisible="{Binding IsLibraryVisible}">
+          <Grid RowDefinitions="*,Auto" Margin="0,10,0,0">
+            <ScrollViewer>
+              <StackPanel Spacing="16">
+                <!-- Main navigation -->
+                <StackPanel Spacing="2">
+                  <!-- 我的书库 (Selected/Plank style) -->
+                  <Border Background="{DynamicResource TertiaryBrush}" BorderBrush="{DynamicResource PrimaryBrush}"
+                          BorderThickness="3,0,0,0" Padding="16,8">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <lucide:Lucide Icon="Database" Width="13" Height="13"
+                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
+                      <TextBlock Text="我的书库" FontSize="13" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource PrimaryBrush}" />
+                    </StackPanel>
+                  </Border>
                 </StackPanel>
-              </Border>
-            </StackPanel>
 
-            <Separator Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="16,0" />
+                <Separator Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="16,0" />
 
-            <!-- 数据库路径 -->
-            <StackPanel Classes="SidebarItemContainer">
-              <TextBlock Classes="SidebarSectionHeader" Text="数据库路径" />
-              <StackPanel Spacing="6">
-                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                  <lucide:Lucide Icon="Folder" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Grid.Column="1" Text="{ReflectionBinding $parent[Window].DataContext.RuntimeDatabasePath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.RuntimeDatabasePath}" />
-                </Grid>
-              </StackPanel>
-            </StackPanel>
-
-            <!-- 同步根目录 -->
-            <StackPanel Classes="SidebarItemContainer">
-              <TextBlock Classes="SidebarSectionHeader" Text="同步根目录" />
-              <StackPanel Spacing="6">
-                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                  <lucide:Lucide Icon="Cloud" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Grid.Column="1" Text="{ReflectionBinding $parent[Window].DataContext.DefaultSyncRootPath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.DefaultSyncRootPath}" />
-                </Grid>
-              </StackPanel>
-            </StackPanel>
-
-            <!-- FileSearchRoot -->
-            <StackPanel Classes="SidebarItemContainer">
-              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                <TextBlock Classes="SidebarSectionHeader" Text="文件搜索根" />
-                <Button Grid.Column="1" Content="重新扫描" Command="{ReflectionBinding $parent[Window].DataContext.RescanFileSearchRootsCommand}" FontSize="11" Padding="8,2" />
-              </Grid>
-              <TextBlock Text="暂无" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{ReflectionBinding $parent[Window].DataContext.NoFileSearchRoots}" />
-              <ItemsControl ItemsSource="{ReflectionBinding $parent[Window].DataContext.FileSearchRoots}" IsVisible="{ReflectionBinding $parent[Window].DataContext.HasFileSearchRoots}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="vm:SidebarFileSearchRootViewModel">
-                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="0,0,0,8">
-                      <lucide:Lucide Icon="Folder" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                      <StackPanel Grid.Column="1" Spacing="2">
-                        <TextBlock Text="{Binding RootPath}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
-                        <WrapPanel>
-                          <TextBlock Text="{Binding AvailabilityText}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,10,0" />
-                          <TextBlock Text="{Binding FileCountText}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,10,0" />
-                          <TextBlock Text="{Binding UpdatedAtText}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                        </WrapPanel>
-                      </StackPanel>
+                <!-- 数据库路径 -->
+                <StackPanel Classes="SidebarItemContainer">
+                  <TextBlock Classes="SidebarSectionHeader" Text="数据库路径" />
+                  <StackPanel Spacing="6">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                      <lucide:Lucide Icon="Folder" Width="13" Height="13"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBlock Grid.Column="1"
+                                 Text="{Binding RuntimeDatabasePath}"
+                                 FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                 TextTrimming="CharacterEllipsis"
+                                 ToolTip.Tip="{Binding RuntimeDatabasePath}" />
                     </Grid>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </StackPanel>
-          </StackPanel>
-        </ScrollViewer>
+                  </StackPanel>
+                </StackPanel>
+
+                <!-- 同步根目录 -->
+                <StackPanel Classes="SidebarItemContainer">
+                  <TextBlock Classes="SidebarSectionHeader" Text="同步根目录" />
+                  <StackPanel Spacing="6">
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                      <lucide:Lucide Icon="Cloud" Width="13" Height="13"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBlock Grid.Column="1"
+                                 Text="{Binding DefaultSyncRootPath}"
+                                 FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                 TextTrimming="CharacterEllipsis"
+                                 ToolTip.Tip="{Binding DefaultSyncRootPath}" />
+                    </Grid>
+                  </StackPanel>
+                </StackPanel>
+
+                <!-- FileSearchRoot -->
+                <StackPanel Classes="SidebarItemContainer">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBlock Classes="SidebarSectionHeader" Text="文件搜索根" />
+                    <Button Grid.Column="1" Content="重新扫描"
+                            Command="{Binding RescanFileSearchRootsCommand}"
+                            FontSize="11" Padding="8,2" />
+                  </Grid>
+                  <TextBlock Text="暂无" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             IsVisible="{Binding NoFileSearchRoots}" />
+                  <ItemsControl ItemsSource="{Binding FileSearchRoots}"
+                                IsVisible="{Binding HasFileSearchRoots}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:SidebarFileSearchRootViewModel">
+                        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" Margin="0,0,0,8">
+                          <lucide:Lucide Icon="Folder" Width="13" Height="13"
+                                         StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                          <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="{Binding RootPath}" FontSize="12"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
+                            <WrapPanel>
+                              <TextBlock Text="{Binding AvailabilityText}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,10,0" />
+                              <TextBlock Text="{Binding FileCountText}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" Margin="0,0,10,0" />
+                              <TextBlock Text="{Binding UpdatedAtText}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            </WrapPanel>
+                          </StackPanel>
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </StackPanel>
+            </ScrollViewer>
+          </Grid>
+        </Border>
       </Grid>
     </Border>
-  </Grid>
-</Border>
-<Grid Grid.Column="1">
-  <DataGrid x:Name="LibraryGrid" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
-            SelectionMode="Extended" SelectionChanged="OnDataGridSelectionChanged"
-            CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="True"
-            IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped" Loaded="OnDataGridLoaded"
-            RowBackground="Transparent" BorderThickness="0" Background="{DynamicResource SurfaceContainerLowestBrush}">
-    <DataGrid.ContextMenu>
-      <ContextMenu>
-        <MenuItem Header="编辑元数据" Command="{ReflectionBinding $parent[Window].DataContext.EditSelectedItemCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.EditSelectedItemCommand.DisabledReason}" />
-        <MenuItem Header="获取所选题录元数据" Command="{ReflectionBinding $parent[Window].DataContext.Shell.LookupMetadataBatchCommand}" IsEnabled="{ReflectionBinding $parent[Window].DataContext.Shell.HasBatchSelection}" />
-        <MenuItem Header="取消批量获取元数据" Command="{ReflectionBinding $parent[Window].DataContext.Shell.CancelMetadataBatchCommand}" IsVisible="{ReflectionBinding $parent[Window].DataContext.Shell.IsMetadataBatchBusy}" />
-        <MenuItem Header="打开文档" Command="{ReflectionBinding $parent[Window].DataContext.ShowReadingCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ShowReadingCommand.DisabledReason}" />
-        <MenuItem Header="运行 OCR" Command="{ReflectionBinding $parent[Window].DataContext.RunSelectedItemOcrCommand}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.RunSelectedItemOcrCommand.DisabledReason}" />
-        <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CopyCslBibliographyDescriptor.DisabledReason}" />
-        <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.ExportItemDescriptor.DisabledReason}" />
-        <MenuItem Header="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor.Label}" Command="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor}" ToolTip.Tip="{ReflectionBinding $parent[Window].DataContext.CheckSyncStateDescriptor.DisabledReason}" />
-      </ContextMenu>
-    </DataGrid.ContextMenu>
-    <DataGrid.Columns>
-      <!-- Item Type -->
-      <DataGridTextColumn Header="题录类型" Binding="{Binding ItemType}" IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
+    <Grid Grid.Column="1">
+      <DataGrid x:Name="LibraryGrid" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
+                SelectionMode="Extended" SelectionChanged="OnDataGridSelectionChanged"
+                CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="True"
+                IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped"
+                Loaded="OnDataGridLoaded"
+                RowBackground="Transparent" BorderThickness="0"
+                Background="{DynamicResource SurfaceContainerLowestBrush}">
+        <DataGrid.ContextMenu>
+          <ContextMenu>
+            <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}" />
+            <MenuItem Header="获取所选题录元数据"
+                      Command="{Binding LookupMetadataBatchCommand}"
+                      IsEnabled="{Binding HasBatchSelection}" />
+            <MenuItem Header="取消批量获取元数据"
+                      Command="{Binding CancelMetadataBatchCommand}"
+                      IsVisible="{Binding IsMetadataBatchBusy}" />
+            <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}" />
+            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}" />
+            <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
+                      Command="{Binding CopyCslBibliographyDescriptor}"
+                      ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding ExportItemDescriptor.Label}"
+                      Command="{Binding ExportItemDescriptor}"
+                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding CheckSyncStateDescriptor.Label}"
+                      Command="{Binding CheckSyncStateDescriptor}"
+                      ToolTip.Tip="{Binding CheckSyncStateDescriptor.DisabledReason}" />
+          </ContextMenu>
+        </DataGrid.ContextMenu>
+        <DataGrid.Columns>
+          <!-- Item Type -->
+          <DataGridTextColumn Header="题录类型" Binding="{Binding ItemType}" IsVisible="{Binding ShowItemTypeColumn}"
+                              Width="100" />
 
-      <!-- Year -->
-      <DataGridTextColumn Header="年份" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}" Width="60" />
+          <!-- Year -->
+          <DataGridTextColumn Header="年份" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}" Width="60" />
 
-      <!-- Author -->
-      <DataGridTextColumn Header="作者" Binding="{Binding Authors}" IsVisible="{Binding ShowAuthorColumn}" Width="120" />
+          <!-- Author -->
+          <DataGridTextColumn Header="作者" Binding="{Binding Authors}" IsVisible="{Binding ShowAuthorColumn}"
+                              Width="120" />
 
-      <!-- Title -->
-      <DataGridTextColumn Header="标题" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}" Width="*" />
+          <!-- Title -->
+          <DataGridTextColumn Header="标题" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}" Width="*" />
 
-      <!-- Source -->
-      <DataGridTextColumn Header="来源" Binding="{Binding PublicationTitle}" IsVisible="{Binding ShowSourceColumn}" Width="150" />
+          <!-- Source -->
+          <DataGridTextColumn Header="来源" Binding="{Binding PublicationTitle}" IsVisible="{Binding ShowSourceColumn}"
+                              Width="150" />
 
-      <!-- Status -->
-      <DataGridTextColumn Header="OCR/索引状态" Binding="{Binding OcrStatus}" IsVisible="{Binding ShowStatusColumn}" Width="120" />
+          <!-- Status -->
+          <DataGridTextColumn Header="OCR/索引状态" Binding="{Binding OcrStatus}" IsVisible="{Binding ShowStatusColumn}"
+                              Width="120" />
 
-      <!-- Pages -->
-      <DataGridTextColumn Header="页数" Binding="{Binding PageCountDisplay}" IsVisible="{Binding ShowPagesColumn}" Width="80" />
+          <!-- Pages -->
+          <DataGridTextColumn Header="页数" Binding="{Binding PageCountDisplay}" IsVisible="{Binding ShowPagesColumn}"
+                              Width="80" />
 
-      <!-- File -->
-      <DataGridTextColumn Header="关联文件" Binding="{Binding SourcePath}" IsVisible="{Binding ShowFileColumn}" Width="150" />
-    </DataGrid.Columns>
-  </DataGrid>
-</Grid>
-<!-- Column 2: Details Inspector (Width 340 when visible) -->
-<Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0" IsVisible="{ReflectionBinding $parent[Window].DataContext.IsLibraryRightSidebarVisible}">
-  <!-- Visible when not reading mode -->
-  <Grid RowDefinitions="40,*" >
-    <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Background="{DynamicResource SurfaceContainerLowBrush}">
-      <TextBlock Text="详情" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+          <!-- File -->
+          <DataGridTextColumn Header="关联文件" Binding="{Binding SourcePath}" IsVisible="{Binding ShowFileColumn}"
+                              Width="150" />
+        </DataGrid.Columns>
+      </DataGrid>
+    </Grid>
+    <!-- Column 2: Details Inspector (Width 340 when visible) -->
+    <Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0"
+            IsVisible="{Binding IsLibraryRightSidebarVisible}">
+      <!-- Visible when not reading mode -->
+      <Grid RowDefinitions="40,*">
+        <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1"
+                Background="{DynamicResource SurfaceContainerLowBrush}">
+          <TextBlock Text="详情" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}"
+                     HorizontalAlignment="Center" VerticalAlignment="Center" />
+        </Border>
+
+        <Border Grid.Row="1" Background="{DynamicResource SurfaceContainerLowBrush}">
+          <ScrollViewer>
+            <StackPanel Margin="18" Spacing="14">
+              <!-- Book Title -->
+              <TextBlock Text="{Binding InspectorTitle}" FontSize="18" FontWeight="SemiBold"
+                         Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+              <TextBlock Text="{Binding InspectorSubtitle}" FontSize="12"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+
+              <!-- Empty state -->
+              <StackPanel IsVisible="{Binding NoSelectedItem}" Spacing="6" Margin="0,20">
+                <TextBlock Text="未选择题录" FontSize="14" FontWeight="SemiBold"
+                           Foreground="{DynamicResource OnSurfaceBrush}" />
+                <TextBlock Text="选择一个已导入题录以查看 OCR/索引状态。" FontSize="13"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+              </StackPanel>
+
+              <!-- Selected state -->
+              <ContentControl Content="{Binding SelectedItem}" IsVisible="{Binding HasSelectedItem}">
+                <ContentControl.ContentTemplate>
+                  <DataTemplate x:DataType="vm:LibraryItemViewModel">
+                    <StackPanel Spacing="16">
+                      <!-- Metadata Table Grid -->
+                      <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
+                              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
+                              Padding="12">
+                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+                              ColumnDefinitions="80,*"
+                              RowSpacing="10">
+                          <!-- Row 0: Item Type -->
+                          <TextBlock Grid.Row="0" Grid.Column="0" Text="条目类型" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ItemType}" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" FontWeight="SemiBold"
+                                     VerticalAlignment="Center" />
+
+                          <!-- Row 1: Authors -->
+                          <TextBlock Grid.Row="1" Grid.Column="0" Text="作者" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Authors}" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
+                                     VerticalAlignment="Center" />
+
+                          <!-- Row 2: Year -->
+                          <TextBlock Grid.Row="2" Grid.Column="0" Text="年份" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Year}" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
+
+                          <!-- Row 3: Publication -->
+                          <TextBlock Grid.Row="3" Grid.Column="0" Text="期刊/出处" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PublicationTitle}"
+                                     FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
+                                     VerticalAlignment="Center" />
+
+                          <!-- Row 4: OCR Status -->
+                          <TextBlock Grid.Row="4" Grid.Column="0" Text="OCR/索引" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OcrStatus}" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
+                                     VerticalAlignment="Center" />
+
+                          <!-- Row 5: File Name -->
+                          <TextBlock Grid.Row="5" Grid.Column="0" Text="关联文件" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                          <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding FileName}" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis"
+                                     VerticalAlignment="Center" />
+                        </Grid>
+                      </Border>
+                    </StackPanel>
+                  </DataTemplate>
+                </ContentControl.ContentTemplate>
+              </ContentControl>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </Grid>
     </Border>
-
-    <Border Grid.Row="1" Background="{DynamicResource SurfaceContainerLowBrush}">
-      <ScrollViewer>
-        <StackPanel Margin="18" Spacing="14">
-          <!-- Book Title -->
-          <TextBlock Text="{Binding InspectorTitle}" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding InspectorSubtitle}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-
-          <!-- Empty state -->
-          <StackPanel IsVisible="{Binding NoSelectedItem}" Spacing="6" Margin="0,20">
-            <TextBlock Text="未选择题录" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-            <TextBlock Text="选择一个已导入题录以查看 OCR/索引状态。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-          </StackPanel>
-
-          <!-- Selected state -->
-          <StackPanel IsVisible="{Binding HasSelectedItem}" Spacing="16">
-            <!-- Metadata Table Grid -->
-            <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4" Padding="12">
-              <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="80,*" RowSpacing="10">
-                <!-- Row 0: Item Type -->
-                <TextBlock Grid.Row="0" Grid.Column="0" Text="条目类型" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedItem.ItemType}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
-
-                <!-- Row 1: Authors -->
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="作者" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedItem.Authors}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
-
-                <!-- Row 2: Year -->
-                <TextBlock Grid.Row="2" Grid.Column="0" Text="年份" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedItem.Year}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
-
-                <!-- Row 3: Publication -->
-                <TextBlock Grid.Row="3" Grid.Column="0" Text="期刊/出处" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedItem.PublicationTitle}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
-
-                <!-- Row 4: OCR Status -->
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="OCR/索引" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding InspectorStatus}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" VerticalAlignment="Center" />
-
-                <!-- Row 5: File Name -->
-                <TextBlock Grid.Row="5" Grid.Column="0" Text="关联文件" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding SelectedItem.FileName}" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-              </Grid>
-            </Border>
-          </StackPanel>
-        </StackPanel>
-      </ScrollViewer>
-    </Border>
-  </Grid>
-</Border>
   </Grid>
 </UserControl>

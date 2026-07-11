@@ -29,8 +29,11 @@ public sealed record FirstRunWorkflowState(
     public bool IsSuccess => string.IsNullOrWhiteSpace(LastError);
     public string? ErrorMessage => LastError;
 
-    public static FirstRunWorkflowState Initial() =>
-        new(FirstRunStep.Database, "Select database location", null, null, null, null, null, null, false);
+    public static FirstRunWorkflowState Initial()
+    {
+        return new FirstRunWorkflowState(FirstRunStep.Database, "Select database location", null, null, null, null,
+            null, null, false);
+    }
 }
 
 public sealed record MinerUConfiguration(

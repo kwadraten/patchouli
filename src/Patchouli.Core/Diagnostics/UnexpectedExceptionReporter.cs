@@ -7,9 +7,14 @@ public static class UnexpectedExceptionReporter
     private static Action<Exception, string, string?> _report = NoOp;
 
     public static void Configure(Action<Exception, string, string?> report)
-        => Volatile.Write(ref _report, report ?? throw new ArgumentNullException(nameof(report)));
+    {
+        Volatile.Write(ref _report, report ?? throw new ArgumentNullException(nameof(report)));
+    }
 
-    public static void Reset() => Volatile.Write(ref _report, NoOp);
+    public static void Reset()
+    {
+        Volatile.Write(ref _report, NoOp);
+    }
 
     public static void Report(Exception exception, string boundary, string? operation = null)
     {
@@ -17,7 +22,9 @@ public static class UnexpectedExceptionReporter
         ArgumentException.ThrowIfNullOrWhiteSpace(boundary);
 
         if (exception is OperationCanceledException)
+        {
             return;
+        }
 
         try
         {
@@ -35,7 +42,9 @@ public static class UnexpectedExceptionReporter
         [CallerMemberName] string? operation = null)
     {
         if (exception is OperationCanceledException)
+        {
             return false;
+        }
 
         Report(exception, boundary, operation);
         return true;

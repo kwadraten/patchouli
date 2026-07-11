@@ -1,4 +1,6 @@
+using System.Data.Common;
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
@@ -37,7 +39,7 @@ public sealed class FileAssetService : IFileAssetService
             return Result<FileAsset>.Failure(AppErrorCodes.ValidationFailed, "File path is required.");
         }
 
-        var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
         {
             return Result<FileAsset>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
@@ -45,11 +47,11 @@ public sealed class FileAssetService : IFileAssetService
 
         try
         {
-            var normalizedPath = Path.GetFullPath(path);
-            var fileInfo = new FileInfo(normalizedPath);
-            var exists = fileInfo.Exists;
-            var now = _clock.UtcNow.ToUniversalTime();
-            var fingerprint = exists
+            string normalizedPath = Path.GetFullPath(path);
+            FileInfo fileInfo = new(normalizedPath);
+            bool exists = fileInfo.Exists;
+            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+            Result<FileFingerprint>? fingerprint = exists
                 ? await _fingerprintService.GetFileMetadataAsync(normalizedPath, cancellationToken)
                 : null;
 
@@ -58,7 +60,7 @@ public sealed class FileAssetService : IFileAssetService
                 return Result<FileAsset>.Failure(fingerprint.ErrorCode!, fingerprint.ErrorMessage!);
             }
 
-            var asset = new FileAsset(
+            FileAsset asset = new(
                 exists ? CreateFileAssetId(fingerprint!.Value.FullBlake3) : FileAssetId.New(),
                 libraryResult.Value.LibraryId,
                 normalizedPath,
@@ -67,19 +69,19 @@ public sealed class FileAssetService : IFileAssetService
                 exists ? fingerprint!.Value.MtimeUtc : null,
                 exists ? fingerprint!.Value.QuickHash : null,
                 exists ? fingerprint!.Value.FullBlake3 : null,
-                PageCount: null,
-                PdfTrailerId: null,
+                null,
+                null,
                 exists ? FileAssetStatus.Available : FileAssetStatus.Missing,
                 now,
                 now);
 
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             if (exists)
             {
-                var existing = await connection.QuerySingleOrDefaultAsync<FileAssetRow>(
+                FileAssetRow? existing = await connection.QuerySingleOrDefaultAsync<FileAssetRow>(
                     """
                     select
                         file_asset_id as FileAssetId,
@@ -103,7 +105,7 @@ public sealed class FileAssetService : IFileAssetService
 
                 if (existing is not null)
                 {
-                    var existingAsset = existing.ToFileAsset();
+                    FileAsset existingAsset = existing.ToFileAsset();
                     if (existingAsset.LibraryId != libraryResult.Value.LibraryId)
                     {
                         return Result<FileAsset>.Failure(
@@ -111,7 +113,7 @@ public sealed class FileAssetService : IFileAssetService
                             "File content already exists in a different library.");
                     }
 
-                    var updatedAsset = existingAsset with
+                    FileAsset updatedAsset = existingAsset with
                     {
                         SizeBytes = asset.SizeBytes,
                         MtimeUtc = asset.MtimeUtc,
@@ -191,7 +193,8 @@ public sealed class FileAssetService : IFileAssetService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-asset"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-asset"))
         {
             return DatabaseFailure<FileAsset>(exception);
         }
@@ -203,10 +206,10 @@ public sealed class FileAssetService : IFileAssetService
     {
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            var row = await connection.QuerySingleOrDefaultAsync<FileAssetRow>(
+            FileAssetRow? row = await connection.QuerySingleOrDefaultAsync<FileAssetRow>(
                 """
                 select
                     file_asset_id as FileAssetId,
@@ -235,7 +238,8 @@ public sealed class FileAssetService : IFileAssetService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-asset"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-asset"))
         {
             return DatabaseFailure<FileAsset>(exception);
         }
@@ -264,7 +268,9 @@ public sealed class FileAssetService : IFileAssetService
     private static FileAssetId CreateFileAssetId(string? fullBlake3)
     {
         if (string.IsNullOrWhiteSpace(fullBlake3) || fullBlake3.Length < 32)
+        {
             return FileAssetId.New();
+        }
 
         return FileAssetId.Parse(
             $"{fullBlake3[..8]}-{fullBlake3[8..12]}-{fullBlake3[12..16]}-{fullBlake3[16..20]}-{fullBlake3[20..32]}");
@@ -276,8 +282,8 @@ public sealed class FileAssetService : IFileAssetService
     }
 
     internal static Task UpsertKnownLocationAsync(
-        Microsoft.Data.Sqlite.SqliteConnection connection,
-        System.Data.Common.DbTransaction transaction,
+        SqliteConnection connection,
+        DbTransaction transaction,
         FileAssetId fileAssetId,
         string path,
         string status,

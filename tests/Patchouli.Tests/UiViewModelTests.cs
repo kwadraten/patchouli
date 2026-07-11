@@ -1,4 +1,7 @@
-﻿using System.IO.Compression;
+﻿using System.Collections.ObjectModel;
+using System.IO.Compression;
+using System.Net.Sockets;
+using System.Text;
 using Avalonia;
 using Avalonia.Headless;
 using Avalonia.Media;
@@ -7,6 +10,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
@@ -14,6 +18,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
@@ -21,6 +26,7 @@ using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.UI.ViewModels.Editor;
 
 namespace Patchouli.Tests;
 
@@ -29,31 +35,73 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task LibraryViewModel_CreateLibrary_updates_current_library()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
-        try { var vm = new MainWindowViewModel { RuntimeDatabasePath = path }; await vm.OpenDatabaseCommand.ExecuteAsync(); vm.Library.DisplayName = "UI Library"; await vm.Library.CreateCommand.ExecuteAsync(); vm.Library.Details.Should().Contain("UI Library"); }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            vm.Library.DisplayName = "UI Library";
+            await vm.Library.CreateCommand.ExecuteAsync();
+            vm.Library.Details.Should().Contain("UI Library");
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task BibliographyViewModel_CreateItem_returns_item()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
-        try { var vm = new MainWindowViewModel { RuntimeDatabasePath = path }; await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync(); vm.Bibliography.Title = "UI Item"; await vm.Bibliography.CreateItemCommand.ExecuteAsync(); vm.Bibliography.Output.Should().Contain("UI Item"); }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            vm.Bibliography.Title = "UI Item";
+            await vm.Bibliography.CreateItemCommand.ExecuteAsync();
+            vm.Bibliography.Output.Should().Contain("UI Item");
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task FileDocumentViewModel_RegisterMissingFile_creates_missing_asset()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
-        try { var vm = new MainWindowViewModel { RuntimeDatabasePath = path }; await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync(); vm.FileDocument.FilePath = Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}.pdf"); await vm.FileDocument.RegisterCommand.ExecuteAsync(); vm.FileDocument.Output.Should().Contain("missing"); }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            vm.FileDocument.FilePath = Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}.pdf");
+            await vm.FileDocument.RegisterCommand.ExecuteAsync();
+            vm.FileDocument.Output.Should().Contain("missing");
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task CopyEvidenceMarkdown_writes_pinned_markdown_to_clipboard()
     {
-        var clipboard = new FakeClipboard(); var vm = new MainWindowViewModel(clipboard);
+        FakeClipboard clipboard = new();
+        MainWindowViewModel vm = new(clipboard);
         vm.SearchEvidence.Markdown = "Pinned source text";
         await vm.SearchEvidence.CopyMarkdownCommand.ExecuteAsync();
         clipboard.Text.Should().Be("Pinned source text");
@@ -63,7 +111,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task CopyEvidenceMarkdown_without_markdown_returns_validation_error()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
         await vm.SearchEvidence.CopyMarkdownCommand.ExecuteAsync();
         vm.SearchEvidence.Output.Should().Contain("validation_failed");
     }
@@ -71,7 +119,8 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task CopyEvidenceRef_writes_ref_to_clipboard()
     {
-        var clipboard = new FakeClipboard(); var vm = new MainWindowViewModel(clipboard);
+        FakeClipboard clipboard = new();
+        MainWindowViewModel vm = new(clipboard);
 
         await vm.SearchEvidence.CopyEvidenceRefAsync("evref:v1:test");
 
@@ -83,43 +132,56 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task CopySearchResultEvidenceMarkdown_creates_search_unit_evidence_lazily()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-evidence-copy-{Guid.NewGuid():N}.sqlite");
-        var clipboard = new FakeClipboard();
+        string path = Path.Combine(Path.GetTempPath(), $"ui-evidence-copy-{Guid.NewGuid():N}.sqlite");
+        FakeClipboard clipboard = new();
         try
         {
-            var vm = new MainWindowViewModel(clipboard) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(clipboard) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var item = await services.Items.CreateItemAsync("book", "UI Evidence Item");
-            var document = await services.Documents.AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
-            var page = await services.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
-            var revision = await services.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId, LayoutRevisionSource.Mock, makeCurrent: true);
-            await services.Layout.AddNodeAsync(revision.Value.LayoutRevisionId, page.Value.PageId, null, LayoutNodeType.Paragraph, null, "Pinned clipboard text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
+            AppServices services = await vm.ServicesAsync();
+            Result<ItemMetadata> item = await services.Items.CreateItemAsync("book", "UI Evidence Item");
+            Result<DocumentInstance> document =
+                await services.Documents.AttachDocumentInstanceAsync(item.Value.ItemId, null,
+                    DocumentInstanceType.PrimaryScan);
+            Result<Page> page = await services.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null,
+                null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
+            Result<LayoutRevision> revision =
+                await services.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId,
+                    LayoutRevisionSource.Mock, true);
+            await services.Layout.AddNodeAsync(revision.Value.LayoutRevisionId, page.Value.PageId, null,
+                LayoutNodeType.Paragraph, null, "Pinned clipboard text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
             await services.SearchUnits.RebuildForDocumentInstanceAsync(document.Value.DocumentInstanceId);
 
-            await using var connection = services.ConnectionFactory.CreateConnection();
+            await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();
-            var unitId = await connection.ExecuteScalarAsync<string>("select unit_id from search_units where resolved_text = 'Pinned clipboard text';");
-            var unit = new SearchMatchedUnitViewModel(unitId!, "Pinned clipboard text", LayoutNodeType.Paragraph, 1, true, null);
+            string? unitId =
+                await connection.ExecuteScalarAsync<string>(
+                    "select unit_id from search_units where resolved_text = 'Pinned clipboard text';");
+            SearchMatchedUnitViewModel unit = new(unitId!, "Pinned clipboard text", LayoutNodeType.Paragraph, 1, true,
+                null);
 
             await vm.SearchEvidence.CopyEvidenceMarkdownForSearchUnitAsync(unit);
 
             unit.EvidenceRef.Should().StartWith("evref:v1:");
-            clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And.Contain(unit.EvidenceRef);
+            clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And
+                .Contain(unit.EvidenceRef);
             vm.SearchEvidence.Markdown.Should().Be(clipboard.Text);
             vm.SearchEvidence.Output.Should().Be("Copied Evidence Markdown");
         }
         finally
         {
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task McpPreviewViewModel_SafetyCheck_flags_specific_local_path()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
         vm.McpPreview.Output = "{\"bad\":\"/tmp/private.sqlite\"}";
         vm.McpPreview.SpecificPath = "/tmp/private.sqlite";
         await vm.McpPreview.SafetyCommand.ExecuteAsync();
@@ -129,7 +191,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task McpPreviewViewModel_SafetyCheck_passes_clean_output()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
         vm.McpPreview.Output = "{\"title\":\"A historical source\"}";
         await vm.McpPreview.SafetyCommand.ExecuteAsync();
         vm.McpPreview.Safety.Should().Be("No obvious local path or secret exposure detected.");
@@ -138,7 +200,7 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_does_not_use_invalid_none_brush()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
         xaml.Should().NotContain("Fill=\"None\"");
         xaml.Should().NotContain("Stroke=\"None\"");
         xaml.Should().NotContain("Background=\"None\"");
@@ -149,10 +211,10 @@ public sealed class UiViewModelTests
     [Fact]
     public void LucideIcon_renders_svg_resource_without_external_package()
     {
-        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         session.Dispatch(() =>
         {
-            var icon = new Patchouli.Lucide.Avalonia.Lucide
+            Lucide.Avalonia.Lucide icon = new()
             {
                 Icon = "Search",
                 Width = 24,
@@ -163,7 +225,7 @@ public sealed class UiViewModelTests
             icon.Measure(new Size(24, 24));
             icon.Arrange(new Rect(0, 0, 24, 24));
 
-            var bitmap = new RenderTargetBitmap(new PixelSize(24, 24), new Vector(96, 96));
+            RenderTargetBitmap bitmap = new(new PixelSize(24, 24), new Vector(96, 96));
             bitmap.Render(icon);
         }, CancellationToken.None);
     }
@@ -171,10 +233,10 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_constructs_with_local_lucide_icons()
     {
-        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         session.Dispatch(() =>
         {
-            var window = new MainWindow();
+            MainWindow window = new();
             window.Close();
         }, CancellationToken.None);
     }
@@ -182,10 +244,10 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task MainWindow_new_item_editor_renders_without_recursive_templates()
     {
-        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         await session.Dispatch(async () =>
         {
-            var window = new MainWindow
+            MainWindow window = new()
             {
                 Width = 1280,
                 Height = 820
@@ -193,14 +255,14 @@ public sealed class UiViewModelTests
             window.Show();
             try
             {
-                var vm = (MainWindowViewModel)window.DataContext!;
+                MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
 
                 await vm.CreateItemMenuCommand.ExecuteAsync();
 
                 window.Measure(new Size(1280, 820));
                 window.Arrange(new Rect(0, 0, 1280, 820));
 
-                var bitmap = new RenderTargetBitmap(new PixelSize(1280, 820), new Vector(96, 96));
+                RenderTargetBitmap bitmap = new(new PixelSize(1280, 820), new Vector(96, 96));
                 bitmap.Render(window);
 
                 vm.IsItemEditorVisible.Should().BeTrue();
@@ -217,26 +279,26 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task MainWindow_returns_to_rendered_library_after_switching_tabs()
     {
-        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         await session.Dispatch(async () =>
         {
-            var window = new MainWindow { Width = 1280, Height = 820 };
+            MainWindow window = new() { Width = 1280, Height = 820 };
             window.Show();
             try
             {
-                var vm = (MainWindowViewModel)window.DataContext!;
+                MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
                 vm.Shell.IsReadingMode = true;
                 await vm.OpenAboutAsync();
 
                 await vm.ShowLibraryCommand.ExecuteAsync();
                 window.Measure(new Size(1280, 820));
                 window.Arrange(new Rect(0, 0, 1280, 820));
-                using var bitmap = new RenderTargetBitmap(new PixelSize(1280, 820), new Vector(96, 96));
+                using RenderTargetBitmap bitmap = new(new PixelSize(1280, 820), new Vector(96, 96));
                 bitmap.Render(window);
 
                 vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
                 vm.Shell.IsReadingMode.Should().BeFalse();
-                window.GetVisualDescendants().OfType<Patchouli.UI.Views.LibraryPage>().Should().ContainSingle();
+                window.GetVisualDescendants().OfType<UI.Views.LibraryPage>().Should().ContainSingle();
             }
             finally
             {
@@ -250,7 +312,8 @@ public sealed class UiViewModelTests
     [Fact]
     public void ItemEditorPage_does_not_template_field_descriptor_with_self_content()
     {
-        var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
+        string editorXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
 
         editorXaml.Should().NotContain("ContentControl Content=\"{Binding}\"");
     }
@@ -258,24 +321,31 @@ public sealed class UiViewModelTests
     [Fact]
     public void Metadata_lookup_ui_wires_identifier_rows_batch_selection_and_progress()
     {
-        var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
-        var mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
-        var libraryCode = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml.cs"));
+        string editorXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
+        string mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string libraryXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        string libraryCode =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml.cs"));
 
-        editorXaml.Should().Contain("editor:IdentifierItemViewModel").And.Contain("LookupCommand").And.Contain("IsBusy");
+        editorXaml.Should().Contain("editor:IdentifierItemViewModel").And.Contain("LookupCommand").And
+            .Contain("IsBusy");
         editorXaml.Should().Contain("RemoveCommand").And.Contain("Content=\"移除\"");
         libraryXaml.Should().Contain("SelectionMode=\"Extended\"").And.Contain("OnDataGridSelectionChanged");
         libraryXaml.Should().NotContain("<Button Content=\"获取所选元数据\"");
-        mainXaml.Should().Contain("获取所选题录元数据").And.Contain("Shell.LookupMetadataBatchCommand").And.Contain("Shell.CancelMetadataBatchCommand");
-        libraryXaml.Should().Contain("获取所选题录元数据").And.Contain("LookupMetadataBatchCommand").And.Contain("CancelMetadataBatchCommand");
-        libraryCode.Should().Contain("grid.SelectedItems").And.Contain("SetSelectedItems").And.Contain("SyncSelectionFromViewModel");
+        mainXaml.Should().Contain("获取所选题录元数据").And.Contain("Shell.LookupMetadataBatchCommand").And
+            .Contain("Shell.CancelMetadataBatchCommand");
+        libraryXaml.Should().Contain("获取所选题录元数据").And.Contain("LookupMetadataBatchCommand").And
+            .Contain("CancelMetadataBatchCommand");
+        libraryCode.Should().Contain("grid.SelectedItems").And.Contain("SetSelectedItems").And
+            .Contain("SyncSelectionFromViewModel");
     }
 
     [Fact]
     public void MainWindow_xaml_avoids_recursive_theme_and_local_self_styles()
     {
-        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
 
         shellXaml.Should().NotContain("Theme=\"{StaticResource {x:Type TabControl}}\"");
         shellXaml.Should().NotContain("<TextBlock.Styles>");
@@ -284,11 +354,13 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_uses_local_lucide_svg_control()
     {
-        var project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Patchouli.UI.csproj"));
-        var packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
-        var mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
-        var pdfXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Patchouli.UI.csproj"));
+        string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
+        string mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string libraryXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        string pdfXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
 
         project.Should().NotContain("LucideAvalonia").And.NotContain("Lucide.Avalonia");
         packages.Should().NotContain("LucideAvalonia").And.NotContain("Lucide.Avalonia");
@@ -301,43 +373,54 @@ public sealed class UiViewModelTests
     [Fact]
     public void All_bound_lucide_icon_names_have_svg_assets()
     {
-        var assetsPath = TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Assets", "Lucide");
-        var assets = Directory.EnumerateFiles(assetsPath, "*.svg")
+        string assetsPath = TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Assets", "Lucide");
+        HashSet<string> assets = Directory.EnumerateFiles(assetsPath, "*.svg")
             .Select(path => Path.GetFileNameWithoutExtension(path).ToLowerInvariant())
             .ToHashSet();
 
-        var iconNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var file in Directory.EnumerateFiles(TestPaths.FromRepositoryRoot("src", "Patchouli.UI"), "*.axaml", SearchOption.AllDirectories))
+        HashSet<string> iconNames = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string file in Directory.EnumerateFiles(TestPaths.FromRepositoryRoot("src", "Patchouli.UI"), "*.axaml",
+                     SearchOption.AllDirectories))
         {
-            var text = File.ReadAllText(file);
-            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(text, "lucide:Lucide[^>]*\\bIcon=\"([^\"]+)\""))
+            string text = File.ReadAllText(file);
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(text,
+                         "lucide:Lucide[^>]*\\bIcon=\"([^\"]+)\""))
             {
-                var icon = match.Groups[1].Value;
+                string icon = match.Groups[1].Value;
                 if (!icon.StartsWith("{Binding", StringComparison.Ordinal))
+                {
                     iconNames.Add(icon);
+                }
             }
         }
 
-        var settingsText = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels", "Settings", "SettingsViewModel.cs"));
-        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(settingsText, "new\\(\"[^\"]+\",\\s*\"([^\"]+)\""))
+        string settingsText = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels",
+            "Settings", "SettingsViewModel.cs"));
+        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                     settingsText, "new\\(\"[^\"]+\",\\s*\"([^\"]+)\""))
+        {
             iconNames.Add(match.Groups[1].Value);
+        }
 
         iconNames.Select(ToKebab).Should().OnlyContain(icon => assets.Contains(icon));
 
         static string ToKebab(string value)
         {
-            var builder = new System.Text.StringBuilder(value.Length + 4);
-            for (var i = 0; i < value.Length; i++)
+            StringBuilder builder = new(value.Length + 4);
+            for (int i = 0; i < value.Length; i++)
             {
-                var current = value[i];
+                char current = value[i];
                 if (current is '_' or '-' or ' ')
                 {
                     AppendDash(builder);
                     continue;
                 }
 
-                if (i > 0 && (char.IsUpper(current) || char.IsDigit(current)) && builder.Length > 0 && builder[^1] != '-')
+                if (i > 0 && (char.IsUpper(current) || char.IsDigit(current)) && builder.Length > 0 &&
+                    builder[^1] != '-')
+                {
                     AppendDash(builder);
+                }
 
                 builder.Append(char.ToLowerInvariant(current));
             }
@@ -345,17 +428,19 @@ public sealed class UiViewModelTests
             return builder.ToString();
         }
 
-        static void AppendDash(System.Text.StringBuilder builder)
+        static void AppendDash(StringBuilder builder)
         {
             if (builder.Length > 0 && builder[^1] != '-')
+            {
                 builder.Append('-');
+            }
         }
     }
 
     [Fact]
     public void MainWindow_xaml_uses_menu_shell_without_legacy_developer_tools_or_token_prompt()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
         xaml.Should().Contain("<Menu");
         xaml.Should().NotContain("Developer Tools");
         xaml.Should().NotContain("ShowMinerUTokenPrompt");
@@ -364,7 +449,8 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_sidebar_uses_real_path_bindings()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
         xaml.Should().Contain("DefaultSyncRootPath");
         xaml.Should().Contain("FileSearchRoots");
         xaml.Should().NotContain("/Documents/Papers");
@@ -377,9 +463,11 @@ public sealed class UiViewModelTests
     [Fact]
     public void Library_shell_exposes_sidebar_menu_and_single_empty_inspector_state()
     {
-        var mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
-        var settingsXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+        string mainXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string libraryXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        string settingsXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
         mainXaml.Should().Contain("Header=\"侧边栏\"");
         mainXaml.Should().Contain("Header=\"左侧边栏\"");
         mainXaml.Should().Contain("Header=\"右侧边栏\"");
@@ -400,11 +488,11 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task MainWindowViewModel_keeps_sidebar_menu_preferences_when_settings_tab_is_active()
     {
-        var settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-sidebar-settings-{Guid.NewGuid():N}.json");
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-sidebar-settings-{Guid.NewGuid():N}.json");
         try
         {
             PatchouliAppSettings.Default().Save(settingsPath);
-            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath);
             await vm.OpenSettingsCommand.ExecuteAsync();
 
             vm.ShowLibraryLeftSidebarPreference.Should().BeTrue();
@@ -418,15 +506,54 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
         }
+    }
+
+    [Fact]
+    public async Task Library_sidebars_reopen_after_switching_tabs()
+    {
+        MainWindowViewModel vm = new(new FakeClipboard());
+        List<string?> shellChanges = new();
+        vm.Shell.PropertyChanged += (_, args) => shellChanges.Add(args.PropertyName);
+
+        vm.Shell.IsLibraryLeftSidebarVisible.Should().BeTrue();
+        vm.Shell.IsLibraryRightSidebarVisible.Should().BeTrue();
+
+        await vm.OpenAboutAsync();
+        vm.Shell.IsLibraryLeftSidebarVisible.Should().BeFalse();
+        vm.Shell.IsLibraryRightSidebarVisible.Should().BeFalse();
+
+        vm.Workspace.ActivateKind(WorkspaceTabKind.Library).Should().BeTrue();
+        vm.Shell.IsLibraryLeftSidebarVisible.Should().BeTrue();
+        vm.Shell.IsLibraryRightSidebarVisible.Should().BeTrue();
+        shellChanges.Should().Contain(nameof(LibraryShellViewModel.IsLibraryLeftSidebarVisible));
+        shellChanges.Should().Contain(nameof(LibraryShellViewModel.IsLibraryRightSidebarVisible));
+
+        shellChanges.Clear();
+        vm.ShowLibraryLeftSidebarPreference = false;
+        vm.ShowLibraryRightSidebarPreference = false;
+        vm.Shell.IsLibraryLeftSidebarVisible.Should().BeFalse();
+        vm.Shell.IsLibraryRightSidebarVisible.Should().BeFalse();
+
+        vm.ShowLibraryLeftSidebarPreference = true;
+        vm.ShowLibraryRightSidebarPreference = true;
+        vm.Shell.IsLibraryLeftSidebarVisible.Should().BeTrue();
+        vm.Shell.IsLibraryRightSidebarVisible.Should().BeTrue();
+        shellChanges.Should().Contain(nameof(LibraryShellViewModel.IsLibraryLeftSidebarVisible));
+        shellChanges.Should().Contain(nameof(LibraryShellViewModel.IsLibraryRightSidebarVisible));
     }
 
     [Fact]
     public async Task BlockingOperationDialog_only_closes_after_operation_reaches_terminal_state()
     {
-        var xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "BlockingOperationDialog.axaml"));
-        var vm = new BlockingOperationDialogViewModel();
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views",
+                "BlockingOperationDialog.axaml"));
+        BlockingOperationDialogViewModel vm = new();
         object? closeResult = new();
         vm.RequestClose = result => closeResult = result;
 
@@ -455,17 +582,18 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task MainWindowViewModel_refreshes_sidebar_file_search_roots()
     {
-        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-search-root-{Guid.NewGuid():N}")).FullName;
-        var database = Path.Combine(root, "ui.sqlite");
-        var pdf = Path.Combine(root, "source.pdf");
+        string root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-search-root-{Guid.NewGuid():N}"))
+            .FullName;
+        string database = Path.Combine(root, "ui.sqlite");
+        string pdf = Path.Combine(root, "source.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = database };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            await services.FileResolution.AddSearchRootAsync(root);
+            AppServices services = await vm.ServicesAsync();
+            await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
             await services.Files.RegisterFileAsync(pdf);
 
             await vm.RefreshSidebarPathsAsync();
@@ -479,27 +607,31 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 
     [Fact]
     public async Task MainWindowViewModel_rescans_file_search_roots_and_imports_new_pdfs_once()
     {
-        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-rescan-root-{Guid.NewGuid():N}")).FullName;
-        var database = Path.Combine(root, "ui.sqlite");
-        var pdf = Path.Combine(root, "new-source.pdf");
+        string root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-rescan-root-{Guid.NewGuid():N}"))
+            .FullName;
+        string database = Path.Combine(root, "ui.sqlite");
+        string pdf = Path.Combine(root, "new-source.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = database };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            await services.FileResolution.AddSearchRootAsync(root);
+            AppServices services = await vm.ServicesAsync();
+            await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
 
-            var first = await vm.RescanFileSearchRootsAsync();
-            var second = await vm.RescanFileSearchRootsAsync();
+            Result<FileSearchRootRescanSummary> first = await vm.RescanFileSearchRootsAsync();
+            Result<FileSearchRootRescanSummary> second = await vm.RescanFileSearchRootsAsync();
 
             first.IsSuccess.Should().BeTrue();
             first.Value.ImportedPdfCount.Should().Be(1);
@@ -510,15 +642,19 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 
     [Fact]
     public void MainWindow_xaml_wires_toolbar_search_and_results_workspace()
     {
-        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var searchXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
+        string shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string searchXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
         shellXaml.Should().Contain("RunToolbarSearchCommand");
         shellXaml.Should().Contain("SearchEvidence.Query");
         searchXaml.Should().Contain("搜索结果");
@@ -527,8 +663,9 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_wires_ocr_queue_workspace()
     {
-        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var queueXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "OcrQueuePage.axaml"));
+        string shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string queueXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "OcrQueuePage.axaml"));
         shellXaml.Should().Contain("OpenOcrQueueCommand");
         shellXaml.Should().Contain("OcrQueuePage");
         queueXaml.Should().Contain("StartCommand");
@@ -542,11 +679,16 @@ public sealed class UiViewModelTests
     [Fact]
     public void SearchResults_xaml_wires_search_unit_evidence_actions_only()
     {
-        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
-        var searchXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
-        var codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml.cs"));
-        var searchCodeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml.cs"));
+        string shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string libraryXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
+        string searchXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
+        string codeBehind =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml.cs"));
+        string searchCodeBehind =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views",
+                "SearchResultsPage.axaml.cs"));
         shellXaml.Should().NotContain("复制证据 Markdown");
         shellXaml.Should().NotContain("导出证据 Markdown");
         libraryXaml.Should().NotContain("复制证据 Markdown");
@@ -565,9 +707,11 @@ public sealed class UiViewModelTests
     [Fact]
     public void MainWindow_xaml_wires_item_editor_and_settings_sections()
     {
-        var shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
-        var editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
-        var settingsXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+        string shellXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+        string editorXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "ItemEditorPage.axaml"));
+        string settingsXaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
         shellXaml.Should().Contain("EditSelectedItemCommand");
         shellXaml.Should().Contain("DataType=\"{x:Type local:ItemEditorViewModel}\"");
         shellXaml.Should().Contain("ItemEditorPage");
@@ -585,9 +729,10 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task ExportEvidenceMarkdownToFile_without_evidence_ref_reports_validation_error()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
 
-        await vm.ExportEvidenceMarkdownToFileAsync("", Path.Combine(Path.GetTempPath(), $"evidence-{Guid.NewGuid():N}.md"));
+        await vm.ExportEvidenceMarkdownToFileAsync("",
+            Path.Combine(Path.GetTempPath(), $"evidence-{Guid.NewGuid():N}.md"));
 
         vm.SearchEvidence.Output.Should().Contain("validation_failed");
         vm.Status.Should().Contain("EvidenceRef");
@@ -596,13 +741,14 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task MainWindowViewModel_auto_starts_mcp_http_server_and_reports_status()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");
-        var port = GetFreeTcpPort();
-        var vm = new MainWindowViewModel(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port) { RuntimeDatabasePath = path };
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");
+        int port = GetFreeTcpPort();
+        MainWindowViewModel vm = new(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port)
+            { RuntimeDatabasePath = path };
         try
         {
-            var services = await vm.ServicesAsync();
-            var settings = await services.McpSettings.GetSettingsAsync();
+            AppServices services = await vm.ServicesAsync();
+            Result<McpServerSettings> settings = await services.McpSettings.GetSettingsAsync();
             settings.IsSuccess.Should().BeTrue();
             await vm.StopMcpServerAsync();
             await services.McpSettings.SaveSettingsAsync(settings.Value with { Port = port });
@@ -611,67 +757,85 @@ public sealed class UiViewModelTests
             vm.McpEndpoint.Should().Be($"http://localhost:{port}/mcp");
             vm.McpStatusText.Should().Be("MCP: 运行中");
             vm.McpStatusDetail.Should().Be("连接数: 0 / 0");
-            using var http = new HttpClient();
-            var health = await http.GetStringAsync($"http://localhost:{port}/health");
+            using HttpClient http = new();
+            string health = await http.GetStringAsync($"http://localhost:{port}/health");
             health.Should().Contain("ok");
         }
         finally
         {
             await vm.StopMcpServerAsync();
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task QueueViewModel_enqueue_mock_adds_task_and_displays_runtime_only_warning()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
         {
-            var vm = new MainWindowViewModel { RuntimeDatabasePath = path };
-            await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync();
-            vm.OcrQueue.DocumentInstanceId = Patchouli.Core.Ids.DocumentInstanceId.New().ToString();
-            vm.OcrQueue.PresetId = Patchouli.Core.Ids.OcrPresetId.New().ToString();
-            vm.OcrQueue.PageIds = Patchouli.Core.Ids.PageId.New().ToString();
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            vm.OcrQueue.DocumentInstanceId = Core.Ids.DocumentInstanceId.New().ToString();
+            vm.OcrQueue.PresetId = Core.Ids.OcrPresetId.New().ToString();
+            vm.OcrQueue.PageIds = Core.Ids.PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
             vm.OcrQueue.Output.Should().Contain("Queued mock OCR task");
             vm.OcrQueue.Tasks.Should().ContainSingle();
             vm.OcrQueue.Output.ToLowerInvariant().Should().NotContain("secret");
         }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task QueueViewModel_refresh_shows_multiple_tasks_as_rows()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
         {
-            var vm = new MainWindowViewModel { RuntimeDatabasePath = path };
-            await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync();
-            vm.OcrQueue.DocumentInstanceId = Patchouli.Core.Ids.DocumentInstanceId.New().ToString();
-            vm.OcrQueue.PresetId = Patchouli.Core.Ids.OcrPresetId.New().ToString();
-            vm.OcrQueue.PageIds = Patchouli.Core.Ids.PageId.New().ToString();
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            vm.OcrQueue.DocumentInstanceId = Core.Ids.DocumentInstanceId.New().ToString();
+            vm.OcrQueue.PresetId = Core.Ids.OcrPresetId.New().ToString();
+            vm.OcrQueue.PageIds = Core.Ids.PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
-            vm.OcrQueue.PageIds = Patchouli.Core.Ids.PageId.New().ToString();
+            vm.OcrQueue.PageIds = Core.Ids.PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
 
             vm.OcrQueue.TaskRows.Should().HaveCount(2);
             vm.OcrQueue.HasTasks.Should().BeTrue();
             vm.OcrQueue.NoTasks.Should().BeFalse();
-            vm.OcrQueue.TaskRows.Should().OnlyContain(row => row.State == Patchouli.Ocr.OcrQueueTaskState.Queued);
+            vm.OcrQueue.TaskRows.Should().OnlyContain(row => row.State == OcrQueueTaskState.Queued);
         }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task QueueViewModel_start_stop_pause_and_validation_are_visible()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
         {
-            var vm = new MainWindowViewModel { RuntimeDatabasePath = path };
-            await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync();
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OcrQueue.StartCommand.ExecuteAsync();
             vm.OcrQueue.StatusSummary.Should().Contain("running");
             await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
@@ -682,22 +846,29 @@ public sealed class UiViewModelTests
             await vm.OcrQueue.StopCommand.ExecuteAsync();
             vm.OcrQueue.StatusSummary.Should().Contain("stopped");
         }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task Library_run_ocr_enqueues_document_task_visible_on_queue_board()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.sqlite");
-        var pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.pdf");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.sqlite");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Queued OCR Item", null, 1));
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult import =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Queued OCR Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
             vm.Shell.MinerUToken = "token";
@@ -709,7 +880,7 @@ public sealed class UiViewModelTests
             vm.Status.Should().Contain("OCR 已加入后台队列");
             vm.OcrQueue.StatusSummary.Should().Contain("running");
             vm.OcrQueue.TaskRows.Should().ContainSingle();
-            var row = vm.OcrQueue.TaskRows.Single();
+            OcrQueueTaskViewModel row = vm.OcrQueue.TaskRows.Single();
             row.DocumentTitle.Should().Be("Queued OCR Item");
             row.Kind.Should().Be(OcrQueueTaskKind.Document);
             row.PageCount.Should().Be(1);
@@ -718,41 +889,59 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(pdf)) File.Delete(pdf);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task SearchProfileViewModel_creates_rule_and_previews_plan()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-profile-{Guid.NewGuid():N}.sqlite");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-profile-{Guid.NewGuid():N}.sqlite");
         try
         {
-            var vm = new MainWindowViewModel { RuntimeDatabasePath = path };
-            await vm.OpenDatabaseCommand.ExecuteAsync(); await vm.Library.CreateCommand.ExecuteAsync();
-            vm.SearchProfiles.Name = "UI variants"; await vm.SearchProfiles.CreateProfileCommand.ExecuteAsync();
-            vm.SearchProfiles.Pattern = "臺灣"; vm.SearchProfiles.Replacement = "台湾";
+            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            vm.SearchProfiles.Name = "UI variants";
+            await vm.SearchProfiles.CreateProfileCommand.ExecuteAsync();
+            vm.SearchProfiles.Pattern = "臺灣";
+            vm.SearchProfiles.Replacement = "台湾";
             await vm.SearchProfiles.AddRuleCommand.ExecuteAsync();
-            vm.SearchProfiles.Query = "臺灣"; await vm.SearchProfiles.PreviewCommand.ExecuteAsync();
+            vm.SearchProfiles.Query = "臺灣";
+            await vm.SearchProfiles.PreviewCommand.ExecuteAsync();
             vm.SearchProfiles.Output.Should().Contain("台湾").And.Contain("OriginalQuery");
         }
-        finally { if (File.Exists(path)) File.Delete(path); }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
     public async Task Shell_refresh_lists_imported_items()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Shell Item", null, 1));
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult import =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Shell Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
 
             await vm.Shell.RefreshItemsAsync();
@@ -762,19 +951,26 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(pdf)) File.Delete(pdf);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task Shell_run_ocr_without_token_reports_recoverable_error()
     {
-        var settingsPath = WriteSettingsFile("");
+        string settingsPath = WriteSettingsFile("");
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
-            var item = new LibraryItemViewModel(
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath);
+            LibraryItemViewModel item = new(
                 "item-1",
                 "Needs OCR",
                 "book",
@@ -803,44 +999,59 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(settingsPath)) File.Delete(settingsPath);
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
         }
     }
 
     [Fact]
     public async Task OpenDatabase_prefers_provider_credential_over_appsettings_token()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var settingsPath = WriteSettingsFile("fallback-token");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = WriteSettingsFile("fallback-token");
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var saved = await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token", "provider-token");
+            AppServices services = await vm.ServicesAsync();
+            Result<ProviderCredentialMetadata> saved =
+                await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token",
+                    "provider-token");
             saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
 
-            var reloaded = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            MainWindowViewModel reloaded = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
             await reloaded.OpenDatabaseCommand.ExecuteAsync();
 
             reloaded.Shell.MinerUToken.Should().Be("provider-token");
         }
         finally
         {
-            if (File.Exists(settingsPath)) File.Delete(settingsPath);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task Settings_save_mineru_token_updates_provider_credential_and_appsettings()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var settingsPath = WriteSettingsFile("");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = WriteSettingsFile("");
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OpenSettingsAsync("mineru");
@@ -848,83 +1059,111 @@ public sealed class UiViewModelTests
 
             await vm.Settings.SaveMinerUSettingsCommand.ExecuteAsync();
 
-            var services = await vm.ServicesAsync();
-            (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should().Be("saved-token");
+            AppServices services = await vm.ServicesAsync();
+            (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
+                .Be("saved-token");
             PatchouliAppSettings.Load(settingsPath).MinerU.Token.Should().Be("saved-token");
             vm.Shell.MinerUToken.Should().Be("saved-token");
             vm.Status.Should().Contain("已保存");
         }
         finally
         {
-            if (File.Exists(settingsPath)) File.Delete(settingsPath);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task OpenDatabase_remembers_custom_runtime_database_when_enabled()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-remember-db-{Guid.NewGuid():N}.sqlite");
-        var settingsPath = WriteSettingsFile("", rememberLastDatabase: true);
+        string path = Path.Combine(Path.GetTempPath(), $"ui-remember-db-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = WriteSettingsFile("", true);
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
 
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
-            var saved = PatchouliAppSettings.Load(settingsPath);
+            PatchouliAppSettings saved = PatchouliAppSettings.Load(settingsPath);
             Path.GetFullPath(saved.Runtime.RuntimeDatabasePath).Should().Be(Path.GetFullPath(path));
 
-            var reloaded = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
+            MainWindowViewModel reloaded = new(new FakeClipboard(), settingsPath: settingsPath);
             Path.GetFullPath(reloaded.RuntimeDatabasePath).Should().Be(Path.GetFullPath(path));
         }
         finally
         {
-            if (File.Exists(settingsPath)) File.Delete(settingsPath);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task OpenDatabase_does_not_remember_custom_runtime_database_when_disabled()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-do-not-remember-db-{Guid.NewGuid():N}.sqlite");
-        var settingsPath = WriteSettingsFile("", rememberLastDatabase: false);
-        var originalSettings = PatchouliAppSettings.Load(settingsPath);
+        string path = Path.Combine(Path.GetTempPath(), $"ui-do-not-remember-db-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = WriteSettingsFile("", false);
+        PatchouliAppSettings originalSettings = PatchouliAppSettings.Load(settingsPath);
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
 
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
-            var saved = PatchouliAppSettings.Load(settingsPath);
-            Path.GetFullPath(saved.Runtime.RuntimeDatabasePath).Should().Be(Path.GetFullPath(originalSettings.Runtime.RuntimeDatabasePath));
+            PatchouliAppSettings saved = PatchouliAppSettings.Load(settingsPath);
+            Path.GetFullPath(saved.Runtime.RuntimeDatabasePath).Should()
+                .Be(Path.GetFullPath(originalSettings.Runtime.RuntimeDatabasePath));
 
-            var reloaded = new MainWindowViewModel(new FakeClipboard(), settingsPath: settingsPath);
-            Path.GetFullPath(reloaded.RuntimeDatabasePath).Should().Be(Path.GetFullPath(AppRuntimeOptions.Default().RuntimeDatabasePath));
+            MainWindowViewModel reloaded = new(new FakeClipboard(), settingsPath: settingsPath);
+            Path.GetFullPath(reloaded.RuntimeDatabasePath).Should()
+                .Be(Path.GetFullPath(AppRuntimeOptions.Default().RuntimeDatabasePath));
         }
         finally
         {
-            if (File.Exists(settingsPath)) File.Delete(settingsPath);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task FirstRun_scan_imports_all_pdfs_as_items_without_manual_metadata()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
-        var scanRoot = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-first-run-scan-{Guid.NewGuid():N}")).FullName;
+        string path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
+        string scanRoot = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-first-run-scan-{Guid.NewGuid():N}")).FullName;
         try
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
             vm.FirstRun.ScanRoot = scanRoot;
-            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test", FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
+            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test",
+                FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
 
             await vm.FirstRun.ScanCommand.ExecuteAsync();
 
@@ -936,31 +1175,40 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (Directory.Exists(scanRoot)) Directory.Delete(scanRoot, true);
-            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(scanRoot))
+            {
+                Directory.Delete(scanRoot, true);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task FirstRun_import_then_selected_item_ocr_makes_text_readable_through_mcp()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-loop-{Guid.NewGuid():N}.sqlite");
-        var scanRoot = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-loop-scan-{Guid.NewGuid():N}")).FullName;
-        var zipPath = CreateMinerUZip("""
-        [
-          { "type": "text", "page_idx": 0, "text": "ui selected item mineru searchable text", "bbox": [0, 0, 1000, 100] }
-        ]
-        """);
+        string path = Path.Combine(Path.GetTempPath(), $"ui-loop-{Guid.NewGuid():N}.sqlite");
+        string scanRoot = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-loop-scan-{Guid.NewGuid():N}")).FullName;
+        string zipPath = CreateMinerUZip("""
+                                         [
+                                           { "type": "text", "page_idx": 0, "text": "ui selected item mineru searchable text", "bbox": [0, 0, 1000, 100] }
+                                         ]
+                                         """);
 
         try
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "selected.pdf");
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
             vm.FirstRun.ScanRoot = scanRoot;
-            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test", FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
+            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test",
+                FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
 
             await vm.FirstRun.ScanCommand.ExecuteAsync();
             vm.FirstRun.MinerUToken = "token";
@@ -968,13 +1216,16 @@ public sealed class UiViewModelTests
 
             vm.IsLibraryVisible.Should().BeTrue();
             vm.Shell.Items.Should().ContainSingle();
-            var services = await vm.ServicesAsync();
-            await using (var connection = services.ConnectionFactory.CreateConnection())
+            AppServices services = await vm.ServicesAsync();
+            await using (SqliteConnection connection = services.ConnectionFactory.CreateConnection())
             {
                 await connection.OpenAsync();
-                (await connection.ExecuteScalarAsync<string>("select secret_value from provider_credentials where provider_id=@Provider;", new { Provider = ProviderIds.MinerU })).Should().Be("token");
+                (await connection.ExecuteScalarAsync<string>(
+                    "select secret_value from provider_credentials where provider_id=@Provider;",
+                    new { Provider = ProviderIds.MinerU })).Should().Be("token");
             }
-            var zipBytes = await File.ReadAllBytesAsync(zipPath);
+
+            byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
             string? tokenUsed = null;
             vm.Shell.MinerUClientFactory = config =>
             {
@@ -988,31 +1239,45 @@ public sealed class UiViewModelTests
             tokenUsed.Should().Be("token");
             vm.Status.Should().Contain("OCR 完成");
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
-            var search = await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
+            Result<McpSearchLibraryResponse> search =
+                await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
             search.IsSuccess.Should().BeTrue(search.ErrorMessage);
-            search.Value.Results.SelectMany(r => r.MatchedUnits).Should().Contain(u => u.Text.Contains("ui selected item mineru searchable text"));
+            search.Value.Results.SelectMany(r => r.MatchedUnits).Should()
+                .Contain(u => u.Text.Contains("ui selected item mineru searchable text"));
         }
         finally
         {
-            if (Directory.Exists(scanRoot)) Directory.Delete(scanRoot, true);
-            if (File.Exists(zipPath)) File.Delete(zipPath);
-            if (File.Exists(path)) File.Delete(path);
+            if (Directory.Exists(scanRoot))
+            {
+                Directory.Delete(scanRoot, true);
+            }
+
+            if (File.Exists(zipPath))
+            {
+                File.Delete(zipPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task Shell_edit_metadata_context_action_opens_item_editor_tab()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Editable Item", null, 1));
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult import =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Editable Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
 
@@ -1037,40 +1302,50 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(pdf)) File.Delete(pdf);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task Item_editor_removes_loaded_creator_after_field_rebuild_and_save()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-creator-remove-{Guid.NewGuid():N}.sqlite");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-creator-remove-{Guid.NewGuid():N}.sqlite");
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var created = await services.Items.CreateItemAsync(new CreateItemRequest(
+            AppServices services = await vm.ServicesAsync();
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(new CreateItemRequest(
                 "book",
                 "Creator removal",
                 Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Literal: "Fetched Author")]));
             created.IsSuccess.Should().BeTrue(created.ErrorMessage);
 
             await vm.Shell.RefreshItemsAsync();
-            await vm.Shell.Items.Single(item => item.ItemId == created.Value.ItemId.ToString()).EditMetadataCommand.ExecuteAsync();
-            var originalCreators = vm.ItemEditor.Creators;
+            await vm.Shell.Items.Single(item => item.ItemId == created.Value.ItemId.ToString()).EditMetadataCommand
+                .ExecuteAsync();
+            ObservableCollection<CreatorItemViewModel> originalCreators = vm.ItemEditor.Creators;
             vm.ItemEditor.ItemType = "report";
-            for (var attempt = 0; attempt < 100 && ReferenceEquals(originalCreators, vm.ItemEditor.Creators); attempt++)
+            for (int attempt = 0; attempt < 100 && ReferenceEquals(originalCreators, vm.ItemEditor.Creators); attempt++)
+            {
                 await Task.Delay(20);
+            }
 
             vm.ItemEditor.Creators.Should().ContainSingle(creator => creator.Name == "Fetched Author");
             await vm.ItemEditor.Creators.Single().RemoveCommand.ExecuteAsync();
             vm.ItemEditor.Creators.Should().BeEmpty();
 
             await vm.ItemEditor.SaveCommand.ExecuteAsync();
-            var saved = await services.Items.GetItemAsync(created.Value.ItemId);
+            Result<ItemMetadata> saved = await services.Items.GetItemAsync(created.Value.ItemId);
             saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
             saved.Value.Creators.Should().BeEmpty();
 
@@ -1079,23 +1354,27 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task General_item_metadata_editor_renders_from_context_action()
     {
-        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-general-editor-{Guid.NewGuid():N}")).FullName;
-        var path = Path.Combine(root, "runtime.sqlite");
-        var pdf = Path.Combine(root, "general.pdf");
-        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        string root = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-general-editor-{Guid.NewGuid():N}")).FullName;
+        string path = Path.Combine(root, "runtime.sqlite");
+        string pdf = Path.Combine(root, "general.pdf");
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                var window = new MainWindow
+                MainWindow window = new()
                 {
                     Width = 1280,
                     Height = 820
@@ -1103,12 +1382,13 @@ public sealed class UiViewModelTests
                 window.Show();
                 try
                 {
-                    var vm = (MainWindowViewModel)window.DataContext!;
+                    MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
                     vm.RuntimeDatabasePath = path;
                     await vm.OpenDatabaseCommand.ExecuteAsync();
                     await vm.Library.CreateCommand.ExecuteAsync();
-                    var services = await vm.ServicesAsync();
-                    var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "General Item", null, 1));
+                    AppServices services = await vm.ServicesAsync();
+                    PdfImportResult import =
+                        await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "General Item", null, 1));
                     import.Success.Should().BeTrue(import.ErrorMessage);
                     await vm.Shell.RefreshItemsAsync();
                     vm.Shell.Items.Single().ItemType.Should().Be("general");
@@ -1117,7 +1397,7 @@ public sealed class UiViewModelTests
 
                     window.Measure(new Size(1280, 820));
                     window.Arrange(new Rect(0, 0, 1280, 820));
-                    var bitmap = new RenderTargetBitmap(new PixelSize(1280, 820), new Vector(96, 96));
+                    RenderTargetBitmap bitmap = new(new PixelSize(1280, 820), new Vector(96, 96));
                     bitmap.Render(window);
 
                     vm.ItemEditor.ItemType.Should().Be("general");
@@ -1135,17 +1415,20 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 
     [Fact]
     public async Task FirstRun_tab_stays_open_and_search_disabled_until_setup_completes()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
         try
         {
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.ShowInlineFirstRunAsync();
 
             vm.IsFirstRunVisible.Should().BeTrue();
@@ -1158,14 +1441,17 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public void Reader_mode_hides_library_sidebars()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
 
         vm.Shell.IsReadingMode = true;
         vm.RaiseShellSelectionChanged();
@@ -1178,7 +1464,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Workspace_singleton_tabs_reuse_existing_instances()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
 
         await vm.OpenSettingsAsync("mineru");
         await vm.OpenSettingsAsync("mineru");
@@ -1194,7 +1480,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Workspace_closing_active_tab_falls_back_to_library_and_keeps_library_open()
     {
-        var vm = new MainWindowViewModel(new FakeClipboard());
+        MainWindowViewModel vm = new(new FakeClipboard());
 
         await vm.OpenAboutAsync();
         vm.IsLibraryTabActive.Should().BeFalse();
@@ -1211,29 +1497,31 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Item_workspace_tabs_use_page_name_item_title_and_truncate_long_titles()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}.sqlite");
-        var firstPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-first.pdf");
-        var secondPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-second.pdf");
-        var longTitle = "非常长的题录标题用于验证标签页会在合理长度之后被截断而不是撑爆标签栏";
+        string path = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}.sqlite");
+        string firstPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-first.pdf");
+        string secondPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-second.pdf");
+        string longTitle = "非常长的题录标题用于验证标签页会在合理长度之后被截断而不是撑爆标签栏";
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, firstPdf);
             File.Copy(TestFixtures.RealThreePagePdf, secondPdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1))).Success.Should().BeTrue();
-            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1))).Success.Should().BeTrue();
+            AppServices services = await vm.ServicesAsync();
+            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1))).Success.Should()
+                .BeTrue();
+            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1))).Success
+                .Should().BeTrue();
             await vm.Shell.RefreshItemsAsync();
 
             vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == "短标题");
             await vm.ShowReadingCommand.ExecuteAsync();
-            var firstTab = vm.ActiveTab!;
+            WorkspaceTabViewModel firstTab = vm.ActiveTab!;
 
             vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == longTitle);
             await vm.ShowReadingCommand.ExecuteAsync();
-            var secondTab = vm.ActiveTab!;
+            WorkspaceTabViewModel secondTab = vm.ActiveTab!;
 
             firstTab.Title.Should().Be("PDF 工作台：短标题");
             secondTab.Title.Should().StartWith("PDF 工作台：");
@@ -1247,25 +1535,37 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(firstPdf)) File.Delete(firstPdf);
-            if (File.Exists(secondPdf)) File.Delete(secondPdf);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(firstPdf))
+            {
+                File.Delete(firstPdf);
+            }
+
+            if (File.Exists(secondPdf))
+            {
+                File.Delete(secondPdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task MainWindow_close_pdf_tab_keeps_library_selection()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Closable Tab", null, 1));
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult import =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Closable Tab", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
             await vm.ShowReadingCommand.ExecuteAsync();
@@ -1278,24 +1578,32 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(pdf)) File.Delete(pdf);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task MainWindow_tabs_persist_across_switches_until_closed()
     {
-        var path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
-        var pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            var services = await vm.ServicesAsync();
-            var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult import =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
 
@@ -1323,28 +1631,37 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (File.Exists(pdf)) File.Delete(pdf);
-            if (File.Exists(path)) File.Delete(path);
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
         }
     }
 
     [Fact]
     public async Task Shell_reading_mode_renders_pdf_preview_in_memory()
     {
-        var root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-preview-{Guid.NewGuid():N}")).FullName;
-        var path = Path.Combine(root, "preview.sqlite");
-        var pdf = Path.Combine(root, "preview.pdf");
-        using var session = HeadlessUnitTestSession.StartNew(typeof(App));
+        string root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-preview-{Guid.NewGuid():N}"))
+            .FullName;
+        string path = Path.Combine(root, "preview.sqlite");
+        string pdf = Path.Combine(root, "preview.pdf");
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                var vm = new MainWindowViewModel(new FakeClipboard()) { RuntimeDatabasePath = path };
+                MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
-                var services = await vm.ServicesAsync();
-                var import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
+                AppServices services = await vm.ServicesAsync();
+                PdfImportResult import =
+                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
                 import.Success.Should().BeTrue(import.ErrorMessage);
                 await vm.Shell.RefreshItemsAsync();
 
@@ -1362,57 +1679,82 @@ public sealed class UiViewModelTests
         }
         finally
         {
-            if (Directory.Exists(root)) Directory.Delete(root, true);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
         }
     }
 
     private sealed class FakeClipboard : IClipboardService
     {
         public string? Text { get; private set; }
-        public Task SetTextAsync(string text) { Text = text; return Task.CompletedTask; }
+
+        public Task SetTextAsync(string text)
+        {
+            Text = text;
+            return Task.CompletedTask;
+        }
+    }
+
+    private static SelectedFileSearchRoot SelectedRoot(string path)
+    {
+        return new SelectedFileSearchRoot(
+            path,
+            "test",
+            FileSearchRootAuthorizationKinds.None,
+            null,
+            null,
+            DateTimeOffset.UtcNow);
     }
 
     private static int GetFreeTcpPort()
     {
-        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
         listener.Start();
-        try { return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port; }
-        finally { listener.Stop(); }
+        try
+        {
+            return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     private static string CreateMinerUZip(string contentListJson)
     {
-        var zipPath = Path.Combine(Path.GetTempPath(), $"ui-mineru-{Guid.NewGuid():N}.zip");
-        using var archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
-        var entry = archive.CreateEntry("sample_content_list.json");
-        using var writer = new StreamWriter(entry.Open());
+        string zipPath = Path.Combine(Path.GetTempPath(), $"ui-mineru-{Guid.NewGuid():N}.zip");
+        using ZipArchive archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+        ZipArchiveEntry entry = archive.CreateEntry("sample_content_list.json");
+        using StreamWriter writer = new(entry.Open());
         writer.Write(contentListJson);
         return zipPath;
     }
 
     private static string WriteSettingsFile(string token, bool rememberLastDatabase = true)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"patchouli-appsettings-{Guid.NewGuid():N}.json");
+        string path = Path.Combine(Path.GetTempPath(), $"patchouli-appsettings-{Guid.NewGuid():N}.json");
         File.WriteAllText(path, $$"""
-        {
-          "Patchouli": {
-            "RuntimeDatabasePath": "{{Path.Combine(Path.GetTempPath(), $"runtime-{Guid.NewGuid():N}.sqlite").Replace("\\", "/")}}",
-            "DefaultSyncRoot": "{{Path.Combine(Path.GetTempPath(), $"sync-{Guid.NewGuid():N}").Replace("\\", "/")}}",
-            "DefaultStagingRoot": "{{Path.Combine(Path.GetTempPath(), $"staging-{Guid.NewGuid():N}").Replace("\\", "/")}}",
-            "LogDirectory": "{{Path.Combine(Path.GetTempPath(), $"logs-{Guid.NewGuid():N}").Replace("\\", "/")}}",
-            "RememberLastDatabase": {{rememberLastDatabase.ToString().ToLowerInvariant()}},
-            "UseMockOcrOnly": true
-          },
-          "MinerU": {
-            "BaseUrl": "https://mineru.example.test",
-            "ModelVersion": "vlm",
-            "IsOcr": true,
-            "EnableTable": true,
-            "EnableFormula": true,
-            "Token": "{{token}}"
-          }
-        }
-        """);
+                                  {
+                                    "Patchouli": {
+                                      "RuntimeDatabasePath": "{{Path.Combine(Path.GetTempPath(), $"runtime-{Guid.NewGuid():N}.sqlite").Replace("\\", "/")}}",
+                                      "DefaultSyncRoot": "{{Path.Combine(Path.GetTempPath(), $"sync-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+                                      "DefaultStagingRoot": "{{Path.Combine(Path.GetTempPath(), $"staging-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+                                      "LogDirectory": "{{Path.Combine(Path.GetTempPath(), $"logs-{Guid.NewGuid():N}").Replace("\\", "/")}}",
+                                      "RememberLastDatabase": {{rememberLastDatabase.ToString().ToLowerInvariant()}},
+                                      "UseMockOcrOnly": true
+                                    },
+                                    "MinerU": {
+                                      "BaseUrl": "https://mineru.example.test",
+                                      "ModelVersion": "vlm",
+                                      "IsOcr": true,
+                                      "EnableTable": true,
+                                      "EnableFormula": true,
+                                      "Token": "{{token}}"
+                                    }
+                                  }
+                                  """);
         return path;
     }
 
@@ -1422,24 +1764,35 @@ public sealed class UiViewModelTests
             new HttpClient(new MinerUProtocolHandler(request =>
             {
                 if (request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath == "/api/v4/file-urls/batch")
+                {
                     return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
                     {
-                        Content = new StringContent("""{"code":0,"data":{"batch_id":"batch-ui","file_urls":["https://upload.example.test/file"]},"msg":"ok"}""")
+                        Content = new StringContent(
+                            """{"code":0,"data":{"batch_id":"batch-ui","file_urls":["https://upload.example.test/file"]},"msg":"ok"}""")
                     };
+                }
 
                 if (request.Method == HttpMethod.Put && request.RequestUri!.Host == "upload.example.test")
+                {
                     return new HttpResponseMessage(System.Net.HttpStatusCode.OK);
+                }
 
-                if (request.Method == HttpMethod.Get && request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/batch-ui")
+                if (request.Method == HttpMethod.Get &&
+                    request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/batch-ui")
+                {
                     return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
                     {
                         Content = new StringContent("""
-                        {"code":0,"data":{"batch_id":"batch-ui","extract_result":[{"file_name":"selected.pdf","state":"done","err_msg":"","full_zip_url":"https://cdn.example.test/result.zip"}]},"msg":"ok"}
-                        """)
+                                                    {"code":0,"data":{"batch_id":"batch-ui","extract_result":[{"file_name":"selected.pdf","state":"done","err_msg":"","full_zip_url":"https://cdn.example.test/result.zip"}]},"msg":"ok"}
+                                                    """)
                     };
+                }
 
                 if (request.Method == HttpMethod.Get && request.RequestUri!.Host == "cdn.example.test")
-                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new ByteArrayContent(zipBytes) };
+                {
+                    return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                        { Content = new ByteArrayContent(zipBytes) };
+                }
 
                 return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
             })),
@@ -1459,8 +1812,16 @@ public sealed class UiViewModelTests
     private sealed class MinerUProtocolHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _handler;
-        public MinerUProtocolHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) => _handler = handler;
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(_handler(request));
+
+        public MinerUProtocolHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+        {
+            _handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(_handler(request));
+        }
     }
 }

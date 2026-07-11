@@ -12,7 +12,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private string _statusText = "就绪";
     private string? _defaultStyleId;
     private bool _loadingCatalogSources;
-    private CslCatalogSourceViewModel? _selectedCatalogSource;
+    private CslCatalogSourceViewModel _selectedCatalogSource = null!;
 
     public CslStyleManagerViewModel(MainWindowViewModel main)
     {
@@ -24,7 +24,11 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     public string SearchQuery
     {
         get => _searchQuery;
-        set { _searchQuery = value; Raise(); }
+        set
+        {
+            _searchQuery = value;
+            Raise();
+        }
     }
 
     public string StatusText
@@ -36,8 +40,14 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
             Raise();
             if (!string.IsNullOrWhiteSpace(value))
             {
-                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("异常", StringComparison.Ordinal)) _main.ReportError(value);
-                else _main.Report(value);
+                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("异常", StringComparison.Ordinal))
+                {
+                    _main.ReportError(value);
+                }
+                else
+                {
+                    _main.Report(value);
+                }
             }
         }
     }
@@ -46,7 +56,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     public ObservableCollection<CslCatalogStyleViewModel> RemoteStyles { get; } = new();
     public ObservableCollection<CslCatalogSourceViewModel> CatalogSources { get; } = new();
 
-    public CslCatalogSourceViewModel? SelectedCatalogSource
+    public CslCatalogSourceViewModel SelectedCatalogSource
     {
         get => _selectedCatalogSource;
         set
@@ -58,9 +68,10 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
             _selectedCatalogSource = value;
             Raise();
-            if (!_loadingCatalogSources && value is not null)
+            if (!_loadingCatalogSources)
             {
-                ChangeCatalogSourceAsync(value).Observe(nameof(CslStyleManagerViewModel), nameof(ChangeCatalogSourceAsync));
+                ChangeCatalogSourceAsync(value)
+                    .Observe(nameof(CslStyleManagerViewModel), nameof(ChangeCatalogSourceAsync));
             }
         }
     }
@@ -77,22 +88,23 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private async Task LoadInstalledStylesAsync()
     {
         StatusText = "正在加载已安装样式...";
-        var services = await _main.ServicesAsync();
-        
-        var settingsResult = await services.CslStore.GetSettingsAsync();
+        AppServices services = await _main.ServicesAsync();
+
+        Result<CslSettings> settingsResult = await services.CslStore.GetSettingsAsync();
         if (settingsResult.IsSuccess)
         {
             _defaultStyleId = settingsResult.Value.DefaultStyleId;
         }
 
-        var installedResult = await services.CslStore.ListInstalledStylesAsync();
+        Result<IReadOnlyList<CslStyle>> installedResult = await services.CslStore.ListInstalledStylesAsync();
         if (installedResult.IsSuccess)
         {
             InstalledStyles.Clear();
-            foreach (var style in installedResult.Value.OrderBy(s => s.DisplayName))
+            foreach (CslStyle style in installedResult.Value.OrderBy(s => s.DisplayName))
             {
                 InstalledStyles.Add(new CslStyleViewModel(style, this, _defaultStyleId == style.StyleId));
             }
+
             StatusText = $"已加载 {InstalledStyles.Count} 个本地样式。";
         }
         else
@@ -103,18 +115,19 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     private async Task LoadCatalogSourcesAsync()
     {
-        var services = await _main.ServicesAsync();
+        AppServices services = await _main.ServicesAsync();
         _loadingCatalogSources = true;
         try
         {
             CatalogSources.Clear();
-            foreach (var source in services.CslCatalog.Sources)
+            foreach (CslCatalogSource source in services.CslCatalog.Sources)
             {
                 CatalogSources.Add(new CslCatalogSourceViewModel(source));
             }
 
-            _selectedCatalogSource = CatalogSources.FirstOrDefault(
-                source => source.SourceId == services.CslCatalog.CurrentSource.SourceId);
+            _selectedCatalogSource =
+                CatalogSources.FirstOrDefault(source => source.SourceId == services.CslCatalog.CurrentSource.SourceId)
+                ?? CatalogSources.First();
             Raise(nameof(SelectedCatalogSource));
         }
         finally
@@ -125,25 +138,26 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     private async Task RefreshAsync()
     {
-        StatusText = $"正在刷新远程索引：{SelectedCatalogSource?.DisplayName ?? "默认源"}...";
-        var services = await _main.ServicesAsync();
-        var refreshResult = await services.CslCatalog.RefreshAsync();
+        StatusText = $"正在刷新远程索引：{SelectedCatalogSource.DisplayName}...";
+        AppServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> refreshResult = await services.CslCatalog.RefreshAsync();
         if (refreshResult.IsFailure)
         {
             StatusText = refreshResult.ErrorMessage ?? "刷新远程索引失败。";
             return;
         }
-        
+
         StatusText = "索引已刷新。";
         await SearchAsync();
     }
 
     private async Task SearchAsync()
     {
-        StatusText = $"正在搜索远程样式：{SelectedCatalogSource?.DisplayName ?? "默认源"}...";
-        var services = await _main.ServicesAsync();
-        var searchResult = await services.CslCatalog.SearchAsync(string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery);
-        
+        StatusText = $"正在搜索远程样式：{SelectedCatalogSource.DisplayName}...";
+        AppServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<CslCatalogStyle>> searchResult =
+            await services.CslCatalog.SearchAsync(string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery);
+
         if (searchResult.IsFailure)
         {
             StatusText = searchResult.ErrorMessage ?? "搜索失败。";
@@ -151,18 +165,20 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         }
 
         RemoteStyles.Clear();
-        var installedIds = InstalledStyles.Select(s => s.StyleId).ToHashSet();
-        foreach (var catalogStyle in searchResult.Value.OrderBy(s => s.DisplayName).Take(100))
+        HashSet<string> installedIds = InstalledStyles.Select(s => s.StyleId).ToHashSet();
+        foreach (CslCatalogStyle catalogStyle in searchResult.Value.OrderBy(s => s.DisplayName).Take(100))
         {
-            RemoteStyles.Add(new CslCatalogStyleViewModel(catalogStyle, this, installedIds.Contains(catalogStyle.StyleId)));
+            RemoteStyles.Add(new CslCatalogStyleViewModel(catalogStyle, this,
+                installedIds.Contains(catalogStyle.StyleId)));
         }
+
         StatusText = $"找到 {RemoteStyles.Count} 个远程样式。";
     }
 
     private async Task ChangeCatalogSourceAsync(CslCatalogSourceViewModel source)
     {
-        var services = await _main.ServicesAsync();
-        var result = services.CslCatalog.SetSource(source.SourceId);
+        AppServices services = await _main.ServicesAsync();
+        Result result = services.CslCatalog.SetSource(source.SourceId);
         if (result.IsFailure)
         {
             StatusText = result.ErrorMessage ?? "切换样式源失败。";
@@ -185,19 +201,20 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
         try
         {
-            using var client = new HttpClient();
-            client.DefaultRequestHeaders.UserAgent.ParseAdd($"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
-            var xml = await client.GetStringAsync(catalogStyle.SourceUrl);
-            var services = await _main.ServicesAsync();
-            var result = await services.CslStore.InstallStyleAsync(catalogStyle, xml);
-            
+            using HttpClient client = new();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(
+                $"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
+            string xml = await client.GetStringAsync(catalogStyle.SourceUrl);
+            AppServices services = await _main.ServicesAsync();
+            Result<CslStyle> result = await services.CslStore.InstallStyleAsync(catalogStyle, xml);
+
             if (result.IsSuccess)
             {
                 StatusText = $"安装成功：{catalogStyle.DisplayName}";
                 await LoadInstalledStylesAsync();
-                
+
                 // Update remote view
-                var remote = RemoteStyles.FirstOrDefault(r => r.StyleId == catalogStyle.StyleId);
+                CslCatalogStyleViewModel? remote = RemoteStyles.FirstOrDefault(r => r.StyleId == catalogStyle.StyleId);
                 if (remote != null)
                 {
                     remote.IsInstalled = true;
@@ -216,15 +233,16 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     internal async Task SetDefaultStyleAsync(string styleId)
     {
-        var services = await _main.ServicesAsync();
-        var result = await services.CslStore.SaveSettingsAsync(styleId, null);
+        AppServices services = await _main.ServicesAsync();
+        Result<CslSettings> result = await services.CslStore.SaveSettingsAsync(styleId, null);
         if (result.IsSuccess)
         {
             _defaultStyleId = styleId;
-            foreach (var style in InstalledStyles)
+            foreach (CslStyleViewModel style in InstalledStyles)
             {
                 style.IsDefault = style.StyleId == styleId;
             }
+
             StatusText = "默认样式已更新。";
         }
         else
@@ -235,13 +253,13 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     internal async Task RemoveStyleAsync(string styleId)
     {
-        var services = await _main.ServicesAsync();
-        var result = await services.CslStore.RemoveStyleAsync(styleId);
+        AppServices services = await _main.ServicesAsync();
+        Result result = await services.CslStore.RemoveStyleAsync(styleId);
         if (result.IsSuccess)
         {
             StatusText = "已移除样式。";
             await LoadInstalledStylesAsync();
-            var remote = RemoteStyles.FirstOrDefault(r => r.StyleId == styleId);
+            CslCatalogStyleViewModel? remote = RemoteStyles.FirstOrDefault(r => r.StyleId == styleId);
             if (remote != null)
             {
                 remote.IsInstalled = false;
@@ -267,7 +285,10 @@ public class CslCatalogSourceViewModel : ViewModelBase
         Description = source.Description;
     }
 
-    public override string ToString() => DisplayName;
+    public override string ToString()
+    {
+        return DisplayName;
+    }
 }
 
 public class CslStyleViewModel : ViewModelBase
@@ -276,13 +297,20 @@ public class CslStyleViewModel : ViewModelBase
     public string StyleId { get; }
     public string Title { get; }
     public string FormattedUpdated { get; }
-    
+
     private bool _isDefault;
+
     public bool IsDefault
     {
         get => _isDefault;
-        set { _isDefault = value; Raise(); Raise(nameof(IsNotDefault)); }
+        set
+        {
+            _isDefault = value;
+            Raise();
+            Raise(nameof(IsNotDefault));
+        }
     }
+
     public bool IsNotDefault => !_isDefault;
 
     public AsyncCommand SetDefaultCommand { get; }
@@ -310,11 +338,18 @@ public class CslCatalogStyleViewModel : ViewModelBase
     public string Title => _catalogStyle.DisplayName;
 
     private bool _isInstalled;
+
     public bool IsInstalled
     {
         get => _isInstalled;
-        set { _isInstalled = value; Raise(); Raise(nameof(IsNotInstalled)); }
+        set
+        {
+            _isInstalled = value;
+            Raise();
+            Raise(nameof(IsNotInstalled));
+        }
     }
+
     public bool IsNotInstalled => !_isInstalled;
 
     public AsyncCommand InstallCommand { get; }
@@ -327,5 +362,3 @@ public class CslCatalogStyleViewModel : ViewModelBase
         InstallCommand = new AsyncCommand(() => _parent.InstallStyleAsync(_catalogStyle));
     }
 }
-
-

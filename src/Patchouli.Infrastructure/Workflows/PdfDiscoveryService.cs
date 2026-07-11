@@ -14,12 +14,16 @@ public sealed class PdfDiscoveryService
     }
 
     public Task<PdfScanResult> ScanDirectoryAsync(string scanRoot, CancellationToken cancellationToken = default)
-        => ScanAsync(scanRoot, cancellationToken);
+    {
+        return ScanAsync(scanRoot, cancellationToken);
+    }
 
     private async Task<PdfScanResult> ScanAsync(string scanRoot, CancellationToken cancellationToken)
     {
-        var resolved = new ResolvedFileSearchRoot(scanRoot, Path.GetFullPath(scanRoot), "filesystem", FileSearchRootAuthorizationKinds.None);
-        var result = await _rootAccess.ScanPdfAsync(resolved, cancellationToken);
-        return new PdfScanResult(result.Candidates, result.Candidates.Count, scanRoot, result.SkippedDirectories, result.SkippedFiles, result.RootStatus, result.ScanStatus);
+        ResolvedFileSearchRoot resolved = new(scanRoot, Path.GetFullPath(scanRoot), "filesystem",
+            FileSearchRootAuthorizationKinds.None);
+        FileSearchRootScanResult result = await _rootAccess.ScanPdfAsync(resolved, cancellationToken);
+        return new PdfScanResult(result.Candidates, result.Candidates.Count, scanRoot, result.SkippedDirectories,
+            result.SkippedFiles, result.RootStatus, result.ScanStatus);
     }
 }

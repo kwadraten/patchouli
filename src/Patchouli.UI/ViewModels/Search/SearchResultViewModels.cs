@@ -2,7 +2,8 @@
 
 public sealed class SearchMatchedUnitViewModel
 {
-    public SearchMatchedUnitViewModel(string unitId, string text, string nodeType, int readingOrder, bool isMatch, string? evidenceRef)
+    public SearchMatchedUnitViewModel(string unitId, string text, string nodeType, int readingOrder, bool isMatch,
+        string? evidenceRef)
     {
         UnitId = unitId;
         Text = text;
@@ -23,7 +24,9 @@ public sealed class SearchMatchedUnitViewModel
 
 public sealed class SearchPageResultViewModel
 {
-    public SearchPageResultViewModel(string itemTitle, string documentInstanceId, string pageId, string? pageLabel, int pageIndex, string indexStatus, bool matchedUnitsHasMore, IEnumerable<SearchMatchedUnitViewModel> matchedUnits)
+    public SearchPageResultViewModel(string itemTitle, string documentInstanceId, string pageId, string? pageLabel,
+        int pageIndex, string indexStatus, bool matchedUnitsHasMore,
+        IEnumerable<SearchMatchedUnitViewModel> matchedUnits)
     {
         ItemTitle = itemTitle;
         DocumentInstanceId = documentInstanceId;

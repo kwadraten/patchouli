@@ -47,9 +47,16 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
         ConflictDescription = descriptor.Summary;
         LocalContent = descriptor.LocalSnapshot ?? "无本地状态";
         IncomingContent = descriptor.IncomingSnapshot ?? "无传入状态";
-        foreach (var option in options ?? []) Options.Add(option);
-        foreach (var action in descriptor.RecommendedActions)
+        foreach (ConflictDialogOption option in options ?? [])
+        {
+            Options.Add(option);
+        }
+
+        foreach (ConflictAction action in descriptor.RecommendedActions)
+        {
             Actions.Add(new ConflictDialogActionViewModel(action, this));
+        }
+
         Actions.Add(new ConflictDialogActionViewModel(
             new ConflictAction("leave_unresolved", "暂不处理", "保持冲突未解决。", false), this));
     }
@@ -64,10 +71,15 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
     public bool HasOptions => Options.Count > 0;
 
     private ConflictDialogOption? _selectedOption;
+
     public ConflictDialogOption? SelectedOption
     {
         get => _selectedOption;
-        set { _selectedOption = value; Raise(); }
+        set
+        {
+            _selectedOption = value;
+            Raise();
+        }
     }
 
     public Action<object?>? RequestClose { get; set; }
@@ -75,7 +87,10 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
     internal Task SubmitAsync(string actionId)
     {
         if (actionId is "choose_candidate" or "confirm_changed_file" && SelectedOption is null)
+        {
             return Task.CompletedTask;
+        }
+
         RequestClose?.Invoke(new ConflictDialogResult(actionId, SelectedOption?.OptionId));
         return Task.CompletedTask;
     }

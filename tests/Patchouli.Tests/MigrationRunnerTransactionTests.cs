@@ -1,5 +1,6 @@
 using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Infrastructure.Migrations;
 
 namespace Patchouli.Tests;
@@ -9,22 +10,25 @@ public sealed class MigrationRunnerTransactionTests
     [Fact]
     public async Task Failed_migration_is_not_recorded_and_is_attempted_again()
     {
-        await using var database = TemporarySqliteDatabase.Create();
-        using var migrations = TemporaryMigrationDirectory.Create();
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        using TemporaryMigrationDirectory migrations = TemporaryMigrationDirectory.Create();
         migrations.Write("0001_create_attempt_marker.sql", "create table attempt_marker (id integer not null);");
-        migrations.Write("0002_failing_migration.sql", "insert into attempt_marker (id) values (1); select * from missing_table;");
+        migrations.Write("0002_failing_migration.sql",
+            "insert into attempt_marker (id) values (1); select * from missing_table;");
 
-        var runner = new MigrationRunner(database.ConnectionFactory, migrations.Path);
+        MigrationRunner runner = new(database.ConnectionFactory, migrations.Path);
 
-        var firstFailure = await Assert.ThrowsAsync<MigrationFailedException>(() => runner.RunAsync());
-        var secondFailure = await Assert.ThrowsAsync<MigrationFailedException>(() => runner.RunAsync());
+        MigrationFailedException firstFailure =
+            await Assert.ThrowsAsync<MigrationFailedException>(() => runner.RunAsync());
+        MigrationFailedException secondFailure =
+            await Assert.ThrowsAsync<MigrationFailedException>(() => runner.RunAsync());
 
-        await using var connection = database.ConnectionFactory.CreateConnection();
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
 
-        var failedMigrationRecords = await connection.ExecuteScalarAsync<int>(
+        int failedMigrationRecords = await connection.ExecuteScalarAsync<int>(
             "select count(1) from schema_migrations where id = '0002';");
-        var attemptRows = await connection.ExecuteScalarAsync<int>("select count(1) from attempt_marker;");
+        int attemptRows = await connection.ExecuteScalarAsync<int>("select count(1) from attempt_marker;");
 
         firstFailure.MigrationId.Should().Be("0002");
         secondFailure.MigrationId.Should().Be("0002");

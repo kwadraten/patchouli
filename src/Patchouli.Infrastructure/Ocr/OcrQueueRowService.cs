@@ -1,4 +1,5 @@
 using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
@@ -19,7 +20,8 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
 
     public async Task<Result<IReadOnlyList<OcrQueueRow>>> ListRowsAsync(CancellationToken cancellationToken = default)
     {
-        var tasks = await _scheduler.ListTasksAsync(new OcrQueueTaskFilter(), cancellationToken);
+        Result<IReadOnlyList<OcrQueueTask>> tasks =
+            await _scheduler.ListTasksAsync(new OcrQueueTaskFilter(), cancellationToken);
         if (tasks.IsFailure)
         {
             return Result<IReadOnlyList<OcrQueueRow>>.Failure(tasks.ErrorCode!, tasks.ErrorMessage!);
@@ -27,17 +29,17 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
 
         try
         {
-            await using var connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            var titles = (await connection.QueryAsync<Row>(
-                """
-                select di.document_instance_id as DocumentInstanceId,
-                       i.title as ItemTitle
-                from document_instances di
-                join items i on i.item_id = di.item_id
-                where di.document_instance_id in @Ids;
-                """,
-                new { Ids = tasks.Value.Select(task => task.DocumentInstanceId.ToString()).Distinct().ToArray() }))
+            Dictionary<string, string> titles = (await connection.QueryAsync<Row>(
+                    """
+                    select di.document_instance_id as DocumentInstanceId,
+                           i.title as ItemTitle
+                    from document_instances di
+                    join items i on i.item_id = di.item_id
+                    where di.document_instance_id in @Ids;
+                    """,
+                    new { Ids = tasks.Value.Select(task => task.DocumentInstanceId.ToString()).Distinct().ToArray() }))
                 .ToDictionary(row => row.DocumentInstanceId, row => row.ItemTitle, StringComparer.Ordinal);
 
             return Result<IReadOnlyList<OcrQueueRow>>.Success(tasks.Value.Select(task =>
@@ -55,20 +57,28 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
         {
             throw;
         }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-queue-row"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.ocr-queue-row"))
         {
-            return Result<IReadOnlyList<OcrQueueRow>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<IReadOnlyList<OcrQueueRow>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
     }
 
     public Task<Result> PauseRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default)
-        => _scheduler.PauseAsync(OcrPauseScope.Task, taskId.ToString(), cancellationToken);
+    {
+        return _scheduler.PauseAsync(OcrPauseScope.Task, taskId.ToString(), cancellationToken);
+    }
 
     public Task<Result> ResumeRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default)
-        => _scheduler.ResumeAsync(OcrPauseScope.Task, taskId.ToString(), cancellationToken);
+    {
+        return _scheduler.ResumeAsync(OcrPauseScope.Task, taskId.ToString(), cancellationToken);
+    }
 
     public Task<Result> CancelRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default)
-        => _scheduler.CancelTaskAsync(taskId, cancellationToken);
+    {
+        return _scheduler.CancelTaskAsync(taskId, cancellationToken);
+    }
 
     private sealed class Row
     {

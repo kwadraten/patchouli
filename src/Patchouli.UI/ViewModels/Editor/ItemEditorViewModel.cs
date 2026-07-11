@@ -3,7 +3,9 @@ using System.Text.Json;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Editor;
@@ -25,7 +27,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _role;
         set
         {
-            if (_role == value) return;
+            if (_role == value)
+            {
+                return;
+            }
+
             _role = value;
             Raise();
         }
@@ -36,10 +42,17 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _literal;
         set
         {
-            if (_literal == value) return;
+            if (_literal == value)
+            {
+                return;
+            }
+
             _literal = value;
             Raise();
-            if (_isApplyingName) return;
+            if (_isApplyingName)
+            {
+                return;
+            }
 
             _isLiteral = !string.IsNullOrWhiteSpace(value);
             _name = _isLiteral ? value : _name;
@@ -61,7 +74,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _family;
         set
         {
-            if (_family == value) return;
+            if (_family == value)
+            {
+                return;
+            }
+
             _family = value;
             Raise();
         }
@@ -72,7 +89,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _given;
         set
         {
-            if (_given == value) return;
+            if (_given == value)
+            {
+                return;
+            }
+
             _given = value;
             Raise();
         }
@@ -83,7 +104,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _suffix;
         set
         {
-            if (_suffix == value) return;
+            if (_suffix == value)
+            {
+                return;
+            }
+
             _suffix = value;
             Raise();
         }
@@ -94,7 +119,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _particles;
         set
         {
-            if (_particles == value) return;
+            if (_particles == value)
+            {
+                return;
+            }
+
             _particles = value;
             Raise();
         }
@@ -105,7 +134,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _name;
         set
         {
-            if (_name == value) return;
+            if (_name == value)
+            {
+                return;
+            }
+
             _name = value;
             Raise();
             ApplyNameParts();
@@ -117,7 +150,11 @@ public sealed class CreatorItemViewModel : ViewModelBase
         get => _isLiteral;
         set
         {
-            if (_isLiteral == value) return;
+            if (_isLiteral == value)
+            {
+                return;
+            }
+
             _isLiteral = value;
             Raise();
             Raise(nameof(IsPersonalName));
@@ -174,7 +211,7 @@ public sealed class CreatorItemViewModel : ViewModelBase
 
     private void ApplyNameParts()
     {
-        var parts = ItemCreatorNameParser.Parse(
+        ItemCreatorNameParts parts = ItemCreatorNameParser.Parse(
             _name,
             _isLiteral ? ItemCreatorNameMode.Literal : ItemCreatorNameMode.Personal);
         _isApplyingName = true;
@@ -193,8 +230,10 @@ public sealed class CreatorItemViewModel : ViewModelBase
     }
 
     private static string FormatPersonalName(string family, string given, string particles, string suffix)
-        => string.Join(" ", new[] { given, particles, family, suffix }
+    {
+        return string.Join(" ", new[] { given, particles, family, suffix }
             .Where(value => !string.IsNullOrWhiteSpace(value)));
+    }
 }
 
 public sealed class LinkedDocumentInstanceItemViewModel : ViewModelBase
@@ -252,36 +291,50 @@ public sealed class IdentifierItemViewModel : ViewModelBase
     public bool CanLookup { get; }
     public bool ShowLookup => CanLookup && !_isBusy;
     public bool ShowRemove => ItemIdentifier is not null && !_isBusy;
+
     public bool IsBusy
     {
         get => _isBusy;
         set
         {
-            if (_isBusy == value) return;
+            if (_isBusy == value)
+            {
+                return;
+            }
+
             _isBusy = value;
             Raise();
             Raise(nameof(ShowLookup));
             Raise(nameof(ShowRemove));
         }
     }
+
     public string Status
     {
         get => _status;
         set
         {
-            if (_status == value) return;
+            if (_status == value)
+            {
+                return;
+            }
+
             _status = value;
             Raise();
             Raise(nameof(HasStatus));
         }
     }
+
     public bool HasStatus => !string.IsNullOrWhiteSpace(Status);
     public AsyncCommand LookupCommand { get; }
     public AsyncCommand RemoveCommand { get; }
 
-    private static string Format(string scheme, string value, string? note) => string.IsNullOrWhiteSpace(note)
-        ? $"{scheme}: {value}"
-        : $"{scheme}: {value} ({note})";
+    private static string Format(string scheme, string value, string? note)
+    {
+        return string.IsNullOrWhiteSpace(note)
+            ? $"{scheme}: {value}"
+            : $"{scheme}: {value} ({note})";
+    }
 }
 
 public sealed class ItemEditorViewModel : ViewModelBase
@@ -311,20 +364,25 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public string Header => _itemId is null ? "新建题录" : "编辑题录";
     public string ItemIdText => _itemId?.ToString() ?? "";
     public bool HasItem => _itemId is not null;
-    
+
     private string _itemType = "book";
-    public string ItemType 
-    { 
-        get => _itemType; 
-        set 
+
+    public string ItemType
+    {
+        get => _itemType;
+        set
         {
-            if (_itemType == value) return;
-            _itemType = value; 
-            Raise(); 
+            if (_itemType == value)
+            {
+                return;
+            }
+
+            _itemType = value;
+            Raise();
             Raise(nameof(IsGeneralTypeWarningVisible));
             BuildFieldsAsync().Observe(nameof(ItemEditorViewModel), nameof(BuildFieldsAsync));
             UpdateUnsavedCslPreviewState();
-        } 
+        }
     }
 
     public bool IsGeneralTypeWarningVisible => _itemType == "general";
@@ -356,12 +414,17 @@ public sealed class ItemEditorViewModel : ViewModelBase
     }
 
     public ObservableCollection<CreatorItemViewModel> Creators => GetCreatorField()?.Creators ?? _emptyCreators;
+
     public string CslPreviewText
     {
         get => _cslPreviewText;
         private set
         {
-            if (_cslPreviewText == value) return;
+            if (_cslPreviewText == value)
+            {
+                return;
+            }
+
             _cslPreviewText = value;
             Raise();
         }
@@ -372,42 +435,52 @@ public sealed class ItemEditorViewModel : ViewModelBase
         get => _hasCslPreviewWarning;
         private set
         {
-            if (_hasCslPreviewWarning == value) return;
+            if (_hasCslPreviewWarning == value)
+            {
+                return;
+            }
+
             _hasCslPreviewWarning = value;
             Raise();
         }
     }
 
-    private void BuildFields(Patchouli.Core.Bibliography.CslItemTypeProfile? itemTypeProfile)
+    private void BuildFields(CslItemTypeProfile? itemTypeProfile)
     {
         CacheCurrentFields();
 
         Fields.Clear();
-        var profile = CslItemTypeProfileService.GetProfile(itemTypeProfile);
+        IReadOnlyList<ItemFieldDefinition> profile = CslItemTypeProfileService.GetProfile(itemTypeProfile);
 
-        foreach (var def in profile)
+        foreach (ItemFieldDefinition def in profile)
         {
-            var field = new ItemFieldDescriptor(def.Key, def.Label, def.Type);
-            if (_fieldValueCache.TryGetValue(def.Key, out var val))
+            ItemFieldDescriptor field = new(def.Key, def.Label, def.Type);
+            if (_fieldValueCache.TryGetValue(def.Key, out string? val))
             {
                 field.Value = val;
             }
+
             if (def.Type == "CreatorList")
             {
                 if (_creatorCache.Count > 0)
                 {
-                    foreach (var c in _creatorCache) field.Creators.Add(c);
+                    foreach (CreatorItemViewModel c in _creatorCache)
+                    {
+                        field.Creators.Add(c);
+                    }
                 }
                 else if (field.Creators.Count == 0)
                 {
                     field.Creators.Add(CreateCreatorItem());
                 }
-                field.AddCreatorCommand = new AsyncCommand(() => 
+
+                field.AddCreatorCommand = new AsyncCommand(() =>
                 {
                     field.Creators.Add(CreateCreatorItem());
                     return Task.CompletedTask;
                 });
             }
+
             Fields.Add(field);
         }
 
@@ -416,13 +489,14 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private async Task BuildFieldsAsync()
     {
-        var profileResult = await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(_itemType);
+        Result<CslItemTypeProfile> profileResult =
+            await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(_itemType);
         BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
     }
 
     private void CacheCurrentFields()
     {
-        foreach (var field in Fields)
+        foreach (ItemFieldDescriptor field in Fields)
         {
             _fieldValueCache[field.Key] = field.Value;
             if (field.Type == "CreatorList")
@@ -434,6 +508,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     }
 
     private string _status = "就绪";
+
     public string Status
     {
         get => _status;
@@ -443,15 +518,22 @@ public sealed class ItemEditorViewModel : ViewModelBase
             Raise();
             if (!string.IsNullOrWhiteSpace(value))
             {
-                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不能", StringComparison.Ordinal) || value.Contains("无法", StringComparison.Ordinal)) _main.ReportError(value);
-                else _main.Report(value);
+                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不能", StringComparison.Ordinal) ||
+                    value.Contains("无法", StringComparison.Ordinal))
+                {
+                    _main.ReportError(value);
+                }
+                else
+                {
+                    _main.Report(value);
+                }
             }
         }
     }
-    
+
     public ObservableCollection<IdentifierItemViewModel> Identifiers { get; } = new();
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
-    
+
     public AsyncCommand NewCommand { get; }
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
@@ -463,35 +545,51 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     // Identifier specific bindings
     private string _identifierScheme = BuiltInIdentifierSchemes.DOI;
+
     public string IdentifierScheme
     {
         get => _identifierScheme;
         set
         {
-            if (_identifierScheme == value) return;
+            if (_identifierScheme == value)
+            {
+                return;
+            }
+
             _identifierScheme = value;
             Raise();
         }
     }
+
     private string _identifierValue = "";
+
     public string IdentifierValue
     {
         get => _identifierValue;
         set
         {
-            if (_identifierValue == value) return;
+            if (_identifierValue == value)
+            {
+                return;
+            }
+
             _identifierValue = value;
             Raise();
         }
     }
 
     private string _identifierNote = "";
+
     public string IdentifierNote
     {
         get => _identifierNote;
         set
         {
-            if (_identifierNote == value) return;
+            if (_identifierNote == value)
+            {
+                return;
+            }
+
             _identifierNote = value;
             Raise();
         }
@@ -503,8 +601,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _fieldValueCache.Clear();
         _creatorCache.Clear();
         ItemType = "general";
-        
-        foreach (var f in Fields)
+
+        foreach (ItemFieldDescriptor f in Fields)
         {
             f.Value = "";
             if (f.Type == "CreatorList")
@@ -533,15 +631,16 @@ public sealed class ItemEditorViewModel : ViewModelBase
         {
             await LoadAsync(_itemId.Value.ToString());
         }
+
         Status = "已放弃未保存的更改";
         Raise(nameof(Status));
     }
 
     public async Task LoadAsync(string itemId)
     {
-        var services = await _main.ServicesAsync();
-        var parsed = ItemId.Parse(itemId);
-        var item = await services.Items.GetItemAsync(parsed);
+        AppServices services = await _main.ServicesAsync();
+        ItemId parsed = ItemId.Parse(itemId);
+        Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
         if (item.IsFailure)
         {
             Status = item.ErrorMessage ?? "无法加载题录。";
@@ -554,7 +653,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _itemType = item.Value.ItemType;
         Raise(nameof(ItemType));
         Raise(nameof(IsGeneralTypeWarningVisible));
-        
+
         _fieldValueCache.Clear();
         _creatorCache.Clear();
         _fieldValueCache["Title"] = item.Value.Title;
@@ -569,53 +668,56 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _fieldValueCache["Language"] = item.Value.Language ?? "";
         _fieldValueCache["AbstractText"] = item.Value.Abstract ?? "";
         _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
-        foreach (var creator in item.Value.Creators)
+        foreach (ItemCreator creator in item.Value.Creators)
         {
-            var editableCreator = CreateCreatorItem();
+            CreatorItemViewModel editableCreator = CreateCreatorItem();
             editableCreator.LoadFrom(creator);
             _creatorCache.Add(editableCreator);
         }
 
         Fields.Clear();
-        var profileResult = await services.ItemTypeProfiles.GetProfileAsync(_itemType);
-        var profile = CslItemTypeProfileService.GetProfile(profileResult.IsSuccess ? profileResult.Value : null);
+        Result<CslItemTypeProfile> profileResult = await services.ItemTypeProfiles.GetProfileAsync(_itemType);
+        IReadOnlyList<ItemFieldDefinition> profile =
+            CslItemTypeProfileService.GetProfile(profileResult.IsSuccess ? profileResult.Value : null);
 
-        foreach (var def in profile)
+        foreach (ItemFieldDefinition def in profile)
         {
-            var field = new ItemFieldDescriptor(def.Key, def.Label, def.Type);
-            
+            ItemFieldDescriptor field = new(def.Key, def.Label, def.Type);
+
             if (def.Type == "CreatorList")
             {
-                field.AddCreatorCommand = new AsyncCommand(() => 
+                field.AddCreatorCommand = new AsyncCommand(() =>
                 {
                     field.Creators.Add(CreateCreatorItem());
                     return Task.CompletedTask;
                 });
-                
-                foreach (var creator in _creatorCache)
+
+                foreach (CreatorItemViewModel creator in _creatorCache)
                 {
                     field.Creators.Add(creator);
                 }
-
             }
             else
             {
                 field.Value = _fieldValueCache.GetValueOrDefault(def.Key, "");
             }
-            
+
             Fields.Add(field);
         }
 
         Status = $"正在编辑：{item.Value.Title}";
         _pendingIdentifiers.Clear();
-        
+
         await RefreshIdentifiersAsync();
         await RefreshLinkedFilesAsync();
         await RefreshCslPreviewAsync();
         RaiseAll();
     }
 
-    private string GetFieldValue(string key) => Fields.FirstOrDefault(f => f.Key == key)?.Value ?? "";
+    private string GetFieldValue(string key)
+    {
+        return Fields.FirstOrDefault(f => f.Key == key)?.Value ?? "";
+    }
 
     private string GetSavedFieldValue(string key)
     {
@@ -626,7 +728,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private async Task SaveAsync()
     {
         CacheCurrentFields();
-        var title = GetSavedFieldValue("Title");
+        string title = GetSavedFieldValue("Title");
         if (string.IsNullOrWhiteSpace(title))
         {
             Status = "标题不能为空。";
@@ -635,29 +737,29 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var services = await _main.ServicesAsync();
-        
-        var creatorField = GetCreatorField();
-        var creators = creatorField?.Creators
+        AppServices services = await _main.ServicesAsync();
+
+        ItemFieldDescriptor? creatorField = GetCreatorField();
+        List<ItemCreatorInput> creators = creatorField?.Creators
             .Select(c => c.IsLiteral
                 ? new ItemCreatorInput(c.Role, Literal: NullIfWhiteSpace(c.Name))
                 : new ItemCreatorInput(
                     c.Role,
-                    Family: NullIfWhiteSpace(c.Family),
-                    Given: NullIfWhiteSpace(c.Given),
+                    NullIfWhiteSpace(c.Family),
+                    NullIfWhiteSpace(c.Given),
                     Suffix: NullIfWhiteSpace(c.Suffix),
                     Particles: NullIfWhiteSpace(c.Particles)))
             .Where(c => c.Family is not null || c.Given is not null || c.Literal is not null)
             .ToList() ?? new List<ItemCreatorInput>();
-            
-        var dates = BuildDates();
-        
+
+        IReadOnlyList<ItemDateInput> dates = BuildDates();
+
         if (_itemId is null)
         {
-            var created = await services.Items.CreateItemAsync(new CreateItemRequest(
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(new CreateItemRequest(
                 ItemType,
                 title,
-                Subtitle: NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
+                NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
                 PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
                 Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
                 Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
@@ -684,12 +786,12 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
         else
         {
-            var updated = await services.Items.UpdateItemAsync(
+            Result<ItemMetadata> updated = await services.Items.UpdateItemAsync(
                 _itemId.Value,
                 new UpdateItemRequest(
                     ItemType,
                     title,
-                    Subtitle: NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
+                    NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
                     PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
                     Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
                     Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
@@ -735,7 +837,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var input = new ItemIdentifierInput(IdentifierScheme.Trim().ToLowerInvariant(), IdentifierValue.Trim(), NullIfWhiteSpace(IdentifierNote));
+        ItemIdentifierInput input = new(IdentifierScheme.Trim().ToLowerInvariant(), IdentifierValue.Trim(),
+            NullIfWhiteSpace(IdentifierNote));
         if (_itemId is null)
         {
             _pendingIdentifiers.Add(input);
@@ -748,12 +851,12 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var result = await (await _main.ServicesAsync()).Items.AddIdentifierAsync(
+        Result<ItemIdentifier> result = await (await _main.ServicesAsync()).Items.AddIdentifierAsync(
             _itemId.Value,
             input.Scheme,
             input.Value,
             input.Note);
-            
+
         Status = result.IsSuccess ? "标识符已添加。" : result.ErrorMessage ?? "标识符添加失败。";
         IdentifierValue = "";
         IdentifierNote = "";
@@ -780,8 +883,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var services = await _main.ServicesAsync();
-        var asset = await services.Files.RegisterFileAsync(FilePath);
+        AppServices services = await _main.ServicesAsync();
+        Result<FileAsset> asset = await services.Files.RegisterFileAsync(FilePath);
         if (asset.IsFailure)
         {
             Status = asset.ErrorMessage ?? "关联文件注册失败。";
@@ -790,12 +893,12 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var document = await services.Documents.AttachDocumentInstanceAsync(
+        Result<DocumentInstance> document = await services.Documents.AttachDocumentInstanceAsync(
             _itemId.Value,
             asset.Value.FileAssetId,
             DocumentInstanceType.PrimaryScan,
             GetFieldValue("Title"),
-            makePrimary: false);
+            false);
 
         Status = document.IsSuccess
             ? document.Value.IsPrimary ? "关联文件已注册并设为主要文件。" : "关联文件已注册。"
@@ -811,18 +914,19 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Identifiers.Clear();
         if (_itemId is null)
         {
-            foreach (var identifier in _pendingIdentifiers)
+            foreach (ItemIdentifierInput identifier in _pendingIdentifiers)
             {
                 Identifiers.Add(new IdentifierItemViewModel(identifier));
             }
+
             return;
         }
 
-        var services = await _main.ServicesAsync();
-        var identifiers = await services.Items.ListIdentifiersAsync(_itemId.Value);
+        AppServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<ItemIdentifier>> identifiers = await services.Items.ListIdentifiersAsync(_itemId.Value);
         if (identifiers.IsSuccess)
         {
-            foreach (var identifier in identifiers.Value)
+            foreach (ItemIdentifier identifier in identifiers.Value)
             {
                 Identifiers.Add(new IdentifierItemViewModel(
                     identifier,
@@ -835,14 +939,17 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private async Task LookupIdentifierAsync(IdentifierItemViewModel row)
     {
-        if (_itemId is null || row.ItemIdentifier is null || row.IsBusy) return;
+        if (_itemId is null || row.ItemIdentifier is null || row.IsBusy)
+        {
+            return;
+        }
 
-        var targetItemId = _itemId.Value;
+        ItemId targetItemId = _itemId.Value;
         row.IsBusy = true;
         row.Status = "正在获取元数据...";
         try
         {
-            var outcome = await MetadataLookupUiBridge.LookupAsync(
+            MetadataLookupOutcome outcome = await MetadataLookupUiBridge.LookupAsync(
                 await _main.ServicesAsync(),
                 targetItemId,
                 row.ItemIdentifier,
@@ -855,7 +962,10 @@ public sealed class ItemEditorViewModel : ViewModelBase
             }
 
             if (_itemId == targetItemId)
+            {
                 await LoadAsync(targetItemId.ToString());
+            }
+
             await _main.Shell.RefreshItemsAsync();
             Status = "元数据已获取并应用。";
         }
@@ -877,13 +987,16 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private async Task RemoveIdentifierAsync(IdentifierItemViewModel row)
     {
-        if (_itemId is null || row.ItemIdentifier is null || row.IsBusy) return;
+        if (_itemId is null || row.ItemIdentifier is null || row.IsBusy)
+        {
+            return;
+        }
 
         row.IsBusy = true;
         row.Status = "正在移除...";
         try
         {
-            var result = await (await _main.ServicesAsync()).Items.RemoveIdentifierAsync(
+            Result result = await (await _main.ServicesAsync()).Items.RemoveIdentifierAsync(
                 _itemId.Value,
                 row.ItemIdentifier.IdentifierId);
             if (result.IsFailure)
@@ -911,20 +1024,22 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var services = await _main.ServicesAsync();
-        var documents = await services.Documents.ListDocumentInstancesForItemAsync(_itemId.Value);
+        AppServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<DocumentInstance>> documents =
+            await services.Documents.ListDocumentInstancesForItemAsync(_itemId.Value);
         if (documents.IsFailure)
         {
             Status = documents.ErrorMessage ?? "无法加载关联文件。";
             return;
         }
 
-        foreach (var document in documents.Value.OrderByDescending(document => document.IsPrimary).ThenBy(document => document.CreatedAt))
+        foreach (DocumentInstance document in documents.Value.OrderByDescending(document => document.IsPrimary)
+                     .ThenBy(document => document.CreatedAt))
         {
-            var displayName = document.Title ?? document.DocumentInstanceId.ToString();
+            string displayName = document.Title ?? document.DocumentInstanceId.ToString();
             if (document.FileAssetId is not null)
             {
-                var fileAsset = await services.Files.GetFileAssetAsync(document.FileAssetId.Value);
+                Result<FileAsset> fileAsset = await services.Files.GetFileAssetAsync(document.FileAssetId.Value);
                 if (fileAsset.IsSuccess)
                 {
                     displayName = fileAsset.Value.FileName;
@@ -943,7 +1058,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var result = await (await _main.ServicesAsync()).Documents.SetPrimaryDocumentInstanceAsync(
+        Result result = await (await _main.ServicesAsync()).Documents.SetPrimaryDocumentInstanceAsync(
             _itemId.Value,
             documentInstanceId);
         Status = result.IsSuccess ? "主要文件已切换。" : result.ErrorMessage ?? "主要文件切换失败。";
@@ -966,14 +1081,14 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private static ItemDateInput? BuildDate(string role, string value)
     {
-        var trimmed = NullIfWhiteSpace(value);
+        string? trimmed = NullIfWhiteSpace(value);
         if (trimmed is null)
         {
             return null;
         }
 
         return trimmed.StartsWith('[')
-            ? new ItemDateInput(role, DatePartsJson: trimmed)
+            ? new ItemDateInput(role, trimmed)
             : new ItemDateInput(role, Literal: trimmed);
     }
 
@@ -982,13 +1097,16 @@ public sealed class ItemEditorViewModel : ViewModelBase
         return JsonSerializer.Serialize(SplitNames(GetSavedFieldValue("TagsText")).ToArray());
     }
 
-    private static IEnumerable<string> SplitNames(string value) =>
-        value.Split(new[] { ';', ',', '\n' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+    private static IEnumerable<string> SplitNames(string value)
+    {
+        return value.Split(new[] { ';', ',', '\n' },
+                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(part => !string.IsNullOrWhiteSpace(part));
+    }
 
     private static string FormatDate(IEnumerable<ItemDate> dates, string role, string? fallback)
     {
-        var date = dates.FirstOrDefault(candidate => candidate.Role == role);
+        ItemDate? date = dates.FirstOrDefault(candidate => candidate.Role == role);
         if (!string.IsNullOrWhiteSpace(date?.Literal))
         {
             return date.Literal;
@@ -1011,17 +1129,23 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
 
-    private static string? NullIfWhiteSpace(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? NullIfWhiteSpace(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
 
     private Task AddCreatorAsync()
     {
-        var creatorField = GetCreatorField();
+        ItemFieldDescriptor? creatorField = GetCreatorField();
         creatorField?.Creators.Add(CreateCreatorItem());
         Raise(nameof(Creators));
         return Task.CompletedTask;
     }
 
-    private CreatorItemViewModel CreateCreatorItem() => new(RemoveCreator);
+    private CreatorItemViewModel CreateCreatorItem()
+    {
+        return new CreatorItemViewModel(RemoveCreator);
+    }
 
     private void RemoveCreator(CreatorItemViewModel creator)
     {
@@ -1029,11 +1153,14 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _creatorCache.Remove(creator);
     }
 
-    private ItemFieldDescriptor? GetCreatorField() => Fields.FirstOrDefault(f => f.Type == "CreatorList");
+    private ItemFieldDescriptor? GetCreatorField()
+    {
+        return Fields.FirstOrDefault(f => f.Type == "CreatorList");
+    }
 
     private void SetFieldValue(string key, string value)
     {
-        var field = Fields.FirstOrDefault(f => f.Key == key);
+        ItemFieldDescriptor? field = Fields.FirstOrDefault(f => f.Key == key);
         if (field is null)
         {
             return;
@@ -1075,7 +1202,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        var rendered = await (await _main.ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([_itemId.Value]));
+        Result<CslRenderResult> rendered =
+            await (await _main.ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([_itemId.Value]));
         if (rendered.IsFailure)
         {
             HasCslPreviewWarning = true;
@@ -1089,23 +1217,24 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private void RaiseAll()
     {
-        foreach (var property in new[]
-        {
-            nameof(Header),
-            nameof(ItemIdText),
-            nameof(HasItem),
-            nameof(ItemType),
-            nameof(Status),
-            nameof(IsGeneralTypeWarningVisible),
-            nameof(CslPreviewText),
-            nameof(HasCslPreviewWarning),
-            nameof(IdentifierScheme),
-            nameof(IdentifierValue),
-            nameof(IdentifierNote)
-        })
+        foreach (string property in new[]
+                 {
+                     nameof(Header),
+                     nameof(ItemIdText),
+                     nameof(HasItem),
+                     nameof(ItemType),
+                     nameof(Status),
+                     nameof(IsGeneralTypeWarningVisible),
+                     nameof(CslPreviewText),
+                     nameof(HasCslPreviewWarning),
+                     nameof(IdentifierScheme),
+                     nameof(IdentifierValue),
+                     nameof(IdentifierNote)
+                 })
         {
             Raise(property);
         }
+
         RaiseEditorFieldProxies();
     }
 }

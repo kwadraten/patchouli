@@ -87,12 +87,18 @@ public sealed record SnapshotBranchInfo(
 
 public interface ISnapshotPublisher
 {
-    Task<Result<SnapshotPublishResult>> PublishSnapshotAsync(SnapshotPublishRequest request, CancellationToken cancellationToken = default);
+    Task<Result<SnapshotPublishResult>> PublishSnapshotAsync(SnapshotPublishRequest request,
+        CancellationToken cancellationToken = default);
 }
 
 public interface ISnapshotImporter
 {
-    Task<Result<SnapshotValidationResult>> ValidateSnapshotAsync(string manifestPath, CancellationToken cancellationToken = default);
-    Task<Result<SnapshotImportResult>> ImportSnapshotToStagingAsync(SnapshotImportRequest request, CancellationToken cancellationToken = default);
-    Task<Result<SnapshotBranchDetectionResult>> DetectBranchAsync(string syncRoot, string localParentSnapshotId, CancellationToken cancellationToken = default);
+    Task<Result<SnapshotValidationResult>> ValidateSnapshotAsync(string manifestPath,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<SnapshotImportResult>> ImportSnapshotToStagingAsync(SnapshotImportRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<SnapshotBranchDetectionResult>> DetectBranchAsync(string syncRoot, string localParentSnapshotId,
+        CancellationToken cancellationToken = default);
 }

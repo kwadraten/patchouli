@@ -8,7 +8,7 @@ public sealed class ItemCreatorNameParserTests
     [Fact]
     public void Parse_splits_western_full_name_into_given_and_family()
     {
-        var result = ItemCreatorNameParser.Parse("Ada Lovelace");
+        ItemCreatorNameParts result = ItemCreatorNameParser.Parse("Ada Lovelace");
 
         result.Family.Should().Be("Lovelace");
         result.Given.Should().Be("Ada");
@@ -18,7 +18,7 @@ public sealed class ItemCreatorNameParserTests
     [Fact]
     public void Parse_honors_family_given_comma_order()
     {
-        var result = ItemCreatorNameParser.Parse("Lovelace, Ada");
+        ItemCreatorNameParts result = ItemCreatorNameParser.Parse("Lovelace, Ada");
 
         result.Family.Should().Be("Lovelace");
         result.Given.Should().Be("Ada");
@@ -28,7 +28,7 @@ public sealed class ItemCreatorNameParserTests
     [Fact]
     public void Parse_splits_common_chinese_compound_surname()
     {
-        var result = ItemCreatorNameParser.Parse("欧阳娜娜");
+        ItemCreatorNameParts result = ItemCreatorNameParser.Parse("欧阳娜娜");
 
         result.Family.Should().Be("欧阳");
         result.Given.Should().Be("娜娜");
@@ -38,7 +38,7 @@ public sealed class ItemCreatorNameParserTests
     [Fact]
     public void Parse_keeps_organisation_as_literal_when_requested()
     {
-        var result = ItemCreatorNameParser.Parse("Royal Society", ItemCreatorNameMode.Literal);
+        ItemCreatorNameParts result = ItemCreatorNameParser.Parse("Royal Society", ItemCreatorNameMode.Literal);
 
         result.Family.Should().BeNull();
         result.Given.Should().BeNull();

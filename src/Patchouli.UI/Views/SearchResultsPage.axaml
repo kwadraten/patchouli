@@ -4,88 +4,113 @@
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:SearchEvidenceViewModel">
-<UserControl.Styles>
-  <Style Selector="Button.EvidenceAction">
-    <Setter Property="Background" Value="Transparent" />
-    <Setter Property="BorderThickness" Value="0" />
-    <Setter Property="Padding" Value="5" />
-    <Setter Property="MinWidth" Value="28" />
-    <Setter Property="MinHeight" Value="28" />
-    <Setter Property="Width" Value="28" />
-    <Setter Property="Height" Value="28" />
-  </Style>
-</UserControl.Styles>
-<Grid>
-  <ScrollViewer>
-    <StackPanel Margin="32" Spacing="18">
-      <StackPanel Spacing="6">
-        <TextBlock Text="搜索结果" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-        <TextBlock Text="{Binding Query, StringFormat='查询：\{0\}'}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-      </StackPanel>
-
-      <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
-        <StackPanel Spacing="8">
-          <TextBlock Text="{Binding IndexStatus, StringFormat='索引状态：\{0\}'}" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-          <TextBlock Text="{Binding AffectedScopesSummary}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" IsVisible="{Binding AffectedScopesSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-          <TextBlock Text="{Binding EstimatedTotalText, StringFormat='命中页数：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+  <UserControl.Styles>
+    <Style Selector="Button.EvidenceAction">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="5" />
+      <Setter Property="MinWidth" Value="28" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Width" Value="28" />
+      <Setter Property="Height" Value="28" />
+    </Style>
+  </UserControl.Styles>
+  <Grid>
+    <ScrollViewer>
+      <StackPanel Margin="32" Spacing="18">
+        <StackPanel Spacing="6">
+          <TextBlock Text="搜索结果" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+          <TextBlock Text="{Binding Query, StringFormat='查询：\{0\}'}" FontSize="13"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </StackPanel>
-      </Border>
 
-      <TextBlock Text="没有命中结果。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding HasNoResults}" />
+        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
+                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+          <StackPanel Spacing="8">
+            <TextBlock Text="{Binding IndexStatus, StringFormat='索引状态：\{0\}'}" FontSize="12" FontWeight="SemiBold"
+                       Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBlock Text="{Binding AffectedScopesSummary}" FontSize="12"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap"
+                       IsVisible="{Binding AffectedScopesSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+            <TextBlock Text="{Binding EstimatedTotalText, StringFormat='命中页数：\{0\}'}" FontSize="12"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          </StackPanel>
+        </Border>
 
-      <ItemsControl ItemsSource="{Binding Results}" IsVisible="{Binding HasResults}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:SearchPageResultViewModel">
-            <Border Background="{DynamicResource SurfaceContainerLowestBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,12">
-              <StackPanel Spacing="10">
-                <StackPanel Spacing="4">
-                  <TextBlock Text="{Binding ItemTitle}" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-                  <TextBlock Text="{Binding PageLabel, StringFormat='页面：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  <TextBlock Text="{Binding IndexStatus, StringFormat='索引状态：\{0\}'}" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        <TextBlock Text="没有命中结果。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                   IsVisible="{Binding HasNoResults}" />
+
+        <ItemsControl ItemsSource="{Binding Results}" IsVisible="{Binding HasResults}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:SearchPageResultViewModel">
+              <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
+                      BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
+                      Padding="16" Margin="0,0,0,12">
+                <StackPanel Spacing="10">
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="{Binding ItemTitle}" FontSize="16" FontWeight="SemiBold"
+                               Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding PageLabel, StringFormat='页面：\{0\}'}" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBlock Text="{Binding IndexStatus, StringFormat='索引状态：\{0\}'}" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+
+                  <ItemsControl ItemsSource="{Binding MatchedUnits}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:SearchMatchedUnitViewModel">
+                        <Border Background="{DynamicResource SurfaceBrush}"
+                                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                                CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                          <Border.ContextMenu>
+                            <ContextMenu>
+                              <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceRefClick" />
+                              <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" />
+                              <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" />
+                            </ContextMenu>
+                          </Border.ContextMenu>
+                          <StackPanel Spacing="6">
+                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                              <TextBlock Text="{Binding Text}" FontSize="13"
+                                         Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+                                <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceRefClick"
+                                        ToolTip.Tip="复制证据引用">
+                                  <lucide:Lucide Icon="Copy" Width="14" Height="14"
+                                                 StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                                </Button>
+                                <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceMarkdownClick"
+                                        ToolTip.Tip="复制证据 Markdown">
+                                  <lucide:Lucide Icon="Copy" Width="14" Height="14"
+                                                 StrokeBrush="{DynamicResource PrimaryBrush}" />
+                                </Button>
+                              </StackPanel>
+                            </Grid>
+                            <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
+                              <TextBlock Text="{Binding NodeType, StringFormat='类型：\{0\}'}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              <TextBlock Grid.Column="1" Text="{Binding ReadingOrder, StringFormat='阅读顺序：\{0\}'}"
+                                         FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              <TextBlock Grid.Column="2" Text="{Binding EvidenceRef, StringFormat='证据引用：\{0\}'}"
+                                         FontSize="11" Foreground="{DynamicResource PrimaryBrush}"
+                                         IsVisible="{Binding HasEvidenceRef}" TextTrimming="CharacterEllipsis"
+                                         ToolTip.Tip="{Binding EvidenceRef}" />
+                            </Grid>
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <TextBlock Text="该页还有更多匹配片段未展开。" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             IsVisible="{Binding MatchedUnitsHasMore}" />
                 </StackPanel>
-
-                <ItemsControl ItemsSource="{Binding MatchedUnits}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:SearchMatchedUnitViewModel">
-                      <Border Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="12" Margin="0,0,0,8">
-                        <Border.ContextMenu>
-                          <ContextMenu>
-                            <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceRefClick" />
-                            <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" />
-                            <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" />
-                          </ContextMenu>
-                        </Border.ContextMenu>
-                        <StackPanel Spacing="6">
-                          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                            <TextBlock Text="{Binding Text}" FontSize="13" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
-                              <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceRefClick" ToolTip.Tip="复制证据引用">
-                                <lucide:Lucide Icon="Copy" Width="14" Height="14" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                              </Button>
-                              <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceMarkdownClick" ToolTip.Tip="复制证据 Markdown">
-                                <lucide:Lucide Icon="Copy" Width="14" Height="14" StrokeBrush="{DynamicResource PrimaryBrush}" />
-                              </Button>
-                            </StackPanel>
-                          </Grid>
-                          <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="12">
-                            <TextBlock Text="{Binding NodeType, StringFormat='类型：\{0\}'}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <TextBlock Grid.Column="1" Text="{Binding ReadingOrder, StringFormat='阅读顺序：\{0\}'}" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <TextBlock Grid.Column="2" Text="{Binding EvidenceRef, StringFormat='证据引用：\{0\}'}" FontSize="11" Foreground="{DynamicResource PrimaryBrush}" IsVisible="{Binding HasEvidenceRef}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding EvidenceRef}" />
-                          </Grid>
-                        </StackPanel>
-                      </Border>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-
-                <TextBlock Text="该页还有更多匹配片段未展开。" FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding MatchedUnitsHasMore}" />
-              </StackPanel>
-            </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-    </StackPanel>
-  </ScrollViewer>
-</Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
 
 </UserControl>
