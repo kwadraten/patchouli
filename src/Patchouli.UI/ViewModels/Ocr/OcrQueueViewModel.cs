@@ -285,12 +285,13 @@ public sealed class OcrQueueViewModel : ViewModelBase
     private void ScheduleRefresh()
     {
         if (Interlocked.Exchange(ref _refreshScheduled, 1) == 1) return;
-        _ = Task.Run(async () =>
-        {
-            try { await RefreshOnUiThreadAsync(); }
-            catch { }
-            finally { Interlocked.Exchange(ref _refreshScheduled, 0); }
-        });
+        RefreshScheduledAsync().Observe("ocr-queue-ui", "scheduled-refresh");
+    }
+
+    private async Task RefreshScheduledAsync()
+    {
+        try { await RefreshOnUiThreadAsync(); }
+        finally { Interlocked.Exchange(ref _refreshScheduled, 0); }
     }
 
     private Task RefreshOnUiThreadAsync()
@@ -301,26 +302,23 @@ public sealed class OcrQueueViewModel : ViewModelBase
         if (_autoRefresh is { IsCancellationRequested: false }) return;
         _autoRefresh = new CancellationTokenSource();
         var token = _autoRefresh.Token;
-        _ = Task.Run(async () =>
+        RunAutoRefreshLoopAsync(token).Observe("ocr-queue-ui", "auto-refresh", token);
+    }
+
+    private async Task RunAutoRefreshLoopAsync(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
         {
-            while (!token.IsCancellationRequested)
+            await Task.Delay(TimeSpan.FromSeconds(1), token);
+            await RefreshOnUiThreadAsync();
+            var queue = _subscribedQueue;
+            if (queue is null) continue;
+            var status = await queue.GetQueueStatusAsync(token);
+            if (status.IsSuccess && status.Value.Running == 0)
             {
-                try
-                {
-                    await Task.Delay(TimeSpan.FromSeconds(1), token);
-                    await RefreshOnUiThreadAsync();
-                    var queue = _subscribedQueue;
-                    if (queue is null) continue;
-                    var status = await queue.GetQueueStatusAsync(token);
-                    if (status.IsSuccess && status.Value.Running == 0)
-                    {
-                        _autoRefresh?.Cancel();
-                    }
-                }
-                catch (OperationCanceledException) { }
-                catch { }
+                _autoRefresh?.Cancel();
             }
-        }, token);
+        }
     }
 
     private sealed class OcrRunProgressRow

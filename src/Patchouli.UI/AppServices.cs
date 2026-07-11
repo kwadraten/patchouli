@@ -36,6 +36,7 @@ using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Search;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
 
@@ -195,7 +196,11 @@ public sealed class AppServices
         }
 
         var executor = new OcrQueueTaskExecutor(Ocr, SearchUnits, SearchIndex);
-        _ocrQueue = new OcrQueueScheduler(library.Value.LibraryId, Clock, executor);
+        _ocrQueue = new OcrQueueScheduler(
+            library.Value.LibraryId,
+            Clock,
+            executor,
+            loopErrorLogger: exception => UnexpectedExceptions.Sink.Report(exception, "ocr-scheduler", "scheduler-loop"));
         return Result<IOcrQueueScheduler>.Success(_ocrQueue);
     }
     public async Task<Result<IOcrQueueRowService>> GetOcrQueueRowsAsync(CancellationToken cancellationToken = default)

@@ -649,8 +649,9 @@ public sealed class MainWindowViewModel : ViewModelBase
                 watcher.Error += error;
                 _fileSearchRootWatchers[path] = watcher;
             }
-            catch
+            catch (Exception exception)
             {
+                UnexpectedExceptions.Sink.Report(exception, "file-watcher", "create-watcher");
             }
         }
     }
@@ -661,17 +662,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         _fileSearchRootWatchDebounce?.Dispose();
         var cts = new CancellationTokenSource();
         _fileSearchRootWatchDebounce = cts;
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), cts.Token);
-                Avalonia.Threading.Dispatcher.UIThread.Post(async () => await RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。"));
-            }
-            catch (OperationCanceledException)
-            {
-            }
-        });
+        DebounceFileSearchRootRescanAsync(cts.Token).Observe("file-watcher", "debounced-rescan", cts.Token);
+    }
+
+    private async Task DebounceFileSearchRootRescanAsync(CancellationToken cancellationToken)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+        await DispatcherTasks.RunAsync(() => RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。"));
     }
 
     private void ResetFileSearchRootWatchers()
