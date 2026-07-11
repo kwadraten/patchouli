@@ -12,11 +12,13 @@ public sealed record ModalOperationOptions(
 public sealed class ModalOperationContext
 {
     private readonly BlockingOperationDialogViewModel _viewModel;
+    private readonly bool _dispatchToUi;
 
-    internal ModalOperationContext(BlockingOperationDialogViewModel viewModel, CancellationToken cancellationToken)
+    internal ModalOperationContext(BlockingOperationDialogViewModel viewModel, CancellationToken cancellationToken, bool dispatchToUi)
     {
         _viewModel = viewModel;
         CancellationToken = cancellationToken;
+        _dispatchToUi = dispatchToUi;
     }
 
     public CancellationToken CancellationToken { get; }
@@ -25,10 +27,24 @@ public sealed class ModalOperationContext
         => Dispatcher.UIThread.Post(() => ApplyProgress(current, total, label, detail));
 
     public Task ReportAsync(int? current, int? total, string label, string? detail = null)
-        => Dispatcher.UIThread.InvokeAsync(() => ApplyProgress(current, total, label, detail)).GetTask();
+    {
+        if (!_dispatchToUi)
+        {
+            ApplyProgress(current, total, label, detail);
+            return Task.CompletedTask;
+        }
+        return Dispatcher.UIThread.InvokeAsync(() => ApplyProgress(current, total, label, detail)).GetTask();
+    }
 
     public Task AddLogAsync(string message)
-        => Dispatcher.UIThread.InvokeAsync(() => _viewModel.AddLog(message)).GetTask();
+    {
+        if (!_dispatchToUi)
+        {
+            _viewModel.AddLog(message);
+            return Task.CompletedTask;
+        }
+        return Dispatcher.UIThread.InvokeAsync(() => _viewModel.AddLog(message)).GetTask();
+    }
 
     private void ApplyProgress(int? current, int? total, string label, string? detail)
     {
@@ -74,13 +90,16 @@ public sealed class ModalOperationRunner : IModalOperationRunner
         viewModel.AddLog(options.InitialStatus);
 
         var dialogTask = _dialogs.ShowDialogAsync(viewModel);
-        await Dispatcher.UIThread.InvokeAsync(() => { });
+        if (!dialogTask.IsCompleted)
+            await Dispatcher.UIThread.InvokeAsync(() => { });
         try
         {
-            var context = new ModalOperationContext(viewModel, source.Token);
-            var result = await Task.Run(
-                async () => await operation(context).ConfigureAwait(false),
-                source.Token);
+            var context = new ModalOperationContext(viewModel, source.Token, !dialogTask.IsCompleted);
+            var result = dialogTask.IsCompleted
+                ? await operation(context)
+                : await Task.Run(
+                    async () => await operation(context).ConfigureAwait(false),
+                    source.Token);
             if (result is IOperationOutcome { IsSuccess: false } outcome)
                 viewModel.MarkFailed(outcome.ErrorMessage ?? "操作未完成。");
             else
