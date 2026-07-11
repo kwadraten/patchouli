@@ -1,4 +1,5 @@
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Csl;
@@ -24,6 +25,12 @@ if (options.IsFailure)
     Console.Error.WriteLine(options.Error);
     return;
 }
+
+UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
+{
+    var context = operation is null ? boundary : $"{boundary}/{operation}";
+    Console.Error.WriteLine(McpOutputSanitizer.Sanitize($"Unexpected error in {context}:{Environment.NewLine}{exception}"));
+});
 
 try
 {

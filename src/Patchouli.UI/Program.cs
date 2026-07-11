@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Threading;
+using Patchouli.Core.Diagnostics;
 using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
@@ -9,6 +10,8 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        UnexpectedExceptionReporter.Configure(
+            (exception, boundary, operation) => UnexpectedExceptions.Sink.Report(exception, boundary, operation));
         var sink = UnexpectedExceptions.Sink;
         AppDomain.CurrentDomain.UnhandledException += (_, eventArgs) =>
         {
