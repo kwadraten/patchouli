@@ -10,6 +10,7 @@ using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Mcp;
@@ -923,6 +924,7 @@ public sealed class UiViewModelTests
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
             vm.FirstRun.ScanRoot = scanRoot;
+            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test", FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
 
             await vm.FirstRun.ScanCommand.ExecuteAsync();
 
@@ -958,6 +960,7 @@ public sealed class UiViewModelTests
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
             vm.FirstRun.ScanRoot = scanRoot;
+            vm.FirstRun.SelectedScanRoot = new SelectedFileSearchRoot(scanRoot, "test", FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
 
             await vm.FirstRun.ScanCommand.ExecuteAsync();
             vm.FirstRun.MinerUToken = "token";

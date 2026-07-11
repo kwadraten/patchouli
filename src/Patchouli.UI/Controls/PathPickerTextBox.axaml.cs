@@ -5,6 +5,7 @@ using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Media;
+using Patchouli.Core.Files;
 
 namespace Patchouli.UI.Controls;
 
@@ -19,6 +20,9 @@ public sealed partial class PathPickerTextBox : UserControl
 {
     public static readonly StyledProperty<string?> PathProperty =
         AvaloniaProperty.Register<PathPickerTextBox, string?>(nameof(Path), defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
+
+    public static readonly StyledProperty<SelectedFileSearchRoot?> SelectedRootProperty =
+        AvaloniaProperty.Register<PathPickerTextBox, SelectedFileSearchRoot?>(nameof(SelectedRoot), defaultBindingMode: Avalonia.Data.BindingMode.TwoWay);
 
     public static readonly StyledProperty<string?> PlaceholderTextProperty =
         AvaloniaProperty.Register<PathPickerTextBox, string?>(nameof(PlaceholderText));
@@ -39,6 +43,12 @@ public sealed partial class PathPickerTextBox : UserControl
     {
         get => GetValue(PathProperty);
         set => SetValue(PathProperty, value);
+    }
+
+    public SelectedFileSearchRoot? SelectedRoot
+    {
+        get => GetValue(SelectedRootProperty);
+        set => SetValue(SelectedRootProperty, value);
     }
 
     public string? PlaceholderText
@@ -114,6 +124,13 @@ public sealed partial class PathPickerTextBox : UserControl
             if (folders.Count > 0 && folders[0].Path.LocalPath is { Length: > 0 } path)
             {
                 Path = path;
+                SelectedRoot = new SelectedFileSearchRoot(
+                    path,
+                    folders[0].Path.Scheme,
+                    FileSearchRootAuthorizationKinds.None,
+                    null,
+                    null,
+                    DateTimeOffset.UtcNow);
             }
         }
         else if (PickerMode == PathPickerMode.OpenFile)

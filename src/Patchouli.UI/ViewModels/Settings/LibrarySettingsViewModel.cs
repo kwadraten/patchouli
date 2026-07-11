@@ -73,6 +73,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
     public void NotifyRuntimeDatabasePathChanged() => Raise(nameof(RuntimeDatabasePath));
 
     public string FileSearchRootInput { get; set; } = "";
+    public SelectedFileSearchRoot? SelectedFileSearchRoot { get; set; }
     public ObservableCollection<FileSearchRootSettingsRowViewModel> FileSearchRoots => _fileSearchRoots;
 
     public string Status
@@ -91,7 +92,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
 
     private async Task AddFileSearchRootAsync()
     {
-        if (string.IsNullOrWhiteSpace(FileSearchRootInput))
+        if (SelectedFileSearchRoot is null)
         {
             return;
         }
@@ -99,9 +100,8 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
         Status = "正在登记并扫描文件搜索根...";
         try
         {
-            var normalizedRoot = System.IO.Path.GetFullPath(FileSearchRootInput.Trim());
             var services = await _main.ServicesAsync();
-            var added = await services.FileResolution.AddSearchRootAsync(normalizedRoot);
+            var added = await services.FileResolution.AddSearchRootAsync(SelectedFileSearchRoot);
             if (added.IsFailure && added.ErrorCode != AppErrorCodes.InvalidState)
             {
                 Status = added.ErrorMessage ?? "文件搜索根登记失败。";
@@ -110,7 +110,9 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
             }
 
             FileSearchRootInput = "";
+            SelectedFileSearchRoot = null;
             Raise(nameof(FileSearchRootInput));
+            Raise(nameof(SelectedFileSearchRoot));
 
             await LoadFileSearchRootsAsync();
             await _main.RefreshSidebarPathsAsync();

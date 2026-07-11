@@ -86,4 +86,22 @@ public sealed class MigrationRunnerTests
 
         scheme.Should().Be("ndlbibid");
     }
+
+    [Fact]
+    public async Task File_search_root_authorization_migration_adds_device_local_columns()
+    {
+        await using var database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+
+        await using var connection = database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        var columns = (await connection.QueryAsync<string>(
+            "select name from pragma_table_info('file_search_roots');")).ToArray();
+
+        columns.Should().Contain([
+            "authorization_kind",
+            "authorization_payload",
+            "authorization_payload_version",
+            "authorization_updated_at"]);
+    }
 }

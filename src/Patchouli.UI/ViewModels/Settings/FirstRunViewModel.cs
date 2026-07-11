@@ -1,6 +1,7 @@
 ﻿using Patchouli.UI.ViewModels;
 using System.Collections.ObjectModel;
 using Patchouli.Core.Import;
+using Patchouli.Core.Files;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.UI.Services;
 
@@ -127,6 +128,7 @@ public sealed class FirstRunViewModel : ViewModelBase
             Raise();
         }
     }
+    public SelectedFileSearchRoot? SelectedScanRoot { get; set; }
 
     public ObservableCollection<PdfCandidateViewModel> PdfCandidates { get; } = new();
     public PdfCandidateViewModel? SelectedPdf { get; set; }

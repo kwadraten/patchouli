@@ -12,28 +12,30 @@ namespace Patchouli.Infrastructure.Files;
 
 public sealed class FileResolutionService : IFileResolutionService
 {
-    private const int MaxScannedFiles = 5000;
-
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ILibraryIdentityService _libraryIdentityService;
     private readonly IClock _clock;
     private readonly IFileFingerprintService _fingerprintService;
     private readonly IBlockingOperationService? _blockingOperations;
+    private readonly IFileSearchRootAccess _rootAccess;
 
     public FileResolutionService(
         SqliteConnectionFactory connectionFactory,
         ILibraryIdentityService libraryIdentityService,
         IClock clock,
         IFileFingerprintService? fingerprintService = null,
-        IBlockingOperationService? blockingOperations = null)
+        IBlockingOperationService? blockingOperations = null,
+        IFileSearchRootAccess? rootAccess = null)
     {
         _connectionFactory = connectionFactory;
         _libraryIdentityService = libraryIdentityService;
         _clock = clock;
         _fingerprintService = fingerprintService ?? new FileFingerprintService();
         _blockingOperations = blockingOperations;
+        _rootAccess = rootAccess ?? new FileSearchRootAccess();
     }
 
+    [Obsolete("Use the SelectedFileSearchRoot overload; retained until the picker UI is migrated.")]
     public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
         string rootPath,
         CancellationToken cancellationToken = default)
@@ -42,6 +44,24 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed, "Search root path is required.");
         }
+
+        return await AddSearchRootAsync(new SelectedFileSearchRoot(
+            Path.GetFullPath(rootPath),
+            "legacy_path",
+            FileSearchRootAuthorizationKinds.None,
+            null,
+            null,
+            _clock.UtcNow), cancellationToken);
+    }
+
+    public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
+        SelectedFileSearchRoot selectedRoot,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(selectedRoot.DisplayPath))
+            return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed, "Search root path is required.");
+        if (string.IsNullOrWhiteSpace(selectedRoot.ProviderIdentity) || string.IsNullOrWhiteSpace(selectedRoot.AuthorizationKind))
+            return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed, "Search root picker provenance and authorization kind are required.");
 
         var libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
         if (libraryResult.IsFailure)
@@ -52,7 +72,7 @@ public sealed class FileResolutionService : IFileResolutionService
         try
         {
             var now = _clock.UtcNow.ToUniversalTime();
-            var normalizedRootPath = Path.GetFullPath(rootPath);
+            var normalizedRootPath = Path.GetFullPath(selectedRoot.DisplayPath);
             var isRootAvailable = Directory.Exists(normalizedRootPath);
             var root = new FileSearchRoot(
                 FileSearchRootId.New(),
@@ -60,7 +80,11 @@ public sealed class FileResolutionService : IFileResolutionService
                 normalizedRootPath,
                 isRootAvailable,
                 now,
-                now);
+                now,
+                selectedRoot.AuthorizationKind,
+                selectedRoot.AuthorizationPayload,
+                selectedRoot.AuthorizationPayloadVersion,
+                selectedRoot.SelectedAt.ToUniversalTime());
             var scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
 
             await using var connection = _connectionFactory.CreateConnection();
@@ -89,13 +113,20 @@ public sealed class FileResolutionService : IFileResolutionService
 
             await connection.ExecuteAsync(
                 """
-                insert into file_search_roots (root_id, library_id, root_path, is_available, created_at, updated_at)
-                values (@RootId, @LibraryId, @RootPath, @IsAvailable, @CreatedAt, @UpdatedAt);
+                insert into file_search_roots (root_id, library_id, root_path, is_available, created_at, updated_at,
+                    authorization_kind, authorization_payload, authorization_payload_version, authorization_updated_at)
+                values (@RootId, @LibraryId, @RootPath, @IsAvailable, @CreatedAt, @UpdatedAt,
+                    @AuthorizationKind, @AuthorizationPayload, @AuthorizationPayloadVersion, @AuthorizationUpdatedAt);
                 """,
                 ToParameters(root),
                 transaction);
 
-            var scanSummary = ScanRoot(root.RootPath, cancellationToken);
+            var reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
+            var scanSummary = reopened.IsSuccess
+                ? await _rootAccess.TraverseAsync(reopened.Value, cancellationToken)
+                : new FileSearchRootTraversalResult([], [], [], FileSearchRootStatuses.AuthorizationRequired, FileSearchRootScanStatuses.Failed);
+            if (reopened.IsSuccess)
+                reopened.Value.AccessLease?.Dispose();
             await transaction.CommitAsync(cancellationToken);
 
             if (!root.IsAvailable)
@@ -112,9 +143,7 @@ public sealed class FileResolutionService : IFileResolutionService
             {
                 await TryCompleteRootScanAsync(
                     scanOperationId,
-                    scanSummary.HitScanLimit
-                        ? $"Scanned {scanSummary.ScannedFileCount} file(s) while registering the search root before hitting the scan cap."
-                        : $"Scanned {scanSummary.ScannedFileCount} file(s) while registering the search root.",
+                    $"Scanned {scanSummary.Files.Count} file(s) while registering the search root ({scanSummary.ScanStatus}).",
                     cancellationToken);
             }
 
@@ -147,7 +176,9 @@ public sealed class FileResolutionService : IFileResolutionService
             var rows = await connection.QueryAsync<SearchRootRow>(
                 """
                 select root_id as RootId, library_id as LibraryId, root_path as RootPath,
-                       is_available as IsAvailable, created_at as CreatedAt, updated_at as UpdatedAt
+                       is_available as IsAvailable, created_at as CreatedAt, updated_at as UpdatedAt,
+                       authorization_kind as AuthorizationKind, authorization_payload as AuthorizationPayload,
+                       authorization_payload_version as AuthorizationPayloadVersion, authorization_updated_at as AuthorizationUpdatedAt
                 from file_search_roots
                 where library_id = @LibraryId
                 order by root_path;
@@ -367,7 +398,9 @@ public sealed class FileResolutionService : IFileResolutionService
             var roots = (await connection.QueryAsync<SearchRootRow>(
                 """
                 select root_id as RootId, library_id as LibraryId, root_path as RootPath,
-                       is_available as IsAvailable, created_at as CreatedAt, updated_at as UpdatedAt
+                       is_available as IsAvailable, created_at as CreatedAt, updated_at as UpdatedAt,
+                       authorization_kind as AuthorizationKind, authorization_payload as AuthorizationPayload,
+                       authorization_payload_version as AuthorizationPayloadVersion, authorization_updated_at as AuthorizationUpdatedAt
                 from file_search_roots
                 where library_id = @LibraryId;
                 """,
@@ -572,24 +605,18 @@ public sealed class FileResolutionService : IFileResolutionService
         CancellationToken cancellationToken)
     {
         var candidates = new List<FileResolutionCandidate>();
-        var scanned = 0;
-
         foreach (var root in roots)
         {
-            if (!Directory.Exists(root.RootPath))
+            var reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
+            if (reopened.IsFailure)
             {
                 continue;
             }
 
-            foreach (var path in EnumerateFilesSafely(root.RootPath))
+            using (reopened.Value.AccessLease)
+            foreach (var path in (await _rootAccess.TraverseAsync(reopened.Value, cancellationToken)).Files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                scanned++;
-                if (scanned > MaxScannedFiles)
-                {
-                    return candidates;
-                }
-
                 var fileInfo = new FileInfo(path);
                 if (!string.Equals(fileInfo.Name, asset.FileName, StringComparison.OrdinalIgnoreCase) ||
                     fileInfo.Length != asset.SizeBytes)
@@ -606,74 +633,6 @@ public sealed class FileResolutionService : IFileResolutionService
         }
 
         return candidates;
-    }
-
-    private RootScanSummary ScanRoot(string rootPath, CancellationToken cancellationToken)
-    {
-        if (!Directory.Exists(rootPath))
-        {
-            return new RootScanSummary(0, false);
-        }
-
-        var scannedFileCount = 0;
-        foreach (var _ in EnumerateFilesSafely(rootPath))
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            scannedFileCount++;
-            if (scannedFileCount >= MaxScannedFiles)
-            {
-                return new RootScanSummary(scannedFileCount, true);
-            }
-        }
-
-        return new RootScanSummary(scannedFileCount, false);
-    }
-
-    private static IEnumerable<string> EnumerateFilesSafely(string rootPath)
-    {
-        var pending = new Stack<string>();
-        pending.Push(rootPath);
-
-        while (pending.Count > 0)
-        {
-            var directory = pending.Pop();
-
-            IEnumerable<string> files;
-            try
-            {
-                files = Directory.EnumerateFiles(directory);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var file in files)
-            {
-                yield return file;
-            }
-
-            IEnumerable<string> subdirectories;
-            try
-            {
-                subdirectories = Directory.EnumerateDirectories(directory);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var subdirectory in subdirectories)
-            {
-                var name = Path.GetFileName(subdirectory);
-                if (name.StartsWith(".", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                pending.Push(subdirectory);
-            }
-        }
     }
 
     private async Task<PathEvaluation?> EvaluatePathAsync(
@@ -791,6 +750,10 @@ public sealed class FileResolutionService : IFileResolutionService
             IsAvailable = root.IsAvailable ? 1 : 0,
             CreatedAt = FormatUtc(root.CreatedAt),
             UpdatedAt = FormatUtc(root.UpdatedAt)
+            ,root.AuthorizationKind
+            ,root.AuthorizationPayload
+            ,root.AuthorizationPayloadVersion
+            ,AuthorizationUpdatedAt = root.AuthorizationUpdatedAt is null ? null : FormatUtc(root.AuthorizationUpdatedAt.Value)
         };
     }
 
@@ -904,6 +867,10 @@ public sealed class FileResolutionService : IFileResolutionService
         public int IsAvailable { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
+        public string? AuthorizationKind { get; set; }
+        public byte[]? AuthorizationPayload { get; set; }
+        public int? AuthorizationPayloadVersion { get; set; }
+        public string? AuthorizationUpdatedAt { get; set; }
 
         public FileSearchRoot ToSearchRoot()
         {
@@ -913,7 +880,11 @@ public sealed class FileResolutionService : IFileResolutionService
                 RootPath,
                 IsAvailable == 1,
                 DateTimeOffset.Parse(CreatedAt),
-                DateTimeOffset.Parse(UpdatedAt));
+                DateTimeOffset.Parse(UpdatedAt),
+                AuthorizationKind,
+                AuthorizationPayload,
+                AuthorizationPayloadVersion,
+                AuthorizationUpdatedAt is null ? null : DateTimeOffset.Parse(AuthorizationUpdatedAt));
         }
     }
 
@@ -947,7 +918,4 @@ public sealed class FileResolutionService : IFileResolutionService
         string Status)
         : FileResolutionCandidate(Path, SizeBytes, MtimeUtc, QuickHash, FullBlake3, Confidence, Reason);
 
-    private sealed record RootScanSummary(
-        int ScannedFileCount,
-        bool HitScanLimit);
 }

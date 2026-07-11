@@ -70,7 +70,8 @@ public sealed class AppServices
         MetadataLookup = new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
-        FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock, blockingOperations: BlockingOperations);
+        FileSearchRootAccess = new FileSearchRootAccess();
+        FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock, blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
         Pages = new PageService(ConnectionFactory, Clock);
         Layout = new LayoutTreeService(ConnectionFactory, Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
@@ -88,7 +89,7 @@ public sealed class AppServices
         OcrAdapters = adapterRegistry;
         var pdfRenderer = new MuPdfNetPdfPageRenderer();
         PdfPreviewRenderer = pdfRenderer;
-        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Patchouli", "cache", "page-renders"));
+        PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock, Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"));
         PageCoordinates = new PageCoordinateService(ConnectionFactory);
         var searchUnitBuilder = new SearchUnitBuilder(ConnectionFactory, Clock);
         SearchUnits = searchUnitBuilder;
@@ -109,7 +110,7 @@ public sealed class AppServices
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
         Credentials = new CredentialStore(ConnectionFactory, Library, Clock);
         PdfMetadata = new PdfMetadataReader();
-        PdfDiscovery = new PdfDiscoveryService();
+        PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess);
         PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
@@ -135,6 +136,7 @@ public sealed class AppServices
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
+    public IFileSearchRootAccess FileSearchRootAccess { get; }
     public IPageService Pages { get; }
     public ILayoutTreeService Layout { get; }
     public IOcrPresetService OcrPresets { get; }
@@ -205,8 +207,10 @@ public sealed class AppServices
     }
     public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         settings ??= PatchouliAppSettings.Load();
+        AppPathGuard.ValidateDatabasePath(path, settings.Runtime.DefaultSyncRoot);
+        AppPathGuard.ValidateMutablePath(settings.Runtime.LogDirectory);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var logger = new SimpleFileLogger(settings.Runtime.LogDirectory);
         try { await logger.LogAsync("startup", $"Opening runtime database {path}"); } catch { }
         var services = new AppServices(path, settings);

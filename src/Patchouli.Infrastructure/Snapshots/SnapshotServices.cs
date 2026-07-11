@@ -170,7 +170,13 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         if (await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'known_file_locations';") > 0)
             await connection.ExecuteAsync("delete from known_file_locations;");
         if (await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'file_search_roots';") > 0)
+        {
+            var hasAuthorizationPayload = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from pragma_table_info('file_search_roots') where name = 'authorization_payload';");
+            if (hasAuthorizationPayload > 0)
+                await connection.ExecuteAsync("update file_search_roots set authorization_payload = null, authorization_payload_version = null, authorization_updated_at = null;");
             await connection.ExecuteAsync("delete from file_search_roots;");
+        }
         if (await connection.ExecuteScalarAsync<int>("select count(1) from sqlite_master where name = 'ocr_preset_versions';") > 0)
             await connection.ExecuteAsync("update ocr_preset_versions set model_path = '[redacted]' where model_path is not null;");
         await connection.ExecuteAsync("vacuum;");

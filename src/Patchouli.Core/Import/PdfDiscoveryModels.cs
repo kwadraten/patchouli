@@ -11,7 +11,11 @@ public sealed record PdfCandidate(
 public sealed record PdfScanResult(
     IReadOnlyList<PdfCandidate> Candidates,
     int TotalCount,
-    string ScanRoot);
+    string ScanRoot,
+    IReadOnlyList<Patchouli.Core.Files.FileSearchRootIssue>? SkippedDirectories = null,
+    IReadOnlyList<Patchouli.Core.Files.FileSearchRootIssue>? SkippedFiles = null,
+    string RootStatus = Patchouli.Core.Files.FileSearchRootStatuses.Available,
+    string ScanStatus = Patchouli.Core.Files.FileSearchRootScanStatuses.Complete);
 
 public sealed record PdfImportRequest(
     string PdfPath,

@@ -6,6 +6,11 @@ namespace Patchouli.Core.Files;
 public interface IFileResolutionService
 {
     Task<Result<FileSearchRoot>> AddSearchRootAsync(
+        SelectedFileSearchRoot selectedRoot,
+        CancellationToken cancellationToken = default);
+
+    [Obsolete("Use the SelectedFileSearchRoot overload; retained until the picker UI is migrated.")]
+    Task<Result<FileSearchRoot>> AddSearchRootAsync(
         string rootPath,
         CancellationToken cancellationToken = default);
 
