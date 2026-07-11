@@ -15,19 +15,21 @@ public sealed class McpHttpServer : IAsyncDisposable
 {
     private readonly McpProtocolHandler _handler;
     private readonly McpServerSettings _settings;
+    private readonly Action<Exception, string>? _unexpectedException;
     private long _activeConnectionCount;
     private long _totalConnectionCount;
     private WebApplication? _app;
 
-    public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort)
-        : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow))
+    public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort, Action<Exception, string>? unexpectedException = null)
+        : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow), unexpectedException)
     {
     }
 
-    public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings)
+    public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings, Action<Exception, string>? unexpectedException = null)
     {
         _handler = handler;
         _settings = settings;
+        _unexpectedException = unexpectedException;
         Endpoint = $"http://{DisplayHost(settings.BindAddress)}:{settings.Port}/mcp";
     }
 
@@ -42,8 +44,16 @@ public sealed class McpHttpServer : IAsyncDisposable
         if (_app is not null) return;
 
         var app = CreateApplication();
-        await app.StartAsync(cancellationToken);
-        _app = app;
+        try
+        {
+            await app.StartAsync(cancellationToken);
+            _app = app;
+        }
+        catch
+        {
+            await app.DisposeAsync();
+            throw;
+        }
     }
 
     public async Task RunAsync(CancellationToken cancellationToken = default)
@@ -57,9 +67,15 @@ public sealed class McpHttpServer : IAsyncDisposable
         if (_app is null) return;
 
         var app = _app;
-        _app = null;
-        await app.StopAsync(cancellationToken);
-        await app.DisposeAsync();
+        try
+        {
+            await app.StopAsync(cancellationToken);
+        }
+        finally
+        {
+            await app.DisposeAsync();
+            _app = null;
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -83,7 +99,7 @@ public sealed class McpHttpServer : IAsyncDisposable
                 {
                     Interlocked.Increment(ref _activeConnectionCount);
                     Interlocked.Increment(ref _totalConnectionCount);
-                    ConnectionCountsChanged?.Invoke(this, EventArgs.Empty);
+                    NotifyConnectionCountsChanged();
                     try
                     {
                         await next(connection);
@@ -91,7 +107,7 @@ public sealed class McpHttpServer : IAsyncDisposable
                     finally
                     {
                         Interlocked.Decrement(ref _activeConnectionCount);
-                        ConnectionCountsChanged?.Invoke(this, EventArgs.Empty);
+                        NotifyConnectionCountsChanged();
                     }
                 });
             });
@@ -118,6 +134,18 @@ public sealed class McpHttpServer : IAsyncDisposable
         app.MapPost("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, _handler, _settings, ct));
         app.MapMethods("/mcp", ["OPTIONS"], (HttpContext context) => HandleMcpOptions(context, _settings));
         return app;
+    }
+
+    private void NotifyConnectionCountsChanged()
+    {
+        foreach (EventHandler subscriber in ConnectionCountsChanged?.GetInvocationList() ?? [])
+        {
+            try { subscriber(this, EventArgs.Empty); }
+            catch (Exception exception)
+            {
+                try { _unexpectedException?.Invoke(exception, "mcp-connection-count-subscriber"); } catch { }
+            }
+        }
     }
 
     private void ConfigureListen(Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions options, Action<Microsoft.AspNetCore.Server.Kestrel.Core.ListenOptions> configure)

@@ -60,11 +60,14 @@ try
     var cslStore = new CslStyleStore(db, clock, blockingOperations: blockingOperations);
     var cslRenderer = new CslRenderer(items, cslStore, new CslItemMapper());
     var api = new McpReadApi(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
-    var handler = new McpProtocolHandler(api, db, effectiveSettings);
-    await using var server = new McpHttpServer(handler, effectiveSettings);
+    static void ReportUnexpected(Exception exception, string operation) =>
+        Console.Error.WriteLine(McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
+    var handler = new McpProtocolHandler(api, db, effectiveSettings, ReportUnexpected);
+    await using var server = new McpHttpServer(handler, effectiveSettings, ReportUnexpected);
     await server.RunAsync();
 }
 catch (Exception ex)
 {
-    Console.Error.WriteLine(McpOutputSanitizer.Sanitize(ex.Message));
+    Console.Error.WriteLine(McpOutputSanitizer.Sanitize(ex.ToString()));
+    Environment.ExitCode = 1;
 }

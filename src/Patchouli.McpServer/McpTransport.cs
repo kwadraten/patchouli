@@ -66,12 +66,14 @@ public sealed class McpProtocolHandler
     private readonly IMcpReadApi _api;
     private readonly SqliteConnectionFactory _db;
     private readonly McpServerSettings _settings;
+    private readonly Action<Exception, string>? _unexpectedException;
 
-    public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db, McpServerSettings? settings = null)
+    public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db, McpServerSettings? settings = null, Action<Exception, string>? unexpectedException = null)
     {
         _api = api;
         _db = db;
         _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with { AuthRequired = false };
+        _unexpectedException = unexpectedException;
     }
 
     public async Task<string> HandleAsync(string line, CancellationToken ct = default)
@@ -113,7 +115,11 @@ public sealed class McpProtocolHandler
         catch (JsonException ex) { return Error("null", -32700, ex.Message); }
         catch (MethodNotFoundException ex) { return Error(id, -32601, ex.Message); }
         catch (InvalidOperationException ex) { return Error(id, -32602, ex.Message); }
-        catch (Exception ex) { return Error(id, -32603, ex.Message); }
+        catch (Exception ex)
+        {
+            try { _unexpectedException?.Invoke(ex, "mcp-protocol-request"); } catch { }
+            return Error(id, -32603, "Internal MCP error.");
+        }
     }
 
     private static object Initialize(JsonElement parameters)

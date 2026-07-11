@@ -753,7 +753,10 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         SetMcpStatus("MCP: 启动中", $"正在监听 http://{serverSettings.BindAddress}:{serverSettings.Port}/mcp", Brushes.Goldenrod);
-        var server = new McpHttpServer(new McpProtocolHandler(services.Mcp, services.ConnectionFactory, serverSettings), serverSettings);
+        void ReportMcpException(Exception exception, string operation) =>
+            UnexpectedExceptions.Sink.Report(exception, "mcp-server", operation);
+        var handler = new McpProtocolHandler(services.Mcp, services.ConnectionFactory, serverSettings, ReportMcpException);
+        var server = new McpHttpServer(handler, serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
         {
@@ -767,8 +770,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            UnexpectedExceptions.Sink.Report(ex, "mcp-server", "start-listener");
             server.ConnectionCountsChanged -= OnMcpConnectionCountsChanged;
-            await server.DisposeAsync();
+            try { await server.DisposeAsync(); }
+            catch (Exception disposeException)
+            {
+                UnexpectedExceptions.Sink.Report(disposeException, "mcp-server", "dispose-after-start-failure");
+            }
             var message = McpOutputSanitizer.Sanitize(ex.Message);
             if (operationId is not null)
                 await services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message, "MCP HTTP listener 启动失败。", ["检查端口占用", "检查 bind 和鉴权设置"], CancellationToken.None);
