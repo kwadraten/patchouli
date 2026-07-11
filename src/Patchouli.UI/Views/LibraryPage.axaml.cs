@@ -3,6 +3,7 @@ using Avalonia;
 using System.Collections.Specialized;
 using Patchouli.UI.ViewModels;
 using Avalonia.VisualTree;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.Views;
 
@@ -18,6 +19,9 @@ public sealed partial class LibraryPage : UserControl
     }
 
     private async void OnDataGridDoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
+        => await UnexpectedExceptionBoundary.RunAsync(ViewSelectedPdfAsync, "view-selected-pdf");
+
+    private async Task ViewSelectedPdfAsync()
     {
         if (DataContext is LibraryShellViewModel { SelectedItem: not null } shell)
         {

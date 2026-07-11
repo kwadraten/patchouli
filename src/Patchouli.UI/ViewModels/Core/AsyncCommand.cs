@@ -19,14 +19,38 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Search;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.ViewModels;
 
 public sealed class AsyncCommand : System.Windows.Input.ICommand
 {
-    private readonly Func<Task> _run; public AsyncCommand(Func<Task> run) => _run = run;
+    private readonly Func<Task> _run;
+    private readonly string _operation;
+    private readonly IUnexpectedExceptionSink _unexpectedExceptions;
+
+    public AsyncCommand(
+        Func<Task> run,
+        IUnexpectedExceptionSink? unexpectedExceptions = null,
+        [CallerArgumentExpression(nameof(run))] string? operation = null)
+    {
+        _run = run;
+        _operation = string.IsNullOrWhiteSpace(operation) ? "unknown-command" : operation;
+        _unexpectedExceptions = unexpectedExceptions ?? UnexpectedExceptions.Sink;
+    }
+
     public event EventHandler? CanExecuteChanged { add { } remove { } } public bool CanExecute(object? parameter) => true;
-    public async void Execute(object? parameter) => await _run();
+    public async void Execute(object? parameter)
+    {
+        try
+        {
+            await _run();
+        }
+        catch (Exception exception)
+        {
+            _unexpectedExceptions.Report(exception, "ui-command", _operation);
+        }
+    }
     public Task ExecuteAsync() => _run();
 }
 

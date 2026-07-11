@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.Views;
 
@@ -12,6 +13,11 @@ public sealed partial class SearchResultsPage : UserControl
     }
 
     private async void OnCopySearchUnitEvidenceRefClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        => await UnexpectedExceptionBoundary.RunAsync(
+            () => CopySearchUnitEvidenceRefAsync(sender),
+            "copy-search-unit-evidence-ref");
+
+    private async Task CopySearchUnitEvidenceRefAsync(object? sender)
     {
         if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
@@ -23,6 +29,11 @@ public sealed partial class SearchResultsPage : UserControl
     }
 
     private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        => await UnexpectedExceptionBoundary.RunAsync(
+            () => CopySearchUnitEvidenceMarkdownAsync(sender),
+            "copy-search-unit-evidence-markdown");
+
+    private async Task CopySearchUnitEvidenceMarkdownAsync(object? sender)
     {
         if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
@@ -34,6 +45,11 @@ public sealed partial class SearchResultsPage : UserControl
     }
 
     private async void OnExportSearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        => await UnexpectedExceptionBoundary.RunAsync(
+            () => ExportSearchUnitEvidenceMarkdownAsync(sender),
+            "export-search-unit-evidence-markdown");
+
+    private async Task ExportSearchUnitEvidenceMarkdownAsync(object? sender)
     {
         if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)

@@ -4,6 +4,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using Patchouli.UI.Diagnostics;
 using Avalonia.Media;
 using Patchouli.Core.Files;
 
@@ -109,6 +110,9 @@ public sealed partial class PathPickerTextBox : UserControl
     }
 
     private async void OnBrowseClick(object? sender, RoutedEventArgs e)
+        => await UnexpectedExceptionBoundary.RunAsync(BrowseAsync, "path-picker-browse");
+
+    private async Task BrowseAsync()
     {
         var storage = TopLevel.GetTopLevel(this)?.StorageProvider;
         if (storage is null) return;

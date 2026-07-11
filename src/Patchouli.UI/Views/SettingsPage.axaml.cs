@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.Views;
 
@@ -10,6 +11,9 @@ public sealed partial class SettingsPage : UserControl
     }
 
     private async void OnOpenMinerUTokenPageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+        => await UnexpectedExceptionBoundary.RunAsync(OpenMinerUTokenPageAsync, "open-mineru-token-page");
+
+    private async Task OpenMinerUTokenPageAsync()
     {
         var launcher = TopLevel.GetTopLevel(this)?.Launcher;
         if (launcher is not null)
