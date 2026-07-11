@@ -124,7 +124,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }
@@ -253,7 +253,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }
@@ -288,7 +288,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -434,7 +434,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemListPage>(exception);
         }
@@ -527,7 +527,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemIdentifier>(exception);
         }
@@ -569,7 +569,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return DatabaseFailure<IReadOnlyList<ItemIdentifier>>(exception);
         }
@@ -599,7 +599,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             var failure = DatabaseFailure<object>(exception);
             return Result.Failure(failure.ErrorCode!, failure.ErrorMessage!);
@@ -1054,7 +1054,7 @@ public sealed class ItemService : IItemService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }

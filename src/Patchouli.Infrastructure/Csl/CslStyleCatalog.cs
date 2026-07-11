@@ -94,7 +94,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-catalog"))
         {
             return Result<IReadOnlyList<CslCatalogStyle>>.Failure(
                 AppErrorCodes.DatabaseError,
@@ -130,7 +130,7 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-catalog"))
         {
             return Result<IReadOnlyList<CslCatalogStyle>>.Failure(
                 AppErrorCodes.DatabaseError,

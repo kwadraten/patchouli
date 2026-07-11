@@ -39,7 +39,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             return await RebuildAsync(connection, documentInstanceId, null, LayoutRevisionId.Parse(revisionId), cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-unit-builder")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result> RebuildForPageAsync(PageId pageId, LayoutRevisionId layoutRevisionId, CancellationToken cancellationToken = default)
@@ -59,7 +59,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             return await RebuildAsync(connection, DocumentInstanceId.Parse(documentInstanceId), pageId, layoutRevisionId, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-unit-builder")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
@@ -90,7 +90,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-unit-builder")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     private async Task<Result> RebuildAsync(Microsoft.Data.Sqlite.SqliteConnection connection, DocumentInstanceId documentInstanceId, PageId? pageId, LayoutRevisionId revisionId, CancellationToken cancellationToken)

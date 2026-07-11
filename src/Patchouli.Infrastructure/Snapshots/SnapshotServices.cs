@@ -119,7 +119,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
             return Result<SnapshotPublishResult>.Success(new SnapshotPublishResult(snapshotId, manifestPath, currentPath, false, null, shards, generation, shards.Count > 1 ? "Runtime database exceeded the snapshot shard target; data was split into multiple immutable shards. FTS rows are cleared in data shards; persisted search_units remain canonical." : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical."));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.snapshot-services"))
         {
             return Result<SnapshotPublishResult>.Failure(AppErrorCodes.DatabaseError, $"Snapshot publish failed: {ex.Message}");
         }
@@ -529,7 +529,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
             }
             return Result<SnapshotValidationResult>.Success(new SnapshotValidationResult(errors.Count == 0, manifest, errors));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.snapshot-services"))
         {
             return Result<SnapshotValidationResult>.Success(new SnapshotValidationResult(false, null, new[] { $"Manifest validation failed: {ex.Message}" }));
         }
@@ -643,7 +643,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
             }
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-services"))
         {
             await TryFailValidationOperationAsync(
                 validationOperationId,

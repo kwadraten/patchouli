@@ -55,7 +55,7 @@ public sealed class OcrQueueRowService : IOcrQueueRowService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-queue-row"))
         {
             return Result<IReadOnlyList<OcrQueueRow>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

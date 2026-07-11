@@ -103,7 +103,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutRevision>(exception);
         }
@@ -138,7 +138,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutRevision>(exception);
         }
@@ -183,7 +183,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -299,7 +299,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -325,7 +325,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<IReadOnlyList<LayoutNode>>(exception);
         }
@@ -353,7 +353,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -405,7 +405,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -457,7 +457,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -516,7 +516,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -582,7 +582,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -654,7 +654,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -745,7 +745,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<LayoutNode>(exception);
         }
@@ -803,7 +803,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -831,7 +831,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -873,7 +873,7 @@ public sealed class LayoutTreeService : ILayoutTreeService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.layout-tree"))
         {
             return DatabaseFailure<PlainTextPage>(exception);
         }

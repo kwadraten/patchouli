@@ -156,7 +156,7 @@ public sealed class MinerUResultDownloader
             return Result<IReadOnlyList<ChunkUploadFile>>.Success(uploadFiles);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mineru-result-downloader"))
         {
             return Result<IReadOnlyList<ChunkUploadFile>>.Failure("pdf_split_failed", $"Failed to split PDF for MinerU upload: {ex.Message}");
         }
@@ -258,7 +258,7 @@ public sealed class MinerUResultDownloader
 
             return Result<string>.Success(mergedPath);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mineru-result-downloader"))
         {
             return Result<string>.Failure("zip_merge_failed", $"Failed to merge MinerU result zips: {ex.Message}");
         }

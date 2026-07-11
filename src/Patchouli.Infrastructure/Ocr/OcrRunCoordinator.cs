@@ -85,7 +85,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return await RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     private async Task<Result<OcrRun>> RunMinerUPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, OcrPresetVersion version, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken)
@@ -167,7 +167,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return await GetRunAsync(runId, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"MinerU OCR failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"MinerU OCR failed: {ex.Message}"); }
     }
 
     private async Task<Result<OcrRun>> FailMinerURunAsync(Microsoft.Data.Sqlite.SqliteConnection connection, OcrRunId runId, IReadOnlyList<PageId> pageIds, string errorCode, string errorMessage, CancellationToken cancellationToken)
@@ -206,7 +206,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return await GetRunAsync(runId, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     private static MinerUConfiguration CreateMinerUConfiguration(OcrPresetVersion version, string token)
@@ -351,7 +351,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return await GetRunAsync(runId, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default)
@@ -450,7 +450,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return await GetRunAsync(runId, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default)
@@ -542,7 +542,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return await GetRunAsync(runId, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId, int dpi = 200, CancellationToken cancellationToken = default)
@@ -580,7 +580,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result> UnsetCurrentOcrAsync(DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
@@ -630,7 +630,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result> HideOcrRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
@@ -704,7 +704,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId, IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
@@ -758,7 +758,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrCandidateAdoption>.Success(adoption);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrCandidateAdoption>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrCandidateAdoption>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
         finally { gate.Release(); }
     }
 
@@ -772,7 +772,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return row is null ? Result<OcrRun>.Failure(AppErrorCodes.NotFound, "OCR run was not found.") : Result<OcrRun>.Success(row.ToRun());
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<OcrRun>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<IReadOnlyList<OcrPageResult>>> ListPageResultsAsync(OcrRunId runId, CancellationToken cancellationToken = default)
@@ -785,7 +785,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result<IReadOnlyList<OcrPageResult>>.Success(rows.Select(r => r.ToResult()).ToArray());
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<IReadOnlyList<OcrPageResult>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-run-coordinator")) { return Result<IReadOnlyList<OcrPageResult>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<OcrRun>> CreatePendingRunForTestAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId, CancellationToken cancellationToken = default)

@@ -112,7 +112,7 @@ public sealed class PageService : IPageService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.page-service"))
         {
             return DatabaseFailure<Page>(exception);
         }
@@ -146,7 +146,7 @@ public sealed class PageService : IPageService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.page-service"))
         {
             return DatabaseFailure<IReadOnlyList<Page>>(exception);
         }
@@ -171,7 +171,7 @@ public sealed class PageService : IPageService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.page-service"))
         {
             return DatabaseFailure<Page>(exception);
         }

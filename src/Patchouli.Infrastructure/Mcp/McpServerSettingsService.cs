@@ -64,7 +64,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.mcp-server-settings"))
         {
             return Result<McpServerSettings>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -132,7 +132,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.mcp-server-settings"))
         {
             return Result<McpServerSettings>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

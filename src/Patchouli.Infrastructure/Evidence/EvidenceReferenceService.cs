@@ -107,7 +107,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             return Result<EvidenceRefRecord>.Success(inserted!.ToRecord());
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<EvidenceRefRecord>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result<EvidenceRefRecord>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<EvidenceResolutionResult>> ResolveAsync(string evidenceRefId, string mode = EvidenceResolutionMode.Pinned, CancellationToken cancellationToken = default)
@@ -161,7 +161,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             return Result<EvidenceResolutionResult>.Success(resolved);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<EvidenceResolutionResult>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result<EvidenceResolutionResult>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<EvidenceMarkdown>> CreateMarkdownAsync(string evidenceRefId, CancellationToken cancellationToken = default)
@@ -207,7 +207,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public Task<Result> TombstoneAsync(string evidenceRefId, string reason, CancellationToken cancellationToken = default)
@@ -262,7 +262,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     private static async Task PropagateDeletionMarkerAsync(Microsoft.Data.Sqlite.SqliteConnection connection, System.Data.Common.DbTransaction tx, RecordRow record, bool purge, string now)

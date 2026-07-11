@@ -126,7 +126,7 @@ public sealed class McpReadApi : IMcpReadApi
                 identifiers));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<McpItemMetadataResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api")) { return Result<McpItemMetadataResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<McpDocumentStatusResponse>> GetDocumentStatusAsync(DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
@@ -150,7 +150,7 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpDocumentStatusResponse>.Success(new McpDocumentStatusResponse(documentInstanceId, hasText, currentRevision is not null, indexStatus == SearchIndexStatusValue.Current, mapped, warning));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<McpDocumentStatusResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api")) { return Result<McpDocumentStatusResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<McpPageTextResponse>> GetPageTextAsync(McpPageTextRequest request, CancellationToken cancellationToken = default)
@@ -237,7 +237,7 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpPageBlocksResponse>.Success(new McpPageBlocksResponse(request.PageId, meta.PageLabel, meta.PageIndex, blocks, request.ReadMode, warnings));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<McpPageBlocksResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api")) { return Result<McpPageBlocksResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<McpSearchContextResponse>> GetSearchResultContextAsync(McpSearchContextRequest request, CancellationToken cancellationToken = default)
@@ -363,7 +363,7 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpPageTextResponse>.Success(new McpPageTextResponse(pageId, meta.PageLabel, meta.PageIndex, string.Join("\n\n", rows), McpReadMode.Current, null, warnings));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<McpPageTextResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api")) { return Result<McpPageTextResponse>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     private async Task<string> SourceFileStatusForDocumentAsync(DocumentInstanceId documentInstanceId)

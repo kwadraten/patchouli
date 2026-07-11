@@ -84,7 +84,7 @@ public sealed class McpVerificationService
                 unitCount > 0 ? "Search units exist but no matching terms found." : null));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-verification"))
         {
             return Result<McpVerificationResult>.Failure(AppErrorCodes.DatabaseError,
                 $"MCP verification failed: {ex.Message}");

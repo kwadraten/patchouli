@@ -30,7 +30,7 @@ public sealed class PageCoordinateService : IPageCoordinateService
     public async Task<Result<PageCoordinateBasis>> GetPageCoordinateBasisAsync(PageId pageId,CancellationToken cancellationToken=default)
     {
         try { await using var c=_connectionFactory.CreateConnection();await c.OpenAsync(cancellationToken);var r=await c.QuerySingleOrDefaultAsync<Row>("select page_id as PageId,coordinate_basis as CoordinateBasis,basis_width as BasisWidth,basis_height as BasisHeight,rotation as Rotation,renderer_basis_version as RendererBasisVersion,source_file_hash as SourceFileHash from pages where page_id=@Id",new{Id=pageId.ToString()});return r is null?Result<PageCoordinateBasis>.Failure(AppErrorCodes.NotFound,"Page was not found."):Result<PageCoordinateBasis>.Success(new(PageId.Parse(r.PageId),r.CoordinateBasis,r.BasisWidth,r.BasisHeight,r.Rotation,r.RendererBasisVersion,r.SourceFileHash)); }
-        catch(Exception ex){return Result<PageCoordinateBasis>.Failure(AppErrorCodes.DatabaseError,$"Database operation failed: {ex.Message}");}
+        catch(Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-coordinate")){return Result<PageCoordinateBasis>.Failure(AppErrorCodes.DatabaseError,$"Database operation failed: {ex.Message}");}
     }
     public async Task<IReadOnlyList<string>> DetectBBoxWarningsAsync(PageId pageId,FileAssetId? fileAssetId=null,CancellationToken cancellationToken=default)
     {

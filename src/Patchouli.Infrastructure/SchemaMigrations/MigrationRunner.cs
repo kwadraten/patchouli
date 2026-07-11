@@ -67,7 +67,7 @@ public sealed class MigrationRunner
                 await transaction.CommitAsync(cancellationToken);
                 applied.Add(new AppliedMigration(file.Id, file.Name));
             }
-            catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.migration-runner"))
             {
                 await transaction.RollbackAsync(cancellationToken);
                 throw new MigrationFailedException(file.Id, file.Name, file.Path, exception);

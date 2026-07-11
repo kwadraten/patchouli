@@ -187,7 +187,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 row.EvidenceCount > 0,
                 null)).ToArray());
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
         {
             return Result<IReadOnlyList<BranchItemSummary>>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -234,7 +234,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 row.SourceStatus,
                 null)).ToArray());
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
         {
             return Result<IReadOnlyList<BranchDocumentInstanceSummary>>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -397,7 +397,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 ["Original files, local FTS cache, render cache, and provider secrets are not imported. Rebuild FTS after import."],
                 true));
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
         {
             return Result<BranchImportPlan>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -500,7 +500,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 plan.Warnings,
                 plan.DocumentInstancesToImport));
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
         {
             return Result<BranchImportResult>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
@@ -520,7 +520,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
             return Task.FromResult(Result.Success());
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
         {
             return Task.FromResult(Result.Failure(AppErrorCodes.DatabaseError, exception.Message));
         }
@@ -538,7 +538,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             File.Copy(branch.StagingDatabasePath, destinationPath, overwrite: true);
             return Task.FromResult(Result<string>.Success(destinationPath));
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.snapshot-branch-inspection"))
         {
             return Task.FromResult(Result<string>.Failure(AppErrorCodes.DatabaseError, exception.Message));
         }

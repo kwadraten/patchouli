@@ -62,7 +62,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-item-query"))
         {
             return Result<IReadOnlyList<LibraryItemRow>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

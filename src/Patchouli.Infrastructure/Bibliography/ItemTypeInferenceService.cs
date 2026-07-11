@@ -96,7 +96,7 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-type-inference"))
         {
             return Result<ItemTypeInference>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -132,7 +132,7 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-type-inference"))
         {
             return Result<IReadOnlyList<ItemTypeInference>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -209,7 +209,7 @@ public sealed class ItemTypeInferenceService : IItemTypeInferenceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.item-type-inference"))
         {
             return Result<ItemTypeInference>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

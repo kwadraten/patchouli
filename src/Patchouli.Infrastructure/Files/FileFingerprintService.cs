@@ -46,7 +46,7 @@ public sealed class FileFingerprintService : IFileFingerprintService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-fingerprint"))
         {
             return Result<FileFingerprint>.Failure(
                 AppErrorCodes.DatabaseError,
@@ -102,7 +102,7 @@ public sealed class FileFingerprintService : IFileFingerprintService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-fingerprint"))
         {
             return Result<string>.Failure(
                 AppErrorCodes.DatabaseError,

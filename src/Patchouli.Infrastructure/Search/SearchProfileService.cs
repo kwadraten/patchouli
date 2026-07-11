@@ -33,7 +33,7 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
             await connection.ExecuteAsync("insert into search_profiles(profile_id,library_id,name,description,is_system,is_default,archived,created_at,updated_at) values(@Id,@Library,@Name,@Description,0,0,0,@Now,@Now);", new { Id = profile.ProfileId.ToString(), Library = profile.LibraryId.ToString(), profile.Name, profile.Description, Now = _clock.UtcNow.ToString("O") });
             return Result<SearchProfile>.Success(profile);
         }
-        catch (Exception ex) { return Result<SearchProfile>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile")) { return Result<SearchProfile>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
     }
 
     public async Task<Result<SearchProfile>> UpdateProfileAsync(SearchProfileId profileId, string name, string? description, bool archived, CancellationToken cancellationToken = default)
@@ -41,14 +41,14 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
         if (string.IsNullOrWhiteSpace(name)) return Result<SearchProfile>.Failure(AppErrorCodes.ValidationFailed, "Profile name is required.");
         var existing = await GetProfileAsync(profileId, cancellationToken); if (existing.IsFailure) return existing;
         try { await using var c = _connectionFactory.CreateConnection(); await c.OpenAsync(cancellationToken); await c.ExecuteAsync("update search_profiles set name=@Name,description=@Description,archived=@Archived,updated_at=@Now where profile_id=@Id;", new { Id = profileId.ToString(), Name = name.Trim(), Description = description, Archived = archived ? 1 : 0, Now = _clock.UtcNow.ToString("O") }); return Result<SearchProfile>.Success(existing.Value with { Name = name.Trim(), Description = description, Archived = archived, UpdatedAt = _clock.UtcNow }); }
-        catch (Exception ex) { return Result<SearchProfile>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile")) { return Result<SearchProfile>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
     }
 
     public async Task<Result> SetDefaultProfileAsync(SearchProfileId profileId, CancellationToken cancellationToken = default)
     {
         var profile = await GetProfileAsync(profileId, cancellationToken); if (profile.IsFailure) return Result.Failure(profile.ErrorCode!, profile.ErrorMessage!);
         try { await using var c = _connectionFactory.CreateConnection(); await c.OpenAsync(cancellationToken); await using var tx = await c.BeginTransactionAsync(cancellationToken); var now = _clock.UtcNow.ToString("O"); await c.ExecuteAsync("update search_profiles set is_default=0 where library_id=@Library;", new { Library = profile.Value.LibraryId.ToString() }, tx); await c.ExecuteAsync("update search_profiles set is_default=1 where profile_id=@Id;", new { Id = profileId.ToString() }, tx); await UpsertSettingsAsync(c, profile.Value.LibraryId, profileId, null, tx); await tx.CommitAsync(cancellationToken); return Result.Success(); }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, ex.Message); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile")) { return Result.Failure(AppErrorCodes.DatabaseError, ex.Message); }
     }
 
     public async Task<Result<SearchProfile>> GetDefaultProfileAsync(CancellationToken cancellationToken = default)
@@ -64,14 +64,14 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
             await UpsertSettingsAsync(c, library.Value, profile.ProfileId, null);
             return Result<SearchProfile>.Success(profile);
         }
-        catch (Exception ex) { return Result<SearchProfile>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile")) { return Result<SearchProfile>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
     }
 
     public async Task<Result> SetLastUsedProfileAsync(SearchProfileId profileId, CancellationToken cancellationToken = default)
     {
         var profile = await GetProfileAsync(profileId, cancellationToken); if (profile.IsFailure) return Result.Failure(profile.ErrorCode!, profile.ErrorMessage!);
         try { await using var c = _connectionFactory.CreateConnection(); await c.OpenAsync(cancellationToken); await UpsertSettingsAsync(c, profile.Value.LibraryId, null, profileId); return Result.Success(); }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, ex.Message); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile")) { return Result.Failure(AppErrorCodes.DatabaseError, ex.Message); }
     }
 
     public async Task<Result<SearchProfile>> GetEffectiveProfileAsync(SearchProfileId? explicitProfileId, string? alias, SearchProfileId? selectedProfileId, CancellationToken cancellationToken = default)
@@ -97,7 +97,7 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
         var library = await CurrentLibraryAsync(cancellationToken); if (library.IsFailure) return Result<SearchRewriteRule>.Failure(library.ErrorCode!, library.ErrorMessage!);
         if (profileId is not null) { var profile = await GetProfileAsync(profileId.Value, cancellationToken); if (profile.IsFailure) return Result<SearchRewriteRule>.Failure(profile.ErrorCode!, profile.ErrorMessage!); }
         try { var rule = new SearchRewriteRule(SearchRewriteRuleId.New(), library.Value, profileId, ruleType, pattern, replacement, direction, true, priority, note, _clock.UtcNow, _clock.UtcNow); await using var c = _connectionFactory.CreateConnection(); await c.OpenAsync(cancellationToken); await c.ExecuteAsync("insert into search_rewrite_rules(rule_id,library_id,profile_id,rule_type,pattern,replacement,direction,enabled,priority,note,created_at,updated_at) values(@Id,@Library,@Profile,@Type,@Pattern,@Replacement,@Direction,1,@Priority,@Note,@Now,@Now);", new { Id = rule.RuleId.ToString(), Library = rule.LibraryId.ToString(), Profile = rule.ProfileId?.ToString(), Type = rule.RuleType, rule.Pattern, rule.Replacement, rule.Direction, rule.Priority, rule.Note, Now = _clock.UtcNow.ToString("O") }); return Result<SearchRewriteRule>.Success(rule); }
-        catch (Exception ex) { return Result<SearchRewriteRule>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile")) { return Result<SearchRewriteRule>.Failure(AppErrorCodes.DatabaseError, ex.Message); }
     }
 
     public Task<Result> EnableRuleAsync(SearchRewriteRuleId ruleId, CancellationToken cancellationToken = default) => SetRuleEnabledAsync(ruleId, true, cancellationToken);

@@ -191,7 +191,7 @@ public sealed class FileAssetService : IFileAssetService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-asset"))
         {
             return DatabaseFailure<FileAsset>(exception);
         }
@@ -235,7 +235,7 @@ public sealed class FileAssetService : IFileAssetService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-asset"))
         {
             return DatabaseFailure<FileAsset>(exception);
         }

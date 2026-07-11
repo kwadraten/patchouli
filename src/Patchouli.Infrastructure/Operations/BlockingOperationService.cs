@@ -78,7 +78,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -133,7 +133,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -240,7 +240,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -261,7 +261,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -314,7 +314,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<IReadOnlyList<BlockingOperation>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -361,7 +361,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<BlockingOperationLogEntry>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -396,7 +396,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<IReadOnlyList<BlockingOperationLogEntry>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -461,7 +461,7 @@ public sealed class BlockingOperationService : IBlockingOperationService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.blocking-operation"))
         {
             return Result<BlockingOperation>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

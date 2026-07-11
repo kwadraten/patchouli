@@ -52,7 +52,7 @@ public sealed class OcrPresetService : IOcrPresetService
             return Result<OcrPreset>.Success(preset);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return DbFail<OcrPreset>(ex); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset")) { return DbFail<OcrPreset>(ex); }
     }
 
     public async Task<Result<OcrPreset>> GetPresetAsync(OcrPresetId presetId, CancellationToken cancellationToken = default)
@@ -65,7 +65,7 @@ public sealed class OcrPresetService : IOcrPresetService
             return row is null ? Result<OcrPreset>.Failure(AppErrorCodes.NotFound, "OCR preset was not found.") : Result<OcrPreset>.Success(row.ToPreset());
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return DbFail<OcrPreset>(ex); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset")) { return DbFail<OcrPreset>(ex); }
     }
 
     public async Task<Result<OcrPresetVersion>> CreatePresetVersionAsync(OcrPresetId presetId, string engineId, string modelId, string? modelPath, string parametersJson, bool applyOnSuccess, CancellationToken cancellationToken = default)
@@ -91,7 +91,7 @@ public sealed class OcrPresetService : IOcrPresetService
             return Result<OcrPresetVersion>.Success(version);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return DbFail<OcrPresetVersion>(ex); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset")) { return DbFail<OcrPresetVersion>(ex); }
     }
 
     public async Task<Result<OcrPresetVersion>> GetCurrentVersionAsync(OcrPresetId presetId, CancellationToken cancellationToken = default)
@@ -106,7 +106,7 @@ public sealed class OcrPresetService : IOcrPresetService
                 : Result<OcrPresetVersion>.Success(version);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return DbFail<OcrPresetVersion>(ex); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset")) { return DbFail<OcrPresetVersion>(ex); }
     }
 
     public async Task<Result<OcrPresetVersion>> RebindModelPathAsync(OcrPresetId presetId, string newModelPath, CancellationToken cancellationToken = default)
@@ -126,7 +126,7 @@ public sealed class OcrPresetService : IOcrPresetService
             return await CreatePresetVersionAsync(presetId, current.EngineId, current.ModelId, newModelPath.Trim(), current.ParametersJson, current.ApplyOnSuccess, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return DbFail<OcrPresetVersion>(ex); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset")) { return DbFail<OcrPresetVersion>(ex); }
     }
 
     public async Task<Result> ArchivePresetAsync(OcrPresetId presetId, CancellationToken cancellationToken = default)
@@ -139,7 +139,7 @@ public sealed class OcrPresetService : IOcrPresetService
             return affected == 0 ? Result.Failure(AppErrorCodes.NotFound, "OCR preset was not found.") : Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-preset")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     internal static async Task<OcrPresetVersion?> GetCurrentVersionAsync(Microsoft.Data.Sqlite.SqliteConnection connection, OcrPresetId presetId, System.Data.Common.DbTransaction? transaction = null)

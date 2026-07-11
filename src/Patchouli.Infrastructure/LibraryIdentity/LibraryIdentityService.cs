@@ -88,7 +88,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-identity"))
         {
             return DatabaseFailure<LibraryMetadata>(exception);
         }
@@ -120,7 +120,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-identity"))
         {
             return DatabaseFailure<LibraryMetadata>(exception);
         }
@@ -193,7 +193,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-identity"))
         {
             return DatabaseFailure<LibraryMetadata>(exception);
         }

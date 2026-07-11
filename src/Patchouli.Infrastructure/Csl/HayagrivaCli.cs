@@ -72,7 +72,7 @@ internal sealed class HayagrivaCli
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.hayagriva-cli"))
         {
             return Result<HayagrivaRenderResponse>.Failure("csl_render_failed", $"hayagriva execution failed: {exception.Message}");
         }

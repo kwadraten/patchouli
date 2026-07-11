@@ -121,7 +121,7 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
             return Result<OcrLayoutImportResult>.Success(new OcrLayoutImportResult(revisionId, nodesCreated));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-layout-importer"))
         {
             return Result<OcrLayoutImportResult>.Failure(AppErrorCodes.DatabaseError, $"OCR layout import failed: {ex.Message}");
         }
@@ -232,7 +232,7 @@ public sealed class OcrLayoutImporter : IOcrLayoutImporter
             return Result<OcrLayoutCopyResult>.Success(new OcrLayoutCopyResult(inserted.Count));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.ocr-layout-importer"))
         {
             return Result<OcrLayoutCopyResult>.Failure(AppErrorCodes.DatabaseError, $"OCR layout copy failed: {ex.Message}");
         }

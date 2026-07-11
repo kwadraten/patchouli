@@ -120,7 +120,7 @@ public sealed class SqliteSearchService : ISearchService
             return Result<SearchResultPage>.Success(new SearchResultPage(results, nextCursor, null, indexStatus, status?.AffectedScopesSummary ?? status?.Reason, request.IncludeRewritePlan ? plan : null));
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<SearchResultPage>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.sqlite-search")) { return Result<SearchResultPage>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<IReadOnlyList<SearchMatchedUnit>>> GetSearchResultContextAsync(SearchUnitId unitId, int before = 2, int after = 2, CancellationToken cancellationToken = default)
@@ -160,7 +160,7 @@ public sealed class SqliteSearchService : ISearchService
             return Result<IReadOnlyList<SearchMatchedUnit>>.Success(siblings[start..(end + 1)].Select(s => s.ToMatchedUnit(s.UnitId == row.UnitId)).ToArray());
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<IReadOnlyList<SearchMatchedUnit>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.sqlite-search")) { return Result<IReadOnlyList<SearchMatchedUnit>>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     private static async Task<SearchIndexStatus?> GetStatusAsync(Microsoft.Data.Sqlite.SqliteConnection connection, string scopeType, string scopeId)

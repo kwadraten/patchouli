@@ -62,7 +62,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             return Result<IReadOnlyList<CslStyle>>.Failure(AppErrorCodes.DatabaseError, $"CSL style listing failed: {exception.Message}");
         }
@@ -103,7 +103,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError, $"CSL style lookup failed: {exception.Message}");
         }
@@ -216,7 +216,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             await TryFailInstallOperationAsync(
                 installOperationId,
@@ -248,7 +248,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError, $"CSL style disable failed: {exception.Message}");
         }
@@ -286,7 +286,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"CSL style removal failed: {exception.Message}");
         }
@@ -312,7 +312,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             return Result<CslSettings>.Failure(AppErrorCodes.DatabaseError, $"CSL settings load failed: {exception.Message}");
         }
@@ -360,7 +360,7 @@ public sealed class CslStyleStore : ICslStyleStore
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.csl-style-store"))
         {
             return Result<CslSettings>.Failure(AppErrorCodes.DatabaseError, $"CSL settings save failed: {exception.Message}");
         }

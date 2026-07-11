@@ -53,7 +53,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             var parser = new MinerUContentListParser();
             contentList = contentListJson is not null ? parser.Parse(contentListJson) : null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mineru-result-importer"))
         {
             return Result<MinerUImportResult>.Failure("zip_read_error", $"Failed to read result zip: {ex.Message}");
         }
@@ -67,7 +67,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             pages = pageResult.Value;
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mineru-result-importer"))
         {
             return Result<MinerUImportResult>.Failure(
                 AppErrorCodes.DatabaseError,

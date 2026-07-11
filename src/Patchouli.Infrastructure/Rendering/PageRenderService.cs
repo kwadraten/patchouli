@@ -64,10 +64,10 @@ public sealed class PageRenderService : IPageRenderService
             catch (PdfRendererUnavailableException ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RendererUnavailable, request, page, rendererBasisVersion, ex.Message)); }
             catch (PdfRendererTimeoutException ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RendererTimeout, request, page, rendererBasisVersion, ex.Message)); }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RenderFailed, request, page, rendererBasisVersion, $"PDF render failed: {ex.Message}")); }
+            catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-render")) { return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.RenderFailed, request, page, rendererBasisVersion, $"PDF render failed: {ex.Message}")); }
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result<PageRenderResult>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-render")) { return Result<PageRenderResult>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     public async Task<Result<string?>> GetCachedRenderPathAsync(PageRenderRequest request, CancellationToken cancellationToken = default)

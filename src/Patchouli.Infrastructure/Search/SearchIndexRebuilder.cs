@@ -45,7 +45,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-index-rebuilder"))
         {
             await SetIndexUnavailableAsync(SearchIndexScopeType.DocumentInstance, documentInstanceId.ToString(), ex.Message, cancellationToken);
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
@@ -78,7 +78,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex)
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-index-rebuilder"))
         {
             await SetIndexUnavailableAsync(SearchIndexScopeType.Library, "current", ex.Message, cancellationToken);
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
@@ -100,7 +100,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             return Result.Success();
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-index-rebuilder")) { return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}"); }
     }
 
     internal static string BuildIndexText(string canonicalText)

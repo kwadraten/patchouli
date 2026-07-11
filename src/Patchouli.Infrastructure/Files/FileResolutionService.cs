@@ -153,7 +153,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileSearchRoot>(exception);
         }
@@ -191,7 +191,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return DatabaseFailure<IReadOnlyList<FileSearchRoot>>(exception);
         }
@@ -218,7 +218,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -255,7 +255,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -296,7 +296,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return DatabaseFailure<IReadOnlyList<KnownFileLocation>>(exception);
         }
@@ -465,7 +465,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileResolutionResult>(exception);
         }
@@ -557,7 +557,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileAsset>(exception);
         }
@@ -593,7 +593,7 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.file-resolution"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

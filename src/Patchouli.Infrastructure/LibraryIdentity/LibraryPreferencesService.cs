@@ -55,7 +55,7 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-preferences"))
         {
             return Result<LibraryPreferences>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
@@ -96,7 +96,7 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.library-preferences"))
         {
             return Result<LibraryPreferences>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }

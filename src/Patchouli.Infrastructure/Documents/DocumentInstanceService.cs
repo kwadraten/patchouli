@@ -129,7 +129,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
         {
             return DatabaseFailure<DocumentInstance>(exception);
         }
@@ -156,7 +156,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
         {
             return DatabaseFailure<DocumentInstance>(exception);
         }
@@ -190,7 +190,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
         {
             return DatabaseFailure<IReadOnlyList<DocumentInstance>>(exception);
         }
@@ -260,7 +260,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.document-instance"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
