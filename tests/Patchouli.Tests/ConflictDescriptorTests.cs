@@ -33,7 +33,8 @@ public sealed class ConflictDescriptorTests
         descriptor.Domain.Should().Be(ConflictDomain.SnapshotSync);
         descriptor.Severity.Should().Be(ConflictSeverity.Blocking);
         descriptor.ConflictCode.Should().Be(ConflictCode.SameIdDifferentContent);
-        descriptor.RecommendedActions.Should().ContainSingle(action => action.ActionId == "manual_pick");
+        descriptor.RecommendedActions.Select(action => action.ActionId).Should().BeEquivalentTo(
+            "keep_local", "import_as_new_item", "skip");
         descriptor.ResolutionStatus.Should().Be(ConflictResolutionStatus.Unresolved);
     }
 
@@ -64,5 +65,7 @@ public sealed class ConflictDescriptorTests
         descriptor.Domain.Should().Be(ConflictDomain.LayoutEdit);
         descriptor.ConflictCode.Should().Be(ConflictCode.LayoutBBoxOrdinaryOverlap);
         descriptor.RecommendedActions.Should().ContainSingle(action => action.ActionId == "adjust_bbox");
+        descriptor.RecommendedActions.Select(action => action.ActionId).Should().BeEquivalentTo(
+            "adjust_bbox", "change_to_allowed_type", "skip_candidate");
     }
 }

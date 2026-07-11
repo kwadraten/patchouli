@@ -1,93 +1,82 @@
-using System.Threading.Tasks;
+using System.Collections.ObjectModel;
+using Patchouli.Core.Conflicts;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
-public enum ConflictResolutionResult
+public sealed record ConflictDialogResult(string ActionId, string? OptionId = null);
+
+public sealed record ConflictDialogOption(string OptionId, string Label, string Detail);
+
+public sealed class ConflictDialogActionViewModel
 {
-    None,
-    KeepLocal,
-    KeepIncomingAsCopy,
-    Skip
+    private readonly ConflictResolutionDialogViewModel _owner;
+
+    public ConflictDialogActionViewModel(ConflictAction action, ConflictResolutionDialogViewModel owner)
+    {
+        ActionId = action.ActionId;
+        Label = action.Label;
+        Description = action.Description ?? "";
+        IsRecommended = action.IsRecommended;
+        _owner = owner;
+        SelectCommand = new AsyncCommand(() => _owner.SubmitAsync(ActionId));
+    }
+
+    public string ActionId { get; }
+    public string Label { get; }
+    public string Description { get; }
+    public bool IsRecommended { get; }
+    public AsyncCommand SelectCommand { get; }
 }
 
 public sealed class ConflictResolutionDialogViewModel : ViewModelBase
 {
-    private string _title = "检测到数据冲突";
-    public string Title
-    {
-        get => _title;
-        set
-        {
-            if (_title != value)
-            {
-                _title = value;
-                Raise();
-            }
-        }
-    }
-
-    private string _conflictDescription = "本地版本与传入版本存在不一致。请选择如何处理此冲突。";
-    public string ConflictDescription
-    {
-        get => _conflictDescription;
-        set
-        {
-            if (_conflictDescription != value)
-            {
-                _conflictDescription = value;
-                Raise();
-            }
-        }
-    }
-
-    private string _localContent = "";
-    public string LocalContent
-    {
-        get => _localContent;
-        set
-        {
-            if (_localContent != value)
-            {
-                _localContent = value;
-                Raise();
-            }
-        }
-    }
-
-    private string _incomingContent = "";
-    public string IncomingContent
-    {
-        get => _incomingContent;
-        set
-        {
-            if (_incomingContent != value)
-            {
-                _incomingContent = value;
-                Raise();
-            }
-        }
-    }
-
-    private ConflictResolutionResult _result = ConflictResolutionResult.None;
-    public ConflictResolutionResult Result => _result;
-
-    public AsyncCommand KeepLocalCommand { get; }
-    public AsyncCommand KeepIncomingAsCopyCommand { get; }
-    public AsyncCommand SkipCommand { get; }
-
     public ConflictResolutionDialogViewModel()
+        : this(new ConflictDescriptor(
+            "unknown", ConflictDomain.SnapshotSync, ConflictSeverity.Blocking,
+            "unknown", "unknown", "本地版本与传入版本存在不一致。",
+            "", "", [new ConflictAction("leave_unresolved", "暂不处理")]))
     {
-        KeepLocalCommand = new(async () => { await SubmitResultAsync(ConflictResolutionResult.KeepLocal); });
-        KeepIncomingAsCopyCommand = new(async () => { await SubmitResultAsync(ConflictResolutionResult.KeepIncomingAsCopy); });
-        SkipCommand = new(async () => { await SubmitResultAsync(ConflictResolutionResult.Skip); });
     }
 
-    private Task SubmitResultAsync(ConflictResolutionResult result)
+    public ConflictResolutionDialogViewModel(
+        ConflictDescriptor descriptor,
+        IReadOnlyList<ConflictDialogOption>? options = null)
     {
-        _result = result;
-        RequestClose?.Invoke(result);
+        ConflictCode = descriptor.ConflictCode;
+        Title = $"检测到冲突 {descriptor.ConflictCode}";
+        ConflictDescription = descriptor.Summary;
+        LocalContent = descriptor.LocalSnapshot ?? "无本地状态";
+        IncomingContent = descriptor.IncomingSnapshot ?? "无传入状态";
+        foreach (var option in options ?? []) Options.Add(option);
+        foreach (var action in descriptor.RecommendedActions)
+            Actions.Add(new ConflictDialogActionViewModel(action, this));
+        Actions.Add(new ConflictDialogActionViewModel(
+            new ConflictAction("leave_unresolved", "暂不处理", "保持冲突未解决。", false), this));
+    }
+
+    public string ConflictCode { get; }
+    public string Title { get; }
+    public string ConflictDescription { get; }
+    public string LocalContent { get; }
+    public string IncomingContent { get; }
+    public ObservableCollection<ConflictDialogActionViewModel> Actions { get; } = new();
+    public ObservableCollection<ConflictDialogOption> Options { get; } = new();
+    public bool HasOptions => Options.Count > 0;
+
+    private ConflictDialogOption? _selectedOption;
+    public ConflictDialogOption? SelectedOption
+    {
+        get => _selectedOption;
+        set { _selectedOption = value; Raise(); }
+    }
+
+    public Action<object?>? RequestClose { get; set; }
+
+    internal Task SubmitAsync(string actionId)
+    {
+        if (actionId is "choose_candidate" or "confirm_changed_file" && SelectedOption is null)
+            return Task.CompletedTask;
+        RequestClose?.Invoke(new ConflictDialogResult(actionId, SelectedOption?.OptionId));
         return Task.CompletedTask;
     }
-
-    public System.Action<object?>? RequestClose { get; set; }
 }
