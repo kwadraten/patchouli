@@ -451,23 +451,35 @@ public sealed class MainWindowViewModel : ViewModelBase
             var imported = 0;
             var skipped = 0;
             var failed = 0;
+            var partialRoots = 0;
+            var unavailableRoots = 0;
+            var skippedDirectories = 0;
+            var skippedFiles = 0;
             progress?.Invoke(0, roots.Value.Count, "正在扫描文件搜索根。", $"已找到 {roots.Value.Count} 个文件搜索根。");
 
             foreach (var root in roots.Value)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Invoke(processedRoots, roots.Value.Count, $"正在扫描：{root.RootPath}", null);
-                var exists = Directory.Exists(root.RootPath);
-                await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, exists, cancellationToken);
-                if (!exists)
+                var reopened = await services.FileSearchRootAccess.ReopenAsync(root, cancellationToken);
+                if (reopened.IsFailure)
                 {
+                    unavailableRoots++;
+                    await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, false, cancellationToken);
                     processedRoots++;
-                    progress?.Invoke(processedRoots, roots.Value.Count, "文件搜索根不可用，已跳过。", $"离线：{root.RootPath}");
+                    progress?.Invoke(processedRoots, roots.Value.Count, "文件搜索根不可用，已跳过。", reopened.ErrorMessage ?? root.RootPath);
                     continue;
                 }
 
-                var scan = await services.PdfDiscovery.ScanDirectoryAsync(root.RootPath, cancellationToken);
-                scanned += scan.TotalCount;
+                using var resolvedRoot = reopened.Value.AccessLease;
+                var scan = await services.FileSearchRootAccess.ScanPdfAsync(reopened.Value, cancellationToken);
+                var available = scan.RootStatus == FileSearchRootStatuses.Available || scan.RootStatus == FileSearchRootStatuses.Partial;
+                await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, available, cancellationToken);
+                if (scan.ScanStatus == FileSearchRootScanStatuses.Partial) partialRoots++;
+                if (scan.ScanStatus == FileSearchRootScanStatuses.Failed) unavailableRoots++;
+                skippedDirectories += scan.SkippedDirectories.Count;
+                skippedFiles += scan.SkippedFiles.Count;
+                scanned += scan.Candidates.Count;
                 foreach (var candidate in scan.Candidates)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
@@ -504,7 +516,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 progress?.Invoke(processedRoots, roots.Value.Count, $"已处理 {processedRoots}/{roots.Value.Count} 个文件搜索根。", null);
             }
 
-            var summary = new FileSearchRootRescanSummary(scanned, imported, skipped, failed);
+            var summary = new FileSearchRootRescanSummary(scanned, imported, skipped, failed, partialRoots, unavailableRoots, skippedDirectories, skippedFiles);
             var message = BuildFileSearchRootRescanMessage(summary, completionMessage);
             progress?.Invoke(roots.Value.Count, roots.Value.Count, "文件重新扫描完成。", message);
             if (operationId is not null)
@@ -549,13 +561,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         await RefreshSidebarPathsAsync();
         await Shell.RefreshItemsAsync();
         var message = BuildFileSearchRootRescanMessage(result.Value, completionMessage);
-        if (result.Value.FailedPdfCount > 0) ReportError(message); else Report(message);
+        if (result.Value.HasWarnings) ReportError(message); else Report(message);
     }
 
     private static string BuildFileSearchRootRescanMessage(
         FileSearchRootRescanSummary summary,
         string completionMessage)
-        => $"{completionMessage} 扫描 {summary.ScannedPdfCount} 个 PDF，新增 {summary.ImportedPdfCount} 个，已存在 {summary.SkippedKnownPdfCount} 个，失败 {summary.FailedPdfCount} 个。";
+        => $"{completionMessage} 扫描 {summary.ScannedPdfCount} 个 PDF，新增 {summary.ImportedPdfCount} 个，已存在 {summary.SkippedKnownPdfCount} 个，失败 {summary.FailedPdfCount} 个；部分扫描 {summary.PartialRootCount} 个，不可用 {summary.UnavailableRootCount} 个，跳过目录 {summary.SkippedDirectoryCount} 个、文件 {summary.SkippedFileCount} 个。";
 
     private static async Task<HashSet<string>> LoadKnownFilePathsAsync(AppServices services, CancellationToken cancellationToken)
     {
@@ -780,16 +792,28 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise(nameof(McpStatusBrush));
         }
 
-        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) Update();
+        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow()) Update();
         else Avalonia.Threading.Dispatcher.UIThread.Post(Update);
     }
 
     private Task SetMcpEndpointAsync(string endpoint)
-        => Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(() =>
+    {
+        void Update()
         {
             McpEndpoint = endpoint;
             Raise(nameof(McpEndpoint));
-        }).GetTask();
+        }
+
+        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
+        {
+            Update();
+            return Task.CompletedTask;
+        }
+        return Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(Update).GetTask();
+    }
+
+    private static bool HasDesktopMainWindow() =>
+        Avalonia.Application.Current?.ApplicationLifetime is Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime { MainWindow: not null };
 
     private string BuildMcpConnectionDetail()
     {
@@ -867,7 +891,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         if (!string.IsNullOrWhiteSpace(FirstRun.ScanRoot))
         {
             var services = await ServicesAsync();
-            var addedRoot = await services.FileResolution.AddSearchRootAsync(FirstRun.ScanRoot);
+            if (FirstRun.SelectedScanRoot is null)
+            {
+                ReportError("文件搜索根必须通过系统文件夹选择器选择。");
+                return;
+            }
+
+            var addedRoot = await services.FileResolution.AddSearchRootAsync(FirstRun.SelectedScanRoot);
             if (addedRoot.IsFailure && addedRoot.ErrorCode != AppErrorCodes.InvalidState)
             {
                 Report(addedRoot.ErrorMessage ?? "无法登记 FileSearchRoot。");
@@ -1257,4 +1287,11 @@ public sealed record FileSearchRootRescanSummary(
     int ScannedPdfCount,
     int ImportedPdfCount,
     int SkippedKnownPdfCount,
-    int FailedPdfCount);
+    int FailedPdfCount,
+    int PartialRootCount = 0,
+    int UnavailableRootCount = 0,
+    int SkippedDirectoryCount = 0,
+    int SkippedFileCount = 0)
+{
+    public bool HasWarnings => FailedPdfCount > 0 || PartialRootCount > 0 || UnavailableRootCount > 0 || SkippedDirectoryCount > 0 || SkippedFileCount > 0;
+}
