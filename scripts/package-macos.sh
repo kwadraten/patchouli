@@ -42,7 +42,15 @@ dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
 cp -R "$publish_dir/." "$macos_dir/"
 cp "$root/tools/patchouli-hayagriva/target/$rust_target/release/patchouli-hayagriva" "$macos_dir/patchouli-hayagriva"
 chmod +x "$macos_dir/Patchouli.UI" "$macos_dir/patchouli-hayagriva"
+
+if [[ ! -f "$macos_dir/appsettings.json" ]]; then
+  echo "Published appsettings.json was not found in Contents/MacOS." >&2
+  exit 1
+fi
+mv "$macos_dir/appsettings.json" "$resources_dir/appsettings.json"
+
 sed "s/__VERSION__/$version/g" "$root/packaging/macos/Info.plist.template" > "$contents_dir/Info.plist"
+plutil -lint "$contents_dir/Info.plist"
 
 iconset="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$iconset"
@@ -53,11 +61,28 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns "$iconset" -o "$resources_dir/AppIcon.icns"
 
-if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
-  codesign --force --deep --options runtime --sign "$APPLE_CODESIGN_IDENTITY" "$app_dir"
-else
-  codesign --force --deep --sign - "$app_dir"
+settings_count="$(find "$contents_dir" -type f -name appsettings.json | wc -l | tr -d '[:space:]')"
+if [[ "$settings_count" != "1" || ! -f "$resources_dir/appsettings.json" || -e "$macos_dir/appsettings.json" ]]; then
+  echo "appsettings.json must exist exactly once, at Contents/Resources/appsettings.json." >&2
+  exit 1
 fi
+
+if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
+  sign_identity="$APPLE_CODESIGN_IDENTITY"
+  sign_options=(--options runtime --timestamp)
+else
+  sign_identity="-"
+  sign_options=()
+fi
+
+# Sign every native payload first, then seal the outer application bundle.
+while IFS= read -r -d '' native_file; do
+  if file "$native_file" | grep -q 'Mach-O'; then
+    codesign --force "${sign_options[@]}" --sign "$sign_identity" "$native_file"
+  fi
+done < <(find "$macos_dir" -type f -print0)
+codesign --force "${sign_options[@]}" --sign "$sign_identity" "$app_dir"
+codesign --verify --deep --strict --verbose=2 "$app_dir"
 
 rm -f "$dmg_path"
 staging="$(mktemp -d)"

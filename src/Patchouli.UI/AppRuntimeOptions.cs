@@ -10,14 +10,15 @@ public sealed record AppRuntimeOptions(string RuntimeDatabasePath, string Defaul
     public static AppRuntimeOptions FromAppSettings(string? settingsPath = null) =>
         PatchouliAppSettings.Load(settingsPath).Runtime;
 
-    public static AppRuntimeOptions Default()
+    public static AppRuntimeOptions Default(IAppPaths? appPaths = null)
     {
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Patchouli");
+        var locations = (appPaths ?? new PlatformAppPaths()).Resolve();
+        var root = locations.DataDirectory;
         return new(
             Path.Combine(root, "patchouli-runtime.sqlite"),
             Path.Combine(root, "sync"),
             Path.Combine(root, "staging"),
-            Path.Combine(root, "logs"),
+            locations.LogDirectory,
             Path.Combine(root, "search"));
     }
 }
@@ -107,18 +108,27 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
 {
     public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
 
-    public static PatchouliAppSettings Default() =>
-        new(AppRuntimeOptions.Default(), MinerUAppSettings.Default(), McpAppSettings.Default(), UiPreferences.Default());
+    public static PatchouliAppSettings Default(IAppPaths? appPaths = null) =>
+        new(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(), McpAppSettings.Default(), UiPreferences.Default());
 
     public static string ResolvePath(string? settingsPath = null) =>
-        string.IsNullOrWhiteSpace(settingsPath)
-            ? AppSettingsLocator.FindNearest("appsettings.json") ?? Path.Combine(Environment.CurrentDirectory, "appsettings.json")
-            : settingsPath;
+        string.IsNullOrWhiteSpace(settingsPath) ? new PlatformAppPaths().Resolve().UserSettingsPath : Path.GetFullPath(settingsPath);
 
     public static PatchouliAppSettings Load(string? settingsPath = null)
     {
-        var defaults = Default();
-        var path = ResolvePath(settingsPath);
+        if (!string.IsNullOrWhiteSpace(settingsPath)) return LoadFile(Default(), Path.GetFullPath(settingsPath));
+        return Load(new PlatformAppPaths());
+    }
+
+    public static PatchouliAppSettings Load(IAppPaths appPaths)
+    {
+        var locations = appPaths.Resolve();
+        var bundled = LoadFile(Default(appPaths), locations.BundledDefaultsPath);
+        return LoadFile(bundled, locations.UserSettingsPath);
+    }
+
+    private static PatchouliAppSettings LoadFile(PatchouliAppSettings defaults, string path)
+    {
 
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
             return defaults;
@@ -181,6 +191,7 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
     public void Save(string? settingsPath = null)
     {
         var path = ResolvePath(settingsPath);
+        AppPathGuard.ValidateMutablePath(path);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))
             Directory.CreateDirectory(directory);
@@ -364,26 +375,5 @@ public sealed record PatchouliAppSettings(AppRuntimeOptions Runtime, MinerUAppSe
         return value
             .Replace("{LocalAppData}", localAppData, StringComparison.OrdinalIgnoreCase)
             .Replace('/', Path.DirectorySeparatorChar);
-    }
-}
-
-internal static class AppSettingsLocator
-{
-    public static string? FindNearest(string fileName)
-    {
-        foreach (var start in new[] { Environment.CurrentDirectory, AppContext.BaseDirectory })
-        {
-            var directory = new DirectoryInfo(start);
-            while (directory is not null)
-            {
-                var candidate = Path.Combine(directory.FullName, fileName);
-                if (File.Exists(candidate))
-                    return candidate;
-
-                directory = directory.Parent;
-            }
-        }
-
-        return null;
     }
 }

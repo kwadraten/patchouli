@@ -8,7 +8,11 @@ public interface IAppLogger
 public sealed class SimpleFileLogger : IAppLogger
 {
     private readonly string _path;
-    public SimpleFileLogger(string directory) { _path = Path.Combine(directory, "patchouli.log"); }
+    public SimpleFileLogger(string directory)
+    {
+        _path = Path.Combine(directory, "patchouli.log");
+        AppPathGuard.ValidateMutablePath(_path);
+    }
     public Task LogAsync(string operation, string message)
     {
         var safe = Redact(message);

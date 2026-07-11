@@ -26,5 +26,15 @@
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Patchouli needs access to folders you select on the Desktop to find and read your literature files.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Patchouli needs access to folders you select in Documents to find and read your literature files.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Patchouli needs access to folders you select in Downloads to find and read your literature files.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Patchouli needs access to folders you select on network volumes to find and read your literature files.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Patchouli needs access to folders you select on removable volumes to find and read your literature files.</string>
 </dict>
 </plist>
