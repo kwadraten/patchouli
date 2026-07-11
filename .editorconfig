@@ -1,0 +1,36 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+
+[*.cs]
+csharp_style_namespace_declarations = file_scoped:warning
+csharp_style_implicit_object_creation_when_type_is_apparent = true:warning
+csharp_style_prefer_collection_expression = true:warning
+dotnet_style_predefined_type_for_locals_parameters_members = true:warning
+dotnet_sort_system_directives_first = true
+resharper_csharp_for_built_in_types = use_explicit_type
+resharper_csharp_for_simple_types = use_explicit_type
+resharper_csharp_for_other_types = use_explicit_type
+resharper_csharp_braces_for_ifelse = required
+resharper_csharp_braces_for_for = required
+resharper_csharp_braces_for_foreach = required
+resharper_csharp_braces_for_while = required
+resharper_csharp_braces_for_dowhile = required
+resharper_csharp_braces_for_using = required
+resharper_csharp_braces_for_lock = required
+resharper_csharp_parentheses_redundancy_style = remove_if_not_clarifies_precedence
+
+[*.axaml]
+indent_size = 2
+
+[**/{bin,obj}/**]
+generated_code = true
+
+[**/*.g.cs]
+generated_code = true
