@@ -334,7 +334,7 @@ public sealed class FirstRunViewModel : ViewModelBase
 
     public async Task ScanDirectoryAsync()
     {
-        if (string.IsNullOrWhiteSpace(ScanRoot))
+        if (SelectedScanRoot is null)
         {
             return;
         }
@@ -355,14 +355,14 @@ public sealed class FirstRunViewModel : ViewModelBase
         try
         {
             FirstRunImportResult result = _modalOperations is null
-                ? await _workflow.ScanAndImportAsync(ScanRoot, _state.CreatedLibraryId)
+                ? await _workflow.ScanAndImportAsync(SelectedScanRoot, _state.CreatedLibraryId)
                 : await _modalOperations.RunAsync(
                     new ModalOperationOptions(
                         "初次扫描与导入",
                         "正在扫描所选目录并导入 PDF 题录。",
                         true),
                     context => _workflow.ScanAndImportAsync(
-                        ScanRoot,
+                        SelectedScanRoot,
                         _state.CreatedLibraryId,
                         context.CancellationToken,
                         context.Report));

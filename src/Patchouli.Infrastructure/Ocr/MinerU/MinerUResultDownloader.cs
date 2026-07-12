@@ -1,9 +1,9 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json.Nodes;
-using MuPDF.NET;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Hashing;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using FileInfo = System.IO.FileInfo;
 
@@ -58,11 +58,14 @@ public sealed class MinerUResultDownloader
 {
     private readonly IMinerUClient _client;
     private readonly MinerUUploadLimits _limits;
+    private readonly PdfiumDocumentEngine _pdfium;
 
-    public MinerUResultDownloader(IMinerUClient client, MinerUUploadLimits? limits = null)
+    public MinerUResultDownloader(IMinerUClient client, MinerUUploadLimits? limits = null,
+        PdfiumDocumentEngine? pdfium = null)
     {
         _client = client;
         _limits = limits ?? MinerUUploadLimits.Default;
+        _pdfium = pdfium ?? new PdfiumDocumentEngine();
     }
 
     public async Task<Result<MinerUDownloadedResult>> UploadAndExtractAsync(
@@ -77,7 +80,7 @@ public sealed class MinerUResultDownloader
         }
 
         string dataId = await Blake3Hash.ComputeFileAsync(pdfPath, cancellationToken);
-        int? pageCount = GetPageCount(pdfPath);
+        int? pageCount = await GetPageCountAsync(pdfPath, cancellationToken);
         if (pageCount is null)
         {
             if (fileInfo.Length > _limits.MaxBytesPerFile)
@@ -156,12 +159,16 @@ public sealed class MinerUResultDownloader
         return await _client.WaitForCompletionAndDownloadAsync(batch.BatchId, downloadDirectory, cancellationToken);
     }
 
-    private static int? GetPageCount(string pdfPath)
+    private async Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken)
     {
         try
         {
-            using Document document = new(pdfPath);
-            return document.PageCount > 0 ? document.PageCount : null;
+            int pageCount = await _pdfium.GetPageCountAsync(pdfPath, cancellationToken);
+            return pageCount > 0 ? pageCount : null;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch
         {
@@ -181,10 +188,9 @@ public sealed class MinerUResultDownloader
         {
             Directory.CreateDirectory(chunkDirectory);
             List<ChunkUploadFile> uploadFiles = new();
-            using Document source = new(pdfPath);
             foreach (MinerUPdfChunk chunk in plannedChunks)
             {
-                await WriteChunkRecursiveAsync(source, originalFileName, sourceDataId, chunk, chunkDirectory,
+                await WriteChunkRecursiveAsync(pdfPath, originalFileName, sourceDataId, chunk, chunkDirectory,
                     uploadFiles, cancellationToken);
             }
 
@@ -203,7 +209,7 @@ public sealed class MinerUResultDownloader
     }
 
     private async Task WriteChunkRecursiveAsync(
-        Document source,
+        string sourcePath,
         string originalFileName,
         string sourceDataId,
         MinerUPdfChunk chunk,
@@ -213,11 +219,7 @@ public sealed class MinerUResultDownloader
     {
         cancellationToken.ThrowIfCancellationRequested();
         string path = Path.Combine(chunkDirectory, BuildChunkFileName(originalFileName, chunk));
-        using (Document output = new())
-        {
-            output.InsertPdf(source, chunk.StartPageIndex, chunk.EndPageIndex);
-            output.EzSave(path);
-        }
+        await _pdfium.ExtractPagesAsync(sourcePath, path, chunk.StartPageIndex, chunk.PageCount, cancellationToken);
 
         long size = new FileInfo(path).Length;
         if (size > _limits.MaxBytesPerFile)
@@ -231,9 +233,10 @@ public sealed class MinerUResultDownloader
             File.Delete(path);
             int leftCount = chunk.PageCount / 2;
             int rightCount = chunk.PageCount - leftCount;
-            await WriteChunkRecursiveAsync(source, originalFileName, sourceDataId, chunk with { PageCount = leftCount },
+            await WriteChunkRecursiveAsync(sourcePath, originalFileName, sourceDataId,
+                chunk with { PageCount = leftCount },
                 chunkDirectory, uploadFiles, cancellationToken);
-            await WriteChunkRecursiveAsync(source, originalFileName, sourceDataId,
+            await WriteChunkRecursiveAsync(sourcePath, originalFileName, sourceDataId,
                 new MinerUPdfChunk(chunk.StartPageIndex + leftCount, rightCount, chunk.EstimatedBytes / 2),
                 chunkDirectory, uploadFiles, cancellationToken);
             return;

@@ -135,6 +135,12 @@
                               Command="{Binding AddFileSearchRootCommand}" Padding="16,0" />
                     </Grid>
                     <Button Content="重新扫描" Command="{Binding RescanFileSearchRootsCommand}" HorizontalAlignment="Left" />
+                    <TextBlock Text="排除规则（每行一个正则表达式，匹配以 / 分隔的相对路径）" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBox Text="{Binding ExclusionPatternsText}" AcceptsReturn="True" MinHeight="120"
+                             FontFamily="Consolas, Menlo, monospace" />
+                    <Button Content="保存排除规则" Command="{Binding SaveExclusionPatternsCommand}"
+                            HorizontalAlignment="Left" />
                     <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">

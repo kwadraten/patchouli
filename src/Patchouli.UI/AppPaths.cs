@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace Patchouli.UI;
 
@@ -149,10 +150,12 @@ public sealed class TestAppPaths : IAppPaths
 
 public static class AppPathGuard
 {
-    public static void ValidateMutablePath(string path, string? applicationBaseDirectory = null)
+    public static void ValidateMutablePath(string path, string? applicationBaseDirectory = null,
+        IRealPathResolver? resolver = null)
     {
-        string resolved = ResolveRealPath(path);
-        string? bundle = FindBundleRoot(ResolveRealPath(applicationBaseDirectory ?? AppContext.BaseDirectory));
+        resolver ??= PlatformRealPathResolver.Instance;
+        string resolved = resolver.Resolve(path);
+        string? bundle = FindBundleRoot(resolver.Resolve(applicationBaseDirectory ?? AppContext.BaseDirectory));
         if (bundle is not null && IsWithin(resolved, bundle))
         {
             throw new InvalidOperationException($"Mutable path must not be inside the application package: {path}");
@@ -172,6 +175,11 @@ public static class AppPathGuard
     }
 
     internal static string ResolveRealPath(string path)
+    {
+        return PlatformRealPathResolver.Instance.Resolve(path);
+    }
+
+    internal static string ResolvePortablePath(string path)
     {
         string full = Path.GetFullPath(path);
         string root = Path.GetPathRoot(full)!;
@@ -219,4 +227,72 @@ public static class AppPathGuard
         return path.Equals(directory, comparison) ||
                path.StartsWith(Path.TrimEndingDirectorySeparator(directory) + Path.DirectorySeparatorChar, comparison);
     }
+}
+
+public interface IRealPathResolver
+{
+    string Resolve(string path);
+}
+
+public sealed class PlatformRealPathResolver : IRealPathResolver
+{
+    public static PlatformRealPathResolver Instance { get; } = new();
+
+    private PlatformRealPathResolver()
+    {
+    }
+
+    public string Resolve(string path)
+    {
+        string full = Path.GetFullPath(path);
+        if (OperatingSystem.IsWindows())
+        {
+            return AppPathGuard.ResolvePortablePath(full);
+        }
+
+        List<string> missingTail = new();
+        string? ancestor = full;
+        while (!string.IsNullOrWhiteSpace(ancestor) && !File.Exists(ancestor) && !Directory.Exists(ancestor))
+        {
+            string name = Path.GetFileName(ancestor);
+            if (!string.IsNullOrEmpty(name))
+            {
+                missingTail.Add(name);
+            }
+
+            ancestor = Path.GetDirectoryName(ancestor);
+        }
+
+        string canonical = ancestor is null ? Path.GetPathRoot(full)! : ResolveExisting(ancestor);
+        for (int index = missingTail.Count - 1; index >= 0; index--)
+        {
+            canonical = Path.Combine(canonical, missingTail[index]);
+        }
+
+        return Path.TrimEndingDirectorySeparator(Path.GetFullPath(canonical));
+    }
+
+    private static string ResolveExisting(string path)
+    {
+        IntPtr pointer = realpath(path, IntPtr.Zero);
+        if (pointer == IntPtr.Zero)
+        {
+            return AppPathGuard.ResolvePortablePath(path);
+        }
+
+        try
+        {
+            return Marshal.PtrToStringUTF8(pointer) ?? path;
+        }
+        finally
+        {
+            free(pointer);
+        }
+    }
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern IntPtr realpath([MarshalAs(UnmanagedType.LPUTF8Str)] string path, IntPtr resolvedPath);
+
+    [DllImport("libc")]
+    private static extern void free(IntPtr pointer);
 }

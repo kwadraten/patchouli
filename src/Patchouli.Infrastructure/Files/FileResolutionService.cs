@@ -38,25 +38,6 @@ public sealed class FileResolutionService : IFileResolutionService
         _rootAccess = rootAccess ?? new FileSearchRootAccess();
     }
 
-    [Obsolete("Use the SelectedFileSearchRoot overload; retained until the picker UI is migrated.")]
-    public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
-        string rootPath,
-        CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(rootPath))
-        {
-            return Result<FileSearchRoot>.Failure(AppErrorCodes.ValidationFailed, "Search root path is required.");
-        }
-
-        return await AddSearchRootAsync(new SelectedFileSearchRoot(
-            Path.GetFullPath(rootPath),
-            "legacy_path",
-            FileSearchRootAuthorizationKinds.None,
-            null,
-            null,
-            _clock.UtcNow), cancellationToken);
-    }
-
     public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
         SelectedFileSearchRoot selectedRoot,
         CancellationToken cancellationToken = default)
@@ -134,24 +115,48 @@ public sealed class FileResolutionService : IFileResolutionService
             Result<ResolvedFileSearchRoot> reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
             FileSearchRootTraversalResult scanSummary = reopened.IsSuccess
                 ? await _rootAccess.TraverseAsync(reopened.Value, cancellationToken)
-                : new FileSearchRootTraversalResult([], [], [], FileSearchRootStatuses.AuthorizationRequired,
+                : new FileSearchRootTraversalResult([], [], [], [], FileSearchRootStatuses.AuthorizationRequired,
                     FileSearchRootScanStatuses.Failed);
             if (reopened.IsSuccess)
             {
                 reopened.Value.AccessLease?.Dispose();
             }
 
+            await TryLogExclusionsAsync(scanOperationId, scanSummary.ExcludedEntries, cancellationToken);
+
+            bool scanComplete = isRootAvailable && scanSummary.ScanStatus == FileSearchRootScanStatuses.Complete;
+            if (root.IsAvailable != scanComplete)
+            {
+                root = root with { IsAvailable = scanComplete, UpdatedAt = _clock.UtcNow.ToUniversalTime() };
+                await connection.ExecuteAsync(
+                    "update file_search_roots set is_available = @IsAvailable, updated_at = @UpdatedAt where root_id = @RootId;",
+                    new { IsAvailable = scanComplete, UpdatedAt = root.UpdatedAt, RootId = root.RootId.ToString() },
+                    transaction);
+            }
+
             await transaction.CommitAsync(cancellationToken);
 
-            if (!root.IsAvailable)
+            if (scanSummary.ScanStatus == FileSearchRootScanStatuses.Cancelled)
+            {
+                if (_blockingOperations is not null && scanOperationId is not null)
+                {
+                    await _blockingOperations.CancelAsync(scanOperationId.Value, "Search root scan was cancelled.",
+                        ["Retry the root scan"], CancellationToken.None);
+                }
+            }
+            else if (scanSummary.ScanStatus != FileSearchRootScanStatuses.Complete)
             {
                 await TryFailRootScanAsync(
                     scanOperationId,
-                    AppErrorCodes.NotFound,
-                    "Search root directory is not currently available.",
-                    "Search root scan did not run because the directory is unavailable.",
+                    scanSummary.ScanStatus == FileSearchRootScanStatuses.Partial
+                        ? "scan_partial"
+                        : RootFailureCode(scanSummary.RootStatus),
+                    scanSummary.ScanStatus == FileSearchRootScanStatuses.Partial
+                        ? "Search root scan was incomplete."
+                        : "Search root scan failed.",
+                    $"Search root scan ended with status {scanSummary.ScanStatus}.",
                     ["Reconnect the search root", "Retry the root scan after the directory is available"],
-                    cancellationToken);
+                    CancellationToken.None);
             }
             else
             {
@@ -171,6 +176,34 @@ public sealed class FileResolutionService : IFileResolutionService
                                               "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileSearchRoot>(exception);
+        }
+    }
+
+    private static string RootFailureCode(string rootStatus)
+    {
+        return rootStatus switch
+        {
+            FileSearchRootStatuses.AccessDenied => "access_denied",
+            FileSearchRootStatuses.AuthorizationRequired => "authorization_required",
+            FileSearchRootStatuses.Offline => AppErrorCodes.NotFound,
+            _ => "scan_failed"
+        };
+    }
+
+    private async Task TryLogExclusionsAsync(BlockingOperationId? operationId,
+        IReadOnlyList<FileSearchRootExcludedEntry> excludedEntries, CancellationToken cancellationToken)
+    {
+        if (_blockingOperations is null || operationId is null)
+        {
+            return;
+        }
+
+        foreach (IGrouping<string, FileSearchRootExcludedEntry> group in excludedEntries.GroupBy(entry => entry.Rule,
+                     StringComparer.Ordinal))
+        {
+            await _blockingOperations.AddLogEntryAsync(operationId.Value, "info",
+                $"Excluded {group.Count()} path(s) by scan rule.", group.Key,
+                BlockingOperationScopeTypes.FileSearchRoot, null, cancellationToken);
         }
     }
 

@@ -1,0 +1,91 @@
+using System.Runtime.InteropServices;
+using Patchouli.Core.Layout;
+using SkiaSharp;
+
+namespace Patchouli.Ocr;
+
+public sealed class PdfRendererUnavailableException : Exception
+{
+    public PdfRendererUnavailableException(string message, Exception? innerException = null) : base(message,
+        innerException)
+    {
+    }
+}
+
+public sealed class PdfRendererTimeoutException : Exception
+{
+    public PdfRendererTimeoutException(string message, Exception? innerException = null) : base(message, innerException)
+    {
+    }
+}
+
+public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRenderer, IPdfPageRendererAvailability,
+    IPdfPageRendererIdentity
+{
+    private readonly PdfiumDocumentEngine _engine;
+
+    public PdfiumPdfPageRenderer(PdfiumDocumentEngine? engine = null)
+    {
+        _engine = engine ?? new PdfiumDocumentEngine();
+    }
+
+    public string GetRendererBasisVersion(int dpi)
+    {
+        return $"pdfium-{PdfiumDocumentEngine.Version}-dpi{dpi}";
+    }
+
+    public async Task<PdfRendererAvailability> CheckAvailabilityAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _engine.CheckAvailabilityAsync(cancellationToken);
+            return new PdfRendererAvailability("PDFium", true,
+                $"PDFium {PdfiumDocumentEngine.Version} renderer is available.");
+        }
+        catch (PdfRendererUnavailableException exception)
+        {
+            return new PdfRendererAvailability("PDFium", false, exception.Message);
+        }
+    }
+
+    public async Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath,
+        int dpi, CancellationToken cancellationToken = default)
+    {
+        PdfPageRasterOutput raster = await RenderPageToPngBytesAsync(pdfPath, pageIndex, dpi, cancellationToken);
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+        await File.WriteAllBytesAsync(outputPath, raster.PngBytes, cancellationToken);
+        return new PdfPageRenderOutput(raster.WidthPixels, raster.HeightPixels, raster.Rotation, raster.CoordinateBasis,
+            raster.BasisWidth, raster.BasisHeight, raster.RendererBasisVersion);
+    }
+
+    public async Task<PdfPageRasterOutput> RenderPageToPngBytesAsync(string pdfPath, int pageIndex, int dpi,
+        CancellationToken cancellationToken = default)
+    {
+        if (pageIndex < 0)
+        {
+            throw new InvalidOperationException("Page index must be non-negative.");
+        }
+
+        if (dpi is < 50 or > 600)
+        {
+            throw new InvalidOperationException("Render DPI must be between 50 and 600.");
+        }
+
+        PdfiumPageBitmap raster = await _engine.RenderPageAsync(pdfPath, pageIndex, dpi, cancellationToken);
+        using SKBitmap bitmap = new(new SKImageInfo(raster.Width, raster.Height, SKColorType.Bgra8888,
+            SKAlphaType.Premul));
+        IntPtr destination = bitmap.GetPixels();
+        int destinationStride = bitmap.RowBytes;
+        for (int row = 0; row < raster.Height; row++)
+        {
+            Marshal.Copy(raster.BgraBytes, row * raster.Stride, IntPtr.Add(destination, row * destinationStride),
+                raster.Width * 4);
+        }
+
+        using SKImage image = SKImage.FromBitmap(bitmap);
+        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+        byte[] bytes = png.ToArray();
+        return new PdfPageRasterOutput(bytes, raster.Width, raster.Height, 0, CoordinateBasis.NormalizedPage,
+            raster.Width, raster.Height, GetRendererBasisVersion(dpi));
+    }
+}

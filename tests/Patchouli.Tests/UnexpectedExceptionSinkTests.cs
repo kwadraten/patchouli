@@ -6,6 +6,12 @@ namespace Patchouli.Tests;
 public sealed class UnexpectedExceptionSinkTests
 {
     [Fact]
+    public void Bootstrap_sink_does_not_create_platform_storage()
+    {
+        UnexpectedExceptions.Sink.Should().BeOfType<RecordingUnexpectedExceptionSink>();
+    }
+
+    [Fact]
     public void File_sink_writes_context_stack_and_redacts_secrets()
     {
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-crash-{Guid.NewGuid():N}");

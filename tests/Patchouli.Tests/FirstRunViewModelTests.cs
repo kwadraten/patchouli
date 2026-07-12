@@ -3,6 +3,7 @@ using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
@@ -136,7 +137,8 @@ public sealed class FirstRunViewModelTests
         TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "full-document.pdf");
         FirstRunViewModel viewModel = new(context.Workflow, new PdfDiscoveryService())
         {
-            ScanRoot = context.ScanRoot
+            ScanRoot = context.ScanRoot,
+            SelectedScanRoot = SelectedRoot(context.ScanRoot)
         };
 
         await viewModel.ScanCommand.ExecuteAsync();
@@ -156,7 +158,8 @@ public sealed class FirstRunViewModelTests
         TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "full-document.pdf");
         FirstRunViewModel viewModel = new(context.Workflow, new PdfDiscoveryService())
         {
-            ScanRoot = context.ScanRoot
+            ScanRoot = context.ScanRoot,
+            SelectedScanRoot = SelectedRoot(context.ScanRoot)
         };
 
         await viewModel.ScanCommand.ExecuteAsync();
@@ -178,7 +181,8 @@ public sealed class FirstRunViewModelTests
         await using ScanImportContext context = await ScanImportContext.CreateAsync();
         FirstRunViewModel viewModel = new(context.Workflow, new PdfDiscoveryService())
         {
-            ScanRoot = context.ScanRoot
+            ScanRoot = context.ScanRoot,
+            SelectedScanRoot = SelectedRoot(context.ScanRoot)
         };
 
         await viewModel.ScanCommand.ExecuteAsync();
@@ -251,6 +255,12 @@ public sealed class FirstRunViewModelTests
         FieldInfo? field = typeof(FirstRunViewModel).GetField("_state",
             BindingFlags.Instance | BindingFlags.NonPublic);
         field!.SetValue(viewModel, state);
+    }
+
+    private static Core.Files.SelectedFileSearchRoot SelectedRoot(string path)
+    {
+        return new SelectedFileSearchRoot(path, "test_picker",
+            Core.Files.FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
     }
 
     private sealed class ScanImportContext : IAsyncDisposable

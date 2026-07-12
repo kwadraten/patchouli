@@ -3,7 +3,7 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.1.1}"
+version="${VERSION:-0.1.2}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/artifacts/publish/$runtime"
 app_dir="$root/artifacts/macos/Patchouli.Net.app"
@@ -19,8 +19,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 case "$runtime" in
-  osx-arm64) rust_target="aarch64-apple-darwin" ;;
-  osx-x64) rust_target="x86_64-apple-darwin" ;;
+  osx-arm64) rust_target="aarch64-apple-darwin"; pdfium_arch="arm64" ;;
+  osx-x64) rust_target="x86_64-apple-darwin"; pdfium_arch="x86_64" ;;
   *) echo "Unsupported macOS runtime: $runtime" >&2; exit 2 ;;
 esac
 
@@ -66,6 +66,25 @@ if [[ "$settings_count" != "1" || ! -f "$resources_dir/appsettings.json" || -e "
   echo "appsettings.json must exist exactly once, at Contents/Resources/appsettings.json." >&2
   exit 1
 fi
+
+pdfium_path="$macos_dir/libpdfium.dylib"
+if [[ ! -f "$pdfium_path" ]]; then
+  echo "PDFium native library was not published for $runtime." >&2
+  exit 1
+fi
+pdfium_description="$(file "$pdfium_path")"
+if [[ "$pdfium_description" != *"Mach-O"* || "$pdfium_description" != *"$pdfium_arch"* ]]; then
+  echo "PDFium native library has the wrong format or architecture: $pdfium_description" >&2
+  exit 1
+fi
+if find "$macos_dir" -type f -iname '*mupdf*' -print -quit | grep -q .; then
+  echo "A forbidden MuPDF payload remains in the macOS application bundle." >&2
+  exit 1
+fi
+
+# Exercise the native library on the packaging host before sealing the bundle.
+dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configuration" \
+  --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUResultDownloaderTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
 
 if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
   sign_identity="$APPLE_CODESIGN_IDENTITY"

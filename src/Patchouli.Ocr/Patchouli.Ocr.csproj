@@ -3,6 +3,7 @@
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="MuPDF.NET" />
+    <PackageReference Include="PDFiumCore" />
+    <PackageReference Include="SkiaSharp" />
   </ItemGroup>
 </Project>

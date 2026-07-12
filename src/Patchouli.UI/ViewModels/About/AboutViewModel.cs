@@ -71,7 +71,8 @@ public class AboutViewModel : ViewModelBase
             new("Dapper", "Apache 2.0", "https://github.com/DapperLib/Dapper", openUrlCommand),
             new("Microsoft.Data.Sqlite", "MIT", "https://github.com/dotnet/efcore", openUrlCommand),
             new("Blake3", "CC0 / Apache 2.0", "https://github.com/BLAKE3-team/BLAKE3", openUrlCommand),
-            new("MuPDF.NET", "AGPL v3.0", "https://github.com/ArtifexSoftware/mupdf.net", openUrlCommand),
+            new("PDFiumCore / PDFium", "Apache-2.0 / BSD-3-Clause",
+                "https://github.com/Dtronix/PDFiumCore", openUrlCommand),
             new("Hayagriva", "Apache 2.0 / MIT", "https://github.com/typst/hayagriva", openUrlCommand)
         };
     }

@@ -112,7 +112,9 @@ public sealed class RecordingUnexpectedExceptionSink : IUnexpectedExceptionSink
 
 public static class UnexpectedExceptions
 {
-    private static IUnexpectedExceptionSink _sink = CreateBootstrapSink();
+    private static IUnexpectedExceptionSink _sink =
+        new RecordingUnexpectedExceptionSink((exception, boundary, operation) =>
+            Trace.WriteLine($"Patchouli bootstrap error at {boundary}/{operation}: {exception}"));
 
     public static IUnexpectedExceptionSink Sink
     {
@@ -120,15 +122,9 @@ public static class UnexpectedExceptions
         set => Volatile.Write(ref _sink, value ?? throw new ArgumentNullException(nameof(value)));
     }
 
-    public static IUnexpectedExceptionSink CreateBootstrapSink()
+    public static void Configure(IAppPaths appPaths)
     {
-        try
-        {
-            return new FileUnexpectedExceptionSink(new PlatformAppPaths().Resolve().LogDirectory);
-        }
-        catch
-        {
-            return new FileUnexpectedExceptionSink(Path.Combine(Path.GetTempPath(), "Patchouli", "logs"));
-        }
+        ArgumentNullException.ThrowIfNull(appPaths);
+        Sink = new FileUnexpectedExceptionSink(appPaths.Resolve().LogDirectory);
     }
 }

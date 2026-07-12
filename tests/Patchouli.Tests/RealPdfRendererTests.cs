@@ -6,13 +6,13 @@ namespace Patchouli.Tests;
 public sealed class RealPdfRendererTests
 {
     [Fact]
-    public async Task ProductionPageRenderService_uses_mupdf_net_renderer()
+    public async Task ProductionPageRenderService_uses_pdfium_renderer()
     {
-        MuPdfNetPdfPageRenderer renderer = new();
+        PdfiumPdfPageRenderer renderer = new();
 
         PdfRendererAvailability status = await renderer.CheckAvailabilityAsync();
 
-        status.RendererName.Should().Be("MuPDF.NET");
+        status.RendererName.Should().Be("PDFium");
         status.IsAvailable.Should().BeTrue();
     }
 
@@ -23,7 +23,7 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact]
-    public async Task MuPdfNetRenderer_invalid_pdf_returns_render_failure()
+    public async Task PdfiumRenderer_invalid_pdf_returns_render_failure()
     {
         string pdf = Path.GetTempFileName();
         string output = Path.ChangeExtension(Path.GetTempFileName(), ".png");
@@ -31,7 +31,7 @@ public sealed class RealPdfRendererTests
 
         try
         {
-            MuPdfNetPdfPageRenderer renderer = new();
+            PdfiumPdfPageRenderer renderer = new();
             Func<Task<PdfPageRenderOutput>> action = () => renderer.RenderPageToPngAsync(pdf, 0, output, 200);
             await action.Should().ThrowAsync<Exception>();
         }
@@ -46,16 +46,16 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact]
-    public async Task MuPdfNetRenderer_invalid_page_index_returns_failure()
+    public async Task PdfiumRenderer_invalid_page_index_returns_failure()
     {
-        MuPdfNetPdfPageRenderer renderer = new();
+        PdfiumPdfPageRenderer renderer = new();
         Func<Task<PdfPageRenderOutput>> action = () =>
             renderer.RenderPageToPngAsync("fixture.pdf", -1, Path.GetTempFileName(), 200);
         await action.Should().ThrowAsync<InvalidOperationException>();
     }
 
     [Fact]
-    public async Task MuPdfNetRenderer_outputs_png_file_and_basis_version()
+    public async Task PdfiumRenderer_outputs_png_file_and_basis_version()
     {
         string pdf = Path.Combine(Path.GetTempPath(), $"fixture-{Guid.NewGuid():N}.pdf");
         string output = Path.ChangeExtension(pdf, ".png");
@@ -63,14 +63,14 @@ public sealed class RealPdfRendererTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MuPdfNetPdfPageRenderer renderer = new();
+            PdfiumPdfPageRenderer renderer = new();
 
             PdfPageRenderOutput result = await renderer.RenderPageToPngAsync(pdf, 0, output, 100);
 
             File.Exists(output).Should().BeTrue();
             result.WidthPixels.Should().BeGreaterThan(0);
             result.HeightPixels.Should().BeGreaterThan(0);
-            result.RendererBasisVersion.Should().Be("mupdf-net-dpi100");
+            result.RendererBasisVersion.Should().Be($"pdfium-{PdfiumDocumentEngine.Version}-dpi100");
         }
         finally
         {
@@ -87,16 +87,18 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact]
-    public void Production_services_wire_mupdf_net_pdf_renderer()
+    public void Production_services_wire_pdfium_pdf_renderer()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs")).Should()
-            .Contain("MuPdfNetPdfPageRenderer");
+            .Contain("PdfiumPdfPageRenderer");
     }
 
     [Fact]
-    public void Production_pdf_packages_include_mupdf_net()
+    public void Production_pdf_packages_include_pdfium_only()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props")).Should().Contain("MuPDF.NET");
+        string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
+        packages.Should().Contain("PDFiumCore");
+        packages.Should().NotContain("MuPDF.NET");
     }
 
     [Fact]

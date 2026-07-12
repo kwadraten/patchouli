@@ -56,28 +56,18 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
     public async Task SaveAsync()
     {
         Status = "正在保存...";
-        PatchouliAppSettings previous = _main.AppOptions;
-        try
+        MetadataLookupAppSettings settings = new(Sources
+            .Select(source => new MetadataSourcePreference(source.SourceId, source.Enabled))
+            .ToArray());
+        SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with { MetadataLookup = settings });
+        if (saved.IsSuccess)
         {
-            MetadataLookupAppSettings settings = new(Sources
-                .Select(source => new MetadataSourcePreference(source.SourceId, source.Enabled))
-                .ToArray());
-            _main.UpdateAppOptions(_main.AppOptions with { MetadataLookup = settings });
             IsDirty = false;
             Status = "已保存";
         }
-        catch (Exception ex)
+        else
         {
-            try
-            {
-                _main.UpdateAppOptions(previous);
-            }
-            catch
-            {
-                // Keep the in-memory settings consistent even when the file remains unwritable.
-            }
-
-            Status = $"保存失败：{ex.Message}";
+            Status = $"保存失败：{saved.ErrorMessage}";
         }
 
         await Task.CompletedTask;

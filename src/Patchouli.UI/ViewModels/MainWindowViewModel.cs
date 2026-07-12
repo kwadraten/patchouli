@@ -124,7 +124,12 @@ public sealed class MainWindowViewModel : ViewModelBase
                 return;
             }
 
-            UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryLeftSidebar = value } });
+            if (!UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryLeftSidebar = value } })
+                    .IsSuccess)
+            {
+                return;
+            }
+
             Raise();
             Raise(nameof(IsLibraryLeftSidebarVisible));
             Shell.RaisePageStateChanged();
@@ -141,7 +146,12 @@ public sealed class MainWindowViewModel : ViewModelBase
                 return;
             }
 
-            UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryRightSidebar = value } });
+            if (!UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryRightSidebar = value } })
+                    .IsSuccess)
+            {
+                return;
+            }
+
             Raise();
             Raise(nameof(IsLibraryRightSidebarVisible));
             Shell.RaisePageStateChanged();
@@ -219,14 +229,18 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public PatchouliAppSettings AppOptions => _settings;
 
-    public void UpdateAppOptions(PatchouliAppSettings settings)
-
+    public SettingsSaveResult UpdateAppOptions(PatchouliAppSettings settings)
     {
+        SettingsSaveResult saved = settings.Save(_settingsPath);
+        if (!saved.IsSuccess)
+        {
+            return saved;
+        }
+
         _settings = settings;
-
-        _settings.Save(_settingsPath);
-
         _services?.UpdateMetadataLookupPreferences(_settings.MetadataLookup);
+        _services?.UpdateFileScanExclusions(_settings.FileScanning);
+        return saved;
     }
 
     private void PersistRuntimeDatabasePathIfEnabled()
@@ -251,7 +265,14 @@ public sealed class MainWindowViewModel : ViewModelBase
         string? settingsPath = null, IModalOperationRunner? modalOperations = null)
     {
         _settingsPath = settingsPath;
-        _settings = PatchouliAppSettings.Load(settingsPath);
+        SettingsLoadFailure? settingsLoadFailure = null;
+        _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
+        if (settingsLoadFailure is not null)
+        {
+            Status = settingsLoadFailure.ErrorMessage;
+            StatusIsError = true;
+        }
+
         _runtimeDatabasePath = _settings.Runtime.RememberLastDatabase
             ? _settings.Runtime.RuntimeDatabasePath
             : AppRuntimeOptions.Default().RuntimeDatabasePath;
@@ -544,8 +565,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 using IDisposable? resolvedRoot = reopened.Value.AccessLease;
                 FileSearchRootScanResult scan =
                     await services.FileSearchRootAccess.ScanPdfAsync(reopened.Value, cancellationToken);
-                bool available = scan.RootStatus == FileSearchRootStatuses.Available ||
-                                 scan.RootStatus == FileSearchRootStatuses.Partial;
+                bool available = scan.ScanStatus == FileSearchRootScanStatuses.Complete &&
+                                 scan.RootStatus == FileSearchRootStatuses.Available;
                 await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, available, cancellationToken);
                 if (scan.ScanStatus == FileSearchRootScanStatuses.Partial)
                 {
@@ -559,6 +580,25 @@ public sealed class MainWindowViewModel : ViewModelBase
 
                 skippedDirectories += scan.SkippedDirectories.Count;
                 skippedFiles += scan.SkippedFiles.Count;
+                if (operationId is not null)
+                {
+                    foreach (IGrouping<string, FileSearchRootExcludedEntry> group in scan.ExcludedEntries.GroupBy(
+                                 entry => entry.Rule, StringComparer.Ordinal))
+                    {
+                        await services.BlockingOperations.AddLogEntryAsync(operationId.Value, "info",
+                            $"Excluded {group.Count()} path(s) by scan rule.", group.Key,
+                            BlockingOperationScopeTypes.FileSearchRoot, root.RootId.ToString(), cancellationToken);
+                    }
+                }
+
+                if (scan.ScanStatus != FileSearchRootScanStatuses.Complete)
+                {
+                    processedRoots++;
+                    progress?.Invoke(processedRoots, roots.Value.Count,
+                        $"文件搜索根扫描未完成：{scan.ScanStatus}", root.RootPath);
+                    continue;
+                }
+
                 scanned += scan.Candidates.Count;
                 foreach (PdfCandidate candidate in scan.Candidates)
                 {
@@ -1156,8 +1196,14 @@ public sealed class MainWindowViewModel : ViewModelBase
             return false;
         }
 
-        _settings = _settings with { MinerU = _settings.MinerU with { Token = trimmed } };
-        _settings.Save(_settingsPath);
+        SettingsSaveResult settingsSaved = UpdateAppOptions(
+            _settings with { MinerU = _settings.MinerU with { Token = trimmed } });
+        if (!settingsSaved.IsSuccess)
+        {
+            ReportError($"MinerU 设置保存失败：{settingsSaved.ErrorMessage}");
+            return false;
+        }
+
         Shell.MinerUToken = trimmed;
         FirstRun.MinerUToken = trimmed;
         Settings.MinerUTokenInput = trimmed;

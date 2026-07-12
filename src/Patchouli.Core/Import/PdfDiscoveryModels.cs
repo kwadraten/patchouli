@@ -14,6 +14,7 @@ public sealed record PdfScanResult(
     string ScanRoot,
     IReadOnlyList<Files.FileSearchRootIssue>? SkippedDirectories = null,
     IReadOnlyList<Files.FileSearchRootIssue>? SkippedFiles = null,
+    IReadOnlyList<Files.FileSearchRootExcludedEntry>? ExcludedEntries = null,
     string RootStatus = Files.FileSearchRootStatuses.Available,
     string ScanStatus = Files.FileSearchRootScanStatuses.Complete);
 

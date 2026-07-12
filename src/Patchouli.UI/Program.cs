@@ -10,6 +10,7 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        UnexpectedExceptions.Configure(new PlatformAppPaths());
         UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
             UnexpectedExceptions.Sink.Report(exception, boundary, operation));
         IUnexpectedExceptionSink sink = UnexpectedExceptions.Sink;

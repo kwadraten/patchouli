@@ -1,18 +1,19 @@
 using Patchouli.Core.Import;
-using MuPDF.NET;
+using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Workflows;
 
 public sealed class PdfMetadataReader : IPdfMetadataReader
 {
-    public Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
+    private readonly PdfiumDocumentEngine _engine;
+
+    public PdfMetadataReader(PdfiumDocumentEngine? engine = null)
     {
-        return Task.Run(() => GetPageCount(pdfPath, cancellationToken), cancellationToken);
+        _engine = engine ?? new PdfiumDocumentEngine();
     }
 
-    private static int? GetPageCount(string pdfPath, CancellationToken cancellationToken)
+    public async Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         if (!File.Exists(pdfPath))
         {
             return null;
@@ -20,9 +21,8 @@ public sealed class PdfMetadataReader : IPdfMetadataReader
 
         try
         {
-            using Document document = new(pdfPath);
-            cancellationToken.ThrowIfCancellationRequested();
-            return document.PageCount > 0 ? document.PageCount : null;
+            int pageCount = await _engine.GetPageCountAsync(pdfPath, cancellationToken);
+            return pageCount > 0 ? pageCount : null;
         }
         catch (OperationCanceledException)
         {

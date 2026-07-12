@@ -4,6 +4,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
+using Patchouli.Core.Files;
 
 namespace Patchouli.Infrastructure.Workflows;
 
@@ -42,11 +43,18 @@ public sealed class FirstRunWorkflow
     }
 
     public async Task<FirstRunWorkflowState> ScanDirectoryAsync(
-        string scanRoot, CancellationToken cancellationToken = default)
+        SelectedFileSearchRoot selectedRoot, CancellationToken cancellationToken = default)
     {
-        string normalizedRoot = Path.GetFullPath(scanRoot);
+        string normalizedRoot = Path.GetFullPath(selectedRoot.DisplayPath);
         BlockingOperationId? scanOperationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
-        PdfScanResult result = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
+        PdfScanResult result = await _pdfDiscoveryService.ScanDirectoryAsync(selectedRoot, cancellationToken);
+        FirstRunWorkflowState? scanFailure = await MapIncompleteScanAsync(scanOperationId, result,
+            cancellationToken);
+        if (scanFailure is not null)
+        {
+            return scanFailure;
+        }
+
         if (result.Candidates.Count == 0)
         {
             await TryFailInitialRootScanAsync(
@@ -72,15 +80,21 @@ public sealed class FirstRunWorkflow
     }
 
     public async Task<FirstRunImportResult> ScanAndImportAsync(
-        string scanRoot,
+        SelectedFileSearchRoot selectedRoot,
         string? libraryId,
         CancellationToken cancellationToken = default,
         Action<int?, int?, string, string?>? progress = null)
     {
-        string normalizedRoot = Path.GetFullPath(scanRoot);
+        string normalizedRoot = Path.GetFullPath(selectedRoot.DisplayPath);
         progress?.Invoke(null, null, "正在扫描 PDF 目录。", $"扫描目录：{normalizedRoot}");
         BlockingOperationId? operationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
-        PdfScanResult scan = await _pdfDiscoveryService.ScanDirectoryAsync(scanRoot, cancellationToken);
+        PdfScanResult scan = await _pdfDiscoveryService.ScanDirectoryAsync(selectedRoot, cancellationToken);
+        FirstRunWorkflowState? scanFailure = await MapIncompleteScanAsync(operationId, scan, cancellationToken);
+        if (scanFailure is not null)
+        {
+            return new FirstRunImportResult(scanFailure with { CreatedLibraryId = libraryId }, scan, 0, 0);
+        }
+
         if (scan.Candidates.Count == 0)
         {
             await TryFailInitialRootScanAsync(
@@ -224,6 +238,45 @@ public sealed class FirstRunWorkflow
         {
             return null;
         }
+    }
+
+    private async Task<FirstRunWorkflowState?> MapIncompleteScanAsync(BlockingOperationId? operationId,
+        PdfScanResult scan, CancellationToken cancellationToken)
+    {
+        if (scan.ScanStatus == FileSearchRootScanStatuses.Complete)
+        {
+            return null;
+        }
+
+        if (scan.ScanStatus == FileSearchRootScanStatuses.Cancelled)
+        {
+            if (_blockingOperations is not null && operationId is not null)
+            {
+                await _blockingOperations.CancelAsync(operationId.Value, "Initial PDF root scan was cancelled.",
+                    ["Retry the scan"], CancellationToken.None);
+            }
+
+            return new FirstRunWorkflowState(FirstRunStep.Scan, "扫描已取消。", null, null, null, null, null,
+                "扫描已取消。", false);
+        }
+
+        string code = scan.ScanStatus == FileSearchRootScanStatuses.Partial
+            ? "scan_partial"
+            : scan.RootStatus switch
+            {
+                FileSearchRootStatuses.AccessDenied => "access_denied",
+                FileSearchRootStatuses.AuthorizationRequired => "authorization_required",
+                FileSearchRootStatuses.Offline => AppErrorCodes.NotFound,
+                _ => "scan_failed"
+            };
+        string message = scan.ScanStatus == FileSearchRootScanStatuses.Partial
+            ? "The selected folder could only be scanned partially."
+            : "The selected folder could not be scanned.";
+        await TryFailInitialRootScanAsync(operationId, code, message, message,
+            ["Review inaccessible paths and retry", "Choose a different PDF folder"], CancellationToken.None);
+        return new FirstRunWorkflowState(FirstRunStep.Scan,
+            scan.ScanStatus == FileSearchRootScanStatuses.Partial ? "目录扫描不完整，未导入任何文件。" : "目录扫描失败。",
+            null, null, null, null, null, message, false);
     }
 
     private async Task TryCompleteInitialRootScanAsync(

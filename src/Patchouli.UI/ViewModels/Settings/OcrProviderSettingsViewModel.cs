@@ -45,9 +45,17 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase
             if (_main.AppOptions.MinerU.Token != value)
             {
                 PatchouliAppSettings options = _main.AppOptions;
-                _main.UpdateAppOptions(options with { MinerU = options.MinerU with { Token = value } });
-                Raise();
-                Raise(nameof(MinerUCredentialStatus));
+                SettingsSaveResult saved =
+                    _main.UpdateAppOptions(options with { MinerU = options.MinerU with { Token = value } });
+                if (saved.IsSuccess)
+                {
+                    Raise();
+                    Raise(nameof(MinerUCredentialStatus));
+                }
+                else
+                {
+                    Status = $"保存失败：{saved.ErrorMessage}";
+                }
             }
         }
     }

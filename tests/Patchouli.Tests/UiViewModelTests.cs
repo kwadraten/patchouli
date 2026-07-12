@@ -1044,6 +1044,25 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public void Invalid_settings_are_reported_in_the_status_bar()
+    {
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"ui-invalid-settings-{Guid.NewGuid():N}.json");
+        File.WriteAllText(settingsPath, "{ invalid json");
+        try
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath);
+
+            vm.StatusIsError.Should().BeTrue();
+            vm.Status.Should().Contain("设置文件格式无效");
+            vm.RuntimeDatabasePath.Should().NotBeNullOrWhiteSpace();
+        }
+        finally
+        {
+            File.Delete(settingsPath);
+        }
+    }
+
+    [Fact]
     public async Task Settings_save_mineru_token_updates_provider_credential_and_appsettings()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
@@ -1672,7 +1691,7 @@ public sealed class UiViewModelTests
                 vm.ShowSidebar.Should().BeFalse();
                 vm.IsInspectorVisible.Should().BeFalse();
                 vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
-                vm.PdfWorkspace.Status.Should().Contain("mupdf-net-dpi120");
+                vm.PdfWorkspace.Status.Should().Contain($"pdfium-{PdfiumDocumentEngine.Version}-dpi120");
                 Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
                 return true;
             }, CancellationToken.None);

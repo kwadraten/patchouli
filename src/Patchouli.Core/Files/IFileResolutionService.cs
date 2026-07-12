@@ -9,11 +9,6 @@ public interface IFileResolutionService
         SelectedFileSearchRoot selectedRoot,
         CancellationToken cancellationToken = default);
 
-    [Obsolete("Use the SelectedFileSearchRoot overload; retained until the picker UI is migrated.")]
-    Task<Result<FileSearchRoot>> AddSearchRootAsync(
-        string rootPath,
-        CancellationToken cancellationToken = default);
-
     Task<Result<IReadOnlyList<FileSearchRoot>>> ListSearchRootsAsync(
         CancellationToken cancellationToken = default);
 

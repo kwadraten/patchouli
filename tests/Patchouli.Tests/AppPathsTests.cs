@@ -103,4 +103,75 @@ public sealed class AppPathsTests
         action.Should().Throw<InvalidOperationException>();
         Directory.Exists(sync).Should().BeFalse();
     }
+
+    [Fact]
+    public void Settings_save_returns_structured_failure_and_leaves_no_temporary_file()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-settings-failure-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string blockingFile = Path.Combine(root, "not-a-directory");
+        File.WriteAllText(blockingFile, "occupied");
+        try
+        {
+            SettingsSaveResult result = PatchouliAppSettings.Default(new TestAppPaths(root))
+                .Save(Path.Combine(blockingFile, "settings.json"));
+
+            result.IsSuccess.Should().BeFalse();
+            result.ErrorCode.Should().Be("settings_io_failed");
+            result.PathCategory.Should().Be("user_settings");
+            Directory.EnumerateFiles(root, "*.tmp", SearchOption.AllDirectories).Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void Settings_load_reports_invalid_json_and_returns_defaults()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-settings-load-{Guid.NewGuid():N}");
+        TestAppPaths appPaths = new(root);
+        AppStorageLocations locations = appPaths.Resolve();
+        Directory.CreateDirectory(Path.GetDirectoryName(locations.UserSettingsPath)!);
+        File.WriteAllText(locations.UserSettingsPath, "{ invalid json");
+        SettingsLoadFailure? failure = null;
+        try
+        {
+            PatchouliAppSettings settings = PatchouliAppSettings.Load(appPaths, value => failure = value);
+
+            settings.Should().BeEquivalentTo(PatchouliAppSettings.Default(appPaths));
+            failure.Should().NotBeNull();
+            failure!.ErrorCode.Should().Be("settings_json_invalid");
+            failure.PathCategory.Should().Be("user_settings");
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public void Mutable_path_guard_uses_canonical_resolver_for_alias_boundary()
+    {
+        string bundle = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "Patchouli.Net.app"));
+        string alias = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "alias", "settings.json"));
+        IRealPathResolver resolver = new MappingRealPathResolver(alias,
+            Path.Combine(bundle, "Contents", "Resources", "settings.json"));
+
+        Action action = () => AppPathGuard.ValidateMutablePath(alias, Path.Combine(bundle, "Contents", "MacOS"),
+            resolver);
+
+        action.Should().Throw<InvalidOperationException>();
+    }
+
+    private sealed class MappingRealPathResolver(string source, string destination) : IRealPathResolver
+    {
+        public string Resolve(string path)
+        {
+            return string.Equals(Path.GetFullPath(path), source, StringComparison.Ordinal)
+                ? destination
+                : Path.GetFullPath(path);
+        }
+    }
 }

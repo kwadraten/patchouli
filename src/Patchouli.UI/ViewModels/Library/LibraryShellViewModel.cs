@@ -221,9 +221,17 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private void SetColumnVisibility(string key, bool value)
     {
-        _main.AppOptions.Ui.LibraryGridVisibleColumns[key] = value;
-        _main.AppOptions.Save(_main.SettingsFilePath);
-        Raise($"Show{key}Column");
+        Dictionary<string, bool> columns = new(_main.AppOptions.Ui.LibraryGridVisibleColumns,
+            StringComparer.Ordinal);
+        columns[key] = value;
+        SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with
+        {
+            Ui = _main.AppOptions.Ui with { LibraryGridVisibleColumns = columns }
+        });
+        if (saved.IsSuccess)
+        {
+            Raise($"Show{key}Column");
+        }
     }
 
     public bool TryGetColumnWidth(string key, out double width)
@@ -243,8 +251,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        _main.AppOptions.Ui.LibraryGridColumnWidths[key] = width;
-        _main.AppOptions.Save(_main.SettingsFilePath);
+        Dictionary<string, double> widths = new(_main.AppOptions.Ui.LibraryGridColumnWidths,
+            StringComparer.Ordinal);
+        widths[key] = width;
+        _main.UpdateAppOptions(_main.AppOptions with
+        {
+            Ui = _main.AppOptions.Ui with { LibraryGridColumnWidths = widths }
+        });
     }
 
     public void SetColumnOrder(string key, int order)
@@ -254,8 +267,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        _main.AppOptions.Ui.LibraryGridColumnOrder[key] = order;
-        _main.AppOptions.Save(_main.SettingsFilePath);
+        Dictionary<string, int> orders = new(_main.AppOptions.Ui.LibraryGridColumnOrder,
+            StringComparer.Ordinal);
+        orders[key] = order;
+        _main.UpdateAppOptions(_main.AppOptions with
+        {
+            Ui = _main.AppOptions.Ui with { LibraryGridColumnOrder = orders }
+        });
     }
 
     public void NotifyMinerUTokenChanged()

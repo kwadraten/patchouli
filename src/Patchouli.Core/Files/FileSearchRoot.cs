@@ -54,9 +54,12 @@ public static class FileSearchRootScanStatuses
 
 public sealed record FileSearchRootIssue(string Path, string Code, string Reason);
 
+public sealed record FileSearchRootExcludedEntry(string Path, string RelativePath, string Rule);
+
 public sealed record FileSearchRootScanResult(
     IReadOnlyList<Import.PdfCandidate> Candidates,
     IReadOnlyList<FileSearchRootIssue> SkippedDirectories,
     IReadOnlyList<FileSearchRootIssue> SkippedFiles,
+    IReadOnlyList<FileSearchRootExcludedEntry> ExcludedEntries,
     string RootStatus,
     string ScanStatus);

@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Patchouli.Core.Import;
+using System.Security;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
 
@@ -130,6 +132,33 @@ public sealed record MetadataLookupAppSettings(IReadOnlyList<MetadataSourcePrefe
     }
 }
 
+public sealed record FileScanningAppSettings(IReadOnlyList<string> ExclusionPatterns)
+{
+    public static FileScanningAppSettings Default()
+    {
+        return new FileScanningAppSettings(
+        [
+            @"(^|/)bin(/|$)", @"(^|/)obj(/|$)", @"(^|/)node_modules(/|$)", @"(^|/)\.git(/|$)",
+            @"(^|/)\.svn(/|$)", @"(^|/)\.hg(/|$)", @"(^|/)\.vs(/|$)"
+        ]);
+    }
+}
+
+public sealed record SettingsSaveResult(
+    bool IsSuccess,
+    string? ErrorCode,
+    string? ErrorMessage,
+    string PathCategory,
+    bool CanRetry)
+{
+    public static SettingsSaveResult Success { get; } = new(true, null, null, "user_settings", false);
+}
+
+public sealed record SettingsLoadFailure(
+    string ErrorCode,
+    string ErrorMessage,
+    string PathCategory);
+
 public sealed record PatchouliAppSettings(
     AppRuntimeOptions Runtime,
     MinerUAppSettings MinerU,
@@ -137,6 +166,7 @@ public sealed record PatchouliAppSettings(
     UiPreferences Ui)
 {
     public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
+    public FileScanningAppSettings FileScanning { get; init; } = FileScanningAppSettings.Default();
 
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
@@ -152,24 +182,27 @@ public sealed record PatchouliAppSettings(
             : Path.GetFullPath(settingsPath);
     }
 
-    public static PatchouliAppSettings Load(string? settingsPath = null)
+    public static PatchouliAppSettings Load(string? settingsPath = null,
+        Action<SettingsLoadFailure>? onFailure = null)
     {
         if (!string.IsNullOrWhiteSpace(settingsPath))
         {
-            return LoadFile(Default(), Path.GetFullPath(settingsPath));
+            return LoadFile(Default(), Path.GetFullPath(settingsPath), "user_settings", onFailure);
         }
 
-        return Load(new PlatformAppPaths());
+        return Load(new PlatformAppPaths(), onFailure);
     }
 
-    public static PatchouliAppSettings Load(IAppPaths appPaths)
+    public static PatchouliAppSettings Load(IAppPaths appPaths, Action<SettingsLoadFailure>? onFailure = null)
     {
         AppStorageLocations locations = appPaths.Resolve();
-        PatchouliAppSettings bundled = LoadFile(Default(appPaths), locations.BundledDefaultsPath);
-        return LoadFile(bundled, locations.UserSettingsPath);
+        PatchouliAppSettings bundled = LoadFile(Default(appPaths), locations.BundledDefaultsPath,
+            "bundled_defaults", onFailure);
+        return LoadFile(bundled, locations.UserSettingsPath, "user_settings", onFailure);
     }
 
-    private static PatchouliAppSettings LoadFile(PatchouliAppSettings defaults, string path)
+    private static PatchouliAppSettings LoadFile(PatchouliAppSettings defaults, string path, string pathCategory,
+        Action<SettingsLoadFailure>? onFailure)
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
@@ -185,6 +218,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? mcp = GetSection(root, "Mcp");
             JsonElement? ui = GetSection(root, "Ui");
             JsonElement? metadataLookup = GetSection(root, "MetadataLookup");
+            JsonElement? fileScanning = GetSection(root, "FileScanning");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -214,92 +248,125 @@ public sealed record PatchouliAppSettings(
                     ReadBool(ui, "ShowLibraryLeftSidebar", defaults.Ui.ShowLibraryLeftSidebar),
                     ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar)))
             {
-                MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup))
+                MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
+                FileScanning = new FileScanningAppSettings(
+                    ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns))
             };
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
+            UnexpectedExceptions.Sink.Report(exception, "settings-load", "parse-settings");
+            onFailure?.Invoke(new SettingsLoadFailure("settings_json_invalid",
+                $"设置文件格式无效，已使用默认值：{exception.Message}", pathCategory));
             return defaults;
         }
-        catch (IOException)
+        catch (IOException exception)
         {
+            UnexpectedExceptions.Sink.Report(exception, "settings-load", "read-settings");
+            onFailure?.Invoke(new SettingsLoadFailure("settings_io_failed",
+                $"无法读取设置文件，已使用默认值：{exception.Message}", pathCategory));
             return defaults;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException exception)
         {
+            UnexpectedExceptions.Sink.Report(exception, "settings-load", "read-settings");
+            onFailure?.Invoke(new SettingsLoadFailure("settings_access_denied",
+                $"没有权限读取设置文件，已使用默认值：{exception.Message}", pathCategory));
             return defaults;
         }
     }
 
-    public void Save(string? settingsPath = null)
+    public SettingsSaveResult Save(string? settingsPath = null)
     {
-        string path = ResolvePath(settingsPath);
-        AppPathGuard.ValidateMutablePath(path);
-        string? directory = Path.GetDirectoryName(path);
-        if (!string.IsNullOrWhiteSpace(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
-        JsonObject root;
+        string? temporaryPath = null;
         try
         {
-            root = File.Exists(path) && JsonNode.Parse(File.ReadAllText(path)) is JsonObject existing
-                ? existing
-                : new JsonObject();
-        }
-        catch (JsonException)
-        {
-            root = new JsonObject();
-        }
+            string path = ResolvePath(settingsPath);
+            AppPathGuard.ValidateMutablePath(path);
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
 
-        root["Patchouli"] = JsonSerializer.SerializeToNode(new
-        {
-            Runtime.RuntimeDatabasePath,
-            Runtime.DefaultSyncRoot,
-            Runtime.DefaultStagingRoot,
-            Runtime.LogDirectory,
-            Runtime.FileSearchRoot,
-            Runtime.RememberLastDatabase,
-            Runtime.UseMockOcrOnly
-        });
-        root["MinerU"] = JsonSerializer.SerializeToNode(new
-        {
-            MinerU.BaseUrl,
-            MinerU.ModelVersion,
-            MinerU.IsOcr,
-            MinerU.EnableTable,
-            MinerU.EnableFormula,
-            MinerU.Token
-        });
-        root["Mcp"] = JsonSerializer.SerializeToNode(new
-        {
-            Mcp.Port,
-            Mcp.BlockExternalAccess,
-            Mcp.ServerToken,
-            Mcp.DisabledTools
-        });
-        root["Ui"] = JsonSerializer.SerializeToNode(new
-        {
-            Ui.LibraryGridVisibleColumns,
-            Ui.LibraryGridColumnWidths,
-            Ui.LibraryGridColumnOrder,
-            Ui.ShowLibraryLeftSidebar,
-            Ui.ShowLibraryRightSidebar
-        });
-        root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
+            JsonObject root;
+            try
+            {
+                root = File.Exists(path) && JsonNode.Parse(File.ReadAllText(path)) is JsonObject existing
+                    ? existing
+                    : new JsonObject();
+            }
+            catch (JsonException)
+            {
+                root = new JsonObject();
+            }
 
-        string temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
-        try
-        {
+            root["Patchouli"] = JsonSerializer.SerializeToNode(new
+            {
+                Runtime.RuntimeDatabasePath,
+                Runtime.DefaultSyncRoot,
+                Runtime.DefaultStagingRoot,
+                Runtime.LogDirectory,
+                Runtime.FileSearchRoot,
+                Runtime.RememberLastDatabase,
+                Runtime.UseMockOcrOnly
+            });
+            root["MinerU"] = JsonSerializer.SerializeToNode(new
+            {
+                MinerU.BaseUrl,
+                MinerU.ModelVersion,
+                MinerU.IsOcr,
+                MinerU.EnableTable,
+                MinerU.EnableFormula,
+                MinerU.Token
+            });
+            root["Mcp"] = JsonSerializer.SerializeToNode(new
+            {
+                Mcp.Port,
+                Mcp.BlockExternalAccess,
+                Mcp.ServerToken,
+                Mcp.DisabledTools
+            });
+            root["Ui"] = JsonSerializer.SerializeToNode(new
+            {
+                Ui.LibraryGridVisibleColumns,
+                Ui.LibraryGridColumnWidths,
+                Ui.LibraryGridColumnOrder,
+                Ui.ShowLibraryLeftSidebar,
+                Ui.ShowLibraryRightSidebar
+            });
+            root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
+            root["FileScanning"] = JsonSerializer.SerializeToNode(new { FileScanning.ExclusionPatterns });
+
+            temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
             File.Move(temporaryPath, path, true);
+            temporaryPath = null;
+            return SettingsSaveResult.Success;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SecurityException
+                                              or InvalidOperationException)
+        {
+            string code = exception switch
+            {
+                UnauthorizedAccessException or SecurityException => "settings_access_denied",
+                InvalidOperationException => "settings_path_rejected",
+                _ => "settings_io_failed"
+            };
+            return new SettingsSaveResult(false, code, exception.Message, "user_settings", exception is IOException);
         }
         finally
         {
-            if (File.Exists(temporaryPath))
+            if (temporaryPath is not null && File.Exists(temporaryPath))
             {
-                File.Delete(temporaryPath);
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    _ = exception;
+                }
             }
         }
     }
@@ -449,6 +516,21 @@ public sealed record PatchouliAppSettings(
         }
 
         return result;
+    }
+
+    private static IReadOnlyList<string> ReadStringList(JsonElement? section, string name,
+        IReadOnlyList<string> fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty(name, out JsonElement values) || values.ValueKind != JsonValueKind.Array)
+        {
+            return fallback;
+        }
+
+        return values.EnumerateArray()
+            .Where(value => value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString()))
+            .Select(value => value.GetString()!.Trim())
+            .ToArray();
     }
 
     private static string ExpandPath(string value)

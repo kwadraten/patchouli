@@ -75,7 +75,7 @@ public sealed class AppServices
             new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
-        FileSearchRootAccess = new FileSearchRootAccess();
+        FileSearchRootAccess = new FileSearchRootAccess(exclusionPatterns: settings.FileScanning.ExclusionPatterns);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
             blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
         Pages = new PageService(ConnectionFactory, Clock);
@@ -93,7 +93,7 @@ public sealed class AppServices
         adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter());
 
         OcrAdapters = adapterRegistry;
-        MuPdfNetPdfPageRenderer pdfRenderer = new();
+        PdfiumPdfPageRenderer pdfRenderer = new();
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
             Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"));
@@ -145,7 +145,7 @@ public sealed class AppServices
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
-    public IFileSearchRootAccess FileSearchRootAccess { get; }
+    public FileSearchRootAccess FileSearchRootAccess { get; }
     public IPageService Pages { get; }
     public ILayoutTreeService Layout { get; }
     public IOcrPresetService OcrPresets { get; }
@@ -177,6 +177,11 @@ public sealed class AppServices
     public void UpdateMetadataLookupPreferences(MetadataLookupAppSettings settings)
     {
         _metadataLookupPreferences = ToMetadataLookupPreferences(settings);
+    }
+
+    public void UpdateFileScanExclusions(FileScanningAppSettings settings)
+    {
+        FileSearchRootAccess.UpdateExclusionPatterns(settings.ExclusionPatterns);
     }
 
     private static IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>

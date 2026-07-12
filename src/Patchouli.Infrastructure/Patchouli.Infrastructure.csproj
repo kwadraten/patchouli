@@ -10,7 +10,6 @@
     <PackageReference Include="Blake3" />
     <PackageReference Include="Dapper" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
-    <PackageReference Include="MuPDF.NET" />
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
         <_Parameter1>Patchouli.Tests</_Parameter1>
     </AssemblyAttribute>

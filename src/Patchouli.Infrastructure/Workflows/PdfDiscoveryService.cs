@@ -1,5 +1,6 @@
-using Patchouli.Core.Import;
 using Patchouli.Core.Files;
+using Patchouli.Core.Import;
+using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Files;
 
 namespace Patchouli.Infrastructure.Workflows;
@@ -13,17 +14,38 @@ public sealed class PdfDiscoveryService
         _rootAccess = rootAccess ?? new FileSearchRootAccess();
     }
 
-    public Task<PdfScanResult> ScanDirectoryAsync(string scanRoot, CancellationToken cancellationToken = default)
+    public async Task<PdfScanResult> ScanDirectoryAsync(SelectedFileSearchRoot selectedRoot,
+        CancellationToken cancellationToken = default)
     {
-        return ScanAsync(scanRoot, cancellationToken);
-    }
+        Result<ResolvedFileSearchRoot> reopened;
+        try
+        {
+            reopened = await _rootAccess.ResolveSelectedAsync(selectedRoot, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return new PdfScanResult([], 0, selectedRoot.DisplayPath, [], [], [],
+                FileSearchRootStatuses.Available, FileSearchRootScanStatuses.Cancelled);
+        }
 
-    private async Task<PdfScanResult> ScanAsync(string scanRoot, CancellationToken cancellationToken)
-    {
-        ResolvedFileSearchRoot resolved = new(scanRoot, Path.GetFullPath(scanRoot), "filesystem",
-            FileSearchRootAuthorizationKinds.None);
-        FileSearchRootScanResult result = await _rootAccess.ScanPdfAsync(resolved, cancellationToken);
-        return new PdfScanResult(result.Candidates, result.Candidates.Count, scanRoot, result.SkippedDirectories,
-            result.SkippedFiles, result.RootStatus, result.ScanStatus);
+        if (reopened.IsFailure)
+        {
+            return new PdfScanResult([], 0, selectedRoot.DisplayPath, [],
+                [new FileSearchRootIssue(selectedRoot.DisplayPath, reopened.ErrorCode!, reopened.ErrorMessage!)], [],
+                FileSearchRootStatuses.AuthorizationRequired, FileSearchRootScanStatuses.Failed);
+        }
+
+        ResolvedFileSearchRoot resolved = reopened.Value;
+        try
+        {
+            FileSearchRootScanResult result = await _rootAccess.ScanPdfAsync(resolved, cancellationToken);
+            return new PdfScanResult(result.Candidates, result.Candidates.Count, selectedRoot.DisplayPath,
+                result.SkippedDirectories, result.SkippedFiles, result.ExcludedEntries, result.RootStatus,
+                result.ScanStatus);
+        }
+        finally
+        {
+            resolved.AccessLease?.Dispose();
+        }
     }
 }

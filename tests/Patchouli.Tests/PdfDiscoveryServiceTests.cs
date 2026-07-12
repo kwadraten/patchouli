@@ -20,7 +20,7 @@ public sealed class PdfDiscoveryServiceTests
             File.WriteAllText(Path.Combine(dir, "readme.txt"), "not a pdf");
 
             PdfDiscoveryService service = new();
-            PdfScanResult result = await service.ScanDirectoryAsync(dir);
+            PdfScanResult result = await service.ScanDirectoryAsync(Selected(dir));
 
             result.Candidates.Should().HaveCount(2);
             result.TotalCount.Should().Be(2);
@@ -44,10 +44,13 @@ public sealed class PdfDiscoveryServiceTests
             TestFixtures.CopyRealThreePagePdfTo(Path.Combine(dir, "bin"), "output.pdf");
             TestFixtures.CopyRealThreePagePdfTo(Path.Combine(dir, "obj"), "temp.pdf");
 
-            PdfDiscoveryService service = new();
-            PdfScanResult result = await service.ScanDirectoryAsync(dir);
+            PdfDiscoveryService service = new(new FileSearchRootAccess(exclusionPatterns:
+                [@"(^|/)bin(/|$)", @"(^|/)obj(/|$)"]));
+            PdfScanResult result = await service.ScanDirectoryAsync(Selected(dir));
 
             result.Candidates.Should().HaveCount(1);
+            result.ExcludedEntries.Should().HaveCount(2);
+            result.ScanStatus.Should().Be(FileSearchRootScanStatuses.Complete);
         }
         finally
         {
@@ -59,7 +62,7 @@ public sealed class PdfDiscoveryServiceTests
     public async Task ScanDirectoryAsync_returns_empty_for_nonexistent_directory()
     {
         PdfDiscoveryService service = new();
-        PdfScanResult result = await service.ScanDirectoryAsync("X:\\nonexistent\\path");
+        PdfScanResult result = await service.ScanDirectoryAsync(Selected("X:\\nonexistent\\path"));
 
         result.Candidates.Should().BeEmpty();
         result.TotalCount.Should().Be(0);
@@ -77,7 +80,7 @@ public sealed class PdfDiscoveryServiceTests
             TestFixtures.CopyRealThreePagePdfTo(dir, "upper.PDF");
             TestFixtures.CopyRealThreePagePdfTo(dir, "mixed.Pdf");
 
-            PdfScanResult result = await new PdfDiscoveryService().ScanDirectoryAsync(dir);
+            PdfScanResult result = await new PdfDiscoveryService().ScanDirectoryAsync(Selected(dir));
 
             result.Candidates.Should().HaveCount(2);
             result.ScanStatus.Should().Be(FileSearchRootScanStatuses.Complete);
@@ -99,7 +102,7 @@ public sealed class PdfDiscoveryServiceTests
             string denied = Directory.CreateDirectory(Path.Combine(dir, "denied")).FullName;
             PdfDiscoveryService service = new(new FileSearchRootAccess(new DeniedDirectoryAdapter(denied)));
 
-            PdfScanResult result = await service.ScanDirectoryAsync(dir);
+            PdfScanResult result = await service.ScanDirectoryAsync(Selected(dir));
 
             result.Candidates.Should().ContainSingle();
             result.ScanStatus.Should().Be(FileSearchRootScanStatuses.Partial);
@@ -112,6 +115,34 @@ public sealed class PdfDiscoveryServiceTests
         }
     }
 
+    [Fact]
+    public async Task ScanDirectoryAsync_returns_cancelled_when_directory_resolution_is_cancelled()
+    {
+        string dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"pdfscan-{Guid.NewGuid():N}"))
+            .FullName;
+        try
+        {
+            using CancellationTokenSource cancellation = new();
+            cancellation.Cancel();
+            PdfDiscoveryService service = new(new FileSearchRootAccess(new CancellingDirectoryAdapter()));
+
+            PdfScanResult result = await service.ScanDirectoryAsync(Selected(dir), cancellation.Token);
+
+            result.ScanStatus.Should().Be(FileSearchRootScanStatuses.Cancelled);
+            result.Candidates.Should().BeEmpty();
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    private static SelectedFileSearchRoot Selected(string path)
+    {
+        return new SelectedFileSearchRoot(path, "test_picker",
+            FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
+    }
+
     private sealed class DeniedDirectoryAdapter(string deniedPath) : INativeFileAccessAdapter
     {
         private readonly PortableNativeFileAccessAdapter _inner = new();
@@ -119,7 +150,8 @@ public sealed class PdfDiscoveryServiceTests
         public ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(string path,
             CancellationToken cancellationToken)
         {
-            return string.Equals(path, deniedPath, StringComparison.OrdinalIgnoreCase)
+            return string.Equals(Path.GetFileName(Path.TrimEndingDirectorySeparator(path)),
+                Path.GetFileName(Path.TrimEndingDirectorySeparator(deniedPath)), StringComparison.OrdinalIgnoreCase)
                 ? ValueTask.FromResult(new NativeDirectoryResolution(null, "access_denied", "Test denial."))
                 : _inner.ResolveDirectoryAsync(path, cancellationToken);
         }
@@ -128,6 +160,21 @@ public sealed class PdfDiscoveryServiceTests
             CancellationToken cancellationToken)
         {
             return _inner.MaterializeFileAsync(path, cancellationToken);
+        }
+    }
+
+    private sealed class CancellingDirectoryAdapter : INativeFileAccessAdapter
+    {
+        public ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(string path,
+            CancellationToken cancellationToken)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        public ValueTask<NativeFileMaterialization> MaterializeFileAsync(string path,
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new NativeFileMaterialization(true));
         }
     }
 }

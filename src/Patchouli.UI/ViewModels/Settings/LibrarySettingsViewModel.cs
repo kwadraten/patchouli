@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Infrastructure.Files;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -20,6 +21,8 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
         _main = main;
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
+        SaveExclusionPatternsCommand = new AsyncCommand(SaveExclusionPatternsAsync);
+        ExclusionPatternsText = string.Join(Environment.NewLine, _main.AppOptions.FileScanning.ExclusionPatterns);
         LoadFileSearchRootsAsync().Observe(nameof(LibrarySettingsViewModel), nameof(LoadFileSearchRootsAsync));
     }
 
@@ -59,24 +62,18 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
             if (_main.AppOptions.Runtime.RememberLastDatabase != value)
             {
                 PatchouliAppSettings options = _main.AppOptions;
-                _main.UpdateAppOptions(options with
-                {
-                    Runtime = options.Runtime with { RememberLastDatabase = value }
-                });
+                AppRuntimeOptions runtime = options.Runtime with { RememberLastDatabase = value };
                 if (value)
                 {
-                    PatchouliAppSettings updated = _main.AppOptions;
-                    _main.UpdateAppOptions(updated with
-                    {
-                        Runtime = updated.Runtime with
-                        {
-                            RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath)
-                        }
-                    });
+                    runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
                 }
 
-                Raise();
-                Status = "已保存";
+                SettingsSaveResult saved = _main.UpdateAppOptions(options with { Runtime = runtime });
+                Status = saved.IsSuccess ? "已保存" : $"保存失败：{saved.ErrorMessage}";
+                if (saved.IsSuccess)
+                {
+                    Raise();
+                }
             }
         }
     }
@@ -87,6 +84,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
     }
 
     public string FileSearchRootInput { get; set; } = "";
+    public string ExclusionPatternsText { get; set; }
     public SelectedFileSearchRoot? SelectedFileSearchRoot { get; set; }
     public ObservableCollection<FileSearchRootSettingsRowViewModel> FileSearchRoots => _fileSearchRoots;
 
@@ -106,6 +104,25 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
 
     public AsyncCommand AddFileSearchRootCommand { get; }
     public AsyncCommand RescanFileSearchRootsCommand { get; }
+    public AsyncCommand SaveExclusionPatternsCommand { get; }
+
+    private async Task SaveExclusionPatternsAsync()
+    {
+        string[] patterns = ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
+                                                                      StringSplitOptions.TrimEntries);
+        if (!FileSearchRootAccess.TryValidateExclusionPatterns(patterns, out string? error))
+        {
+            Status = $"排除规则无效：{error}";
+            return;
+        }
+
+        SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with
+        {
+            FileScanning = new FileScanningAppSettings(patterns)
+        });
+        Status = saved.IsSuccess ? "排除规则已保存。" : $"保存失败：{saved.ErrorMessage}";
+        await Task.CompletedTask;
+    }
 
     private async Task AddFileSearchRootAsync()
     {
