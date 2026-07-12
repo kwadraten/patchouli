@@ -1,11 +1,13 @@
+using System.Runtime.InteropServices;
+using Avalonia;
 using Avalonia.Media.Imaging;
+using Avalonia.Platform;
 using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Ocr;
 using System.Linq;
-using Avalonia;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Results;
 
@@ -623,16 +625,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            PdfPageRasterOutput raster =
-                await services.PdfPreviewRenderer.RenderPageToPngBytesAsync(resolution.Value.ResolvedPath,
+            PdfPagePixelBufferOutput raster =
+                await services.PdfPreviewRenderer.RenderPageToBgraBytesAsync(resolution.Value.ResolvedPath,
                     page.PageIndex, 120);
             if (generation != _renderGeneration)
             {
                 return;
             }
 
-            await using MemoryStream stream = new(raster.PngBytes);
-            Image = new Bitmap(stream);
+            Image = CreateBitmap(raster);
             _widthPixels = raster.WidthPixels;
             _heightPixels = raster.HeightPixels;
 
@@ -683,6 +684,20 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             "select file_asset_id from document_instances where document_instance_id = @Id;",
             new { Id = documentInstanceId.ToString() });
         return string.IsNullOrWhiteSpace(id) ? null : FileAssetId.Parse(id);
+    }
+
+    private static WriteableBitmap CreateBitmap(PdfPagePixelBufferOutput raster)
+    {
+        GCHandle pixels = GCHandle.Alloc(raster.BgraBytes, GCHandleType.Pinned);
+        try
+        {
+            return new WriteableBitmap(PixelFormat.Bgra8888, AlphaFormat.Premul, pixels.AddrOfPinnedObject(),
+                new PixelSize(raster.WidthPixels, raster.HeightPixels), new Vector(96, 96), raster.Stride);
+        }
+        finally
+        {
+            pixels.Free();
+        }
     }
 
     private async Task LoadNodesAsync(PageId pageId, LayoutRevisionId revisionId)

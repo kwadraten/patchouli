@@ -87,10 +87,35 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact]
+    public async Task PdfiumRenderer_outputs_bgra_pixel_buffer_for_preview()
+    {
+        PdfiumPdfPageRenderer renderer = new();
+
+        PdfPagePixelBufferOutput raster = await renderer.RenderPageToBgraBytesAsync(TestFixtures.RealThreePagePdf, 0,
+            100);
+
+        raster.WidthPixels.Should().BeGreaterThan(0);
+        raster.HeightPixels.Should().BeGreaterThan(0);
+        raster.Stride.Should().BeGreaterThanOrEqualTo(raster.WidthPixels * 4);
+        raster.BgraBytes.Length.Should().Be(raster.Stride * raster.HeightPixels);
+        renderer.Should().BeAssignableTo<IPdfPagePixelBufferRenderer>();
+    }
+
+    [Fact]
     public void Production_services_wire_pdfium_pdf_renderer()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs")).Should()
             .Contain("PdfiumPdfPageRenderer");
+    }
+
+    [Fact]
+    public void Pdf_workspace_uses_pdfium_pixel_buffer_without_png_decode()
+    {
+        string workspace = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels",
+            "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        workspace.Should().Contain("RenderPageToBgraBytesAsync");
+        workspace.Should().NotContain("RenderPageToPngBytesAsync");
     }
 
     [Fact]

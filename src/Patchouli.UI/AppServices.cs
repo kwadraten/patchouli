@@ -152,7 +152,7 @@ public sealed class AppServices
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
     public IPageRenderService PageRenders { get; }
-    public IPdfPageMemoryRenderer PdfPreviewRenderer { get; }
+    public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
     public IOcrRunCoordinator Ocr { get; }
     public ISearchUnitBuilder SearchUnits { get; }

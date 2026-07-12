@@ -20,7 +20,7 @@ public sealed class PdfRendererTimeoutException : Exception
 }
 
 public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRenderer, IPdfPageRendererAvailability,
-    IPdfPageRendererIdentity
+    IPdfPageRendererIdentity, IPdfPagePixelBufferRenderer
 {
     private readonly PdfiumDocumentEngine _engine;
 
@@ -61,6 +61,28 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
     public async Task<PdfPageRasterOutput> RenderPageToPngBytesAsync(string pdfPath, int pageIndex, int dpi,
         CancellationToken cancellationToken = default)
     {
+        PdfPagePixelBufferOutput raster =
+            await RenderPageToBgraBytesAsync(pdfPath, pageIndex, dpi, cancellationToken);
+        using SKBitmap bitmap = new(new SKImageInfo(raster.WidthPixels, raster.HeightPixels, SKColorType.Bgra8888,
+            SKAlphaType.Premul));
+        IntPtr destination = bitmap.GetPixels();
+        int destinationStride = bitmap.RowBytes;
+        for (int row = 0; row < raster.HeightPixels; row++)
+        {
+            Marshal.Copy(raster.BgraBytes, row * raster.Stride, IntPtr.Add(destination, row * destinationStride),
+                raster.WidthPixels * 4);
+        }
+
+        using SKImage image = SKImage.FromBitmap(bitmap);
+        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
+        byte[] bytes = png.ToArray();
+        return new PdfPageRasterOutput(bytes, raster.WidthPixels, raster.HeightPixels, raster.Rotation,
+            raster.CoordinateBasis, raster.BasisWidth, raster.BasisHeight, raster.RendererBasisVersion);
+    }
+
+    public async Task<PdfPagePixelBufferOutput> RenderPageToBgraBytesAsync(string pdfPath, int pageIndex, int dpi,
+        CancellationToken cancellationToken = default)
+    {
         if (pageIndex < 0)
         {
             throw new InvalidOperationException("Page index must be non-negative.");
@@ -72,20 +94,7 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
         }
 
         PdfiumPageBitmap raster = await _engine.RenderPageAsync(pdfPath, pageIndex, dpi, cancellationToken);
-        using SKBitmap bitmap = new(new SKImageInfo(raster.Width, raster.Height, SKColorType.Bgra8888,
-            SKAlphaType.Premul));
-        IntPtr destination = bitmap.GetPixels();
-        int destinationStride = bitmap.RowBytes;
-        for (int row = 0; row < raster.Height; row++)
-        {
-            Marshal.Copy(raster.BgraBytes, row * raster.Stride, IntPtr.Add(destination, row * destinationStride),
-                raster.Width * 4);
-        }
-
-        using SKImage image = SKImage.FromBitmap(bitmap);
-        using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
-        byte[] bytes = png.ToArray();
-        return new PdfPageRasterOutput(bytes, raster.Width, raster.Height, 0, CoordinateBasis.NormalizedPage,
-            raster.Width, raster.Height, GetRendererBasisVersion(dpi));
+        return new PdfPagePixelBufferOutput(raster.BgraBytes, raster.Width, raster.Height, raster.Stride, 0,
+            CoordinateBasis.NormalizedPage, raster.Width, raster.Height, GetRendererBasisVersion(dpi));
     }
 }

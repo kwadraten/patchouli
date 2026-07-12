@@ -77,6 +77,17 @@ public sealed record PdfPageRasterOutput(
     double BasisHeight,
     string RendererBasisVersion);
 
+public sealed record PdfPagePixelBufferOutput(
+    byte[] BgraBytes,
+    int WidthPixels,
+    int HeightPixels,
+    int Stride,
+    int Rotation,
+    string CoordinateBasis,
+    double BasisWidth,
+    double BasisHeight,
+    string RendererBasisVersion);
+
 public interface IPdfPageRenderer
 {
     Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath, int dpi,
@@ -86,6 +97,12 @@ public interface IPdfPageRenderer
 public interface IPdfPageMemoryRenderer
 {
     Task<PdfPageRasterOutput> RenderPageToPngBytesAsync(string pdfPath, int pageIndex, int dpi,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IPdfPagePixelBufferRenderer
+{
+    Task<PdfPagePixelBufferOutput> RenderPageToBgraBytesAsync(string pdfPath, int pageIndex, int dpi,
         CancellationToken cancellationToken = default);
 }
 
