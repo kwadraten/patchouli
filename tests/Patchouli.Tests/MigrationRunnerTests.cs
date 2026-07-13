@@ -54,7 +54,7 @@ public sealed class MigrationRunnerTests
         firstRun.Should().Contain(m => m.Id == "006" && m.Name == "006_create_ocr_lifecycle");
         firstRun.Should().Contain(m => m.Id == "007" && m.Name == "007_create_search_units_and_fts");
         firstRun.Should().Contain(m => m.Id == "008" && m.Name == "008_create_evidence_refs");
-        firstRun.Should().Contain(m => m.Id == "009" && m.Name == "009_create_provider_credentials");
+        firstRun.Should().NotContain(m => m.Id == "009");
         firstRun.Should().HaveCount(expectedMigrationCount);
         secondRun.Should().BeEmpty();
         appliedCount.Should().Be(expectedMigrationCount);

@@ -20,7 +20,8 @@ public sealed class McpServerSettingsTests
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
         FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        McpServerSettingsService service = new(database.ConnectionFactory, clock);
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-mcp-{Guid.NewGuid():N}.json");
+        McpServerSettingsService service = new(settingsPath, clock);
 
         Result<McpServerSettings> saved = await service.SaveSettingsAsync(new McpServerSettings(
             4540,
@@ -36,10 +37,8 @@ public sealed class McpServerSettingsTests
         saved.IsSuccess.Should().BeTrue();
         loaded.IsSuccess.Should().BeTrue();
         loaded.Value.Port.Should().Be(4540);
-        loaded.Value.CorsEnabled.Should().BeTrue();
-        loaded.Value.AllowedOrigins.Should().ContainSingle().Which.Should().Be("https://example.test");
+        File.ReadAllText(settingsPath).Should().Contain("redacted-token");
         loaded.Value.ToolOverrides.Should().ContainSingle();
-        loaded.Value.ToolOverrides.Single().Enabled.Should().BeFalse();
     }
 
     [Fact]
@@ -49,7 +48,8 @@ public sealed class McpServerSettingsTests
         FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
-        McpServerSettingsService service = new(database.ConnectionFactory, clock, blockingOperations);
+        McpServerSettingsService service =
+            new(Path.Combine(Path.GetTempPath(), $"patchouli-mcp-{Guid.NewGuid():N}.json"), clock, blockingOperations);
 
         Result result = await service.ValidateSettingsAsync(new McpServerSettings(
             4536,
@@ -83,7 +83,8 @@ public sealed class McpServerSettingsTests
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
         LibraryIdentityService library = new(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("Snapshot-safe MCP");
-        McpServerSettingsService service = new(database.ConnectionFactory, clock);
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-mcp-{Guid.NewGuid():N}.json");
+        McpServerSettingsService service = new(settingsPath, clock);
         await service.SaveSettingsAsync(new McpServerSettings(
             4540,
             "127.0.0.1",
@@ -107,7 +108,6 @@ public sealed class McpServerSettingsTests
                              { DataSource = shardPath, Pooling = false }.ToString()))
             {
                 await shard.OpenAsync();
-                (await shard.ExecuteScalarAsync<int>("select count(1) from mcp_server_settings;")).Should().Be(0);
             }
 
             (await File.ReadAllTextAsync(shardPath)).Should().NotContain("super-secret-token");

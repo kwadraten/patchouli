@@ -372,24 +372,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
-            IEnumerable<CredentialRow> credentialRows = await source.QueryAsync<CredentialRow>(
-                """
-                select distinct provider_id as ProviderId, display_name as DisplayName
-                from provider_credentials
-                order by provider_id, display_name;
-                """);
-            ConflictDescriptor[] credentialConflicts = credentialRows
-                .Select(row => ConflictDescriptorMapper.CredentialNotImported(row.ProviderId, row.DisplayName))
-                .ToArray();
-            if (credentialConflicts.Length == 0)
-            {
-                conflicts.Add(ConflictDescriptorMapper.CredentialNotImported("*"));
-            }
-            else
-            {
-                conflicts.AddRange(credentialConflicts);
-            }
-
             ItemId[] itemsToImport = selectedItems.Select(ItemId.Parse).ToArray();
             DocumentInstanceId[] documentsToImport = documentList.Select(DocumentInstanceId.Parse).ToArray();
 
@@ -629,11 +611,5 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         public string Id { get; set; } = "";
         public string Title { get; set; } = "";
         public string ItemType { get; set; } = "";
-    }
-
-    private sealed class CredentialRow
-    {
-        public string ProviderId { get; set; } = "";
-        public string? DisplayName { get; set; }
     }
 }

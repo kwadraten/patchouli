@@ -433,7 +433,7 @@ public sealed class SnapshotTests
     {
         Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName)
             .Where(name => name!.Contains("credential", StringComparison.OrdinalIgnoreCase)).Should()
-            .Equal("009_create_provider_credentials.sql");
+            .BeEmpty();
     }
 
     private static SqliteConnection OpenShard(string syncRoot, SnapshotShard shard)

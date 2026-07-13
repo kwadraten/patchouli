@@ -55,8 +55,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         ["search_profiles", "search_rewrite_rules", "search_settings"]
     ];
 
-    private static readonly string[] CredentialTables = ["provider_credentials", "provider_credential_bindings"];
-    private static readonly string[] LocalOnlyTables = ["mcp_server_settings", "mcp_tool_overrides"];
     private readonly IClock _clock;
 
     public SnapshotPublisher(IClock clock)
@@ -183,19 +181,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         if (exists > 0)
         {
             await connection.ExecuteAsync("delete from search_units_fts;");
-        }
-    }
-
-    public static async Task RedactCredentialsAsync(string shardPath)
-    {
-        await using SqliteConnection connection = new(BuildConnectionString(shardPath, SqliteOpenMode.ReadWriteCreate));
-        await connection.OpenAsync();
-        int exists =
-            await connection.ExecuteScalarAsync<int>(
-                "select count(1) from sqlite_master where name = 'provider_credentials';");
-        if (exists > 0)
-        {
-            await connection.ExecuteAsync("update provider_credentials set secret_value = '[redacted]';");
         }
     }
 
@@ -464,21 +449,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 }
             }
 
-            foreach (string table in CredentialTables)
-            {
-                if (await TableExistsAsync(connection, table))
-                {
-                    await connection.ExecuteAsync($"delete from {table};");
-                }
-            }
-
-            foreach (string table in LocalOnlyTables)
-            {
-                if (await TableExistsAsync(connection, table))
-                {
-                    await connection.ExecuteAsync($"delete from {table};");
-                }
-            }
 
             if (await TableExistsAsync(connection, "search_units_fts"))
             {
@@ -566,55 +536,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
     private readonly record struct RowIdRange(long MinRowId, long MaxRowId);
 
-    private static async Task<SnapshotShard?> CreateCredentialShardAsync(string runtimePath, string syncRoot,
-        string snapshotId)
-    {
-        await using SqliteConnection source = new(BuildConnectionString(runtimePath, SqliteOpenMode.ReadOnly));
-        await source.OpenAsync();
-        int exists =
-            await source.ExecuteScalarAsync<int>(
-                "select count(1) from sqlite_master where name = 'provider_credentials';");
-        if (exists == 0)
-        {
-            return null;
-        }
-
-        string shardId = $"credentials_{snapshotId}";
-        string name = $"{shardId}.sqlite";
-        string path = Path.Combine(syncRoot, "shards", name);
-        if (File.Exists(path))
-        {
-            File.Delete(path);
-        }
-
-        await using (SqliteConnection target = new(BuildConnectionString(path, SqliteOpenMode.ReadWriteCreate)))
-        {
-            await target.OpenAsync();
-            await target.ExecuteAsync(
-                "create table provider_credentials (credential_id text primary key, library_id text, provider_id text, display_name text, secret_value text, status text, created_at text, updated_at text); create table provider_credential_bindings (binding_id text primary key, credential_id text, preset_id text null, provider_id text, status text, created_at text, updated_at text);");
-            IEnumerable<CredentialShardRow> creds = await source.QueryAsync<CredentialShardRow>(
-                "select credential_id as CredentialId,library_id as LibraryId,provider_id as ProviderId,display_name as DisplayName,secret_value as SecretValue,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credentials;");
-            foreach (CredentialShardRow row in creds)
-            {
-                await target.ExecuteAsync(
-                    "insert into provider_credentials values (@CredentialId,@LibraryId,@ProviderId,@DisplayName,@SecretValue,@Status,@CreatedAt,@UpdatedAt);",
-                    row);
-            }
-
-            IEnumerable<BindingShardRow> bindings = await source.QueryAsync<BindingShardRow>(
-                "select binding_id as BindingId,credential_id as CredentialId,preset_id as PresetId,provider_id as ProviderId,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credential_bindings;");
-            foreach (BindingShardRow row in bindings)
-            {
-                await target.ExecuteAsync(
-                    "insert into provider_credential_bindings values (@BindingId,@CredentialId,@PresetId,@ProviderId,@Status,@CreatedAt,@UpdatedAt);",
-                    row);
-            }
-        }
-
-        return new SnapshotShard(shardId, Path.Combine("shards", name), new FileInfo(path).Length,
-            await Blake3FileAsync(path), "sensitive_mutable", false);
-    }
-
     public static async Task<string> ReadLibraryIdAsync(string databasePath)
     {
         await using SqliteConnection connection = new(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly));
@@ -684,29 +605,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             File.Move(candidate, path);
         }
     }
-}
-
-file sealed class CredentialShardRow
-{
-    public string CredentialId { get; set; } = "";
-    public string LibraryId { get; set; } = "";
-    public string ProviderId { get; set; } = "";
-    public string DisplayName { get; set; } = "";
-    public string SecretValue { get; set; } = "";
-    public string Status { get; set; } = "";
-    public string CreatedAt { get; set; } = "";
-    public string UpdatedAt { get; set; } = "";
-}
-
-file sealed class BindingShardRow
-{
-    public string BindingId { get; set; } = "";
-    public string CredentialId { get; set; } = "";
-    public string? PresetId { get; set; }
-    public string ProviderId { get; set; } = "";
-    public string Status { get; set; } = "";
-    public string CreatedAt { get; set; } = "";
-    public string UpdatedAt { get; set; } = "";
 }
 
 public sealed class SnapshotImporter : ISnapshotImporter

@@ -40,7 +40,9 @@ try
     SystemClock clock = new();
     BlockingOperationService blockingOperations = new(db, clock);
     await new MigrationRunner(db, Path.Combine(AppContext.BaseDirectory, "migrations")).RunAsync();
-    McpServerSettingsService settingsService = new(db, clock, blockingOperations);
+    string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Patchouli", "settings.json");
+    McpServerSettingsService settingsService = new(settingsPath, clock, blockingOperations);
     Result<McpServerSettings> loadedSettings = await settingsService.GetSettingsAsync();
     if (loadedSettings.IsFailure)
     {

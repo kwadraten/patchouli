@@ -50,8 +50,6 @@ public sealed class SnapshotBranchInspectionTests
         p.Value.PagesToImport.Should().Be(1);
         p.Value.LayoutRevisionsToImport.Should().Be(1);
         p.Value.SearchUnitsToImport.Should().Be(1);
-        p.Value.Conflicts.Should().Contain(x =>
-            x.ConflictCode == ConflictCode.CredentialNotImported && x.Severity == ConflictSeverity.Warning);
         System.Text.Json.JsonSerializer.Serialize(p.Value).Should().NotContain(c.Secret);
     }
 
@@ -131,7 +129,6 @@ public sealed class SnapshotBranchInspectionTests
         SnapshotBranchInspectionInfo b = (await c.Open()).Value;
         BranchImportPlan p = (await c.Service.BuildImportPlanAsync(b, [c.Item], [])).Value;
         await c.Service.ApplyImportPlanAsync(p, true);
-        (await c.Count("provider_credentials")).Should().Be(0);
         File.Exists("/tmp/never-copy.pdf").Should().BeFalse();
         (await c.Count("file_assets")).Should().Be(1);
     }
@@ -271,7 +268,7 @@ public sealed class SnapshotBranchInspectionTests
             {
                 await cn.OpenAsync();
                 await cn.ExecuteAsync(
-                    "insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) values(@I,@L,'book','Branch Item','[]','[]','[]','{}',@N,@N);insert into item_identifiers(identifier_id,item_id,scheme,value,created_at) values(@X,@I,'DOI','10/test',@N);insert into file_assets(file_asset_id,library_id,original_path,file_name,size_bytes,status,created_at,updated_at) values(@F,@L,'/tmp/never-copy.pdf','never-copy.pdf',0,'missing',@N,@N);insert into document_instances(document_instance_id,item_id,file_asset_id,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,@F,'primary_scan',1,'active',@N,@N);insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,0,0,'normalized_page','test',@N,@N);insert into layout_revisions(layout_revision_id,document_instance_id,source,is_current,created_at) values(@R,@D,'manual',1,@N);insert into layout_nodes(node_id,document_instance_id,page_id,node_type,text_policy,reading_order,source,revision_id,ignored,own_text) values(@O,@D,@P,'paragraph','own',1,'manual',@R,0,'branch text');insert into search_units(unit_id,document_instance_id,page_id,root_node_id,text_revision_id,bbox_revision_id,layout_revision_id,resolved_text,node_type,reading_order,status,created_at,updated_at) values(@U,@D,@P,@O,@R,@R,@R,'branch text','paragraph',1,'current',@N,@N);insert into evidence_ref_records(evidence_record_id,evidence_ref_id,library_id,document_instance_id,page_id,unit_id,text_revision_id,bbox_revision_id,layout_revision_id,pinned_text,source_title,page_index,status,created_at) values(@E,'evref:v1:test',@L,@D,@P,@U,@R,@R,@R,'branch text','Branch Item',0,'active',@N);insert into provider_credentials(credential_id,library_id,provider_id,display_name,secret_value,status,created_at,updated_at) values(@C,@L,'test','test',@S,'active',@N,@N);",
+                    "insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) values(@I,@L,'book','Branch Item','[]','[]','[]','{}',@N,@N);insert into item_identifiers(identifier_id,item_id,scheme,value,created_at) values(@X,@I,'DOI','10/test',@N);insert into file_assets(file_asset_id,library_id,original_path,file_name,size_bytes,status,created_at,updated_at) values(@F,@L,'/tmp/never-copy.pdf','never-copy.pdf',0,'missing',@N,@N);insert into document_instances(document_instance_id,item_id,file_asset_id,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,@F,'primary_scan',1,'active',@N,@N);insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,0,0,'normalized_page','test',@N,@N);insert into layout_revisions(layout_revision_id,document_instance_id,source,is_current,created_at) values(@R,@D,'manual',1,@N);insert into layout_nodes(node_id,document_instance_id,page_id,node_type,text_policy,reading_order,source,revision_id,ignored,own_text) values(@O,@D,@P,'paragraph','own',1,'manual',@R,0,'branch text');insert into search_units(unit_id,document_instance_id,page_id,root_node_id,text_revision_id,bbox_revision_id,layout_revision_id,resolved_text,node_type,reading_order,status,created_at,updated_at) values(@U,@D,@P,@O,@R,@R,@R,'branch text','paragraph',1,'current',@N,@N);insert into evidence_ref_records(evidence_record_id,evidence_ref_id,library_id,document_instance_id,page_id,unit_id,text_revision_id,bbox_revision_id,layout_revision_id,pinned_text,source_title,page_index,status,created_at) values(@E,'evref:v1:test',@L,@D,@P,@U,@R,@R,@R,'branch text','Branch Item',0,'active',@N);",
                     new
                     {
                         I = item.ToString(), L = lib.LibraryId.ToString(), N = now, X = IdentifierId.New().ToString(),
@@ -288,7 +285,7 @@ public sealed class SnapshotBranchInspectionTests
             {
                 await cn.OpenAsync();
                 await cn.ExecuteAsync(
-                    "delete from evidence_ref_records; delete from items; delete from provider_credentials; delete from search_index_status; ");
+                    "delete from evidence_ref_records; delete from items; delete from search_index_status; ");
             }
 
             return new Ctx(db, root,
