@@ -81,6 +81,8 @@
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <TextBlock Text="{Binding ActiveSaveStateText}" VerticalAlignment="Center"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Text="{Binding ActiveValidationStateText}" VerticalAlignment="Center"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
             <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
                     IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardActiveSection}" />
             <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32"
@@ -364,6 +366,16 @@
             </DataTemplate>
 
             <!-- CSL Settings -->
+            <DataTemplate DataType="settings:UtilitySettingsViewModel">
+              <StackPanel Spacing="12" MaxWidth="720">
+                <TextBlock Text="{Binding Title}" FontSize="24" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Description}" TextWrapping="Wrap"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Text="当前为设备级设置；随库同步功能默认关闭。" FontSize="12"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              </StackPanel>
+            </DataTemplate>
+
             <DataTemplate DataType="settings:CslSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
                 <StackPanel Spacing="6">

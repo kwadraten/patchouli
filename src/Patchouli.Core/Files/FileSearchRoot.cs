@@ -41,6 +41,7 @@ public static class FileSearchRootStatuses
     public const string Offline = "offline";
     public const string AccessDenied = "access_denied";
     public const string AuthorizationRequired = "authorization_required";
+    public const string MappingRequired = "mapping_required";
     public const string Partial = "partial";
 }
 

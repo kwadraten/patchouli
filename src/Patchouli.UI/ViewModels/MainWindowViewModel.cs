@@ -304,6 +304,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         Settings.MinerUTokenInput = "";
         OpenDatabaseCommand = new AsyncCommand(async () =>
         {
+            if (Settings.HasDirtySections)
+            {
+                ReportError("设置有未保存的更改，请先保存或放弃后再切换数据库。");
+                return;
+            }
             await StopMcpServerAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
             _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
@@ -342,7 +347,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         EditSelectedItemCommand = new AsyncCommand(EditSelectedItemAsync);
         RunSelectedItemOcrCommand = new AsyncCommand(RunSelectedItemOcrAsync);
         ClosePdfWorkspaceTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.PdfWorkspace));
-        CloseSettingsTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.Settings));
+        CloseSettingsTabCommand = new AsyncCommand(() => CloseSettingsTabAsync());
         CloseSearchTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
         CloseItemEditorTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.ItemEditor));
@@ -1501,6 +1506,22 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         Workspace.CloseKind(kind);
         return Task.CompletedTask;
+    }
+
+    private async Task CloseSettingsTabAsync()
+    {
+        if (Settings.HasDirtySections)
+        {
+            foreach (SettingsCategoryViewModel category in Settings.Categories)
+            {
+                if (category.Section?.IsDirty == true)
+                {
+                    await category.Section.DiscardAsync();
+                }
+            }
+        }
+
+        Workspace.CloseKind(WorkspaceTabKind.Settings);
     }
 
     private Task CloseTabAsync(string tabId)

@@ -11,6 +11,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private string _searchQuery = "";
     private string _statusText = "就绪";
     private string? _defaultStyleId;
+    private string? _locale;
     private bool _loadingCatalogSources;
     private CslCatalogSourceViewModel _selectedCatalogSource = null!;
 
@@ -19,6 +20,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshAsync);
         SearchCommand = new AsyncCommand(SearchAsync);
+        SaveLocaleCommand = new AsyncCommand(SaveLocaleAsync);
     }
 
     public string SearchQuery
@@ -78,6 +80,22 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SearchCommand { get; }
+    public AsyncCommand SaveLocaleCommand { get; }
+
+    public string Locale
+    {
+        get => _locale ?? "";
+        set
+        {
+            if (_locale == value)
+            {
+                return;
+            }
+
+            _locale = value.Trim();
+            Raise();
+        }
+    }
 
     public async Task InitializeAsync()
     {
@@ -94,6 +112,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         if (settingsResult.IsSuccess)
         {
             _defaultStyleId = settingsResult.Value.DefaultStyleId;
+            _locale = settingsResult.Value.Locale;
         }
 
         Result<IReadOnlyList<CslStyle>> installedResult = await services.CslStore.ListInstalledStylesAsync();
@@ -234,10 +253,11 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     internal async Task SetDefaultStyleAsync(string styleId)
     {
         AppServices services = await _main.ServicesAsync();
-        Result<CslSettings> result = await services.CslStore.SaveSettingsAsync(styleId, null);
+        Result<CslSettings> result = await services.CslStore.SaveSettingsAsync(styleId, _locale);
         if (result.IsSuccess)
         {
             _defaultStyleId = styleId;
+            _locale = result.Value.Locale;
             foreach (CslStyleViewModel style in InstalledStyles)
             {
                 style.IsDefault = style.StyleId == styleId;
@@ -249,6 +269,13 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         {
             StatusText = result.ErrorMessage ?? "更新默认样式失败。";
         }
+    }
+
+    private async Task SaveLocaleAsync()
+    {
+        AppServices services = await _main.ServicesAsync();
+        Result<CslSettings> result = await services.CslStore.SaveSettingsAsync(_defaultStyleId, _locale);
+        StatusText = result.IsSuccess ? "CSL locale 已保存。" : result.ErrorMessage ?? "CSL locale 保存失败。";
     }
 
     internal async Task RemoveStyleAsync(string styleId)

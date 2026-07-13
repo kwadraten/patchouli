@@ -21,6 +21,9 @@ public sealed class SettingsViewModel : ViewModelBase
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         CslSettings = new CslSettingsViewModel(main);
+        SyncSettings = new UtilitySettingsViewModel("同步与快照", "设置同步范围、设备身份和快照操作。敏感设置默认仅在本机保存。");
+        MaintenanceSettings = new UtilitySettingsViewModel("缓存与维护", "管理可重建索引、CSL 索引和本地缓存。");
+        AboutSettings = new UtilitySettingsViewModel("关于", "查看 Patchouli 版本、许可和运行环境信息。");
 
         foreach (ISettingsSection section in new ISettingsSection[]
                      { LibrarySettings, McpSettings, OcrProviderSettings, MetadataLookupSettings, CslSettings })
@@ -34,7 +37,10 @@ public sealed class SettingsViewModel : ViewModelBase
             new("MCP 服务与安全", "Server", McpSettings),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
             new("元数据来源", "Search", MetadataLookupSettings),
-            new("CSL 样式", "Quote", CslSettings)
+            new("同步与快照", "Cloud", SyncSettings),
+            new("缓存与维护", "RefreshCw", MaintenanceSettings),
+            new("关于", "Info", AboutSettings),
+            new("CSL 样式管理器", "Quote", CslSettings)
         };
 
         ActiveCategory = Categories.First();
@@ -49,6 +55,9 @@ public sealed class SettingsViewModel : ViewModelBase
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public CslSettingsViewModel CslSettings { get; }
+    public UtilitySettingsViewModel SyncSettings { get; }
+    public UtilitySettingsViewModel MaintenanceSettings { get; }
+    public UtilitySettingsViewModel AboutSettings { get; }
 
     public string MinerUTokenInput
     {
@@ -71,6 +80,14 @@ public sealed class SettingsViewModel : ViewModelBase
         get => _activeCategory;
         set
         {
+            if (_activeCategory is not null && _activeCategory.Section?.IsDirty == true &&
+                !ReferenceEquals(_activeCategory, value))
+            {
+                _activeCategory.Section.DiscardAsync()
+                    .Observe(nameof(SettingsViewModel), nameof(ISettingsSection.DiscardAsync));
+                Raise(nameof(ActiveCategory));
+            }
+
             _activeCategory = value;
             Raise();
             RaiseActiveSectionState();
@@ -104,6 +121,10 @@ public sealed class SettingsViewModel : ViewModelBase
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
 
+    public bool HasDirtySections => Categories.Any(category => category.Section?.IsDirty == true);
+
+    public bool CanLeaveSettings => !HasDirtySections;
+
     public bool ShowSaveControls => ActiveCategory.Section?.SupportsEditing == true;
 
     public bool CanSaveActiveSection => ActiveCategory.Section?.SupportsEditing == true &&
@@ -115,6 +136,8 @@ public sealed class SettingsViewModel : ViewModelBase
     public bool IsActiveSectionDirty => ActiveCategory.Section?.IsDirty == true;
     public string ActiveSaveStateText => ActiveCategory.Section?.SaveStateText ?? "无需保存";
     public string ActiveLastError => ActiveCategory.Section?.LastError ?? "";
+    public string ActiveValidationStateText => ActiveCategory.Section?.ValidationState.ToString() ?? "Unknown";
+    public bool ActiveRequiresReload => ActiveCategory.Section?.RequiresReload == true;
 
     private async Task SaveActiveSectionAsync()
     {
@@ -168,6 +191,10 @@ public sealed class SettingsViewModel : ViewModelBase
         Raise(nameof(IsActiveSectionDirty));
         Raise(nameof(ActiveSaveStateText));
         Raise(nameof(ActiveLastError));
+        Raise(nameof(ActiveValidationStateText));
+        Raise(nameof(ActiveRequiresReload));
+        Raise(nameof(HasDirtySections));
+        Raise(nameof(CanLeaveSettings));
     }
 
     private void SectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
