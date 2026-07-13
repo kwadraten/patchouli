@@ -28,6 +28,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         ExportCommand = new AsyncCommand(ExportAsync);
         CheckCurrentCommand = new AsyncCommand(CheckCurrentAsync);
         OpenPackageCommand = new AsyncCommand(OpenPackageAsync);
+        ResolveConflictsCommand = new AsyncCommand(ResolveConflictsAsync);
         ApplyCommand = new AsyncCommand(ApplyAsync);
     }
 
@@ -134,6 +135,10 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     public int WarningCount => _incoming?.Warnings.Count ?? 0;
     public bool HasIncomingPlan => _contentPlan is not null;
+
+    public bool CanResolveContentConflicts => _contentPlan?.BranchImportPlan.Conflicts.Any(
+        IsExecutableContentConflict) == true;
+
     public bool CanApply => _contentPlan is not null && ConfirmApply && BlockingConflictCount == 0;
 
     public string IncomingSummary => _incoming is null
@@ -145,6 +150,7 @@ public sealed class SnapshotViewModel : ViewModelBase
     public AsyncCommand ExportCommand { get; }
     public AsyncCommand CheckCurrentCommand { get; }
     public AsyncCommand OpenPackageCommand { get; }
+    public AsyncCommand ResolveConflictsCommand { get; }
     public AsyncCommand ApplyCommand { get; }
 
     public async Task RefreshAsync()
@@ -258,6 +264,44 @@ public sealed class SnapshotViewModel : ViewModelBase
         await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess);
     }
 
+    private async Task ResolveConflictsAsync()
+    {
+        if (_contentPlan is null)
+        {
+            OperationMessage = "请先检查一个传入快照。";
+            RaiseIncoming();
+            return;
+        }
+
+        while (FindNextExecutableContentConflict() is { } conflict)
+        {
+            AppServices services = await _main.ServicesAsync();
+            SnapshotContentConflictActionExecutor executor = new(services.SnapshotSync, _contentPlan,
+                conflict.ConflictCode);
+            Result<ConflictResolutionResult> resolution = await _main.ResolveConflictAsync(conflict, executor);
+            if (resolution.IsFailure)
+            {
+                OperationMessage = DescribeFailure(resolution);
+                await RefreshAfterOperationAsync("resolve_snapshot_content_conflict", false);
+                return;
+            }
+
+            if (!resolution.Value.WasExecuted)
+            {
+                OperationMessage = "内容冲突仍未解决；可再次打开冲突处理。";
+                RaiseIncoming();
+                return;
+            }
+
+            ReplaceContentPlan(executor.Plan);
+        }
+
+        OperationMessage = BlockingConflictCount == 0
+            ? "内容冲突已处理。请重新确认后再应用传入内容。"
+            : "仍有未支持的阻塞冲突，暂不能应用传入内容。";
+        await RefreshAfterOperationAsync("resolve_snapshot_content_conflict", BlockingConflictCount == 0);
+    }
+
     private async Task RefreshAfterOperationAsync(string operation, bool succeeded)
     {
         await _main.LogOperationAsync(operation,
@@ -288,8 +332,37 @@ public sealed class SnapshotViewModel : ViewModelBase
         Raise(nameof(BlockingConflictCount));
         Raise(nameof(WarningCount));
         Raise(nameof(HasIncomingPlan));
+        Raise(nameof(CanResolveContentConflicts));
         Raise(nameof(CanApply));
         Raise(nameof(IncomingSummary));
+    }
+
+    private ConflictDescriptor? FindNextExecutableContentConflict()
+    {
+        return _contentPlan?.BranchImportPlan.Conflicts.FirstOrDefault(IsExecutableContentConflict);
+    }
+
+    private static bool IsExecutableContentConflict(ConflictDescriptor conflict)
+    {
+        return conflict.ResolutionStatus == ConflictResolutionStatus.Unresolved &&
+               conflict.Severity == ConflictSeverity.Blocking &&
+               conflict.ConflictCode is ConflictCode.SameIdDifferentContent or ConflictCode.PrimaryDocumentConflict;
+    }
+
+    private void ReplaceContentPlan(SnapshotContentResolutionPlan plan)
+    {
+        _contentPlan = plan;
+        if (_incoming is not null)
+        {
+            _incoming = _incoming with
+            {
+                ContentPlan = plan,
+                Conflicts = plan.BranchImportPlan.Conflicts
+            };
+        }
+
+        ConfirmApply = false;
+        RaiseIncoming();
     }
 
     private static string DescribeFailure(IOperationOutcome result)

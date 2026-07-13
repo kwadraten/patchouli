@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 
@@ -367,8 +368,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                 await SnapshotPublisher.Blake3FileAsync(manifestPath.Value),
                 await SnapshotPublisher.Blake3FileAsync(binding.RuntimeDatabasePath));
             bool hasBlockingConflict = importPlan.Value.Conflicts.Any(conflict =>
-                conflict.Severity == Core.Conflicts.ConflictSeverity.Blocking &&
-                conflict.ResolutionStatus == Core.Conflicts.ConflictResolutionStatus.Unresolved);
+                conflict.Severity == ConflictSeverity.Blocking &&
+                conflict.ResolutionStatus == ConflictResolutionStatus.Unresolved);
             SnapshotSyncOperationState state = hasBlockingConflict
                 ? SnapshotSyncOperationState.AwaitingContentConflicts
                 : SnapshotSyncOperationState.InspectingBranch;
@@ -430,23 +431,11 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
 
         try
         {
-            if (!File.Exists(plan.BranchImportPlan.SourceBranch.StagingDatabasePath) ||
-                !File.Exists(plan.BranchImportPlan.SourceBranch.ManifestPath))
+            Result freshness = await EnsurePlanIsCurrentAsync(binding, plan, cancellationToken);
+            if (freshness.IsFailure)
             {
-                return Result<SnapshotApplyResult>.Failure("snapshot_plan_superseded",
-                    "The inspected staging copy or manifest no longer exists. Inspect the snapshot again.");
-            }
-
-            await SnapshotPublisher.CheckpointAsync(binding.RuntimeDatabasePath);
-            string currentManifestHash =
-                await SnapshotPublisher.Blake3FileAsync(plan.BranchImportPlan.SourceBranch.ManifestPath);
-            string currentRuntimeHash = await SnapshotPublisher.Blake3FileAsync(binding.RuntimeDatabasePath);
-            if (!string.Equals(currentManifestHash, plan.IncomingManifestFingerprint,
-                    StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(currentRuntimeHash, plan.LocalContentFingerprint, StringComparison.OrdinalIgnoreCase))
-            {
-                return Result<SnapshotApplyResult>.Failure("snapshot_plan_superseded",
-                    "Incoming or local content changed after inspection. Inspect the snapshot again before applying it.");
+                return Result<SnapshotApplyResult>.Failure(freshness.ErrorCode!, freshness.ErrorMessage!,
+                    freshness.Conflicts);
             }
 
             await SaveStateOrThrowAsync(binding, SnapshotSyncOperationState.Applying, null, cancellationToken);
@@ -489,6 +478,60 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             await RecordFailureAsync(binding, exception.Message, cancellationToken);
             return Result<SnapshotApplyResult>.Failure(AppErrorCodes.DatabaseError,
                 $"Snapshot apply failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result<SnapshotContentResolutionPlan>> ResolveContentConflictAsync(
+        SnapshotContentResolutionPlan plan,
+        string conflictId,
+        ConflictActionSelection selection,
+        CancellationToken cancellationToken = default)
+    {
+        Result<SnapshotSyncBinding> resolved = await _bindings.GetBindingAsync(cancellationToken);
+        if (resolved.IsFailure)
+        {
+            return Result<SnapshotContentResolutionPlan>.Failure(resolved.ErrorCode!, resolved.ErrorMessage!);
+        }
+
+        SnapshotSyncBinding binding = resolved.Value;
+        Result valid = ValidateBinding(binding, false);
+        if (valid.IsFailure)
+        {
+            return Result<SnapshotContentResolutionPlan>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
+        }
+
+        try
+        {
+            Result freshness = await EnsurePlanIsCurrentAsync(binding, plan, cancellationToken);
+            if (freshness.IsFailure)
+            {
+                return Result<SnapshotContentResolutionPlan>.Failure(freshness.ErrorCode!, freshness.ErrorMessage!,
+                    freshness.Conflicts);
+            }
+
+            Result<BranchImportPlan> updated = await _branchInspection.ResolveConflictAsync(
+                plan.BranchImportPlan,
+                conflictId,
+                selection,
+                cancellationToken);
+            if (updated.IsFailure)
+            {
+                return Result<SnapshotContentResolutionPlan>.Failure(updated.ErrorCode!, updated.ErrorMessage!,
+                    updated.Conflicts);
+            }
+
+            return Result<SnapshotContentResolutionPlan>.Success(plan with { BranchImportPlan = updated.Value });
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.snapshot-sync-coordinator"))
+        {
+            await RecordFailureAsync(binding, exception.Message, cancellationToken);
+            return Result<SnapshotContentResolutionPlan>.Failure(AppErrorCodes.DatabaseError,
+                $"Snapshot conflict resolution failed: {exception.Message}");
         }
     }
 
@@ -580,6 +623,34 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         }
 
         return Result.Success();
+    }
+
+    private static async Task<Result> EnsurePlanIsCurrentAsync(
+        SnapshotSyncBinding binding,
+        SnapshotContentResolutionPlan plan,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(plan.BranchImportPlan.SourceBranch.StagingDatabasePath) ||
+            !File.Exists(plan.BranchImportPlan.SourceBranch.ManifestPath))
+        {
+            return Result.Failure("snapshot_plan_superseded",
+                "The inspected staging copy or manifest no longer exists. Inspect the snapshot again.");
+        }
+
+        await SnapshotPublisher.CheckpointAsync(binding.RuntimeDatabasePath);
+        string currentManifestHash = await SnapshotPublisher.Blake3FileAsync(
+            plan.BranchImportPlan.SourceBranch.ManifestPath);
+        string currentRuntimeHash = await SnapshotPublisher.Blake3FileAsync(binding.RuntimeDatabasePath);
+        if (string.Equals(currentManifestHash, plan.IncomingManifestFingerprint, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(currentRuntimeHash, plan.LocalContentFingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Success();
+        }
+
+        return Result.Failure(
+            "snapshot_plan_superseded",
+            "Incoming or local content changed after inspection. Inspect the snapshot again before applying it.",
+            plan.BranchImportPlan.Conflicts);
     }
 
     private async Task SaveStateOrThrowAsync(

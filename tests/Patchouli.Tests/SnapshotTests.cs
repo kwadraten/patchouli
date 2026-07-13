@@ -1,6 +1,7 @@
 using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -539,6 +540,68 @@ public sealed class SnapshotTests
             inspected.Value.ContentPlan with { IsExplicitlyConfirmed = true });
 
         applied.ErrorCode.Should().Be("snapshot_plan_superseded");
+    }
+
+    [Fact]
+    public async Task Sync_coordinator_resolves_an_item_conflict_before_applying_the_replacement_plan()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "sync-root-a",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-a",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        SnapshotSyncCoordinator coordinator = new(
+            c.Publisher,
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+        (await coordinator.PublishAsync()).IsSuccess.Should().BeTrue();
+
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync("update items set title = 'Local title';");
+        }
+
+        Result<SnapshotIncomingPlan> inspected =
+            await coordinator.InspectIncomingAsync(SnapshotIncomingRequest.CurrentSyncRoot);
+        ConflictDescriptor conflict = inspected.Value.Conflicts.Single(candidate =>
+            candidate.ConflictCode == ConflictCode.SameIdDifferentContent);
+
+        Result<SnapshotContentResolutionPlan> itemResolved = await coordinator.ResolveContentConflictAsync(
+            inspected.Value.ContentPlan,
+            conflict.ConflictId!,
+            new ConflictActionSelection("keep_local"));
+
+        itemResolved.IsSuccess.Should().BeTrue();
+        itemResolved.Value.BranchImportPlan.Conflicts.Single(candidate => candidate.ConflictId == conflict.ConflictId)
+            .ResolutionStatus.Should().Be(ConflictResolutionStatus.Resolved);
+        itemResolved.Value.BranchImportPlan.ItemsToImport.Should().BeEmpty();
+
+        ConflictDescriptor primaryDocumentConflict = itemResolved.Value.BranchImportPlan.Conflicts.Single(candidate =>
+            candidate.ConflictCode == ConflictCode.PrimaryDocumentConflict);
+        Result<SnapshotContentResolutionPlan> resolved = await coordinator.ResolveContentConflictAsync(
+            itemResolved.Value,
+            primaryDocumentConflict.ConflictId!,
+            new ConflictActionSelection("keep_local_without_incoming"));
+
+        resolved.IsSuccess.Should().BeTrue();
+        resolved.Value.BranchImportPlan.Conflicts.Should().OnlyContain(candidate =>
+            candidate.ResolutionStatus == ConflictResolutionStatus.Resolved);
+
+        Result<SnapshotApplyResult> applied = await coordinator.ApplyAsync(
+            resolved.Value with { IsExplicitlyConfirmed = true });
+
+        applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
+        await using SqliteConnection verification = c.OpenRuntime();
+        (await verification.ExecuteScalarAsync<string>("select title from items limit 1;")).Should().Be("Local title");
     }
 
     [Fact]

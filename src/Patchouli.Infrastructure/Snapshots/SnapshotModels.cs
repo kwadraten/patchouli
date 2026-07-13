@@ -236,6 +236,16 @@ public interface ISnapshotSyncCoordinator
         SnapshotIncomingRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Applies one reviewed content-conflict action to an immutable import plan. This never writes to the
+    /// runtime library; the caller must still explicitly confirm and apply the returned plan.
+    /// </summary>
+    Task<Result<SnapshotContentResolutionPlan>> ResolveContentConflictAsync(
+        SnapshotContentResolutionPlan plan,
+        string conflictId,
+        ConflictActionSelection selection,
+        CancellationToken cancellationToken = default);
+
     Task<Result<SnapshotApplyResult>> ApplyAsync(
         SnapshotContentResolutionPlan plan,
         CancellationToken cancellationToken = default);
