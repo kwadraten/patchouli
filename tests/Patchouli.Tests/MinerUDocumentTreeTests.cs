@@ -20,6 +20,81 @@ namespace Patchouli.Tests;
 public sealed class MinerUDocumentTreeTests
 {
     [Fact]
+    public async Task Importer_preserves_v2_page_footer_content_as_suppressed_text()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[
+                                                          {"type":"page_footer","content":{"page_footer_content":[{"type":"text","content":"JSTOR"}]},"bbox":[0,900,1000,950]}
+                                                        ]]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            boxes.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            {
+                BoxType = DocumentBoxType.Footer,
+                Suppressed = true,
+                Payload = new TextBoxPayload("JSTOR")
+            });
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_preserves_v2_auxiliary_content_as_suppressed_text()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[
+                                                          {"type":"page_header","content":{"page_header_content":[{"type":"text","content":"Running head"}]},"bbox":[0,0,1000,50]},
+                                                          {"type":"page_number","content":{"page_number_content":[{"type":"text","content":"7"}]},"bbox":[900,950,1000,1000]},
+                                                          {"type":"page_footnote","content":{"page_footnote_content":[{"type":"text","content":"Footnote"}]},"bbox":[0,850,1000,900]}
+                                                        ]]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            boxes.Select(box => new
+                {
+                    box.BoxType,
+                    box.Suppressed,
+                    Markdown = ((TextBoxPayload)box.Payload!).Markdown
+                })
+                .Should().BeEquivalentTo([
+                    new { BoxType = DocumentBoxType.Header, Suppressed = true, Markdown = "Running head" },
+                    new { BoxType = DocumentBoxType.PageNumber, Suppressed = true, Markdown = "7" },
+                    new { BoxType = DocumentBoxType.PageFootnote, Suppressed = true, Markdown = "Footnote" }
+                ]);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
     public async Task Importer_stages_typed_boxes_suppresses_auxiliary_and_builds_gfm_table()
     {
         await using Context context = await Context.CreateAsync();

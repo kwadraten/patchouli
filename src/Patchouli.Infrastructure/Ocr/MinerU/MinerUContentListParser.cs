@@ -187,7 +187,16 @@ internal sealed class MinerUContentListParser
 
         return GetString(content, "html")
                ?? GetInlineText(content, "title_content")
-               ?? GetInlineText(content, "paragraph_content");
+               ?? GetInlineText(content, "paragraph_content")
+               ?? GetTypedInlineText(item, content);
+    }
+
+    private static string? GetTypedInlineText(JsonElement item, JsonElement content)
+    {
+        string? type = GetString(item, "type");
+        return string.IsNullOrWhiteSpace(type)
+            ? null
+            : GetInlineText(content, $"{type.Trim().ToLowerInvariant()}_content");
     }
 
     private static string? GetString(JsonElement item, string propertyName)
