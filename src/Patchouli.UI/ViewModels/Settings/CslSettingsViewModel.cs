@@ -1,8 +1,9 @@
 ﻿using Patchouli.UI.ViewModels;
+using System.Threading.Tasks;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class CslSettingsViewModel : ViewModelBase
+public sealed class CslSettingsViewModel : ViewModelBase, ISettingsSection
 {
     private readonly MainWindowViewModel _main;
     private string _status = "";
@@ -29,6 +30,21 @@ public sealed class CslSettingsViewModel : ViewModelBase
 
     public string Description => "管理 CSL 样式索引、安装本地样式、设置默认样式，并用于题录复制和预览。";
     public AsyncCommand OpenManagerCommand { get; }
+    public bool SupportsEditing => false;
+    public bool IsDirty => false;
+    public bool CanSave => false;
+    public string SaveStateText => "无需保存";
+    public string? LastError => null;
+
+    public Task SaveAsync()
+    {
+        return Task.CompletedTask;
+    }
+
+    public Task DiscardAsync()
+    {
+        return Task.CompletedTask;
+    }
 
     private async Task OpenManagerAsync()
     {

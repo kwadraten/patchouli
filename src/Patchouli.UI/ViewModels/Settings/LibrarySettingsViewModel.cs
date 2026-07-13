@@ -10,19 +10,26 @@ using Patchouli.Infrastructure.Files;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class LibrarySettingsViewModel : ViewModelBase
+public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
 {
     private readonly MainWindowViewModel _main;
     private string _status = "";
     private readonly ObservableCollection<FileSearchRootSettingsRowViewModel> _fileSearchRoots = new();
+    private bool _rememberLastDatabase;
+    private string _exclusionPatternsText;
+    private string _persistedExclusionPatternsText;
+    private bool _isDirty;
 
     public LibrarySettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
-        SaveExclusionPatternsCommand = new AsyncCommand(SaveExclusionPatternsAsync);
-        ExclusionPatternsText = string.Join(Environment.NewLine, _main.AppOptions.FileScanning.ExclusionPatterns);
+        SaveExclusionPatternsCommand = new AsyncCommand(SaveAsync);
+        _rememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
+        _persistedExclusionPatternsText =
+            string.Join(Environment.NewLine, _main.AppOptions.FileScanning.ExclusionPatterns);
+        _exclusionPatternsText = _persistedExclusionPatternsText;
         LoadFileSearchRootsAsync().Observe(nameof(LibrarySettingsViewModel), nameof(LoadFileSearchRootsAsync));
     }
 
@@ -56,24 +63,14 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
 
     public bool RememberLastDatabase
     {
-        get => _main.AppOptions.Runtime.RememberLastDatabase;
+        get => _rememberLastDatabase;
         set
         {
-            if (_main.AppOptions.Runtime.RememberLastDatabase != value)
+            if (_rememberLastDatabase != value)
             {
-                PatchouliAppSettings options = _main.AppOptions;
-                AppRuntimeOptions runtime = options.Runtime with { RememberLastDatabase = value };
-                if (value)
-                {
-                    runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
-                }
-
-                SettingsSaveResult saved = _main.UpdateAppOptions(options with { Runtime = runtime });
-                Status = saved.IsSuccess ? "已保存" : $"保存失败：{saved.ErrorMessage}";
-                if (saved.IsSuccess)
-                {
-                    Raise();
-                }
+                _rememberLastDatabase = value;
+                Raise();
+                MarkDirty();
             }
         }
     }
@@ -84,7 +81,23 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
     }
 
     public string FileSearchRootInput { get; set; } = "";
-    public string ExclusionPatternsText { get; set; }
+
+    public string ExclusionPatternsText
+    {
+        get => _exclusionPatternsText;
+        set
+        {
+            if (_exclusionPatternsText == value)
+            {
+                return;
+            }
+
+            _exclusionPatternsText = value;
+            Raise();
+            MarkDirty();
+        }
+    }
+
     public SelectedFileSearchRoot? SelectedFileSearchRoot { get; set; }
     public ObservableCollection<FileSearchRootSettingsRowViewModel> FileSearchRoots => _fileSearchRoots;
 
@@ -106,22 +119,72 @@ public sealed class LibrarySettingsViewModel : ViewModelBase
     public AsyncCommand RescanFileSearchRootsCommand { get; }
     public AsyncCommand SaveExclusionPatternsCommand { get; }
 
-    private async Task SaveExclusionPatternsAsync()
+    public bool SupportsEditing => true;
+    public bool IsDirty => _isDirty;
+    public bool CanSave => _isDirty;
+    public string SaveStateText => Status;
+    public string? LastError { get; private set; }
+
+    public Task DiscardAsync()
+    {
+        _rememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
+        _exclusionPatternsText = _persistedExclusionPatternsText;
+        _isDirty = false;
+        Raise(nameof(RememberLastDatabase));
+        Raise(nameof(ExclusionPatternsText));
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Status = "已放弃更改";
+        return Task.CompletedTask;
+    }
+
+    public async Task SaveAsync()
     {
         string[] patterns = ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
                                                                       StringSplitOptions.TrimEntries);
         if (!FileSearchRootAccess.TryValidateExclusionPatterns(patterns, out string? error))
         {
             Status = $"排除规则无效：{error}";
+            LastError = error;
+            Raise(nameof(LastError));
             return;
+        }
+
+        AppRuntimeOptions runtime = _main.AppOptions.Runtime with { RememberLastDatabase = _rememberLastDatabase };
+        if (_rememberLastDatabase)
+        {
+            runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
         }
 
         SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with
         {
+            Runtime = runtime,
             FileScanning = new FileScanningAppSettings(patterns)
         });
         Status = saved.IsSuccess ? "排除规则已保存。" : $"保存失败：{saved.ErrorMessage}";
+        if (saved.IsSuccess)
+        {
+            _persistedExclusionPatternsText = _exclusionPatternsText;
+            _isDirty = false;
+            LastError = null;
+        }
+        else
+        {
+            LastError = saved.ErrorMessage;
+        }
+
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Raise(nameof(LastError));
         await Task.CompletedTask;
+    }
+
+    private void MarkDirty()
+    {
+        _isDirty = true;
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Status = "有未保存的更改";
     }
 
     private async Task AddFileSearchRootAsync()

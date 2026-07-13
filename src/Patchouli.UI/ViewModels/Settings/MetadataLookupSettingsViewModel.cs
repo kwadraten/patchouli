@@ -3,11 +3,12 @@ using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class MetadataLookupSettingsViewModel : ViewModelBase
+public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSection
 {
     private readonly MainWindowViewModel _main;
     private string _status = "已保存";
     private bool _isDirty;
+    private string? _lastError;
 
     public MetadataLookupSettingsViewModel(MainWindowViewModel main)
     {
@@ -38,6 +39,11 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
         }
     }
 
+    public bool SupportsEditing => true;
+    public bool CanSave => IsDirty;
+    public string SaveStateText => Status;
+    public string? LastError => _lastError;
+
     public string Status
     {
         get => _status;
@@ -64,10 +70,13 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase
         {
             IsDirty = false;
             Status = "已保存";
+            _lastError = null;
         }
         else
         {
             Status = $"保存失败：{saved.ErrorMessage}";
+            _lastError = saved.ErrorMessage;
+            Raise(nameof(LastError));
         }
 
         await Task.CompletedTask;

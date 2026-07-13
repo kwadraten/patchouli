@@ -79,8 +79,12 @@
             <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger" />
+            <TextBlock Text="{Binding ActiveSaveStateText}" VerticalAlignment="Center"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
+                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardActiveSection}" />
             <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32"
+                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanSaveActiveSection}"
                     Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
           </StackPanel>
         </Grid>
@@ -139,8 +143,6 @@
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBox Text="{Binding ExclusionPatternsText}" AcceptsReturn="True" MinHeight="120"
                              FontFamily="Consolas, Menlo, monospace" />
-                    <Button Content="保存排除规则" Command="{Binding SaveExclusionPatternsCommand}"
-                            HorizontalAlignment="Left" />
                     <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">
@@ -276,8 +278,6 @@
                     <TextBlock Text="OCR 引擎" FontSize="24" FontWeight="SemiBold"
                                Foreground="{DynamicResource OnSurfaceBrush}" />
                   </StackPanel>
-                  <Button Grid.Column="1" Content="保存" Command="{Binding SaveMinerUSettingsCommand}" Classes="Primary"
-                          VerticalAlignment="Top" />
                 </Grid>
 
                 <Border Background="{DynamicResource SurfaceContainerLowestBrush}"

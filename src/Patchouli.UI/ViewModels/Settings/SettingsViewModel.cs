@@ -1,5 +1,6 @@
 using Patchouli.UI.ViewModels;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -10,6 +11,7 @@ public sealed class SettingsViewModel : ViewModelBase
     private readonly MainWindowViewModel _main;
     private SettingsCategoryViewModel _activeCategory = null!;
     private string _globalStatus = "";
+    private bool _isRoutingCommand;
 
     public SettingsViewModel(MainWindowViewModel main)
     {
@@ -19,6 +21,12 @@ public sealed class SettingsViewModel : ViewModelBase
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         CslSettings = new CslSettingsViewModel(main);
+
+        foreach (ISettingsSection section in new ISettingsSection[]
+                     { LibrarySettings, McpSettings, OcrProviderSettings, MetadataLookupSettings, CslSettings })
+        {
+            ((INotifyPropertyChanged)section).PropertyChanged += SectionPropertyChanged;
+        }
 
         Categories = new ObservableCollection<SettingsCategoryViewModel>
         {
@@ -31,27 +39,9 @@ public sealed class SettingsViewModel : ViewModelBase
 
         ActiveCategory = Categories.First();
 
-        SaveCommand = new AsyncCommand(async () =>
-        {
-            if (ReferenceEquals(ActiveCategory.Content, MetadataLookupSettings))
-            {
-                await MetadataLookupSettings.SaveAsync();
-                GlobalStatus = MetadataLookupSettings.Status;
-                return;
-            }
+        SaveCommand = new AsyncCommand(SaveActiveSectionAsync);
 
-            GlobalStatus = "所有设置已保存";
-        });
-
-        DiscardCommand = new AsyncCommand(async () =>
-        {
-            if (ReferenceEquals(ActiveCategory.Content, MetadataLookupSettings))
-            {
-                await MetadataLookupSettings.DiscardAsync();
-            }
-
-            GlobalStatus = "已放弃当前更改";
-        });
+        DiscardCommand = new AsyncCommand(DiscardActiveSectionAsync);
     }
 
     public LibrarySettingsViewModel LibrarySettings { get; }
@@ -83,6 +73,7 @@ public sealed class SettingsViewModel : ViewModelBase
         {
             _activeCategory = value;
             Raise();
+            RaiseActiveSectionState();
             if (ReferenceEquals(value.Content, McpSettings))
             {
                 McpSettings.LoadAsync().Observe(nameof(SettingsViewModel), nameof(McpSettings.LoadAsync));
@@ -112,4 +103,78 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
+
+    public bool ShowSaveControls => ActiveCategory.Section?.SupportsEditing == true;
+
+    public bool CanSaveActiveSection => ActiveCategory.Section?.SupportsEditing == true &&
+                                        ActiveCategory.Section.CanSave && !_isRoutingCommand;
+
+    public bool CanDiscardActiveSection => ActiveCategory.Section?.SupportsEditing == true &&
+                                           ActiveCategory.Section.IsDirty && !_isRoutingCommand;
+
+    public bool IsActiveSectionDirty => ActiveCategory.Section?.IsDirty == true;
+    public string ActiveSaveStateText => ActiveCategory.Section?.SaveStateText ?? "无需保存";
+    public string ActiveLastError => ActiveCategory.Section?.LastError ?? "";
+
+    private async Task SaveActiveSectionAsync()
+    {
+        ISettingsSection? section = ActiveCategory.Section;
+        if (section is null || !section.SupportsEditing || !section.CanSave)
+        {
+            return;
+        }
+
+        _isRoutingCommand = true;
+        RaiseActiveSectionState();
+        try
+        {
+            await section.SaveAsync();
+            GlobalStatus = section.SaveStateText;
+        }
+        finally
+        {
+            _isRoutingCommand = false;
+            RaiseActiveSectionState();
+        }
+    }
+
+    private async Task DiscardActiveSectionAsync()
+    {
+        ISettingsSection? section = ActiveCategory.Section;
+        if (section is null || !section.SupportsEditing || !section.IsDirty)
+        {
+            return;
+        }
+
+        _isRoutingCommand = true;
+        RaiseActiveSectionState();
+        try
+        {
+            await section.DiscardAsync();
+            GlobalStatus = section.SaveStateText;
+        }
+        finally
+        {
+            _isRoutingCommand = false;
+            RaiseActiveSectionState();
+        }
+    }
+
+    private void RaiseActiveSectionState()
+    {
+        Raise(nameof(ShowSaveControls));
+        Raise(nameof(CanSaveActiveSection));
+        Raise(nameof(CanDiscardActiveSection));
+        Raise(nameof(IsActiveSectionDirty));
+        Raise(nameof(ActiveSaveStateText));
+        Raise(nameof(ActiveLastError));
+    }
+
+    private void SectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (ReferenceEquals(sender, ActiveCategory.Section))
+        {
+            RaiseActiveSectionState();
+        }
+    }
 }

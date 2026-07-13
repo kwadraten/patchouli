@@ -5,15 +5,20 @@ using System.Threading.Tasks;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class OcrProviderSettingsViewModel : ViewModelBase
+public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSection
 {
     private readonly MainWindowViewModel _main;
     private string _status = "";
+    private string _token = "";
+    private string _persistedToken = "";
+    private bool _isDirty;
 
     public OcrProviderSettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
-        SaveMinerUSettingsCommand = new AsyncCommand(SaveMinerUSettingsAsync);
+        SaveMinerUSettingsCommand = new AsyncCommand(SaveAsync);
+        _token = _main.AppOptions.MinerU.Token;
+        _persistedToken = _token;
     }
 
     public string Status
@@ -39,23 +44,18 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase
 
     public string MinerUTokenInput
     {
-        get => _main.AppOptions.MinerU.Token;
+        get => _token;
         set
         {
-            if (_main.AppOptions.MinerU.Token != value)
+            if (_token != value)
             {
-                PatchouliAppSettings options = _main.AppOptions;
-                SettingsSaveResult saved =
-                    _main.UpdateAppOptions(options with { MinerU = options.MinerU with { Token = value } });
-                if (saved.IsSuccess)
-                {
-                    Raise();
-                    Raise(nameof(MinerUCredentialStatus));
-                }
-                else
-                {
-                    Status = $"保存失败：{saved.ErrorMessage}";
-                }
+                _token = value;
+                _isDirty = true;
+                Raise();
+                Raise(nameof(MinerUCredentialStatus));
+                Raise(nameof(IsDirty));
+                Raise(nameof(CanSave));
+                Status = "有未保存的更改";
             }
         }
     }
@@ -70,10 +70,41 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase
     public string PreferredOcrProviderType => "云端 OCR/版面解析";
 
     public AsyncCommand SaveMinerUSettingsCommand { get; }
+    public bool SupportsEditing => true;
+    public bool IsDirty => _isDirty;
+    public bool CanSave => _isDirty;
+    public string SaveStateText => Status;
+    public string? LastError { get; private set; }
 
-    private async Task SaveMinerUSettingsAsync()
+    public Task DiscardAsync()
     {
-        bool saved = await _main.SaveMinerUTokenSettingsAsync(MinerUTokenInput);
+        _token = _persistedToken;
+        _isDirty = false;
+        Raise(nameof(MinerUTokenInput));
+        Raise(nameof(MinerUCredentialStatus));
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Status = "已放弃更改";
+        return Task.CompletedTask;
+    }
+
+    public async Task SaveAsync()
+    {
+        bool saved = await _main.SaveMinerUTokenSettingsAsync(_token);
         Status = saved ? "已保存" : "保存失败";
+        if (saved)
+        {
+            _persistedToken = _token;
+            _isDirty = false;
+            LastError = null;
+        }
+        else
+        {
+            LastError = "无法保存 MinerU 凭据。";
+        }
+
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Raise(nameof(LastError));
     }
 }

@@ -8,11 +8,16 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class McpSettingsViewModel : ViewModelBase
+public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
 {
     private readonly MainWindowViewModel _main;
     private string _status = "";
     private McpServerSettings _settings = new(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
+
+    private McpServerSettings _persistedSettings =
+        new(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
+
+    private bool _isDirty;
 
     public McpSettingsViewModel(MainWindowViewModel main)
     {
@@ -52,7 +57,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             {
                 _settings = _settings with { Port = value };
                 Raise();
-                ObserveSave();
+                MarkDirty();
             }
         }
     }
@@ -72,7 +77,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             Raise();
             Raise(nameof(AllowExternalAccess));
             Raise(nameof(IsAllowExternalAccessWarningVisible));
-            ObserveSave();
+            MarkDirty();
         }
     }
 
@@ -91,7 +96,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
             Raise();
             Raise(nameof(BindAddress));
             Raise(nameof(IsAllowExternalAccessWarningVisible));
-            ObserveSave();
+            MarkDirty();
         }
     }
 
@@ -109,7 +114,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
             _settings = _settings with { CorsEnabled = value };
             Raise();
-            ObserveSave();
+            MarkDirty();
         }
     }
 
@@ -129,7 +134,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
             _settings = _settings with { AllowedOrigins = origins };
             Raise();
-            ObserveSave();
+            MarkDirty();
         }
     }
 
@@ -145,7 +150,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
 
             _settings = _settings with { AuthRequired = value };
             Raise();
-            ObserveSave();
+            MarkDirty();
         }
     }
 
@@ -160,7 +165,7 @@ public sealed class McpSettingsViewModel : ViewModelBase
                 _settings = _settings with { Token = next };
                 Raise();
                 Raise(nameof(IsAllowExternalAccessWarningVisible));
-                ObserveSave();
+                MarkDirty();
             }
         }
     }
@@ -173,6 +178,23 @@ public sealed class McpSettingsViewModel : ViewModelBase
     public AsyncCommand GenerateTokenCommand { get; }
     public AsyncCommand StartMcpCommand { get; }
     public AsyncCommand StopMcpCommand { get; }
+    public bool SupportsEditing => true;
+    public bool IsDirty => _isDirty;
+    public bool CanSave => _isDirty;
+    public string SaveStateText => Status;
+    public string? LastError { get; private set; }
+
+    public Task DiscardAsync()
+    {
+        _settings = _persistedSettings;
+        _isDirty = false;
+        ReloadToolOverrides();
+        RaiseAllSettings();
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Status = "已放弃更改";
+        return Task.CompletedTask;
+    }
 
     private Task GenerateTokenAsync()
     {
@@ -202,27 +224,34 @@ public sealed class McpSettingsViewModel : ViewModelBase
         }
 
         _settings = result.Value;
+        _persistedSettings = result.Value;
+        _isDirty = false;
         ReloadToolOverrides();
         RaiseAllSettings();
         Status = "已加载数据库 MCP 设置。";
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
     }
 
-    private async Task SaveAsync()
+    public async Task SaveAsync()
     {
         Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(_settings);
         if (result.IsFailure)
         {
             Status = result.ErrorMessage ?? "MCP 设置保存失败。";
+            LastError = result.ErrorMessage;
+            Raise(nameof(LastError));
             return;
         }
 
         _settings = result.Value;
+        _persistedSettings = result.Value;
+        _isDirty = false;
         Status = "已保存 (重启服务生效)";
-    }
-
-    private void ObserveSave()
-    {
-        SaveAsync().Observe(nameof(McpSettingsViewModel), nameof(SaveAsync));
+        LastError = null;
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Raise(nameof(LastError));
     }
 
     internal void UpdateToolOverride(string toolName, bool enabled)
@@ -237,7 +266,15 @@ public sealed class McpSettingsViewModel : ViewModelBase
         {
             ToolOverrides = overrides.OrderBy(value => value.ToolName, StringComparer.Ordinal).ToArray()
         };
-        ObserveSave();
+        MarkDirty();
+    }
+
+    private void MarkDirty()
+    {
+        _isDirty = true;
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Status = "有未保存的更改";
     }
 
     private void ReloadToolOverrides()
