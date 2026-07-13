@@ -120,7 +120,7 @@ public sealed class SnapshotTests
         Result<SnapshotPublishResult> first = await c.PublishAsync();
         Result<SnapshotPublishResult> second = await c.PublishAsync(first.Value.SnapshotId);
         second.Value.Shards.Single().FileName.Should().Be(first.Value.Shards.Single().FileName);
-        Directory.EnumerateFiles(Path.Combine(c.SyncRoot, "shards"), "*.sqlite").Should().HaveCount(3);
+        Directory.EnumerateFiles(Path.Combine(c.SyncRoot, "shards"), "*.sqlite").Should().HaveCount(1);
     }
 
     [Fact]
@@ -133,12 +133,12 @@ public sealed class SnapshotTests
     }
 
     [Fact]
-    public async Task PublishSnapshot_creates_sensitive_mutable_shard_when_credential_store_exists()
+    public async Task PublishSnapshot_does_not_create_sensitive_mutable_shard_for_device_credentials()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
         Result<SnapshotPublishResult> r = await c.PublishAsync();
         SnapshotManifest? m = await SnapshotPublisher.ReadJsonAsync<SnapshotManifest>(r.Value.ManifestPath, default);
-        m!.SensitiveMutableShards.Should().ContainSingle(s => s.Kind == "sensitive_mutable" && !s.IsImmutable);
+        m!.SensitiveMutableShards.Should().BeEmpty();
     }
 
     [Fact]

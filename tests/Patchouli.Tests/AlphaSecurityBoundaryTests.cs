@@ -20,10 +20,10 @@ public sealed class AlphaSecurityBoundaryTests
     }
 
     [Fact]
-    public void SensitiveMutableShard_contains_credentials_only_when_expected()
+    public void SensitiveMutableShard_is_reserved_for_explicit_future_device_sync()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Snapshots",
-            "SnapshotServices.cs")).Should().Contain("sensitive_mutable");
+            "SnapshotServices.cs")).Should().Contain("SensitiveMutableShards");
     }
 
     [Theory]

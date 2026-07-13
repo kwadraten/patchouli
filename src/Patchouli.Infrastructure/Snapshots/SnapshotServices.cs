@@ -128,10 +128,9 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 }
             }
 
-            SnapshotShard? credentialShard = await CreateCredentialShardAsync(runtimePath, syncRoot, snapshotId);
             SnapshotManifest manifest = new(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId,
                 AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), shards,
-                credentialShard is null ? Array.Empty<SnapshotShard>() : new[] { credentialShard },
+                Array.Empty<SnapshotShard>(),
                 await Blake3FileAsync(runtimePath), request.Notes);
             string manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
@@ -861,12 +860,10 @@ public sealed class SnapshotImporter : ISnapshotImporter
                     cancellationToken);
             }
 
-            foreach (SnapshotShard shard in manifest.SensitiveMutableShards)
+            if (manifest.SensitiveMutableShards.Count > 0)
             {
-                await CopyFileAsync(
-                    Path.Combine(syncRoot, shard.FileName),
-                    Path.Combine(request.StagingRoot, Path.GetFileName(shard.FileName)),
-                    cancellationToken);
+                warnings.Add(
+                    "Device-level sensitive settings were found in this legacy snapshot and were not imported.");
             }
 
             await TryCompleteValidationOperationAsync(
