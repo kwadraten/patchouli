@@ -730,6 +730,22 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
+            await connection.ExecuteAsync(
+                """
+                insert into library_setting_records (
+                    setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
+                select setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy
+                from branch.library_setting_records
+                where 1 = 1
+                on conflict(setting_key) do update set
+                    schema_version = excluded.schema_version,
+                    value_json = excluded.value_json,
+                    revision = excluded.revision,
+                    updated_at = excluded.updated_at,
+                    updated_by_device_id = excluded.updated_by_device_id,
+                    merge_policy = excluded.merge_policy;
+                """, transaction: transaction);
+
             int importedPages = documents.Length == 0
                 ? 0
                 : await connection.ExecuteScalarAsync<int>(

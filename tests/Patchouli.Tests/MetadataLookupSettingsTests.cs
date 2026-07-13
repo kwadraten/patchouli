@@ -104,6 +104,100 @@ public sealed class MetadataLookupSettingsTests
     }
 
     [Fact]
+    public void Changing_category_does_not_discard_unsaved_settings()
+    {
+        string path = TemporarySettings("{}");
+        try
+        {
+            MainWindowViewModel main = new(settingsPath: path);
+            MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
+            SettingsCategoryViewModel metadataCategory = main.Settings.Categories.Single(category =>
+                ReferenceEquals(category.Content, metadata));
+            SettingsCategoryViewModel syncCategory = main.Settings.Categories.Single(category =>
+                ReferenceEquals(category.Content, main.Settings.SyncSettings));
+            main.Settings.ActiveCategory = metadataCategory;
+            bool original = metadata.Sources[0].Enabled;
+
+            metadata.Sources[0].Enabled = !original;
+            main.Settings.ActiveCategory = syncCategory;
+
+            main.Settings.ActiveCategory.Should().BeSameAs(metadataCategory);
+            metadata.Sources[0].Enabled.Should().Be(!original);
+            metadata.IsDirty.Should().BeTrue();
+            main.Settings.GlobalStatus.Should().Contain("未保存");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Closing_settings_does_not_discard_unsaved_drafts()
+    {
+        string path = TemporarySettings("{}");
+        try
+        {
+            MainWindowViewModel main = new(settingsPath: path);
+            await main.OpenSettingsAsync("mineru");
+            MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
+            metadata.Sources[0].Enabled = !metadata.Sources[0].Enabled;
+
+            await main.CloseSettingsTabCommand.ExecuteAsync();
+
+            main.ShowSettingsTab.Should().BeTrue();
+            metadata.IsDirty.Should().BeTrue();
+            main.Settings.GlobalStatus.Should().Contain("未保存");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Opting_in_moves_metadata_preferences_to_the_library_and_opting_out_materializes_them_locally()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-synced-metadata-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string settingsPath = Path.Combine(root, "appsettings.json");
+        string databasePath = Path.Combine(root, "runtime.sqlite");
+        try
+        {
+            PatchouliAppSettings initial = PatchouliAppSettings.Default() with
+            {
+                Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = databasePath }
+            };
+            initial.Save(settingsPath).IsSuccess.Should().BeTrue();
+            MainWindowViewModel main = new(settingsPath: settingsPath);
+            SyncSettingsViewModel sync = main.Settings.SyncSettings;
+            sync.SyncMetadataLookup = true;
+
+            await sync.SaveAsync();
+            MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
+            metadata.Sources[0].Enabled = false;
+            await metadata.SaveAsync();
+
+            (await (await main.ServicesAsync()).LibrarySettings.GetAsync("metadata_lookup")).Value.Should().NotBeNull();
+            File.ReadAllText(settingsPath).Should().NotContain("\"MetadataLookup\"");
+
+            MainWindowViewModel restarted = new(settingsPath: settingsPath);
+            await restarted.ServicesAsync();
+            restarted.Settings.MetadataLookupSettings.Sources[0].Enabled.Should().BeFalse();
+
+            sync.SyncMetadataLookup = false;
+            await sync.SaveAsync();
+
+            (await (await main.ServicesAsync()).LibrarySettings.GetAsync("metadata_lookup")).Value.Should().BeNull();
+            PatchouliAppSettings.Load(settingsPath).MetadataLookup.Sources[0].Enabled.Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public void Malformed_json_loads_defaults()
     {
         string path = TemporarySettings("{ not-json");

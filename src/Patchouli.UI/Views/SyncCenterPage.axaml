@@ -56,6 +56,14 @@
           <CheckBox Content="我已检查传入内容并确认应用" IsChecked="{Binding ConfirmApply}" IsEnabled="{Binding HasIncomingPlan}" />
           <Button Content="应用已检查的内容" Command="{Binding ApplyCommand}" IsEnabled="{Binding CanApply}"
                   HorizontalAlignment="Left" />
+          <Separator />
+          <TextBlock Text="不应用时，可丢弃 staging 分支，或将它保留为独立资料库副本。两者均不会修改当前资料库。"
+                     TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <Button Content="丢弃已检查的内容" Command="{Binding DiscardIncomingCommand}"
+                  IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
+          <TextBox Text="{Binding IncomingCopyDestinationPath}" PlaceholderText="独立资料库副本目标路径" />
+          <Button Content="保留为独立资料库副本" Command="{Binding KeepIncomingCopyCommand}"
+                  IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
         </StackPanel>
       </Border>
 

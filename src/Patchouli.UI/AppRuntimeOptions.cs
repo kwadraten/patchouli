@@ -380,7 +380,15 @@ public sealed record PatchouliAppSettings(
                 Ui.ShowLibraryLeftSidebar,
                 Ui.ShowLibraryRightSidebar
             });
-            root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
+            if (Sync.SyncMetadataLookup)
+            {
+                root.Remove("MetadataLookup");
+            }
+            else
+            {
+                root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
+            }
+
             root["FileScanning"] = JsonSerializer.SerializeToNode(new { FileScanning.ExclusionPatterns });
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";

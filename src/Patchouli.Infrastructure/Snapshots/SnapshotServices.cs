@@ -40,7 +40,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         "evidence_successors",
         "search_profiles",
         "search_rewrite_rules",
-        "search_settings"
+        "search_settings",
+        "library_setting_records"
     ];
 
     private static readonly string[][] DataShardTableGroups =
@@ -52,7 +53,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         ["pages", "layout_revisions", "layout_nodes"],
         ["ocr_presets", "ocr_preset_versions", "ocr_runs", "ocr_page_results", "ocr_candidate_adoptions"],
         ["search_units", "search_index_status", "evidence_ref_records", "evidence_successors"],
-        ["search_profiles", "search_rewrite_rules", "search_settings"]
+        ["search_profiles", "search_rewrite_rules", "search_settings", "library_setting_records"]
     ];
 
     private readonly IClock _clock;
@@ -977,7 +978,8 @@ public sealed class SnapshotImporter : ISnapshotImporter
         "evidence_successors",
         "search_profiles",
         "search_rewrite_rules",
-        "search_settings"
+        "search_settings",
+        "library_setting_records"
     ];
 
     private async Task<BlockingOperationId?> TryStartValidationOperationAsync(string manifestPath,

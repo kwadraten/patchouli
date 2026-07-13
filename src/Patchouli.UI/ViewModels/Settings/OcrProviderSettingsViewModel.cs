@@ -88,8 +88,23 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
         return Task.CompletedTask;
     }
 
+    internal void LoadPersistedToken(string token)
+    {
+        _token = token;
+        _persistedToken = token;
+        _isDirty = false;
+        LastError = null;
+        Raise(nameof(MinerUTokenInput));
+        Raise(nameof(MinerUCredentialStatus));
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+        Raise(nameof(LastError));
+        Status = "已保存";
+    }
+
     public async Task SaveAsync()
     {
+        Status = "正在保存...";
         bool saved = await _main.SaveMinerUTokenSettingsAsync(_token);
         Status = saved ? "已保存" : "保存失败";
         if (saved)

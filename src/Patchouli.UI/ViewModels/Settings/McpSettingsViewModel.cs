@@ -236,6 +236,7 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
 
     public async Task SaveAsync()
     {
+        Status = "正在保存...";
         long revision = _editRevision;
         McpServerSettings draft = _settings;
         Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(draft);
@@ -258,6 +259,7 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         {
             Status = "已保存旧版本，仍有新的未保存更改";
         }
+
         LastError = null;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));

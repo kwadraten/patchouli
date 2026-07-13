@@ -17,6 +17,7 @@ public sealed class SnapshotViewModel : ViewModelBase
     private SnapshotIncomingPlan? _incoming;
     private string _exportDestinationDirectory = "";
     private string _packageManifestPath = "";
+    private string _incomingCopyDestinationPath = "";
     private bool _confirmApply;
     private string _operationMessage = "同步中心尚未检查同步目录。";
 
@@ -30,6 +31,8 @@ public sealed class SnapshotViewModel : ViewModelBase
         OpenPackageCommand = new AsyncCommand(OpenPackageAsync);
         ResolveConflictsCommand = new AsyncCommand(ResolveConflictsAsync);
         ApplyCommand = new AsyncCommand(ApplyAsync);
+        DiscardIncomingCommand = new AsyncCommand(DiscardIncomingAsync);
+        KeepIncomingCopyCommand = new AsyncCommand(KeepIncomingCopyAsync);
     }
 
     public string ExportDestinationDirectory
@@ -76,6 +79,22 @@ public sealed class SnapshotViewModel : ViewModelBase
             _confirmApply = value;
             Raise();
             Raise(nameof(CanApply));
+        }
+    }
+
+    /// <summary>Destination selected for preserving a reviewed incoming branch as a standalone library copy.</summary>
+    public string IncomingCopyDestinationPath
+    {
+        get => _incomingCopyDestinationPath;
+        set
+        {
+            if (_incomingCopyDestinationPath == value)
+            {
+                return;
+            }
+
+            _incomingCopyDestinationPath = value;
+            Raise();
         }
     }
 
@@ -152,6 +171,8 @@ public sealed class SnapshotViewModel : ViewModelBase
     public AsyncCommand OpenPackageCommand { get; }
     public AsyncCommand ResolveConflictsCommand { get; }
     public AsyncCommand ApplyCommand { get; }
+    public AsyncCommand DiscardIncomingCommand { get; }
+    public AsyncCommand KeepIncomingCopyCommand { get; }
 
     public async Task RefreshAsync()
     {
@@ -251,9 +272,8 @@ public sealed class SnapshotViewModel : ViewModelBase
                 context.CancellationToken));
         if (result.IsSuccess)
         {
-            _contentPlan = null;
-            _incoming = null;
-            ConfirmApply = false;
+            ClearIncomingPlan();
+            await _main.RefreshSyncedMetadataLookupAsync();
             OperationMessage = "快照内容已应用；相关本地 FTS 索引已标记为 stale。";
         }
         else
@@ -262,6 +282,61 @@ public sealed class SnapshotViewModel : ViewModelBase
         }
 
         await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess);
+    }
+
+    private async Task DiscardIncomingAsync()
+    {
+        if (_contentPlan is null)
+        {
+            OperationMessage = "请先检查一个传入快照。";
+            RaiseIncoming();
+            return;
+        }
+
+        Result result = await _main.ModalOperations.RunAsync(
+            new ModalOperationOptions("丢弃传入快照", "正在清理已检查的 staging 分支。", true),
+            async context => await (await _main.ServicesAsync()).SnapshotSync.DiscardIncomingAsync(
+                _contentPlan,
+                context.CancellationToken));
+        if (result.IsSuccess)
+        {
+            ClearIncomingPlan();
+            OperationMessage = "已丢弃传入快照的 staging 分支；活动资料库未被修改。";
+        }
+        else
+        {
+            OperationMessage = DescribeFailure(result);
+        }
+
+        await RefreshAfterOperationAsync("discard_snapshot_branch", result.IsSuccess);
+    }
+
+    private async Task KeepIncomingCopyAsync()
+    {
+        if (_contentPlan is null)
+        {
+            OperationMessage = "请先检查一个传入快照。";
+            RaiseIncoming();
+            return;
+        }
+
+        Result<string> result = await _main.ModalOperations.RunAsync(
+            new ModalOperationOptions("保留传入副本", "正在创建独立资料库副本并清理 staging 分支。", true),
+            async context => await (await _main.ServicesAsync()).SnapshotSync.KeepIncomingAsSeparateLibraryCopyAsync(
+                _contentPlan,
+                IncomingCopyDestinationPath,
+                context.CancellationToken));
+        if (result.IsSuccess)
+        {
+            ClearIncomingPlan();
+            OperationMessage = $"已保留独立资料库副本：{result.Value}";
+        }
+        else
+        {
+            OperationMessage = DescribeFailure(result);
+        }
+
+        await RefreshAfterOperationAsync("keep_snapshot_branch_copy", result.IsSuccess);
     }
 
     private async Task ResolveConflictsAsync()
@@ -363,6 +438,13 @@ public sealed class SnapshotViewModel : ViewModelBase
 
         ConfirmApply = false;
         RaiseIncoming();
+    }
+
+    private void ClearIncomingPlan()
+    {
+        _contentPlan = null;
+        _incoming = null;
+        ConfirmApply = false;
     }
 
     private static string DescribeFailure(IOperationOutcome result)

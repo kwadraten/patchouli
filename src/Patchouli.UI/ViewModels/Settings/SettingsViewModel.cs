@@ -71,10 +71,15 @@ public sealed class SettingsViewModel : ViewModelBase
         get => _activeCategory;
         set
         {
-            if (_activeCategory is not null && _activeCategory.Section?.IsDirty == true && !ReferenceEquals(_activeCategory, value))
+            if (_activeCategory is not null && _activeCategory.Section?.IsDirty == true &&
+                !ReferenceEquals(_activeCategory, value))
             {
-                _activeCategory.Section.DiscardAsync().Observe(nameof(SettingsViewModel), nameof(ISettingsSection.DiscardAsync));
+                GlobalStatus = "当前设置分组有未保存的更改；请先保存或放弃更改。";
+                Raise(nameof(ActiveCategory));
+                RaiseActiveSectionState();
+                return;
             }
+
             _activeCategory = value;
             Raise();
             RaiseActiveSectionState();

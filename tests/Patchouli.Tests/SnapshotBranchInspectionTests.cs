@@ -69,6 +69,20 @@ public sealed class SnapshotBranchInspectionTests
     }
 
     [Fact]
+    public async Task Apply_imports_opted_in_library_settings_in_the_same_branch_transaction()
+    {
+        await using Ctx c = await Ctx.Create(true);
+        SnapshotBranchInspectionInfo branch = (await c.Open()).Value;
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync(branch, [], [c.Doc])).Value;
+
+        Result<BranchImportResult> applied = await c.Service.ApplyImportPlanAsync(plan, true);
+
+        applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
+        (await c.Scalar<string>("select value_json from library_setting_records where setting_key = @Key;",
+            new { Key = "metadata_lookup" })).Should().Be("{\"sources\":[]}");
+    }
+
+    [Fact]
     public async Task Conflict_blocks_overwrite_and_branch_actions_do_not_touch_active()
     {
         await using Ctx c = await Ctx.Create();
@@ -303,7 +317,7 @@ public sealed class SnapshotBranchInspectionTests
         public DocumentInstanceId Doc { get; }
         public string Secret { get; }
 
-        public static async Task<Ctx> Create()
+        public static async Task<Ctx> Create(bool includeLibrarySetting = false)
         {
             TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
             string root = Directory
@@ -332,6 +346,12 @@ public sealed class SnapshotBranchInspectionTests
                         O = node.ToString(), U = unit.ToString(), E = EvidenceRefId.New().ToString(),
                         C = CredentialId.New().ToString(), S = secret
                     });
+                if (includeLibrarySetting)
+                {
+                    await cn.ExecuteAsync(
+                        "insert into library_setting_records(setting_key,schema_version,value_json,revision,updated_at,updated_by_device_id,merge_policy) values('metadata_lookup',1,'{\"sources\":[]}',1,@N,'device','scalar_replace');",
+                        new { N = now });
+                }
             }
 
             SnapshotPublishResult pub =
@@ -341,7 +361,7 @@ public sealed class SnapshotBranchInspectionTests
             {
                 await cn.OpenAsync();
                 await cn.ExecuteAsync(
-                    "delete from evidence_ref_records; delete from items; delete from search_index_status; ");
+                    "delete from evidence_ref_records; delete from items; delete from search_index_status; delete from library_setting_records;");
             }
 
             return new Ctx(db, root,

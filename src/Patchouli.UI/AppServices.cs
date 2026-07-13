@@ -11,6 +11,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
@@ -32,6 +33,7 @@ using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Rendering;
 using Patchouli.Infrastructure.Search;
+using Patchouli.Infrastructure.Settings;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
@@ -75,6 +77,7 @@ public sealed class AppServices
         MetadataSources = MetadataSourceRegistry.CreateDefault(_metadataLookupHttpClient);
         MetadataLookup =
             new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
+        LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
         FileSearchRootAccess = new FileSearchRootAccess(exclusionPatterns: settings.FileScanning.ExclusionPatterns);
@@ -156,6 +159,7 @@ public sealed class AppServices
     public IItemTypeInferenceService ItemTypeInference { get; }
     public IMetadataSourceRegistry MetadataSources { get; }
     public IMetadataLookupService MetadataLookup { get; }
+    public ILibrarySettingStore LibrarySettings { get; }
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
@@ -193,6 +197,85 @@ public sealed class AppServices
     public void UpdateMetadataLookupPreferences(MetadataLookupAppSettings settings)
     {
         _metadataLookupPreferences = ToMetadataLookupPreferences(settings);
+    }
+
+    public async Task<Result<MetadataLookupAppSettings?>> GetSyncedMetadataLookupAsync(
+        CancellationToken cancellationToken = default)
+    {
+        Result<SettingRecord?> record = await LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup,
+            cancellationToken);
+        if (record.IsFailure)
+        {
+            return Result<MetadataLookupAppSettings?>.Failure(record.ErrorCode!, record.ErrorMessage!);
+        }
+
+        if (record.Value is null)
+        {
+            return Result<MetadataLookupAppSettings?>.Success(null);
+        }
+
+        try
+        {
+            MetadataLookupAppSettings? settings =
+                System.Text.Json.JsonSerializer.Deserialize<MetadataLookupAppSettings>(
+                    record.Value.Value);
+            return settings is null
+                ? Result<MetadataLookupAppSettings?>.Failure(AppErrorCodes.ValidationFailed,
+                    "Synced metadata lookup setting is empty.")
+                : Result<MetadataLookupAppSettings?>.Success(
+                    MetadataLookupAppSettings.MergeWithDefaults(settings.Sources));
+        }
+        catch (System.Text.Json.JsonException exception)
+        {
+            return Result<MetadataLookupAppSettings?>.Failure(AppErrorCodes.ValidationFailed,
+                $"Synced metadata lookup setting is invalid: {exception.Message}");
+        }
+    }
+
+    public async Task<Result> SaveSyncedMetadataLookupAsync(MetadataLookupAppSettings settings, string deviceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, "A device identity is required for synced settings.");
+        }
+
+        Result<SettingRecord?> current = await LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup,
+            cancellationToken);
+        if (current.IsFailure)
+        {
+            return Result.Failure(current.ErrorCode!, current.ErrorMessage!);
+        }
+
+        SettingRecord next = new(
+            LibrarySettingKeys.MetadataLookup,
+            1,
+            System.Text.Json.JsonSerializer.Serialize(MetadataLookupAppSettings.MergeWithDefaults(settings.Sources)),
+            (current.Value?.Revision ?? 0) + 1,
+            Clock.UtcNow.ToUniversalTime(),
+            deviceId.Trim(),
+            SettingsMergePolicies.ScalarReplace);
+        Result saved = await LibrarySettings.SaveAsync(next, cancellationToken);
+        if (saved.IsSuccess)
+        {
+            UpdateMetadataLookupPreferences(settings);
+        }
+
+        return saved;
+    }
+
+    private async Task ApplySyncedMetadataLookupAsync(PatchouliAppSettings settings)
+    {
+        if (!settings.Sync.SyncMetadataLookup)
+        {
+            return;
+        }
+
+        Result<MetadataLookupAppSettings?> synced = await GetSyncedMetadataLookupAsync();
+        if (synced.IsSuccess && synced.Value is not null)
+        {
+            UpdateMetadataLookupPreferences(synced.Value);
+        }
     }
 
     public void UpdateFileScanExclusions(FileScanningAppSettings settings)
@@ -275,6 +358,7 @@ public sealed class AppServices
 
         AppServices services = new(path, settings, settingsPath);
         await services.MigrationRunner.RunAsync();
+        await services.ApplySyncedMetadataLookupAsync(settings);
         try
         {
             await logger.LogAsync("migration", "Pending migrations completed.");

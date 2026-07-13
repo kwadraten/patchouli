@@ -557,7 +557,9 @@ public sealed class FileResolutionService : IFileResolutionService
         string selectedPath,
         bool requireOriginalFullFingerprint,
         bool markSourceBasisStale,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<SqliteConnection, DbTransaction, FileFingerprint, CancellationToken, Task<Result>>? afterFileAssetUpdated =
+            null)
     {
         if (string.IsNullOrWhiteSpace(selectedPath))
         {
@@ -651,6 +653,17 @@ public sealed class FileResolutionService : IFileResolutionService
                     transaction);
             }
 
+            if (afterFileAssetUpdated is not null)
+            {
+                Result followUp = await afterFileAssetUpdated(connection, transaction, fingerprint.Value,
+                    cancellationToken);
+                if (followUp.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<FileAsset>.Failure(followUp.ErrorCode!, followUp.ErrorMessage!, followUp.Conflicts);
+                }
+            }
+
             await transaction.CommitAsync(cancellationToken);
 
             return Result<FileAsset>.Success(new FileAsset(
@@ -684,150 +697,147 @@ public sealed class FileResolutionService : IFileResolutionService
         string selectedPath,
         CancellationToken cancellationToken = default)
     {
-        Result<FileAsset> confirmed = await ConfirmChangedFileAsync(fileAssetId, selectedPath, cancellationToken);
-        if (confirmed.IsFailure)
-        {
-            return Result.Failure(confirmed.ErrorCode!, confirmed.ErrorMessage!, confirmed.Conflicts);
-        }
+        Result<FileAsset> confirmed = await ConfirmFileAsync(
+            fileAssetId,
+            selectedPath,
+            false,
+            true,
+            cancellationToken,
+            (connection, transaction, fingerprint, token) =>
+                CopyStaleRevisionsAsync(connection, transaction, fileAssetId, fingerprint, token));
+        return confirmed.IsSuccess
+            ? Result.Success()
+            : Result.Failure(confirmed.ErrorCode!, confirmed.ErrorMessage!, confirmed.Conflicts);
+    }
 
-        if (string.IsNullOrWhiteSpace(confirmed.Value.FullBlake3))
+    private async Task<Result> CopyStaleRevisionsAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        FileAssetId fileAssetId,
+        FileFingerprint fingerprint,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(fingerprint.FullBlake3))
         {
             return Result.Failure(AppErrorCodes.ValidationFailed,
                 "A complete fingerprint is required before deriving a layout revision.");
         }
 
-        try
+        RevisionCopyRow[] revisions = (await connection.QueryAsync<RevisionCopyRow>(
+            """
+            select layout_revision_id as LayoutRevisionId,
+                   document_instance_id as DocumentInstanceId,
+                   source as Source,
+                   created_at as CreatedAt
+            from layout_revisions
+            where document_instance_id in (
+                select document_instance_id
+                from document_instances
+                where file_asset_id = @FileAssetId
+            )
+              and source_basis_status = 'stale'
+              and is_current = 1;
+            """,
+            new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
+
+        foreach (RevisionCopyRow revision in revisions)
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
-            await connection.OpenAsync(cancellationToken);
-            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-            RevisionCopyRow[] revisions = (await connection.QueryAsync<RevisionCopyRow>(
+            string newRevisionId = LayoutRevisionId.New().ToString();
+            await connection.ExecuteAsync(
                 """
-                select layout_revision_id as LayoutRevisionId,
-                       document_instance_id as DocumentInstanceId,
-                       source as Source,
-                       created_at as CreatedAt
-                from layout_revisions
-                where document_instance_id in (
-                    select document_instance_id
-                    from document_instances
-                    where file_asset_id = @FileAssetId
+                insert into layout_revisions (
+                    layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at,
+                    source_full_blake3, source_basis_status
                 )
-                  and source_basis_status = 'stale'
-                  and is_current = 1;
+                values (@LayoutRevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt,
+                        @SourceFullBlake3, 'current');
                 """,
-                new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
+                new
+                {
+                    LayoutRevisionId = newRevisionId,
+                    revision.DocumentInstanceId,
+                    ParentRevisionId = revision.LayoutRevisionId,
+                    Source = "reused_for_new_fingerprint",
+                    CreatedAt = FormatUtc(_clock.UtcNow),
+                    SourceFullBlake3 = fingerprint.FullBlake3
+                },
+                transaction);
 
-            foreach (RevisionCopyRow revision in revisions)
+            LayoutNodeCopyRow[] nodes = (await connection.QueryAsync<LayoutNodeCopyRow>(
+                """
+                select node_id as NodeId,
+                       document_instance_id as DocumentInstanceId,
+                       page_id as PageId,
+                       parent_node_id as ParentNodeId,
+                       node_type as NodeType,
+                       bbox_x as BBoxX,
+                       bbox_y as BBoxY,
+                       bbox_width as BBoxWidth,
+                       bbox_height as BBoxHeight,
+                       own_text as OwnText,
+                       text_policy as TextPolicy,
+                       reading_order as ReadingOrder,
+                       source as Source,
+                       confidence as Confidence,
+                       ignored as Ignored,
+                       row_index as RowIndex,
+                       col_index as ColIndex,
+                       row_span as RowSpan,
+                       col_span as ColSpan,
+                       is_header as IsHeader
+                from layout_nodes
+                where revision_id = @RevisionId;
+                """,
+                new { RevisionId = revision.LayoutRevisionId }, transaction)).ToArray();
+
+            Dictionary<string, string> nodeIds = nodes.ToDictionary(node => node.NodeId,
+                _ => LayoutNodeId.New().ToString(), StringComparer.Ordinal);
+            foreach (LayoutNodeCopyRow node in nodes)
             {
-                string newRevisionId = LayoutRevisionId.New().ToString();
                 await connection.ExecuteAsync(
                     """
-                    insert into layout_revisions (
-                        layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at,
-                        source_full_blake3, source_basis_status
+                    insert into layout_nodes (
+                        node_id, document_instance_id, page_id, parent_node_id, node_type,
+                        bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
+                        reading_order, source, revision_id, confidence, ignored,
+                        row_index, col_index, row_span, col_span, is_header
                     )
-                    values (@LayoutRevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt,
-                            @SourceFullBlake3, 'current');
+                    values (
+                        @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
+                        @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
+                        @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
+                        @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
+                    );
                     """,
                     new
                     {
-                        LayoutRevisionId = newRevisionId,
-                        revision.DocumentInstanceId,
-                        ParentRevisionId = revision.LayoutRevisionId,
-                        Source = "reused_for_new_fingerprint",
-                        CreatedAt = FormatUtc(_clock.UtcNow),
-                        SourceFullBlake3 = confirmed.Value.FullBlake3
+                        NodeId = nodeIds[node.NodeId],
+                        node.DocumentInstanceId,
+                        node.PageId,
+                        ParentNodeId = node.ParentNodeId is null ? null : nodeIds[node.ParentNodeId],
+                        node.NodeType,
+                        node.BBoxX,
+                        node.BBoxY,
+                        node.BBoxWidth,
+                        node.BBoxHeight,
+                        node.OwnText,
+                        node.TextPolicy,
+                        node.ReadingOrder,
+                        node.Source,
+                        RevisionId = newRevisionId,
+                        node.Confidence,
+                        node.Ignored,
+                        node.RowIndex,
+                        node.ColIndex,
+                        node.RowSpan,
+                        node.ColSpan,
+                        node.IsHeader
                     },
                     transaction);
-
-                LayoutNodeCopyRow[] nodes = (await connection.QueryAsync<LayoutNodeCopyRow>(
-                    """
-                    select node_id as NodeId,
-                           document_instance_id as DocumentInstanceId,
-                           page_id as PageId,
-                           parent_node_id as ParentNodeId,
-                           node_type as NodeType,
-                           bbox_x as BBoxX,
-                           bbox_y as BBoxY,
-                           bbox_width as BBoxWidth,
-                           bbox_height as BBoxHeight,
-                           own_text as OwnText,
-                           text_policy as TextPolicy,
-                           reading_order as ReadingOrder,
-                           source as Source,
-                           confidence as Confidence,
-                           ignored as Ignored,
-                           row_index as RowIndex,
-                           col_index as ColIndex,
-                           row_span as RowSpan,
-                           col_span as ColSpan,
-                           is_header as IsHeader
-                    from layout_nodes
-                    where revision_id = @RevisionId;
-                    """,
-                    new { RevisionId = revision.LayoutRevisionId }, transaction)).ToArray();
-
-                Dictionary<string, string> nodeIds = nodes.ToDictionary(node => node.NodeId,
-                    _ => LayoutNodeId.New().ToString(), StringComparer.Ordinal);
-                foreach (LayoutNodeCopyRow node in nodes)
-                {
-                    await connection.ExecuteAsync(
-                        """
-                        insert into layout_nodes (
-                            node_id, document_instance_id, page_id, parent_node_id, node_type,
-                            bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
-                            reading_order, source, revision_id, confidence, ignored,
-                            row_index, col_index, row_span, col_span, is_header
-                        )
-                        values (
-                            @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
-                            @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
-                            @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
-                            @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
-                        );
-                        """,
-                        new
-                        {
-                            NodeId = nodeIds[node.NodeId],
-                            node.DocumentInstanceId,
-                            node.PageId,
-                            ParentNodeId = node.ParentNodeId is null ? null : nodeIds[node.ParentNodeId],
-                            node.NodeType,
-                            node.BBoxX,
-                            node.BBoxY,
-                            node.BBoxWidth,
-                            node.BBoxHeight,
-                            node.OwnText,
-                            node.TextPolicy,
-                            node.ReadingOrder,
-                            node.Source,
-                            RevisionId = newRevisionId,
-                            node.Confidence,
-                            node.Ignored,
-                            node.RowIndex,
-                            node.ColIndex,
-                            node.RowSpan,
-                            node.ColSpan,
-                            node.IsHeader
-                        },
-                        transaction);
-                }
             }
+        }
 
-            await transaction.CommitAsync(cancellationToken);
-            return Result.Success();
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
-                                              "infrastructure.file-resolution"))
-        {
-            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
-        }
+        return Result.Success();
     }
 
     public async Task<Result> KeepOldEvidenceAsync(

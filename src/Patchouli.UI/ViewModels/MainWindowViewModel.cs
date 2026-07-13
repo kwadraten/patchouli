@@ -17,6 +17,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
@@ -247,6 +248,104 @@ public sealed class MainWindowViewModel : ViewModelBase
         return saved;
     }
 
+    public async Task<SettingsSaveResult> SaveMetadataLookupSettingsAsync(MetadataLookupAppSettings metadataLookup)
+    {
+        if (!_settings.Sync.SyncMetadataLookup)
+        {
+            return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
+        }
+
+        AppServices services = await ServicesAsync();
+        Result saved = await services.SaveSyncedMetadataLookupAsync(metadataLookup, _settings.Sync.DeviceId);
+        if (saved.IsFailure)
+        {
+            return new SettingsSaveResult(false, saved.ErrorCode, saved.ErrorMessage, "library_setting_record", true);
+        }
+
+        SettingsSaveResult json = UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
+        return json;
+    }
+
+    public async Task<SettingsSaveResult> SetMetadataLookupSyncEnabledAsync(bool enabled)
+    {
+        if (enabled == _settings.Sync.SyncMetadataLookup)
+        {
+            return SettingsSaveResult.Success;
+        }
+
+        AppServices services = await ServicesAsync();
+        if (enabled)
+        {
+            Result<SettingRecord?> previous =
+                await services.LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup);
+            if (previous.IsFailure)
+            {
+                return new SettingsSaveResult(false, previous.ErrorCode, previous.ErrorMessage,
+                    "library_setting_record", true);
+            }
+
+            Result saved =
+                await services.SaveSyncedMetadataLookupAsync(_settings.MetadataLookup, _settings.Sync.DeviceId);
+            if (saved.IsFailure)
+            {
+                return new SettingsSaveResult(false, saved.ErrorCode, saved.ErrorMessage, "library_setting_record",
+                    true);
+            }
+
+            SettingsSaveResult json = UpdateAppOptions(_settings with
+            {
+                Sync = _settings.Sync with { SyncMetadataLookup = true }
+            });
+            if (!json.IsSuccess)
+            {
+                if (previous.Value is null)
+                {
+                    await services.LibrarySettings.DeleteAsync(LibrarySettingKeys.MetadataLookup);
+                }
+                else
+                {
+                    await services.LibrarySettings.SaveAsync(previous.Value);
+                }
+            }
+
+            return json;
+        }
+
+        Result<MetadataLookupAppSettings?> record = await services.GetSyncedMetadataLookupAsync();
+        if (record.IsFailure)
+        {
+            return new SettingsSaveResult(false, record.ErrorCode, record.ErrorMessage, "library_setting_record", true);
+        }
+
+        Result<SettingRecord?> storedRecord =
+            await services.LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup);
+        if (storedRecord.IsFailure)
+        {
+            return new SettingsSaveResult(false, storedRecord.ErrorCode, storedRecord.ErrorMessage,
+                "library_setting_record", true);
+        }
+
+        MetadataLookupAppSettings materialized = record.Value ?? _settings.MetadataLookup;
+        Result removed = await services.LibrarySettings.DeleteAsync(LibrarySettingKeys.MetadataLookup);
+        if (removed.IsFailure)
+        {
+            return new SettingsSaveResult(false, removed.ErrorCode, removed.ErrorMessage, "library_setting_record",
+                true);
+        }
+
+        SettingsSaveResult savedJson = UpdateAppOptions(_settings with
+        {
+            MetadataLookup = materialized,
+            Sync = _settings.Sync with { SyncMetadataLookup = false }
+        });
+        if (!savedJson.IsSuccess && storedRecord.Value is not null)
+        {
+            await services.LibrarySettings.SaveAsync(storedRecord.Value);
+        }
+
+        return savedJson;
+    }
+
     private void PersistRuntimeDatabasePathIfEnabled()
     {
         if (!_settings.Runtime.RememberLastDatabase)
@@ -352,6 +451,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             await StopMcpServerAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
             _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+            await RefreshSyncedMetadataLookupAsync(_services);
             PersistRuntimeDatabasePathIfEnabled();
             await LoadPersistedMinerUTokenAsync();
             await RefreshSidebarPathsAsync();
@@ -480,6 +580,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+        await RefreshSyncedMetadataLookupAsync(_services);
         await LoadPersistedMinerUTokenAsync();
         await RefreshSidebarPathsAsync();
         if (_autoStartMcpServer)
@@ -488,6 +589,29 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         return _services;
+    }
+
+    public async Task RefreshSyncedMetadataLookupAsync()
+    {
+        await RefreshSyncedMetadataLookupAsync(await ServicesAsync());
+    }
+
+    private async Task RefreshSyncedMetadataLookupAsync(AppServices services)
+    {
+        if (!_settings.Sync.SyncMetadataLookup)
+        {
+            return;
+        }
+
+        Result<MetadataLookupAppSettings?> synced = await services.GetSyncedMetadataLookupAsync();
+        if (synced.IsFailure || synced.Value is null)
+        {
+            return;
+        }
+
+        _settings = _settings with { MetadataLookup = synced.Value };
+        services.UpdateMetadataLookupPreferences(synced.Value);
+        Settings.MetadataLookupSettings.ReloadFromEffectiveSettingsIfClean(synced.Value);
     }
 
     public async Task<Result<ConflictResolutionResult>> ResolveConflictAsync(
@@ -1267,7 +1391,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         Shell.MinerUToken = trimmed;
         FirstRun.MinerUToken = trimmed;
-        Settings.MinerUTokenInput = trimmed;
+        Settings.OcrProviderSettings.LoadPersistedToken(trimmed);
         Shell.NotifyMinerUTokenChanged();
         Report("MinerU 凭据已保存。");
         return true;
@@ -1278,7 +1402,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         string token = await GetPersistedMinerUTokenAsync();
         Shell.MinerUToken = token;
         FirstRun.MinerUToken = token;
-        Settings.MinerUTokenInput = token;
+        Settings.OcrProviderSettings.LoadPersistedToken(token);
         Shell.NotifyMinerUTokenChanged();
     }
 
@@ -1571,17 +1695,16 @@ public sealed class MainWindowViewModel : ViewModelBase
         return Task.CompletedTask;
     }
 
-    private async Task CloseSettingsTabAsync()
+    private Task CloseSettingsTabAsync()
     {
-        foreach (SettingsCategoryViewModel category in Settings.Categories)
+        if (Settings.HasDirtySections)
         {
-            if (category.Section?.IsDirty == true)
-            {
-                await category.Section.DiscardAsync();
-            }
+            Settings.GlobalStatus = "设置有未保存的更改；请先保存或放弃后再关闭设置。";
+            return Task.CompletedTask;
         }
 
         Workspace.CloseKind(WorkspaceTabKind.Settings);
+        return Task.CompletedTask;
     }
 
     private Task CloseTabAsync(string tabId)

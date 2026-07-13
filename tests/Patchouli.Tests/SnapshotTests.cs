@@ -125,6 +125,31 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public async Task Publish_and_import_preserve_opted_in_non_secret_setting_records()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync(
+                """
+                insert into library_setting_records (
+                    setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
+                values ('metadata_lookup', 1, '{"sources":[]}', 1, '2026-07-13T00:00:00.0000000+00:00',
+                        'device-a', 'scalar_replace');
+                """);
+        }
+
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        Result<SnapshotImportResult> imported = await c.ImportAsync(published.Value.ManifestPath);
+        await using SqliteConnection staging = OpenSqlite(imported.Value.StagingDatabasePath!);
+        await staging.OpenAsync();
+
+        (await staging.ExecuteScalarAsync<string>(
+                "select value_json from library_setting_records where setting_key = 'metadata_lookup';"))
+            .Should().Be("{\"sources\":[]}");
+    }
+
+    [Fact]
     public async Task PublishSnapshot_increments_logical_generation()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
@@ -540,6 +565,42 @@ public sealed class SnapshotTests
             inspected.Value.ContentPlan with { IsExplicitlyConfirmed = true });
 
         applied.ErrorCode.Should().Be("snapshot_plan_superseded");
+    }
+
+    [Fact]
+    public async Task Sync_coordinator_keeps_an_inspected_branch_as_a_copy_then_releases_staging()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "sync-root-a",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-a",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        SnapshotSyncCoordinator coordinator = new(
+            c.Publisher,
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+        (await coordinator.PublishAsync()).IsSuccess.Should().BeTrue();
+        Result<SnapshotIncomingPlan> inspected =
+            await coordinator.InspectIncomingAsync(SnapshotIncomingRequest.CurrentSyncRoot);
+        string destination = Path.Combine(c.StagingRoot, "preserved-library.sqlite");
+
+        Result<string> kept = await coordinator.KeepIncomingAsSeparateLibraryCopyAsync(
+            inspected.Value.ContentPlan,
+            destination);
+
+        kept.IsSuccess.Should().BeTrue(kept.ErrorMessage);
+        File.Exists(destination).Should().BeTrue();
+        File.Exists(inspected.Value.Branch.StagingDatabasePath).Should().BeFalse();
+        bindings.State.OperationState.Should().Be(SnapshotSyncOperationState.Ready);
     }
 
     [Fact]

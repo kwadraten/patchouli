@@ -481,6 +481,50 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         }
     }
 
+    public async Task<Result> DiscardIncomingAsync(
+        SnapshotContentResolutionPlan plan,
+        CancellationToken cancellationToken = default)
+    {
+        Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
+            cancellationToken);
+        return discarded.IsFailure
+            ? discarded
+            : await SetReadyAfterIncomingDispositionAsync(cancellationToken);
+    }
+
+    public async Task<Result<string>> KeepIncomingAsSeparateLibraryCopyAsync(
+        SnapshotContentResolutionPlan plan,
+        string destinationPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(destinationPath))
+        {
+            return Result<string>.Failure(AppErrorCodes.ValidationFailed,
+                "Choose a destination for the separate library copy.");
+        }
+
+        Result<string> copied = await _branchInspection.KeepBranchAsSeparateLibraryCopyAsync(
+            plan.BranchImportPlan.SourceBranch,
+            destinationPath,
+            cancellationToken);
+        if (copied.IsFailure)
+        {
+            return copied;
+        }
+
+        Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
+            cancellationToken);
+        if (discarded.IsFailure)
+        {
+            return Result<string>.Failure(discarded.ErrorCode!, discarded.ErrorMessage!);
+        }
+
+        Result ready = await SetReadyAfterIncomingDispositionAsync(cancellationToken);
+        return ready.IsSuccess
+            ? copied
+            : Result<string>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
+    }
+
     public async Task<Result<SnapshotContentResolutionPlan>> ResolveContentConflictAsync(
         SnapshotContentResolutionPlan plan,
         string conflictId,
@@ -685,6 +729,19 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         {
             // The operation's original failure remains useful even when its diagnostic state could not be persisted.
         }
+    }
+
+    private async Task<Result> SetReadyAfterIncomingDispositionAsync(CancellationToken cancellationToken)
+    {
+        Result<SnapshotSyncBinding> resolved = await _bindings.GetBindingAsync(cancellationToken);
+        if (resolved.IsFailure)
+        {
+            return Result.Failure(resolved.ErrorCode!, resolved.ErrorMessage!);
+        }
+
+        SnapshotSyncBinding binding = resolved.Value;
+        return await _bindings.SaveLocalStateAsync(
+            NextState(binding.LocalState, SnapshotSyncOperationState.Ready, null, null), cancellationToken);
     }
 
     private SnapshotSyncLocalState NextState(

@@ -249,4 +249,20 @@ public interface ISnapshotSyncCoordinator
     Task<Result<SnapshotApplyResult>> ApplyAsync(
         SnapshotContentResolutionPlan plan,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Discards a staged incoming branch after the user has reviewed it. This never writes to the active library.
+    /// </summary>
+    Task<Result> DiscardIncomingAsync(
+        SnapshotContentResolutionPlan plan,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Copies a reviewed incoming branch to a user-selected standalone database, then releases the staging branch.
+    /// This never applies the branch to the active library.
+    /// </summary>
+    Task<Result<string>> KeepIncomingAsSeparateLibraryCopyAsync(
+        SnapshotContentResolutionPlan plan,
+        string destinationPath,
+        CancellationToken cancellationToken = default);
 }

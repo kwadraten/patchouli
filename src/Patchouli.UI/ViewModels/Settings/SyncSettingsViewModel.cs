@@ -103,8 +103,10 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
     public string SaveStateText => _status;
     public string? LastError { get; private set; }
 
-    public Task SaveAsync()
+    public async Task SaveAsync()
     {
+        _status = "正在保存...";
+        Raise(nameof(SaveStateText));
         bool rootChanged = !string.Equals(
             Path.GetFullPath(_persisted.SyncRoot),
             Path.GetFullPath(_draft.SyncRoot),
@@ -116,7 +118,14 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
                 SnapshotState = SnapshotSyncLocalState.NotConfigured
             }
             : _draft;
-        SettingsSaveResult result = _main.UpdateAppOptions(_main.AppOptions with { Sync = savedDraft });
+        SettingsSaveResult result = savedDraft.SyncMetadataLookup == _persisted.SyncMetadataLookup
+            ? _main.UpdateAppOptions(_main.AppOptions with { Sync = savedDraft })
+            : await _main.SetMetadataLookupSyncEnabledAsync(savedDraft.SyncMetadataLookup);
+        if (result.IsSuccess && savedDraft.SyncMetadataLookup != _persisted.SyncMetadataLookup)
+        {
+            result = _main.UpdateAppOptions(_main.AppOptions with { Sync = savedDraft });
+        }
+
         if (result.IsSuccess)
         {
             _persisted = savedDraft;
@@ -132,7 +141,6 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
         }
 
         RaiseState();
-        return Task.CompletedTask;
     }
 
     public Task DiscardAsync()

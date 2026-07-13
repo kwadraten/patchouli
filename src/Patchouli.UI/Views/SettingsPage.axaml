@@ -182,6 +182,13 @@
                     <TextBlock Text="凭据、MCP token、设备授权和本机运行状态不会随快照同步。发布、导出、接收和冲突解决在同步中心完成。"
                                FontSize="12" TextWrapping="Wrap"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <Separator />
+                    <TextBlock Text="随库同步的非秘密设置" FontSize="16" FontWeight="SemiBold"
+                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <CheckBox Content="随库同步元数据来源优先级" IsChecked="{Binding SyncMetadataLookup}" />
+                    <TextBlock Text="启用后，元数据来源优先级的基准值存入当前资料库，并随内容快照整体发布和接收；本机设备绑定、MCP 配置和凭据始终仅此设备。"
+                               FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <StackPanel Orientation="Horizontal" Spacing="8">
                       <Button Content="打开同步中心" Command="{Binding OpenSyncCenterCommand}" />
                       <Button Content="立即发布" Command="{Binding PublishSnapshotCommand}" />

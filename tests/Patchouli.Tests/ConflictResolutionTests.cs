@@ -68,4 +68,36 @@ public sealed class ConflictResolutionTests
         dialog.SelectedOption = dialog.Options.Single();
         choose.IsEnabled.Should().BeTrue();
     }
+
+    [Fact]
+    public void Changed_source_actions_that_read_a_candidate_path_require_that_candidate()
+    {
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.SourceFileChanged(
+            FileAssetId.New(),
+            "C:\\library\\old.pdf",
+            [
+                new FileResolutionCandidate("C:\\library\\changed.pdf", 12, null, "quick", "full",
+                    FileResolutionConfidence.Exact, "search_root")
+            ],
+            "Source changed.");
+
+        foreach (string actionId in new[] { "confirm_changed_file", "reuse_revision_for_new_fingerprint" })
+        {
+            ConflictResolutionTransitions.ValidateSelection(descriptor, new ConflictActionSelection(actionId))
+                .ErrorCode.Should().Be("conflict_option_required");
+        }
+    }
+
+    [Fact]
+    public void Changing_a_bbox_candidate_to_an_overlap_compatible_type_requires_the_type_option()
+    {
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.LayoutBBoxOrdinaryOverlap(
+            PageId.New().ToString(), LayoutNodeId.New().ToString(), "paragraph",
+            new Core.Layout.NormalizedBBox(0.1, 0.1, 0.2, 0.2), "block",
+            new Core.Layout.NormalizedBBox(0.15, 0.15, 0.2, 0.2));
+
+        ConflictResolutionTransitions.ValidateSelection(descriptor,
+                new ConflictActionSelection("change_to_allowed_type"))
+            .ErrorCode.Should().Be("conflict_option_required");
+    }
 }

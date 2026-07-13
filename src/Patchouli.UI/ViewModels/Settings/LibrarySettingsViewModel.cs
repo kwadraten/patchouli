@@ -140,6 +140,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
 
     public async Task SaveAsync()
     {
+        Status = "正在保存...";
         string[] patterns = ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
                                                                       StringSplitOptions.TrimEntries);
         if (!FileSearchRootAccess.TryValidateExclusionPatterns(patterns, out string? error))

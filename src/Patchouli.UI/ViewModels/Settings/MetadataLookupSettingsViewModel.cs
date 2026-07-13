@@ -65,7 +65,7 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
         MetadataLookupAppSettings settings = new(Sources
             .Select(source => new MetadataSourcePreference(source.SourceId, source.Enabled))
             .ToArray());
-        SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with { MetadataLookup = settings });
+        SettingsSaveResult saved = await _main.SaveMetadataLookupSettingsAsync(settings);
         if (saved.IsSuccess)
         {
             IsDirty = false;
@@ -78,8 +78,6 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
             _lastError = saved.ErrorMessage;
             Raise(nameof(LastError));
         }
-
-        await Task.CompletedTask;
     }
 
     public Task DiscardAsync()
@@ -87,6 +85,14 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
         Load(_main.AppOptions.MetadataLookup, false);
         Status = "已放弃更改";
         return Task.CompletedTask;
+    }
+
+    internal void ReloadFromEffectiveSettingsIfClean(MetadataLookupAppSettings settings)
+    {
+        if (!IsDirty)
+        {
+            Load(settings, false);
+        }
     }
 
     internal void MarkDirty()

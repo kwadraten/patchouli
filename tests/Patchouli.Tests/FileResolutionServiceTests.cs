@@ -351,6 +351,35 @@ public sealed class FileResolutionServiceTests
         current.Value.OriginalPath.Should().Be(Path.GetFullPath(file));
     }
 
+    [Fact]
+    public async Task Reusing_a_revision_rolls_back_the_file_change_when_the_new_source_lacks_a_full_fingerprint()
+    {
+        await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
+        string original = await context.Temp.WriteFileAsync("rollback.pdf", "original");
+        Result<FileAsset> asset = await context.FileAssetService.RegisterFileAsync(original);
+        string replacement = Path.Combine(context.Temp.Path, "replacement.pdf");
+        FileResolutionService service = new(
+            context.Database.ConnectionFactory,
+            new LibraryIdentityService(context.Database.ConnectionFactory,
+                new FixedClock(new DateTimeOffset(2026, 6, 19, 3, 0, 0, TimeSpan.Zero))),
+            new FixedClock(new DateTimeOffset(2026, 6, 19, 3, 0, 0, TimeSpan.Zero)),
+            new MissingFullFingerprintService(new FileFingerprint(
+                replacement,
+                "replacement.pdf",
+                11,
+                DateTimeOffset.Parse("2026-06-19T03:00:00Z"),
+                "quick",
+                null)),
+            context.BlockingOperations);
+
+        Result reused = await service.ReuseRevisionForNewFingerprintAsync(asset.Value.FileAssetId, replacement);
+        Result<FileAsset> current = await context.FileAssetService.GetFileAssetAsync(asset.Value.FileAssetId);
+
+        reused.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        current.Value.OriginalPath.Should().Be(Path.GetFullPath(original));
+        current.Value.FullBlake3.Should().Be(asset.Value.FullBlake3);
+    }
+
     private static SelectedFileSearchRoot SelectedRoot(string path)
     {
         return new SelectedFileSearchRoot(
@@ -468,6 +497,24 @@ public sealed class FileResolutionServiceTests
             {
                 Directory.Delete(Path, true);
             }
+        }
+    }
+
+    private sealed class MissingFullFingerprintService(FileFingerprint fingerprint) : IFileFingerprintService
+    {
+        public Task<Result<FileFingerprint>> GetFileMetadataAsync(string path,
+            CancellationToken cancellationToken = default)
+        {
+            _ = path;
+            _ = cancellationToken;
+            return Task.FromResult(Result<FileFingerprint>.Success(fingerprint));
+        }
+
+        public Task<Result<string>> ComputeQuickHashAsync(string path, CancellationToken cancellationToken = default)
+        {
+            _ = path;
+            _ = cancellationToken;
+            return Task.FromResult(Result<string>.Success(fingerprint.QuickHash));
         }
     }
 }
