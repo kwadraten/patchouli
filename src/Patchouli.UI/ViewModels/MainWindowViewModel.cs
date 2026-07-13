@@ -273,6 +273,24 @@ public sealed class MainWindowViewModel : ViewModelBase
             StatusIsError = true;
         }
 
+        if (settingsLoadFailure is null && string.IsNullOrWhiteSpace(_settings.Sync.DeviceId))
+        {
+            PatchouliAppSettings initializedSettings = _settings with
+            {
+                Sync = _settings.Sync with { DeviceId = Guid.NewGuid().ToString("D") }
+            };
+            SettingsSaveResult identitySaved = initializedSettings.Save(_settingsPath);
+            if (identitySaved.IsSuccess)
+            {
+                _settings = initializedSettings;
+            }
+            else
+            {
+                Status = identitySaved.ErrorMessage ?? "无法保存本机设备身份。";
+                StatusIsError = true;
+            }
+        }
+
         _runtimeDatabasePath = _settings.Runtime.RememberLastDatabase
             ? _settings.Runtime.RuntimeDatabasePath
             : AppRuntimeOptions.Default().RuntimeDatabasePath;
@@ -304,6 +322,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         Settings.MinerUTokenInput = "";
         OpenDatabaseCommand = new AsyncCommand(async () =>
         {
+            if (Settings.HasDirtySections)
+            {
+                ReportError("设置有未保存的更改，请先保存或放弃后再切换数据库。");
+                return;
+            }
             await StopMcpServerAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
             _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
@@ -342,7 +365,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         EditSelectedItemCommand = new AsyncCommand(EditSelectedItemAsync);
         RunSelectedItemOcrCommand = new AsyncCommand(RunSelectedItemOcrAsync);
         ClosePdfWorkspaceTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.PdfWorkspace));
-        CloseSettingsTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.Settings));
+        CloseSettingsTabCommand = new AsyncCommand(CloseSettingsTabAsync);
         CloseSearchTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
         CloseItemEditorTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.ItemEditor));
@@ -1501,6 +1524,15 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         Workspace.CloseKind(kind);
         return Task.CompletedTask;
+    }
+
+    private async Task CloseSettingsTabAsync()
+    {
+        foreach (SettingsCategoryViewModel category in Settings.Categories)
+        {
+            if (category.Section?.IsDirty == true) await category.Section.DiscardAsync();
+        }
+        Workspace.CloseKind(WorkspaceTabKind.Settings);
     }
 
     private Task CloseTabAsync(string tabId)

@@ -47,7 +47,7 @@ UI 与 MCP server 层必须支持以下配置：
 - 工具开关：设置页允许用户针对性启用或禁用 MCP 中的特定工具；禁用后的工具不得出现在可调用工具列表中，直接调用时返回明确的 disabled/tool_unavailable 错误。
 - MCP server 不得因配置读取失败而静默降级为无鉴权公网监听。
 - MCP 配置必须有独立模型，例如 `McpServerSettings`：port、bind_address、cors_enabled、allowed_origins、auth_required、token、tool_overrides、updated_at。
-- 鉴权 token 是本机 MCP 访问 secret，不是 OCR ProviderCredential。它默认只存在于本机设置/本机 secret 存储，不进入库快照或 branch import。
+- 鉴权 token 是本机 MCP 访问 secret，不是 OCR provider credential。它默认保存在本机 `appsettings.json` 的 local-only 设置范围，不进入库快照或 branch import。
 - HTTP 请求鉴权使用 `Authorization: Bearer <token>`；失败返回 401，不把 token 写入日志。
 - `/health` 可以无鉴权返回 minimal status；MCP JSON-RPC endpoint 必须鉴权，除非 bind 为 `127.0.0.1` 且用户显式关闭鉴权。
 
@@ -128,7 +128,7 @@ v2 必须实现独立的 CSL 样式管理 UI 和题录生成功能。
 - CSL 样式文件应存储在库或用户配置的可管理位置，并记录来源 URL 与内容哈希。
 - 题录详情页和题录列表右键菜单支持“复制 CSL 题录”。
 - 复制时使用当前默认 CSL 样式；右键二级菜单允许选择最近使用样式。
-- 设置页允许选择默认 CSL 样式和输出 locale。
+- CSL 样式管理器允许选择默认 CSL 样式和输出 locale；它是独立工作区，不属于全局设置页。
 - 题录生成必须基于 Item 的 CSL 对齐字段、creator/date/identifier 结构化数据和 `extra_csl`。
 - v2 应新增 CSL 服务边界，例如 `ICslStyleCatalog`、`ICslStyleStore`、`ICslItemMapper`、`ICslRenderer`。
 - 需要持久化 `csl_styles` 与 `csl_settings`，至少记录 style_id、display_name、source_url、source_kind、content_hash、installed_at、updated_at、locale、is_default。
@@ -168,18 +168,23 @@ v2 不再把 Mock、历史本地 CLI OCR、本地占位 OCR 作为用户可见�
 - OCR provider 配置只负责保存和使用用户提供的 token/secret key、endpoint、model id 和必要参数。
 - Patchouli 不负责账号注册、配额购买、余额检查、成本估算或云端计费策略。
 - provider 返回的认证、限流、配额、模型不可用等错误按普通 provider 错误展示，不进入账号管理流程。
-- 所有 provider secret 必须沿用 ProviderCredential 边界：不进 MCP、不进日志、不进不可变历史分片。
+- 所有 provider secret 必须由本机 `appsettings.json` 的 local-only Credentials 范围唯一保存：不进 MCP、不进日志、不进快照或不可变历史分片。
 
 ### 3.7 设置 UI
 
 设置 UI 需要变成最终用户可理解的控制台。
 
-- 分组至少包括：库与数据库、同步、文件搜索根、MCP Server、CSL 样式、OCR Provider、缓存与维护、关于。
-- 在“库与数据库”分组中，必须提供“记住上次打开的数据库”开关，并确保状态能持久化保存。
+- 设置页包含五个有直接编辑模型和持久化所有权的分组：库与本机路径、同步与快照、MCP 服务与安全、OCR Provider、元数据来源。
+- 文件搜索根、排除规则和“记住上次打开的数据库”属于“库与本机路径”，不再拆成单独分组。
+- “同步与快照”保存本机同步目录、稳定设备身份、随库同步范围和同步状态；发布、导出、接收、分支检查与冲突解决仍在菜单栏的 Sync 工作流和同步中心完成，不能塞进设置页的 Save/Discard。
+- 本机 `appsettings.json` 是设置的默认且唯一 owner。用户明确启用某个“随库同步”范围后，才将该范围的同步基础值迁入运行库数据库；JSON 此后保留同步策略、设备 override、设备 binding 和所有 local-only secret value。关闭同步时必须把当前 effective value 物化回 JSON，不能保留两个可写 base。
+- CSL 样式管理器是独立工作区；重建索引、刷新 CSL 索引、清理缓存和打开日志目录是各自领域的维护动作。它们不应为了导航完整性被塞入空的设置分组。
+- “关于”保持为独立标签页，不属于设置分组。
+- 在“库与本机路径”分组中，必须提供“记住上次打开的数据库”开关，并确保状态能持久化保存。
 - 每个设置分组显示保存状态、验证状态、上次错误和需要重启/重载的提示。
 - 增加文件搜索根时必须触发阻塞式扫描流程；扫描完成前不得假装配置已完全可用。
 - Provider secret 属于最终用户；可信本机设置 UI 允许明文显示、复制和修改，同时继续遵守不进 MCP、不进日志和不进不可变历史分片的边界。
-- 维护区提供安全操作：重建搜索索引、刷新 CSL 索引、清理本地缓存、打开日志目录。
+- 维护动作在其所属工作区或菜单中提供：搜索提供重建索引，CSL 管理器提供刷新索引；缓存清理和打开日志目录在本机维护入口提供。
 - v2 设置页不直接拼接数据库 SQL；所有设置变更走服务接口，以便阻塞/冲突/secret 处理可测试。
 - 每个可保存分组必须显示 dirty/saving/saved/failed 状态，避免用户误以为已经持久化。
 
@@ -188,6 +193,7 @@ v2 不再把 Mock、历史本地 CLI OCR、本地占位 OCR 作为用户可见�
 v2 需要整理菜单信息架构。
 
 - 菜单栏按任务组织：Library、Sync、Items、OCR、Search、MCP、Settings、Help。
+- Sync 菜单至少提供“发布到同步目录”“导出快照包”“接收/检查快照”和“打开同步中心”；所有入口复用同一 command descriptor 和状态模型。
 - 右键菜单按对象组织：题录、文档实例、页面、布局节点、搜索结果、证据引用。
 - 题录右键菜单必须包含：编辑元数据、打开文档、运行 OCR、复制证据 Markdown、复制 CSL 题录、导出题录、查看同步/冲突状态。
 - 与当前选择无关的命令隐藏或禁用，并显示禁用原因。
@@ -354,7 +360,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | 证据引用 | `evref:v1` 编码、pinned 默认、current/compare、superseded、tombstoned/purged/not_found/library_mismatch、Markdown 复制文本与来源。 | `EvidenceReferenceServiceTests` |
 | MCP Read API | 第一版 MCP 是只读且纯文本的；search_library、get_item_metadata、get_document_status、get_page_text、get_page_blocks、get_search_result_context；HTTP transport。 | `McpReadApiTests`、`McpServerTransportTests` |
 | MCP 安全边界 | MCP 从不触发 OCR 或索引重建；MCP 无法读取提供程序密钥；不返回本地路径、file URL、提供程序配置、缓存图像或图像路径。 | `AlphaSecurityBoundaryTests`、ADR `0010` |
-| 凭据 | ProviderCredential、credential binding、配置读取、日志脱敏、快照中普通分片与 `sensitive_mutable` 分离。 | `CredentialStoreTests`、`AlphaSecurityBoundaryTests` |
+| 凭据 | local-only `Credentials` appsettings 范围是 provider secret 的唯一持久化 owner；credential module 只提供读取、验证和日志脱敏，快照/导出/branch import 均排除凭据。 | `CredentialStoreTests`、`AlphaSecurityBoundaryTests` |
 | 快照 | 运行库与同步快照分离；内容寻址 SQLite 分片、manifest、current pointer、导入验证、缓存排除。 | `SnapshotTests`、ADR `0001`、`0002` |
 | 快照分支 | 分歧作为独立分支打开以供检查；选择性导入题录/文档实例；v1 不执行自动对象级合并；不得在分支间静默执行最后写入者胜出。 | `SnapshotBranchInspectionTests`、ADR `0011` |
 | 端到端 Alpha | 创建库、导入题录/文件/页面、布局、搜索、证据、OCR 队列、MCP、PDF 渲染 OCR、快照分支等主路径有 smoke/regression 覆盖。 | `AlphaEndToEndWorkflowTests`、`scripts/alpha-*.sh` |

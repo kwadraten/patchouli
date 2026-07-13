@@ -12,7 +12,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.Net");
-        BuildInfo.Version.Should().Be("0.1.2");
+        BuildInfo.Version.Should().Be("0.2.0");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -79,7 +79,7 @@ public sealed class AlphaPackagingTests
     public void UI_version_info_viewmodel_exposes_version_schema_db_path()
     {
         MainWindowViewModel vm = new(new TestClipboard());
-        vm.VersionInfo.Should().Contain("0.1.2").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.2.0").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -92,7 +92,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.1.2");
+        BuildInfo.Version.Should().Be("0.2.0");
     }
 
     [Fact]

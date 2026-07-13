@@ -5,7 +5,7 @@
   #define OutputDir "..\..\artifacts\installer"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.2.0"
 #endif
 
 #define AppName "Patchouli.Net"
@@ -43,7 +43,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"

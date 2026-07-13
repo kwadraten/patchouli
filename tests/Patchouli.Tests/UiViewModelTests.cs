@@ -27,11 +27,37 @@ using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
+using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
 
 public sealed class UiViewModelTests
 {
+    [Fact]
+    public void Settings_page_uses_five_editable_groups_and_keeps_csl_about_outside()
+    {
+        MainWindowViewModel vm = new(new FakeClipboard());
+        vm.Settings.Categories.Select(category => category.Title).Should().Equal(
+            "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源");
+        vm.Settings.Categories.Select(category => category.Section is { SupportsEditing: true }).Should()
+            .OnlyContain(value => value);
+    }
+
+    [Fact]
+    public void Sync_settings_expose_a_persisted_device_identity_and_name()
+    {
+        MainWindowViewModel vm = new(new FakeClipboard());
+
+        vm.Settings.Categories.Single(category => category.Title == "同步与快照").Section
+            .Should().BeOfType<SyncSettingsViewModel>();
+        SyncSettingsViewModel sync = (SyncSettingsViewModel)vm.Settings.Categories
+            .Single(category => category.Title == "同步与快照").Section!;
+
+        sync.DeviceId.Should().NotBeNullOrWhiteSpace();
+        sync.DeviceName.Should().NotBeNullOrWhiteSpace();
+        sync.DeviceId.Should().Be(vm.AppOptions.Sync.DeviceId);
+    }
+
     [Fact]
     public async Task LibraryViewModel_CreateLibrary_updates_current_library()
     {
