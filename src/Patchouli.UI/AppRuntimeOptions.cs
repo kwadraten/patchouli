@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Patchouli.Core.Import;
-using Patchouli.Core.Mcp;
 using System.Security;
 using Patchouli.UI.Diagnostics;
 
@@ -67,6 +66,22 @@ public sealed record CredentialsAppSettings(IReadOnlyList<ProviderCredentialAppS
     public static CredentialsAppSettings Default()
     {
         return new CredentialsAppSettings([]);
+    }
+}
+
+public sealed record McpAppSettings(
+    int Port,
+    bool BlockExternalAccess,
+    string ServerToken,
+    Dictionary<string, bool> DisabledTools)
+{
+    public bool CorsEnabled { get; init; }
+    public IReadOnlyList<string> AllowedOrigins { get; init; } = [];
+    public bool AuthRequired { get; init; }
+
+    public static McpAppSettings Default()
+    {
+        return new McpAppSettings(4536, true, string.Empty, new Dictionary<string, bool>());
     }
 }
 
@@ -164,19 +179,10 @@ public sealed record SettingsLoadFailure(
     string ErrorMessage,
     string PathCategory);
 
-public sealed record SettingsDiagnostic(string Code, string Message, string PathCategory);
-
-public sealed record SettingsLoadResult<T>(
-    T Settings,
-    IReadOnlyList<SettingsDiagnostic> Diagnostics)
-{
-    public bool IsSuccess => Diagnostics.Count == 0;
-}
-
 public sealed record PatchouliAppSettings(
     AppRuntimeOptions Runtime,
     MinerUAppSettings MinerU,
-    McpServerSettings Mcp,
+    McpAppSettings Mcp,
     UiPreferences Ui)
 {
     public CredentialsAppSettings Credentials { get; init; } = CredentialsAppSettings.Default();
@@ -186,7 +192,7 @@ public sealed record PatchouliAppSettings(
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
         return new PatchouliAppSettings(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(),
-            new McpServerSettings(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UnixEpoch),
+            McpAppSettings.Default(),
             UiPreferences.Default());
     }
 
@@ -206,14 +212,6 @@ public sealed record PatchouliAppSettings(
         }
 
         return Load(new PlatformAppPaths(), onFailure);
-    }
-
-    public static SettingsLoadResult<PatchouliAppSettings> LoadWithResult(string? settingsPath = null)
-    {
-        List<SettingsDiagnostic> diagnostics = new();
-        PatchouliAppSettings settings = Load(settingsPath, failure =>
-            diagnostics.Add(new SettingsDiagnostic(failure.ErrorCode, failure.ErrorMessage, failure.PathCategory)));
-        return new SettingsLoadResult<PatchouliAppSettings>(settings, diagnostics);
     }
 
     public static PatchouliAppSettings Load(IAppPaths appPaths, Action<SettingsLoadFailure>? onFailure = null)
@@ -259,7 +257,11 @@ public sealed record PatchouliAppSettings(
                     ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
                     ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
                     ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula)),
-                ReadMcpSettings(mcp, defaults.Mcp),
+                new McpAppSettings(
+                    ReadInt(mcp, "Port", defaults.Mcp.Port),
+                    ReadBool(mcp, "BlockExternalAccess", defaults.Mcp.BlockExternalAccess),
+                    ReadString(mcp, "ServerToken", defaults.Mcp.ServerToken).Trim(),
+                    ReadStringBoolDict(mcp, "DisabledTools", defaults.Mcp.DisabledTools)),
                 new UiPreferences(
                     ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns),
                     ReadStringDoubleDict(ui, "LibraryGridColumnWidths", defaults.Ui.LibraryGridColumnWidths),
@@ -344,7 +346,13 @@ public sealed record PatchouliAppSettings(
                 SchemaVersion = 1,
                 Providers = Credentials.Providers
             });
-            root["Mcp"] = JsonSerializer.SerializeToNode(Mcp);
+            root["Mcp"] = JsonSerializer.SerializeToNode(new
+            {
+                Mcp.Port,
+                Mcp.BlockExternalAccess,
+                Mcp.ServerToken,
+                Mcp.DisabledTools
+            });
             root["Ui"] = JsonSerializer.SerializeToNode(new
             {
                 Ui.LibraryGridVisibleColumns,
@@ -428,49 +436,6 @@ public sealed record PatchouliAppSettings(
         }
 
         return new CredentialsAppSettings(values);
-    }
-
-    private static McpServerSettings ReadMcpSettings(JsonElement? section, McpServerSettings fallback)
-    {
-        if (section is not { ValueKind: JsonValueKind.Object } element)
-        {
-            return fallback;
-        }
-
-        int port = ReadInt(section, "Port", fallback.Port);
-        string bind = ReadString(section, "BindAddress", fallback.BindAddress).Trim();
-        if (string.IsNullOrWhiteSpace(bind))
-        {
-            bind = ReadBool(section, "BlockExternalAccess", false) ? "127.0.0.1" : "0.0.0.0";
-        }
-
-        string? token = ReadString(section, "Token", "").Trim();
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            token = ReadString(section, "ServerToken", fallback.Token ?? "").Trim();
-        }
-
-        IReadOnlyList<string> origins = element.ValueKind == JsonValueKind.Object &&
-                                        element.TryGetProperty("AllowedOrigins", out JsonElement originsElement) &&
-                                        originsElement.ValueKind == JsonValueKind.Array
-            ? originsElement.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
-                .Select(value => value.GetString()!).ToArray()
-            : fallback.AllowedOrigins;
-        IReadOnlyList<McpToolOverride> overrides = element.ValueKind == JsonValueKind.Object &&
-                                                   element.TryGetProperty("ToolOverrides",
-                                                       out JsonElement overridesElement) &&
-                                                   overridesElement.ValueKind == JsonValueKind.Array
-            ? overridesElement.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
-                .Select(value => new McpToolOverride(
-                    ReadString(value, "ToolName", ""),
-                    ReadBool(value, "Enabled", true),
-                    ReadString(value, "DisabledReason", "")))
-                .Where(value => !string.IsNullOrWhiteSpace(value.ToolName)).ToArray()
-            : [];
-
-        return new McpServerSettings(port, bind, ReadBool(section, "CorsEnabled", fallback.CorsEnabled), origins,
-            ReadBool(section, "AuthRequired", fallback.AuthRequired || !string.IsNullOrWhiteSpace(token)),
-            string.IsNullOrWhiteSpace(token) ? null : token, overrides, fallback.UpdatedAt);
     }
 
     private static string ReadString(JsonElement? section, string name, string fallback)

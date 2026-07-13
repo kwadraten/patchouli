@@ -2,12 +2,6 @@ namespace Patchouli.Core.Conflicts;
 
 public static class ConflictCode
 {
-    public const string SettingsConcurrentChange = "SC-01";
-    public const string SettingsMissingMapping = "SC-02";
-    public const string SettingsInvalidBinding = "SC-03";
-    public const string SettingsUnsafeIncoming = "SC-04";
-    public const string SettingsSecretConflict = "SC-05";
-    public const string SettingsSchemaMismatch = "SC-06";
     public const string SameIdDifferentContent = "CF-01";
     public const string PrimaryDocumentConflict = "CF-02";
     public const string CredentialNotImported = "CF-03";

@@ -6,10 +6,6 @@
   <Grid RowDefinitions="Auto,*" Margin="32">
     <StackPanel Grid.Row="0" Spacing="8" Margin="0,0,0,24">
       <TextBlock Text="CSL 样式管理" FontSize="28" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
-      <StackPanel Orientation="Horizontal" Spacing="8">
-        <TextBox Text="{Binding Locale}" PlaceholderText="Locale，例如 zh-CN" Width="180" />
-        <Button Content="保存 Locale" Command="{Binding SaveLocaleCommand}" />
-      </StackPanel>
     </StackPanel>
 
     <Grid Grid.Row="1" ColumnDefinitions="*,32,*">

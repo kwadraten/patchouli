@@ -120,33 +120,20 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         }
 
         int port = mcp.TryGetProperty("Port", out JsonElement p) ? p.GetInt32() : DefaultPort;
-        string bindAddress = mcp.TryGetProperty("BindAddress", out JsonElement bind)
-            ? bind.GetString() ?? "127.0.0.1"
-            : mcp.TryGetProperty("BlockExternalAccess", out JsonElement b) && b.GetBoolean()
-                ? "127.0.0.1"
-                : "0.0.0.0";
+        bool block = mcp.TryGetProperty("BlockExternalAccess", out JsonElement b) && b.GetBoolean();
         bool cors = mcp.TryGetProperty("CorsEnabled", out JsonElement c) && c.GetBoolean();
         bool auth = mcp.TryGetProperty("AuthRequired", out JsonElement a) && a.GetBoolean();
         string[] origins = mcp.TryGetProperty("AllowedOrigins", out JsonElement o) && o.ValueKind == JsonValueKind.Array
             ? o.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
                 .Select(value => value.GetString()!).ToArray()
             : [];
-        string token = mcp.TryGetProperty("Token", out JsonElement t) ? t.GetString() ?? "" : "";
-        if (string.IsNullOrWhiteSpace(token) && mcp.TryGetProperty("ServerToken", out JsonElement legacyToken))
-        {
-            token = legacyToken.GetString() ?? "";
-        }
-
-        IReadOnlyList<McpToolOverride> tools = mcp.TryGetProperty("ToolOverrides", out JsonElement overrides) &&
-                                               overrides.ValueKind == JsonValueKind.Array
-            ? overrides.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
-                .Select(value => new McpToolOverride(
-                    value.TryGetProperty("ToolName", out JsonElement name) ? name.GetString() ?? "" : "",
-                    !value.TryGetProperty("Enabled", out JsonElement enabled) || enabled.GetBoolean(),
-                    value.TryGetProperty("DisabledReason", out JsonElement reason) ? reason.GetString() : null))
-                .Where(value => !string.IsNullOrWhiteSpace(value.ToolName)).ToArray()
+        string token = mcp.TryGetProperty("ServerToken", out JsonElement t) ? t.GetString() ?? "" : "";
+        IReadOnlyList<McpToolOverride> tools = mcp.TryGetProperty("DisabledTools", out JsonElement disabled) &&
+                                               disabled.ValueKind == JsonValueKind.Object
+            ? disabled.EnumerateObject().Where(value => !value.Value.GetBoolean())
+                .Select(value => new McpToolOverride(value.Name, false, "Disabled in Patchouli settings.")).ToArray()
             : [];
-        return new McpServerSettings(port, bindAddress, cors, origins,
+        return new McpServerSettings(port, block ? "127.0.0.1" : "0.0.0.0", cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
             string.IsNullOrWhiteSpace(token) ? null : token, tools, _clock.UtcNow);
     }
@@ -174,12 +161,13 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         root["Mcp"] = new JsonObject
         {
             ["Port"] = settings.Port,
-            ["BindAddress"] = settings.BindAddress,
+            ["BlockExternalAccess"] = settings.BindAddress == "127.0.0.1",
             ["CorsEnabled"] = settings.CorsEnabled,
             ["AllowedOrigins"] = JsonSerializer.SerializeToNode(settings.AllowedOrigins),
             ["AuthRequired"] = settings.AuthRequired,
-            ["Token"] = settings.Token ?? "",
-            ["ToolOverrides"] = JsonSerializer.SerializeToNode(settings.ToolOverrides)
+            ["ServerToken"] = settings.Token ?? "",
+            ["DisabledTools"] = new JsonObject(settings.ToolOverrides.Where(value => !value.Enabled)
+                .ToDictionary(value => value.ToolName, _ => (JsonNode?)false, StringComparer.Ordinal))
         };
         string temporary = _path + $".{Guid.NewGuid():N}.tmp";
         await File.WriteAllTextAsync(temporary, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),

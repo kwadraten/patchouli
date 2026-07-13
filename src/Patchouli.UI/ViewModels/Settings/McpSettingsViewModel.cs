@@ -18,7 +18,6 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         new(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
 
     private bool _isDirty;
-    private long _editRevision;
 
     public McpSettingsViewModel(MainWindowViewModel main)
     {
@@ -236,9 +235,7 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
 
     public async Task SaveAsync()
     {
-        long revision = _editRevision;
-        McpServerSettings draft = _settings;
-        Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(draft);
+        Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(_settings);
         if (result.IsFailure)
         {
             Status = result.ErrorMessage ?? "MCP 设置保存失败。";
@@ -247,17 +244,10 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
             return;
         }
 
+        _settings = result.Value;
         _persistedSettings = result.Value;
-        if (revision == _editRevision)
-        {
-            _settings = result.Value;
-            _isDirty = false;
-            Status = "已保存 (重启服务生效)";
-        }
-        else
-        {
-            Status = "已保存旧版本，仍有新的未保存更改";
-        }
+        _isDirty = false;
+        Status = "已保存 (重启服务生效)";
         LastError = null;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -281,7 +271,6 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
 
     private void MarkDirty()
     {
-        _editRevision++;
         _isDirty = true;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
