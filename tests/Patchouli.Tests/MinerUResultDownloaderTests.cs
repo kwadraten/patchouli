@@ -82,6 +82,18 @@ public sealed class MinerUResultDownloaderTests
     }
 
     [Fact]
+    public void PlanChunks_splits_at_mineru_official_200_page_limit()
+    {
+        IReadOnlyList<MinerUPdfChunk> chunks = MinerUPdfChunkPlanner.PlanChunks(
+            201,
+            10L * 1024 * 1024,
+            MinerUUploadLimits.Default);
+
+        chunks.Select(chunk => chunk.PageRange).Should().Equal("1-200", "201-201");
+        chunks.Should().OnlyContain(chunk => chunk.PageCount <= MinerUUploadLimits.OfficialMaxPagesPerFile);
+    }
+
+    [Fact]
     public async Task UploadAndExtract_merges_split_content_lists_with_original_page_indexes()
     {
         string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-merge-{Guid.NewGuid():N}");

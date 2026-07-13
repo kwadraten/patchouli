@@ -307,7 +307,8 @@ public sealed class AppServices
                 index)).ToArray();
     }
 
-    public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory)
+    public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory,
+        MinerUUploadLimits? uploadLimits = null)
     {
         return new OcrRunCoordinator(
             ConnectionFactory,
@@ -320,7 +321,8 @@ public sealed class AppServices
             PageRenders,
             PageCoordinates,
             MinerUImporter,
-            minerUClientFactory);
+            minerUClientFactory,
+            minerUUploadLimits: uploadLimits);
     }
 
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)

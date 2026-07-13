@@ -11,6 +11,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Search;
@@ -32,6 +33,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly IMinerUResultImporter? _minerUResultImporter;
     private readonly Func<MinerUConfiguration, IMinerUClient>? _minerUClientFactory;
     private readonly string _minerUCacheRoot;
+    private readonly MinerUUploadLimits _minerUUploadLimits;
 
     public OcrRunCoordinator(
         SqliteConnectionFactory connectionFactory,
@@ -44,7 +46,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         IPageCoordinateService? pageCoordinateService = null,
         IMinerUResultImporter? minerUResultImporter = null,
         Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null,
-        string? minerUCacheRoot = null)
+        string? minerUCacheRoot = null,
+        MinerUUploadLimits? minerUUploadLimits = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
@@ -57,6 +60,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _minerUResultImporter = minerUResultImporter;
         _minerUClientFactory = minerUClientFactory;
         _minerUCacheRoot = minerUCacheRoot ?? Path.Combine(Path.GetTempPath(), "patchouli", "mineru");
+        _minerUUploadLimits = minerUUploadLimits ?? MinerUUploadLimits.Default;
     }
 
     public OcrRunCoordinator(
@@ -71,7 +75,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         IPageCoordinateService? pageCoordinateService = null,
         IMinerUResultImporter? minerUResultImporter = null,
         Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null,
-        string? minerUCacheRoot = null)
+        string? minerUCacheRoot = null,
+        MinerUUploadLimits? minerUUploadLimits = null)
         : this(
             connectionFactory,
             clock,
@@ -83,7 +88,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             pageCoordinateService,
             minerUResultImporter,
             minerUClientFactory,
-            minerUCacheRoot)
+            minerUCacheRoot,
+            minerUUploadLimits)
     {
         _credentialResolver = credentialResolver;
     }
@@ -577,7 +583,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         MinerUConfiguration configuration = new(
             secret.Value,
             parameters.BaseUrl,
-            parameters.ModelVersion ?? version.ModelId,
+            parameters.ModelVersion,
             parameters.IsOcr,
             parameters.EnableTable,
             parameters.EnableFormula);
@@ -590,28 +596,10 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
-        string dataId = documentInstanceId.ToString();
-        Result<MinerUUploadBatch> upload = await client.RequestUploadUrlsAsync(
-        [
-            new MinerUUploadRequest(source.SourcePath, Path.GetFileName(source.SourcePath),
-                new FileInfo(source.SourcePath).Length, dataId)
-        ], cancellationToken);
-        if (upload.IsFailure || upload.Value.FileUrls.Count == 0)
-        {
-            return await FailMinerURunAsync(run, pages, upload.ErrorCode, upload.ErrorMessage, cancellationToken);
-        }
-
-        Result uploaded = await client.UploadFileAsync(
-            upload.Value.FileUrls[0].UploadUrl, source.SourcePath, cancellationToken);
-        if (uploaded.IsFailure)
-        {
-            return await FailMinerURunAsync(run, pages, uploaded.ErrorCode, uploaded.ErrorMessage, cancellationToken);
-        }
-
         string downloadDirectory = Path.Combine(_minerUCacheRoot, run.OcrRunId.ToString());
         Directory.CreateDirectory(downloadDirectory);
-        Result<MinerUDownloadedResult> downloaded = await client.WaitForCompletionAndDownloadAsync(
-            upload.Value.BatchId, downloadDirectory, cancellationToken);
+        Result<MinerUDownloadedResult> downloaded = await new MinerUResultDownloader(client, _minerUUploadLimits)
+            .UploadAndExtractAsync(source.SourcePath, downloadDirectory, cancellationToken);
         if (downloaded.IsFailure)
         {
             return await FailMinerURunAsync(run, pages, downloaded.ErrorCode, downloaded.ErrorMessage,

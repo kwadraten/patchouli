@@ -177,6 +177,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         RevisionProbe? revision = await connection.QuerySingleOrDefaultAsync<RevisionProbe>(
             """
             select document_instance_id as DocumentInstanceId, page_id as PageId,
+                parent_tree_revision_id as ParentTreeRevisionId,
                 status as Status, is_current as IsCurrent
             from document_tree_revisions where tree_revision_id = @RevisionId;
             """,
@@ -213,13 +214,16 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             """
             select unit_id as UnitId, box_id as BoxId
             from search_units
-            where page_id = @PageId and status = @Status and tree_revision_id <> @RevisionId;
+            where page_id = @PageId
+              and tree_revision_id = @ParentRevisionId
+              and (status = @Current or status = @Stale);
             """,
             new
             {
                 PageId = pageId.ToString(),
-                Status = SearchUnitStatus.Current,
-                RevisionId = revisionId.ToString()
+                ParentRevisionId = revision.ParentTreeRevisionId,
+                Current = SearchUnitStatus.Current,
+                Stale = SearchUnitStatus.Stale
             },
             transaction)).ToArray();
         Dictionary<string, PreviousUnitRow> previousByBox = previous.ToDictionary(row => row.BoxId);
@@ -294,7 +298,9 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         await connection.ExecuteAsync(
             """
             update search_units set status = @Deleted, updated_at = @Now
-            where page_id = @PageId and status = @Current and tree_revision_id <> @RevisionId;
+            where page_id = @PageId
+              and (status = @Current or status = @Stale)
+              and tree_revision_id <> @RevisionId;
             """,
             new
             {
@@ -302,6 +308,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 Now = now,
                 PageId = pageId.ToString(),
                 Current = SearchUnitStatus.Current,
+                Stale = SearchUnitStatus.Stale,
                 RevisionId = revisionId.ToString()
             },
             transaction);
@@ -594,6 +601,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
     {
         public string DocumentInstanceId { get; set; } = string.Empty;
         public string PageId { get; set; } = string.Empty;
+        public string? ParentTreeRevisionId { get; set; }
         public string Status { get; set; } = string.Empty;
         public int IsCurrent { get; set; }
     }

@@ -51,6 +51,23 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     (select count(1) from pages p where p.document_instance_id = di.document_instance_id) as PageCount,
                     coalesce((select sis.status from search_index_status sis where sis.scope_type = 'document_instance' and sis.scope_id = di.document_instance_id), 'not_indexed') as IndexStatus,
                     coalesce(di.status, 'unknown') as DocumentStatus,
+                    (select r.state
+                     from ocr_runs r
+                     where r.document_instance_id = di.document_instance_id and r.hidden = 0
+                     order by r.created_at desc
+                     limit 1) as LatestOcrState,
+                    (select pr.error_message
+                     from ocr_page_results pr
+                     join ocr_runs r on r.ocr_run_id = pr.ocr_run_id
+                     where r.ocr_run_id = (
+                         select latest.ocr_run_id
+                         from ocr_runs latest
+                         where latest.document_instance_id = di.document_instance_id and latest.hidden = 0
+                         order by latest.created_at desc
+                         limit 1)
+                       and length(trim(coalesce(pr.error_message, ''))) > 0
+                     order by pr.created_at desc
+                     limit 1) as LatestOcrError,
                     (select count(1) from search_units su where su.document_instance_id = di.document_instance_id and su.status = 'current') as SearchUnitCount
                 from items i
                 left join document_instances di on di.item_id = i.item_id and di.is_primary = 1
@@ -86,6 +103,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         public int PageCount { get; set; }
         public string IndexStatus { get; set; } = "";
         public string DocumentStatus { get; set; } = "";
+        public string? LatestOcrState { get; set; }
+        public string? LatestOcrError { get; set; }
         public int SearchUnitCount { get; set; }
 
         public LibraryItemRow ToModel()
@@ -103,8 +122,27 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                 LinkedFileName,
                 PageCount,
                 SearchUnitCount,
-                SearchUnitCount > 0 ? $"indexed ({SearchUnitCount})" : $"not_indexed ({DocumentStatus})",
+                BuildOcrStatus(),
                 IndexStatus);
+        }
+
+        private string BuildOcrStatus()
+        {
+            if (LatestOcrState is "failed" or "completed_with_errors")
+            {
+                return string.IsNullOrWhiteSpace(LatestOcrError)
+                    ? "OCR 失败"
+                    : $"OCR 失败：{LatestOcrError}";
+            }
+
+            if (LatestOcrState == "running")
+            {
+                return "OCR 正在运行...";
+            }
+
+            return SearchUnitCount > 0
+                ? $"已索引（{SearchUnitCount} 个单元，{IndexStatus}）"
+                : $"未索引（{IndexStatus}）";
         }
     }
 

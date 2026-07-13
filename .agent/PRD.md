@@ -351,20 +351,20 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 |---|---|---|
 | 项目边界 | agent 文档集中在 `.agent/`，根目录只保留 `AGENTS.md` 入口；无 `docs/` 依赖。 | `AlphaPackagingTests`、`.agent/domain.md` |
 | 桌面技术栈 | .NET + Avalonia 桌面应用、版本信息、设置、首轮初始化、库页面、题录编辑、搜索、OCR 队列、PDF 工作台与 About 页面。 | `src/Patchouli.UI`、`UiViewModelTests`、`FirstRunViewModelTests` |
-| 库身份 | `library_id` 创建后稳定，重命名/移动不改变身份；跨库证据解析返回 mismatch。 | `LibraryIdentityServiceTests`、`EvidenceReferenceServiceTests` |
+| 库身份 | `library_id` 创建后稳定，重命名/移动不改变身份；跨库证据解析返回 mismatch。 | `LibraryIdentityServiceTests`、`EvidenceRefV2Tests` |
 | 题录模型 | Item/FileAsset/DocumentInstance 三层模型；CSL 对齐字段；可扩展标识符；结构化 creator/date；标签来自导入 keyword 但不保留独立 keyword 字段。 | `BibliographicCoreTests`、迁移 `003`、`010`、`013` |
 | 文件资产 | 原文件不入库；known locations、search roots、快速哈希、BLAKE3、缺失/移动/变更/冲突状态与统一文件解析服务。 | `FileResolutionServiceTests`、`FileFingerprintServiceTests` |
-| PDF 导入与页面 | PDF 扫描、导入 workflow、页数读取、页面记录、页面坐标基准。 | `PdfDiscoveryServiceTests`、`PdfImportWorkflowTests`、`PageLayoutTests` |
+| PDF 导入与页面 | PDF 扫描、导入 workflow、页数读取、页面记录、页面坐标基准。 | `PdfDiscoveryServiceTests`、`PdfImportWorkflowTests`、`DocumentTreeServiceTests` |
 | 页面渲染缓存 | PDF 页面渲染、缓存命名空间 `page_renders`、渲染失败/超时结果化、渲染输出用于 OCR 输入。MCP never returns cached images or image paths. | `PdfPageRenderingTests`、`RealPdfRendererTests` |
-| OCR Preset | OCR Preset 和不可变 Preset Version；模型/路径/参数变更创建新版本；ready/missing/rebind 状态。 | `OcrLifecycleTests`、`OcrAdapterReadinessTests` |
-| OCR 提供程序 | Mock、本地占位、MinerU client/downloader/importer/layout mapper/content list v2 解析已存在；MinerU 是第一产品 OCR/layout 路径的 ADR 已记录。 | `MinerU*Tests`、ADR `0014` |
-| OCR 生命周期 | 运行按页面保存；staging/candidate/current；取消、隐藏、unset current、completed_with_errors、失败页面保留、bbox 硬失败、重试溯源、按页候选采纳。 | `OcrLifecycleTests` |
+| OCR Preset | OCR Preset 和不可变 Preset Version；模型/路径/参数变更创建新版本；ready/missing/rebind 状态。 | `OcrLifecycleBoxTreeTests`、`UiViewModelTests` |
+| OCR 提供程序 | Mock、本地占位、MinerU client/downloader/importer/Document Tree candidate mapper/content list v2 解析已存在；MinerU 是第一产品 OCR 路径的 ADR 已记录。 | `MinerUClientTests`、`MinerUResultDownloaderTests`、`MinerUDocumentTreeTests`、`MinerUContentListParserTests`、ADR `0014` |
+| OCR 生命周期 | 运行按页面保存；staging/candidate/current；取消、completed_with_errors、失败页面保留与按页候选采纳。 | `OcrLifecycleBoxTreeTests` |
 | OCR 队列 | 并发限制、优先级、老化、暂停/恢复、取消、瞬时重试、需要人工修复的失败分类。 | `OcrQueueSchedulerTests` |
 | Document Box Tree | 0.2.0 fresh schema、页级 immutable revision、typed leaf、sibling pointer、logical page、draft command、Markdig compiler/SourceMap。 | `DocumentTree*Tests`、迁移 `005`、ADR `0015` |
-| 搜索单元与 FTS | non-suppressed leaf Box 生成 search_unit；本地 FTS 索引是可重建的本地缓存；索引状态 current/stale/partial/unavailable；无线性 SQL LIKE 降级。 | `BoxTreeReadSurfaceTests` |
+| 搜索单元与 FTS | non-suppressed leaf Box 生成 search_unit；本地 FTS 索引是可重建的本地缓存；索引状态 current/stale/partial/unavailable；无线性 SQL LIKE 降级。 | `SearchUnitFtsBoxTreeTests`、`BoxTreeReadSurfaceTests` |
 | 搜索配置文件 | 搜索配置文件、rewrite rule、alias/effective profile、rewrite plan、预览/执行边界。 | `SearchProfileRewriteTests`、迁移 `011` |
-| 证据引用 | `evref:v2` 以 `(tree_revision_id, box_id)` 编码；pinned 默认，current/compare 显示漂移。 | `BoxTreeReadSurfaceTests` |
-| MCP Read API | 第一版 MCP 是只读且纯文本的；search_library、get_item_metadata、get_document_status、get_page_text、get_page_blocks、get_search_result_context；HTTP transport。 | `McpReadApiTests`、`McpServerTransportTests` |
+| 证据引用 | `evref:v2` 以 `(tree_revision_id, box_id)` 编码；pinned 默认，current/compare 显示漂移。 | `EvidenceRefV2Tests`、`BoxTreeReadSurfaceTests` |
+| MCP Read API | 第一版 MCP 是只读且纯文本的；search_library、get_item_metadata、get_document_status、get_page_text、get_page_blocks、get_search_result_context；HTTP transport。 | `BoxTreeReadSurfaceTests`、`McpVerificationServiceTests`、`McpServerTransportTests` |
 | MCP 安全边界 | MCP 从不触发 OCR 或索引重建；MCP 无法读取提供程序密钥；不返回本地路径、file URL、提供程序配置、缓存图像或图像路径。 | `AlphaSecurityBoundaryTests`、ADR `0010` |
 | 凭据 | local-only `Credentials` appsettings 范围是 provider secret 的唯一持久化 owner；credential module 只提供读取、验证和日志脱敏，快照/导出/branch import 均排除凭据。 | `CredentialStoreTests`、`AlphaSecurityBoundaryTests` |
 | 快照 | 运行库与同步快照分离；内容寻址 SQLite 分片、manifest、current pointer、导入验证、缓存排除。 | `SnapshotTests`、ADR `0001`、`0002` |

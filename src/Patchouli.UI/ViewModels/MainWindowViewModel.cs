@@ -1396,10 +1396,31 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<bool> SaveMinerUTokenSettingsAsync(string token)
     {
+        return await SaveMinerUSettingsAsync(token, _settings.MinerU.ModelVersion);
+    }
+
+    public async Task<bool> SaveMinerUSettingsAsync(string token, string modelVersion)
+    {
+        if (modelVersion is not ("vlm" or "pipeline"))
+        {
+            ReportError("MinerU 模型必须选择 vlm 或 pipeline。");
+            return false;
+        }
+
         string trimmed = token.Trim();
         bool persisted = await SaveMinerUTokenAsync(trimmed);
         if (!persisted)
         {
+            return false;
+        }
+
+        SettingsSaveResult settingsSaved = UpdateAppOptions(_settings with
+        {
+            MinerU = _settings.MinerU with { ModelVersion = modelVersion }
+        });
+        if (!settingsSaved.IsSuccess)
+        {
+            ReportError(settingsSaved.ErrorMessage ?? "无法保存 MinerU 模型设置。");
             return false;
         }
 

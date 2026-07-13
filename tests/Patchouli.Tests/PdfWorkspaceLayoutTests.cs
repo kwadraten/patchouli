@@ -29,4 +29,15 @@ public sealed class PdfWorkspaceLayoutTests
         xaml.Should().NotContain("ResolveConflictOverwriteCommand").And.NotContain("强制覆盖");
         viewModel.Should().NotContain("ResolveConflictOverwriteAsync").And.NotContain("CheckOverlap");
     }
+
+    [Fact]
+    public void PdfWorkspace_sidebar_shows_centered_empty_state_for_empty_preview_and_box_list()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+
+        xaml.Should().Contain("Text=\"空\"");
+        xaml.Should().Contain("IsVisible=\"{Binding HasNoPreviewBlocks}\"");
+        xaml.Should().Contain("IsVisible=\"{Binding HasNoBoundingBoxes}\"");
+    }
 }

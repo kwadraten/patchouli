@@ -348,6 +348,10 @@
                   <StackPanel Spacing="10">
                     <TextBlock Text="云端版面解析 (MinerU)" FontSize="16" FontWeight="SemiBold"
                                Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="解析模型" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <ComboBox ItemsSource="{Binding MinerUModelVersionOptions}"
+                              SelectedItem="{Binding MinerUModelVersion}" />
                     <TextBox Text="{Binding MinerUTokenInput}" PasswordChar="•" PlaceholderText="在此输入 Token" />
                   </StackPanel>
                 </Border>

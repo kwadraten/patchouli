@@ -1,6 +1,7 @@
 ﻿using System.Collections.ObjectModel;
 using System.IO.Compression;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using Avalonia;
 using Avalonia.Headless;
@@ -16,7 +17,9 @@ using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.MinerU;
@@ -891,9 +894,9 @@ public sealed class UiViewModelTests
             MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            vm.OcrQueue.DocumentInstanceId = Core.Ids.DocumentInstanceId.New().ToString();
-            vm.OcrQueue.PresetId = Core.Ids.OcrPresetId.New().ToString();
-            vm.OcrQueue.PageIds = Core.Ids.PageId.New().ToString();
+            vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
+            vm.OcrQueue.PresetId = OcrPresetId.New().ToString();
+            vm.OcrQueue.PageIds = PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
             vm.OcrQueue.Output.Should().Contain("Queued mock OCR task");
             vm.OcrQueue.Tasks.Should().ContainSingle();
@@ -917,11 +920,11 @@ public sealed class UiViewModelTests
             MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            vm.OcrQueue.DocumentInstanceId = Core.Ids.DocumentInstanceId.New().ToString();
-            vm.OcrQueue.PresetId = Core.Ids.OcrPresetId.New().ToString();
-            vm.OcrQueue.PageIds = Core.Ids.PageId.New().ToString();
+            vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
+            vm.OcrQueue.PresetId = OcrPresetId.New().ToString();
+            vm.OcrQueue.PageIds = PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
-            vm.OcrQueue.PageIds = Core.Ids.PageId.New().ToString();
+            vm.OcrQueue.PageIds = PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
 
             vm.OcrQueue.TaskRows.Should().HaveCount(2);
@@ -1008,6 +1011,56 @@ public sealed class UiViewModelTests
             if (File.Exists(path))
             {
                 File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Queue_terminal_failure_updates_status_bar_and_library_item_immediately()
+    {
+        string root = Directory
+            .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-queue-failure-{Guid.NewGuid():N}"))
+            .FullName;
+        string path = Path.Combine(root, "failure.sqlite");
+        string pdf = Path.Combine(root, "failure.pdf");
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        try
+        {
+            await session.Dispatch(async () =>
+            {
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
+                AppServices services = await vm.ServicesAsync();
+                PdfImportResult import =
+                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Failed queue item", null, 1));
+                await vm.Shell.RefreshItemsAsync();
+                LibraryItemViewModel item = vm.Shell.Items.Single();
+                item.OcrStatus = "OCR 已加入后台队列";
+                LibraryMetadata library = (await services.Library.GetCurrentLibraryAsync()).Value;
+                OcrQueueTask task = new(
+                    OcrQueueTaskId.New(), library.LibraryId, DocumentInstanceId.Parse(item.DocumentInstanceId!),
+                    OcrPresetId.New(), [PageId.New()], OcrQueueTaskKind.Document, OcrEngineIds.MinerU,
+                    OcrAdapterKind.CloudApi, ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument,
+                    DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Failed, 1, 1, null,
+                    "upload_url_failed", "MinerU rejected model_version", null, null, null);
+
+                typeof(OcrQueueViewModel).GetMethod("OnQueueChanged",
+                        BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(vm.OcrQueue, [null, new OcrQueueChangedEventArgs(task, OcrQueueChangeKind.Updated)]);
+
+                vm.StatusIsError.Should().BeTrue();
+                vm.Status.Should().Contain("MinerU rejected model_version");
+                item.OcrStatus.Should().Be("OCR 失败：MinerU rejected model_version");
+                return true;
+            }, CancellationToken.None);
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
             }
         }
     }
@@ -1185,6 +1238,13 @@ public sealed class UiViewModelTests
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OpenSettingsAsync("mineru");
+            object section = vm.Settings.OcrProviderSettings;
+            PropertyInfo? modelOptions = section.GetType().GetProperty("MinerUModelVersionOptions");
+            PropertyInfo? selectedModel = section.GetType().GetProperty("MinerUModelVersion");
+            modelOptions.Should().NotBeNull();
+            selectedModel.Should().NotBeNull();
+            ((IEnumerable<string>)modelOptions!.GetValue(section)!).Should().Equal("vlm", "pipeline");
+            selectedModel!.SetValue(section, "pipeline");
             vm.Settings.MinerUTokenInput = "saved-token";
 
             await vm.Settings.SaveMinerUSettingsCommand.ExecuteAsync();
@@ -1194,8 +1254,13 @@ public sealed class UiViewModelTests
                 .Be("saved-token");
             PatchouliAppSettings.Load(settingsPath).Credentials.Providers.Should()
                 .ContainSingle(value => value.ProviderId == ProviderIds.MinerU && value.SecretValue == "saved-token");
+            PatchouliAppSettings.Load(settingsPath).MinerU.ModelVersion.Should().Be("pipeline");
             vm.Shell.MinerUToken.Should().Be("saved-token");
             vm.Status.Should().Contain("已保存");
+            string xaml =
+                File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+            xaml.Should().Contain("ItemsSource=\"{Binding MinerUModelVersionOptions}\"");
+            xaml.Should().Contain("SelectedItem=\"{Binding MinerUModelVersion}\"");
         }
         finally
         {
@@ -1354,14 +1419,17 @@ public sealed class UiViewModelTests
 
             byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
             string? tokenUsed = null;
+            string? modelVersionUsed = "not-called";
             vm.Shell.MinerUClientFactory = config =>
             {
                 tokenUsed = config.Token;
+                modelVersionUsed = config.ModelVersion;
                 return CreateProtocolMinerUClient(config, zipBytes);
             };
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
             File.ReadAllText(PatchouliAppSettings.ResolvePath()).Should().Contain("token");
+            modelVersionUsed.Should().BeNull("the app settings own the MinerU API model version fallback");
             vm.Status.Should().Contain("OCR 完成");
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
             Result<McpSearchLibraryResponse> search =
@@ -1385,6 +1453,57 @@ public sealed class UiViewModelTests
             if (File.Exists(path))
             {
                 File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Document_mineru_ocr_uses_page_and_size_aware_pdf_splitting()
+    {
+        string root = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), $"ui-mineru-split-{Guid.NewGuid():N}")).FullName;
+        string databasePath = Path.Combine(root, "library.sqlite");
+        string settingsPath = Path.Combine(root, "appsettings.json");
+        string pdfPath = Path.Combine(root, "three-pages.pdf");
+        File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
+
+        try
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = databasePath };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult imported =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdfPath, "Split PDF", null, 3));
+            imported.Success.Should().BeTrue(imported.ErrorMessage);
+            Result<OcrPreset> preset = await services.OcrPresets.CreatePresetAsync(
+                "MinerU", null, OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true);
+            preset.IsSuccess.Should().BeTrue(preset.ErrorMessage);
+            await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token", "token");
+            PageLimitedMinerUClient client = new(1);
+            IOcrRunCoordinator coordinator = services.CreateOcrRunCoordinator(
+                _ => client,
+                new MinerUUploadLimits(1, MinerUUploadLimits.OfficialMaxBytesPerFile));
+
+            Result<OcrRun> result = await coordinator.RunPresetOnDocumentAsync(
+                DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), preset.Value.PresetId);
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            client.AcceptedRequests.Should().HaveCount(3);
+            client.AcceptedRequests.Should().OnlyContain(request => request.LocalPath != pdfPath);
+            foreach (MinerUUploadRequest request in client.AcceptedRequests)
+            {
+                (await new PdfiumDocumentEngine().GetPageCountAsync(request.LocalPath)).Should().Be(1);
+                request.FileSize.Should().BeLessThanOrEqualTo(MinerUUploadLimits.OfficialMaxBytesPerFile);
+            }
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
             }
         }
     }
@@ -1947,6 +2066,69 @@ public sealed class UiViewModelTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(_handler(request));
+        }
+    }
+
+    private sealed class PageLimitedMinerUClient : IMinerUClient
+    {
+        private readonly int _maxPages;
+
+        public PageLimitedMinerUClient(int maxPages)
+        {
+            _maxPages = maxPages;
+        }
+
+        public bool IsConfigured => true;
+        public List<MinerUUploadRequest> AcceptedRequests { get; } = new();
+
+        public async Task<Result<MinerUUploadBatch>> RequestUploadUrlsAsync(
+            IReadOnlyList<MinerUUploadRequest> files,
+            CancellationToken cancellationToken = default)
+        {
+            MinerUUploadRequest request = files.Single();
+            int pageCount = await new PdfiumDocumentEngine().GetPageCountAsync(request.LocalPath, cancellationToken);
+            if (pageCount > _maxPages)
+            {
+                return Result<MinerUUploadBatch>.Failure(MinerUProviderStatus.UploadUrlFailed,
+                    $"number of pages exceeds limit ({_maxPages} pages), please split the file and try again");
+            }
+
+            AcceptedRequests.Add(request);
+            string batchId = $"batch-{AcceptedRequests.Count}";
+            return Result<MinerUUploadBatch>.Success(new MinerUUploadBatch(batchId,
+            [
+                new MinerUFileUploadUrl(request.FileName, "https://upload.example.test/file", request.DataId)
+            ]));
+        }
+
+        public Task<Result> UploadFileAsync(string uploadUrl, string localPath,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<MinerUPollResult>> PollExtractResultAsync(string batchId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<MinerUPollResult>.Success(
+                new MinerUPollResult(batchId, MinerUProviderStatus.Done, null, null)));
+        }
+
+        public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
+            string batchId,
+            string downloadDirectory,
+            CancellationToken cancellationToken = default)
+        {
+            Directory.CreateDirectory(downloadDirectory);
+            string zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
+            using ZipArchive archive = ZipFile.Open(zipPath, ZipArchiveMode.Create);
+            ZipArchiveEntry entry = archive.CreateEntry("sample_content_list_v2.json");
+            using StreamWriter writer = new(entry.Open());
+            writer.Write($$"""
+                           [[{"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"{{batchId}}"}]},"bbox":[0,0,100,100]}]]
+                           """);
+            return Task.FromResult(Result<MinerUDownloadedResult>.Success(
+                new MinerUDownloadedResult(batchId, zipPath, MinerUProviderStatus.Done)));
         }
     }
 }

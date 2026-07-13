@@ -76,6 +76,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             ClearPendingBox();
             return Task.CompletedTask;
         });
+        BoundingBoxes.CollectionChanged += (_, _) => Raise(nameof(HasNoBoundingBoxes));
+        PreviewBlocks.CollectionChanged += (_, _) => Raise(nameof(HasNoPreviewBlocks));
     }
 
     public Bitmap? Image { get; private set; }
@@ -320,6 +322,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public System.Collections.ObjectModel.ObservableCollection<MarkdownPreviewBlockViewModel> PreviewBlocks { get; } =
         new();
+
+    public bool HasNoBoundingBoxes => BoundingBoxes.Count == 0;
+    public bool HasNoPreviewBlocks => PreviewBlocks.Count == 0;
 
     public PdfBBoxViewModel? SelectedBox
     {

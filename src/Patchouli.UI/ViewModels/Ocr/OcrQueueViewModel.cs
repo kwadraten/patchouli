@@ -320,16 +320,31 @@ public sealed class OcrQueueViewModel : ViewModelBase
         _subscribedQueue.Changed += OnQueueChanged;
     }
 
+    public void ObserveQueue(IOcrQueueScheduler queue)
+    {
+        SubscribeQueue(queue);
+    }
+
     private void OnQueueChanged(object? sender, OcrQueueChangedEventArgs e)
     {
         if (e.Task?.State == OcrQueueTaskState.Succeeded)
         {
-            PostStatus(() => _main.Report("OCR 完成，搜索索引已更新。"));
+            PostStatus(() =>
+            {
+                _main.Report("OCR 完成，搜索索引已更新。");
+                _main.Shell.ApplyOcrQueueTerminalState(e.Task);
+            });
+            RefreshLibraryAsync().Observe("ocr-queue-ui", "refresh-library-after-success");
         }
         else if (e.Task?.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked)
         {
             string message = e.Task.LastErrorMessage ?? "OCR 任务失败。";
-            PostStatus(() => _main.ReportError(message));
+            PostStatus(() =>
+            {
+                _main.ReportError(message);
+                _main.Shell.ApplyOcrQueueTerminalState(e.Task);
+            });
+            RefreshLibraryAsync().Observe("ocr-queue-ui", "refresh-library-after-failure");
         }
 
         ScheduleRefresh();
@@ -337,6 +352,11 @@ public sealed class OcrQueueViewModel : ViewModelBase
         {
             EnsureAutoRefreshLoop();
         }
+    }
+
+    private Task RefreshLibraryAsync()
+    {
+        return DispatcherTasks.RunAsync(_main.Shell.RefreshItemsAsync);
     }
 
     private static void PostStatus(Action update)

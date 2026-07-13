@@ -256,46 +256,57 @@
           </Border>
           <TabControl Grid.Row="1">
             <TabItem Header="原生预览">
-              <ScrollViewer>
-                <ItemsControl ItemsSource="{Binding PreviewBlocks}" Margin="16">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:MarkdownPreviewBlockViewModel">
-                      <Button Command="{Binding SelectCommand}" HorizontalContentAlignment="Stretch"
-                              Background="Transparent" BorderThickness="0" Padding="8" Margin="0,0,0,4">
-                        <StackPanel Spacing="4">
-                          <TextBlock Text="{Binding Kind}" FontSize="10"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                          <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
-                                     Classes.previewHeading="{Binding IsHeading}" />
-                        </StackPanel>
-                      </Button>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-              </ScrollViewer>
+              <Grid>
+                <ScrollViewer>
+                  <ItemsControl ItemsSource="{Binding PreviewBlocks}" Margin="16">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:MarkdownPreviewBlockViewModel">
+                        <Button Command="{Binding SelectCommand}" HorizontalContentAlignment="Stretch"
+                                Background="Transparent" BorderThickness="0" Padding="8" Margin="0,0,0,4">
+                          <StackPanel Spacing="4">
+                            <TextBlock Text="{Binding Kind}" FontSize="10"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            <TextBlock Text="{Binding Text}" TextWrapping="Wrap"
+                                       Classes.previewHeading="{Binding IsHeading}" />
+                          </StackPanel>
+                        </Button>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+                <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
+                           IsVisible="{Binding HasNoPreviewBlocks}" />
+              </Grid>
             </TabItem>
             <TabItem Header="Box 编辑">
-              <ScrollViewer>
-                <ItemsControl ItemsSource="{Binding BoundingBoxes}" Margin="16">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                      <Border Margin="0,0,0,12" Background="{DynamicResource SurfaceContainerLowestBrush}"
-                              BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="6"
-                              Padding="12">
-                        <StackPanel Spacing="8">
-                          <Border Background="{Binding BoxColor}" CornerRadius="4" Padding="6,2"
-                                  HorizontalAlignment="Left">
-                            <TextBlock Text="{Binding BoxType}" FontSize="11" Foreground="#FFFFFF" FontWeight="Bold" />
-                          </Border>
-                          <TextBox Text="{Binding Text}" IsReadOnly="{Binding !Workspace.IsEditMode}"
-                                   AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60"
-                                   BorderThickness="0" Background="Transparent" />
-                        </StackPanel>
-                      </Border>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-              </ScrollViewer>
+              <Grid>
+                <ScrollViewer>
+                  <ItemsControl ItemsSource="{Binding BoundingBoxes}" Margin="16">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                        <Border Margin="0,0,0,12" Background="{DynamicResource SurfaceContainerLowestBrush}"
+                                BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                                CornerRadius="6"
+                                Padding="12">
+                          <StackPanel Spacing="8">
+                            <Border Background="{Binding BoxColor}" CornerRadius="4" Padding="6,2"
+                                    HorizontalAlignment="Left">
+                              <TextBlock Text="{Binding BoxType}" FontSize="11" Foreground="#FFFFFF" FontWeight="Bold" />
+                            </Border>
+                            <TextBox Text="{Binding Text}" IsReadOnly="{Binding !Workspace.IsEditMode}"
+                                     AcceptsReturn="True" TextWrapping="Wrap" MinHeight="60"
+                                     BorderThickness="0" Background="Transparent" />
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+                <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
+                           IsVisible="{Binding HasNoBoundingBoxes}" />
+              </Grid>
             </TabItem>
           </TabControl>
         </Grid>

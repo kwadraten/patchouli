@@ -340,7 +340,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 row.IndexStatus,
                 RunOcrForItemAsync,
                 EditMetadataForItemAsync,
-                ViewPdfForItemAsync);
+                ViewPdfForItemAsync,
+                row.OcrStatus);
             refreshedItems.Add(item);
             refreshedRecentItems.Add(row.Title);
             if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
@@ -595,6 +596,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return Result<OcrQueueTask>.Failure(queue.ErrorCode!, queue.ErrorMessage!);
         }
 
+        _main.OcrQueue.ObserveQueue(queue.Value);
+
         string adapterKind = engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
         string? providerId = engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
         Result<OcrQueueTask> enqueued = await queue.Value.EnqueueDocumentAsync(documentInstanceId, presetId, pageIds,
@@ -605,6 +608,22 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
 
         return enqueued;
+    }
+
+    public void ApplyOcrQueueTerminalState(OcrQueueTask task)
+    {
+        LibraryItemViewModel? item = Items.FirstOrDefault(candidate =>
+            string.Equals(candidate.DocumentInstanceId, task.DocumentInstanceId.ToString(),
+                StringComparison.Ordinal));
+        if (item is null)
+        {
+            return;
+        }
+
+        item.OcrStatus = task.State == OcrQueueTaskState.Succeeded
+            ? "OCR 完成，搜索索引已更新。"
+            : $"OCR 失败：{task.LastErrorMessage ?? "OCR 任务失败。"}";
+        Raise(nameof(InspectorStatus));
     }
 
     private async Task<string> ResolveMinerUTokenAsync()
@@ -786,7 +805,8 @@ public sealed class LibraryItemViewModel : ViewModelBase
         string indexStatus,
         Func<LibraryItemViewModel, Task> runOcr,
         Func<LibraryItemViewModel, Task> editMetadata,
-        Func<LibraryItemViewModel, Task>? viewPdf = null)
+        Func<LibraryItemViewModel, Task>? viewPdf = null,
+        string? ocrStatus = null)
     {
         ItemId = itemId;
         Title = title;
@@ -801,7 +821,9 @@ public sealed class LibraryItemViewModel : ViewModelBase
         PageCount = pageCount;
         SearchUnitCount = searchUnitCount;
         IndexStatus = indexStatus;
-        _ocrStatus = searchUnitCount > 0 ? $"已索引（{searchUnitCount} 个单元，{indexStatus}）" : $"未索引（{indexStatus}）";
+        _ocrStatus = ocrStatus ?? (searchUnitCount > 0
+            ? $"已索引（{searchUnitCount} 个单元，{indexStatus}）"
+            : $"未索引（{indexStatus}）");
         RunOcrCommand = new AsyncCommand(() => runOcr(this));
         EditMetadataCommand = new AsyncCommand(() => editMetadata(this));
         ViewPdfCommand = new AsyncCommand(() => (viewPdf ?? editMetadata)(this));

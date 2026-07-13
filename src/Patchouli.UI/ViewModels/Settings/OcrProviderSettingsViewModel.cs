@@ -1,4 +1,4 @@
-﻿using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels;
 using System;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
@@ -11,6 +11,8 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
     private string _status = "";
     private string _token = "";
     private string _persistedToken = "";
+    private string _modelVersion;
+    private string _persistedModelVersion;
     private bool _isDirty;
 
     public OcrProviderSettingsViewModel(MainWindowViewModel main)
@@ -19,6 +21,8 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
         SaveMinerUSettingsCommand = new AsyncCommand(SaveAsync);
         _token = "";
         _persistedToken = _token;
+        _modelVersion = NormalizeModelVersion(main.AppOptions.MinerU.ModelVersion);
+        _persistedModelVersion = _modelVersion;
     }
 
     public string Status
@@ -50,11 +54,9 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
             if (_token != value)
             {
                 _token = value;
-                _isDirty = true;
+                UpdateDirtyState();
                 Raise();
                 Raise(nameof(MinerUCredentialStatus));
-                Raise(nameof(IsDirty));
-                Raise(nameof(CanSave));
                 Status = "有未保存的更改";
             }
         }
@@ -63,6 +65,27 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
     public string MinerUCredentialStatus => string.IsNullOrWhiteSpace(MinerUTokenInput)
         ? "未配置 ProviderCredential"
         : "已配置 ProviderCredential";
+
+    public ReadOnlyCollection<string> MinerUModelVersionOptions { get; } =
+        Array.AsReadOnly(["vlm", "pipeline"]);
+
+    public string MinerUModelVersion
+    {
+        get => _modelVersion;
+        set
+        {
+            string normalized = NormalizeModelVersion(value);
+            if (_modelVersion == normalized)
+            {
+                return;
+            }
+
+            _modelVersion = normalized;
+            UpdateDirtyState();
+            Raise();
+            Status = "有未保存的更改";
+        }
+    }
 
     public string OcrConcurrencySummary { get; } = "OCR 队列第一版使用本机单任务 tick 执行。";
 
@@ -79,8 +102,10 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
     public Task DiscardAsync()
     {
         _token = _persistedToken;
+        _modelVersion = _persistedModelVersion;
         _isDirty = false;
         Raise(nameof(MinerUTokenInput));
+        Raise(nameof(MinerUModelVersion));
         Raise(nameof(MinerUCredentialStatus));
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -92,9 +117,12 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
     {
         _token = token;
         _persistedToken = token;
+        _modelVersion = NormalizeModelVersion(_main.AppOptions.MinerU.ModelVersion);
+        _persistedModelVersion = _modelVersion;
         _isDirty = false;
         LastError = null;
         Raise(nameof(MinerUTokenInput));
+        Raise(nameof(MinerUModelVersion));
         Raise(nameof(MinerUCredentialStatus));
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -105,21 +133,34 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
     public async Task SaveAsync()
     {
         Status = "正在保存...";
-        bool saved = await _main.SaveMinerUTokenSettingsAsync(_token);
+        bool saved = await _main.SaveMinerUSettingsAsync(_token, _modelVersion);
         Status = saved ? "已保存" : "保存失败";
         if (saved)
         {
             _persistedToken = _token;
+            _persistedModelVersion = _modelVersion;
             _isDirty = false;
             LastError = null;
         }
         else
         {
-            LastError = "无法保存 MinerU 凭据。";
+            LastError = "无法保存 MinerU 凭据或模型设置。";
         }
 
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
         Raise(nameof(LastError));
+    }
+
+    private void UpdateDirtyState()
+    {
+        _isDirty = _token != _persistedToken || _modelVersion != _persistedModelVersion;
+        Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
+    }
+
+    private static string NormalizeModelVersion(string? value)
+    {
+        return string.Equals(value, "pipeline", StringComparison.OrdinalIgnoreCase) ? "pipeline" : "vlm";
     }
 }
