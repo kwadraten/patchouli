@@ -5,13 +5,12 @@ using Avalonia.Platform;
 using Dapper;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
 using Patchouli.Ocr;
 using System.Linq;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Results;
-using Patchouli.Core.Conflicts;
-using Patchouli.Infrastructure.Conflicts;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -27,11 +26,18 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private bool _isSidebarOpen;
     private bool _isDrawToolActive;
     private PdfBBoxViewModel? _selectedBox;
-    private string? _currentRevisionId;
-    private string? _draftRevisionId;
+    private DocumentTreeRevisionId? _currentRevisionId;
+    private DocumentTreeRevisionId? _draftRevisionId;
+    private PageEditSessionId? _editSessionId;
     private PageId? _currentPageId;
+    private IReadOnlyList<DocumentBox> _loadedBoxes = [];
     private bool _isDrawing;
     private Point _selectionStartPoint;
+    private NormalizedBBox? _pendingBBox;
+    private string _newBoxText = string.Empty;
+    private string _newBoxType = DocumentBoxType.Text;
+    private int _newHeadingLevel = 1;
+    private string _newCodeLanguage = string.Empty;
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
@@ -62,6 +68,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         DrawToolCommand = new AsyncCommand(() =>
         {
             IsDrawToolActive = true;
+            return Task.CompletedTask;
+        });
+        InsertPendingBoxCommand = new AsyncCommand(PersistStagingBoxAsync);
+        CancelPendingBoxCommand = new AsyncCommand(() =>
+        {
+            ClearPendingBox();
             return Task.CompletedTask;
         });
     }
@@ -119,6 +131,69 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
             _isEditMode = value;
             Raise();
+        }
+    }
+
+    public PageEditSessionId? EditSessionId => _editSessionId;
+
+    public IReadOnlyList<string> NewBoxTypeOptions { get; } =
+    [
+        DocumentBoxType.Text, DocumentBoxType.Title, DocumentBoxType.RefText, DocumentBoxType.List,
+        DocumentBoxType.Table, DocumentBoxType.Code, DocumentBoxType.Equation, DocumentBoxType.LogicalPage
+    ];
+
+    public bool IsNewBoxPending => _pendingBBox is not null;
+
+    public string NewBoxText
+    {
+        get => _newBoxText;
+        set
+        {
+            if (_newBoxText != value)
+            {
+                _newBoxText = value;
+                Raise();
+            }
+        }
+    }
+
+    public string NewBoxType
+    {
+        get => _newBoxType;
+        set
+        {
+            if (_newBoxType != value)
+            {
+                _newBoxType = value;
+                Raise();
+            }
+        }
+    }
+
+    public int NewHeadingLevel
+    {
+        get => _newHeadingLevel;
+        set
+        {
+            int normalized = Math.Clamp(value, 1, 6);
+            if (_newHeadingLevel != normalized)
+            {
+                _newHeadingLevel = normalized;
+                Raise();
+            }
+        }
+    }
+
+    public string NewCodeLanguage
+    {
+        get => _newCodeLanguage;
+        set
+        {
+            if (_newCodeLanguage != value)
+            {
+                _newCodeLanguage = value;
+                Raise();
+            }
         }
     }
 
@@ -243,6 +318,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes { get; } = new();
 
+    public System.Collections.ObjectModel.ObservableCollection<MarkdownPreviewBlockViewModel> PreviewBlocks { get; } =
+        new();
+
     public PdfBBoxViewModel? SelectedBox
     {
         get => _selectedBox;
@@ -278,6 +356,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand CancelEditModeCommand { get; }
     public AsyncCommand SelectToolCommand { get; }
     public AsyncCommand DrawToolCommand { get; }
+    public AsyncCommand InsertPendingBoxCommand { get; }
+    public AsyncCommand CancelPendingBoxCommand { get; }
 
     public void OnPointerPressed(double x, double y)
     {
@@ -318,14 +398,14 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IsDrawing = false;
         if (SelectionWidth > 5 && SelectionHeight > 5)
         {
-            CreateBBoxFromSelectionAsync().Observe(nameof(PdfWorkspaceViewModel), nameof(CreateBBoxFromSelectionAsync));
+            CreateBBoxFromSelection();
         }
 
         SelectionWidth = 0;
         SelectionHeight = 0;
     }
 
-    private async Task CreateBBoxFromSelectionAsync()
+    private void CreateBBoxFromSelection()
     {
         if (_draftRevisionId is null || _currentPageId is null || _widthPixels <= 0 || _heightPixels <= 0)
         {
@@ -333,97 +413,129 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        PdfBBoxViewModel box = new(_main, this, LayoutNodeId.New(), SelectionLeft, SelectionTop, SelectionWidth,
-            SelectionHeight, LayoutNodeType.Paragraph, Avalonia.Media.Brushes.DarkOrange)
-        {
-            IsStaging = true
-        };
-
-        await PersistStagingBoxAsync(box);
+        double x = Math.Clamp(SelectionLeft / _widthPixels, 0, 1);
+        double y = Math.Clamp(SelectionTop / _heightPixels, 0, 1);
+        double width = Math.Clamp(SelectionWidth / _widthPixels, 0.0001, 1 - x);
+        double height = Math.Clamp(SelectionHeight / _heightPixels, 0.0001, 1 - y);
+        _pendingBBox = new NormalizedBBox(x, y, width, height);
+        NewBoxText = string.Empty;
+        NewBoxType = DocumentBoxType.Text;
+        NewHeadingLevel = 1;
+        NewCodeLanguage = string.Empty;
+        Raise(nameof(IsNewBoxPending));
+        Status = _loadedBoxes.Count == 0
+            ? "填写类型和内容后插入第一个根 Box。"
+            : "请选择一个现有 Box 作为明确的父级或前置 sibling，再确认插入。";
     }
 
-    private async Task PersistStagingBoxAsync(PdfBBoxViewModel box)
+    private async Task PersistStagingBoxAsync()
     {
-        if (_draftRevisionId is null || _currentPageId is null)
+        if (_editSessionId is null || _draftRevisionId is null || _currentPageId is null)
         {
             return;
         }
 
-        double x = Math.Clamp(box.Left / _widthPixels, 0, 1);
-        double y = Math.Clamp(box.Top / _heightPixels, 0, 1);
-        double width = Math.Clamp(box.Width / _widthPixels, 0.0001, 1 - x);
-        double height = Math.Clamp(box.Height / _heightPixels, 0.0001, 1 - y);
-        NormalizedBBox bbox = new(x, y, width, height);
-        Result<LayoutNode> result = await (await _main.ServicesAsync()).Layout.AddNodeAsync(
-            LayoutRevisionId.Parse(_draftRevisionId),
-            _currentPageId.Value,
-            null,
-            LayoutNodeType.Paragraph,
-            bbox,
-            box.Text,
-            TextPolicy.Own,
-            BoundingBoxes.Count + 1,
-            LayoutNodeSource.Manual);
-        if (result.IsFailure)
+        if (_pendingBBox is null)
         {
-            ConflictDescriptor? conflict = result.Conflicts.SingleOrDefault(candidate =>
-                candidate.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap);
-            if (conflict is not null)
+            return;
+        }
+
+        DocumentBox? selected = SelectedBox is null
+            ? null
+            : _loadedBoxes.FirstOrDefault(candidate => candidate.BoxId == SelectedBox.BoxId);
+        if (_loadedBoxes.Count > 0 && selected is null)
+        {
+            Status = "请选择插入位置：点选 logical page 作为父级，或点选 leaf 作为前置 sibling。";
+            return;
+        }
+
+        IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        Result<DocumentBox> result;
+        if (NewBoxType == DocumentBoxType.LogicalPage)
+        {
+            if (_loadedBoxes.Any(box => box.ParentBoxId is null && box.BoxType != DocumentBoxType.LogicalPage))
             {
-                LayoutStagingCandidate candidate = new(
-                    LayoutRevisionId.Parse(_draftRevisionId),
-                    _currentPageId.Value,
-                    null,
-                    LayoutNodeType.Paragraph,
-                    bbox,
-                    box.Text,
-                    TextPolicy.Own,
-                    BoundingBoxes.Count + 1,
-                    LayoutNodeSource.Manual);
-                LayoutStagingConflictActionExecutor executor = new((await _main.ServicesAsync()).Layout, candidate);
-                Result<ConflictResolutionResult> resolution = await _main.ResolveConflictAsync(conflict, executor);
-                if (resolution.IsFailure)
-                {
-                    Status = $"新增 bbox 冲突未处理：{resolution.ErrorMessage}";
-                    return;
-                }
-
-                if (resolution.Value.Disposition == ConflictExecutionDisposition.RetainStagingCandidate)
-                {
-                    BoundingBoxes.Add(box);
-                    SelectedBox = box;
-                    Status = "候选 bbox 保留为暂存状态；调整后重新提交，现有布局未被修改。";
-                    return;
-                }
-
-                if (resolution.Value.Disposition == ConflictExecutionDisposition.Applied)
-                {
-                    BoundingBoxes.Clear();
-                    await LoadNodesAsync(_currentPageId.Value, LayoutRevisionId.Parse(_draftRevisionId));
-                    Status = "冲突已通过允许重叠的节点类型处理。";
-                    return;
-                }
-
-                Status = "已放弃暂存 bbox，现有布局未被修改。";
+                Status = "普通根 Box 不能自动转换为逻辑页；请在草稿中先显式移除或重建直属内容。";
                 return;
             }
 
-            Status = $"新增 bbox 未写入 layout：{result.ErrorMessage}";
+            if (_loadedBoxes.Any(box => box.BoxType == DocumentBoxType.LogicalPage) &&
+                selected?.BoxType != DocumentBoxType.LogicalPage)
+            {
+                Status = "请选择一个 logical_page，明确新逻辑页的 sibling 插入位置。";
+                return;
+            }
+
+            DocumentBoxId? afterLogical = selected?.BoxType == DocumentBoxType.LogicalPage ? selected.BoxId : null;
+            result = await editor.InsertLogicalPageAsync(_editSessionId.Value, afterLogical, _pendingBBox.Value);
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(NewBoxText))
+            {
+                Status = "新建 leaf Box 必须填写有效内容。";
+                return;
+            }
+
+            DocumentBoxId? parent = selected?.BoxType == DocumentBoxType.LogicalPage
+                ? selected.BoxId
+                : selected?.ParentBoxId;
+            DocumentBoxId? after = selected?.BoxType == DocumentBoxType.LogicalPage
+                ? _loadedBoxes.LastOrDefault(box => box.ParentBoxId == selected.BoxId)?.BoxId
+                : selected?.BoxId;
+            result = await editor.DrawAndInsertLeafAsync(
+                _editSessionId.Value,
+                new InsertLeafCommand(parent, after, NewBoxType, null, null, _pendingBBox.Value,
+                    CreatePayload(NewBoxType, NewBoxText),
+                    NewBoxType == DocumentBoxType.Title ? NewHeadingLevel : null,
+                    NewBoxType == DocumentBoxType.Code && !string.IsNullOrWhiteSpace(NewCodeLanguage)
+                        ? NewCodeLanguage.Trim()
+                        : null));
+        }
+
+        if (result.IsFailure)
+        {
+            Status = $"新增 Box 未写入草稿：{result.ErrorMessage}";
             return;
         }
 
-        PdfBBoxViewModel persisted = new(_main, this, result.Value, _widthPixels, _heightPixels)
-        {
-            IsStaging = true
-        };
+        _loadedBoxes = await LoadBoxesAsync(_draftRevisionId.Value);
+        PdfBBoxViewModel persisted = new(_main, this, result.Value, _widthPixels, _heightPixels, true);
         BoundingBoxes.Add(persisted);
         SelectedBox = persisted;
-        Status = "已创建局部 OCR 候选 bbox，可在右侧编辑文本并保存草稿。";
+        ClearPendingBox();
+        await RefreshPreviewAsync();
+        Status = "已创建 Box；右侧文本保存到页面草稿，提交前不会影响当前版本。";
+    }
+
+    private static DocumentBoxPayload CreatePayload(string boxType, string text)
+    {
+        return boxType switch
+        {
+            DocumentBoxType.List => new ListBoxPayload(text),
+            DocumentBoxType.Table => new TableBoxPayload(text),
+            DocumentBoxType.Code => new CodeBoxPayload(text),
+            DocumentBoxType.Equation => new EquationBoxPayload(text),
+            _ => new TextBoxPayload(text)
+        };
+    }
+
+    private void ClearPendingBox()
+    {
+        _pendingBBox = null;
+        NewBoxText = string.Empty;
+        Raise(nameof(IsNewBoxPending));
     }
 
     public void RemoveBBox(PdfBBoxViewModel bbox)
     {
         BoundingBoxes.Remove(bbox);
+        foreach (MarkdownPreviewBlockViewModel block in PreviewBlocks.Where(block => block.BoxId == bbox.BoxId)
+                     .ToArray())
+        {
+            PreviewBlocks.Remove(block);
+        }
+
         if (SelectedBox == bbox)
         {
             SelectedBox = null;
@@ -450,15 +562,25 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IsSidebarOpen = false;
         IsDrawToolActive = false;
         BoundingBoxes.Clear();
+        PreviewBlocks.Clear();
         SelectedBox = null;
         _currentRevisionId = null;
         _draftRevisionId = null;
+        _editSessionId = null;
+        _loadedBoxes = [];
+        ClearPendingBox();
         Status = "选择题录后可预览 PDF。";
         RaiseAll();
     }
 
     private async Task PreviousPageAsync()
     {
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再切换页面。";
+            return;
+        }
+
         if (_pageIndex <= 0)
         {
             return;
@@ -470,6 +592,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task NextPageAsync()
     {
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再切换页面。";
+            return;
+        }
+
         if (_pageCount > 0 && _pageIndex >= _pageCount - 1)
         {
             return;
@@ -573,18 +701,20 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             _heightPixels = raster.HeightPixels;
 
             BoundingBoxes.Clear();
+            PreviewBlocks.Clear();
             SelectedBox = null;
             if (_isEditMode && _draftRevisionId != null)
             {
-                await LoadNodesAsync(page.PageId, LayoutRevisionId.Parse(_draftRevisionId));
+                await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true);
             }
             else
             {
-                Result<LayoutRevision> rev = await services.Layout.GetCurrentRevisionAsync(documentInstanceId);
+                Result<DocumentTreeRevision> rev =
+                    await services.DocumentTrees.GetCurrentRevisionAsync(documentInstanceId, page.PageId);
                 if (rev.IsSuccess)
                 {
-                    _currentRevisionId = rev.Value.LayoutRevisionId.ToString();
-                    await LoadNodesAsync(page.PageId, rev.Value.LayoutRevisionId);
+                    _currentRevisionId = rev.Value.TreeRevisionId;
+                    await LoadBoxesIntoViewAsync(rev.Value.TreeRevisionId, false);
                 }
             }
 
@@ -635,21 +765,73 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    private async Task LoadNodesAsync(PageId pageId, LayoutRevisionId revisionId)
+    private async Task<IReadOnlyList<DocumentBox>> LoadBoxesAsync(DocumentTreeRevisionId revisionId)
     {
-        AppServices services = await _main.ServicesAsync();
-        Result<IReadOnlyList<LayoutNode>> nodesResult = await services.Layout.ListNodesForPageAsync(pageId, revisionId);
-        if (nodesResult.IsSuccess)
-        {
-            foreach (LayoutNode node in nodesResult.Value)
-            {
-                if (node.Ignored && !_isEditMode)
-                {
-                    continue;
-                }
+        Result<IReadOnlyList<DocumentBox>> result =
+            await (await _main.ServicesAsync()).DocumentTrees.ListBoxesAsync(revisionId);
+        return result.IsSuccess ? result.Value : [];
+    }
 
-                BoundingBoxes.Add(new PdfBBoxViewModel(_main, this, node, _widthPixels, _heightPixels));
+    private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isStaging)
+    {
+        _loadedBoxes = await LoadBoxesAsync(revisionId);
+        foreach (DocumentBox box in _loadedBoxes)
+        {
+            if (box.Suppressed && !IsEditMode)
+            {
+                continue;
             }
+
+            BoundingBoxes.Add(new PdfBBoxViewModel(_main, this, box, _widthPixels, _heightPixels, isStaging));
+        }
+
+        await LoadPreviewAsync(revisionId);
+    }
+
+    internal async Task RefreshPreviewAsync()
+    {
+        DocumentTreeRevisionId? revisionId = IsEditMode ? _draftRevisionId : _currentRevisionId;
+        if (revisionId is not null)
+        {
+            await LoadPreviewAsync(revisionId.Value);
+        }
+    }
+
+    private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId)
+    {
+        PreviewBlocks.Clear();
+        AppServices services = await _main.ServicesAsync();
+        Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
+            revisionId, IsEditMode);
+        if (compiled.IsFailure)
+        {
+            return;
+        }
+
+        MarkdownDocumentModel model = services.Markdown.Parse(compiled.Value.Markdown);
+        for (int index = 0; index < model.Blocks.Count; index++)
+        {
+            int previewIndex = index;
+            MarkdownBlock block = model.Blocks[index];
+            MarkdownSourceMapEntry? source = compiled.Value.SourceMap.FirstOrDefault(entry =>
+                previewIndex >= entry.PreviewNodeStart &&
+                previewIndex < entry.PreviewNodeStart + entry.PreviewNodeCount);
+            DocumentBoxId? boxId = source?.BoxId;
+            PreviewBlocks.Add(new MarkdownPreviewBlockViewModel(
+                block.Kind, block.Text, block.Level, boxId,
+                () =>
+                {
+                    SelectPreviewBox(boxId);
+                    return Task.CompletedTask;
+                }));
+        }
+    }
+
+    private void SelectPreviewBox(DocumentBoxId? boxId)
+    {
+        if (boxId is not null)
+        {
+            SelectedBox = BoundingBoxes.FirstOrDefault(box => box.BoxId == boxId.Value);
         }
     }
 
@@ -663,11 +845,17 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         AppServices services = await _main.ServicesAsync();
         DocumentInstanceId docId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-        Result<LayoutRevision> rev =
-            await services.Layout.CreateLayoutRevisionAsync(docId, LayoutRevisionSource.Manual, false);
-        if (rev.IsSuccess)
+        if (_currentPageId is null)
         {
-            _draftRevisionId = rev.Value.LayoutRevisionId.ToString();
+            Status = "请先加载需要编辑的页面。";
+            return;
+        }
+
+        Result<PageEditSession> session = await services.DocumentTrees.BeginPageEditAsync(docId, _currentPageId.Value);
+        if (session.IsSuccess)
+        {
+            _editSessionId = session.Value.SessionId;
+            _draftRevisionId = session.Value.DraftRevisionId;
             IsEditMode = true;
             IsSidebarOpen = true;
             IsDrawToolActive = false;
@@ -675,24 +863,25 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
         else
         {
-            Status = $"无法进入编辑模式：{rev.ErrorMessage}";
+            Status = $"无法进入编辑模式：{session.ErrorMessage}";
         }
     }
 
     private async Task SaveAndExitAsync()
     {
-        if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId) || _draftRevisionId is null)
+        if (_editSessionId is null)
         {
             return;
         }
 
         AppServices services = await _main.ServicesAsync();
-        DocumentInstanceId docId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-        Result res = await services.Layout.SetCurrentRevisionAsync(docId, LayoutRevisionId.Parse(_draftRevisionId));
+        Result<DocumentTreeRevision> res = await services.DocumentTrees.CommitPageEditAsync(_editSessionId.Value);
         if (res.IsSuccess)
         {
             IsEditMode = false;
             _draftRevisionId = null;
+            _editSessionId = null;
+            ClearPendingBox();
             await ReloadAsync();
         }
         else
@@ -703,8 +892,21 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task CancelEditModeAsync()
     {
+        if (_editSessionId is not null)
+        {
+            Result discarded =
+                await (await _main.ServicesAsync()).DocumentTrees.DiscardPageEditAsync(_editSessionId.Value);
+            if (discarded.IsFailure)
+            {
+                Status = $"放弃草稿失败：{discarded.ErrorMessage}";
+                return;
+            }
+        }
+
         IsEditMode = false;
         _draftRevisionId = null;
+        _editSessionId = null;
+        ClearPendingBox();
         await ReloadAsync();
     }
 

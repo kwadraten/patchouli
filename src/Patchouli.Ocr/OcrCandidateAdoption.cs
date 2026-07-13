@@ -6,6 +6,6 @@ public sealed record OcrCandidateAdoption(
     OcrCandidateAdoptionId AdoptionId,
     OcrRunId OcrRunId,
     DocumentInstanceId DocumentInstanceId,
-    LayoutRevisionId AdoptedRevisionId,
+    IReadOnlyList<DocumentTreeRevisionId> AdoptedTreeRevisionIds,
     string AdoptedPagesJson,
     DateTimeOffset CreatedAt);

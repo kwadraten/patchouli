@@ -122,7 +122,9 @@ public sealed class MockOcrViewModel : ViewModelBase
                     .Select(PageId.Parse).ToArray();
             Result<OcrCandidateAdoption> r =
                 await (await _main.ServicesAsync()).Ocr.AdoptCandidateRunAsync(OcrRunId.Parse(RunId), selected);
-            Output = r.IsSuccess ? $"Adopted: {r.Value.AdoptedRevisionId}" : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
+            Output = r.IsSuccess
+                ? $"Adopted: {string.Join(", ", r.Value.AdoptedTreeRevisionIds)}"
+                : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
             Raise(nameof(Output));
         });
         CancelCommand = new AsyncCommand(async () =>

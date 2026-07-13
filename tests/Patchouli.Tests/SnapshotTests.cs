@@ -1,5 +1,6 @@
 using Dapper;
 using FluentAssertions;
+using Patchouli.Core;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
@@ -46,7 +47,7 @@ public sealed class SnapshotTests
         SnapshotManifest? m = await SnapshotPublisher.ReadJsonAsync<SnapshotManifest>(r.Value.ManifestPath, default);
         m!.LibraryId.Should().Be(c.LibraryId.ToString());
         m.DeviceId.Should().Be("device-a");
-        m.SchemaVersion.Should().Be(1);
+        m.SchemaVersion.Should().Be(AppSchemaVersion.Current);
         m.Shards.Should().HaveCount(1);
     }
 
@@ -770,11 +771,8 @@ public sealed class SnapshotTests
             Result<Page> page = await new PageService(db.ConnectionFactory, clock).CreatePageAsync(
                 doc.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null,
                 "renderer-v1", null);
-            LayoutTreeService layout = new(db.ConnectionFactory, clock);
-            Result<LayoutRevision> rev =
-                await layout.CreateLayoutRevisionAsync(doc.Value.DocumentInstanceId, LayoutRevisionSource.Mock, true);
-            await layout.AddNodeAsync(rev.Value.LayoutRevisionId, page.Value.PageId, null, LayoutNodeType.Paragraph,
-                null, "snapshot text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
+            await BoxTreeTestData.CommitTextAsync(db.ConnectionFactory, clock, doc.Value.DocumentInstanceId,
+                page.Value.PageId, "snapshot text");
             SearchUnitBuilder builder = new(db.ConnectionFactory, clock);
             SearchIndexRebuilder rebuilder = new(db.ConnectionFactory, clock);
             await builder.RebuildForDocumentInstanceAsync(doc.Value.DocumentInstanceId);
@@ -825,16 +823,24 @@ public sealed class SnapshotTests
         {
             await using SqliteConnection cn = OpenRuntime();
             SearchUnitTemplate t = await cn.QuerySingleAsync<SearchUnitTemplate>(
-                "select document_instance_id as DocumentInstanceId, page_id as PageId, root_node_id as RootNodeId, text_revision_id as TextRevisionId, bbox_revision_id as BboxRevisionId, layout_revision_id as LayoutRevisionId, node_type as NodeType from search_units limit 1;");
+                "select document_instance_id as DocumentInstanceId, page_id as PageId, tree_revision_id as TreeRevisionId, box_type as BoxType from search_units limit 1;");
             for (int i = 0; i < count; i++)
             {
+                string boxId = DocumentBoxId.New().ToString();
                 await cn.ExecuteAsync(
-                    "insert into search_units (unit_id, document_instance_id, page_id, root_node_id, text_revision_id, bbox_revision_id, layout_revision_id, resolved_text, bbox_union_json, node_type, reading_order, status, supersedes_unit_id, superseded_by_unit_id, created_at, updated_at) values (@UnitId,@DocumentInstanceId,@PageId,@RootNodeId,@TextRevisionId,@BboxRevisionId,@LayoutRevisionId,@Text,null,@NodeType,@ReadingOrder,'active',null,null,@Now,@Now);",
+                    "insert into document_boxes(tree_revision_id,box_id,document_instance_id,page_id,box_type,bbox_x,bbox_y,bbox_width,bbox_height,payload_json,suppressed) values(@Tree,@Box,@Doc,@Page,'text',0.01,0.01,0.01,0.01,@Payload,0);",
                     new
                     {
-                        UnitId = SearchUnitId.New().ToString(), t.DocumentInstanceId, t.PageId, t.RootNodeId,
-                        t.TextRevisionId, t.BboxRevisionId, t.LayoutRevisionId, Text = text, t.NodeType,
-                        ReadingOrder = i + 2, Now = "2026-01-01T00:00:00.0000000Z"
+                        Tree = t.TreeRevisionId, Box = boxId, Doc = t.DocumentInstanceId, Page = t.PageId,
+                        Payload = System.Text.Json.JsonSerializer.Serialize(new { markdown = text })
+                    });
+                await cn.ExecuteAsync(
+                    "insert into search_units (unit_id,document_instance_id,page_id,box_id,tree_revision_id,resolved_text,bbox_json,box_type,ordinal,status,created_at,updated_at) values(@UnitId,@DocumentInstanceId,@PageId,@BoxId,@TreeRevisionId,@Text,'{}',@BoxType,@Ordinal,'current',@Now,@Now);",
+                    new
+                    {
+                        UnitId = SearchUnitId.New().ToString(), t.DocumentInstanceId, t.PageId, BoxId = boxId,
+                        t.TreeRevisionId, Text = text, t.BoxType, Ordinal = i + 2,
+                        Now = "2026-01-01T00:00:00.0000000Z"
                     });
             }
         }
@@ -856,11 +862,8 @@ public sealed class SnapshotTests
         private sealed record SearchUnitTemplate(
             string DocumentInstanceId,
             string PageId,
-            string RootNodeId,
-            string TextRevisionId,
-            string BboxRevisionId,
-            string LayoutRevisionId,
-            string NodeType);
+            string TreeRevisionId,
+            string BoxType);
     }
 
     private sealed class MemorySnapshotSyncBindingStore : ISnapshotSyncBindingStore

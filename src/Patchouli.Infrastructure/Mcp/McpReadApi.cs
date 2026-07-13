@@ -1,17 +1,20 @@
 using Dapper;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Mcp;
 using Patchouli.Search;
 using Patchouli.Ocr;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Time;
 
 namespace Patchouli.Infrastructure.Mcp;
 
@@ -23,10 +26,13 @@ public sealed class McpReadApi : IMcpReadApi
     private readonly IPageCoordinateService? _coordinates;
     private readonly ICslStyleStore? _cslStyleStore;
     private readonly ICslRenderer? _cslRenderer;
+    private readonly IMarkdownEngine _markdown;
+    private readonly IDocumentMarkdownCompiler _markdownCompiler;
 
     public McpReadApi(SqliteConnectionFactory connectionFactory, ISearchService searchService,
         IEvidenceReferenceService evidenceService, IPageCoordinateService? coordinates = null,
-        ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null)
+        ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null,
+        IMarkdownEngine? markdown = null, IDocumentMarkdownCompiler? markdownCompiler = null)
     {
         _connectionFactory = connectionFactory;
         _searchService = searchService;
@@ -34,6 +40,9 @@ public sealed class McpReadApi : IMcpReadApi
         _coordinates = coordinates;
         _cslStyleStore = cslStyleStore;
         _cslRenderer = cslRenderer;
+        _markdown = markdown ?? new MarkdigMarkdownEngine();
+        _markdownCompiler = markdownCompiler ?? new DocumentMarkdownCompiler(
+            new DocumentTreeService(connectionFactory, new SystemClock(), _markdown), _markdown);
     }
 
     public async Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
@@ -71,8 +80,8 @@ public sealed class McpReadApi : IMcpReadApi
                     }
                 }
 
-                units.Add(new McpMatchedUnit(unit.UnitId, evidenceRef, unit.Text, unit.NodeType, unit.ReadingOrder,
-                    unit.LayoutRevisionId, unit.IsMatch));
+                units.Add(new McpMatchedUnit(unit.UnitId, evidenceRef, unit.Text, unit.BoxType, unit.Ordinal,
+                    unit.TreeRevisionId, unit.IsMatch));
             }
 
             pages.Add(new McpSearchPageResult(
@@ -182,12 +191,17 @@ public sealed class McpReadApi : IMcpReadApi
                     "Document instance was not found.");
             }
 
-            string? currentRevision = await connection.ExecuteScalarAsync<string?>(
-                "select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;",
+            int currentRevisionCount = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from document_tree_revisions where document_instance_id = @Id and status = 'committed' and is_current = 1;",
                 new { Id = documentInstanceId.ToString() });
-            bool hasText = currentRevision is not null && await connection.ExecuteScalarAsync<int>(
-                "select count(1) from layout_nodes where document_instance_id = @Id and revision_id = @Revision and ignored = 0 and length(trim(coalesce(own_text,''))) > 0;",
-                new { Id = documentInstanceId.ToString(), Revision = currentRevision }) > 0;
+            bool hasText = currentRevisionCount > 0 && await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1) from document_boxes b
+                join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+                where b.document_instance_id = @Id and r.status = 'committed' and r.is_current = 1
+                  and b.suppressed = 0 and b.payload_json is not null;
+                """,
+                new { Id = documentInstanceId.ToString() }) > 0;
             string? indexStatus = await connection.ExecuteScalarAsync<string?>(
                 "select status from search_index_status where scope_type = 'document_instance' and scope_id = @Id;",
                 new { Id = documentInstanceId.ToString() });
@@ -201,7 +215,7 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             return Result<McpDocumentStatusResponse>.Success(new McpDocumentStatusResponse(documentInstanceId, hasText,
-                currentRevision is not null, indexStatus == SearchIndexStatusValue.Current, mapped, warning));
+                currentRevisionCount > 0, indexStatus == SearchIndexStatusValue.Current, mapped, warning));
         }
         catch (OperationCanceledException)
         {
@@ -244,7 +258,7 @@ public sealed class McpReadApi : IMcpReadApi
         }
 
         Result<McpPageTextResponse> page =
-            await CurrentPageTextAsync(request.PageId, request.IncludeAnnotations, cancellationToken);
+            await CurrentPageTextAsync(request.PageId, request.IncludeSuppressed, cancellationToken);
         return page;
     }
 
@@ -272,7 +286,8 @@ public sealed class McpReadApi : IMcpReadApi
                 ? resolved.Value.PinnedText ?? ""
                 : $"[Pinned]\n{resolved.Value.PinnedText}\n\n[Current]\n{resolved.Value.CurrentText}";
             return Result<McpPageBlocksResponse>.Success(new McpPageBlocksResponse(request.PageId, meta?.PageLabel,
-                meta?.PageIndex ?? 0, [new McpPageBlock(default, "evidence", text, 0, request.EvidenceRef, null)],
+                meta?.PageIndex ?? 0,
+                [new McpPageBlock(default, default, "evidence", text, 0, false, request.EvidenceRef, null)],
                 request.ReadMode, Warnings(resolved.Value.Warning)));
         }
 
@@ -287,32 +302,38 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             string? revisionId = await connection.ExecuteScalarAsync<string?>(
-                "select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;",
-                new { Id = meta.DocumentInstanceId });
+                """
+                select tree_revision_id from document_tree_revisions
+                where page_id = @PageId and status = 'committed' and is_current = 1;
+                """,
+                new { PageId = request.PageId.ToString() });
             if (revisionId is null)
             {
                 return Result<McpPageBlocksResponse>.Failure(AppErrorCodes.NotFound,
-                    "Current layout revision was not found.");
+                    "Current committed document tree revision was not found.");
             }
 
-            IEnumerable<NodeRow> rows = await connection.QueryAsync<NodeRow>(
+            DocumentBoxRow[] rawRows = (await connection.QueryAsync<DocumentBoxRow>(
                 """
-                select n.node_id as NodeId, n.node_type as NodeType, n.own_text as Text, n.reading_order as ReadingOrder,
+                select b.box_id as BoxId, b.parent_box_id as ParentBoxId,
+                       b.next_sibling_box_id as NextSiblingBoxId, b.box_type as BoxType,
+                       b.base_type as BaseType, b.payload_json as PayloadJson, b.suppressed as Suppressed,
                        su.unit_id as SearchUnitId,
-                       bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight
-                from layout_nodes n
-                left join search_units su on su.root_node_id = n.node_id and su.status = 'current' and su.layout_revision_id = @RevisionId
-                where n.page_id = @PageId and n.revision_id = @RevisionId and n.ignored = 0
-                  and n.node_type not in ('header','footer','page_number')
-                  and (@IncludeAnnotations = 1 or n.node_type not in ('annotation','marginalia'))
-                  and n.text_policy <> 'none'
-                order by n.reading_order, n.node_id;
+                       b.bbox_x as BBoxX, b.bbox_y as BBoxY,
+                       b.bbox_width as BBoxWidth, b.bbox_height as BBoxHeight
+                from document_boxes b
+                left join search_units su on su.box_id = b.box_id
+                    and su.tree_revision_id = b.tree_revision_id and su.status = 'current'
+                where b.page_id = @PageId and b.tree_revision_id = @RevisionId
+                ;
                 """,
                 new
                 {
-                    PageId = request.PageId.ToString(), RevisionId = revisionId,
-                    IncludeAnnotations = request.IncludeAnnotations ? 1 : 0
-                });
+                    PageId = request.PageId.ToString(), RevisionId = revisionId
+                })).ToArray();
+            DocumentBoxRow[] rows = OrderBoxRows(rawRows)
+                .Where(row => request.IncludeSuppressed || row.Suppressed == 0)
+                .ToArray();
             List<string> warnings = new();
             if (_coordinates is not null)
             {
@@ -321,7 +342,8 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             List<McpPageBlock> blocks = new();
-            foreach (NodeRow row in rows)
+            int ordinal = 0;
+            foreach (DocumentBoxRow row in rows)
             {
                 string? evidenceRef = null;
                 if (!string.IsNullOrWhiteSpace(row.SearchUnitId))
@@ -340,15 +362,15 @@ public sealed class McpReadApi : IMcpReadApi
                 }
 
                 blocks.Add(new McpPageBlock(
-                    LayoutNodeId.Parse(row.NodeId),
-                    row.NodeType,
-                    row.Text ?? "",
-                    row.ReadingOrder,
+                    DocumentBoxId.Parse(row.BoxId),
+                    DocumentTreeRevisionId.Parse(revisionId),
+                    row.BoxType,
+                    PlainText(row),
+                    ordinal++,
+                    row.Suppressed == 1,
                     evidenceRef,
-                    request.IncludeBbox && row.BBoxX is not null && row.BBoxY is not null &&
-                    row.BBoxWidth is not null && row.BBoxHeight is not null
-                        ? new NormalizedBBox(row.BBoxX.Value, row.BBoxY.Value, row.BBoxWidth.Value,
-                            row.BBoxHeight.Value)
+                    request.IncludeBbox
+                        ? new NormalizedBBox(row.BBoxX, row.BBoxY, row.BBoxWidth, row.BBoxHeight)
                         : null));
             }
 
@@ -380,9 +402,9 @@ public sealed class McpReadApi : IMcpReadApi
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         Dictionary<string, NormalizedBBox?> bboxMap = (await connection.QueryAsync<UnitBBoxRow>(
-                "select unit_id as UnitId, bbox_union_json as BboxUnionJson from search_units where unit_id in @UnitIds;",
+                "select unit_id as UnitId, bbox_json as BboxJson from search_units where unit_id in @UnitIds;",
                 new { UnitIds = context.Value.Select(unit => unit.UnitId.ToString()).ToArray() }))
-            .ToDictionary(row => row.UnitId, row => ParseNormalizedBBox(row.BboxUnionJson), StringComparer.Ordinal);
+            .ToDictionary(row => row.UnitId, row => ParseNormalizedBBox(row.BboxJson), StringComparer.Ordinal);
         List<McpContextUnit> units = new();
         foreach (SearchMatchedUnit unit in context.Value)
         {
@@ -398,8 +420,8 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             units.Add(new McpContextUnit(unit.UnitId, evidenceRef, unit.Text,
-                bboxMap.GetValueOrDefault(unit.UnitId.ToString()), unit.IsMatch, unit.ReadingOrder, unit.PageId,
-                unit.LayoutRevisionId));
+                bboxMap.GetValueOrDefault(unit.UnitId.ToString()), unit.IsMatch, unit.Ordinal, unit.PageId,
+                unit.TreeRevisionId));
         }
 
         string? warning = _coordinates is null
@@ -498,7 +520,7 @@ public sealed class McpReadApi : IMcpReadApi
             rendered.Value.Errors));
     }
 
-    private async Task<Result<McpPageTextResponse>> CurrentPageTextAsync(PageId pageId, bool includeAnnotations,
+    private async Task<Result<McpPageTextResponse>> CurrentPageTextAsync(PageId pageId, bool includeSuppressed,
         CancellationToken cancellationToken)
     {
         try
@@ -512,33 +534,29 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             string? revisionId = await connection.ExecuteScalarAsync<string?>(
-                "select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;",
-                new { Id = meta.DocumentInstanceId });
+                """
+                select tree_revision_id from document_tree_revisions
+                where page_id = @PageId and status = 'committed' and is_current = 1;
+                """,
+                new { PageId = pageId.ToString() });
             if (revisionId is null)
             {
                 return Result<McpPageTextResponse>.Failure(AppErrorCodes.NotFound,
-                    "Current layout revision was not found.");
+                    "Current committed document tree revision was not found.");
             }
 
-            IEnumerable<string> rows = await connection.QueryAsync<string>(
-                """
-                select own_text
-                from layout_nodes
-                where page_id = @PageId and revision_id = @RevisionId and ignored = 0 and length(trim(coalesce(own_text,''))) > 0
-                  and node_type not in ('header','footer','page_number')
-                  and (@IncludeAnnotations = 1 or node_type not in ('annotation','marginalia'))
-                  and text_policy = 'own'
-                order by reading_order, node_id;
-                """,
-                new
-                {
-                    PageId = pageId.ToString(), RevisionId = revisionId, IncludeAnnotations = includeAnnotations ? 1 : 0
-                });
+            Result<CompiledMarkdown> compiled = await _markdownCompiler.CompilePageMarkdownAsync(
+                DocumentTreeRevisionId.Parse(revisionId), includeSuppressed, cancellationToken);
+            if (compiled.IsFailure)
+            {
+                return Result<McpPageTextResponse>.Failure(compiled.ErrorCode!, compiled.ErrorMessage!);
+            }
+
             string[] warnings = _coordinates is null
                 ? Array.Empty<string>()
                 : (await _coordinates.DetectBBoxWarningsAsync(pageId, cancellationToken: cancellationToken)).ToArray();
             return Result<McpPageTextResponse>.Success(new McpPageTextResponse(pageId, meta.PageLabel, meta.PageIndex,
-                string.Join("\n\n", rows), McpReadMode.Current, null, warnings));
+                compiled.Value.Markdown, McpReadMode.Current, null, warnings));
         }
         catch (OperationCanceledException)
         {
@@ -612,6 +630,61 @@ public sealed class McpReadApi : IMcpReadApi
         return string.IsNullOrWhiteSpace(warning) ? Array.Empty<string>() : new[] { warning };
     }
 
+    private IEnumerable<DocumentBoxRow> OrderBoxRows(IReadOnlyList<DocumentBoxRow> rows)
+    {
+        foreach (DocumentBoxRow root in OrderSiblingRows(rows, null))
+        {
+            if (root.BoxType == DocumentBoxType.LogicalPage)
+            {
+                foreach (DocumentBoxRow child in OrderSiblingRows(rows, root.BoxId))
+                {
+                    yield return child;
+                }
+            }
+            else
+            {
+                yield return root;
+            }
+        }
+    }
+
+    private static IEnumerable<DocumentBoxRow> OrderSiblingRows(
+        IReadOnlyList<DocumentBoxRow> rows,
+        string? parentId)
+    {
+        DocumentBoxRow[] siblings = rows.Where(row => row.ParentBoxId == parentId).ToArray();
+        HashSet<string> referenced = siblings
+            .Where(row => row.NextSiblingBoxId is not null)
+            .Select(row => row.NextSiblingBoxId!)
+            .ToHashSet();
+        DocumentBoxRow? current = siblings.SingleOrDefault(row => !referenced.Contains(row.BoxId));
+        HashSet<string> visited = [];
+        while (current is not null && visited.Add(current.BoxId))
+        {
+            yield return current;
+            current = current.NextSiblingBoxId is null
+                ? null
+                : siblings.SingleOrDefault(row => row.BoxId == current.NextSiblingBoxId);
+        }
+    }
+
+    private string PlainText(DocumentBoxRow row)
+    {
+        DocumentBoxPayload? payload = DocumentBoxPayloadSerializer.Deserialize(
+            row.BoxType, row.BaseType, row.PayloadJson);
+        return payload switch
+        {
+            TextBoxPayload text => _markdown.ToPlainText(text.Markdown),
+            EquationBoxPayload equation => equation.Latex,
+            ListBoxPayload list => _markdown.ToPlainText(list.Markdown),
+            TableBoxPayload table => _markdown.ToPlainText(table.Markdown),
+            CodeBoxPayload code => code.Code,
+            MediaBoxPayload media => media.Description ??
+                                     (row.BoxType == DocumentBoxType.Chart ? "[Chart]" : "[Image]"),
+            _ => string.Empty
+        };
+    }
+
     private sealed class PageMeta
     {
         public string PageId { get; set; } = "";
@@ -620,23 +693,26 @@ public sealed class McpReadApi : IMcpReadApi
         public int PageIndex { get; set; }
     }
 
-    private sealed class NodeRow
+    private sealed class DocumentBoxRow
     {
-        public string NodeId { get; set; } = "";
-        public string NodeType { get; set; } = "";
-        public string? Text { get; set; }
-        public int ReadingOrder { get; set; }
+        public string BoxId { get; set; } = "";
+        public string? ParentBoxId { get; set; }
+        public string? NextSiblingBoxId { get; set; }
+        public string BoxType { get; set; } = "";
+        public string? BaseType { get; set; }
+        public string? PayloadJson { get; set; }
+        public int Suppressed { get; set; }
         public string? SearchUnitId { get; set; }
-        public double? BBoxX { get; set; }
-        public double? BBoxY { get; set; }
-        public double? BBoxWidth { get; set; }
-        public double? BBoxHeight { get; set; }
+        public double BBoxX { get; set; }
+        public double BBoxY { get; set; }
+        public double BBoxWidth { get; set; }
+        public double BBoxHeight { get; set; }
     }
 
     private sealed class UnitBBoxRow
     {
         public string UnitId { get; set; } = "";
-        public string? BboxUnionJson { get; set; }
+        public string? BboxJson { get; set; }
     }
 
     private sealed class IdentifierRow

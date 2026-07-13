@@ -1,5 +1,4 @@
 using Patchouli.Core.Ids;
-using Patchouli.Core.Layout;
 
 namespace Patchouli.Search;
 
@@ -7,14 +6,12 @@ public sealed record SearchUnit(
     SearchUnitId UnitId,
     DocumentInstanceId DocumentInstanceId,
     PageId PageId,
-    LayoutNodeId RootNodeId,
-    string TextRevisionId,
-    string BBoxRevisionId,
-    LayoutRevisionId LayoutRevisionId,
+    DocumentBoxId BoxId,
+    DocumentTreeRevisionId TreeRevisionId,
     string ResolvedText,
-    string? BBoxUnionJson,
-    string NodeType,
-    int ReadingOrder,
+    string BBoxJson,
+    string BoxType,
+    int Ordinal,
     string Status,
     SearchUnitId? SupersedesUnitId,
     SearchUnitId? SupersededByUnitId,
@@ -69,10 +66,11 @@ public sealed record SearchPageResult(
 public sealed record SearchMatchedUnit(
     SearchUnitId UnitId,
     PageId PageId,
+    DocumentBoxId BoxId,
     string Text,
-    string NodeType,
-    int ReadingOrder,
-    LayoutRevisionId LayoutRevisionId,
+    string BoxType,
+    int Ordinal,
+    DocumentTreeRevisionId TreeRevisionId,
     bool IsMatch);
 
 public sealed record SearchResultPage(
@@ -99,7 +97,7 @@ public interface ISearchUnitBuilder
     Task<Core.Results.Result> RebuildForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
-    Task<Core.Results.Result> RebuildForPageAsync(PageId pageId, LayoutRevisionId layoutRevisionId,
+    Task<Core.Results.Result> RebuildForPageAsync(PageId pageId, DocumentTreeRevisionId treeRevisionId,
         CancellationToken cancellationToken = default);
 
     Task<Core.Results.Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId,

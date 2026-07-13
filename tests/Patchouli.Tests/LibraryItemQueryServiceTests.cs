@@ -8,8 +8,8 @@ using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
-using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
 
@@ -30,14 +30,11 @@ public sealed class LibraryItemQueryServiceTests
             Result<FileAsset> asset = await context.Files.RegisterFileAsync(filePath);
             Result<DocumentInstance> document = await context.Documents.AttachDocumentInstanceAsync(item.Value.ItemId,
                 asset.Value.FileAssetId, DocumentInstanceType.PrimaryScan, makePrimary: true);
-            await context.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0,
+            Result<Page> page = await context.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null,
+                null, 0,
                 CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
-            Result<LayoutRevision> revision =
-                await context.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId,
-                    LayoutRevisionSource.Mock, true);
-            await context.Layout.AddNodeAsync(revision.Value.LayoutRevisionId,
-                (await context.Pages.ListPagesAsync(document.Value.DocumentInstanceId)).Value.Single().PageId, null,
-                LayoutNodeType.Paragraph, null, "searchable text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
+            await BoxTreeTestData.CommitTextAsync(context.Database.ConnectionFactory, context.Clock,
+                document.Value.DocumentInstanceId, page.Value.PageId, "searchable text");
             await context.SearchUnits.RebuildForDocumentInstanceAsync(document.Value.DocumentInstanceId);
             await context.SearchIndex.RebuildFtsForDocumentInstanceAsync(document.Value.DocumentInstanceId);
 
@@ -65,11 +62,11 @@ public sealed class LibraryItemQueryServiceTests
         await library.CreateLibraryAsync("Row Test");
         return new TestContext(
             database,
+            clock,
             new ItemService(database.ConnectionFactory, library, clock),
             new FileAssetService(database.ConnectionFactory, library, clock),
             new DocumentInstanceService(database.ConnectionFactory, clock),
             new PageService(database.ConnectionFactory, clock),
-            new LayoutTreeService(database.ConnectionFactory, clock),
             new SearchUnitBuilder(database.ConnectionFactory, clock),
             new SearchIndexRebuilder(database.ConnectionFactory, clock),
             new LibraryItemQueryService(database.ConnectionFactory));
@@ -77,27 +74,28 @@ public sealed class LibraryItemQueryServiceTests
 
     private sealed class TestContext : IAsyncDisposable
     {
-        public TestContext(TemporarySqliteDatabase database, ItemService items, FileAssetService files,
-            DocumentInstanceService documents, PageService pages, LayoutTreeService layout,
+        public TestContext(TemporarySqliteDatabase database, FixedClock clock, ItemService items,
+            FileAssetService files,
+            DocumentInstanceService documents, PageService pages,
             SearchUnitBuilder searchUnits, SearchIndexRebuilder searchIndex, LibraryItemQueryService query)
         {
             Database = database;
+            Clock = clock;
             Items = items;
             Files = files;
             Documents = documents;
             Pages = pages;
-            Layout = layout;
             SearchUnits = searchUnits;
             SearchIndex = searchIndex;
             Query = query;
         }
 
         public TemporarySqliteDatabase Database { get; }
+        public FixedClock Clock { get; }
         public ItemService Items { get; }
         public FileAssetService Files { get; }
         public DocumentInstanceService Documents { get; }
         public PageService Pages { get; }
-        public LayoutTreeService Layout { get; }
         public SearchUnitBuilder SearchUnits { get; }
         public SearchIndexRebuilder SearchIndex { get; }
         public LibraryItemQueryService Query { get; }

@@ -166,8 +166,8 @@ public sealed class PdfPageRenderingTests
     {
         await using Context c = await Context.CreateAsync();
         Result<PageRenderResult> r = await c.RenderAsync();
-        EvidenceReference reference = new(c.LibraryId, c.DocumentInstanceId, c.PageId, SearchUnitId.New(),
-            "text-revision", "bbox-revision", LayoutRevisionId.New(), null);
+        EvidenceReference reference = new(c.LibraryId, c.DocumentInstanceId, c.PageId,
+            DocumentTreeRevisionId.New(), DocumentBoxId.New());
         EvidenceReferenceCodec.Encode(reference).Value.Should().NotContain(r.Value.CacheImagePath!);
     }
 
@@ -233,7 +233,7 @@ public sealed class PdfPageRenderingTests
                 "002_create_library_metadata.sql",
                 "003_create_bibliographic_core.sql",
                 "004_create_file_resolution.sql",
-                "005_create_pages_and_layout.sql",
+                "005_create_pages_and_document_trees.sql",
                 "006_create_ocr_lifecycle.sql",
                 "007_create_search_units_and_fts.sql",
                 "008_create_evidence_refs.sql",
@@ -241,14 +241,12 @@ public sealed class PdfPageRenderingTests
                 "011_create_search_profiles.sql",
                 "012_hide_ocr_runs.sql",
                 "013_create_structured_item_names_and_dates.sql",
-                "014_add_table_cell_metadata.sql",
                 "016_create_csl_styles.sql",
                 "017_create_item_type_inferences.sql",
                 "019_create_blocking_operations.sql",
                 "021_create_library_preferences.sql",
                 "022_normalize_identifier_schemes.sql",
                 "023_add_file_search_root_authorization.sql",
-                "024_add_layout_revision_source_basis.sql",
                 "025_create_library_setting_records.sql");
     }
 

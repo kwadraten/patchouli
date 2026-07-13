@@ -257,10 +257,10 @@ public sealed class FirstRunViewModelTests
         field!.SetValue(viewModel, state);
     }
 
-    private static Core.Files.SelectedFileSearchRoot SelectedRoot(string path)
+    private static SelectedFileSearchRoot SelectedRoot(string path)
     {
         return new SelectedFileSearchRoot(path, "test_picker",
-            Core.Files.FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
+            FileSearchRootAuthorizationKinds.None, null, null, DateTimeOffset.UtcNow);
     }
 
     private sealed class ScanImportContext : IAsyncDisposable

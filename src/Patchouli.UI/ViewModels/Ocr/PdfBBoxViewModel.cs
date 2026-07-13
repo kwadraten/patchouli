@@ -1,6 +1,6 @@
 using Avalonia.Media;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
-using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 
 namespace Patchouli.UI.ViewModels;
@@ -8,19 +8,42 @@ namespace Patchouli.UI.ViewModels;
 public sealed class PdfBBoxViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private readonly PdfWorkspaceViewModel _workspace;
     private bool _isSelected;
     private string? _text;
 
-    public PdfWorkspaceViewModel Workspace => _workspace;
+    public PdfBBoxViewModel(
+        MainWindowViewModel main,
+        PdfWorkspaceViewModel workspace,
+        DocumentBox box,
+        double imageWidth,
+        double imageHeight,
+        bool isStaging)
+    {
+        _main = main;
+        Workspace = workspace;
+        BoxId = box.BoxId;
+        BoxType = box.BoxType;
+        Text = PayloadText(box.Payload);
+        Left = box.BBox.X * imageWidth;
+        Top = box.BBox.Y * imageHeight;
+        Width = box.BBox.Width * imageWidth;
+        Height = box.BBox.Height * imageHeight;
+        BoxColor = ColorFor(box.BoxType);
+        IsStaging = isStaging;
+        SaveTextCommand = new AsyncCommand(SaveTextAsync);
+        IgnoreCommand = new AsyncCommand(IgnoreAsync);
+    }
 
-    public LayoutNodeId NodeId { get; }
+    public PdfWorkspaceViewModel Workspace { get; }
+    public DocumentBoxId BoxId { get; }
     public double Left { get; }
     public double Top { get; }
     public double Width { get; }
     public double Height { get; }
-    public string NodeType { get; }
+    public string BoxType { get; }
     public IBrush BoxColor { get; }
+    public bool IsStaging { get; }
+    public bool IsLogicalPage => BoxType == DocumentBoxType.LogicalPage;
 
     public bool IsSelected
     {
@@ -33,23 +56,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
             }
 
             _isSelected = value;
-            Raise();
-        }
-    }
-
-    private bool _isStaging;
-
-    public bool IsStaging
-    {
-        get => _isStaging;
-        set
-        {
-            if (_isStaging == value)
-            {
-                return;
-            }
-
-            _isStaging = value;
             Raise();
         }
     }
@@ -72,78 +78,84 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public AsyncCommand SaveTextCommand { get; }
     public AsyncCommand IgnoreCommand { get; }
 
-    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNode node,
-        double imageWidth, double imageHeight)
-    {
-        _main = main;
-        _workspace = workspace;
-        NodeId = node.NodeId;
-        NodeType = node.NodeType;
-        Text = node.OwnText;
-
-        if (node.BBox != null)
-        {
-            Left = node.BBox.Value.X * imageWidth;
-            Top = node.BBox.Value.Y * imageHeight;
-            Width = node.BBox.Value.Width * imageWidth;
-            Height = node.BBox.Value.Height * imageHeight;
-        }
-
-        BoxColor = GetColorForNodeType(node.NodeType);
-        SaveTextCommand = new AsyncCommand(SaveTextAsync);
-        IgnoreCommand = new AsyncCommand(IgnoreAsync);
-    }
-
-    public PdfBBoxViewModel(MainWindowViewModel main, PdfWorkspaceViewModel workspace, LayoutNodeId nodeId, double left,
-        double top, double width, double height, string nodeType, IBrush boxColor)
-    {
-        _main = main;
-        _workspace = workspace;
-        NodeId = nodeId;
-        Left = left;
-        Top = top;
-        Width = width;
-        Height = height;
-        NodeType = nodeType;
-        BoxColor = boxColor;
-        SaveTextCommand = new AsyncCommand(SaveTextAsync);
-        IgnoreCommand = new AsyncCommand(IgnoreAsync);
-    }
-
-    private IBrush GetColorForNodeType(string nodeType)
-    {
-        return nodeType switch
-        {
-            LayoutNodeType.Heading => Brushes.Blue,
-            LayoutNodeType.Paragraph => Brushes.Green,
-            LayoutNodeType.Table => Brushes.Orange,
-            "figure" => Brushes.Red,
-            "formula" => Brushes.Purple,
-            _ => Brushes.Gray
-        };
-    }
-
     private async Task SaveTextAsync()
     {
-        AppServices services = await _main.ServicesAsync();
-        Result result = await services.Layout.UpdateNodeTextAsync(NodeId, Text);
+        PageEditSessionId? sessionId = Workspace.EditSessionId;
+        if (sessionId is null)
+        {
+            return;
+        }
+
+        if (IsLogicalPage)
+        {
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.UpdateLeafAsync(
+            sessionId.Value,
+            new UpdateLeafCommand(BoxId, BoxType, new TextBoxPayload(Text ?? string.Empty)));
         if (result.IsFailure)
         {
-            _workspace.Status = $"更新文本失败: {result.ErrorMessage}";
+            Workspace.Status = $"更新文本失败: {result.ErrorMessage}";
+        }
+        else
+        {
+            Workspace.Status = "文本已写入页面草稿。";
+            await Workspace.RefreshPreviewAsync();
         }
     }
 
     private async Task IgnoreAsync()
     {
-        AppServices services = await _main.ServicesAsync();
-        Result result = await services.Layout.MarkIgnoredAsync(NodeId, true);
+        if (BoxType == DocumentBoxType.LogicalPage)
+        {
+            Workspace.Status = "logical_page 不能作为普通内容抑制；请移动或删除其子 Box。";
+            return;
+        }
+
+        PageEditSessionId? sessionId = Workspace.EditSessionId;
+        if (sessionId is null)
+        {
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetSuppressedAsync(
+            sessionId.Value, BoxId, true);
         if (result.IsSuccess)
         {
-            _workspace.RemoveBBox(this);
+            Workspace.RemoveBBox(this);
         }
         else
         {
-            _workspace.Status = $"忽略节点失败: {result.ErrorMessage}";
+            Workspace.Status = $"抑制 Box 失败: {result.ErrorMessage}";
         }
+    }
+
+    private static string? PayloadText(DocumentBoxPayload? payload)
+    {
+        return payload switch
+        {
+            TextBoxPayload value => value.Markdown,
+            ListBoxPayload value => value.Markdown,
+            TableBoxPayload value => value.Markdown,
+            EquationBoxPayload value => value.Latex,
+            CodeBoxPayload value => value.Code,
+            MediaBoxPayload value => value.Description,
+            _ => null
+        };
+    }
+
+    private static IBrush ColorFor(string boxType)
+    {
+        return boxType switch
+        {
+            DocumentBoxType.Title => Brushes.Blue,
+            DocumentBoxType.Text => Brushes.Green,
+            DocumentBoxType.Table => Brushes.Orange,
+            DocumentBoxType.Image => Brushes.Red,
+            DocumentBoxType.Equation => Brushes.Purple,
+            DocumentBoxType.LogicalPage => Brushes.Teal,
+            _ => Brushes.Gray
+        };
     }
 }

@@ -10,7 +10,9 @@ internal sealed record MinerUContentListPage(
     int PageNum,
     [property: JsonPropertyName("width")] double Width,
     [property: JsonPropertyName("height")] double Height,
-    [property: JsonPropertyName("blocks")] IReadOnlyList<MinerUContentBlock> Blocks);
+    [property: JsonPropertyName("blocks")] IReadOnlyList<MinerUContentBlock> Blocks,
+    [property: JsonPropertyName("discarded_blocks")]
+    IReadOnlyList<MinerUContentBlock>? DiscardedBlocks = null);
 
 internal sealed record MinerUContentBlock(
     [property: JsonPropertyName("type")] string Type,
@@ -21,7 +23,8 @@ internal sealed record MinerUContentBlock(
     double? Confidence,
     [property: JsonPropertyName("table_cells")]
     IReadOnlyList<MinerUTableCell>? TableCells = null,
-    [property: JsonPropertyName("cells")] IReadOnlyList<MinerUTableCell>? Cells = null);
+    [property: JsonPropertyName("cells")] IReadOnlyList<MinerUTableCell>? Cells = null,
+    [property: JsonPropertyName("level")] int? HeadingLevel = null);
 
 internal sealed record MinerUTableCell(
     [property: JsonPropertyName("row_index")]
@@ -144,7 +147,8 @@ internal sealed class MinerUContentListParser
             GetString(item, "latex") ?? GetString(item, "equation"),
             GetDouble(item, "confidence"),
             tableCells,
-            null));
+            null,
+            GetInt(item, "level") ?? GetInt(item, "heading_level")));
     }
 
     private static string? GetText(JsonElement item)

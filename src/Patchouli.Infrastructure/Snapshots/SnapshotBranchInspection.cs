@@ -43,7 +43,7 @@ public sealed record BranchDocumentInstanceSummary(
     string InstanceType,
     bool IsPrimary,
     int PageCount,
-    int LayoutRevisionCount,
+    int TreeRevisionCount,
     int SearchUnitCount,
     int EvidenceRefCount,
     string SourceFileStatus,
@@ -56,7 +56,7 @@ public sealed record BranchImportPlan(
     IReadOnlyList<ItemId> ItemsToImport,
     IReadOnlyList<DocumentInstanceId> DocumentInstancesToImport,
     int PagesToImport,
-    int LayoutRevisionsToImport,
+    int TreeRevisionsToImport,
     int SearchUnitsToImport,
     int EvidenceRefsToImport,
     int FileAssetsToImport,
@@ -199,10 +199,11 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                        (select count(*) from document_instances d where d.item_id = i.item_id) DocumentCount,
                        (select count(*)
                           from document_instances d
-                          join layout_revisions r on r.document_instance_id = d.document_instance_id and r.is_current = 1
-                          join layout_nodes n on n.revision_id = r.layout_revision_id
+                          join document_tree_revisions r on r.document_instance_id = d.document_instance_id and r.is_current = 1
+                          join document_boxes n on n.tree_revision_id = r.tree_revision_id
                          where d.item_id = i.item_id
-                           and length(trim(coalesce(n.own_text, ''))) > 0) OcrCount,
+                           and n.suppressed = 0
+                           and n.payload_json is not null) OcrCount,
                        (select count(*) from search_units s join document_instances d on d.document_instance_id = s.document_instance_id where d.item_id = i.item_id) SearchCount,
                        (select count(*) from evidence_ref_records e join document_instances d on d.document_instance_id = e.document_instance_id where d.item_id = i.item_id) EvidenceCount
                 from items i
@@ -246,7 +247,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                        d.is_primary IsPrimary,
                        coalesce(f.status, 'unknown') SourceStatus,
                        (select count(*) from pages p where p.document_instance_id = d.document_instance_id) Pages,
-                       (select count(*) from layout_revisions r where r.document_instance_id = d.document_instance_id) Revisions,
+                       (select count(*) from document_tree_revisions r where r.document_instance_id = d.document_instance_id) Revisions,
                        (select count(*) from search_units s where s.document_instance_id = d.document_instance_id) Units,
                        (select count(*) from evidence_ref_records e where e.document_instance_id = d.document_instance_id) Evidence
                 from document_instances d
@@ -401,10 +402,10 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 ? 0
                 : await source.ExecuteScalarAsync<int>(
                     "select count(*) from pages where document_instance_id in @Docs;", new { Docs = documentList });
-            int layoutRevisionsToImport = documentList.Length == 0
+            int treeRevisionsToImport = documentList.Length == 0
                 ? 0
                 : await source.ExecuteScalarAsync<int>(
-                    "select count(*) from layout_revisions where document_instance_id in @Docs;",
+                    "select count(*) from document_tree_revisions where document_instance_id in @Docs;",
                     new { Docs = documentList });
             int searchUnitsToImport = documentList.Length == 0
                 ? 0
@@ -424,7 +425,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 itemsToImport,
                 documentsToImport,
                 pagesToImport,
-                layoutRevisionsToImport,
+                treeRevisionsToImport,
                 searchUnitsToImport,
                 evidenceRefsToImport,
                 documentList.Length,
@@ -700,8 +701,10 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 await connection.ExecuteAsync(
                     """
                     insert into pages select * from branch.pages where document_instance_id in @Docs;
-                    insert into layout_revisions select * from branch.layout_revisions where document_instance_id in @Docs;
-                    insert into layout_nodes select * from branch.layout_nodes where document_instance_id in @Docs;
+                    insert into document_tree_revisions
+                    select * from branch.document_tree_revisions where document_instance_id in @Docs;
+                    insert into document_boxes
+                    select * from branch.document_boxes where document_instance_id in @Docs;
                     insert into search_units select * from branch.search_units where document_instance_id in @Docs;
                     insert into evidence_ref_records select * from branch.evidence_ref_records where document_instance_id in @Docs;
                     """,

@@ -34,7 +34,7 @@ public sealed class SnapshotBranchInspectionTests
         items.Value.Single().Title.Should().Be("Branch Item");
         items.Value.Single().DocumentInstanceCount.Should().Be(1);
         docs.Value.Single().PageCount.Should().Be(1);
-        docs.Value.Single().LayoutRevisionCount.Should().Be(1);
+        docs.Value.Single().TreeRevisionCount.Should().Be(1);
         docs.Value.Single().SearchUnitCount.Should().Be(1);
     }
 
@@ -47,7 +47,7 @@ public sealed class SnapshotBranchInspectionTests
         p.Value.ItemsToImport.Should().Contain(c.Item);
         p.Value.DocumentInstancesToImport.Should().Contain(c.Doc);
         p.Value.PagesToImport.Should().Be(1);
-        p.Value.LayoutRevisionsToImport.Should().Be(1);
+        p.Value.TreeRevisionsToImport.Should().Be(1);
         p.Value.SearchUnitsToImport.Should().Be(1);
         System.Text.Json.JsonSerializer.Serialize(p.Value).Should().NotContain(c.Secret);
     }
@@ -329,8 +329,8 @@ public sealed class SnapshotBranchInspectionTests
             ItemId item = ItemId.New();
             DocumentInstanceId doc = DocumentInstanceId.New();
             PageId page = PageId.New();
-            LayoutRevisionId rev = LayoutRevisionId.New();
-            LayoutNodeId node = LayoutNodeId.New();
+            DocumentTreeRevisionId rev = DocumentTreeRevisionId.New();
+            DocumentBoxId box = DocumentBoxId.New();
             SearchUnitId unit = SearchUnitId.New();
             string now = clock.UtcNow.ToString("O");
             string secret = "branch-secret-123";
@@ -338,12 +338,12 @@ public sealed class SnapshotBranchInspectionTests
             {
                 await cn.OpenAsync();
                 await cn.ExecuteAsync(
-                    "insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) values(@I,@L,'book','Branch Item','[]','[]','[]','{}',@N,@N);insert into item_identifiers(identifier_id,item_id,scheme,value,created_at) values(@X,@I,'DOI','10/test',@N);insert into file_assets(file_asset_id,library_id,original_path,file_name,size_bytes,status,created_at,updated_at) values(@F,@L,'/tmp/never-copy.pdf','never-copy.pdf',0,'missing',@N,@N);insert into document_instances(document_instance_id,item_id,file_asset_id,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,@F,'primary_scan',1,'active',@N,@N);insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,0,0,'normalized_page','test',@N,@N);insert into layout_revisions(layout_revision_id,document_instance_id,source,is_current,created_at) values(@R,@D,'manual',1,@N);insert into layout_nodes(node_id,document_instance_id,page_id,node_type,text_policy,reading_order,source,revision_id,ignored,own_text) values(@O,@D,@P,'paragraph','own',1,'manual',@R,0,'branch text');insert into search_units(unit_id,document_instance_id,page_id,root_node_id,text_revision_id,bbox_revision_id,layout_revision_id,resolved_text,node_type,reading_order,status,created_at,updated_at) values(@U,@D,@P,@O,@R,@R,@R,'branch text','paragraph',1,'current',@N,@N);insert into evidence_ref_records(evidence_record_id,evidence_ref_id,library_id,document_instance_id,page_id,unit_id,text_revision_id,bbox_revision_id,layout_revision_id,pinned_text,source_title,page_index,status,created_at) values(@E,'evref:v1:test',@L,@D,@P,@U,@R,@R,@R,'branch text','Branch Item',0,'active',@N);",
+                    "insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) values(@I,@L,'book','Branch Item','[]','[]','[]','{}',@N,@N);insert into item_identifiers(identifier_id,item_id,scheme,value,created_at) values(@X,@I,'DOI','10/test',@N);insert into file_assets(file_asset_id,library_id,original_path,file_name,size_bytes,status,created_at,updated_at) values(@F,@L,'/tmp/never-copy.pdf','never-copy.pdf',0,'missing',@N,@N);insert into document_instances(document_instance_id,item_id,file_asset_id,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,@F,'primary_scan',1,'active',@N,@N);insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,0,0,'normalized_page','test',@N,@N);insert into document_tree_revisions(tree_revision_id,document_instance_id,page_id,source,status,is_current,created_at,committed_at) values(@R,@D,@P,'manual_edit','committed',1,@N,@N);insert into document_boxes(tree_revision_id,box_id,document_instance_id,page_id,box_type,bbox_x,bbox_y,bbox_width,bbox_height,payload_json,suppressed) values(@R,@O,@D,@P,'text',0.1,0.1,0.8,0.1,'{\"markdown\":\"branch text\"}',0);insert into search_units(unit_id,document_instance_id,page_id,box_id,tree_revision_id,resolved_text,bbox_json,box_type,ordinal,status,created_at,updated_at) values(@U,@D,@P,@O,@R,'branch text','{\"x\":0.1,\"y\":0.1,\"width\":0.8,\"height\":0.1}','text',1,'current',@N,@N);insert into evidence_ref_records(evidence_record_id,evidence_ref_id,library_id,document_instance_id,page_id,unit_id,tree_revision_id,box_id,pinned_text,source_title,page_index,status,created_at) values(@E,'evref:v2:test',@L,@D,@P,@U,@R,@O,'branch text','Branch Item',0,'active',@N);",
                     new
                     {
                         I = item.ToString(), L = lib.LibraryId.ToString(), N = now, X = IdentifierId.New().ToString(),
                         F = FileAssetId.New().ToString(), D = doc.ToString(), P = page.ToString(), R = rev.ToString(),
-                        O = node.ToString(), U = unit.ToString(), E = EvidenceRefId.New().ToString(),
+                        O = box.ToString(), U = unit.ToString(), E = EvidenceRefId.New().ToString(),
                         C = CredentialId.New().ToString(), S = secret
                     });
                 if (includeLibrarySetting)

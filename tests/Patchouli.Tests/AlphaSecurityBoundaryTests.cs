@@ -41,15 +41,16 @@ public sealed class AlphaSecurityBoundaryTests
     [Fact]
     public void EvidenceRef_payload_has_no_local_path_or_secret()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "EvidenceReferenceServiceTests.cs"))
-            .Should().Contain("does_not_expose");
+        string codec = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Evidence", "EvidenceModels.cs"));
+        codec.Should().Contain("evref:v2:").And.NotContain("OriginalPath").And.NotContain("ResolvedPath");
     }
 
     [Fact]
     public void SearchResult_has_no_sql_like_fallback_marker()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "SearchTests.cs")).Should()
-            .Contain("does_not_use_SQL_LIKE");
+        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Search",
+                "SqliteSearchService.cs"))
+            .Should().NotContainEquivalentOf("resolved_text like");
     }
 
     [Fact]

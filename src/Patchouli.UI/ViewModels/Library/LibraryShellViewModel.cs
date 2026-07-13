@@ -441,6 +441,23 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 return;
             }
 
+            if (run.Value.State is not (OcrRunState.Completed or OcrRunState.CompletedWithErrors))
+            {
+                item.OcrStatus = $"OCR 未完成：{run.Value.State}";
+                _main.Report(item.OcrStatus);
+                Raise(nameof(InspectorStatus));
+                return;
+            }
+
+            Result<OcrCandidateAdoption> adoption = await coordinator.AdoptCandidateRunAsync(run.Value.OcrRunId);
+            if (adoption.IsFailure)
+            {
+                item.OcrStatus = adoption.ErrorMessage ?? "OCR 候选版本采用失败。";
+                _main.Report(item.OcrStatus);
+                Raise(nameof(InspectorStatus));
+                return;
+            }
+
             Result units = await services.SearchUnits.RebuildForDocumentInstanceAsync(documentInstanceId);
             Result index = units.IsSuccess
                 ? await services.SearchIndex.RebuildFtsForDocumentInstanceAsync(documentInstanceId)

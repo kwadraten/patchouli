@@ -9,8 +9,8 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Search;
@@ -157,12 +157,8 @@ public sealed class SearchProfileRewriteTests
             Result<Page> page = await new PageService(db.ConnectionFactory, clock).CreatePageAsync(
                 doc.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test",
                 null);
-            LayoutTreeService layout = new(db.ConnectionFactory, clock);
-            Result<LayoutRevision> revision =
-                await layout.CreateLayoutRevisionAsync(doc.Value.DocumentInstanceId, LayoutRevisionSource.Manual, true);
-            await layout.AddNodeAsync(revision.Value.LayoutRevisionId, page.Value.PageId, null,
-                LayoutNodeType.Paragraph, new NormalizedBBox(.1, .1, .5, .1), "台湾史", TextPolicy.Own, 1,
-                LayoutNodeSource.Manual);
+            await BoxTreeTestData.CommitTextAsync(db.ConnectionFactory, clock, doc.Value.DocumentInstanceId,
+                page.Value.PageId, "台湾史");
             SearchUnitBuilder builder = new(db.ConnectionFactory, clock);
             SearchIndexRebuilder index = new(db.ConnectionFactory, clock);
             await builder.RebuildForDocumentInstanceAsync(doc.Value.DocumentInstanceId);

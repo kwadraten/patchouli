@@ -5,9 +5,8 @@ create table if not exists evidence_ref_records (
     document_instance_id text not null,
     page_id text not null,
     unit_id text not null,
-    text_revision_id text not null,
-    bbox_revision_id text not null,
-    layout_revision_id text not null,
+    tree_revision_id text not null,
+    box_id text not null,
     snapshot_id text null,
     pinned_text text not null,
     source_title text not null,
@@ -19,7 +18,7 @@ create table if not exists evidence_ref_records (
     foreign key (document_instance_id) references document_instances(document_instance_id),
     foreign key (page_id) references pages(page_id),
     foreign key (unit_id) references search_units(unit_id),
-    foreign key (layout_revision_id) references layout_revisions(layout_revision_id)
+    foreign key (tree_revision_id, box_id) references document_boxes(tree_revision_id, box_id)
 );
 
 create table if not exists evidence_successors (

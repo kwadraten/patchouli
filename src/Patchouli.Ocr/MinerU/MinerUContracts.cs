@@ -36,8 +36,8 @@ public sealed record MinerUImportRequest(
 public sealed record MinerUImportResult(
     bool Success,
     string? ErrorMessage,
-    string? LayoutRevisionId,
-    int NodesCreated,
+    IReadOnlyList<string> StagingTreeRevisionIds,
+    int BoxesCreated,
     IReadOnlyList<string> Warnings);
 
 public static class MinerUProviderStatus

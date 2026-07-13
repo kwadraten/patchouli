@@ -2,12 +2,13 @@ using System.Data.Common;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
-using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Search;
 
 namespace Patchouli.Infrastructure.Search;
@@ -16,45 +17,81 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
 {
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
+    private readonly IMarkdownEngine _markdown;
 
-    public SearchUnitBuilder(SqliteConnectionFactory connectionFactory, IClock clock)
+    public SearchUnitBuilder(
+        SqliteConnectionFactory connectionFactory,
+        IClock clock,
+        IMarkdownEngine? markdown = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
+        _markdown = markdown ?? new MarkdigMarkdownEngine();
     }
 
-    public async Task<Result> RebuildForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
+    public async Task<Result> RebuildForDocumentInstanceAsync(
+        DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            string? revisionId = await connection.ExecuteScalarAsync<string?>(
-                "select layout_revision_id from layout_revisions where document_instance_id = @Id and is_current = 1 limit 1;",
-                new { Id = documentInstanceId.ToString() });
-            if (revisionId is null)
+            CurrentRevisionRow[] revisions = (await connection.QueryAsync<CurrentRevisionRow>(
+                """
+                select tree_revision_id as TreeRevisionId, page_id as PageId
+                from document_tree_revisions
+                where document_instance_id = @DocumentInstanceId
+                  and status = 'committed' and is_current = 1
+                order by page_id;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() })).ToArray();
+            if (revisions.Length == 0)
             {
-                await UpsertStatusAsync(connection, SearchIndexScopeType.DocumentInstance,
-                    documentInstanceId.ToString(), SearchIndexStatusValue.Unavailable, 0, 0, null,
-                    "Document instance has no current layout revision.", cancellationToken);
+                await UpsertStatusAsync(
+                    connection,
+                    SearchIndexScopeType.DocumentInstance,
+                    documentInstanceId.ToString(),
+                    SearchIndexStatusValue.Unavailable,
+                    0,
+                    0,
+                    null,
+                    "Document instance has no current committed document tree revisions.",
+                    cancellationToken);
                 return Result.Success();
             }
 
-            return await RebuildAsync(connection, documentInstanceId, null, LayoutRevisionId.Parse(revisionId),
-                cancellationToken);
+            foreach (CurrentRevisionRow revision in revisions)
+            {
+                Result rebuilt = await RebuildAsync(
+                    connection,
+                    documentInstanceId,
+                    PageId.Parse(revision.PageId),
+                    DocumentTreeRevisionId.Parse(revision.TreeRevisionId),
+                    cancellationToken);
+                if (rebuilt.IsFailure)
+                {
+                    return rebuilt;
+                }
+            }
+
+            return Result.Success();
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-unit-builder"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception,
+                                              "infrastructure.search-unit-builder"))
         {
-            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result> RebuildForPageAsync(PageId pageId, LayoutRevisionId layoutRevisionId,
+    public async Task<Result> RebuildForPageAsync(
+        PageId pageId,
+        DocumentTreeRevisionId treeRevisionId,
         CancellationToken cancellationToken = default)
     {
         try
@@ -64,25 +101,29 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             string? documentInstanceId = await connection.ExecuteScalarAsync<string?>(
                 "select document_instance_id from pages where page_id = @PageId;",
                 new { PageId = pageId.ToString() });
-            if (documentInstanceId is null)
-            {
-                return Result.Failure(AppErrorCodes.NotFound, "Page was not found.");
-            }
-
-            return await RebuildAsync(connection, DocumentInstanceId.Parse(documentInstanceId), pageId,
-                layoutRevisionId, cancellationToken);
+            return documentInstanceId is null
+                ? Result.Failure(AppErrorCodes.NotFound, "Page was not found.")
+                : await RebuildAsync(
+                    connection,
+                    DocumentInstanceId.Parse(documentInstanceId),
+                    pageId,
+                    treeRevisionId,
+                    cancellationToken);
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-unit-builder"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception,
+                                              "infrastructure.search-unit-builder"))
         {
-            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
     }
 
-    public async Task<Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId,
+    public async Task<Result> MarkDocumentInstanceDirtyAsync(
+        DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
         try
@@ -105,113 +146,110 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 1,
                 0,
                 $"document_instance:{documentInstanceId}",
-                "Layout changed; search units need rebuild.",
+                "Document Box Tree changed; search units need rebuild.",
                 cancellationToken);
-            await UpsertLibraryStatusAsync(connection, SearchIndexStatusValue.Stale,
-                $"document_instance:{documentInstanceId}", "One or more document instances need search rebuild.");
+            await UpsertLibraryStatusAsync(
+                connection,
+                SearchIndexStatusValue.Stale,
+                $"document_instance:{documentInstanceId}",
+                "One or more document instances need search rebuild.");
             return Result.Success();
         }
         catch (OperationCanceledException)
         {
             throw;
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-unit-builder"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception,
+                                              "infrastructure.search-unit-builder"))
         {
-            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
     }
 
-    private async Task<Result> RebuildAsync(SqliteConnection connection,
-        DocumentInstanceId documentInstanceId, PageId? pageId, LayoutRevisionId revisionId,
+    private async Task<Result> RebuildAsync(
+        SqliteConnection connection,
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId revisionId,
         CancellationToken cancellationToken)
     {
-        int revisionMatches = await connection.ExecuteScalarAsync<int>(
-            "select count(1) from layout_revisions where layout_revision_id = @RevisionId and document_instance_id = @DocumentInstanceId;",
-            new { RevisionId = revisionId.ToString(), DocumentInstanceId = documentInstanceId.ToString() });
-        if (revisionMatches == 0)
+        RevisionProbe? revision = await connection.QuerySingleOrDefaultAsync<RevisionProbe>(
+            """
+            select document_instance_id as DocumentInstanceId, page_id as PageId,
+                status as Status, is_current as IsCurrent
+            from document_tree_revisions where tree_revision_id = @RevisionId;
+            """,
+            new { RevisionId = revisionId.ToString() });
+        if (revision is null || revision.DocumentInstanceId != documentInstanceId.ToString() ||
+            revision.PageId != pageId.ToString())
         {
-            return Result.Failure(AppErrorCodes.ValidationFailed,
-                "Layout revision does not belong to the document instance.");
+            return Result.Failure(
+                AppErrorCodes.ValidationFailed,
+                "Document tree revision does not belong to the requested document page.");
         }
 
-        bool isCurrentRevision = await connection.ExecuteScalarAsync<int>(
-            "select is_current from layout_revisions where layout_revision_id = @RevisionId;",
-            new { RevisionId = revisionId.ToString() }) == 1;
+        if (revision.Status != DocumentTreeRevisionStatus.Committed || revision.IsCurrent != 1)
+        {
+            return Result.Failure(
+                AppErrorCodes.InvalidState,
+                "Only a current committed document tree revision can generate default SearchUnits.");
+        }
 
-        NodeRow[] rows = (await connection.QueryAsync<NodeRow>(
+        DocumentBoxRow[] rows = (await connection.QueryAsync<DocumentBoxRow>(
             """
-            select n.node_id as NodeId, n.document_instance_id as DocumentInstanceId, n.page_id as PageId, n.parent_node_id as ParentNodeId,
-                   n.node_type as NodeType, n.bbox_x as BBoxX, n.bbox_y as BBoxY, n.bbox_width as BBoxWidth, n.bbox_height as BBoxHeight,
-                   n.own_text as OwnText, n.text_policy as TextPolicy, n.reading_order as ReadingOrder, n.revision_id as RevisionId, n.ignored as Ignored,
-                   n.row_index as RowIndex, n.col_index as ColIndex, n.row_span as RowSpan, n.col_span as ColSpan, n.is_header as IsHeader,
-                   p.page_index as PageIndex
-            from layout_nodes n
-            join pages p on p.page_id = n.page_id
-            where n.document_instance_id = @DocumentInstanceId
-              and n.revision_id = @RevisionId
-              and (@PageId is null or n.page_id = @PageId)
-            order by p.page_index, n.reading_order, n.node_id;
+            select box_id as BoxId, parent_box_id as ParentBoxId, next_sibling_box_id as NextSiblingBoxId,
+                box_type as BoxType, base_type as BaseType, payload_json as PayloadJson,
+                bbox_x as BBoxX, bbox_y as BBoxY, bbox_width as BBoxWidth, bbox_height as BBoxHeight,
+                suppressed as Suppressed
+            from document_boxes where tree_revision_id = @RevisionId;
+            """,
+            new { RevisionId = revisionId.ToString() })).ToArray();
+        GeneratedUnit[] generated = BuildUnits(rows, documentInstanceId, pageId, revisionId).ToArray();
+        string now = FormatUtc(_clock.UtcNow.ToUniversalTime());
+
+        await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+        PreviousUnitRow[] previous = (await connection.QueryAsync<PreviousUnitRow>(
+            """
+            select unit_id as UnitId, box_id as BoxId
+            from search_units
+            where page_id = @PageId and status = @Status and tree_revision_id <> @RevisionId;
             """,
             new
             {
-                DocumentInstanceId = documentInstanceId.ToString(), RevisionId = revisionId.ToString(),
-                PageId = pageId?.ToString()
-            })).ToArray();
+                PageId = pageId.ToString(),
+                Status = SearchUnitStatus.Current,
+                RevisionId = revisionId.ToString()
+            },
+            transaction)).ToArray();
+        Dictionary<string, PreviousUnitRow> previousByBox = previous.ToDictionary(row => row.BoxId);
+        HashSet<string> touched = [];
 
-        GeneratedUnit[] generated = BuildUnits(rows, revisionId).ToArray();
-        string now = _clock.UtcNow.ToUniversalTime().ToString("O");
-        await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
-        SearchUnitRow[] previousCurrentUnits = isCurrentRevision
-            ? (await connection.QueryAsync<SearchUnitRow>(
-                """
-                select unit_id as UnitId, page_id as PageId, node_type as NodeType, reading_order as ReadingOrder
-                from search_units
-                where document_instance_id = @DocumentInstanceId
-                  and status = @Status
-                  and layout_revision_id <> @RevisionId
-                  and (@PageId is null or page_id = @PageId)
-                order by page_id, reading_order, unit_id;
-                """,
-                new
-                {
-                    DocumentInstanceId = documentInstanceId.ToString(), Status = SearchUnitStatus.Current,
-                    RevisionId = revisionId.ToString(), PageId = pageId?.ToString()
-                },
-                tx)).ToArray()
-            : Array.Empty<SearchUnitRow>();
-        Dictionary<string, Queue<SearchUnitRow>> predecessorBuckets = previousCurrentUnits
-            .GroupBy(u => SuccessorMatchKey(u.PageId, u.NodeType, u.ReadingOrder))
-            .ToDictionary(g => g.Key, g => new Queue<SearchUnitRow>(g), StringComparer.Ordinal);
-        List<SearchUnitSuccessorPair> successorPairs = new();
-        HashSet<string> touched = new(StringComparer.OrdinalIgnoreCase);
         foreach (GeneratedUnit unit in generated)
         {
             string? existing = await connection.ExecuteScalarAsync<string?>(
                 """
                 select unit_id from search_units
-                where document_instance_id = @DocumentInstanceId
-                  and page_id = @PageId
-                  and root_node_id = @RootNodeId
-                  and layout_revision_id = @RevisionId
-                limit 1;
+                where tree_revision_id = @TreeRevisionId and box_id = @BoxId;
                 """,
-                new { unit.DocumentInstanceId, unit.PageId, unit.RootNodeId, RevisionId = revisionId.ToString() },
-                tx);
+                new { unit.TreeRevisionId, unit.BoxId },
+                transaction);
             string unitId = existing ?? SearchUnitId.New().ToString();
             touched.Add(unitId);
             await connection.ExecuteAsync(
                 """
                 insert into search_units (
-                    unit_id, document_instance_id, page_id, root_node_id, text_revision_id, bbox_revision_id, layout_revision_id,
-                    resolved_text, bbox_union_json, node_type, reading_order, status, created_at, updated_at
-                )
-                values (@UnitId, @DocumentInstanceId, @PageId, @RootNodeId, @TextRevisionId, @BBoxRevisionId, @LayoutRevisionId,
-                    @ResolvedText, @BBoxUnionJson, @NodeType, @ReadingOrder, @Status, @CreatedAt, @UpdatedAt)
-                on conflict(unit_id) do update set
+                    unit_id, document_instance_id, page_id, box_id, tree_revision_id,
+                    resolved_text, bbox_json, box_type, ordinal, status,
+                    supersedes_unit_id, created_at, updated_at)
+                values (@UnitId, @DocumentInstanceId, @PageId, @BoxId, @TreeRevisionId,
+                    @ResolvedText, @BBoxJson, @BoxType, @Ordinal, @Status,
+                    @SupersedesUnitId, @CreatedAt, @UpdatedAt)
+                on conflict(tree_revision_id, box_id) do update set
                     resolved_text = excluded.resolved_text,
-                    bbox_union_json = excluded.bbox_union_json,
-                    node_type = excluded.node_type,
-                    reading_order = excluded.reading_order,
+                    bbox_json = excluded.bbox_json,
+                    box_type = excluded.box_type,
+                    ordinal = excluded.ordinal,
                     status = excluded.status,
                     updated_at = excluded.updated_at;
                 """,
@@ -220,429 +258,272 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                     UnitId = unitId,
                     unit.DocumentInstanceId,
                     unit.PageId,
-                    unit.RootNodeId,
-                    TextRevisionId = revisionId.ToString(),
-                    BBoxRevisionId = revisionId.ToString(),
-                    LayoutRevisionId = revisionId.ToString(),
+                    unit.BoxId,
+                    unit.TreeRevisionId,
                     unit.ResolvedText,
-                    unit.BBoxUnionJson,
-                    unit.NodeType,
-                    unit.ReadingOrder,
+                    unit.BBoxJson,
+                    unit.BoxType,
+                    unit.Ordinal,
                     Status = SearchUnitStatus.Current,
+                    SupersedesUnitId = previousByBox.GetValueOrDefault(unit.BoxId)?.UnitId,
                     CreatedAt = now,
                     UpdatedAt = now
                 },
-                tx);
-            if (existing is null
-                && predecessorBuckets.TryGetValue(SuccessorMatchKey(unit.PageId, unit.NodeType, unit.ReadingOrder),
-                    out Queue<SearchUnitRow>? predecessors)
-                && predecessors.Count > 0)
+                transaction);
+
+            if (previousByBox.TryGetValue(unit.BoxId, out PreviousUnitRow? predecessor))
             {
-                successorPairs.Add(new SearchUnitSuccessorPair(
-                    predecessors.Dequeue(),
-                    new SearchUnitEvidenceTarget(unitId, unit.DocumentInstanceId, unit.PageId, revisionId.ToString(),
-                        revisionId.ToString(), revisionId.ToString(), unit.ResolvedText)));
-            }
-        }
-
-        foreach (SearchUnitSuccessorPair pair in successorPairs)
-        {
-            await connection.ExecuteAsync(
-                "update search_units set status = @Status, superseded_by_unit_id = @SuccessorUnitId, updated_at = @UpdatedAt where unit_id = @PredecessorUnitId;",
-                new
-                {
-                    Status = SearchUnitStatus.Deleted, SuccessorUnitId = pair.Successor.UnitId, UpdatedAt = now,
-                    PredecessorUnitId = pair.Predecessor.UnitId
-                },
-                tx);
-            await connection.ExecuteAsync(
-                "update search_units set supersedes_unit_id = @PredecessorUnitId, updated_at = @UpdatedAt where unit_id = @SuccessorUnitId;",
-                new
-                {
-                    PredecessorUnitId = pair.Predecessor.UnitId, UpdatedAt = now,
-                    SuccessorUnitId = pair.Successor.UnitId
-                },
-                tx);
-        }
-
-        if (isCurrentRevision)
-        {
-            await connection.ExecuteAsync(
-                """
-                update search_units
-                set status = @Status, updated_at = @UpdatedAt
-                where document_instance_id = @DocumentInstanceId
-                  and status = @CurrentStatus
-                  and layout_revision_id <> @RevisionId
-                  and (@PageId is null or page_id = @PageId);
-                """,
-                new
-                {
-                    Status = SearchUnitStatus.Deleted, UpdatedAt = now,
-                    DocumentInstanceId = documentInstanceId.ToString(), CurrentStatus = SearchUnitStatus.Current,
-                    RevisionId = revisionId.ToString(), PageId = pageId?.ToString()
-                },
-                tx);
-        }
-
-        await LinkEvidenceSuccessorsAsync(connection, tx, successorPairs, now);
-        await connection.ExecuteAsync(
-            """
-            update search_units
-            set status = @Status, updated_at = @UpdatedAt
-            where document_instance_id = @DocumentInstanceId
-              and layout_revision_id = @RevisionId
-              and (@PageId is null or page_id = @PageId)
-              and unit_id not in @Touched;
-            """,
-            new
-            {
-                Status = SearchUnitStatus.Deleted, UpdatedAt = now, DocumentInstanceId = documentInstanceId.ToString(),
-                RevisionId = revisionId.ToString(), PageId = pageId?.ToString(),
-                Touched = touched.DefaultIfEmpty("__none__").ToArray()
-            },
-            tx);
-        await tx.CommitAsync(cancellationToken);
-
-        await UpsertStatusAsync(connection, SearchIndexScopeType.DocumentInstance, documentInstanceId.ToString(),
-            SearchIndexStatusValue.Stale, 0, generated.Length, $"document_instance:{documentInstanceId}",
-            "Search units changed; FTS rebuild is pending.", cancellationToken);
-        if (pageId is not null)
-        {
-            await UpsertStatusAsync(connection, SearchIndexScopeType.Page, pageId.Value.ToString(),
-                SearchIndexStatusValue.Stale, 0, generated.Length, $"page:{pageId}",
-                "Search units changed; FTS rebuild is pending.", cancellationToken);
-        }
-
-        await UpsertLibraryStatusAsync(connection, SearchIndexStatusValue.Stale,
-            $"document_instance:{documentInstanceId}", "Search units changed; FTS rebuild is pending.");
-        return Result.Success();
-    }
-
-    private static async Task LinkEvidenceSuccessorsAsync(SqliteConnection connection,
-        DbTransaction tx, IReadOnlyList<SearchUnitSuccessorPair> successorPairs, string now)
-    {
-        foreach (SearchUnitSuccessorPair pair in successorPairs)
-        {
-            EvidenceRecordRow[] predecessorRecords = (await connection.QueryAsync<EvidenceRecordRow>(
-                """
-                select evidence_record_id as EvidenceRecordId, library_id as LibraryId, source_title as SourceTitle, page_label as PageLabel, page_index as PageIndex
-                from evidence_ref_records
-                where unit_id = @UnitId and status = @Status;
-                """,
-                new { UnitId = pair.Predecessor.UnitId, Status = EvidenceRecordStatus.Active },
-                tx)).ToArray();
-            foreach (EvidenceRecordRow predecessorRecord in predecessorRecords)
-            {
-                EvidenceReference reference = new(
-                    LibraryId.Parse(predecessorRecord.LibraryId),
-                    DocumentInstanceId.Parse(pair.Successor.DocumentInstanceId),
-                    PageId.Parse(pair.Successor.PageId),
-                    SearchUnitId.Parse(pair.Successor.UnitId),
-                    pair.Successor.TextRevisionId,
-                    pair.Successor.BboxRevisionId,
-                    LayoutRevisionId.Parse(pair.Successor.LayoutRevisionId));
-                Result<string> encoded = EvidenceReferenceCodec.Encode(reference);
-                if (encoded.IsFailure)
-                {
-                    throw new InvalidOperationException(encoded.ErrorMessage);
-                }
-
                 await connection.ExecuteAsync(
                     """
-                    insert or ignore into evidence_ref_records (
-                        evidence_record_id, evidence_ref_id, library_id, document_instance_id, page_id, unit_id,
-                        text_revision_id, bbox_revision_id, layout_revision_id, snapshot_id, pinned_text,
-                        source_title, page_label, page_index, status, created_at
-                    )
-                    values (
-                        @RecordId, @EvidenceRefId, @LibraryId, @DocumentInstanceId, @PageId, @UnitId,
-                        @TextRevisionId, @BboxRevisionId, @LayoutRevisionId, null, @PinnedText,
-                        @SourceTitle, @PageLabel, @PageIndex, @Status, @CreatedAt
-                    );
+                    update search_units
+                    set status = @Deleted, superseded_by_unit_id = @Successor, updated_at = @Now
+                    where unit_id = @Predecessor;
                     """,
                     new
                     {
-                        RecordId = Guid.NewGuid().ToString("D"),
-                        EvidenceRefId = encoded.Value,
-                        predecessorRecord.LibraryId,
-                        pair.Successor.DocumentInstanceId,
-                        pair.Successor.PageId,
-                        pair.Successor.UnitId,
-                        pair.Successor.TextRevisionId,
-                        pair.Successor.BboxRevisionId,
-                        pair.Successor.LayoutRevisionId,
-                        PinnedText = pair.Successor.ResolvedText,
-                        predecessorRecord.SourceTitle,
-                        predecessorRecord.PageLabel,
-                        predecessorRecord.PageIndex,
-                        Status = EvidenceRecordStatus.Active,
-                        CreatedAt = now
+                        Deleted = SearchUnitStatus.Deleted,
+                        Successor = unitId,
+                        Now = now,
+                        Predecessor = predecessor.UnitId
                     },
-                    tx);
-                string? successorRecordId = await connection.ExecuteScalarAsync<string>(
-                    "select evidence_record_id from evidence_ref_records where evidence_ref_id = @EvidenceRefId;",
-                    new { EvidenceRefId = encoded.Value },
-                    tx);
-                await connection.ExecuteAsync(
-                    "update evidence_ref_records set status = @Status where evidence_record_id = @RecordId and status = @ActiveStatus;",
-                    new
-                    {
-                        Status = EvidenceRecordStatus.Superseded, RecordId = predecessorRecord.EvidenceRecordId,
-                        ActiveStatus = EvidenceRecordStatus.Active
-                    },
-                    tx);
-                await connection.ExecuteAsync(
-                    "insert or ignore into evidence_successors (predecessor_record_id, successor_record_id, reason, created_at) values (@Predecessor, @Successor, @Reason, @CreatedAt);",
-                    new
-                    {
-                        Predecessor = predecessorRecord.EvidenceRecordId, Successor = successorRecordId,
-                        Reason = EvidenceSuccessorReason.LayoutReplaced, CreatedAt = now
-                    },
-                    tx);
+                    transaction);
+                await LinkEvidenceSuccessorsAsync(connection, transaction, predecessor.UnitId, unitId, unit, now);
             }
         }
+
+        await connection.ExecuteAsync(
+            """
+            update search_units set status = @Deleted, updated_at = @Now
+            where page_id = @PageId and status = @Current and tree_revision_id <> @RevisionId;
+            """,
+            new
+            {
+                Deleted = SearchUnitStatus.Deleted,
+                Now = now,
+                PageId = pageId.ToString(),
+                Current = SearchUnitStatus.Current,
+                RevisionId = revisionId.ToString()
+            },
+            transaction);
+        await transaction.CommitAsync(cancellationToken);
+
+        await UpsertStatusAsync(
+            connection,
+            SearchIndexScopeType.Page,
+            pageId.ToString(),
+            SearchIndexStatusValue.Stale,
+            0,
+            generated.Length,
+            $"page:{pageId}",
+            "Search units changed; FTS rebuild is pending.",
+            cancellationToken);
+        await UpsertStatusAsync(
+            connection,
+            SearchIndexScopeType.DocumentInstance,
+            documentInstanceId.ToString(),
+            SearchIndexStatusValue.Stale,
+            0,
+            generated.Length,
+            $"document_instance:{documentInstanceId}",
+            "Search units changed; FTS rebuild is pending.",
+            cancellationToken);
+        await UpsertLibraryStatusAsync(
+            connection,
+            SearchIndexStatusValue.Stale,
+            $"document_instance:{documentInstanceId}",
+            "Search units changed; FTS rebuild is pending.");
+        return Result.Success();
     }
 
-    private static string SuccessorMatchKey(string pageId, string nodeType, int readingOrder)
+    private IEnumerable<GeneratedUnit> BuildUnits(
+        IReadOnlyList<DocumentBoxRow> rows,
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId revisionId)
     {
-        return $"{pageId}\n{nodeType}\n{readingOrder}";
-    }
-
-    private static IEnumerable<GeneratedUnit> BuildUnits(IReadOnlyList<NodeRow> rows, LayoutRevisionId revisionId)
-    {
-        Dictionary<string, NodeRow[]> byParent = rows.GroupBy(r => r.ParentNodeId ?? "")
-            .ToDictionary(g => g.Key, g => g.OrderBy(r => r.ReadingOrder).ThenBy(r => r.NodeId).ToArray());
-        Dictionary<string, NodeRow> byId = rows.ToDictionary(r => r.NodeId);
-        foreach (NodeRow row in rows.OrderBy(r => r.PageIndex).ThenBy(r => r.ReadingOrder).ThenBy(r => r.NodeId))
+        int ordinal = 0;
+        foreach (DocumentBoxRow row in OrderLeaves(rows))
         {
-            if (HasIndexableAncestor(row, byId, byParent))
+            if (row.Suppressed == 1)
             {
                 continue;
             }
 
-            string text = ResolveText(row, byParent);
+            DocumentBoxPayload? payload = DocumentBoxPayloadSerializer.Deserialize(
+                row.BoxType, row.BaseType, row.PayloadJson);
+            string text = ResolveText(row.BoxType, payload);
             if (string.IsNullOrWhiteSpace(text))
             {
                 continue;
             }
 
-            BBoxJson? bbox = GetBBox(row) ?? UnionDescendantBBoxes(row, byParent);
             yield return new GeneratedUnit(
-                row.DocumentInstanceId,
-                row.PageId,
-                row.NodeId,
+                documentInstanceId.ToString(),
+                pageId.ToString(),
+                row.BoxId,
+                revisionId.ToString(),
                 text.Trim(),
-                bbox is null ? null : JsonSerializer.Serialize(bbox),
-                row.NodeType,
-                row.ReadingOrder);
+                JsonSerializer.Serialize(new BBoxJson(row.BBoxX, row.BBoxY, row.BBoxWidth, row.BBoxHeight)),
+                row.BoxType,
+                ordinal++);
         }
     }
 
-    private static bool HasIndexableAncestor(NodeRow row, IReadOnlyDictionary<string, NodeRow> byId,
-        IReadOnlyDictionary<string, NodeRow[]> byParent)
+    private string ResolveText(string boxType, DocumentBoxPayload? payload)
     {
-        string? parentId = row.ParentNodeId;
-        while (parentId is not null && byId.TryGetValue(parentId, out NodeRow? parent))
+        return payload switch
         {
-            if (IsIndexableRoot(parent, byParent))
-            {
-                return true;
-            }
-
-            parentId = parent.ParentNodeId;
-        }
-
-        return false;
-    }
-
-    private static bool IsIndexableRoot(NodeRow row, IReadOnlyDictionary<string, NodeRow[]> byParent)
-    {
-        return !row.Ignored && !IsExcluded(row.NodeType) && row.TextPolicy != TextPolicy.None &&
-               !string.IsNullOrWhiteSpace(ResolveText(row, byParent));
-    }
-
-    private static string ResolveText(NodeRow row, IReadOnlyDictionary<string, NodeRow[]> byParent)
-    {
-        if (row.Ignored || IsExcluded(row.NodeType))
-        {
-            return "";
-        }
-
-        if (row.NodeType is LayoutNodeType.Table)
-        {
-            return TryBuildMarkdownTable(row, byParent) ?? "[Table]";
-        }
-
-        if (row.NodeType is LayoutNodeType.TableRow or LayoutNodeType.TableCell)
-        {
-            return "[Table]";
-        }
-
-        return row.TextPolicy switch
-        {
-            TextPolicy.Own => row.OwnText ?? "",
-            TextPolicy.AggregateChildren => string.Join("\n",
-                (byParent.TryGetValue(row.NodeId, out NodeRow[]? children) ? children : Array.Empty<NodeRow>())
-                .Select(child => ResolveText(child, byParent)).Where(text => !string.IsNullOrWhiteSpace(text))),
-            _ => ""
+            TextBoxPayload text => _markdown.ToPlainText(text.Markdown),
+            EquationBoxPayload equation => equation.Latex,
+            ListBoxPayload list => _markdown.ToPlainText(list.Markdown),
+            TableBoxPayload table => _markdown.ToPlainText(table.Markdown),
+            CodeBoxPayload code => code.Code,
+            MediaBoxPayload media => media.Description ?? (boxType == DocumentBoxType.Chart ? "[Chart]" : "[Image]"),
+            _ => string.Empty
         };
     }
 
-    private static string? TryBuildMarkdownTable(NodeRow table, IReadOnlyDictionary<string, NodeRow[]> byParent)
+    private static IEnumerable<DocumentBoxRow> OrderLeaves(IReadOnlyList<DocumentBoxRow> rows)
     {
-        NodeRow[] cells = CollectTableCells(table, byParent).ToArray();
-        if (cells.Length == 0 || cells.Any(cell =>
-                cell.RowIndex is null || cell.ColIndex is null || (cell.RowSpan ?? 1) != 1 || (cell.ColSpan ?? 1) != 1))
+        DocumentBoxRow[] roots = Order(rows, null).ToArray();
+        foreach (DocumentBoxRow root in roots)
         {
-            return null;
-        }
-
-        int maxRow = cells.Max(cell => cell.RowIndex!.Value);
-        int maxCol = cells.Max(cell => cell.ColIndex!.Value);
-        if (maxRow < 1 || maxCol < 0)
-        {
-            return null;
-        }
-
-        Dictionary<(int Row, int Col), NodeRow> map = new();
-        foreach (NodeRow cell in cells)
-        {
-            if (!map.TryAdd((cell.RowIndex!.Value, cell.ColIndex!.Value), cell))
+            if (root.BoxType == DocumentBoxType.LogicalPage)
             {
-                return null;
-            }
-        }
-
-        for (int row = 0; row <= maxRow; row++)
-        for (int col = 0; col <= maxCol; col++)
-        {
-            if (!map.ContainsKey((row, col)))
-            {
-                return null;
-            }
-        }
-
-        if (Enumerable.Range(0, maxCol + 1).Any(col => !map[(0, col)].IsHeader))
-        {
-            return null;
-        }
-
-        List<string> lines = new()
-        {
-            BuildMarkdownRow(Enumerable.Range(0, maxCol + 1).Select(col => CellText(map[(0, col)], byParent))),
-            BuildMarkdownRow(Enumerable.Repeat("---", maxCol + 1))
-        };
-        for (int row = 1; row <= maxRow; row++)
-        {
-            int currentRow = row;
-            lines.Add(BuildMarkdownRow(Enumerable.Range(0, maxCol + 1)
-                .Select(col => CellText(map[(currentRow, col)], byParent))));
-        }
-
-        return string.Join("\n", lines);
-    }
-
-    private static IEnumerable<NodeRow> CollectTableCells(NodeRow node, IReadOnlyDictionary<string, NodeRow[]> byParent)
-    {
-        foreach (NodeRow child in byParent.GetValueOrDefault(node.NodeId, []))
-        {
-            if (child.Ignored)
-            {
-                continue;
-            }
-
-            if (child.NodeType == LayoutNodeType.TableCell)
-            {
-                yield return child;
-            }
-            else if (child.NodeType == LayoutNodeType.TableRow)
-            {
-                foreach (NodeRow cell in CollectTableCells(child, byParent))
+                foreach (DocumentBoxRow child in Order(rows, root.BoxId))
                 {
-                    yield return cell;
+                    yield return child;
                 }
             }
-        }
-    }
-
-    private static string CellText(NodeRow cell, IReadOnlyDictionary<string, NodeRow[]> byParent)
-    {
-        string text = cell.TextPolicy switch
-        {
-            TextPolicy.Own => cell.OwnText ?? "",
-            TextPolicy.AggregateChildren => string.Join(" ",
-                byParent.GetValueOrDefault(cell.NodeId, []).Select(child => ResolveText(child, byParent))
-                    .Where(text => !string.IsNullOrWhiteSpace(text)).Select(text => text.Trim())),
-            _ => ""
-        };
-        return EscapeMarkdownCell(text.Trim());
-    }
-
-    private static string BuildMarkdownRow(IEnumerable<string> cells)
-    {
-        return "| " + string.Join(" | ", cells) + " |";
-    }
-
-    private static string EscapeMarkdownCell(string text)
-    {
-        return text.Replace("\\", "\\\\").Replace("|", "\\|").Replace("\r", " ").Replace("\n", "<br>");
-    }
-
-    private static bool IsExcluded(string nodeType)
-    {
-        return nodeType is LayoutNodeType.Header or LayoutNodeType.Footer or LayoutNodeType.PageNumber
-            or LayoutNodeType.Marginalia or LayoutNodeType.Annotation;
-    }
-
-    private static BBoxJson? GetBBox(NodeRow row)
-    {
-        return row.BBoxX is null || row.BBoxY is null || row.BBoxWidth is null || row.BBoxHeight is null
-            ? null
-            : new BBoxJson(row.BBoxX.Value, row.BBoxY.Value, row.BBoxWidth.Value, row.BBoxHeight.Value);
-    }
-
-    private static BBoxJson? UnionDescendantBBoxes(NodeRow row, IReadOnlyDictionary<string, NodeRow[]> byParent)
-    {
-        List<BBoxJson> boxes = new();
-        Add(row);
-        if (boxes.Count == 0)
-        {
-            return null;
-        }
-
-        double minX = boxes.Min(b => b.X);
-        double minY = boxes.Min(b => b.Y);
-        double maxX = boxes.Max(b => b.X + b.Width);
-        double maxY = boxes.Max(b => b.Y + b.Height);
-        return new BBoxJson(minX, minY, maxX - minX, maxY - minY);
-
-        void Add(NodeRow current)
-        {
-            BBoxJson? box = GetBBox(current);
-            if (box is not null)
+            else
             {
-                boxes.Add(box);
+                yield return root;
+            }
+        }
+    }
+
+    private static IEnumerable<DocumentBoxRow> Order(IReadOnlyList<DocumentBoxRow> rows, string? parentId)
+    {
+        DocumentBoxRow[] siblings = rows.Where(row => row.ParentBoxId == parentId).ToArray();
+        HashSet<string> referenced = siblings
+            .Where(row => row.NextSiblingBoxId is not null)
+            .Select(row => row.NextSiblingBoxId!)
+            .ToHashSet();
+        DocumentBoxRow? current = siblings.SingleOrDefault(row => !referenced.Contains(row.BoxId));
+        HashSet<string> visited = [];
+        while (current is not null && visited.Add(current.BoxId))
+        {
+            yield return current;
+            current = current.NextSiblingBoxId is null
+                ? null
+                : siblings.SingleOrDefault(row => row.BoxId == current.NextSiblingBoxId);
+        }
+    }
+
+    private static async Task LinkEvidenceSuccessorsAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        string predecessorUnitId,
+        string successorUnitId,
+        GeneratedUnit successor,
+        string now)
+    {
+        EvidenceRecordRow[] records = (await connection.QueryAsync<EvidenceRecordRow>(
+            """
+            select evidence_record_id as EvidenceRecordId, library_id as LibraryId,
+                source_title as SourceTitle, page_label as PageLabel, page_index as PageIndex
+            from evidence_ref_records
+            where unit_id = @UnitId and status = @Status;
+            """,
+            new { UnitId = predecessorUnitId, Status = EvidenceRecordStatus.Active },
+            transaction)).ToArray();
+
+        foreach (EvidenceRecordRow record in records)
+        {
+            EvidenceReference reference = new(
+                LibraryId.Parse(record.LibraryId),
+                DocumentInstanceId.Parse(successor.DocumentInstanceId),
+                PageId.Parse(successor.PageId),
+                DocumentTreeRevisionId.Parse(successor.TreeRevisionId),
+                DocumentBoxId.Parse(successor.BoxId));
+            Result<string> encoded = EvidenceReferenceCodec.Encode(reference);
+            if (encoded.IsFailure)
+            {
+                throw new InvalidOperationException(encoded.ErrorMessage);
             }
 
-            if (byParent.TryGetValue(current.NodeId, out NodeRow[]? children))
-            {
-                foreach (NodeRow child in children)
+            string successorRecordId = Guid.NewGuid().ToString("D");
+            await connection.ExecuteAsync(
+                """
+                insert or ignore into evidence_ref_records (
+                    evidence_record_id, evidence_ref_id, library_id, document_instance_id,
+                    page_id, unit_id, tree_revision_id, box_id, snapshot_id, pinned_text,
+                    source_title, page_label, page_index, status, created_at)
+                values (@RecordId, @EvidenceRefId, @LibraryId, @DocumentInstanceId,
+                    @PageId, @UnitId, @TreeRevisionId, @BoxId, null, @PinnedText,
+                    @SourceTitle, @PageLabel, @PageIndex, @Status, @CreatedAt);
+                """,
+                new
                 {
-                    Add(child);
-                }
-            }
+                    RecordId = successorRecordId,
+                    EvidenceRefId = encoded.Value,
+                    record.LibraryId,
+                    successor.DocumentInstanceId,
+                    successor.PageId,
+                    UnitId = successorUnitId,
+                    successor.TreeRevisionId,
+                    successor.BoxId,
+                    PinnedText = successor.ResolvedText,
+                    record.SourceTitle,
+                    record.PageLabel,
+                    record.PageIndex,
+                    Status = EvidenceRecordStatus.Active,
+                    CreatedAt = now
+                },
+                transaction);
+            string? actualSuccessorId = await connection.ExecuteScalarAsync<string?>(
+                "select evidence_record_id from evidence_ref_records where evidence_ref_id = @EvidenceRefId;",
+                new { EvidenceRefId = encoded.Value },
+                transaction);
+            await connection.ExecuteAsync(
+                "update evidence_ref_records set status = @Status where evidence_record_id = @Id;",
+                new { Status = EvidenceRecordStatus.Superseded, Id = record.EvidenceRecordId },
+                transaction);
+            await connection.ExecuteAsync(
+                """
+                insert or ignore into evidence_successors (
+                    predecessor_record_id, successor_record_id, reason, created_at)
+                values (@Predecessor, @Successor, @Reason, @CreatedAt);
+                """,
+                new
+                {
+                    Predecessor = record.EvidenceRecordId,
+                    Successor = actualSuccessorId,
+                    Reason = EvidenceSuccessorReason.LayoutReplaced,
+                    CreatedAt = now
+                },
+                transaction);
         }
     }
 
-    internal static Task UpsertStatusAsync(SqliteConnection connection, string scopeType,
-        string scopeId, string status, int pendingDocuments, int pendingUnits, string? affectedScopes, string? reason,
+    internal static Task UpsertStatusAsync(
+        SqliteConnection connection,
+        string scopeType,
+        string scopeId,
+        string status,
+        int pendingDocuments,
+        int pendingUnits,
+        string? affectedScopes,
+        string? reason,
         CancellationToken cancellationToken = default)
     {
         return connection.ExecuteAsync(
             """
-            insert into search_index_status (scope_type, scope_id, status, pending_document_count, pending_unit_count, progress_percent, affected_scopes_summary, reason, updated_at)
-            values (@ScopeType, @ScopeId, @Status, @PendingDocuments, @PendingUnits, null, @AffectedScopes, @Reason, @UpdatedAt)
+            insert into search_index_status (
+                scope_type, scope_id, status, pending_document_count, pending_unit_count,
+                progress_percent, affected_scopes_summary, reason, updated_at)
+            values (@ScopeType, @ScopeId, @Status, @PendingDocuments, @PendingUnits,
+                null, @AffectedScopes, @Reason, @UpdatedAt)
             on conflict(scope_type, scope_id) do update set
                 status = excluded.status,
                 pending_document_count = excluded.pending_document_count,
@@ -653,84 +534,97 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             """,
             new
             {
-                ScopeType = scopeType, ScopeId = scopeId, Status = status, PendingDocuments = pendingDocuments,
-                PendingUnits = pendingUnits, AffectedScopes = affectedScopes, Reason = reason,
+                ScopeType = scopeType,
+                ScopeId = scopeId,
+                Status = status,
+                PendingDocuments = pendingDocuments,
+                PendingUnits = pendingUnits,
+                AffectedScopes = affectedScopes,
+                Reason = reason,
                 UpdatedAt = DateTimeOffset.UtcNow.ToString("O")
             });
     }
 
-    private static async Task UpsertLibraryStatusAsync(SqliteConnection connection, string status,
-        string? affectedScopes, string? reason)
+    private static async Task UpsertLibraryStatusAsync(
+        SqliteConnection connection,
+        string status,
+        string? affectedScopes,
+        string? reason)
     {
-        string? libraryId =
-            await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
+        string? libraryId = await connection.ExecuteScalarAsync<string?>(
+            "select library_id from library_metadata limit 1;");
         if (libraryId is not null)
         {
-            await UpsertStatusAsync(connection, SearchIndexScopeType.Library, libraryId, status, 0, 0, affectedScopes,
+            await UpsertStatusAsync(
+                connection,
+                SearchIndexScopeType.Library,
+                libraryId,
+                status,
+                0,
+                0,
+                affectedScopes,
                 reason);
         }
+    }
+
+    private static string FormatUtc(DateTimeOffset value)
+    {
+        return value.ToUniversalTime().ToString("O");
     }
 
     private sealed record GeneratedUnit(
         string DocumentInstanceId,
         string PageId,
-        string RootNodeId,
+        string BoxId,
+        string TreeRevisionId,
         string ResolvedText,
-        string? BBoxUnionJson,
-        string NodeType,
-        int ReadingOrder);
-
-    private sealed class SearchUnitRow
-    {
-        public string UnitId { get; set; } = "";
-        public string PageId { get; set; } = "";
-        public string NodeType { get; set; } = "";
-        public int ReadingOrder { get; set; }
-    }
-
-    private sealed record SearchUnitEvidenceTarget(
-        string UnitId,
-        string DocumentInstanceId,
-        string PageId,
-        string TextRevisionId,
-        string BboxRevisionId,
-        string LayoutRevisionId,
-        string ResolvedText);
-
-    private sealed record SearchUnitSuccessorPair(SearchUnitRow Predecessor, SearchUnitEvidenceTarget Successor);
+        string BBoxJson,
+        string BoxType,
+        int Ordinal);
 
     private sealed record BBoxJson(double X, double Y, double Width, double Height);
 
-    private sealed class EvidenceRecordRow
+    private sealed class CurrentRevisionRow
     {
-        public string EvidenceRecordId { get; set; } = "";
-        public string LibraryId { get; set; } = "";
-        public string SourceTitle { get; set; } = "";
-        public string? PageLabel { get; set; }
-        public int PageIndex { get; set; }
+        public string TreeRevisionId { get; set; } = string.Empty;
+        public string PageId { get; set; } = string.Empty;
     }
 
-    private sealed class NodeRow
+    private sealed class RevisionProbe
     {
-        public string NodeId { get; set; } = "";
-        public string DocumentInstanceId { get; set; } = "";
-        public string PageId { get; set; } = "";
-        public string? ParentNodeId { get; set; }
-        public string NodeType { get; set; } = "";
-        public double? BBoxX { get; set; }
-        public double? BBoxY { get; set; }
-        public double? BBoxWidth { get; set; }
-        public double? BBoxHeight { get; set; }
-        public string? OwnText { get; set; }
-        public string TextPolicy { get; set; } = "";
-        public int ReadingOrder { get; set; }
-        public string RevisionId { get; set; } = "";
-        public bool Ignored { get; set; }
+        public string DocumentInstanceId { get; set; } = string.Empty;
+        public string PageId { get; set; } = string.Empty;
+        public string Status { get; set; } = string.Empty;
+        public int IsCurrent { get; set; }
+    }
+
+    private sealed class DocumentBoxRow
+    {
+        public string BoxId { get; set; } = string.Empty;
+        public string? ParentBoxId { get; set; }
+        public string? NextSiblingBoxId { get; set; }
+        public string BoxType { get; set; } = string.Empty;
+        public string? BaseType { get; set; }
+        public string? PayloadJson { get; set; }
+        public double BBoxX { get; set; }
+        public double BBoxY { get; set; }
+        public double BBoxWidth { get; set; }
+        public double BBoxHeight { get; set; }
+        public int Suppressed { get; set; }
+    }
+
+    private sealed class PreviousUnitRow
+    {
+        public string UnitId { get; set; } = string.Empty;
+        public string BoxId { get; set; } = string.Empty;
+    }
+
+    private sealed class EvidenceRecordRow
+    {
+        public string EvidenceRecordId { get; set; } = string.Empty;
+        public string LibraryId { get; set; } = string.Empty;
+        public string SourceTitle { get; set; } = string.Empty;
+        public string? PageLabel { get; set; }
         public int PageIndex { get; set; }
-        public int? RowIndex { get; set; }
-        public int? ColIndex { get; set; }
-        public int? RowSpan { get; set; }
-        public int? ColSpan { get; set; }
-        public bool IsHeader { get; set; }
     }
 }

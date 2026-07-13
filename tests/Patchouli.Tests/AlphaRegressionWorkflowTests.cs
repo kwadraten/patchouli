@@ -14,8 +14,8 @@ using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
-using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
@@ -52,14 +52,12 @@ public sealed class AlphaRegressionWorkflowTests
             PageService pages = new(database.ConnectionFactory, clock);
             Result<Page> page = await pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null, null, 0,
                 CoordinateBasis.NormalizedPage, null, null, "alpha-test", null);
-            LayoutTreeService layout = new(database.ConnectionFactory, clock);
-            Result<LayoutRevision> revision = await layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId,
-                LayoutRevisionSource.Manual, true);
-            await layout.AddNodeAsync(revision.Value.LayoutRevisionId, page.Value.PageId, null,
-                LayoutNodeType.Paragraph, new NormalizedBBox(.1, .1, .8, .2), "这是 Alpha 中文回归文本。", TextPolicy.Own, 1,
-                LayoutNodeSource.Manual);
-            (await layout.BuildPagePlainTextAsync(page.Value.PageId, revision.Value.LayoutRevisionId)).Value.Text
-                .Should().Contain("中文回归");
+            DocumentTreeRevision revision = await BoxTreeTestData.CommitTextAsync(database.ConnectionFactory, clock,
+                document.Value.DocumentInstanceId, page.Value.PageId, "这是 Alpha 中文回归文本。");
+            DocumentMarkdownCompiler compiler = new(BoxTreeTestData.CreateService(database.ConnectionFactory, clock),
+                new MarkdigMarkdownEngine());
+            (await compiler.CompilePageMarkdownAsync(revision.TreeRevisionId)).Value.Markdown.Should()
+                .Contain("中文回归");
 
             SearchUnitBuilder builder = new(database.ConnectionFactory, clock);
             SearchIndexRebuilder index = new(database.ConnectionFactory, clock);

@@ -36,17 +36,17 @@ public sealed class ProjectBoundaryTests
     }
 
     [Fact]
-    public void Ocr_provider_paths_do_not_insert_layout_nodes_outside_shared_importer()
+    public void Ocr_provider_paths_do_not_insert_document_boxes_outside_shared_tree_service()
     {
         string ocrRoot = TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Ocr");
         string?[] offenders = Directory.EnumerateFiles(ocrRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.EndsWith("OcrLayoutImporter.cs", StringComparison.OrdinalIgnoreCase))
+            .Where(path => !path.EndsWith("DocumentTreeService.cs", StringComparison.OrdinalIgnoreCase))
             .Where(path =>
-                File.ReadAllText(path).Contains("insert into layout_nodes", StringComparison.OrdinalIgnoreCase))
+                File.ReadAllText(path).Contains("insert into document_boxes", StringComparison.OrdinalIgnoreCase))
             .Select(Path.GetFileName)
             .ToArray();
 
         offenders.Should()
-            .BeEmpty("OCR providers and coordinators should delegate layout node writes to OcrLayoutImporter.");
+            .BeEmpty("OCR providers and coordinators should delegate Box writes to DocumentTreeService.");
     }
 }

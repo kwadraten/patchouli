@@ -13,15 +13,15 @@ namespace Patchouli.Infrastructure.Ocr.MinerU;
 public sealed class MinerUResultImporter : IMinerUResultImporter
 {
     private readonly SqliteConnectionFactory _connectionFactory;
-    private readonly IOcrLayoutImporter _layoutImporter;
+    private readonly IOcrDocumentTreeImporter _treeImporter;
 
     public MinerUResultImporter(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
-        IOcrLayoutImporter? layoutImporter = null)
+        IOcrDocumentTreeImporter? treeImporter = null)
     {
         _connectionFactory = connectionFactory;
-        _layoutImporter = layoutImporter ?? new OcrLayoutImporter(connectionFactory, clock);
+        _treeImporter = treeImporter ?? new OcrDocumentTreeImporter(connectionFactory, clock);
     }
 
     public async Task<Result<MinerUImportResult>> ImportResultZipAsync(
@@ -33,155 +33,74 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             return Result<MinerUImportResult>.Failure("file_not_found", "Result zip file was not found.");
         }
 
-        if (!Guid.TryParse(request.DocumentInstanceId, out Guid docGuid))
+        if (!Guid.TryParse(request.DocumentInstanceId, out Guid documentGuid))
         {
             return Result<MinerUImportResult>.Failure("invalid_id", "Document instance ID is not a valid GUID.");
         }
 
-        DocumentInstanceId documentInstanceId = new(docGuid);
-
         MinerUContentListDocument? contentList;
-        string? fallbackMd;
-
         try
         {
             using MinerUZipReader reader = MinerUZipReader.Open(request.ZipPath);
-            string? contentListJson = reader.ReadFileContent("_content_list.json")
-                                      ?? reader.ReadFileContent("_content_list_v2.json");
-            fallbackMd = reader.ReadFileContent("full.md");
-
-            if (contentListJson is null && fallbackMd is null)
+            string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
+                                      ?? reader.ReadFileContent("_content_list.json");
+            if (contentListJson is null)
             {
                 return Result<MinerUImportResult>.Failure(
-                    "invalid_zip",
-                    "Result zip does not contain a content list JSON or fallback Markdown file.");
+                    "tree_artifact_required",
+                    "MinerU result has no verifiable content-list tree artifact; full.md cannot be imported as a pseudo box.");
             }
 
-            MinerUContentListParser parser = new();
-            contentList = contentListJson is not null ? parser.Parse(contentListJson) : null;
+            contentList = new MinerUContentListParser().Parse(contentListJson);
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mineru-result-importer"))
-        {
-            return Result<MinerUImportResult>.Failure("zip_read_error", $"Failed to read result zip: {ex.Message}");
-        }
-
-        IReadOnlyList<Page> pages;
-        try
-        {
-            Result<IReadOnlyList<Page>> pageResult = await GetPagesAsync(documentInstanceId, cancellationToken);
-            if (pageResult.IsFailure)
-            {
-                return Result<MinerUImportResult>.Failure(pageResult.ErrorCode!, pageResult.ErrorMessage!);
-            }
-
-            pages = pageResult.Value;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mineru-result-importer"))
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception,
+                                              "infrastructure.mineru-result-importer"))
         {
             return Result<MinerUImportResult>.Failure(
-                AppErrorCodes.DatabaseError,
-                $"Database error while fetching pages: {ex.Message}");
+                "zip_read_error",
+                $"Failed to read result zip: {exception.Message}");
         }
 
-        List<string> warnings = new();
-
-        if (contentList is null)
+        if (contentList is null || contentList.Pages.Count == 0)
         {
-            warnings.Add("Content list JSON not available; using Markdown fallback.");
-            return await ImportMarkdownFallbackAsync(documentInstanceId, fallbackMd!, pages, warnings,
-                cancellationToken);
+            return Result<MinerUImportResult>.Failure("no_content", "MinerU content list is empty.");
         }
 
-        if (contentList.Pages.Count == 0)
+        DocumentInstanceId documentInstanceId = new(documentGuid);
+        Result<IReadOnlyList<Page>> pages = await GetPagesAsync(documentInstanceId, cancellationToken);
+        if (pages.IsFailure)
         {
-            return Result<MinerUImportResult>.Failure("no_content", "Content list is empty.");
+            return Result<MinerUImportResult>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
         }
 
-        MinerULayoutNodeMapper mapper = new();
-        OcrLayoutDocument layoutDocument = mapper.MapDocument(contentList, pages);
-        if (layoutDocument.TotalBlockCount == 0)
+        OcrDocumentTreeCandidate candidate = new MinerUDocumentTreeCandidateMapper().MapDocument(
+            contentList, pages.Value);
+        Result candidateValidation = candidate.Validate();
+        if (candidateValidation.IsFailure)
         {
-            return Result<MinerUImportResult>.Failure("no_nodes", "No mappable layout nodes found in content list.");
+            string details = string.Join("; ", candidate.Diagnostics.Select(diagnostic => diagnostic.Code));
+            return Result<MinerUImportResult>.Failure(
+                candidateValidation.ErrorCode!,
+                string.IsNullOrWhiteSpace(details)
+                    ? candidateValidation.ErrorMessage!
+                    : $"{candidateValidation.ErrorMessage} Diagnostics: {details}");
         }
 
-        Result<OcrLayoutImportResult> import = await _layoutImporter.ImportRevisionAsync(
-            new OcrLayoutImportRequest(
-                documentInstanceId,
-                layoutDocument,
-                LayoutRevisionSource.Import,
-                LayoutNodeSource.Import,
-                MakeCurrent: true),
+        Result<OcrDocumentTreeImportResult> imported = await _treeImporter.StageAsync(
+            new OcrDocumentTreeImportRequest(documentInstanceId, candidate),
             cancellationToken);
-        if (import.IsFailure)
+        if (imported.IsFailure)
         {
-            return Result<MinerUImportResult>.Failure(import.ErrorCode!, import.ErrorMessage!);
+            return Result<MinerUImportResult>.Failure(imported.ErrorCode!, imported.ErrorMessage!);
         }
 
-        return Result<MinerUImportResult>.Success(
-            new MinerUImportResult(
-                true,
-                null,
-                import.Value.RevisionId.ToString(),
-                import.Value.NodesCreated,
-                warnings.AsReadOnly()));
-    }
-
-    private async Task<Result<MinerUImportResult>> ImportMarkdownFallbackAsync(
-        DocumentInstanceId documentInstanceId,
-        string markdown,
-        IReadOnlyList<Page> pages,
-        List<string> warnings,
-        CancellationToken cancellationToken)
-    {
-        List<OcrLayoutBlock> blocks = new();
-        Page? firstPage = pages.Count > 0 ? pages[0] : null;
-        if (!string.IsNullOrWhiteSpace(markdown) && firstPage is not null)
-        {
-            blocks.Add(new OcrLayoutBlock(
-                LayoutNodeType.Paragraph,
-                TextPolicy.Own,
-                1,
-                markdown.Trim()));
-        }
-
-        OcrLayoutDocument layoutDocument = new(
-            firstPage is null
-                ? []
-                :
-                [
-                    new OcrLayoutPage(firstPage.PageId, firstPage.PageIndex, firstPage.Width, firstPage.Height, blocks)
-                ]);
-
-        if (layoutDocument.Pages.Count == 0)
-        {
-            return Result<MinerUImportResult>.Failure(AppErrorCodes.NotFound,
-                "Document instance has no pages to import.");
-        }
-
-        Result<OcrLayoutImportResult> import = await _layoutImporter.ImportRevisionAsync(
-            new OcrLayoutImportRequest(
-                documentInstanceId,
-                layoutDocument,
-                LayoutRevisionSource.Import,
-                LayoutNodeSource.Import,
-                MakeCurrent: true),
-            cancellationToken);
-        if (import.IsFailure)
-        {
-            return Result<MinerUImportResult>.Failure(import.ErrorCode!, import.ErrorMessage!);
-        }
-
-        return Result<MinerUImportResult>.Success(
-            new MinerUImportResult(
-                true,
-                null,
-                import.Value.RevisionId.ToString(),
-                import.Value.NodesCreated,
-                warnings.AsReadOnly()));
+        return Result<MinerUImportResult>.Success(new MinerUImportResult(
+            true,
+            null,
+            imported.Value.StagingRevisionIds.Select(id => id.ToString()).ToArray(),
+            imported.Value.BoxesCreated,
+            imported.Value.Diagnostics.Select(diagnostic => diagnostic.Code).ToArray()));
     }
 
     private async Task<Result<IReadOnlyList<Page>>> GetPagesAsync(
@@ -190,7 +109,6 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
     {
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
-
         IEnumerable<PageRow> rows = await connection.QueryAsync<PageRow>(
             """
             select page_id as PageId, document_instance_id as DocumentInstanceId, page_index as PageIndex,
@@ -198,39 +116,34 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
                    coordinate_basis as CoordinateBasis, basis_width as BasisWidth, basis_height as BasisHeight,
                    renderer_basis_version as RendererBasisVersion, source_file_hash as SourceFileHash,
                    created_at as CreatedAt, updated_at as UpdatedAt
-            from pages
-            where document_instance_id = @Id
-            order by page_index;
+            from pages where document_instance_id = @Id order by page_index;
             """,
             new { Id = documentInstanceId.ToString() });
-
         return Result<IReadOnlyList<Page>>.Success(rows.Select(row => row.ToPage()).ToArray());
     }
 
     private sealed class PageRow
     {
-        public string PageId { get; set; } = "";
-        public string DocumentInstanceId { get; set; } = "";
+        public string PageId { get; set; } = string.Empty;
+        public string DocumentInstanceId { get; set; } = string.Empty;
         public int PageIndex { get; set; }
         public string? PageLabel { get; set; }
         public double? Width { get; set; }
         public double? Height { get; set; }
         public int Rotation { get; set; }
-        public string CoordinateBasis { get; set; } = "";
+        public string CoordinateBasis { get; set; } = string.Empty;
         public double? BasisWidth { get; set; }
         public double? BasisHeight { get; set; }
-        public string RendererBasisVersion { get; set; } = "";
+        public string RendererBasisVersion { get; set; } = string.Empty;
         public string? SourceFileHash { get; set; }
-        public string CreatedAt { get; set; } = "";
-        public string UpdatedAt { get; set; } = "";
+        public string CreatedAt { get; set; } = string.Empty;
+        public string UpdatedAt { get; set; } = string.Empty;
 
         public Page ToPage()
         {
-            string pageId = PageId;
-            string documentId = DocumentInstanceId;
             return new Page(
-                Patchouli.Core.Ids.PageId.Parse(pageId),
-                Patchouli.Core.Ids.DocumentInstanceId.Parse(documentId),
+                Patchouli.Core.Ids.PageId.Parse(PageId),
+                Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
                 PageIndex,
                 PageLabel,
                 Width,

@@ -112,8 +112,9 @@ public sealed class SqliteSearchService : ISearchService
             {
                 UnitHitRow[] matchedRows = (await connection.QueryAsync<UnitHitRow>(
                     """
-                    select su.unit_id as UnitId, su.page_id as PageId, su.resolved_text as Text, su.node_type as NodeType,
-                           su.reading_order as ReadingOrder, su.layout_revision_id as LayoutRevisionId,
+                    select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
+                           su.resolved_text as Text, su.box_type as BoxType,
+                           su.ordinal as Ordinal, su.tree_revision_id as TreeRevisionId,
                            i.item_id as ItemId, i.title as ItemTitle, di.document_instance_id as DocumentInstanceId,
                            p.page_label as PageLabel, p.page_index as PageIndex
                     from search_units_fts f
@@ -124,7 +125,7 @@ public sealed class SqliteSearchService : ISearchService
                     where search_units_fts match @Match
                       and su.page_id = @PageId
                       and su.status = @Status
-                    order by su.reading_order, su.unit_id
+                    order by su.ordinal, su.unit_id
                     limit @Limit;
                     """,
                     new
@@ -168,7 +169,7 @@ public sealed class SqliteSearchService : ISearchService
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             UnitHitRow? row = await connection.QuerySingleOrDefaultAsync<UnitHitRow>(
-                "select unit_id as UnitId, page_id as PageId, resolved_text as Text, node_type as NodeType, reading_order as ReadingOrder, layout_revision_id as LayoutRevisionId from search_units where unit_id = @UnitId;",
+                "select unit_id as UnitId, page_id as PageId, box_id as BoxId, resolved_text as Text, box_type as BoxType, ordinal as Ordinal, tree_revision_id as TreeRevisionId from search_units where unit_id = @UnitId;",
                 new { UnitId = unitId.ToString() });
             if (row is null)
             {
@@ -180,15 +181,15 @@ public sealed class SqliteSearchService : ISearchService
             after = Math.Clamp(after, 0, 10);
             UnitHitRow[] siblings = (await connection.QueryAsync<UnitHitRow>(
                 """
-                select unit_id as UnitId, page_id as PageId, resolved_text as Text, node_type as NodeType,
-                       reading_order as ReadingOrder, layout_revision_id as LayoutRevisionId
+                select unit_id as UnitId, page_id as PageId, box_id as BoxId, resolved_text as Text, box_type as BoxType,
+                       ordinal as Ordinal, tree_revision_id as TreeRevisionId
                 from search_units
                 where page_id = @PageId
-                  and layout_revision_id = @RevisionId
+                  and tree_revision_id = @RevisionId
                   and status = @Status
-                order by reading_order, unit_id;
+                order by ordinal, unit_id;
                 """,
-                new { row.PageId, RevisionId = row.LayoutRevisionId, Status = SearchUnitStatus.Current })).ToArray();
+                new { row.PageId, RevisionId = row.TreeRevisionId, Status = SearchUnitStatus.Current })).ToArray();
             int index = Array.FindIndex(siblings, s => s.UnitId == row.UnitId);
             if (index < 0)
             {
@@ -272,10 +273,11 @@ public sealed class SqliteSearchService : ISearchService
     {
         public string UnitId { get; set; } = "";
         public string PageId { get; set; } = "";
+        public string BoxId { get; set; } = "";
         public string Text { get; set; } = "";
-        public string NodeType { get; set; } = "";
-        public int ReadingOrder { get; set; }
-        public string LayoutRevisionId { get; set; } = "";
+        public string BoxType { get; set; } = "";
+        public int Ordinal { get; set; }
+        public string TreeRevisionId { get; set; } = "";
         public string ItemId { get; set; } = "";
         public string ItemTitle { get; set; } = "";
         public string DocumentInstanceId { get; set; } = "";
@@ -284,9 +286,9 @@ public sealed class SqliteSearchService : ISearchService
 
         public SearchMatchedUnit ToMatchedUnit(bool isMatch)
         {
-            return new SearchMatchedUnit(SearchUnitId.Parse(UnitId), Core.Ids.PageId.Parse(PageId), Text, NodeType,
-                ReadingOrder,
-                Core.Ids.LayoutRevisionId.Parse(LayoutRevisionId), isMatch);
+            return new SearchMatchedUnit(SearchUnitId.Parse(UnitId), Core.Ids.PageId.Parse(PageId),
+                DocumentBoxId.Parse(BoxId), Text, BoxType, Ordinal,
+                DocumentTreeRevisionId.Parse(TreeRevisionId), isMatch);
         }
     }
 

@@ -286,8 +286,8 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
                     matchedUnits.Add(new SearchMatchedUnitViewModel(
                         unit.UnitId.ToString(),
                         unit.Text,
-                        unit.NodeType,
-                        unit.ReadingOrder,
+                        unit.BoxType,
+                        unit.Ordinal,
                         unit.IsMatch,
                         null));
                     firstMatchedUnit ??= unit.UnitId.ToString();

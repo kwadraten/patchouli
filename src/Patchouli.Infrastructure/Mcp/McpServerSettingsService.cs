@@ -130,11 +130,14 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 .Select(value => value.GetString()!).ToArray()
             : [];
         string token = mcp.TryGetProperty("Token", out JsonElement t) ? t.GetString() ?? "" : "";
-        IReadOnlyList<McpToolOverride> tools = mcp.TryGetProperty("ToolOverrides", out JsonElement overrides) && overrides.ValueKind == JsonValueKind.Array
-            ? overrides.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
-                .Select(value => new McpToolOverride(value.GetProperty("ToolName").GetString() ?? "", value.GetProperty("Enabled").GetBoolean(),
-                    value.TryGetProperty("DisabledReason", out JsonElement reason) ? reason.GetString() : null)).ToArray()
-            : [];
+        IReadOnlyList<McpToolOverride> tools =
+            mcp.TryGetProperty("ToolOverrides", out JsonElement overrides) && overrides.ValueKind == JsonValueKind.Array
+                ? overrides.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
+                    .Select(value => new McpToolOverride(value.GetProperty("ToolName").GetString() ?? "",
+                        value.GetProperty("Enabled").GetBoolean(),
+                        value.TryGetProperty("DisabledReason", out JsonElement reason) ? reason.GetString() : null))
+                    .ToArray()
+                : [];
         return new McpServerSettings(port, bindAddress, cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
             string.IsNullOrWhiteSpace(token) ? null : token, tools, _clock.UtcNow);

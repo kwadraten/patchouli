@@ -37,8 +37,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             CreateRow? row = await connection.QuerySingleOrDefaultAsync<CreateRow>(
                 """
                 select lm.library_id as LibraryId, su.document_instance_id as DocumentInstanceId, su.page_id as PageId,
-                       su.unit_id as UnitId, su.text_revision_id as TextRevisionId, su.bbox_revision_id as BboxRevisionId,
-                       su.layout_revision_id as LayoutRevisionId, su.resolved_text as ResolvedText,
+                       su.unit_id as UnitId, su.tree_revision_id as TreeRevisionId, su.box_id as BoxId,
+                       su.resolved_text as ResolvedText,
                        i.title as SourceTitle, p.page_label as PageLabel, p.page_index as PageIndex
                 from search_units su
                 join pages p on p.page_id = su.page_id
@@ -57,10 +57,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 LibraryId.Parse(row.LibraryId),
                 DocumentInstanceId.Parse(row.DocumentInstanceId),
                 PageId.Parse(row.PageId),
-                SearchUnitId.Parse(row.UnitId),
-                row.TextRevisionId,
-                row.BboxRevisionId,
-                LayoutRevisionId.Parse(row.LayoutRevisionId));
+                DocumentTreeRevisionId.Parse(row.TreeRevisionId),
+                DocumentBoxId.Parse(row.BoxId));
             Result<string> encoded = EvidenceReferenceCodec.Encode(reference);
             if (encoded.IsFailure)
             {
@@ -79,12 +77,12 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 """
                 insert into evidence_ref_records (
                     evidence_record_id, evidence_ref_id, library_id, document_instance_id, page_id, unit_id,
-                    text_revision_id, bbox_revision_id, layout_revision_id, snapshot_id, pinned_text,
+                    tree_revision_id, box_id, snapshot_id, pinned_text,
                     source_title, page_label, page_index, status, created_at
                 )
                 values (
                     @RecordId, @EvidenceRefId, @LibraryId, @DocumentInstanceId, @PageId, @UnitId,
-                    @TextRevisionId, @BboxRevisionId, @LayoutRevisionId, null, @PinnedText,
+                    @TreeRevisionId, @BoxId, null, @PinnedText,
                     @SourceTitle, @PageLabel, @PageIndex, @Status, @CreatedAt
                 );
                 """,
@@ -96,9 +94,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                     row.DocumentInstanceId,
                     row.PageId,
                     row.UnitId,
-                    row.TextRevisionId,
-                    row.BboxRevisionId,
-                    row.LayoutRevisionId,
+                    row.TreeRevisionId,
+                    row.BoxId,
                     PinnedText = row.ResolvedText,
                     row.SourceTitle,
                     row.PageLabel,
@@ -366,7 +363,6 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             update search_units
             set status = @Status,
                 resolved_text = case when @Purge = 1 then @PurgedText else resolved_text end,
-                bbox_union_json = case when @Purge = 1 then null else bbox_union_json end,
                 updated_at = @UpdatedAt
             where unit_id = @UnitId;
             """,
@@ -380,27 +376,6 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             },
             tx);
         await connection.ExecuteAsync("delete from search_units_fts where unit_id = @UnitId;", new { record.UnitId },
-            tx);
-        await connection.ExecuteAsync(
-            """
-            with recursive affected(node_id) as (
-                select root_node_id from search_units where unit_id = @UnitId
-                union all
-                select n.node_id
-                from layout_nodes n
-                join affected a on n.parent_node_id = a.node_id
-            )
-            update layout_nodes
-            set ignored = 1,
-                own_text = case when @Purge = 1 then null else own_text end,
-                bbox_x = case when @Purge = 1 then null else bbox_x end,
-                bbox_y = case when @Purge = 1 then null else bbox_y end,
-                bbox_width = case when @Purge = 1 then null else bbox_width end,
-                bbox_height = case when @Purge = 1 then null else bbox_height end,
-                confidence = case when @Purge = 1 then null else confidence end
-            where node_id in (select node_id from affected);
-            """,
-            new { record.UnitId, Purge = purge ? 1 : 0 },
             tx);
     }
 
@@ -442,8 +417,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         UnitRow? unit = await CurrentUnitAsync(connection, final.Record);
         return FromRecord(EvidenceResolutionStatus.FoundCurrent, final.Record,
             unit?.ResolvedText ?? final.Record.PinnedText, unit?.ResolvedText != final.Record.PinnedText,
-            unit?.LayoutRevisionId != final.Record.LayoutRevisionId,
-            unit?.BboxRevisionId != final.Record.BboxRevisionId, Array.Empty<string>(), final.Summary, null);
+            unit?.TreeRevisionId != final.Record.TreeRevisionId,
+            false, Array.Empty<string>(), final.Summary, null);
     }
 
     private static async Task<EvidenceResolutionResult> ResolveCompareAsync(
@@ -453,8 +428,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         UnitRow? unit = await CurrentUnitAsync(connection, final.Record);
         string currentText = unit?.ResolvedText ?? final.Record.PinnedText;
         return FromRecord(EvidenceResolutionStatus.Compared, record, currentText, currentText != record.PinnedText,
-            (unit?.LayoutRevisionId ?? final.Record.LayoutRevisionId) != record.LayoutRevisionId,
-            (unit?.BboxRevisionId ?? final.Record.BboxRevisionId) != record.BboxRevisionId, Array.Empty<string>(),
+            (unit?.TreeRevisionId ?? final.Record.TreeRevisionId) != record.TreeRevisionId,
+            false, Array.Empty<string>(),
             final.Summary, final.Warning);
     }
 
@@ -490,7 +465,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         string evidenceRefId)
     {
         return await connection.QuerySingleOrDefaultAsync<RecordRow>(
-            "select evidence_record_id as EvidenceRecordId, evidence_ref_id as EvidenceRefId, library_id as LibraryId, document_instance_id as DocumentInstanceId, page_id as PageId, unit_id as UnitId, text_revision_id as TextRevisionId, bbox_revision_id as BboxRevisionId, layout_revision_id as LayoutRevisionId, snapshot_id as SnapshotId, pinned_text as PinnedText, source_title as SourceTitle, page_label as PageLabel, page_index as PageIndex, status as Status, created_at as CreatedAt from evidence_ref_records where evidence_ref_id = @EvidenceRefId;",
+            "select evidence_record_id as EvidenceRecordId, evidence_ref_id as EvidenceRefId, library_id as LibraryId, document_instance_id as DocumentInstanceId, page_id as PageId, unit_id as UnitId, tree_revision_id as TreeRevisionId, box_id as BoxId, snapshot_id as SnapshotId, pinned_text as PinnedText, source_title as SourceTitle, page_label as PageLabel, page_index as PageIndex, status as Status, created_at as CreatedAt from evidence_ref_records where evidence_ref_id = @EvidenceRefId;",
             new { EvidenceRefId = evidenceRefId });
     }
 
@@ -498,7 +473,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         RecordRow record)
     {
         return await connection.QuerySingleOrDefaultAsync<UnitRow>(
-            "select resolved_text as ResolvedText, layout_revision_id as LayoutRevisionId, bbox_revision_id as BboxRevisionId from search_units where unit_id = @UnitId and status = 'current';",
+            "select resolved_text as ResolvedText, tree_revision_id as TreeRevisionId, box_id as BoxId from search_units where unit_id = @UnitId and status = 'current';",
             new { record.UnitId });
     }
 
@@ -521,7 +496,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 """
                 select r.evidence_record_id as EvidenceRecordId, r.evidence_ref_id as EvidenceRefId, r.library_id as LibraryId,
                        r.document_instance_id as DocumentInstanceId, r.page_id as PageId, r.unit_id as UnitId,
-                       r.text_revision_id as TextRevisionId, r.bbox_revision_id as BboxRevisionId, r.layout_revision_id as LayoutRevisionId,
+                       r.tree_revision_id as TreeRevisionId, r.box_id as BoxId,
                        r.snapshot_id as SnapshotId, r.pinned_text as PinnedText, r.source_title as SourceTitle, r.page_label as PageLabel,
                        r.page_index as PageIndex, r.status as Status, r.created_at as CreatedAt
                 from evidence_successors s
@@ -570,9 +545,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         public string DocumentInstanceId { get; set; } = "";
         public string PageId { get; set; } = "";
         public string UnitId { get; set; } = "";
-        public string TextRevisionId { get; set; } = "";
-        public string BboxRevisionId { get; set; } = "";
-        public string LayoutRevisionId { get; set; } = "";
+        public string TreeRevisionId { get; set; } = "";
+        public string BoxId { get; set; } = "";
         public string ResolvedText { get; set; } = "";
         public string SourceTitle { get; set; } = "";
         public string? PageLabel { get; set; }
@@ -582,8 +556,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
     private sealed class UnitRow
     {
         public string ResolvedText { get; set; } = "";
-        public string LayoutRevisionId { get; set; } = "";
-        public string BboxRevisionId { get; set; } = "";
+        public string TreeRevisionId { get; set; } = "";
+        public string BoxId { get; set; } = "";
     }
 
     private sealed class RecordRow
@@ -594,9 +568,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         public string DocumentInstanceId { get; set; } = "";
         public string PageId { get; set; } = "";
         public string UnitId { get; set; } = "";
-        public string TextRevisionId { get; set; } = "";
-        public string BboxRevisionId { get; set; } = "";
-        public string LayoutRevisionId { get; set; } = "";
+        public string TreeRevisionId { get; set; } = "";
+        public string BoxId { get; set; } = "";
         public string? SnapshotId { get; set; }
         public string PinnedText { get; set; } = "";
         public string SourceTitle { get; set; } = "";
@@ -609,8 +582,8 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         {
             return new EvidenceRefRecord(EvidenceRecordId, EvidenceRefId, Core.Ids.LibraryId.Parse(LibraryId),
                 Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId), Core.Ids.PageId.Parse(PageId),
-                SearchUnitId.Parse(UnitId), TextRevisionId, BboxRevisionId,
-                Core.Ids.LayoutRevisionId.Parse(LayoutRevisionId), SnapshotId, PinnedText, SourceTitle, PageLabel,
+                SearchUnitId.Parse(UnitId), DocumentTreeRevisionId.Parse(TreeRevisionId),
+                DocumentBoxId.Parse(BoxId), SnapshotId, PinnedText, SourceTitle, PageLabel,
                 PageIndex, Status, DateTimeOffset.Parse(CreatedAt));
         }
     }

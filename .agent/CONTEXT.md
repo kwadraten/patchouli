@@ -1,6 +1,6 @@
 # Literature Library
 
-Patchouli is a personal literature manager that treats user-owned source files as evidence-bearing documents. The domain language centers on stable bibliographic identity, relocatable files, versioned OCR/layout text, searchable units, and text-only evidence references.
+Patchouli is a personal literature manager that treats user-owned source files as evidence-bearing documents. The domain language centers on stable bibliographic identity, relocatable files, immutable page-local Document Box Trees, searchable units, and text-only evidence references.
 
 ## Standing Product Boundaries
 
@@ -16,13 +16,13 @@ Original PDFs/images remain in user-managed folders. Patchouli stores FileAsset 
 Page renders, thumbnails, OCR intermediate images, and overlays are local rebuildable caches. `page_renders` is a local cache namespace only. MCP never returns cached images or image paths.
 
 **OCR adoption**:
-OCR output is staging or candidate output until adopted. Only committed current LayoutRevisions feed default search, evidence resolution, and MCP reads. Failed bbox coordinate conversion blocks that page from OCR/layout/search/MCP exposure.
+OCR output is staging or candidate output until adopted. Only the committed current DocumentTreeRevision of each physical page feeds default search, evidence resolution, and MCP reads. Failed bbox coordinate conversion blocks that page from OCR/Box Tree/search/MCP exposure.
 
 **OCR interchange schema**:
-MinerU remains the preferred OCR/layout provider and its content-list-style output is the compatibility baseline for OCR text storage, editing, layout mapping, tables, bbox, SearchUnits, and evidence. Other OCR providers, including multimodal LLM OCR, must normalize their output into a MinerU-compatible intermediate shape before it enters LayoutRevisions, LayoutNodes, SearchUnits, or MCP-visible evidence.
+MinerU remains the preferred OCR provider, but its JSON is an import format rather than the database schema. Every provider produces a short-lived `OcrDocumentTreeCandidate`; the shared importer validates and stages page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage.
 
 **Search and evidence**:
-SearchUnits are persisted derived text units generated from committed layout trees. SearchUnit metadata is synced; the local FTS index is a rebuildable local cache. EvidenceRefs resolve pinned by default, and current/compare modes must surface drift instead of silently changing copied evidence.
+SearchUnits are persisted derived text units generated one per non-suppressed leaf DocumentBox in sibling-pointer order. SearchUnit metadata is synced; the local FTS index is a rebuildable local cache. EvidenceRefs identify `(tree_revision_id, box_id)`, resolve pinned by default, and current/compare modes must surface drift instead of silently changing copied evidence.
 
 **MCP Read API**:
 MCP is read-only and text-only. It can search and read evidence context, but it never writes metadata, edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. MCP 无法读取提供程序密钥.
@@ -61,19 +61,25 @@ A user-approved directory tree that can be scanned to relocate missing or moved 
 _Avoid_: Sync root, library root
 
 **DocumentInstance**:
-A concrete manifestation of an Item, such as a scan, OCR PDF, partial file, supplement, or alternate digitization. It owns pages, OCR/layout revisions, search units, and evidence refs.
+A concrete manifestation of an Item, such as a scan, OCR PDF, partial file, supplement, or alternate digitization. It owns physical pages, page-local Document Tree revisions, search units, and evidence refs.
 _Avoid_: File, item, attachment
 
 **Page**:
 An ordered page within a DocumentInstance, with coordinate basis metadata used to interpret layout and evidence regions.
 
-**LayoutRevision**:
-A versioned layout/text state for a DocumentInstance. Only committed current revisions feed default search and MCP reads.
-_Avoid_: OCR text blob
+**DocumentTreeRevision**:
+An immutable, page-local revision of a physical Page's Box Tree. `staging` and `draft` revisions are not current; adoption or edit commit creates the single committed current revision for that physical page.
+_Avoid_: LayoutRevision, document-wide OCR text blob
 
-**LayoutNode**:
-A node in the page layout tree, such as a paragraph, heading, table, line, or custom block, with text policy, reading order, and optional bbox.
-_Avoid_: Search result, page block
+**DocumentBox**:
+A stable-ID node inside one DocumentTreeRevision. Sibling pointers are the only canonical order. A Box has a normalized bbox, type, optional typed leaf payload, and `suppressed`; only `logical_page` may have children.
+_Avoid_: LayoutNode, reading-order row, table cell
+
+**Logical Page**:
+An optional `logical_page` root used only when one scanned physical Page contains multiple page regions. Logical pages are ordered siblings inside the physical page and are not rows in `pages`.
+
+**Compiled Markdown**:
+The deterministic, ephemeral Markdown projection of a DocumentTreeRevision. The central Markdig pipeline produces validation, plain text, and native-preview nodes; AST and UI SourceMap are never persisted or synced.
 
 **OCR Preset**:
 A user-facing reusable OCR/HTR configuration. Presets are selected manually and are distinct from Search Profiles.
@@ -93,7 +99,7 @@ _Avoid_: Current OCR
 OCR output preserved for later user adoption. It is not part of default search or MCP until adopted.
 
 **SearchUnit**:
-A persisted derived text unit generated from the layout tree for search, evidence, and page context. SearchUnit metadata is synced; the FTS index is rebuildable local cache.
+A persisted derived text unit generated from one non-suppressed leaf DocumentBox for search, evidence, and page context. SearchUnit metadata is synced; the FTS index is rebuildable local cache.
 _Avoid_: FTS row, snippet
 
 **SearchProfile**:
@@ -101,7 +107,7 @@ A search-time bundle of rewrite rules, aliases, and recall behavior. It is unrel
 _Avoid_: OCR Profile, OCR Preset
 
 **EvidenceRef**:
-A long-term parseable text reference to evidence over a SearchUnit and its revision identities.
+A long-term parseable text reference whose v2 identity is `(tree_revision_id, box_id)`; SearchUnit is the creation/resolution surface, not the evidence identity.
 _Avoid_: Citation, file URL, local path
 
 **Pinned Evidence**:

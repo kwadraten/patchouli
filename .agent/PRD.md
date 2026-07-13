@@ -1,11 +1,17 @@
 # Patchouli PRD v2 正式版
 
 状态：正式版
-日期：2026-07-08
+日期：2026-07-13
+
+### 0.2.0 Document Box Tree 修订
+
+0.2.0 是有意的 schema/API 断代：fresh SQLite library 只包含页级 `document_tree_revisions` 与 `document_boxes`。应用必须拒绝 0.1.x/未知 epoch；不提供 LayoutRevision/LayoutNode migration、兼容 adapter、双写或 `evref:v1` 解码。ADR `0015` 与本节覆盖下方 v1.1 历史基线中关于 legacy layout schema 的描述。
+
+每个物理 Page 独立拥有一个 current immutable DocumentTreeRevision。Box sibling 指针是唯一顺序；只有 `logical_page` 可有 children；leaf 使用 typed payload。中央 Markdig 管线统一验证、确定性 Markdown、纯文本和原生 Avalonia 预览，raw HTML 禁用，AST/SourceMap 不持久化。
 
 ## 1. 产品定位
 
-Patchouli 是桌面优先的个人文献管理器，围绕题录、用户自有源文件、OCR/布局修订、搜索单元和稳定证据引用构建。
+Patchouli 是桌面优先的个人文献管理器，围绕题录、用户自有源文件、页级 Document Box Tree 修订、搜索单元和稳定证据引用构建。
 
 v2 的目标是推出最终用户可用版本。这里的“可用”指：
 
@@ -29,7 +35,7 @@ v2 完成时，用户应能完成以下端到端工作流：
 4. 在题录编辑器中按 CSL type 填写合适字段，保存 creator、date、identifier 和扩展 CSL 字段。
 5. 管理 CSL 样式，复制或导出单条/多条题录；遇到 `general` 或渲染错误时得到明确 warning/error，而不是空结果。
 6. 配置 MCP 端口、bind、CORS 和 token；MCP 可返回题录、证据、文档状态和 CSL 输出，但不暴露路径、图片、密钥或 OCR 配置。
-7. 使用 MinerU 或其他生产 OCR provider 运行 OCR，所有 provider 输出进入同一 MinerU-compatible/OcrLayoutDocument 流水线。
+7. 使用 MinerU 或其他生产 OCR provider 运行 OCR，所有 provider 输出进入同一 `OcrDocumentTreeCandidate` staging/adoption 流水线。
 8. 在 OCR 编辑器里局部识别、预览候选、处理 bbox 冲突并采纳结果。
 9. 通过清晰菜单、右键菜单、状态栏、阻塞弹窗和冲突弹窗理解当前操作后果。
 
@@ -141,30 +147,30 @@ v2 必须实现独立的 CSL 样式管理 UI 和题录生成功能。
 
 v2 必须把 OCR 编辑器从 alpha 预览推进到可用工作台。
 
-- PDF 工作台显示页面图像、当前布局节点、bbox、阅读顺序和选中节点属性。
+- PDF 工作台显示页面图像、当前 DocumentBox、bbox、sibling 顺序和选中 Box 属性，并通过中央 Markdig 提供无 WebView 的原生预览。
 - 支持框选区域后运行局部 OCR。
-- 支持局部 OCR 结果作为候选进入 staging，不自动污染 current layout/search/MCP。
+- 支持局部 OCR 结果作为短生命周期 leaf payload diff；接受前不得修改 bbox、parent、sibling 或 suppressed，也不污染 current/search/MCP。
 - 支持候选结果对比、按区域/页面采纳、撤销采纳前操作。
-- 支持手工编辑文本、节点类型、reading_order、bbox 和 ignored 状态。
+- 支持显式 insert/update/move/split/merge/delete、bbox 与 suppressed 命令；所有命令只修改 page draft。
 - 对普通 bbox 重叠显示冲突，而不是静默保存。
 - ruby、边注等允许重叠类型必须有显式节点类型或样式声明。
 - OCR 编辑器中所有会改变证据 current 的操作都应显示 search index stale/partial 的后果。
 - 局部 OCR 的输入是 page + normalized bbox + OCR Preset Version；输出仍进入 MinerU-compatible 中间结构。
 - 局部 OCR 采纳默认只替换用户显式选中的节点或空区域，不自动推断删除周边节点。
-- OCR 编辑器必须把 `LayoutTreeService` 的普通 bbox overlap 从通用 validation error 提升为结构化冲突 `CF-06`。
+- 普通 sibling bbox overlap 必须产生结构化冲突 `CF-06`，且失败命令不得部分修改 draft。
 
 ### 3.6 生产 OCR Provider
 
-v2 不再把 Mock、历史本地 CLI OCR、本地占位 OCR 作为用户可见或生产可选 OCR。MinerU 仍然是首选生产 OCR/provider，并且 MinerU content list / layout mapper 仍是 OCR 文本存储、编辑、表格、bbox、布局修订和搜索单元生成的 schema 基准。
+v2 不再把 Mock、历史本地 CLI OCR、本地占位 OCR 作为用户可见或生产可选 OCR。MinerU 仍然是首选生产 OCR/provider，但 MinerU JSON 只是导入格式，Document Box Tree 才是 OCR 文本、编辑、bbox、搜索和证据的 canonical model。
 
 - Mock OCR 只允许存在于测试工程或明确的开发测试路径。
 - 历史本地 CLI OCR 和 local placeholder 不应出现在最终用户 UI、默认设置、首轮初始化或生产 preset 中。
 - v2 可新增多模态 LLM OCR provider，作为 MinerU 之外的生产 OCR 路径之一。
-- 任何新增 OCR provider 都必须把输出规范化为 MinerU-compatible 的中间结构，再进入 `LayoutRevision`、`LayoutNode`、SearchUnit、证据和 MCP。
-- 兼容结构至少需要表达 page、block type、text/latex、bbox、confidence、table/table_row/table_cell、row/column/span/header 信息。
-- Provider-specific 原始响应可以作为调试/溯源附件保留，但不得成为默认编辑、搜索或 MCP 读取的直接数据源。
-- v2 应把当前 `MinerUContentListDocument` / mapper 概念抽象成 provider-neutral DTO，例如 `OcrLayoutDocument`、`OcrLayoutPage`、`OcrLayoutBlock`、`OcrTableCell`。MinerU importer 是该 DTO 的第一个 parser，其他 provider 先转换到该 DTO。
-- 不允许每个 provider 各自直接写 `layout_nodes`；所有 provider 必须走同一个 import/adoption service。
+- 任何新增 OCR provider 都必须输出 provider-neutral `OcrDocumentTreeCandidate`，再进入 shared tree importer/adoption service。
+- candidate 表达 page、leaf type/subtype、typed payload、bbox、confidence、source order 与 suppressed；provider order 只初始化 sibling pointers。
+- Provider-specific 完整原始响应不进入 canonical database、snapshot、编辑、搜索或 MCP 数据面。
+- MinerU 规则表格转为单一 GFM leaf；不规则表格保存 `[Table]` + diagnostic；不得保存 table-cell rows。
+- 不允许 provider 直接写 `document_boxes`；所有 provider 必须走同一个 import/adoption service。
 - OCR provider 配置只负责保存和使用用户提供的 token/secret key、endpoint、model id 和必要参数。
 - Patchouli 不负责账号注册、配额购买、余额检查、成本估算或云端计费策略。
 - provider 返回的认证、限流、配额、模型不可用等错误按普通 provider 错误展示，不进入账号管理流程。
@@ -297,7 +303,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | 初次 PDF 导入 type | 扫描只产生文件事实；导入 skeleton item 使用内部 `general` 类型；保存时警告用户细分；CSL 渲染遇到 `general` 必须阻止并返回 `general_type_not_renderable`。 |
 | 切换 item type | 不删除隐藏字段。隐藏字段保留并显示在“其他已保存字段”区域。 |
 | 新建题录标识符 | 新建时 identifiers 暂存，保存时与 item 一起提交。 |
-| OCR schema | 多模态 LLM 输出不能直接写 layout_nodes；必须先转换为 MinerU-compatible/OcrLayoutDocument，再走统一 import/adoption。 |
+| OCR schema | provider 不能直接写 `document_boxes`；必须先转换为 `OcrDocumentTreeCandidate`，再走统一 import/adoption。 |
 | 局部 OCR | 区域 OCR 不自动删除重叠块；只替换显式选中节点；普通重叠生成 CF-06。 |
 | FileSearchRoot 扫描 | AddSearchRoot 不是单纯 insert；添加 root 必须创建 scan run，并以阻塞操作表达。 |
 | 冲突 code | UI 不解析错误字符串；CF-01 到 CF-06 必须是结构化 code/DTO。 |
@@ -324,14 +330,14 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | V2-AC4 | MCP 可以返回 CSL 样式列表和题录渲染结果，且不暴露本地路径或 secret。 | MCP CSL contract tests |
 | V2-AC5 | 题录编辑器按 `CslItemTypeProfile` 显示 type-aware 字段，切换 type 不丢字段，creator/date/identifier 可在新建时完整编辑。 | Item editor profile + UI tests |
 | V2-AC6 | 初次 PDF 扫描/导入不把未知题录静默确认为 CSL `document`；未知题录进入 `general`，保存时明确警告需要细分，CSL 复制/导出/MCP 渲染必须阻止 `general` 并返回 warning/error。 | Pdf import classification + CSL warning tests |
-| V2-AC7 | OCR 编辑器支持区域选择、局部 OCR、候选预览、采纳和 bbox 冲突阻止。 | OCR editor UI + layout conflict tests |
+| V2-AC7 | PDF 工作台使用页级 draft/commit/discard、显式 Box 命令、原生 Markdig 预览、区域候选 diff 和 CF-06 冲突阻止。 | DocumentTree/UI/Markdown tests |
 | V2-AC8 | 生产 UI 不再暴露 Mock/历史本地 CLI OCR/local placeholder OCR；测试路径仍可使用 mock。 | UI/menu/settings boundary tests |
-| V2-AC9 | MinerU 是首选生产 OCR；多模态 LLM OCR provider 可以使用保存的 token/secret key 运行，并把输出规范化为 MinerU-compatible schema。 | OCR provider integration + schema compatibility tests |
+| V2-AC9 | MinerU 是首选生产 OCR；所有 provider 把输出规范化为 `OcrDocumentTreeCandidate`，并且无 tree artifact 时拒绝 `full.md` fallback。 | MinerU Document Tree tests |
 | V2-AC10 | 初始化扫描和新增文件搜索根扫描以阻塞式任务表达，完成前状态不可误报为 ready。 | Blocking workflow tests |
 | V2-AC11 | CF-01 到 CF-06 均有 UI 表达、状态 code、推荐动作和测试覆盖。 | Conflict workflow tests |
 | V2-AC12 | 菜单栏和右键菜单按对象/任务组织，不出现 alpha/dev-only 命令。 | XAML/ViewModel menu tests |
 | V2-AC13 | AddSearchRoot、首次初始化扫描、快照导入验证和 MCP 启动验证都通过统一 BlockingOperation 模型表达。 | BlockingOperation service tests |
-| V2-AC14 | 所有 OCR provider 通过同一 OcrLayoutDocument import/adoption service 写入布局，不允许 provider 直写 layout_nodes。 | OCR schema boundary tests |
+| V2-AC14 | 所有 OCR provider 通过同一 Document Tree import/adoption service 写入 staging，不允许 provider 直写 `document_boxes`。 | OCR schema boundary tests |
 | V2-AC15 | CSL item mapper 对核心 CSL 字段、creator/date/identifier、extra_csl、`general` 阻止渲染和 warning 行为有纯单元测试。 | CSL mapper tests |
 | V2-AC16 | OCR 队列页面删除手工 ID 输入表单，改为后台任务看板、真实题录标题和行级操作。 | OCR queue UI/ViewModel tests |
 | V2-AC17 | 书库列表使用 Avalonia DataGrid，支持列宽、列顺序、排序、列显隐和跨重启持久化。 | Library grid UI/ViewModel tests |
@@ -354,10 +360,10 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | OCR 提供程序 | Mock、本地占位、MinerU client/downloader/importer/layout mapper/content list v2 解析已存在；MinerU 是第一产品 OCR/layout 路径的 ADR 已记录。 | `MinerU*Tests`、ADR `0014` |
 | OCR 生命周期 | 运行按页面保存；staging/candidate/current；取消、隐藏、unset current、completed_with_errors、失败页面保留、bbox 硬失败、重试溯源、按页候选采纳。 | `OcrLifecycleTests` |
 | OCR 队列 | 并发限制、优先级、老化、暂停/恢复、取消、瞬时重试、需要人工修复的失败分类。 | `OcrQueueSchedulerTests` |
-| 布局树 | layout revision、layout node、text policy、index policy、阅读顺序、bbox、半开放节点类型、表格 cell 元数据。 | `PageLayoutTests`、迁移 `005`、`014` |
-| 搜索单元与 FTS | layout tree 生成 search_unit；本地 FTS 索引是可重建的本地缓存；索引状态 current/stale/partial/unavailable；无线性 SQL LIKE 降级。 | `SearchTests` |
+| Document Box Tree | 0.2.0 fresh schema、页级 immutable revision、typed leaf、sibling pointer、logical page、draft command、Markdig compiler/SourceMap。 | `DocumentTree*Tests`、迁移 `005`、ADR `0015` |
+| 搜索单元与 FTS | non-suppressed leaf Box 生成 search_unit；本地 FTS 索引是可重建的本地缓存；索引状态 current/stale/partial/unavailable；无线性 SQL LIKE 降级。 | `BoxTreeReadSurfaceTests` |
 | 搜索配置文件 | 搜索配置文件、rewrite rule、alias/effective profile、rewrite plan、预览/执行边界。 | `SearchProfileRewriteTests`、迁移 `011` |
-| 证据引用 | `evref:v1` 编码、pinned 默认、current/compare、superseded、tombstoned/purged/not_found/library_mismatch、Markdown 复制文本与来源。 | `EvidenceReferenceServiceTests` |
+| 证据引用 | `evref:v2` 以 `(tree_revision_id, box_id)` 编码；pinned 默认，current/compare 显示漂移。 | `BoxTreeReadSurfaceTests` |
 | MCP Read API | 第一版 MCP 是只读且纯文本的；search_library、get_item_metadata、get_document_status、get_page_text、get_page_blocks、get_search_result_context；HTTP transport。 | `McpReadApiTests`、`McpServerTransportTests` |
 | MCP 安全边界 | MCP 从不触发 OCR 或索引重建；MCP 无法读取提供程序密钥；不返回本地路径、file URL、提供程序配置、缓存图像或图像路径。 | `AlphaSecurityBoundaryTests`、ADR `0010` |
 | 凭据 | local-only `Credentials` appsettings 范围是 provider secret 的唯一持久化 owner；credential module 只提供读取、验证和日志脱敏，快照/导出/branch import 均排除凭据。 | `CredentialStoreTests`、`AlphaSecurityBoundaryTests` |
@@ -377,7 +383,8 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | Item/FileAsset/DocumentInstance 三层模型 | ADR `0005` |
 | OCR Preset Version 溯源 | ADR `0006` |
 | OCR staging 先于 current adoption | ADR `0007` |
-| layout tree 生成 SearchUnit；本地 FTS 是缓存；搜索配置文件只影响查询召回 | ADR `0008` |
+| page-local Document Box Tree 生成 SearchUnit；本地 FTS 是缓存；搜索配置文件只影响查询召回 | ADR `0008` |
+| 0.2.0 fresh schema epoch、Box Tree、中央 Markdig 与 Evidence v2 | ADR `0015` |
 | EvidenceRef 默认 pinned，旧引用不静默漂移 | ADR `0009` |
 | MCP 只读、纯文本、无 OCR/索引动作、无路径/密钥/图片 | ADR `0010` |
 | 快照分歧创建分支，无自动对象级合并，无 last-writer-wins | ADR `0011` |

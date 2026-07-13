@@ -636,19 +636,24 @@ public sealed class FileResolutionService : IFileResolutionService
             {
                 await connection.ExecuteAsync(
                     """
-                    update layout_revisions
-                    set source_basis_status = 'stale'
-                    where document_instance_id in (
-                        select document_instance_id
-                        from document_instances
-                        where file_asset_id = @FileAssetId
-                    )
-                      and coalesce(source_full_blake3, '') <> coalesce(@FullBlake3, '');
+                    insert into search_index_status (
+                        scope_type, scope_id, status, pending_document_count, pending_unit_count,
+                        progress_percent, affected_scopes_summary, reason, updated_at)
+                    select 'document_instance', document_instance_id, 'stale', 1, 0,
+                           null, 'Source file fingerprint changed', 'source_file_changed', @UpdatedAt
+                    from document_instances
+                    where file_asset_id = @FileAssetId
+                    on conflict(scope_type, scope_id) do update set
+                        status = 'stale',
+                        pending_document_count = 1,
+                        affected_scopes_summary = excluded.affected_scopes_summary,
+                        reason = excluded.reason,
+                        updated_at = excluded.updated_at;
                     """,
                     new
                     {
                         FileAssetId = fileAssetId.ToString(),
-                        fingerprint.Value.FullBlake3
+                        UpdatedAt = FormatUtc(now)
                     },
                     transaction);
             }
@@ -700,144 +705,12 @@ public sealed class FileResolutionService : IFileResolutionService
         Result<FileAsset> confirmed = await ConfirmFileAsync(
             fileAssetId,
             selectedPath,
-            false,
             true,
-            cancellationToken,
-            (connection, transaction, fingerprint, token) =>
-                CopyStaleRevisionsAsync(connection, transaction, fileAssetId, fingerprint, token));
+            true,
+            cancellationToken);
         return confirmed.IsSuccess
             ? Result.Success()
             : Result.Failure(confirmed.ErrorCode!, confirmed.ErrorMessage!, confirmed.Conflicts);
-    }
-
-    private async Task<Result> CopyStaleRevisionsAsync(
-        SqliteConnection connection,
-        DbTransaction transaction,
-        FileAssetId fileAssetId,
-        FileFingerprint fingerprint,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(fingerprint.FullBlake3))
-        {
-            return Result.Failure(AppErrorCodes.ValidationFailed,
-                "A complete fingerprint is required before deriving a layout revision.");
-        }
-
-        RevisionCopyRow[] revisions = (await connection.QueryAsync<RevisionCopyRow>(
-            """
-            select layout_revision_id as LayoutRevisionId,
-                   document_instance_id as DocumentInstanceId,
-                   source as Source,
-                   created_at as CreatedAt
-            from layout_revisions
-            where document_instance_id in (
-                select document_instance_id
-                from document_instances
-                where file_asset_id = @FileAssetId
-            )
-              and source_basis_status = 'stale'
-              and is_current = 1;
-            """,
-            new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
-
-        foreach (RevisionCopyRow revision in revisions)
-        {
-            string newRevisionId = LayoutRevisionId.New().ToString();
-            await connection.ExecuteAsync(
-                """
-                insert into layout_revisions (
-                    layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at,
-                    source_full_blake3, source_basis_status
-                )
-                values (@LayoutRevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt,
-                        @SourceFullBlake3, 'current');
-                """,
-                new
-                {
-                    LayoutRevisionId = newRevisionId,
-                    revision.DocumentInstanceId,
-                    ParentRevisionId = revision.LayoutRevisionId,
-                    Source = "reused_for_new_fingerprint",
-                    CreatedAt = FormatUtc(_clock.UtcNow),
-                    SourceFullBlake3 = fingerprint.FullBlake3
-                },
-                transaction);
-
-            LayoutNodeCopyRow[] nodes = (await connection.QueryAsync<LayoutNodeCopyRow>(
-                """
-                select node_id as NodeId,
-                       document_instance_id as DocumentInstanceId,
-                       page_id as PageId,
-                       parent_node_id as ParentNodeId,
-                       node_type as NodeType,
-                       bbox_x as BBoxX,
-                       bbox_y as BBoxY,
-                       bbox_width as BBoxWidth,
-                       bbox_height as BBoxHeight,
-                       own_text as OwnText,
-                       text_policy as TextPolicy,
-                       reading_order as ReadingOrder,
-                       source as Source,
-                       confidence as Confidence,
-                       ignored as Ignored,
-                       row_index as RowIndex,
-                       col_index as ColIndex,
-                       row_span as RowSpan,
-                       col_span as ColSpan,
-                       is_header as IsHeader
-                from layout_nodes
-                where revision_id = @RevisionId;
-                """,
-                new { RevisionId = revision.LayoutRevisionId }, transaction)).ToArray();
-
-            Dictionary<string, string> nodeIds = nodes.ToDictionary(node => node.NodeId,
-                _ => LayoutNodeId.New().ToString(), StringComparer.Ordinal);
-            foreach (LayoutNodeCopyRow node in nodes)
-            {
-                await connection.ExecuteAsync(
-                    """
-                    insert into layout_nodes (
-                        node_id, document_instance_id, page_id, parent_node_id, node_type,
-                        bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
-                        reading_order, source, revision_id, confidence, ignored,
-                        row_index, col_index, row_span, col_span, is_header
-                    )
-                    values (
-                        @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
-                        @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
-                        @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
-                        @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
-                    );
-                    """,
-                    new
-                    {
-                        NodeId = nodeIds[node.NodeId],
-                        node.DocumentInstanceId,
-                        node.PageId,
-                        ParentNodeId = node.ParentNodeId is null ? null : nodeIds[node.ParentNodeId],
-                        node.NodeType,
-                        node.BBoxX,
-                        node.BBoxY,
-                        node.BBoxWidth,
-                        node.BBoxHeight,
-                        node.OwnText,
-                        node.TextPolicy,
-                        node.ReadingOrder,
-                        node.Source,
-                        RevisionId = newRevisionId,
-                        node.Confidence,
-                        node.Ignored,
-                        node.RowIndex,
-                        node.ColIndex,
-                        node.RowSpan,
-                        node.ColSpan,
-                        node.IsHeader
-                    },
-                    transaction);
-            }
-        }
-
-        return Result.Success();
     }
 
     public async Task<Result> KeepOldEvidenceAsync(
@@ -1171,37 +1044,6 @@ public sealed class FileResolutionService : IFileResolutionService
         public string UpdatedAt { get; set; } = string.Empty;
     }
 
-    private sealed class RevisionCopyRow
-    {
-        public string LayoutRevisionId { get; set; } = string.Empty;
-        public string DocumentInstanceId { get; set; } = string.Empty;
-        public string Source { get; set; } = string.Empty;
-        public string CreatedAt { get; set; } = string.Empty;
-    }
-
-    private sealed class LayoutNodeCopyRow
-    {
-        public string NodeId { get; set; } = string.Empty;
-        public string DocumentInstanceId { get; set; } = string.Empty;
-        public string PageId { get; set; } = string.Empty;
-        public string? ParentNodeId { get; set; }
-        public string NodeType { get; set; } = string.Empty;
-        public double? BBoxX { get; set; }
-        public double? BBoxY { get; set; }
-        public double? BBoxWidth { get; set; }
-        public double? BBoxHeight { get; set; }
-        public string? OwnText { get; set; }
-        public string TextPolicy { get; set; } = string.Empty;
-        public int ReadingOrder { get; set; }
-        public string Source { get; set; } = string.Empty;
-        public double? Confidence { get; set; }
-        public int Ignored { get; set; }
-        public int? RowIndex { get; set; }
-        public int? ColIndex { get; set; }
-        public int? RowSpan { get; set; }
-        public int? ColSpan { get; set; }
-        public int IsHeader { get; set; }
-    }
 
     private sealed class SearchRootRow
     {

@@ -50,7 +50,7 @@ public sealed class MigrationRunnerTests
         firstRun.Should().Contain(m => m.Id == "002" && m.Name == "002_create_library_metadata");
         firstRun.Should().Contain(m => m.Id == "003" && m.Name == "003_create_bibliographic_core");
         firstRun.Should().Contain(m => m.Id == "004" && m.Name == "004_create_file_resolution");
-        firstRun.Should().Contain(m => m.Id == "005" && m.Name == "005_create_pages_and_layout");
+        firstRun.Should().Contain(m => m.Id == "005" && m.Name == "005_create_pages_and_document_trees");
         firstRun.Should().Contain(m => m.Id == "006" && m.Name == "006_create_ocr_lifecycle");
         firstRun.Should().Contain(m => m.Id == "007" && m.Name == "007_create_search_units_and_fts");
         firstRun.Should().Contain(m => m.Id == "008" && m.Name == "008_create_evidence_refs");

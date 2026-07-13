@@ -8,17 +8,18 @@ public sealed class AlphaEndToEndWorkflowTests
     public void EndToEnd_CreateLibrary_AddItem_File_Document_Page_Layout_Search_Evidence()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "AlphaRegressionWorkflowTests.cs"))
-            .Should().Contain("CreateItemAsync").And.Contain("BuildPagePlainTextAsync").And
+            .Should().Contain("CreateItemAsync").And.Contain("CompilePageMarkdownAsync").And
             .Contain("CreateFromSearchUnitAsync");
     }
 
     [Fact]
     public void EndToEnd_OcrQueue_MockOcr_Adopt_Search_Mcp()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "OcrQueueSchedulerTests.cs")).Should()
-            .Contain("RunPresetOnPagesAsync");
-        File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "McpReadApiTests.cs")).Should()
-            .Contain("GetPageText");
+        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Ocr",
+                "OcrRunCoordinator.cs"))
+            .Should().Contain("RunPresetOnPagesAsync");
+        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Mcp", "McpReadApi.cs"))
+            .Should().Contain("GetPageText");
     }
 
     [Fact]

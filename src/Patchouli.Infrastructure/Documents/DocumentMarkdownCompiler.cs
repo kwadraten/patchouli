@@ -1,0 +1,206 @@
+using System.Text;
+using Patchouli.Core.Documents;
+using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
+
+namespace Patchouli.Infrastructure.Documents;
+
+public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
+{
+    private readonly IDocumentTreeService _trees;
+    private readonly IMarkdownEngine _markdown;
+
+    public DocumentMarkdownCompiler(IDocumentTreeService trees, IMarkdownEngine markdown)
+    {
+        _trees = trees;
+        _markdown = markdown;
+    }
+
+    public async Task<Result<CompiledMarkdown>> CompilePageMarkdownAsync(
+        DocumentTreeRevisionId treeRevisionId,
+        bool includeSuppressed = false,
+        CancellationToken cancellationToken = default)
+    {
+        Result<IReadOnlyList<DocumentBox>> boxesResult = await _trees.ListBoxesAsync(
+            treeRevisionId, cancellationToken);
+        if (boxesResult.IsFailure)
+        {
+            return Result<CompiledMarkdown>.Failure(boxesResult.ErrorCode!, boxesResult.ErrorMessage!);
+        }
+
+        IReadOnlyList<DocumentBox> boxes = boxesResult.Value;
+        List<MarkdownDiagnostic> diagnostics = new();
+        List<PendingMap> maps = new();
+        StringBuilder output = new();
+
+        DocumentBox[] roots = Order(boxes, null).ToArray();
+        bool logicalMode = roots.All(box => box.BoxType == DocumentBoxType.LogicalPage) && roots.Length > 0;
+        if (logicalMode)
+        {
+            for (int index = 0; index < roots.Length; index++)
+            {
+                if (index > 0)
+                {
+                    AppendSeparator(output, "---");
+                }
+
+                foreach (DocumentBox child in Order(boxes, roots[index].BoxId))
+                {
+                    AppendBox(output, maps, diagnostics, child, includeSuppressed);
+                }
+            }
+        }
+        else
+        {
+            foreach (DocumentBox box in roots)
+            {
+                AppendBox(output, maps, diagnostics, box, includeSuppressed);
+            }
+        }
+
+        string markdown = output.ToString().TrimEnd();
+        MarkdownDocumentModel document = _markdown.Parse(markdown);
+        MarkdownSourceMapEntry[] sourceMap = maps.Select(map =>
+        {
+            int firstNode = document.Blocks.ToList().FindIndex(block => Intersects(block, map));
+            int nodeCount = firstNode < 0
+                ? 0
+                : document.Blocks.Skip(firstNode).TakeWhile(block => Intersects(block, map)).Count();
+            return new MarkdownSourceMapEntry(
+                map.BoxId,
+                map.Start,
+                map.Length,
+                Math.Max(0, firstNode),
+                nodeCount);
+        }).ToArray();
+        return Result<CompiledMarkdown>.Success(new CompiledMarkdown(markdown, sourceMap, diagnostics));
+    }
+
+    private static IEnumerable<DocumentBox> Order(IReadOnlyList<DocumentBox> boxes, DocumentBoxId? parentId)
+    {
+        DocumentBox[] siblings = boxes.Where(box => box.ParentBoxId == parentId).ToArray();
+        if (siblings.Length == 0)
+        {
+            yield break;
+        }
+
+        HashSet<DocumentBoxId> referenced = siblings
+            .Where(box => box.NextSiblingBoxId is not null)
+            .Select(box => box.NextSiblingBoxId!.Value)
+            .ToHashSet();
+        DocumentBox? current = siblings.SingleOrDefault(box => !referenced.Contains(box.BoxId));
+        HashSet<DocumentBoxId> visited = [];
+        while (current is not null && visited.Add(current.BoxId))
+        {
+            yield return current;
+            current = current.NextSiblingBoxId is null
+                ? null
+                : siblings.SingleOrDefault(box => box.BoxId == current.NextSiblingBoxId.Value);
+        }
+    }
+
+    private static void AppendBox(
+        StringBuilder output,
+        List<PendingMap> maps,
+        List<MarkdownDiagnostic> diagnostics,
+        DocumentBox box,
+        bool includeSuppressed)
+    {
+        if (box.Suppressed && !includeSuppressed)
+        {
+            return;
+        }
+
+        string? fragment = CompileBox(box, diagnostics);
+        if (string.IsNullOrWhiteSpace(fragment))
+        {
+            return;
+        }
+
+        if (output.Length > 0)
+        {
+            output.Append("\n\n");
+        }
+
+        int start = output.Length;
+        output.Append(fragment.Trim());
+        maps.Add(new PendingMap(box.BoxId, start, output.Length - start));
+    }
+
+    private static void AppendSeparator(StringBuilder output, string separator)
+    {
+        if (output.Length > 0)
+        {
+            output.Append("\n\n");
+        }
+
+        output.Append(separator);
+    }
+
+    private static string? CompileBox(DocumentBox box, List<MarkdownDiagnostic> diagnostics)
+    {
+        return box.Payload switch
+        {
+            TextBoxPayload text when box.BoxType == DocumentBoxType.Title =>
+                $"{new string('#', box.HeadingLevel ?? 1)} {text.Markdown.Trim()}",
+            TextBoxPayload text => text.Markdown,
+            EquationBoxPayload equation => $"$$\n{equation.Latex.Trim()}\n$$",
+            ListBoxPayload list => list.Markdown,
+            TableBoxPayload table => table.Markdown,
+            CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
+            MediaBoxPayload media => CompileMedia(box.BoxType, media),
+            null when box.BoxType == DocumentBoxType.LogicalPage => null,
+            _ => AddPayloadDiagnostic(box, diagnostics)
+        };
+    }
+
+    private static string CompileCode(string code, string? language)
+    {
+        int longestRun = LongestBacktickRun(code);
+        string fence = new('`', Math.Max(3, longestRun + 1));
+        return $"{fence}{language}\n{code.TrimEnd()}\n{fence}";
+    }
+
+    private static string CompileMedia(string boxType, MediaBoxPayload media)
+    {
+        string label = boxType == DocumentBoxType.Chart ? "Chart" : "Image";
+        return string.IsNullOrWhiteSpace(media.Description)
+            ? $"[{label}]"
+            : $"[{label}: {media.Description.Trim()}]";
+    }
+
+    private static string AddPayloadDiagnostic(DocumentBox box, List<MarkdownDiagnostic> diagnostics)
+    {
+        diagnostics.Add(new MarkdownDiagnostic(
+            "invalid_box_payload",
+            "The document box payload could not be compiled for its type.",
+            box.BoxId));
+        return string.Empty;
+    }
+
+    private static int LongestBacktickRun(string value)
+    {
+        int maximum = 0;
+        int current = 0;
+        foreach (char character in value)
+        {
+            if (character == '`')
+            {
+                maximum = Math.Max(maximum, ++current);
+            }
+            else
+            {
+                current = 0;
+            }
+        }
+
+        return maximum;
+    }
+
+    private static bool Intersects(MarkdownBlock block, PendingMap map)
+    {
+        return block.Start < map.Start + map.Length && block.Start + block.Length > map.Start;
+    }
+
+    private sealed record PendingMap(DocumentBoxId BoxId, int Start, int Length);
+}

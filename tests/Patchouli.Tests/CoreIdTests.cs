@@ -13,8 +13,9 @@ public sealed class CoreIdTests
         FileAssetId.New().Should().NotBe(FileAssetId.New());
         DocumentInstanceId.New().Should().NotBe(DocumentInstanceId.New());
         PageId.New().Should().NotBe(PageId.New());
-        LayoutRevisionId.New().Should().NotBe(LayoutRevisionId.New());
-        LayoutNodeId.New().Should().NotBe(LayoutNodeId.New());
+        DocumentTreeRevisionId.New().Should().NotBe(DocumentTreeRevisionId.New());
+        DocumentBoxId.New().Should().NotBe(DocumentBoxId.New());
+        PageEditSessionId.New().Should().NotBe(PageEditSessionId.New());
         SearchUnitId.New().Should().NotBe(SearchUnitId.New());
         EvidenceRefId.New().Should().NotBe(EvidenceRefId.New());
     }
@@ -27,8 +28,9 @@ public sealed class CoreIdTests
         FileAssetId fileAssetId = FileAssetId.New();
         DocumentInstanceId documentInstanceId = DocumentInstanceId.New();
         PageId pageId = PageId.New();
-        LayoutRevisionId layoutRevisionId = LayoutRevisionId.New();
-        LayoutNodeId layoutNodeId = LayoutNodeId.New();
+        DocumentTreeRevisionId treeRevisionId = DocumentTreeRevisionId.New();
+        DocumentBoxId boxId = DocumentBoxId.New();
+        PageEditSessionId editSessionId = PageEditSessionId.New();
         SearchUnitId searchUnitId = SearchUnitId.New();
         EvidenceRefId evidenceRefId = EvidenceRefId.New();
 
@@ -37,8 +39,9 @@ public sealed class CoreIdTests
         FileAssetId.Parse(fileAssetId.ToString()).Should().Be(fileAssetId);
         DocumentInstanceId.Parse(documentInstanceId.ToString()).Should().Be(documentInstanceId);
         PageId.Parse(pageId.ToString()).Should().Be(pageId);
-        LayoutRevisionId.Parse(layoutRevisionId.ToString()).Should().Be(layoutRevisionId);
-        LayoutNodeId.Parse(layoutNodeId.ToString()).Should().Be(layoutNodeId);
+        DocumentTreeRevisionId.Parse(treeRevisionId.ToString()).Should().Be(treeRevisionId);
+        DocumentBoxId.Parse(boxId.ToString()).Should().Be(boxId);
+        PageEditSessionId.Parse(editSessionId.ToString()).Should().Be(editSessionId);
         SearchUnitId.Parse(searchUnitId.ToString()).Should().Be(searchUnitId);
         EvidenceRefId.Parse(evidenceRefId.ToString()).Should().Be(evidenceRefId);
     }

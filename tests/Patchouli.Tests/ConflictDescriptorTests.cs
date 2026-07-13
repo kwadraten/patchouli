@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -55,14 +56,14 @@ public sealed class ConflictDescriptorTests
     }
 
     [Fact]
-    public void Layout_overlap_conflict_uses_cf06_and_adjust_bbox_action()
+    public void Document_box_overlap_conflict_uses_cf06_and_adjust_bbox_action()
     {
-        ConflictDescriptor descriptor = ConflictDescriptorMapper.LayoutBBoxOrdinaryOverlap(
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.DocumentBoxBBoxOrdinaryOverlap(
             PageId.New().ToString(),
-            LayoutNodeId.New().ToString(),
-            LayoutNodeType.Paragraph,
+            DocumentBoxId.New().ToString(),
+            DocumentBoxType.Text,
             new NormalizedBBox(0.1, 0.1, 0.2, 0.2),
-            LayoutNodeType.Block,
+            DocumentBoxType.Title,
             new NormalizedBBox(0.15, 0.15, 0.2, 0.2));
 
         descriptor.Domain.Should().Be(ConflictDomain.LayoutEdit);

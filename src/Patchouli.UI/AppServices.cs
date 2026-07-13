@@ -89,7 +89,10 @@ public sealed class AppServices
             new FileConflictActionExecutor(FileResolution, ConflictCode.SourceFileChangedOrBBoxBasisStale)
         ]);
         Pages = new PageService(ConnectionFactory, Clock);
-        Layout = new LayoutTreeService(ConnectionFactory, Clock);
+        Markdown = new MarkdigMarkdownEngine();
+        DocumentTrees = new DocumentTreeService(ConnectionFactory, Clock, Markdown);
+        DocumentTreeEditor = (IDocumentTreeEditor)DocumentTrees;
+        DocumentMarkdown = new DocumentMarkdownCompiler(DocumentTrees, Markdown);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
         OcrAdapterRegistry adapterRegistry = new();
@@ -108,23 +111,33 @@ public sealed class AppServices
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
             Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"));
         PageCoordinates = new PageCoordinateService(ConnectionFactory);
-        SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock);
+        SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
         SearchUnits = searchUnitBuilder;
         SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock);
-        OcrLayoutImporter ocrLayoutImporter = new(ConnectionFactory, Clock);
+        OcrDocumentTreeImporter ocrTreeImporter = new(DocumentTrees);
         SearchProfileService searchProfiles = new(ConnectionFactory, Library, Clock);
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
-        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrLayoutImporter);
+        MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
         Credentials = new CredentialStore(settingsPath);
         Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
-            pageOcrEngine, searchUnitBuilder, ocrLayoutImporter,
-            adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
+            pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
+            adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
+            configuration => new MinerUClient(new MinerUOptions
+            {
+                Token = configuration.Token,
+                BaseUrl = configuration.BaseUrl ?? settings.MinerU.BaseUrl,
+                ModelVersion = configuration.ModelVersion ?? settings.MinerU.ModelVersion,
+                IsOcr = configuration.IsOcr,
+                EnableTable = configuration.EnableTable,
+                EnableFormula = configuration.EnableFormula
+            }));
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
-        Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
+        Mcp = new McpReadApi(
+            ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -166,7 +179,10 @@ public sealed class AppServices
     public ConflictActionExecutorRegistry ConflictActions { get; }
     public FileSearchRootAccess FileSearchRootAccess { get; }
     public IPageService Pages { get; }
-    public ILayoutTreeService Layout { get; }
+    public IMarkdownEngine Markdown { get; }
+    public IDocumentTreeService DocumentTrees { get; }
+    public IDocumentTreeEditor DocumentTreeEditor { get; }
+    public IDocumentMarkdownCompiler DocumentMarkdown { get; }
     public IOcrPresetService OcrPresets { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
@@ -298,8 +314,8 @@ public sealed class AppServices
             Clock,
             Credentials.GetActiveSecretForProviderAsync,
             Settings.Runtime.UseMockOcrOnly ? (IOcrEngine)new MockOcrEngine() : new UnavailableOcrEngine(),
-            new SearchUnitBuilder(ConnectionFactory, Clock),
-            new OcrLayoutImporter(ConnectionFactory, Clock),
+            new SearchUnitBuilder(ConnectionFactory, Clock, Markdown),
+            new OcrDocumentTreeImporter(DocumentTrees),
             OcrAdapters,
             PageRenders,
             PageCoordinates,

@@ -9,10 +9,8 @@ public sealed record EvidenceReference(
     LibraryId LibraryId,
     DocumentInstanceId DocumentInstanceId,
     PageId PageId,
-    SearchUnitId SearchUnitId,
-    string TextRevisionId,
-    string BboxRevisionId,
-    LayoutRevisionId LayoutRevisionId,
+    DocumentTreeRevisionId TreeRevisionId,
+    DocumentBoxId BoxId,
     string? SnapshotId = null);
 
 public sealed record EvidenceRefRecord(
@@ -22,9 +20,8 @@ public sealed record EvidenceRefRecord(
     DocumentInstanceId DocumentInstanceId,
     PageId PageId,
     SearchUnitId SearchUnitId,
-    string TextRevisionId,
-    string BboxRevisionId,
-    LayoutRevisionId LayoutRevisionId,
+    DocumentTreeRevisionId TreeRevisionId,
+    DocumentBoxId BoxId,
     string? SnapshotId,
     string PinnedText,
     string SourceTitle,
@@ -93,24 +90,17 @@ public sealed record EvidenceMarkdown(
 
 public static class EvidenceReferenceCodec
 {
-    private const string Prefix = "evref:v1:";
+    private const string Prefix = "evref:v2:";
 
     public static Result<string> Encode(EvidenceReference reference)
     {
-        if (string.IsNullOrWhiteSpace(reference.TextRevisionId) || string.IsNullOrWhiteSpace(reference.BboxRevisionId))
-        {
-            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "Evidence revision ids are required.");
-        }
-
         Payload payload = new(
-            1,
+            2,
             reference.LibraryId.ToString(),
             reference.DocumentInstanceId.ToString(),
             reference.PageId.ToString(),
-            reference.SearchUnitId.ToString(),
-            reference.TextRevisionId,
-            reference.BboxRevisionId,
-            reference.LayoutRevisionId.ToString(),
+            reference.TreeRevisionId.ToString(),
+            reference.BoxId.ToString(),
             reference.SnapshotId);
         string json = JsonSerializer.Serialize(payload);
         return Result<string>.Success(Prefix + Base64UrlEncode(Encoding.UTF8.GetBytes(json)));
@@ -120,21 +110,19 @@ public static class EvidenceReferenceCodec
     {
         if (string.IsNullOrWhiteSpace(evidenceRefId) || !evidenceRefId.StartsWith(Prefix, StringComparison.Ordinal))
         {
-            return Invalid("Evidence reference must start with evref:v1:.");
+            return Invalid("Evidence reference must start with evref:v2:.");
         }
 
         try
         {
             string json = Encoding.UTF8.GetString(Base64UrlDecode(evidenceRefId[Prefix.Length..]));
             Payload? payload = JsonSerializer.Deserialize<Payload>(json);
-            if (payload is null || payload.V != 1
+            if (payload is null || payload.V != 2
                                 || string.IsNullOrWhiteSpace(payload.LibraryId)
                                 || string.IsNullOrWhiteSpace(payload.DocumentInstanceId)
                                 || string.IsNullOrWhiteSpace(payload.PageId)
-                                || string.IsNullOrWhiteSpace(payload.UnitId)
-                                || string.IsNullOrWhiteSpace(payload.TextRevisionId)
-                                || string.IsNullOrWhiteSpace(payload.BboxRevisionId)
-                                || string.IsNullOrWhiteSpace(payload.LayoutRevisionId))
+                                || string.IsNullOrWhiteSpace(payload.TreeRevisionId)
+                                || string.IsNullOrWhiteSpace(payload.BoxId))
             {
                 return Invalid("Evidence reference payload is incomplete.");
             }
@@ -143,10 +131,8 @@ public static class EvidenceReferenceCodec
                 LibraryId.Parse(payload.LibraryId),
                 DocumentInstanceId.Parse(payload.DocumentInstanceId),
                 PageId.Parse(payload.PageId),
-                SearchUnitId.Parse(payload.UnitId),
-                payload.TextRevisionId,
-                payload.BboxRevisionId,
-                LayoutRevisionId.Parse(payload.LayoutRevisionId),
+                DocumentTreeRevisionId.Parse(payload.TreeRevisionId),
+                DocumentBoxId.Parse(payload.BoxId),
                 payload.SnapshotId));
         }
         catch
@@ -177,9 +163,7 @@ public static class EvidenceReferenceCodec
         string LibraryId,
         string DocumentInstanceId,
         string PageId,
-        string UnitId,
-        string TextRevisionId,
-        string BboxRevisionId,
-        string LayoutRevisionId,
+        string TreeRevisionId,
+        string BoxId,
         string? SnapshotId);
 }

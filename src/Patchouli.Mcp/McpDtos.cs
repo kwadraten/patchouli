@@ -38,9 +38,9 @@ public sealed record McpMatchedUnit(
     SearchUnitId UnitId,
     string? EvidenceRef,
     string Text,
-    string NodeType,
-    int ReadingOrder,
-    LayoutRevisionId LayoutRevisionId,
+    string BoxType,
+    int Ordinal,
+    DocumentTreeRevisionId TreeRevisionId,
     bool IsMatch);
 
 public sealed record McpItemIdentifier(string Scheme, string Value, string? Note);
@@ -107,7 +107,7 @@ public sealed record McpPageTextRequest(
     PageId PageId,
     string ReadMode = McpReadMode.Current,
     string? EvidenceRef = null,
-    bool IncludeAnnotations = false);
+    bool IncludeSuppressed = false);
 
 public sealed record McpPageTextResponse(
     PageId PageId,
@@ -123,7 +123,7 @@ public sealed record McpPageBlocksRequest(
     string ReadMode = McpReadMode.Current,
     string? EvidenceRef = null,
     bool IncludeBbox = false,
-    bool IncludeAnnotations = false);
+    bool IncludeSuppressed = false);
 
 public sealed record McpPageBlocksResponse(
     PageId PageId,
@@ -134,10 +134,12 @@ public sealed record McpPageBlocksResponse(
     IReadOnlyList<string> Warnings);
 
 public sealed record McpPageBlock(
-    LayoutNodeId NodeId,
-    string NodeType,
+    DocumentBoxId BoxId,
+    DocumentTreeRevisionId TreeRevisionId,
+    string BoxType,
     string Text,
-    int ReadingOrder,
+    int Ordinal,
+    bool Suppressed,
     string? EvidenceRef,
     NormalizedBBox? BBox);
 
@@ -157,9 +159,9 @@ public sealed record McpContextUnit(
     string Text,
     NormalizedBBox? BBox,
     bool IsMatch,
-    int ReadingOrder,
+    int Ordinal,
     PageId PageId,
-    LayoutRevisionId LayoutRevisionId);
+    DocumentTreeRevisionId TreeRevisionId);
 
 public sealed record McpCslStyleSummary(
     string StyleId,

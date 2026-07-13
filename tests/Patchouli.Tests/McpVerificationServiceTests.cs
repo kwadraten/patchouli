@@ -11,8 +11,8 @@ using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
-using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
@@ -101,12 +101,8 @@ public sealed class McpVerificationServiceTests
             Result<Page> page = await pages.CreatePageAsync(doc.Value.DocumentInstanceId, 0, "1", null, null, 0,
                 CoordinateBasis.NormalizedPage, null, null, "test", null);
 
-            // Create a layout revision
-            LayoutTreeService layout = new(db.ConnectionFactory, clock);
-            Result<LayoutRevision> rev =
-                await layout.CreateLayoutRevisionAsync(doc.Value.DocumentInstanceId, LayoutRevisionSource.Import, true);
-            await layout.AddNodeAsync(rev.Value.LayoutRevisionId, page.Value.PageId, null, LayoutNodeType.Paragraph,
-                null, "test text", TextPolicy.Own, 1, LayoutNodeSource.Import);
+            await BoxTreeTestData.CommitTextAsync(db.ConnectionFactory, clock, doc.Value.DocumentInstanceId,
+                page.Value.PageId, "test text");
 
             SqliteSearchService search = new(db.ConnectionFactory);
             EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);

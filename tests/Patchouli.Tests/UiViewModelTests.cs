@@ -218,11 +218,8 @@ public sealed class UiViewModelTests
                     DocumentInstanceType.PrimaryScan);
             Result<Page> page = await services.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null,
                 null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
-            Result<LayoutRevision> revision =
-                await services.Layout.CreateLayoutRevisionAsync(document.Value.DocumentInstanceId,
-                    LayoutRevisionSource.Mock, true);
-            await services.Layout.AddNodeAsync(revision.Value.LayoutRevisionId, page.Value.PageId, null,
-                LayoutNodeType.Paragraph, null, "Pinned clipboard text", TextPolicy.Own, 1, LayoutNodeSource.Mock);
+            await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
+                document.Value.DocumentInstanceId, page.Value.PageId, "Pinned clipboard text");
             await services.SearchUnits.RebuildForDocumentInstanceAsync(document.Value.DocumentInstanceId);
 
             await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
@@ -230,12 +227,12 @@ public sealed class UiViewModelTests
             string? unitId =
                 await connection.ExecuteScalarAsync<string>(
                     "select unit_id from search_units where resolved_text = 'Pinned clipboard text';");
-            SearchMatchedUnitViewModel unit = new(unitId!, "Pinned clipboard text", LayoutNodeType.Paragraph, 1, true,
+            SearchMatchedUnitViewModel unit = new(unitId!, "Pinned clipboard text", DocumentBoxType.Text, 1, true,
                 null);
 
             await vm.SearchEvidence.CopyEvidenceMarkdownForSearchUnitAsync(unit);
 
-            unit.EvidenceRef.Should().StartWith("evref:v1:");
+            unit.EvidenceRef.Should().StartWith("evref:v2:");
             clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And
                 .Contain(unit.EvidenceRef);
             vm.SearchEvidence.Markdown.Should().Be(clipboard.Text);

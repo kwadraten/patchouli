@@ -143,53 +143,51 @@ public static class ConflictDescriptorMapper
             Options: ToOptions(changedCandidates));
     }
 
-    public static ConflictDescriptor LayoutBBoxOrdinaryOverlap(
+    public static ConflictDescriptor DocumentBoxBBoxOrdinaryOverlap(
         string pageId,
-        string siblingNodeId,
-        string siblingNodeType,
+        string siblingBoxId,
+        string siblingBoxType,
         NormalizedBBox siblingBBox,
-        string proposedNodeType,
+        string proposedBoxType,
         NormalizedBBox proposedBBox)
     {
         return new ConflictDescriptor(
             ConflictCode.LayoutBBoxOrdinaryOverlap,
             ConflictDomain.LayoutEdit,
             ConflictSeverity.Blocking,
-            "layout_node",
-            siblingNodeId,
-            "The proposed layout node bbox overlaps an existing ordinary sibling node.",
+            "document_box",
+            siblingBoxId,
+            "The proposed document Box bbox overlaps an existing ordinary sibling Box.",
             Serialize(new
             {
                 page_id = pageId,
-                node_id = siblingNodeId,
-                node_type = siblingNodeType,
+                box_id = siblingBoxId,
+                box_type = siblingBoxType,
                 bbox = siblingBBox
             }),
             Serialize(new
             {
                 page_id = pageId,
-                node_type = proposedNodeType,
+                box_type = proposedBoxType,
                 bbox = proposedBBox
             }),
             [
                 new ConflictAction("adjust_bbox", "Adjust bbox",
-                    "Change the node bbox or structure so ordinary siblings no longer overlap."),
-                new ConflictAction("change_to_allowed_type", "Use an overlapping node type",
+                    "Change the Box bbox or structure so ordinary siblings no longer overlap."),
+                new ConflictAction("change_to_allowed_type", "Use an overlapping Box type",
                     "Change the candidate to an explicitly overlap-compatible node type.", false, true),
                 new ConflictAction("skip_candidate", "Skip candidate",
                     "Discard this candidate without changing the current layout.", false)
             ],
             Options:
             [
-                new ConflictActionOption(LayoutNodeType.Ruby, "Ruby", "Ruby annotations may overlap their base text."),
-                new ConflictActionOption(LayoutNodeType.Annotation, "Annotation",
+                new ConflictActionOption("ruby", "Ruby", "Ruby annotations may overlap their base text."),
+                new ConflictActionOption("annotation", "Annotation",
                     "Annotations may overlap layout content."),
-                new ConflictActionOption(LayoutNodeType.Marginalia, "Marginalia",
+                new ConflictActionOption("aside", "Aside",
                     "Marginalia may overlap layout content."),
-                new ConflictActionOption(LayoutNodeType.Seal, "Seal", "Seals may overlap layout content."),
-                new ConflictActionOption(LayoutNodeType.Warichu, "Warichu", "Warichu may overlap layout content."),
-                new ConflictActionOption(LayoutNodeType.Custom, "Custom",
-                    "Custom overlay nodes may overlap layout content.")
+                new ConflictActionOption("seal", "Seal", "Seals may overlap layout content."),
+                new ConflictActionOption("warichu", "Warichu", "Warichu may overlap layout content.")
             ]);
     }
 

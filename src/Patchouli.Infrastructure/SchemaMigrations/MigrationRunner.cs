@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core;
 using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Migrations;
@@ -32,6 +33,7 @@ public sealed class MigrationRunner
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
 
+        await EnsureSupportedSchemaEpochAsync(connection);
         await EnsureSchemaMigrationsTableAsync(connection);
 
         List<AppliedMigration> applied = new();
@@ -80,6 +82,33 @@ public sealed class MigrationRunner
         return applied;
     }
 
+    private static async Task EnsureSupportedSchemaEpochAsync(SqliteConnection connection)
+    {
+        int hasLibraryMetadata = await connection.ExecuteScalarAsync<int>(
+            "select count(1) from sqlite_master where type = 'table' and name = 'library_metadata';");
+
+        if (hasLibraryMetadata > 0)
+        {
+            int[] versions = (await connection.QueryAsync<int>(
+                "select distinct schema_version from library_metadata;")).ToArray();
+            if (versions.Any(version => version != AppSchemaVersion.Current))
+            {
+                throw new UnsupportedLibrarySchemaException(versions);
+            }
+        }
+
+        int legacyTableCount = await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1)
+            from sqlite_master
+            where type = 'table' and name in ('layout_revisions', 'layout_nodes');
+            """);
+        if (legacyTableCount > 0)
+        {
+            throw new UnsupportedLibrarySchemaException([1]);
+        }
+    }
+
     private static Task EnsureSchemaMigrationsTableAsync(SqliteConnection connection)
     {
         return connection.ExecuteAsync(
@@ -109,6 +138,24 @@ public sealed class MigrationRunner
                 fileName[..separatorIndex],
                 fileName);
         }
+    }
+}
+
+public sealed class UnsupportedLibrarySchemaException : Exception
+{
+    public UnsupportedLibrarySchemaException(IReadOnlyCollection<int> schemaVersions)
+        : base(BuildMessage(schemaVersions))
+    {
+        SchemaVersions = schemaVersions;
+    }
+
+    public IReadOnlyCollection<int> SchemaVersions { get; }
+
+    private static string BuildMessage(IReadOnlyCollection<int> schemaVersions)
+    {
+        string found = schemaVersions.Count == 0 ? "unknown" : string.Join(", ", schemaVersions.Order());
+        return $"Library schema epoch {found} is not supported by Patchouli 0.2.0. " +
+               "Create a new library and re-import the source documents.";
     }
 }
 

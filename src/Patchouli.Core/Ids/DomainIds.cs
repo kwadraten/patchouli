@@ -156,16 +156,16 @@ public readonly record struct PageId(Guid Value)
     }
 }
 
-public readonly record struct LayoutRevisionId(Guid Value)
+public readonly record struct DocumentTreeRevisionId(Guid Value)
 {
-    public static LayoutRevisionId New()
+    public static DocumentTreeRevisionId New()
     {
-        return new LayoutRevisionId(Guid.NewGuid());
+        return new DocumentTreeRevisionId(Guid.NewGuid());
     }
 
-    public static LayoutRevisionId Parse(string value)
+    public static DocumentTreeRevisionId Parse(string value)
     {
-        return new LayoutRevisionId(Guid.Parse(value));
+        return new DocumentTreeRevisionId(Guid.Parse(value));
     }
 
     public override string ToString()
@@ -174,16 +174,34 @@ public readonly record struct LayoutRevisionId(Guid Value)
     }
 }
 
-public readonly record struct LayoutNodeId(Guid Value)
+public readonly record struct DocumentBoxId(Guid Value)
 {
-    public static LayoutNodeId New()
+    public static DocumentBoxId New()
     {
-        return new LayoutNodeId(Guid.NewGuid());
+        return new DocumentBoxId(Guid.NewGuid());
     }
 
-    public static LayoutNodeId Parse(string value)
+    public static DocumentBoxId Parse(string value)
     {
-        return new LayoutNodeId(Guid.Parse(value));
+        return new DocumentBoxId(Guid.Parse(value));
+    }
+
+    public override string ToString()
+    {
+        return Value.ToString("D");
+    }
+}
+
+public readonly record struct PageEditSessionId(Guid Value)
+{
+    public static PageEditSessionId New()
+    {
+        return new PageEditSessionId(Guid.NewGuid());
+    }
+
+    public static PageEditSessionId Parse(string value)
+    {
+        return new PageEditSessionId(Guid.Parse(value));
     }
 
     public override string ToString()
