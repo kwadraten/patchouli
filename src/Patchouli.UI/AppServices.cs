@@ -118,6 +118,12 @@ public sealed class AppServices
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
+        SnapshotSync = new SnapshotSyncCoordinator(
+            SnapshotPublisher,
+            SnapshotImporter,
+            BranchInspection,
+            new SnapshotSyncSettingsStore(runtimeDatabasePath, settingsPath, settings.Runtime.DefaultStagingRoot),
+            Clock);
         PdfMetadata = new PdfMetadataReader();
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess);
         PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
@@ -167,6 +173,7 @@ public sealed class AppServices
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
     public ISnapshotBranchInspectionService BranchInspection { get; }
+    public ISnapshotSyncCoordinator SnapshotSync { get; }
     public ICredentialStore Credentials { get; }
     public IPdfMetadataReader PdfMetadata { get; }
     public PdfDiscoveryService PdfDiscovery { get; }

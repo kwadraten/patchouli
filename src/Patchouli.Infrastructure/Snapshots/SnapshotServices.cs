@@ -635,16 +635,40 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 errors.Add("Unsupported manifest version.");
             }
 
+            if (manifest.SchemaVersion != AppSchemaVersion.Current)
+            {
+                errors.Add("Unsupported snapshot schema version.");
+            }
+
             if (string.IsNullOrWhiteSpace(manifest.LibraryId))
             {
                 errors.Add("Manifest library_id is required.");
             }
 
-            string syncRoot = Directory.GetParent(Directory.GetParent(Path.GetFullPath(manifestPath))!.FullName)!
-                .FullName;
+            if (string.IsNullOrWhiteSpace(manifest.SnapshotId))
+            {
+                errors.Add("Manifest snapshot_id is required.");
+            }
+
+            if (manifest.Shards.Count == 0)
+            {
+                errors.Add("Manifest must contain at least one data shard.");
+            }
+
+            if (!TryResolveSnapshotRoot(manifestPath, out string syncRoot))
+            {
+                errors.Add("Manifest must be located directly inside a manifests directory.");
+                return Result<SnapshotValidationResult>.Success(new SnapshotValidationResult(false, manifest, errors));
+            }
+
             foreach (SnapshotShard shard in manifest.Shards.Concat(manifest.SensitiveMutableShards))
             {
-                string path = Path.Combine(syncRoot, shard.FileName);
+                if (!TryResolveShardPath(syncRoot, shard.FileName, out string path))
+                {
+                    errors.Add($"Shard path escapes snapshot root: {shard.FileName}");
+                    continue;
+                }
+
                 if (!File.Exists(path))
                 {
                     errors.Add($"Shard missing: {shard.FileName}");
@@ -747,15 +771,30 @@ public sealed class SnapshotImporter : ISnapshotImporter
             }
 
             Directory.CreateDirectory(request.StagingRoot);
-            string syncRoot =
-                Directory.GetParent(Directory.GetParent(Path.GetFullPath(request.ManifestPath))!.FullName)!.FullName;
+            if (!TryResolveSnapshotRoot(request.ManifestPath, out string syncRoot))
+            {
+                return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
+                    "Manifest must be located directly inside a manifests directory.");
+            }
+
             SnapshotShard firstShard = manifest.Shards.First();
             string stagingPath = Path.Combine(request.StagingRoot, $"{manifest.SnapshotId}.staging.sqlite");
-            await CopyFileAsync(Path.Combine(syncRoot, firstShard.FileName), stagingPath, cancellationToken);
+            if (!TryResolveShardPath(syncRoot, firstShard.FileName, out string firstShardPath))
+            {
+                return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
+                    "Snapshot contains an unsafe shard path.");
+            }
+
+            await CopyFileAsync(firstShardPath, stagingPath, cancellationToken);
             foreach (SnapshotShard shard in manifest.Shards.Skip(1))
             {
-                await MergeDataShardIntoStagingAsync(stagingPath, Path.Combine(syncRoot, shard.FileName),
-                    cancellationToken);
+                if (!TryResolveShardPath(syncRoot, shard.FileName, out string shardPath))
+                {
+                    return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
+                        "Snapshot contains an unsafe shard path.");
+                }
+
+                await MergeDataShardIntoStagingAsync(stagingPath, shardPath, cancellationToken);
             }
 
             if (manifest.SensitiveMutableShards.Count > 0)
@@ -877,6 +916,40 @@ public sealed class SnapshotImporter : ISnapshotImporter
         return await connection.ExecuteScalarAsync<int>(
             $"select count(1) from {schema}.sqlite_master where type in ('table','view') and name = @Table;",
             new { Table = table }) > 0;
+    }
+
+    private static bool TryResolveSnapshotRoot(string manifestPath, out string snapshotRoot)
+    {
+        snapshotRoot = string.Empty;
+        string fullManifestPath = Path.GetFullPath(manifestPath);
+        DirectoryInfo? manifestsDirectory = Directory.GetParent(fullManifestPath);
+        if (manifestsDirectory is null ||
+            !string.Equals(manifestsDirectory.Name, "manifests", StringComparison.OrdinalIgnoreCase) ||
+            manifestsDirectory.Parent is null)
+        {
+            return false;
+        }
+
+        snapshotRoot = manifestsDirectory.Parent.FullName;
+        return true;
+    }
+
+    private static bool TryResolveShardPath(string snapshotRoot, string shardFileName, out string shardPath)
+    {
+        shardPath = string.Empty;
+        if (string.IsNullOrWhiteSpace(shardFileName) || Path.IsPathRooted(shardFileName))
+        {
+            return false;
+        }
+
+        string candidate = Path.GetFullPath(Path.Combine(snapshotRoot, shardFileName));
+        if (!SnapshotPublisher.IsPathInside(candidate, snapshotRoot))
+        {
+            return false;
+        }
+
+        shardPath = candidate;
+        return true;
     }
 
     private static readonly string[] MergeTables =

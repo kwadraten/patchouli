@@ -1,115 +1,299 @@
-using System.Text.Json;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels;
 
+/// <summary>
+/// The user-facing Sync Center state. The coordinator owns all internal paths, staging, device identity, and lineage;
+/// this model only selects an intentional user operation and presents its durable outcome.
+/// </summary>
 public sealed class SnapshotViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private SnapshotContentResolutionPlan? _contentPlan;
+    private SnapshotSyncStatus? _status;
+    private SnapshotIncomingPlan? _incoming;
+    private string _exportDestinationDirectory = "";
+    private string _packageManifestPath = "";
+    private bool _confirmApply;
+    private string _operationMessage = "同步中心尚未检查同步目录。";
 
     public SnapshotViewModel(MainWindowViewModel main)
     {
         _main = main;
+        RefreshCommand = new AsyncCommand(RefreshAsync);
         PublishCommand = new AsyncCommand(PublishAsync);
-        ValidateCommand = new AsyncCommand(ValidateAsync);
-        ImportCommand = new AsyncCommand(ImportAsync);
+        ExportCommand = new AsyncCommand(ExportAsync);
+        CheckCurrentCommand = new AsyncCommand(CheckCurrentAsync);
+        OpenPackageCommand = new AsyncCommand(OpenPackageAsync);
+        ApplyCommand = new AsyncCommand(ApplyAsync);
     }
 
-    public string SyncRoot { get; set; } = "";
-    public string DeviceId { get; set; } = "device-ui";
-    public string ManifestPath { get; set; } = "";
-    public string StagingRoot { get; set; } = "";
-    public string LastSnapshotId { get; set; } = "";
-    public string LastManifestPath { get; set; } = "";
-    public string Output { get; set; } = "";
+    public string ExportDestinationDirectory
+    {
+        get => _exportDestinationDirectory;
+        set
+        {
+            if (_exportDestinationDirectory == value)
+            {
+                return;
+            }
+
+            _exportDestinationDirectory = value;
+            Raise();
+        }
+    }
+
+    /// <summary>Path selected from a portable package; it is never a runtime/staging path.</summary>
+    public string PackageManifestPath
+    {
+        get => _packageManifestPath;
+        set
+        {
+            if (_packageManifestPath == value)
+            {
+                return;
+            }
+
+            _packageManifestPath = value;
+            Raise();
+        }
+    }
+
+    public bool ConfirmApply
+    {
+        get => _confirmApply;
+        set
+        {
+            if (_confirmApply == value)
+            {
+                return;
+            }
+
+            _confirmApply = value;
+            Raise();
+            Raise(nameof(CanApply));
+        }
+    }
+
+    public SnapshotSyncOperationState OperationState =>
+        _status?.State ?? SnapshotSyncOperationState.NotConfigured;
+
+    public string OperationStateText => OperationState switch
+    {
+        SnapshotSyncOperationState.NotConfigured => "尚未配置",
+        SnapshotSyncOperationState.Ready => "已就绪",
+        SnapshotSyncOperationState.Validating => "正在验证",
+        SnapshotSyncOperationState.Publishing => "正在发布",
+        SnapshotSyncOperationState.Published => "已发布",
+        SnapshotSyncOperationState.Exporting => "正在导出",
+        SnapshotSyncOperationState.CheckingIncoming => "正在检查传入快照",
+        SnapshotSyncOperationState.InspectingBranch => "正在检查快照分支",
+        SnapshotSyncOperationState.AwaitingContentConflicts => "等待内容冲突处理",
+        SnapshotSyncOperationState.Applying => "正在应用",
+        SnapshotSyncOperationState.Applied => "已应用",
+        SnapshotSyncOperationState.Failed => "操作失败",
+        _ => OperationState.ToString()
+    };
+
+    public string SyncRootSummary => _status is { IsSyncRootAvailable: true, SyncRootId: not null }
+        ? $"同步目录已就绪（绑定 {_status.SyncRootId}）"
+        : "同步目录不可用或尚未配置";
+
+    public string LocalSnapshotSummary => _status?.LocalState.LineageSnapshotId is { Length: > 0 } snapshotId
+        ? $"本机 lineage：{snapshotId}"
+        : "本机尚无已发布或已应用的快照";
+
+    public string RemoteSnapshotSummary => _status?.RemoteCurrent?.SnapshotId is { Length: > 0 } snapshotId
+        ? $"同步目录 current：{snapshotId}"
+        : "同步目录中尚无 current 快照";
+
+    public string OperationMessage
+    {
+        get => _operationMessage;
+        private set
+        {
+            if (_operationMessage == value)
+            {
+                return;
+            }
+
+            _operationMessage = value;
+            Raise();
+        }
+    }
+
+    public int IncomingItemCount => _incoming?.Items.Count ?? 0;
+    public int IncomingDocumentCount => _incoming?.Documents.Count ?? 0;
+
+    public int BlockingConflictCount => _incoming?.Conflicts.Count(conflict =>
+        conflict.Severity == ConflictSeverity.Blocking &&
+        conflict.ResolutionStatus == ConflictResolutionStatus.Unresolved) ?? 0;
+
+    public int WarningCount => _incoming?.Warnings.Count ?? 0;
+    public bool HasIncomingPlan => _contentPlan is not null;
+    public bool CanApply => _contentPlan is not null && ConfirmApply && BlockingConflictCount == 0;
+
+    public string IncomingSummary => _incoming is null
+        ? "尚未打开传入快照。"
+        : $"传入快照包含 {IncomingItemCount} 条题录、{IncomingDocumentCount} 个文档实例、{BlockingConflictCount} 个阻塞冲突。";
+
+    public AsyncCommand RefreshCommand { get; }
     public AsyncCommand PublishCommand { get; }
-    public AsyncCommand ValidateCommand { get; }
-    public AsyncCommand ImportCommand { get; }
+    public AsyncCommand ExportCommand { get; }
+    public AsyncCommand CheckCurrentCommand { get; }
+    public AsyncCommand OpenPackageCommand { get; }
+    public AsyncCommand ApplyCommand { get; }
+
+    public async Task RefreshAsync()
+    {
+        Result<SnapshotSyncStatus> result = await (await _main.ServicesAsync()).SnapshotSync.GetStatusAsync();
+        if (result.IsSuccess)
+        {
+            _status = result.Value;
+            OperationMessage = result.Value.Warnings.Count == 0
+                ? "同步状态已更新。"
+                : string.Join(" ", result.Value.Warnings);
+        }
+        else
+        {
+            OperationMessage = DescribeFailure(result);
+        }
+
+        RaiseStatus();
+    }
 
     private async Task PublishAsync()
     {
-        AppServices services = await _main.ServicesAsync();
         Result<SnapshotPublishResult> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions(
-                "发布同步快照",
-                "正在创建快照分片并校验内容。",
-                true),
-            context => services.SnapshotPublisher.PublishSnapshotAsync(
-                new SnapshotPublishRequest(services.RuntimeDatabasePath, SyncRoot, DeviceId),
+            new ModalOperationOptions("发布到同步目录", "正在创建并验证快照分片。", true),
+            async context => await (await _main.ServicesAsync()).SnapshotSync.PublishAsync(context.CancellationToken));
+        OperationMessage = result.IsSuccess
+            ? result.Value.CreatedBranch
+                ? "同步目录已有其他 current 快照。已保留本机内容，先检查传入快照后再决定下一步。"
+                : "快照已发布到同步目录。"
+            : DescribeFailure(result);
+        await RefreshAfterOperationAsync("publish_snapshot", result.IsSuccess);
+    }
+
+    private async Task ExportAsync()
+    {
+        Result<SnapshotExportResult> result = await _main.ModalOperations.RunAsync(
+            new ModalOperationOptions("导出快照包", "正在创建可移动的目录快照包。", true),
+            async context => await (await _main.ServicesAsync()).SnapshotSync.ExportAsync(
+                new SnapshotExportRequest(ExportDestinationDirectory),
                 context.CancellationToken));
-        Output = Format(result);
+        OperationMessage = result.IsSuccess
+            ? "快照目录包已导出；未改动任何同步目录的 current 指针。"
+            : DescribeFailure(result);
+        await RefreshAfterOperationAsync("export_snapshot_package", result.IsSuccess);
+    }
+
+    private async Task CheckCurrentAsync()
+    {
+        await InspectAsync(SnapshotIncomingRequest.CurrentSyncRoot, "检查同步目录中的 current 快照", "inspect_sync_current");
+    }
+
+    private async Task OpenPackageAsync()
+    {
+        await InspectAsync(
+            new SnapshotIncomingRequest(SnapshotIncomingSource.ExportPackage, PackageManifestPath),
+            "打开快照目录包",
+            "inspect_snapshot_package");
+    }
+
+    private async Task InspectAsync(SnapshotIncomingRequest request, string title, string operation)
+    {
+        Result<SnapshotIncomingPlan> result = await _main.ModalOperations.RunAsync(
+            new ModalOperationOptions(title, "正在验证、staging 并检查传入快照。", true),
+            async context => await (await _main.ServicesAsync()).SnapshotSync.InspectIncomingAsync(request,
+                context.CancellationToken));
         if (result.IsSuccess)
         {
-            ManifestPath = result.Value.ManifestPath;
-            LastManifestPath = result.Value.ManifestPath;
-            LastSnapshotId = result.Value.SnapshotId;
+            _incoming = result.Value;
+            _contentPlan = result.Value.ContentPlan;
+            ConfirmApply = false;
+            OperationMessage = BlockingConflictCount > 0
+                ? "传入快照已检查；阻塞冲突必须通过统一冲突工作流处理后才能应用。"
+                : "传入快照已检查。请确认后再应用。";
+        }
+        else
+        {
+            _incoming = null;
+            _contentPlan = null;
+            OperationMessage = DescribeFailure(result);
         }
 
-        RaiseAll();
-        await _main.LogOperationAsync("publish_snapshot", Output);
+        await RefreshAfterOperationAsync(operation, result.IsSuccess);
     }
 
-    private async Task ValidateAsync()
+    private async Task ApplyAsync()
     {
-        AppServices services = await _main.ServicesAsync();
-        Result<SnapshotValidationResult> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions(
-                "验证同步快照",
-                "正在校验 manifest 与内容分片。",
-                true),
-            async context =>
-            {
-                Result<SnapshotValidationResult> validation =
-                    await services.SnapshotImporter.ValidateSnapshotAsync(ManifestPath, context.CancellationToken);
-                return validation.IsFailure || validation.Value.IsValid
-                    ? validation
-                    : Result<SnapshotValidationResult>.Failure(
-                        AppErrorCodes.ValidationFailed,
-                        string.Join(" ", validation.Value.Errors));
-            });
-        Output = Format(result);
-        Raise(nameof(Output));
+        if (_contentPlan is null)
+        {
+            OperationMessage = "请先检查一个传入快照。";
+            RaiseIncoming();
+            return;
+        }
+
+        Result<SnapshotApplyResult> result = await _main.ModalOperations.RunAsync(
+            new ModalOperationOptions("应用快照内容", "正在重新验证并事务性应用导入计划。", true),
+            async context => await (await _main.ServicesAsync()).SnapshotSync.ApplyAsync(
+                _contentPlan with { IsExplicitlyConfirmed = ConfirmApply },
+                context.CancellationToken));
+        if (result.IsSuccess)
+        {
+            _contentPlan = null;
+            _incoming = null;
+            ConfirmApply = false;
+            OperationMessage = "快照内容已应用；相关本地 FTS 索引已标记为 stale。";
+        }
+        else
+        {
+            OperationMessage = DescribeFailure(result);
+        }
+
+        await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess);
     }
 
-    private async Task ImportAsync()
+    private async Task RefreshAfterOperationAsync(string operation, bool succeeded)
     {
-        AppServices services = await _main.ServicesAsync();
-        Result<SnapshotImportResult> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions(
-                "导入同步快照",
-                "正在验证快照并导入 staging 数据库。",
-                true),
-            async context =>
-            {
-                Result<SnapshotImportResult> imported = await services.SnapshotImporter.ImportSnapshotToStagingAsync(
-                    new SnapshotImportRequest(ManifestPath, StagingRoot),
-                    context.CancellationToken);
-                return imported.IsFailure || (imported.Value.IsValid && imported.Value.IsLibraryMatch &&
-                                              imported.Value.StagingDatabasePath is not null)
-                    ? imported
-                    : Result<SnapshotImportResult>.Failure(
-                        AppErrorCodes.ValidationFailed,
-                        string.Join(" ", imported.Value.Warnings));
-            });
-        Output = Format(result) + "\nImport does not replace active runtime DB.";
-        Raise(nameof(Output));
-        await _main.LogOperationAsync("import_snapshot_staging", Output);
+        await _main.LogOperationAsync(operation,
+            succeeded ? "Snapshot sync operation completed." : "Snapshot sync operation failed.");
+        Result<SnapshotSyncStatus> status = await (await _main.ServicesAsync()).SnapshotSync.GetStatusAsync();
+        if (status.IsSuccess)
+        {
+            _status = status.Value;
+        }
+
+        RaiseStatus();
+        RaiseIncoming();
     }
 
-    private static string Format<T>(Result<T> result)
+    private void RaiseStatus()
     {
-        return result.IsSuccess
-            ? JsonSerializer.Serialize(result.Value, new JsonSerializerOptions { WriteIndented = true })
-            : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+        Raise(nameof(OperationState));
+        Raise(nameof(OperationStateText));
+        Raise(nameof(SyncRootSummary));
+        Raise(nameof(LocalSnapshotSummary));
+        Raise(nameof(RemoteSnapshotSummary));
     }
 
-    private void RaiseAll()
+    private void RaiseIncoming()
     {
-        Raise(nameof(Output));
-        Raise(nameof(ManifestPath));
-        Raise(nameof(LastManifestPath));
-        Raise(nameof(LastSnapshotId));
+        Raise(nameof(IncomingItemCount));
+        Raise(nameof(IncomingDocumentCount));
+        Raise(nameof(BlockingConflictCount));
+        Raise(nameof(WarningCount));
+        Raise(nameof(HasIncomingPlan));
+        Raise(nameof(CanApply));
+        Raise(nameof(IncomingSummary));
+    }
+
+    private static string DescribeFailure(IOperationOutcome result)
+    {
+        return $"操作失败：{result.ErrorMessage ?? "未知错误"}";
     }
 }

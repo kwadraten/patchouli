@@ -27,6 +27,7 @@ public enum WorkspaceTabKind
     Library,
     PdfWorkspace,
     Settings,
+    SyncCenter,
     SearchResults,
     OcrQueue,
     ItemEditor,

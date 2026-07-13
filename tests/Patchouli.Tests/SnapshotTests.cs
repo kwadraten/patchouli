@@ -429,6 +429,140 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public async Task Sync_coordinator_publishes_then_records_local_lineage()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "sync-root-a",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-a",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        SnapshotSyncCoordinator coordinator = new(
+            c.Publisher,
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+
+        Result<SnapshotPublishResult> published = await coordinator.PublishAsync();
+
+        published.IsSuccess.Should().BeTrue();
+        bindings.State.OperationState.Should().Be(SnapshotSyncOperationState.Published);
+        bindings.State.LastPublishedSnapshotId.Should().Be(published.Value.SnapshotId);
+        bindings.State.LineageSnapshotId.Should().Be(published.Value.SnapshotId);
+        (await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(Path.Combine(c.SyncRoot, "current.json"),
+                default))!
+            .SnapshotId.Should().Be(published.Value.SnapshotId);
+    }
+
+    [Fact]
+    public async Task Sync_coordinator_exports_a_valid_portable_package_without_a_current_pointer()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        string destination = Path.Combine(Path.GetTempPath(), $"patchouli-export-{Guid.NewGuid():N}");
+        try
+        {
+            MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+                c.Database.Path,
+                "sync-root-a",
+                c.SyncRoot,
+                c.StagingRoot,
+                "device-a",
+                SnapshotSyncLocalState.NotConfigured));
+            FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+            SnapshotSyncCoordinator coordinator = new(
+                c.Publisher,
+                c.Importer,
+                new SnapshotBranchInspectionService(
+                    c.Importer,
+                    c.Database.ConnectionFactory,
+                    new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+                bindings,
+                clock);
+
+            Result<SnapshotExportResult> exported =
+                await coordinator.ExportAsync(new SnapshotExportRequest(destination));
+
+            exported.IsSuccess.Should().BeTrue();
+            File.Exists(exported.Value.ManifestPath).Should().BeTrue();
+            File.Exists(Path.Combine(destination, "current.json")).Should().BeFalse();
+            (await c.Importer.ValidateSnapshotAsync(exported.Value.ManifestPath)).Value.IsValid.Should().BeTrue();
+            File.Exists(Path.Combine(c.SyncRoot, "current.json")).Should().BeFalse();
+        }
+        finally
+        {
+            if (Directory.Exists(destination))
+            {
+                Directory.Delete(destination, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Sync_coordinator_rejects_an_inspected_plan_when_local_content_changes()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "sync-root-a",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-a",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        SnapshotSyncCoordinator coordinator = new(
+            c.Publisher,
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+        (await coordinator.PublishAsync()).IsSuccess.Should().BeTrue();
+        Result<SnapshotIncomingPlan> inspected =
+            await coordinator.InspectIncomingAsync(SnapshotIncomingRequest.CurrentSyncRoot);
+        inspected.IsSuccess.Should().BeTrue();
+
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync("update items set title = 'Changed after inspection';");
+        }
+
+        Result<SnapshotApplyResult> applied = await coordinator.ApplyAsync(
+            inspected.Value.ContentPlan with { IsExplicitlyConfirmed = true });
+
+        applied.ErrorCode.Should().Be("snapshot_plan_superseded");
+    }
+
+    [Fact]
+    public async Task ValidateSnapshot_rejects_a_shard_path_that_escapes_the_package_root()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        SnapshotManifest manifest =
+            (await SnapshotPublisher.ReadJsonAsync<SnapshotManifest>(published.Value.ManifestPath, default))!;
+        SnapshotManifest unsafeManifest = manifest with
+        {
+            Shards = [manifest.Shards.Single() with { FileName = Path.Combine("..", "outside.sqlite") }]
+        };
+        await SnapshotPublisher.WriteJsonAtomicAsync(published.Value.ManifestPath, unsafeManifest, default);
+
+        Result<SnapshotValidationResult> validation =
+            await c.Importer.ValidateSnapshotAsync(published.Value.ManifestPath);
+
+        validation.Value.IsValid.Should().BeFalse();
+        validation.Value.Errors.Should()
+            .Contain(error => error.Contains("escapes", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
     public void Credential_store_is_created_only_by_009_migration()
     {
         Directory.EnumerateFiles(TestPaths.MigrationsDirectory, "*.sql").Select(Path.GetFileName)
@@ -603,5 +737,32 @@ public sealed class SnapshotTests
             string BboxRevisionId,
             string LayoutRevisionId,
             string NodeType);
+    }
+
+    private sealed class MemorySnapshotSyncBindingStore : ISnapshotSyncBindingStore
+    {
+        private SnapshotSyncBinding _binding;
+
+        public MemorySnapshotSyncBindingStore(SnapshotSyncBinding binding)
+        {
+            _binding = binding;
+        }
+
+        public SnapshotSyncLocalState State => _binding.LocalState;
+
+        public Task<Result<SnapshotSyncBinding>> GetBindingAsync(CancellationToken cancellationToken = default)
+        {
+            _ = cancellationToken;
+            return Task.FromResult(Result<SnapshotSyncBinding>.Success(_binding));
+        }
+
+        public Task<Result> SaveLocalStateAsync(
+            SnapshotSyncLocalState state,
+            CancellationToken cancellationToken = default)
+        {
+            _ = cancellationToken;
+            _binding = _binding with { LocalState = state };
+            return Task.FromResult(Result.Success());
+        }
     }
 }

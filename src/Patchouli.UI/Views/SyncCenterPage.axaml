@@ -1,0 +1,64 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Patchouli.UI.Views.SyncCenterPage"
+             x:DataType="local:SnapshotViewModel"
+             xmlns:local="using:Patchouli.UI.ViewModels">
+  <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="18" MaxWidth="900"
+          HorizontalAlignment="Left">
+      <StackPanel Spacing="6">
+        <TextBlock Text="同步中心" FontSize="26" FontWeight="SemiBold" />
+        <TextBlock Text="发布经过验证的快照、导出目录包，或先在 staging 中检查传入内容。活动运行数据库不会直接同步。"
+                   TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      </StackPanel>
+
+      <Border Grid.Row="1" Padding="16" CornerRadius="8" Background="{DynamicResource SurfaceContainerBrush}">
+        <StackPanel Spacing="7">
+          <TextBlock Text="当前状态" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding OperationStateText}" FontWeight="SemiBold"
+                     Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBlock Text="{Binding SyncRootSummary}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding LocalSnapshotSummary}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding RemoteSnapshotSummary}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding OperationMessage}" TextWrapping="Wrap"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <Button Content="刷新状态" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+
+      <Border Grid.Row="2" Padding="16" CornerRadius="8" Background="{DynamicResource SurfaceContainerBrush}">
+        <StackPanel Spacing="10">
+          <TextBlock Text="发布与导出" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock Text="发布会复用同步目录中的同 hash 分片，并在验证后更新 current 指针。"
+                     TextWrapping="Wrap" />
+          <Button Content="发布到同步目录" Command="{Binding PublishCommand}" HorizontalAlignment="Left" />
+          <TextBlock Text="导出目录包不更新任何同步目录的 current 指针。请选择一个尚不存在的目录。"
+                     TextWrapping="Wrap" />
+          <TextBox Text="{Binding ExportDestinationDirectory}" PlaceholderText="快照包目标目录" />
+          <Button Content="导出快照目录包" Command="{Binding ExportCommand}" HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+
+      <Border Grid.Row="3" Padding="16" CornerRadius="8" Background="{DynamicResource SurfaceContainerBrush}">
+        <StackPanel Spacing="10">
+          <TextBlock Text="接收与检查" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock Text="传入快照会先验证 manifest、hash、schema、库身份和路径，再导入 staging 供检查。"
+                     TextWrapping="Wrap" />
+          <Button Content="检查同步目录中的 current 快照" Command="{Binding CheckCurrentCommand}" HorizontalAlignment="Left" />
+          <TextBox Text="{Binding PackageManifestPath}" PlaceholderText="目录包中的 manifests/快照.json" />
+          <Button Content="从快照包打开" Command="{Binding OpenPackageCommand}" HorizontalAlignment="Left" />
+          <TextBlock Text="{Binding IncomingSummary}" TextWrapping="Wrap" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding WarningCount, StringFormat='警告：{0}'}" />
+          <TextBlock Text="{Binding BlockingConflictCount, StringFormat='阻塞冲突：{0}'}"
+                     Foreground="{DynamicResource ErrorBrush}" />
+          <CheckBox Content="我已检查传入内容并确认应用" IsChecked="{Binding ConfirmApply}" IsEnabled="{Binding HasIncomingPlan}" />
+          <Button Content="应用已检查的内容" Command="{Binding ApplyCommand}" IsEnabled="{Binding CanApply}"
+                  HorizontalAlignment="Left" />
+        </StackPanel>
+      </Border>
+
+      <TextBlock Grid.Row="4" Text="遇到阻塞冲突时，应用会停止；同步中心不会静默合并或采用最后写入者胜出。"
+                 TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    </Grid>
+  </ScrollViewer>
+</UserControl>

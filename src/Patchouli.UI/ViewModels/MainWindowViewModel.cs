@@ -191,7 +191,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     public SearchProfileViewModel SearchProfiles { get; }
     public McpPreviewViewModel McpPreview { get; }
     public SnapshotViewModel Snapshot { get; }
-    public SnapshotBranchViewModel SnapshotBranch { get; }
     public AboutViewModel About { get; }
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
@@ -224,6 +223,10 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand ShowAboutCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
     public UiCommandDescriptor CheckSyncStateDescriptor { get; }
+    public UiCommandDescriptor PublishSnapshotDescriptor { get; }
+    public UiCommandDescriptor ExportSnapshotPackageDescriptor { get; }
+    public UiCommandDescriptor ReceiveSnapshotDescriptor { get; }
+    public UiCommandDescriptor OpenSnapshotPackageDescriptor { get; }
     public UiCommandDescriptor CopyCslBibliographyDescriptor { get; }
     public UiCommandDescriptor ExportItemDescriptor { get; }
 
@@ -273,11 +276,21 @@ public sealed class MainWindowViewModel : ViewModelBase
             StatusIsError = true;
         }
 
-        if (settingsLoadFailure is null && string.IsNullOrWhiteSpace(_settings.Sync.DeviceId))
+        if (settingsLoadFailure is null &&
+            (string.IsNullOrWhiteSpace(_settings.Sync.DeviceId) ||
+             string.IsNullOrWhiteSpace(_settings.Sync.SyncRootId)))
         {
             PatchouliAppSettings initializedSettings = _settings with
             {
-                Sync = _settings.Sync with { DeviceId = Guid.NewGuid().ToString("D") }
+                Sync = _settings.Sync with
+                {
+                    DeviceId = string.IsNullOrWhiteSpace(_settings.Sync.DeviceId)
+                        ? Guid.NewGuid().ToString("D")
+                        : _settings.Sync.DeviceId,
+                    SyncRootId = string.IsNullOrWhiteSpace(_settings.Sync.SyncRootId)
+                        ? Guid.NewGuid().ToString("D")
+                        : _settings.Sync.SyncRootId
+                }
             };
             SettingsSaveResult identitySaved = initializedSettings.Save(_settingsPath);
             if (identitySaved.IsSuccess)
@@ -316,7 +329,14 @@ public sealed class MainWindowViewModel : ViewModelBase
         SearchProfiles = new SearchProfileViewModel(this);
         McpPreview = new McpPreviewViewModel(this);
         Snapshot = new SnapshotViewModel(this);
-        SnapshotBranch = new SnapshotBranchViewModel(this);
+        Snapshot.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(SnapshotViewModel.OperationStateText) or
+                nameof(SnapshotViewModel.OperationMessage))
+            {
+                Settings.SyncSettings.NotifySnapshotStateChanged();
+            }
+        };
         About = new AboutViewModel(this);
         Shell.MinerUToken = "";
         Settings.MinerUTokenInput = "";
@@ -327,6 +347,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 ReportError("设置有未保存的更改，请先保存或放弃后再切换数据库。");
                 return;
             }
+
             await StopMcpServerAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
             _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
@@ -357,7 +378,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         ActivateSearchTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.SearchResults));
         ActivateOcrQueueTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.OcrQueue));
         ActivateAboutTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.About));
-        CheckSyncStateCommand = new AsyncCommand(CheckSyncStateAsync);
+        CheckSyncStateCommand = new AsyncCommand(OpenSyncCenterAsync);
         CopyCslBibliographyCommand = new AsyncCommand(CopyCslBibliographyAsync);
         ExportItemCommand = new AsyncCommand(ExportSelectedItemBibliographyAsync);
         CreateItemMenuCommand = new AsyncCommand(OpenNewItemEditorAsync);
@@ -379,7 +400,20 @@ public sealed class MainWindowViewModel : ViewModelBase
         });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
-        CheckSyncStateDescriptor = new UiCommandDescriptor("sync.check_state", "查看同步/冲突状态", CheckSyncStateCommand);
+        CheckSyncStateDescriptor = new UiCommandDescriptor("sync.open_center", "打开同步中心", CheckSyncStateCommand);
+        PublishSnapshotDescriptor = new UiCommandDescriptor("sync.publish", "发布到同步目录", Snapshot.PublishCommand);
+        ExportSnapshotPackageDescriptor = new UiCommandDescriptor(
+            "sync.export_package",
+            "导出快照包…",
+            new AsyncCommand(OpenSyncCenterAsync));
+        ReceiveSnapshotDescriptor = new UiCommandDescriptor(
+            "sync.receive_current",
+            "检查/接收 current 快照",
+            Snapshot.CheckCurrentCommand);
+        OpenSnapshotPackageDescriptor = new UiCommandDescriptor(
+            "sync.open_package",
+            "从快照包打开…",
+            new AsyncCommand(OpenSyncCenterAsync));
         CopyCslBibliographyDescriptor =
             new UiCommandDescriptor("csl.copy_bibliography", "复制 CSL 题录", CopyCslBibliographyCommand);
         ExportItemDescriptor = new UiCommandDescriptor("csl.export_item", "导出题录", ExportItemCommand);
@@ -1462,10 +1496,10 @@ public sealed class MainWindowViewModel : ViewModelBase
         return Task.CompletedTask;
     }
 
-    private Task CheckSyncStateAsync()
+    public async Task OpenSyncCenterAsync()
     {
-        Report("同步/冲突状态：当前未检测到需要处理的阻塞项。快照导入冲突将作为独立分支打开以供检查。");
-        return Task.CompletedTask;
+        await ActivateTabAsync(WorkspaceTabKind.SyncCenter, "SyncCenter", "同步中心", "RefreshCw", true, () => Snapshot);
+        await Snapshot.RefreshAsync();
     }
 
     private async Task CopyCslBibliographyAsync()
@@ -1530,8 +1564,12 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         foreach (SettingsCategoryViewModel category in Settings.Categories)
         {
-            if (category.Section?.IsDirty == true) await category.Section.DiscardAsync();
+            if (category.Section?.IsDirty == true)
+            {
+                await category.Section.DiscardAsync();
+            }
         }
+
         Workspace.CloseKind(WorkspaceTabKind.Settings);
     }
 

@@ -59,6 +59,52 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public async Task Sync_menu_command_opens_the_sync_center_without_development_path_inputs()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-sync-ui-{Guid.NewGuid():N}");
+        string settingsPath = Path.Combine(root, "settings.json");
+        try
+        {
+            AppRuntimeOptions runtime = PatchouliAppSettings.Default().Runtime with
+            {
+                RuntimeDatabasePath = Path.Combine(root, "runtime.sqlite"),
+                DefaultSyncRoot = Path.Combine(root, "sync"),
+                DefaultStagingRoot = Path.Combine(root, "staging"),
+                LogDirectory = Path.Combine(root, "logs")
+            };
+            PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+            {
+                Runtime = runtime,
+                Sync = new SyncAppSettings(
+                    "device-a",
+                    "Test device",
+                    runtime.DefaultSyncRoot,
+                    false,
+                    false,
+                    false,
+                    "sync-root-a")
+            };
+            settings.Save(settingsPath).IsSuccess.Should().BeTrue();
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath);
+
+            await vm.CheckSyncStateCommand.ExecuteAsync();
+
+            vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.SyncCenter);
+            vm.ActiveTab.Content.Should().BeSameAs(vm.Snapshot);
+            typeof(SnapshotViewModel).GetProperty("SyncRoot").Should().BeNull();
+            typeof(SnapshotViewModel).GetProperty("StagingRoot").Should().BeNull();
+            typeof(SnapshotViewModel).GetProperty("DeviceId").Should().BeNull();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task LibraryViewModel_CreateLibrary_updates_current_library()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");

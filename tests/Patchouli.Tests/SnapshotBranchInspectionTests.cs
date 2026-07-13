@@ -8,7 +8,6 @@ using Patchouli.Core.Results;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
-using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
 
@@ -143,23 +142,6 @@ public sealed class SnapshotBranchInspectionTests
         (await c.Count("evidence_ref_records")).Should().Be(1);
         string json = await c.EvidenceJson();
         json.Should().NotContain("/tmp").And.NotContain(c.Secret);
-    }
-
-    [Fact]
-    public async Task ViewModel_open_apply_confirmation_and_safety_warning_are_visible()
-    {
-        await using Ctx c = await Ctx.Create();
-        MainWindowViewModel vm = new() { RuntimeDatabasePath = c.Db.Path };
-        await vm.OpenDatabaseCommand.ExecuteAsync();
-        vm.SnapshotBranch.ManifestPath = c.Pub.ManifestPath;
-        vm.SnapshotBranch.StagingRoot = Path.Combine(c.Root, "vm-staging");
-        vm.SnapshotBranch.Output.Should().Contain("No automatic merge").And.Contain("No silent last-writer-wins");
-        await vm.SnapshotBranch.OpenCommand.ExecuteAsync();
-        vm.SnapshotBranch.Output.Should().Contain("StagingDatabasePath");
-        vm.SnapshotBranch.SelectedItemIds = c.Item.ToString();
-        await vm.SnapshotBranch.BuildPlanCommand.ExecuteAsync();
-        await vm.SnapshotBranch.ApplyCommand.ExecuteAsync();
-        vm.SnapshotBranch.Output.Should().Contain("requires_confirmation");
     }
 
     [Fact]

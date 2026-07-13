@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Patchouli.Core.Import;
+using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Mcp;
 using System.Security;
 using Patchouli.UI.Diagnostics;
@@ -76,7 +77,9 @@ public sealed record SyncAppSettings(
     string SyncRoot,
     bool SyncMcpSettings,
     bool SyncProviderCredentials,
-    bool SyncMetadataLookup)
+    bool SyncMetadataLookup,
+    string SyncRootId = "",
+    SnapshotSyncLocalState? SnapshotState = null)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
@@ -177,7 +180,9 @@ public sealed record SettingsLoadFailure(
     string ErrorCode,
     string ErrorMessage,
     string PathCategory);
+
 public sealed record SettingsDiagnostic(string Code, string Message, string PathCategory);
+
 public sealed record SettingsLoadResult<T>(T Settings, IReadOnlyList<SettingsDiagnostic> Diagnostics)
 {
     public bool IsSuccess => Diagnostics.Count == 0;
@@ -289,7 +294,9 @@ public sealed record PatchouliAppSettings(
                     ExpandPath(ReadString(sync, "SyncRoot", defaults.Sync.SyncRoot)),
                     ReadBool(sync, "SyncMcpSettings", defaults.Sync.SyncMcpSettings),
                     ReadBool(sync, "SyncProviderCredentials", defaults.Sync.SyncProviderCredentials),
-                    ReadBool(sync, "SyncMetadataLookup", defaults.Sync.SyncMetadataLookup))
+                    ReadBool(sync, "SyncMetadataLookup", defaults.Sync.SyncMetadataLookup),
+                    ReadString(sync, "SyncRootId", defaults.Sync.SyncRootId),
+                    ReadSnapshotSyncState(sync, defaults.Sync.SnapshotState ?? SnapshotSyncLocalState.NotConfigured))
             };
         }
         catch (JsonException exception)
@@ -450,19 +457,48 @@ public sealed record PatchouliAppSettings(
         return new CredentialsAppSettings(values);
     }
 
+    private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty("SnapshotState", out JsonElement state) ||
+            state.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return fallback;
+        }
+
+        try
+        {
+            return state.Deserialize<SnapshotSyncLocalState>() ?? fallback;
+        }
+        catch (JsonException)
+        {
+            return fallback;
+        }
+    }
+
     private static McpServerSettings ReadMcpSettings(JsonElement? section, McpServerSettings fallback)
     {
-        if (section is not { ValueKind: JsonValueKind.Object } element) return fallback;
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
         string bind = ReadString(section, "BindAddress", fallback.BindAddress).Trim();
         string? token = ReadString(section, "Token", fallback.Token ?? "").Trim();
-        IReadOnlyList<string> origins = element.TryGetProperty("AllowedOrigins", out JsonElement originsElement) && originsElement.ValueKind == JsonValueKind.Array
-            ? originsElement.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String).Select(value => value.GetString()!).ToArray()
-            : fallback.AllowedOrigins;
-        IReadOnlyList<McpToolOverride> overrides = element.TryGetProperty("ToolOverrides", out JsonElement overridesElement) && overridesElement.ValueKind == JsonValueKind.Array
-            ? overridesElement.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
-                .Select(value => new McpToolOverride(ReadString(value, "ToolName", ""), ReadBool(value, "Enabled", true), ReadString(value, "DisabledReason", "")))
-                .Where(value => !string.IsNullOrWhiteSpace(value.ToolName)).ToArray()
-            : fallback.ToolOverrides;
+        IReadOnlyList<string> origins =
+            element.TryGetProperty("AllowedOrigins", out JsonElement originsElement) &&
+            originsElement.ValueKind == JsonValueKind.Array
+                ? originsElement.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.String)
+                    .Select(value => value.GetString()!).ToArray()
+                : fallback.AllowedOrigins;
+        IReadOnlyList<McpToolOverride> overrides =
+            element.TryGetProperty("ToolOverrides", out JsonElement overridesElement) &&
+            overridesElement.ValueKind == JsonValueKind.Array
+                ? overridesElement.EnumerateArray().Where(value => value.ValueKind == JsonValueKind.Object)
+                    .Select(value => new McpToolOverride(ReadString(value, "ToolName", ""),
+                        ReadBool(value, "Enabled", true), ReadString(value, "DisabledReason", "")))
+                    .Where(value => !string.IsNullOrWhiteSpace(value.ToolName)).ToArray()
+                : fallback.ToolOverrides;
         return new McpServerSettings(ReadInt(section, "Port", fallback.Port), bind,
             ReadBool(section, "CorsEnabled", fallback.CorsEnabled), origins,
             ReadBool(section, "AuthRequired", fallback.AuthRequired), string.IsNullOrWhiteSpace(token) ? null : token,

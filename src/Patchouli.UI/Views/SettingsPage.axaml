@@ -79,10 +79,10 @@
             <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-             <TextBlock Text="{Binding ActiveSaveStateText}" VerticalAlignment="Center"
-                        Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-             <TextBlock Text="{Binding ActiveValidationStateText}" VerticalAlignment="Center"
-                        Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Text="{Binding ActiveSaveStateText}" VerticalAlignment="Center"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Text="{Binding ActiveValidationStateText}" VerticalAlignment="Center"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
             <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
                     IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardActiveSection}" />
             <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32"
@@ -175,13 +175,18 @@
                     <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
                     <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
                     <TextBox Text="{Binding SyncRoot}" PlaceholderText="本机同步目录" />
-                    <CheckBox Content="随库同步 MCP 设置" IsChecked="{Binding SyncMcpSettings}" />
-                    <CheckBox Content="随库同步 Provider Credentials" IsChecked="{Binding SyncProviderCredentials}" />
-                    <CheckBox Content="随库同步元数据来源偏好" IsChecked="{Binding SyncMetadataLookup}" />
-                    <TextBlock Text="默认仅此设备。发布、导出、接收和冲突解决在同步中心完成。"
+                    <TextBlock Text="{Binding SnapshotOperationStateText, StringFormat='最近同步状态：{0}'}"
+                               FontSize="12" Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="{Binding SnapshotOperationMessage}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBlock Text="凭据、MCP token、设备授权和本机运行状态不会随快照同步。发布、导出、接收和冲突解决在同步中心完成。"
                                FontSize="12" TextWrapping="Wrap"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <Button Content="打开同步中心" Command="{Binding OpenSyncCenterCommand}" HorizontalAlignment="Left" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Button Content="打开同步中心" Command="{Binding OpenSyncCenterCommand}" />
+                      <Button Content="立即发布" Command="{Binding PublishSnapshotCommand}" />
+                      <Button Content="检查传入快照" Command="{Binding CheckIncomingSnapshotCommand}" />
+                    </StackPanel>
                   </StackPanel>
                 </Border>
               </StackPanel>

@@ -28,6 +28,9 @@
     <DataTemplate DataType="{x:Type settings:SettingsViewModel}">
       <views:SettingsPage />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type local:SnapshotViewModel}">
+      <views:SyncCenterPage />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type local:SearchEvidenceViewModel}">
       <views:SearchResultsPage />
     </DataTemplate>
@@ -77,6 +80,16 @@
           <MenuItem Header="同步">
             <MenuItem Header="{Binding CheckSyncStateDescriptor.Label}" Command="{Binding CheckSyncStateDescriptor}"
                       ToolTip.Tip="{Binding CheckSyncStateDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding PublishSnapshotDescriptor.Label}" Command="{Binding PublishSnapshotDescriptor}"
+                      ToolTip.Tip="{Binding PublishSnapshotDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding ReceiveSnapshotDescriptor.Label}" Command="{Binding ReceiveSnapshotDescriptor}"
+                      ToolTip.Tip="{Binding ReceiveSnapshotDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding ExportSnapshotPackageDescriptor.Label}"
+                      Command="{Binding ExportSnapshotPackageDescriptor}"
+                      ToolTip.Tip="{Binding ExportSnapshotPackageDescriptor.DisabledReason}" />
+            <MenuItem Header="{Binding OpenSnapshotPackageDescriptor.Label}"
+                      Command="{Binding OpenSnapshotPackageDescriptor}"
+                      ToolTip.Tip="{Binding OpenSnapshotPackageDescriptor.DisabledReason}" />
           </MenuItem>
           <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />

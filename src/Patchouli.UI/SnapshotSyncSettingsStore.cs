@@ -1,0 +1,61 @@
+using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Snapshots;
+
+namespace Patchouli.UI;
+
+/// <summary>
+/// Adapter from the device-owned JSON settings lifecycle to the snapshot coordinator. Only the binding and its
+/// operational state are read or written here; credentials, app-local preferences, and device authorization payloads
+/// remain outside snapshot content.
+/// </summary>
+public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
+{
+    private readonly string _runtimeDatabasePath;
+    private readonly string _settingsPath;
+    private readonly string _stagingRoot;
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    public SnapshotSyncSettingsStore(string runtimeDatabasePath, string settingsPath, string stagingRoot)
+    {
+        _runtimeDatabasePath = runtimeDatabasePath;
+        _settingsPath = settingsPath;
+        _stagingRoot = stagingRoot;
+    }
+
+    public Task<Result<SnapshotSyncBinding>> GetBindingAsync(CancellationToken cancellationToken = default)
+    {
+        _ = cancellationToken;
+        PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
+        SnapshotSyncLocalState state = settings.Sync.SnapshotState ?? SnapshotSyncLocalState.NotConfigured;
+        return Task.FromResult(Result<SnapshotSyncBinding>.Success(new SnapshotSyncBinding(
+            _runtimeDatabasePath,
+            settings.Sync.SyncRootId,
+            settings.Sync.SyncRoot,
+            _stagingRoot,
+            settings.Sync.DeviceId,
+            state)));
+    }
+
+    public async Task<Result> SaveLocalStateAsync(
+        SnapshotSyncLocalState state,
+        CancellationToken cancellationToken = default)
+    {
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
+            SettingsSaveResult saved = (settings with
+            {
+                Sync = settings.Sync with { SnapshotState = state }
+            }).Save(_settingsPath);
+            return saved.IsSuccess
+                ? Result.Success()
+                : Result.Failure(saved.ErrorCode ?? "settings_save_failed",
+                    saved.ErrorMessage ?? "Unable to save snapshot sync state.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+}
