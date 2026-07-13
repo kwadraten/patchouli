@@ -126,6 +126,48 @@ public sealed class UiViewModelTests
     }
 
     [Fact]
+    public async Task OpenDatabaseCommand_reports_unsupported_schema_in_status_bar()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-legacy-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            await using (SqliteConnection connection = new($"Data Source={path}"))
+            {
+                await connection.OpenAsync();
+                await connection.ExecuteAsync(
+                    """
+                    create table library_metadata (
+                        library_id text primary key,
+                        display_name text not null,
+                        schema_version integer not null,
+                        created_at text not null,
+                        updated_at text not null
+                    );
+                    insert into library_metadata values ('legacy', 'Legacy', 1, 'now', 'now');
+                    create table layout_nodes (node_id text primary key);
+                    """);
+            }
+
+            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+
+            vm.StatusIsError.Should().BeTrue();
+            vm.Status.Should().Contain("不受 Patchouli 0.2.0 支持");
+            vm.Status.Should().Contain("schema epoch（1）");
+            vm.Status.Should().Contain("请新建资料库并重新导入源文档");
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public async Task BibliographyViewModel_CreateItem_returns_item()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");

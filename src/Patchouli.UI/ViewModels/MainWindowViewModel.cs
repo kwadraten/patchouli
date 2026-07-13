@@ -19,6 +19,7 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Evidence;
+using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
@@ -450,7 +451,20 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             await StopMcpServerAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
-            _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+            try
+            {
+                _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+            }
+            catch (UnsupportedLibrarySchemaException exception)
+            {
+                string epochs = exception.SchemaVersions.Count == 0
+                    ? "未知"
+                    : string.Join("、", exception.SchemaVersions.Order());
+                ReportError($"无法打开资料库：检测到不受 Patchouli 0.2.0 支持的数据库 schema epoch（{epochs}）。" +
+                            "0.2.0 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                return;
+            }
+
             await RefreshSyncedMetadataLookupAsync(_services);
             PersistRuntimeDatabasePathIfEnabled();
             await LoadPersistedMinerUTokenAsync();
