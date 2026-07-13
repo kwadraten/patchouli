@@ -201,26 +201,6 @@
                           IsVisible="{Binding SelectionVisible}" />
                 </Canvas>
 
-                <Popup IsOpen="{Binding IsConflictFlyoutOpen}" Placement="Center" IsLightDismissEnabled="False">
-                  <Border Background="{DynamicResource SurfaceBrush}" BorderThickness="1"
-                          BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="6" Padding="16"
-                          BoxShadow="0 4 16 #22000000">
-                    <StackPanel Spacing="12">
-                      <TextBlock Text="冲突检测" FontWeight="Bold" FontSize="14" Foreground="{DynamicResource ErrorBrush}" />
-                      <TextBlock Text="{Binding ConflictMessage}" FontSize="12" />
-                      <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Margin="0,4,0,0">
-                        <Button Content="调整边框" Command="{Binding ResolveConflictAdjustCommand}" FontSize="12"
-                                Padding="12,6" Background="Transparent" />
-                        <Button Content="强制覆盖" Command="{Binding ResolveConflictOverwriteCommand}" FontSize="12"
-                                Padding="12,6" Background="{DynamicResource ErrorContainerBrush}"
-                                Foreground="{DynamicResource OnErrorContainerBrush}" />
-                        <Button Content="跳过" Command="{Binding ResolveConflictSkipCommand}" FontSize="12"
-                                Padding="12,6" Background="Transparent" />
-                      </StackPanel>
-                    </StackPanel>
-                  </Border>
-                </Popup>
-
                 <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center"
                             IsVisible="{Binding HasNoImage}">
                   <lucide:Lucide Icon="FolderOpen" Width="32" Height="32" StrokeBrush="{DynamicResource PrimaryBrush}" />

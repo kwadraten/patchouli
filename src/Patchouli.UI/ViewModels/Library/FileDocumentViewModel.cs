@@ -20,7 +20,6 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Search;
-using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -88,24 +87,19 @@ public sealed class FileDocumentViewModel : ViewModelBase
         if (result.IsSuccess && result.Value.Conflicts.Count > 0)
         {
             ConflictDescriptor conflict = result.Value.Conflicts[0];
-            ConflictDialogOption[] options = result.Value.Candidates.Select(candidate => new ConflictDialogOption(
-                    candidate.Path,
-                    candidate.Path,
-                    $"{candidate.SizeBytes} bytes | {candidate.MtimeUtc:O} | {candidate.Confidence} | {candidate.Reason}"))
-                .ToArray();
-            ConflictResolutionDialogViewModel dialog = new(conflict, options);
-            ConflictDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConflictDialogResult>(dialog);
-            if (choice?.ActionId is "choose_candidate" or "confirm_changed_file" &&
-                choice.OptionId is not null &&
-                result.Value.Candidates.Any(candidate =>
-                    string.Equals(candidate.Path, choice.OptionId, StringComparison.OrdinalIgnoreCase)))
+            Result<ConflictResolutionResult> resolved = await _main.ResolveConflictAsync(conflict);
+            if (resolved.IsFailure)
             {
-                Result<FileAsset> confirmed =
-                    await services.FileResolution.ConfirmMovedCandidateAsync(fileAssetId, choice.OptionId);
-                Output = confirmed.IsSuccess ? "文件位置与指纹已确认。" : $"ERROR {confirmed.ErrorCode}: {confirmed.ErrorMessage}";
+                Output = $"ERROR {resolved.ErrorCode}: {resolved.ErrorMessage}";
                 Raise(nameof(Output));
                 return;
             }
+
+            Output = resolved.Value.WasExecuted
+                ? $"冲突已按 {resolved.Value.Descriptor.SelectedAction} 处理。"
+                : "冲突保持未解决。";
+            Raise(nameof(Output));
+            return;
         }
 
         Output = result.IsSuccess

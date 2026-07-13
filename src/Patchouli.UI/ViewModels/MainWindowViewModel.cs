@@ -7,6 +7,7 @@ using Avalonia.Media;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
@@ -487,6 +488,16 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         return _services;
+    }
+
+    public async Task<Result<ConflictResolutionResult>> ResolveConflictAsync(
+        ConflictDescriptor conflict,
+        IConflictActionExecutor? executor = null,
+        CancellationToken cancellationToken = default)
+    {
+        AppServices services = await ServicesAsync();
+        ConflictResolutionCoordinator coordinator = new(Dialogs, services.ConflictActions);
+        return await coordinator.ResolveAsync(conflict, executor, cancellationToken);
     }
 
     public async Task RefreshSidebarPathsAsync()

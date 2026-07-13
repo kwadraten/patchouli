@@ -528,10 +528,36 @@ public sealed class FileResolutionService : IFileResolutionService
         }
     }
 
-    public async Task<Result<FileAsset>> ConfirmMovedCandidateAsync(
+    public Task<Result<FileAsset>> ConfirmMovedCandidateAsync(
         FileAssetId fileAssetId,
         string selectedPath,
         CancellationToken cancellationToken = default)
+    {
+        return ConfirmFileAsync(fileAssetId, selectedPath, false, false, cancellationToken);
+    }
+
+    public Task<Result<FileAsset>> RebindSourceAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        CancellationToken cancellationToken = default)
+    {
+        return ConfirmFileAsync(fileAssetId, selectedPath, true, false, cancellationToken);
+    }
+
+    public Task<Result<FileAsset>> ConfirmChangedFileAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        CancellationToken cancellationToken = default)
+    {
+        return ConfirmFileAsync(fileAssetId, selectedPath, false, true, cancellationToken);
+    }
+
+    private async Task<Result<FileAsset>> ConfirmFileAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        bool requireOriginalFullFingerprint,
+        bool markSourceBasisStale,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(selectedPath))
         {
@@ -556,6 +582,16 @@ public sealed class FileResolutionService : IFileResolutionService
             {
                 await transaction.RollbackAsync(cancellationToken);
                 return Result<FileAsset>.Failure(AppErrorCodes.NotFound, "File asset was not found.");
+            }
+
+            if (requireOriginalFullFingerprint &&
+                (string.IsNullOrWhiteSpace(asset.FullBlake3) ||
+                 string.IsNullOrWhiteSpace(fingerprint.Value.FullBlake3) ||
+                 !string.Equals(asset.FullBlake3, fingerprint.Value.FullBlake3, StringComparison.Ordinal)))
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<FileAsset>.Failure(AppErrorCodes.ValidationFailed,
+                    "Rebinding requires a path with the original complete file fingerprint.");
             }
 
             DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
@@ -594,6 +630,27 @@ public sealed class FileResolutionService : IFileResolutionService
                 FileAssetStatus.Available,
                 now);
 
+            if (markSourceBasisStale)
+            {
+                await connection.ExecuteAsync(
+                    """
+                    update layout_revisions
+                    set source_basis_status = 'stale'
+                    where document_instance_id in (
+                        select document_instance_id
+                        from document_instances
+                        where file_asset_id = @FileAssetId
+                    )
+                      and coalesce(source_full_blake3, '') <> coalesce(@FullBlake3, '');
+                    """,
+                    new
+                    {
+                        FileAssetId = fileAssetId.ToString(),
+                        fingerprint.Value.FullBlake3
+                    },
+                    transaction);
+            }
+
             await transaction.CommitAsync(cancellationToken);
 
             return Result<FileAsset>.Success(new FileAsset(
@@ -619,6 +676,183 @@ public sealed class FileResolutionService : IFileResolutionService
                                               "infrastructure.file-resolution"))
         {
             return DatabaseFailure<FileAsset>(exception);
+        }
+    }
+
+    public async Task<Result> ReuseRevisionForNewFingerprintAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        CancellationToken cancellationToken = default)
+    {
+        Result<FileAsset> confirmed = await ConfirmChangedFileAsync(fileAssetId, selectedPath, cancellationToken);
+        if (confirmed.IsFailure)
+        {
+            return Result.Failure(confirmed.ErrorCode!, confirmed.ErrorMessage!, confirmed.Conflicts);
+        }
+
+        if (string.IsNullOrWhiteSpace(confirmed.Value.FullBlake3))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "A complete fingerprint is required before deriving a layout revision.");
+        }
+
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            RevisionCopyRow[] revisions = (await connection.QueryAsync<RevisionCopyRow>(
+                """
+                select layout_revision_id as LayoutRevisionId,
+                       document_instance_id as DocumentInstanceId,
+                       source as Source,
+                       created_at as CreatedAt
+                from layout_revisions
+                where document_instance_id in (
+                    select document_instance_id
+                    from document_instances
+                    where file_asset_id = @FileAssetId
+                )
+                  and source_basis_status = 'stale'
+                  and is_current = 1;
+                """,
+                new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
+
+            foreach (RevisionCopyRow revision in revisions)
+            {
+                string newRevisionId = LayoutRevisionId.New().ToString();
+                await connection.ExecuteAsync(
+                    """
+                    insert into layout_revisions (
+                        layout_revision_id, document_instance_id, parent_revision_id, source, is_current, created_at,
+                        source_full_blake3, source_basis_status
+                    )
+                    values (@LayoutRevisionId, @DocumentInstanceId, @ParentRevisionId, @Source, 0, @CreatedAt,
+                            @SourceFullBlake3, 'current');
+                    """,
+                    new
+                    {
+                        LayoutRevisionId = newRevisionId,
+                        revision.DocumentInstanceId,
+                        ParentRevisionId = revision.LayoutRevisionId,
+                        Source = "reused_for_new_fingerprint",
+                        CreatedAt = FormatUtc(_clock.UtcNow),
+                        SourceFullBlake3 = confirmed.Value.FullBlake3
+                    },
+                    transaction);
+
+                LayoutNodeCopyRow[] nodes = (await connection.QueryAsync<LayoutNodeCopyRow>(
+                    """
+                    select node_id as NodeId,
+                           document_instance_id as DocumentInstanceId,
+                           page_id as PageId,
+                           parent_node_id as ParentNodeId,
+                           node_type as NodeType,
+                           bbox_x as BBoxX,
+                           bbox_y as BBoxY,
+                           bbox_width as BBoxWidth,
+                           bbox_height as BBoxHeight,
+                           own_text as OwnText,
+                           text_policy as TextPolicy,
+                           reading_order as ReadingOrder,
+                           source as Source,
+                           confidence as Confidence,
+                           ignored as Ignored,
+                           row_index as RowIndex,
+                           col_index as ColIndex,
+                           row_span as RowSpan,
+                           col_span as ColSpan,
+                           is_header as IsHeader
+                    from layout_nodes
+                    where revision_id = @RevisionId;
+                    """,
+                    new { RevisionId = revision.LayoutRevisionId }, transaction)).ToArray();
+
+                Dictionary<string, string> nodeIds = nodes.ToDictionary(node => node.NodeId,
+                    _ => LayoutNodeId.New().ToString(), StringComparer.Ordinal);
+                foreach (LayoutNodeCopyRow node in nodes)
+                {
+                    await connection.ExecuteAsync(
+                        """
+                        insert into layout_nodes (
+                            node_id, document_instance_id, page_id, parent_node_id, node_type,
+                            bbox_x, bbox_y, bbox_width, bbox_height, own_text, text_policy,
+                            reading_order, source, revision_id, confidence, ignored,
+                            row_index, col_index, row_span, col_span, is_header
+                        )
+                        values (
+                            @NodeId, @DocumentInstanceId, @PageId, @ParentNodeId, @NodeType,
+                            @BBoxX, @BBoxY, @BBoxWidth, @BBoxHeight, @OwnText, @TextPolicy,
+                            @ReadingOrder, @Source, @RevisionId, @Confidence, @Ignored,
+                            @RowIndex, @ColIndex, @RowSpan, @ColSpan, @IsHeader
+                        );
+                        """,
+                        new
+                        {
+                            NodeId = nodeIds[node.NodeId],
+                            node.DocumentInstanceId,
+                            node.PageId,
+                            ParentNodeId = node.ParentNodeId is null ? null : nodeIds[node.ParentNodeId],
+                            node.NodeType,
+                            node.BBoxX,
+                            node.BBoxY,
+                            node.BBoxWidth,
+                            node.BBoxHeight,
+                            node.OwnText,
+                            node.TextPolicy,
+                            node.ReadingOrder,
+                            node.Source,
+                            RevisionId = newRevisionId,
+                            node.Confidence,
+                            node.Ignored,
+                            node.RowIndex,
+                            node.ColIndex,
+                            node.RowSpan,
+                            node.ColSpan,
+                            node.IsHeader
+                        },
+                        transaction);
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result> KeepOldEvidenceAsync(
+        FileAssetId fileAssetId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            int exists = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from file_assets where file_asset_id = @FileAssetId;",
+                new { FileAssetId = fileAssetId.ToString() });
+            return exists == 0
+                ? Result.Failure(AppErrorCodes.NotFound, "File asset was not found.")
+                : Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
         }
     }
 
@@ -925,6 +1159,38 @@ public sealed class FileResolutionService : IFileResolutionService
         public string Status { get; set; } = string.Empty;
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
+    }
+
+    private sealed class RevisionCopyRow
+    {
+        public string LayoutRevisionId { get; set; } = string.Empty;
+        public string DocumentInstanceId { get; set; } = string.Empty;
+        public string Source { get; set; } = string.Empty;
+        public string CreatedAt { get; set; } = string.Empty;
+    }
+
+    private sealed class LayoutNodeCopyRow
+    {
+        public string NodeId { get; set; } = string.Empty;
+        public string DocumentInstanceId { get; set; } = string.Empty;
+        public string PageId { get; set; } = string.Empty;
+        public string? ParentNodeId { get; set; }
+        public string NodeType { get; set; } = string.Empty;
+        public double? BBoxX { get; set; }
+        public double? BBoxY { get; set; }
+        public double? BBoxWidth { get; set; }
+        public double? BBoxHeight { get; set; }
+        public string? OwnText { get; set; }
+        public string TextPolicy { get; set; } = string.Empty;
+        public int ReadingOrder { get; set; }
+        public string Source { get; set; } = string.Empty;
+        public double? Confidence { get; set; }
+        public int Ignored { get; set; }
+        public int? RowIndex { get; set; }
+        public int? ColIndex { get; set; }
+        public int? RowSpan { get; set; }
+        public int? ColSpan { get; set; }
+        public int IsHeader { get; set; }
     }
 
     private sealed class SearchRootRow

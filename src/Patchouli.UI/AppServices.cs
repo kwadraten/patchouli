@@ -2,6 +2,7 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
@@ -17,6 +18,7 @@ using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Coordinates;
+using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
@@ -78,6 +80,11 @@ public sealed class AppServices
         FileSearchRootAccess = new FileSearchRootAccess(exclusionPatterns: settings.FileScanning.ExclusionPatterns);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
             blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
+        ConflictActions = new ConflictActionExecutorRegistry(
+        [
+            new FileConflictActionExecutor(FileResolution, ConflictCode.FileRelocationMultipleCandidates),
+            new FileConflictActionExecutor(FileResolution, ConflictCode.SourceFileChangedOrBBoxBasisStale)
+        ]);
         Pages = new PageService(ConnectionFactory, Clock);
         Layout = new LayoutTreeService(ConnectionFactory, Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
@@ -152,6 +159,7 @@ public sealed class AppServices
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
+    public ConflictActionExecutorRegistry ConflictActions { get; }
     public FileSearchRootAccess FileSearchRootAccess { get; }
     public IPageService Pages { get; }
     public ILayoutTreeService Layout { get; }

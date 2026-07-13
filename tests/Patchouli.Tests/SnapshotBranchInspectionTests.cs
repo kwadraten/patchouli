@@ -207,6 +207,80 @@ public sealed class SnapshotBranchInspectionTests
         (await c.Count("document_instances")).Should().Be(0);
     }
 
+    [Fact]
+    public async Task Same_item_keep_local_removes_incoming_item_and_document_dependencies_from_plan()
+    {
+        await using Ctx c = await Ctx.Create();
+        await c.InsertConflictingItem();
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync((await c.Open()).Value, [c.Item], [])).Value;
+        ConflictDescriptor conflict = plan.Conflicts.Single(x => x.ConflictCode == ConflictCode.SameIdDifferentContent);
+
+        plan = (await c.Service.ResolveConflictAsync(plan, conflict.ConflictId!,
+            new ConflictActionSelection("keep_local"))).Value;
+
+        plan.ItemsToImport.Should().NotContain(c.Item);
+        plan.DocumentInstancesToImport.Should().NotContain(c.Doc);
+        (await c.Service.ApplyImportPlanAsync(plan, true)).IsSuccess.Should().BeTrue();
+        (await c.Title()).Should().Be("Existing");
+        (await c.Count("document_instances")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Same_item_import_as_new_remaps_the_item_without_rebinding_the_incoming_document()
+    {
+        await using Ctx c = await Ctx.Create();
+        await c.InsertConflictingItem();
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync((await c.Open()).Value, [c.Item], [])).Value;
+        ConflictDescriptor conflict = plan.Conflicts.Single(x => x.ConflictCode == ConflictCode.SameIdDifferentContent);
+
+        plan = (await c.Service.ResolveConflictAsync(plan, conflict.ConflictId!,
+            new ConflictActionSelection("import_as_new_item"))).Value;
+
+        plan.ItemIdRemappings.Should().ContainKey(c.Item.ToString());
+        (await c.Service.ApplyImportPlanAsync(plan, true)).IsSuccess.Should().BeTrue();
+        (await c.Count("items")).Should().Be(2);
+        (await c.Count("document_instances")).Should().Be(1);
+        (await c.Scalar<string>("select item_id from document_instances where document_instance_id = @Id",
+            new { Id = c.Doc.ToString() })).Should().Be(plan.ItemIdRemappings[c.Item.ToString()]);
+    }
+
+    [Fact]
+    public async Task Primary_document_resolution_can_import_incoming_as_secondary()
+    {
+        await using Ctx c = await Ctx.Create();
+        await c.InsertExistingPrimary();
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync((await c.Open()).Value, [c.Item], [])).Value;
+        ConflictDescriptor conflict =
+            plan.Conflicts.Single(x => x.ConflictCode == ConflictCode.PrimaryDocumentConflict);
+
+        plan = (await c.Service.ResolveConflictAsync(plan, conflict.ConflictId!,
+            new ConflictActionSelection("keep_local_with_incoming_secondary"))).Value;
+
+        (await c.Service.ApplyImportPlanAsync(plan, true)).IsSuccess.Should().BeTrue();
+        (await c.Count("document_instances")).Should().Be(2);
+        (await c.Scalar<long>("select count(*) from document_instances where item_id = @Id and is_primary = 1",
+            new { Id = c.Item.ToString() })).Should().Be(1);
+        (await c.Scalar<long>("select is_primary from document_instances where document_instance_id = @Id",
+            new { Id = c.Doc.ToString() })).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Resolved_plan_is_rejected_as_superseded_when_local_state_changes()
+    {
+        await using Ctx c = await Ctx.Create();
+        await c.InsertConflictingItem();
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync((await c.Open()).Value, [c.Item], [])).Value;
+        ConflictDescriptor conflict = plan.Conflicts.Single(x => x.ConflictCode == ConflictCode.SameIdDifferentContent);
+        plan = (await c.Service.ResolveConflictAsync(plan, conflict.ConflictId!,
+            new ConflictActionSelection("keep_local"))).Value;
+        await c.UpdateItemTitle("Changed after resolution");
+
+        Result<BranchImportResult> result = await c.Service.ApplyImportPlanAsync(plan, true);
+
+        result.ErrorCode.Should().Be("plan_stale");
+        result.Conflicts.Should().ContainSingle(x => x.ResolutionStatus == ConflictResolutionStatus.Superseded);
+    }
+
     private sealed class Ctx : IAsyncDisposable
     {
         private Ctx(TemporarySqliteDatabase db, string root, SnapshotBranchInspectionService service,
@@ -331,6 +405,21 @@ public sealed class SnapshotBranchInspectionTests
             await c.OpenAsync();
             return (await c.ExecuteScalarAsync<string>("select title from items where item_id=@I",
                 new { I = Item.ToString() }))!;
+        }
+
+        public async Task<T> Scalar<T>(string sql, object parameters)
+        {
+            await using SqliteConnection c = Db.ConnectionFactory.CreateConnection();
+            await c.OpenAsync();
+            return (await c.ExecuteScalarAsync<T>(sql, parameters))!;
+        }
+
+        public async Task UpdateItemTitle(string title)
+        {
+            await using SqliteConnection c = Db.ConnectionFactory.CreateConnection();
+            await c.OpenAsync();
+            await c.ExecuteAsync("update items set title = @Title where item_id = @ItemId;",
+                new { Title = title, ItemId = Item.ToString() });
         }
 
         public async ValueTask DisposeAsync()

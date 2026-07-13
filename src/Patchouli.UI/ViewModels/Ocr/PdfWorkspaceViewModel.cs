@@ -10,6 +10,8 @@ using Patchouli.Ocr;
 using System.Linq;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Results;
+using Patchouli.Core.Conflicts;
+using Patchouli.Infrastructure.Conflicts;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -30,8 +32,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private PageId? _currentPageId;
     private bool _isDrawing;
     private Point _selectionStartPoint;
-    private bool _isConflictFlyoutOpen;
-    private string _conflictMessage = "";
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
@@ -64,9 +64,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             IsDrawToolActive = true;
             return Task.CompletedTask;
         });
-        ResolveConflictAdjustCommand = new AsyncCommand(ResolveConflictAdjustAsync);
-        ResolveConflictOverwriteCommand = new AsyncCommand(ResolveConflictOverwriteAsync);
-        ResolveConflictSkipCommand = new AsyncCommand(ResolveConflictSkipAsync);
     }
 
     public Bitmap? Image { get; private set; }
@@ -244,40 +241,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public bool SelectionVisible => IsDrawing && SelectionWidth > 0 && SelectionHeight > 0;
 
-    public bool IsConflictFlyoutOpen
-    {
-        get => _isConflictFlyoutOpen;
-        set
-        {
-            if (_isConflictFlyoutOpen == value)
-            {
-                return;
-            }
-
-            _isConflictFlyoutOpen = value;
-            Raise();
-        }
-    }
-
-    public string ConflictMessage
-    {
-        get => _conflictMessage;
-        set
-        {
-            if (_conflictMessage == value)
-            {
-                return;
-            }
-
-            _conflictMessage = value;
-            Raise();
-        }
-    }
-
-    public AsyncCommand ResolveConflictAdjustCommand { get; }
-    public AsyncCommand ResolveConflictOverwriteCommand { get; }
-    public AsyncCommand ResolveConflictSkipCommand { get; }
-
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> BoundingBoxes { get; } = new();
 
     public PdfBBoxViewModel? SelectedBox
@@ -362,8 +325,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         SelectionHeight = 0;
     }
 
-    private PdfBBoxViewModel? _pendingStagingBox;
-
     private async Task CreateBBoxFromSelectionAsync()
     {
         if (_draftRevisionId is null || _currentPageId is null || _widthPixels <= 0 || _heightPixels <= 0)
@@ -378,75 +339,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             IsStaging = true
         };
 
-        if (CheckOverlap(box))
-        {
-            _pendingStagingBox = box;
-            ConflictMessage = "边框发生重叠 (CF-06)。请选择处理方式：";
-            IsConflictFlyoutOpen = true;
-        }
-        else
-        {
-            await PersistStagingBoxAsync(box);
-        }
-    }
-
-    private async Task ResolveConflictAdjustAsync()
-    {
-        IsConflictFlyoutOpen = false;
-        if (_pendingStagingBox != null)
-        {
-            // Just add it but let the user adjust it
-            await PersistStagingBoxAsync(_pendingStagingBox);
-        }
-
-        _pendingStagingBox = null;
-    }
-
-    private async Task ResolveConflictOverwriteAsync()
-    {
-        IsConflictFlyoutOpen = false;
-        if (_pendingStagingBox != null)
-        {
-            // Remove any overlapping existing boxes
-            Rect rect1 = new(_pendingStagingBox.Left, _pendingStagingBox.Top, _pendingStagingBox.Width,
-                _pendingStagingBox.Height);
-            List<PdfBBoxViewModel> toRemove = BoundingBoxes.Where(existing =>
-            {
-                Rect rect2 = new(existing.Left, existing.Top, existing.Width, existing.Height);
-                return rect1.Intersects(rect2);
-            }).ToList();
-
-            foreach (PdfBBoxViewModel box in toRemove)
-            {
-                BoundingBoxes.Remove(box);
-            }
-
-            await PersistStagingBoxAsync(_pendingStagingBox);
-        }
-
-        _pendingStagingBox = null;
-    }
-
-    private Task ResolveConflictSkipAsync()
-    {
-        IsConflictFlyoutOpen = false;
-        _pendingStagingBox = null;
-        return Task.CompletedTask;
-    }
-
-    private bool CheckOverlap(PdfBBoxViewModel newBox)
-    {
-        Rect rect1 = new(newBox.Left, newBox.Top, newBox.Width, newBox.Height);
-        foreach (PdfBBoxViewModel existing in BoundingBoxes)
-        {
-            Rect rect2 = new(existing.Left, existing.Top, existing.Width, existing.Height);
-            if (rect1.Intersects(rect2))
-            {
-                return true;
-            }
-        }
-
-        return false;
+        await PersistStagingBoxAsync(box);
     }
 
     private async Task PersistStagingBoxAsync(PdfBBoxViewModel box)
@@ -473,6 +366,48 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             LayoutNodeSource.Manual);
         if (result.IsFailure)
         {
+            ConflictDescriptor? conflict = result.Conflicts.SingleOrDefault(candidate =>
+                candidate.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap);
+            if (conflict is not null)
+            {
+                LayoutStagingCandidate candidate = new(
+                    LayoutRevisionId.Parse(_draftRevisionId),
+                    _currentPageId.Value,
+                    null,
+                    LayoutNodeType.Paragraph,
+                    bbox,
+                    box.Text,
+                    TextPolicy.Own,
+                    BoundingBoxes.Count + 1,
+                    LayoutNodeSource.Manual);
+                LayoutStagingConflictActionExecutor executor = new((await _main.ServicesAsync()).Layout, candidate);
+                Result<ConflictResolutionResult> resolution = await _main.ResolveConflictAsync(conflict, executor);
+                if (resolution.IsFailure)
+                {
+                    Status = $"新增 bbox 冲突未处理：{resolution.ErrorMessage}";
+                    return;
+                }
+
+                if (resolution.Value.Disposition == ConflictExecutionDisposition.RetainStagingCandidate)
+                {
+                    BoundingBoxes.Add(box);
+                    SelectedBox = box;
+                    Status = "候选 bbox 保留为暂存状态；调整后重新提交，现有布局未被修改。";
+                    return;
+                }
+
+                if (resolution.Value.Disposition == ConflictExecutionDisposition.Applied)
+                {
+                    BoundingBoxes.Clear();
+                    await LoadNodesAsync(_currentPageId.Value, LayoutRevisionId.Parse(_draftRevisionId));
+                    Status = "冲突已通过允许重叠的节点类型处理。";
+                    return;
+                }
+
+                Status = "已放弃暂存 bbox，现有布局未被修改。";
+                return;
+            }
+
             Status = $"新增 bbox 未写入 layout：{result.ErrorMessage}";
             return;
         }

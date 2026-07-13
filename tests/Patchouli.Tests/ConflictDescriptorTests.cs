@@ -71,4 +71,33 @@ public sealed class ConflictDescriptorTests
         descriptor.RecommendedActions.Select(action => action.ActionId).Should().BeEquivalentTo(
             "adjust_bbox", "change_to_allowed_type", "skip_candidate");
     }
+
+    [Fact]
+    public void Primary_document_conflict_offers_only_non_destructive_import_choices()
+    {
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.PrimaryDocumentConflict(
+            ItemId.New(),
+            DocumentInstanceId.New(),
+            DocumentInstanceId.New());
+
+        descriptor.RecommendedActions.Select(action => action.ActionId).Should().BeEquivalentTo(
+            "keep_local_with_incoming_secondary",
+            "keep_local_without_incoming");
+    }
+
+    [Fact]
+    public void Changed_source_conflict_exposes_all_explicit_evidence_preserving_actions()
+    {
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.SourceFileChanged(
+            FileAssetId.New(),
+            "C:\\library\\old.pdf",
+            [],
+            "The source file changed.");
+
+        descriptor.RecommendedActions.Select(action => action.ActionId).Should().BeEquivalentTo(
+            "rebind_source",
+            "confirm_changed_file",
+            "reuse_revision_for_new_fingerprint",
+            "keep_old_evidence");
+    }
 }

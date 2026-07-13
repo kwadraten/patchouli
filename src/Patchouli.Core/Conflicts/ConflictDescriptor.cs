@@ -11,7 +11,17 @@ public sealed record ConflictDescriptor(
     string? IncomingSnapshot,
     IReadOnlyList<ConflictAction> RecommendedActions,
     string? SelectedAction = null,
-    string ResolutionStatus = ConflictResolutionStatus.Unresolved);
+    string ResolutionStatus = ConflictResolutionStatus.Unresolved,
+    IReadOnlyList<ConflictActionOption>? Options = null,
+    string? ConflictId = null)
+{
+    public IReadOnlyList<ConflictActionOption> AvailableOptions => Options ?? [];
+}
+
+public sealed record ConflictActionOption(
+    string OptionId,
+    string Label,
+    string Detail);
 
 public static class ConflictDomain
 {

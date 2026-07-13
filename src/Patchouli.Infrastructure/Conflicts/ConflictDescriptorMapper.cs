@@ -26,9 +26,9 @@ public static class ConflictDescriptorMapper
             Serialize(new { title = incomingTitle, item_type = incomingItemType }),
             [
                 new ConflictAction("keep_local", "Keep local",
-                    "Keep the local item metadata. Resolution is not yet executable in branch import."),
+                    "Keep the local item metadata and exclude the incoming item with its dependent documents."),
                 new ConflictAction("import_as_new_item", "Import as new item",
-                    "Import with a new identity. Resolution is not yet executable in branch import.", false),
+                    "Create a new item identity and remap incoming dependent documents.", false),
                 new ConflictAction("skip", "Skip incoming item", "Do not import this incoming item.", false)
             ]);
     }
@@ -48,14 +48,12 @@ public static class ConflictDescriptorMapper
             Serialize(new { item_id = itemId.ToString(), primary_document_id = existingDocumentId.ToString() }),
             Serialize(new { item_id = itemId.ToString(), primary_document_id = incomingDocumentId.ToString() }),
             [
-                new ConflictAction("keep_local_primary", "Keep local primary",
-                    "Keep the local primary document. Resolution is not yet executable in branch import."),
-                new ConflictAction("import_as_secondary", "Import as secondary",
-                    "Import the incoming document as non-primary. Resolution is not yet executable in branch import.",
-                    false),
-                new ConflictAction("replace_primary", "Replace primary",
-                    "Use the incoming document as primary. Resolution is not yet executable in branch import.", false),
-                new ConflictAction("skip", "Skip incoming document", "Do not import this incoming document.", false)
+                new ConflictAction("keep_local_with_incoming_secondary",
+                    "Keep local primary and import incoming as secondary",
+                    "The local primary document remains primary; the incoming document is imported as non-primary."),
+                new ConflictAction("keep_local_without_incoming", "Keep local primary without incoming document",
+                    "The local primary document remains primary and the incoming document with all dependent data is excluded.",
+                    false)
             ]);
     }
 
@@ -100,8 +98,9 @@ public static class ConflictDescriptorMapper
             }),
             [
                 new ConflictAction("choose_candidate", "Choose candidate",
-                    "Pick the correct relocated source file before continuing.")
-            ]);
+                    "Pick the correct relocated source file before continuing.", RequiresOption: true)
+            ],
+            Options: ToOptions(candidates));
     }
 
     public static ConflictDescriptor SourceFileChanged(
@@ -128,9 +127,20 @@ public static class ConflictDescriptorMapper
                 }).ToArray()
             }),
             [
+                new ConflictAction("rebind_source", "Rebind original source",
+                    "Choose a path whose complete fingerprint matches the original source.", RequiresOption: true),
                 new ConflictAction("confirm_changed_file", "Confirm changed file",
-                    "Confirm that the changed source file should replace the previous fingerprint.")
-            ]);
+                    "Accept the new source fingerprint and mark revisions based on the old fingerprint as stale.",
+                    false,
+                    true),
+                new ConflictAction("reuse_revision_for_new_fingerprint", "Reuse revision for new fingerprint",
+                    "Create a new revision derived from an old revision only after explicitly confirming the new source.",
+                    false,
+                    true),
+                new ConflictAction("keep_old_evidence", "Keep old evidence",
+                    "Keep the old fingerprint and pinned evidence unchanged; the source-change warning remains.", false)
+            ],
+            Options: ToOptions(changedCandidates));
     }
 
     public static ConflictDescriptor LayoutBBoxOrdinaryOverlap(
@@ -165,14 +175,35 @@ public static class ConflictDescriptorMapper
                 new ConflictAction("adjust_bbox", "Adjust bbox",
                     "Change the node bbox or structure so ordinary siblings no longer overlap."),
                 new ConflictAction("change_to_allowed_type", "Use an overlapping node type",
-                    "Change the candidate to an explicitly overlap-compatible node type.", false),
+                    "Change the candidate to an explicitly overlap-compatible node type.", false, true),
                 new ConflictAction("skip_candidate", "Skip candidate",
                     "Discard this candidate without changing the current layout.", false)
+            ],
+            Options:
+            [
+                new ConflictActionOption(LayoutNodeType.Ruby, "Ruby", "Ruby annotations may overlap their base text."),
+                new ConflictActionOption(LayoutNodeType.Annotation, "Annotation",
+                    "Annotations may overlap layout content."),
+                new ConflictActionOption(LayoutNodeType.Marginalia, "Marginalia",
+                    "Marginalia may overlap layout content."),
+                new ConflictActionOption(LayoutNodeType.Seal, "Seal", "Seals may overlap layout content."),
+                new ConflictActionOption(LayoutNodeType.Warichu, "Warichu", "Warichu may overlap layout content."),
+                new ConflictActionOption(LayoutNodeType.Custom, "Custom",
+                    "Custom overlay nodes may overlap layout content.")
             ]);
     }
 
     private static string Serialize(object value)
     {
         return JsonSerializer.Serialize(value);
+    }
+
+    private static IReadOnlyList<ConflictActionOption> ToOptions(IEnumerable<FileResolutionCandidate> candidates)
+    {
+        return candidates.Select(candidate => new ConflictActionOption(
+                candidate.Path,
+                candidate.Path,
+                $"{candidate.SizeBytes} bytes | {candidate.MtimeUtc:O} | {candidate.FullBlake3 ?? candidate.QuickHash ?? "no hash"} | {candidate.Confidence} | {candidate.Reason}"))
+            .ToArray();
     }
 }

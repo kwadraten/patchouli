@@ -17,4 +17,16 @@ public sealed class PdfWorkspaceLayoutTests
         pdfXaml.Should().NotContain("Canvas.Left=\"{Binding Left}\"");
         pdfXaml.Should().NotContain("Canvas.Top=\"{Binding Top}\"");
     }
+
+    [Fact]
+    public void PdfWorkspace_uses_no_parallel_bbox_conflict_flyout_or_overwrite_action()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        xaml.Should().NotContain("ResolveConflictOverwriteCommand").And.NotContain("强制覆盖");
+        viewModel.Should().NotContain("ResolveConflictOverwriteAsync").And.NotContain("CheckOverlap");
+    }
 }

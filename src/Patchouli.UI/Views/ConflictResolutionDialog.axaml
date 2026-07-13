@@ -25,10 +25,12 @@
                      Foreground="{DynamicResource OnSurfaceBrush}" />
           <TextBlock Text="{Binding ConflictDescription}" FontSize="14"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding SeverityDescription}" FontSize="12"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
         </StackPanel>
         <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12"
                 Padding="10,3" VerticalAlignment="Top">
-          <TextBlock Text="需要处理" FontSize="12" FontWeight="SemiBold"
+          <TextBlock Text="{Binding Severity}" FontSize="12" FontWeight="SemiBold"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </Border>
       </Grid>
@@ -83,7 +85,8 @@
         </ItemsControl.ItemsPanel>
         <ItemsControl.ItemTemplate>
           <DataTemplate x:DataType="vm:ConflictDialogActionViewModel">
-            <Button Content="{Binding Label}" Command="{Binding SelectCommand}" ToolTip.Tip="{Binding Description}"
+            <Button Content="{Binding Label}" Command="{Binding SelectCommand}" IsEnabled="{Binding IsEnabled}"
+                    ToolTip.Tip="{Binding Description}"
                     Margin="4,0" />
           </DataTemplate>
         </ItemsControl.ItemTemplate>

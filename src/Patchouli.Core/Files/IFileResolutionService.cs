@@ -35,6 +35,25 @@ public interface IFileResolutionService
         string selectedPath,
         CancellationToken cancellationToken = default);
 
+    Task<Result<FileAsset>> RebindSourceAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<FileAsset>> ConfirmChangedFileAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> ReuseRevisionForNewFingerprintAsync(
+        FileAssetId fileAssetId,
+        string selectedPath,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> KeepOldEvidenceAsync(
+        FileAssetId fileAssetId,
+        CancellationToken cancellationToken = default);
+
     Task<Result> MarkFileMissingAsync(
         FileAssetId fileAssetId,
         CancellationToken cancellationToken = default);
