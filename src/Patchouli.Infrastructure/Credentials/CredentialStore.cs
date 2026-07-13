@@ -1,301 +1,195 @@
-using Dapper;
-using Microsoft.Data.Sqlite;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
-using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Core.Time;
-using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Credentials;
 
 public sealed class CredentialStore : ICredentialStore
 {
-    private readonly SqliteConnectionFactory _factory;
-    private readonly ILibraryIdentityService _library;
-    private readonly IClock _clock;
+    private readonly string _path;
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public CredentialStore(SqliteConnectionFactory factory, ILibraryIdentityService library, IClock clock)
+    public CredentialStore(string path)
     {
-        _factory = factory;
-        _library = library;
-        _clock = clock;
+        _path = path;
     }
 
-    public async Task<Result<ProviderCredentialMetadata>> SaveCredentialAsync(string providerId, string displayName,
+    public async Task<Result<ProviderCredentialMetadata>> SaveAsync(string providerId, string displayName,
         string secretValue, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(providerId) || string.IsNullOrWhiteSpace(displayName) ||
-            string.IsNullOrWhiteSpace(secretValue))
+        if (string.IsNullOrWhiteSpace(providerId) || string.IsNullOrWhiteSpace(secretValue))
         {
             return Result<ProviderCredentialMetadata>.Failure(AppErrorCodes.ValidationFailed,
-                "Provider, display name, and secret are required.");
+                "Provider and secret are required.");
         }
 
-        Result<LibraryMetadata> lib = await _library.GetCurrentLibraryAsync(cancellationToken);
-        if (lib.IsFailure)
-        {
-            return Result<ProviderCredentialMetadata>.Failure(lib.ErrorCode!, lib.ErrorMessage!);
-        }
-
+        await _gate.WaitAsync(cancellationToken);
         try
         {
-            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
-            CredentialId id = CredentialId.New();
-            await using SqliteConnection c = _factory.CreateConnection();
-            await c.OpenAsync(cancellationToken);
-            await c.ExecuteAsync(
-                "insert into provider_credentials (credential_id,library_id,provider_id,display_name,secret_value,status,created_at,updated_at) values (@Id,@Lib,@Provider,@Name,@Secret,'active',@Now,@Now);",
-                new
+            JsonObject root = await ReadRootAsync(cancellationToken);
+            JsonObject credentials = GetObject(root, "Credentials");
+            JsonArray providers = GetArray(credentials, "Providers");
+            string provider = providerId.Trim().ToLowerInvariant();
+            JsonObject? existing = providers.OfType<JsonObject>().FirstOrDefault(item =>
+                string.Equals(item["ProviderId"]?.GetValue<string>(), provider, StringComparison.OrdinalIgnoreCase));
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            string id = existing?["CredentialId"]?.GetValue<string>() ?? Guid.NewGuid().ToString("D");
+            JsonObject value = new()
+            {
+                ["CredentialId"] = id,
+                ["ProviderId"] = provider,
+                ["DisplayName"] = string.IsNullOrWhiteSpace(displayName) ? provider : displayName.Trim(),
+                ["SecretValue"] = secretValue.Trim(),
+                ["Status"] = ProviderCredentialStatus.Active,
+                ["CreatedAt"] = existing?["CreatedAt"]?.GetValue<string>() ?? now.ToString("O"),
+                ["UpdatedAt"] = now.ToString("O")
+            };
+            for (int index = providers.Count - 1; index >= 0; index--)
+            {
+                if (providers[index] is JsonObject item &&
+                    string.Equals(item["ProviderId"]?.GetValue<string>(), provider, StringComparison.OrdinalIgnoreCase))
                 {
-                    Id = id.ToString(), Lib = lib.Value.LibraryId.ToString(), Provider = providerId.Trim(),
-                    Name = displayName.Trim(), Secret = secretValue, Now = now.ToString("O")
-                });
-            return Result<ProviderCredentialMetadata>.Success(new ProviderCredentialMetadata(id, lib.Value.LibraryId,
-                providerId.Trim(), displayName.Trim(), ProviderCredentialStatus.Active, now, now));
-        }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
-        {
-            return Result<ProviderCredentialMetadata>.Failure(AppErrorCodes.DatabaseError, ex.Message);
-        }
-    }
-
-    public async Task<Result<ProviderCredentialMetadata>> SaveOrUpdateProviderCredentialAsync(string providerId,
-        string displayName, string secretValue, CancellationToken cancellationToken = default)
-    {
-        if (string.IsNullOrWhiteSpace(providerId) || string.IsNullOrWhiteSpace(displayName) ||
-            string.IsNullOrWhiteSpace(secretValue))
-        {
-            return Result<ProviderCredentialMetadata>.Failure(AppErrorCodes.ValidationFailed,
-                "Provider, display name, and secret are required.");
-        }
-
-        Result<LibraryMetadata> lib = await _library.GetCurrentLibraryAsync(cancellationToken);
-        if (lib.IsFailure)
-        {
-            return Result<ProviderCredentialMetadata>.Failure(lib.ErrorCode!, lib.ErrorMessage!);
-        }
-
-        try
-        {
-            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
-            await using SqliteConnection c = _factory.CreateConnection();
-            await c.OpenAsync(cancellationToken);
-            string provider = providerId.Trim();
-            string name = displayName.Trim();
-            string secret = secretValue.Trim();
-            Row? existing = await c.QuerySingleOrDefaultAsync<Row>(
-                "select credential_id as CredentialId,library_id as LibraryId,provider_id as ProviderId,display_name as DisplayName,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credentials where library_id=@Lib and provider_id=@Provider and status='active' order by updated_at desc limit 1;",
-                new { Lib = lib.Value.LibraryId.ToString(), Provider = provider });
-            if (existing is not null)
-            {
-                await c.ExecuteAsync(
-                    "update provider_credentials set display_name=@Name,secret_value=@Secret,updated_at=@Now where credential_id=@Id;",
-                    new { Id = existing.CredentialId, Name = name, Secret = secret, Now = now.ToString("O") });
-                return Result<ProviderCredentialMetadata>.Success(new ProviderCredentialMetadata(
-                    CredentialId.Parse(existing.CredentialId), lib.Value.LibraryId, provider, name,
-                    ProviderCredentialStatus.Active, DateTimeOffset.Parse(existing.CreatedAt), now));
+                    providers.RemoveAt(index);
+                }
             }
 
-            CredentialId id = CredentialId.New();
-            await c.ExecuteAsync(
-                "insert into provider_credentials (credential_id,library_id,provider_id,display_name,secret_value,status,created_at,updated_at) values (@Id,@Lib,@Provider,@Name,@Secret,'active',@Now,@Now);",
-                new
-                {
-                    Id = id.ToString(), Lib = lib.Value.LibraryId.ToString(), Provider = provider, Name = name,
-                    Secret = secret, Now = now.ToString("O")
-                });
-            return Result<ProviderCredentialMetadata>.Success(new ProviderCredentialMetadata(id, lib.Value.LibraryId,
-                provider, name, ProviderCredentialStatus.Active, now, now));
+            providers.Add(value);
+            bool saved = await WriteRootAsync(root, cancellationToken);
+            return saved
+                ? Result<ProviderCredentialMetadata>.Success(ToMetadata(value))
+                : Result<ProviderCredentialMetadata>.Failure(AppErrorCodes.DatabaseError,
+                    "Credential settings could not be saved.");
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
+        finally
         {
-            return Result<ProviderCredentialMetadata>.Failure(AppErrorCodes.DatabaseError, ex.Message);
-        }
-    }
-
-    public async Task<Result<ProviderCredentialMetadata>> GetCredentialMetadataAsync(CredentialId credentialId,
-        CancellationToken cancellationToken = default)
-    {
-        IReadOnlyList<ProviderCredentialMetadata> rows = await ListRowsAsync(cancellationToken);
-        ProviderCredentialMetadata? r = rows.FirstOrDefault(x => x.CredentialId == credentialId);
-        return r is null
-            ? Result<ProviderCredentialMetadata>.Failure(AppErrorCodes.NotFound, "Credential was not found.")
-            : Result<ProviderCredentialMetadata>.Success(r);
-    }
-
-    public async Task<Result<string>> GetSecretForInternalUseAsync(CredentialId credentialId,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await using SqliteConnection c = _factory.CreateConnection();
-            await c.OpenAsync(cancellationToken);
-            (string Secret, string Status) row = await c.QuerySingleOrDefaultAsync<(string Secret, string Status)>(
-                "select secret_value as Secret,status as Status from provider_credentials where credential_id=@Id;",
-                new { Id = credentialId.ToString() });
-            if (string.IsNullOrEmpty(row.Secret))
-            {
-                return Result<string>.Failure(AppErrorCodes.NotFound, "Credential was not found.");
-            }
-
-            if (row.Status != ProviderCredentialStatus.Active)
-            {
-                return Result<string>.Failure(AppErrorCodes.InvalidState, "Credential is not active.");
-            }
-
-            return Result<string>.Success(row.Secret);
-        }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
-        {
-            return Result<string>.Failure(AppErrorCodes.DatabaseError, ex.Message);
+            _gate.Release();
         }
     }
 
     public async Task<Result<string>> GetActiveSecretForProviderAsync(string providerId,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(providerId))
-        {
-            return Result<string>.Failure(AppErrorCodes.ValidationFailed, "Provider is required.");
-        }
-
-        Result<LibraryMetadata> lib = await _library.GetCurrentLibraryAsync(cancellationToken);
-        if (lib.IsFailure)
-        {
-            return Result<string>.Failure(lib.ErrorCode!, lib.ErrorMessage!);
-        }
-
-        try
-        {
-            await using SqliteConnection c = _factory.CreateConnection();
-            await c.OpenAsync(cancellationToken);
-            string? secret = await c.ExecuteScalarAsync<string?>(
-                "select secret_value from provider_credentials where library_id=@Lib and provider_id=@Provider and status='active' and length(trim(secret_value))>0 order by updated_at desc limit 1;",
-                new { Lib = lib.Value.LibraryId.ToString(), Provider = providerId.Trim() });
-            return string.IsNullOrWhiteSpace(secret)
-                ? Result<string>.Failure(AppErrorCodes.NotFound, "Credential was not found.")
-                : Result<string>.Success(secret);
-        }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
-        {
-            return Result<string>.Failure(AppErrorCodes.DatabaseError, ex.Message);
-        }
+        JsonObject root = await ReadRootAsync(cancellationToken);
+        JsonArray providers = GetArray(GetObject(root, "Credentials"), "Providers");
+        JsonObject? value = providers.OfType<JsonObject>().FirstOrDefault(item =>
+            string.Equals(item["ProviderId"]?.GetValue<string>(), providerId.Trim(),
+                StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(item["Status"]?.GetValue<string>(), ProviderCredentialStatus.Active,
+                StringComparison.OrdinalIgnoreCase));
+        string? secret = value?["SecretValue"]?.GetValue<string>();
+        return string.IsNullOrWhiteSpace(secret)
+            ? Result<string>.Failure(AppErrorCodes.NotFound, "Credential was not found.")
+            : Result<string>.Success(secret);
     }
 
-    public async Task<Result<ProviderCredentialBinding>> BindCredentialToPresetAsync(CredentialId credentialId,
-        OcrPresetId presetId, CancellationToken cancellationToken = default)
+    public async Task<Result> RemoveAsync(string providerId, CancellationToken cancellationToken = default)
     {
-        Result<ProviderCredentialMetadata> meta = await GetCredentialMetadataAsync(credentialId, cancellationToken);
-        if (meta.IsFailure)
-        {
-            return Result<ProviderCredentialBinding>.Failure(meta.ErrorCode!, meta.ErrorMessage!);
-        }
-
-        if (meta.Value.Status != ProviderCredentialStatus.Active)
-        {
-            return Result<ProviderCredentialBinding>.Failure(AppErrorCodes.InvalidState, "Credential is not active.");
-        }
-
+        await _gate.WaitAsync(cancellationToken);
         try
         {
-            await using SqliteConnection c = _factory.CreateConnection();
-            await c.OpenAsync(cancellationToken);
-            string? provider = await c.ExecuteScalarAsync<string?>(
-                "select provider_id from provider_credentials where credential_id=@Id;",
-                new { Id = credentialId.ToString() });
-            int preset = await c.ExecuteScalarAsync<int>("select count(1) from ocr_presets where preset_id=@Id;",
-                new { Id = presetId.ToString() });
-            if (preset == 0)
+            JsonObject root = await ReadRootAsync(cancellationToken);
+            JsonArray providers = GetArray(GetObject(root, "Credentials"), "Providers");
+            for (int index = providers.Count - 1; index >= 0; index--)
             {
-                return Result<ProviderCredentialBinding>.Failure(AppErrorCodes.NotFound, "OCR preset was not found.");
+                if (providers[index] is JsonObject item &&
+                    string.Equals(item["ProviderId"]?.GetValue<string>(), providerId.Trim(),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    providers.RemoveAt(index);
+                }
             }
 
-            DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
-            ProviderCredentialBinding b = new(Guid.NewGuid().ToString("D"), credentialId, presetId, provider!,
-                ProviderCredentialBindingStatus.Active, now, now);
-            await c.ExecuteAsync(
-                "insert into provider_credential_bindings (binding_id,credential_id,preset_id,provider_id,status,created_at,updated_at) values (@Id,@Credential,@Preset,@Provider,@Status,@Now,@Now);",
-                new
-                {
-                    Id = b.BindingId, Credential = credentialId.ToString(), Preset = presetId.ToString(),
-                    Provider = b.ProviderId, Status = b.Status, Now = now.ToString("O")
-                });
-            return Result<ProviderCredentialBinding>.Success(b);
+            bool saved = await WriteRootAsync(root, cancellationToken);
+            return saved
+                ? Result.Success()
+                : Result.Failure(AppErrorCodes.DatabaseError, "Credential settings could not be saved.");
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
+        finally
         {
-            return Result<ProviderCredentialBinding>.Failure(AppErrorCodes.DatabaseError, ex.Message);
+            _gate.Release();
         }
     }
 
-    public Task<Result> RevokeCredentialAsync(CredentialId credentialId, CancellationToken cancellationToken = default)
-    {
-        return SetStatusAsync(credentialId, ProviderCredentialStatus.Revoked, ProviderCredentialBindingStatus.Revoked,
-            "[revoked]", cancellationToken);
-    }
-
-    public Task<Result> EmergencyPurgeCredentialAsync(CredentialId credentialId,
+    public async Task<Result<IReadOnlyList<ProviderCredentialMetadata>>> ListAsync(
         CancellationToken cancellationToken = default)
     {
-        return SetStatusAsync(credentialId, ProviderCredentialStatus.Purged,
-            ProviderCredentialBindingStatus.CredentialMissing, "[purged]", cancellationToken);
+        JsonObject root = await ReadRootAsync(cancellationToken);
+        JsonArray providers = GetArray(GetObject(root, "Credentials"), "Providers");
+        return Result<IReadOnlyList<ProviderCredentialMetadata>>.Success(
+            providers.OfType<JsonObject>().Select(ToMetadata).ToArray());
     }
 
-    public async Task<Result<IReadOnlyList<ProviderCredentialMetadata>>> ListCredentialsAsync(
-        CancellationToken cancellationToken = default)
+    private async Task<JsonObject> ReadRootAsync(CancellationToken cancellationToken)
     {
+        if (!File.Exists(_path))
+        {
+            return new JsonObject();
+        }
+
+        await using FileStream stream = File.OpenRead(_path);
+        return await JsonNode.ParseAsync(stream, cancellationToken: cancellationToken) as JsonObject ??
+               new JsonObject();
+    }
+
+    private async Task<bool> WriteRootAsync(JsonObject root, CancellationToken cancellationToken)
+    {
+        string? directory = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        string temporaryPath = _path + $".{Guid.NewGuid():N}.tmp";
         try
         {
-            return Result<IReadOnlyList<ProviderCredentialMetadata>>.Success(await ListRowsAsync(cancellationToken));
+            await File.WriteAllTextAsync(temporaryPath,
+                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+                cancellationToken);
+            File.Move(temporaryPath, _path, true);
+            return true;
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return Result<IReadOnlyList<ProviderCredentialMetadata>>.Failure(AppErrorCodes.DatabaseError, ex.Message);
+            return false;
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
         }
     }
 
-    private async Task<Result> SetStatusAsync(CredentialId id, string status, string bindingStatus, string secret,
-        CancellationToken ct)
+    private static JsonObject GetObject(JsonObject root, string name)
     {
-        try
+        if (root[name] is not JsonObject value)
         {
-            await using SqliteConnection c = _factory.CreateConnection();
-            await c.OpenAsync(ct);
-            int n = await c.ExecuteAsync(
-                "update provider_credentials set status=@Status,secret_value=@Secret,updated_at=@Now where credential_id=@Id; update provider_credential_bindings set status=@Binding,updated_at=@Now where credential_id=@Id;",
-                new
-                {
-                    Id = id.ToString(), Status = status, Secret = secret, Binding = bindingStatus,
-                    Now = _clock.UtcNow.ToUniversalTime().ToString("O")
-                });
-            return n == 0 ? Result.Failure(AppErrorCodes.NotFound, "Credential was not found.") : Result.Success();
+            value = new JsonObject();
+            root[name] = value;
         }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.credential-store"))
-        {
-            return Result.Failure(AppErrorCodes.DatabaseError, ex.Message);
-        }
+
+        return value;
     }
 
-    private async Task<IReadOnlyList<ProviderCredentialMetadata>> ListRowsAsync(CancellationToken ct)
+    private static JsonArray GetArray(JsonObject root, string name)
     {
-        await using SqliteConnection c = _factory.CreateConnection();
-        await c.OpenAsync(ct);
-        IEnumerable<Row> rows = await c.QueryAsync<Row>(
-            "select credential_id as CredentialId,library_id as LibraryId,provider_id as ProviderId,display_name as DisplayName,status as Status,created_at as CreatedAt,updated_at as UpdatedAt from provider_credentials order by created_at;");
-        return rows.Select(r => new ProviderCredentialMetadata(CredentialId.Parse(r.CredentialId),
-            LibraryId.Parse(r.LibraryId), r.ProviderId, r.DisplayName, r.Status, DateTimeOffset.Parse(r.CreatedAt),
-            DateTimeOffset.Parse(r.UpdatedAt))).ToArray();
+        if (root[name] is not JsonArray value)
+        {
+            value = new JsonArray();
+            root[name] = value;
+        }
+
+        return value;
     }
 
-    private sealed class Row
+    private static ProviderCredentialMetadata ToMetadata(JsonObject value)
     {
-        public string CredentialId { get; set; } = "";
-        public string LibraryId { get; set; } = "";
-        public string ProviderId { get; set; } = "";
-        public string DisplayName { get; set; } = "";
-        public string Status { get; set; } = "";
-        public string CreatedAt { get; set; } = "";
-        public string UpdatedAt { get; set; } = "";
+        return new ProviderCredentialMetadata(CredentialId.Parse(value["CredentialId"]!.GetValue<string>()),
+            value["ProviderId"]!.GetValue<string>(), value["DisplayName"]!.GetValue<string>(),
+            value["Status"]!.GetValue<string>(), DateTimeOffset.Parse(value["CreatedAt"]!.GetValue<string>()),
+            DateTimeOffset.Parse(value["UpdatedAt"]!.GetValue<string>()));
     }
 }

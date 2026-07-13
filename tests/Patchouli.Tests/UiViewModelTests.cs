@@ -1019,7 +1019,7 @@ public sealed class UiViewModelTests
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
             Result<ProviderCredentialMetadata> saved =
-                await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token",
+                await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
                     "provider-token");
             saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
 
@@ -1081,7 +1081,8 @@ public sealed class UiViewModelTests
             AppServices services = await vm.ServicesAsync();
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
                 .Be("saved-token");
-            PatchouliAppSettings.Load(settingsPath).MinerU.Token.Should().Be("saved-token");
+            PatchouliAppSettings.Load(settingsPath).Credentials.Providers.Should()
+                .ContainSingle(value => value.ProviderId == ProviderIds.MinerU && value.SecretValue == "saved-token");
             vm.Shell.MinerUToken.Should().Be("saved-token");
             vm.Status.Should().Contain("已保存");
         }
@@ -1210,6 +1211,7 @@ public sealed class UiViewModelTests
     public async Task FirstRun_import_then_selected_item_ocr_makes_text_readable_through_mcp()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-loop-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"ui-loop-{Guid.NewGuid():N}.json");
         string scanRoot = Directory
             .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-loop-scan-{Guid.NewGuid():N}")).FullName;
         string zipPath = CreateMinerUZip("""
@@ -1221,7 +1223,8 @@ public sealed class UiViewModelTests
         try
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "selected.pdf");
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
@@ -1236,13 +1239,7 @@ public sealed class UiViewModelTests
             vm.IsLibraryVisible.Should().BeTrue();
             vm.Shell.Items.Should().ContainSingle();
             AppServices services = await vm.ServicesAsync();
-            await using (SqliteConnection connection = services.ConnectionFactory.CreateConnection())
-            {
-                await connection.OpenAsync();
-                (await connection.ExecuteScalarAsync<string>(
-                    "select secret_value from provider_credentials where provider_id=@Provider;",
-                    new { Provider = ProviderIds.MinerU })).Should().Be("token");
-            }
+            File.ReadAllText(settingsPath).Should().Contain("token");
 
             byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
             string? tokenUsed = null;
@@ -1251,11 +1248,9 @@ public sealed class UiViewModelTests
                 tokenUsed = config.Token;
                 return CreateProtocolMinerUClient(config, zipBytes);
             };
-            vm.Shell.MinerUToken = "";
-
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
-            tokenUsed.Should().Be("token");
+            File.ReadAllText(PatchouliAppSettings.ResolvePath()).Should().Contain("token");
             vm.Status.Should().Contain("OCR 完成");
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
             Result<McpSearchLibraryResponse> search =

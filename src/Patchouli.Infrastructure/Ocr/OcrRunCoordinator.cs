@@ -31,6 +31,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly IOcrLayoutImporter _layoutImporter;
     private readonly Func<MinerUConfiguration, IMinerUClient>? _minerUClientFactory;
     private readonly string _minerUCacheRoot;
+    private readonly Func<string, CancellationToken, Task<Result<string>>>? _credentialResolver;
 
     public OcrRunCoordinator(SqliteConnectionFactory connectionFactory, IClock clock, IOcrEngine? engine = null,
         ISearchDirtyMarker? searchDirtyMarker = null, IOcrLayoutImporter? layoutImporter = null,
@@ -49,6 +50,19 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _minerUResultImporter = minerUResultImporter;
         _minerUClientFactory = minerUClientFactory;
         _minerUCacheRoot = minerUCacheRoot ?? Path.Combine(Path.GetTempPath(), "Patchouli", "mineru-cache");
+    }
+
+    public OcrRunCoordinator(SqliteConnectionFactory connectionFactory, IClock clock,
+        Func<string, CancellationToken, Task<Result<string>>> credentialResolver,
+        IOcrEngine? engine = null, ISearchDirtyMarker? searchDirtyMarker = null,
+        IOcrLayoutImporter? layoutImporter = null, IOcrAdapterRegistry? adapterRegistry = null,
+        IPageRenderService? pageRenderService = null, IPageCoordinateService? pageCoordinateService = null,
+        IMinerUResultImporter? minerUResultImporter = null,
+        Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null, string? minerUCacheRoot = null)
+        : this(connectionFactory, clock, engine, searchDirtyMarker, layoutImporter, adapterRegistry, pageRenderService,
+            pageCoordinateService, minerUResultImporter, minerUClientFactory, minerUCacheRoot)
+    {
+        _credentialResolver = credentialResolver;
     }
 
     public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId,
@@ -132,18 +146,10 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                     "MinerU OCR requires an available source PDF path.");
             }
 
-            string? token = await connection.ExecuteScalarAsync<string?>(
-                """
-                select pc.secret_value
-                from provider_credentials pc
-                join library_metadata lm on lm.library_id = pc.library_id
-                where pc.provider_id = @Provider
-                  and pc.status = 'active'
-                  and length(trim(pc.secret_value)) > 0
-                order by pc.updated_at desc
-                limit 1;
-                """,
-                new { Provider = ProviderIds.MinerU });
+            Result<string> credential = _credentialResolver is null
+                ? Result<string>.Failure(AppErrorCodes.NotFound, "MinerU API token is not configured.")
+                : await _credentialResolver(ProviderIds.MinerU, cancellationToken);
+            string? token = credential.IsSuccess ? credential.Value : null;
             if (string.IsNullOrWhiteSpace(token))
             {
                 return Result<OcrRun>.Failure(AppErrorCodes.ValidationFailed, "MinerU API token is not configured.");

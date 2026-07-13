@@ -39,8 +39,7 @@ public sealed record MinerUAppSettings(
     string ModelVersion,
     bool IsOcr,
     bool EnableTable,
-    bool EnableFormula,
-    string Token = "")
+    bool EnableFormula)
 {
     public static MinerUAppSettings Default()
     {
@@ -53,12 +52,33 @@ public sealed record MinerUAppSettings(
     }
 }
 
+public sealed record ProviderCredentialAppSettings(
+    string CredentialId,
+    string ProviderId,
+    string DisplayName,
+    string SecretValue,
+    string Status,
+    string CreatedAt,
+    string UpdatedAt);
+
+public sealed record CredentialsAppSettings(IReadOnlyList<ProviderCredentialAppSettings> Providers)
+{
+    public static CredentialsAppSettings Default()
+    {
+        return new CredentialsAppSettings([]);
+    }
+}
+
 public sealed record McpAppSettings(
     int Port,
     bool BlockExternalAccess,
     string ServerToken,
     Dictionary<string, bool> DisabledTools)
 {
+    public bool CorsEnabled { get; init; }
+    public IReadOnlyList<string> AllowedOrigins { get; init; } = [];
+    public bool AuthRequired { get; init; }
+
     public static McpAppSettings Default()
     {
         return new McpAppSettings(4536, true, string.Empty, new Dictionary<string, bool>());
@@ -165,6 +185,7 @@ public sealed record PatchouliAppSettings(
     McpAppSettings Mcp,
     UiPreferences Ui)
 {
+    public CredentialsAppSettings Credentials { get; init; } = CredentialsAppSettings.Default();
     public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
     public FileScanningAppSettings FileScanning { get; init; } = FileScanningAppSettings.Default();
 
@@ -219,6 +240,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? ui = GetSection(root, "Ui");
             JsonElement? metadataLookup = GetSection(root, "MetadataLookup");
             JsonElement? fileScanning = GetSection(root, "FileScanning");
+            JsonElement? credentials = GetSection(root, "Credentials");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -234,8 +256,7 @@ public sealed record PatchouliAppSettings(
                     ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
                     ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
                     ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
-                    ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
-                    ReadString(minerU, "Token", defaults.MinerU.Token).Trim()),
+                    ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula)),
                 new McpAppSettings(
                     ReadInt(mcp, "Port", defaults.Mcp.Port),
                     ReadBool(mcp, "BlockExternalAccess", defaults.Mcp.BlockExternalAccess),
@@ -250,7 +271,8 @@ public sealed record PatchouliAppSettings(
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
-                    ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns))
+                    ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns)),
+                Credentials = ReadCredentials(credentials, defaults.Credentials)
             };
         }
         catch (JsonException exception)
@@ -317,8 +339,12 @@ public sealed record PatchouliAppSettings(
                 MinerU.ModelVersion,
                 MinerU.IsOcr,
                 MinerU.EnableTable,
-                MinerU.EnableFormula,
-                MinerU.Token
+                MinerU.EnableFormula
+            });
+            root["Credentials"] = JsonSerializer.SerializeToNode(new
+            {
+                SchemaVersion = 1,
+                Providers = Credentials.Providers
             });
             root["Mcp"] = JsonSerializer.SerializeToNode(new
             {
@@ -376,6 +402,40 @@ public sealed record PatchouliAppSettings(
         return root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out JsonElement section)
             ? section
             : null;
+    }
+
+    private static CredentialsAppSettings ReadCredentials(JsonElement? section, CredentialsAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty("Providers", out JsonElement providers) ||
+            providers.ValueKind != JsonValueKind.Array)
+        {
+            return fallback;
+        }
+
+        List<ProviderCredentialAppSettings> values = new();
+        foreach (JsonElement provider in providers.EnumerateArray())
+        {
+            string providerId = ReadString(provider, "ProviderId", "").Trim().ToLowerInvariant();
+            string secret = ReadString(provider, "SecretValue", "").Trim();
+            if (string.IsNullOrWhiteSpace(providerId) || string.IsNullOrWhiteSpace(secret))
+            {
+                continue;
+            }
+
+            values.RemoveAll(value => string.Equals(value.ProviderId, providerId, StringComparison.OrdinalIgnoreCase));
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            values.Add(new ProviderCredentialAppSettings(
+                ReadString(provider, "CredentialId", Guid.NewGuid().ToString("D")),
+                providerId,
+                ReadString(provider, "DisplayName", providerId),
+                secret,
+                ReadString(provider, "Status", "active"),
+                ReadString(provider, "CreatedAt", now.ToString("O")),
+                ReadString(provider, "UpdatedAt", now.ToString("O"))));
+        }
+
+        return new CredentialsAppSettings(values);
     }
 
     private static string ReadString(JsonElement? section, string name, string fallback)

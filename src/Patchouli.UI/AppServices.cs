@@ -49,7 +49,7 @@ public sealed class AppServices
     private IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
 
-    private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings)
+    private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath)
     {
         RuntimeDatabasePath = runtimeDatabasePath;
         Settings = settings;
@@ -109,14 +109,15 @@ public sealed class AppServices
         Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrLayoutImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
-        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, pageOcrEngine, searchUnitBuilder, ocrLayoutImporter,
+        Credentials = new CredentialStore(settingsPath);
+        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
+            pageOcrEngine, searchUnitBuilder, ocrLayoutImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter);
-        McpSettings = new McpServerSettingsService(ConnectionFactory, Clock, BlockingOperations);
+        McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
-        Credentials = new CredentialStore(ConnectionFactory, Library, Clock);
         PdfMetadata = new PdfMetadataReader();
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess);
         PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
@@ -197,6 +198,7 @@ public sealed class AppServices
         return new OcrRunCoordinator(
             ConnectionFactory,
             Clock,
+            Credentials.GetActiveSecretForProviderAsync,
             Settings.Runtime.UseMockOcrOnly ? (IOcrEngine)new MockOcrEngine() : new UnavailableOcrEngine(),
             new SearchUnitBuilder(ConnectionFactory, Clock),
             new OcrLayoutImporter(ConnectionFactory, Clock),
@@ -238,9 +240,11 @@ public sealed class AppServices
             : Result<IOcrQueueRowService>.Success(new OcrQueueRowService(queue.Value, ConnectionFactory));
     }
 
-    public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null)
+    public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
+        string? settingsPath = null)
     {
-        settings ??= PatchouliAppSettings.Load();
+        settingsPath ??= PatchouliAppSettings.ResolvePath();
+        settings ??= PatchouliAppSettings.Load(settingsPath);
         AppPathGuard.ValidateDatabasePath(path, settings.Runtime.DefaultSyncRoot);
         AppPathGuard.ValidateMutablePath(settings.Runtime.LogDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
@@ -254,7 +258,7 @@ public sealed class AppServices
             UnexpectedExceptions.Sink.Report(exception, "operation-log", "startup");
         }
 
-        AppServices services = new(path, settings);
+        AppServices services = new(path, settings, settingsPath);
         await services.MigrationRunner.RunAsync();
         try
         {

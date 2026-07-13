@@ -17,7 +17,7 @@ public sealed class OcrProviderSettingsViewModel : ViewModelBase, ISettingsSecti
     {
         _main = main;
         SaveMinerUSettingsCommand = new AsyncCommand(SaveAsync);
-        _token = _main.AppOptions.MinerU.Token;
+        _token = "";
         _persistedToken = _token;
     }
 

@@ -300,13 +300,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         Snapshot = new SnapshotViewModel(this);
         SnapshotBranch = new SnapshotBranchViewModel(this);
         About = new AboutViewModel(this);
-        Shell.MinerUToken = _settings.MinerU.Token;
-        Settings.MinerUTokenInput = _settings.MinerU.Token;
+        Shell.MinerUToken = "";
+        Settings.MinerUTokenInput = "";
         OpenDatabaseCommand = new AsyncCommand(async () =>
         {
             await StopMcpServerAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
-            _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
+            _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
             PersistRuntimeDatabasePathIfEnabled();
             await LoadPersistedMinerUTokenAsync();
             await RefreshSidebarPathsAsync();
@@ -421,7 +421,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return _services;
         }
 
-        _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings);
+        _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
         await LoadPersistedMinerUTokenAsync();
         await RefreshSidebarPathsAsync();
         if (_autoStartMcpServer)
@@ -1176,7 +1176,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         AppServices services = await ServicesAsync();
         Result<ProviderCredentialMetadata> saved =
-            await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token",
+            await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
                 token.Trim());
         if (saved.IsFailure)
         {
@@ -1184,6 +1184,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return false;
         }
 
+        _settings = PatchouliAppSettings.Load(SettingsFilePath);
         return true;
     }
 
@@ -1193,14 +1194,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         bool persisted = await SaveMinerUTokenAsync(trimmed);
         if (!persisted)
         {
-            return false;
-        }
-
-        SettingsSaveResult settingsSaved = UpdateAppOptions(
-            _settings with { MinerU = _settings.MinerU with { Token = trimmed } });
-        if (!settingsSaved.IsSuccess)
-        {
-            ReportError($"MinerU 设置保存失败：{settingsSaved.ErrorMessage}");
             return false;
         }
 
@@ -1215,11 +1208,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task LoadPersistedMinerUTokenAsync()
     {
         string token = await GetPersistedMinerUTokenAsync();
-        if (string.IsNullOrWhiteSpace(token))
-        {
-            token = _settings.MinerU.Token;
-        }
-
         Shell.MinerUToken = token;
         FirstRun.MinerUToken = token;
         Settings.MinerUTokenInput = token;

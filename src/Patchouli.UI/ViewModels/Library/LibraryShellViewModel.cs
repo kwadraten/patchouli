@@ -414,8 +414,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         try
         {
             AppServices services = await _main.ServicesAsync();
-            await services.Credentials.SaveOrUpdateProviderCredentialAsync(ProviderIds.MinerU, "MinerU API token",
-                token);
             OcrPresetId presetId = await EnsureMinerUPresetAsync(services);
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
             if (MinerUClientFactory is null)

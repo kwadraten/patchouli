@@ -81,7 +81,8 @@ public sealed class AlphaRegressionWorkflowTests
             (await evidence.ResolveAsync(record.Value.EvidenceRefId, EvidenceResolutionMode.Compare)).Value
                 .HasTextChanged.Should().BeFalse();
 
-            await new CredentialStore(database.ConnectionFactory, libraryService, clock).SaveCredentialAsync(
+            string credentialPath = Path.Combine(Path.GetTempPath(), $"patchouli-credential-{Guid.NewGuid():N}.json");
+            await new CredentialStore(credentialPath).SaveAsync(
                 "test-provider", "Alpha credential", fakeSecret);
             McpReadApi mcp = new(database.ConnectionFactory, search, evidence);
             Result<McpSearchLibraryResponse> mcpResult =

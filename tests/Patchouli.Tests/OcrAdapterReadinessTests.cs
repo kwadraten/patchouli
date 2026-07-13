@@ -364,31 +364,28 @@ public sealed class OcrAdapterReadinessTests
             Result<OcrPreset> preset = await presets.CreatePresetAsync("Readiness", null, engineId, "model", modelPath,
                 "{}", applyOnSuccess);
             OcrAdapterRegistry registry = CreateRegistry(adapter);
-            OcrRunCoordinator coordinator = new(database.ConnectionFactory, clock, new MockOcrEngine(),
+            string credentialToken = "";
+            OcrRunCoordinator coordinator = new(database.ConnectionFactory, clock,
+                (provider, _) => Task.FromResult<Result<string>>(!string.IsNullOrWhiteSpace(credentialToken)
+                    ? Result<string>.Success(credentialToken)
+                    : Result<string>.Failure(AppErrorCodes.NotFound, "Credential missing")), new MockOcrEngine(),
                 adapterRegistry: registry,
                 minerUResultImporter: new MinerUResultImporter(database.ConnectionFactory, clock),
                 minerUClientFactory: minerUClientFactory);
             SqliteSearchService search = new(database.ConnectionFactory);
             EvidenceReferenceService evidence = new(database.ConnectionFactory, clock);
-            return new OcrReadinessContext(database, presets, coordinator,
+            OcrReadinessContext context = new(database, presets, coordinator,
                 new McpReadApi(database.ConnectionFactory, search, evidence), preset.Value.PresetId,
                 document.Value.DocumentInstanceId, firstPageId!.Value, currentRevision.Value.LayoutRevisionId);
+            context.SetCredentialToken = value => credentialToken = value;
+            return context;
         }
+
+        private Action<string>? SetCredentialToken { get; set; }
 
         public async Task SaveMinerUCredentialAsync(string token)
         {
-            await using SqliteConnection connection = Database.ConnectionFactory.CreateConnection();
-            await connection.OpenAsync();
-            string? libraryId =
-                await connection.ExecuteScalarAsync<string>("select library_id from library_metadata limit 1;");
-            string now = DateTimeOffset.Parse("2026-06-20T00:00:00Z").ToString("O");
-            await connection.ExecuteAsync(
-                "insert into provider_credentials (credential_id, library_id, provider_id, display_name, secret_value, status, created_at, updated_at) values (@Id, @LibraryId, @Provider, 'MinerU', @Secret, 'active', @Now, @Now);",
-                new
-                {
-                    Id = CredentialId.New().ToString(), LibraryId = libraryId, Provider = ProviderIds.MinerU,
-                    Secret = token, Now = now
-                });
+            SetCredentialToken?.Invoke(token);
         }
 
         public async Task<LayoutRevisionId?> GetCurrentRevisionIdAsync()
