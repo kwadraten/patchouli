@@ -95,6 +95,8 @@ public sealed class SnapshotTests
         }
 
         Result<SnapshotImportResult> imported = await c.ImportAsync(r.Value.ManifestPath);
+        imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+        imported.Value.StagingDatabasePath.Should().NotBeNull(string.Join("; ", imported.Value.Warnings));
         await using SqliteConnection cn = OpenSqlite(imported.Value.StagingDatabasePath!);
         await cn.OpenAsync();
         (await cn.ExecuteScalarAsync<int>("select count(1) from items;")).Should().Be(1);
@@ -110,6 +112,8 @@ public sealed class SnapshotTests
         Result<SnapshotPublishResult> r = await c.PublishAsync(targetShardSizeBytes: 4096);
         r.Value.Shards.Should().Contain(s => s.Kind.StartsWith("data:04:01:", StringComparison.Ordinal));
         Result<SnapshotImportResult> imported = await c.ImportAsync(r.Value.ManifestPath);
+        imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+        imported.Value.StagingDatabasePath.Should().NotBeNull(string.Join("; ", imported.Value.Warnings));
         await using SqliteConnection cn = OpenSqlite(imported.Value.StagingDatabasePath!);
         await cn.OpenAsync();
         (await cn.ExecuteScalarAsync<int>("select count(1) from search_units;")).Should().Be(13);
@@ -184,6 +188,23 @@ public sealed class SnapshotTests
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
         Result<SnapshotPublishResult> r = await c.PublishAsync();
         (await c.Importer.ValidateSnapshotAsync(r.Value.ManifestPath)).Value.IsValid.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ValidateSnapshot_rejects_shard_with_unknown_or_empty_schema_epoch()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        await using (SqliteConnection shard = OpenShard(c.SyncRoot, published.Value.Shards.Single()))
+        {
+            await shard.ExecuteAsync("pragma foreign_keys = off;");
+            await shard.ExecuteAsync("delete from library_metadata;");
+        }
+
+        SnapshotValidationResult validation =
+            (await c.Importer.ValidateSnapshotAsync(published.Value.ManifestPath)).Value;
+        validation.IsValid.Should().BeFalse();
+        validation.Errors.Should().Contain(error => error.Contains("schema", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
@@ -826,20 +847,23 @@ public sealed class SnapshotTests
                 "select document_instance_id as DocumentInstanceId, page_id as PageId, tree_revision_id as TreeRevisionId, box_type as BoxType from search_units limit 1;");
             for (int i = 0; i < count; i++)
             {
+                string pageId = PageId.New().ToString();
+                string revisionId = DocumentTreeRevisionId.New().ToString();
                 string boxId = DocumentBoxId.New().ToString();
                 await cn.ExecuteAsync(
-                    "insert into document_boxes(tree_revision_id,box_id,document_instance_id,page_id,box_type,bbox_x,bbox_y,bbox_width,bbox_height,payload_json,suppressed) values(@Tree,@Box,@Doc,@Page,'text',0.01,0.01,0.01,0.01,@Payload,0);",
+                    "insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@Page,@DocumentInstanceId,@Index,0,'normalized_page','test',@Now,@Now);insert into document_tree_revisions(tree_revision_id,document_instance_id,page_id,source,status,is_current,created_at,committed_at) values(@Revision,@DocumentInstanceId,@Page,'manual_edit','committed',1,@Now,@Now);insert into document_boxes(tree_revision_id,box_id,document_instance_id,page_id,box_type,bbox_x,bbox_y,bbox_width,bbox_height,payload_json,suppressed) values(@Revision,@Box,@DocumentInstanceId,@Page,'text',0.01,0.01,0.01,0.01,@Payload,0);",
                     new
                     {
-                        Tree = t.TreeRevisionId, Box = boxId, Doc = t.DocumentInstanceId, Page = t.PageId,
+                        Page = pageId, Revision = revisionId, Box = boxId, t.DocumentInstanceId,
+                        Index = i + 1, Now = "2026-01-01T00:00:00.0000000Z",
                         Payload = System.Text.Json.JsonSerializer.Serialize(new { markdown = text })
                     });
                 await cn.ExecuteAsync(
                     "insert into search_units (unit_id,document_instance_id,page_id,box_id,tree_revision_id,resolved_text,bbox_json,box_type,ordinal,status,created_at,updated_at) values(@UnitId,@DocumentInstanceId,@PageId,@BoxId,@TreeRevisionId,@Text,'{}',@BoxType,@Ordinal,'current',@Now,@Now);",
                     new
                     {
-                        UnitId = SearchUnitId.New().ToString(), t.DocumentInstanceId, t.PageId, BoxId = boxId,
-                        t.TreeRevisionId, Text = text, t.BoxType, Ordinal = i + 2,
+                        UnitId = SearchUnitId.New().ToString(), t.DocumentInstanceId, PageId = pageId, BoxId = boxId,
+                        TreeRevisionId = revisionId, Text = text, t.BoxType, Ordinal = i + 2,
                         Now = "2026-01-01T00:00:00.0000000Z"
                     });
             }

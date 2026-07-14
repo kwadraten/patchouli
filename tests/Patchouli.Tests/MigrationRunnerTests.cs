@@ -30,6 +30,21 @@ public sealed class MigrationRunnerTests
     }
 
     [Fact]
+    public async Task RunAsync_rejects_unknown_nonempty_database_without_schema_epoch()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await using (SqliteConnection connection = database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync("create table unrelated(value text);");
+        }
+
+        MigrationRunner runner = new(database.ConnectionFactory, TestPaths.MigrationsDirectory);
+        Func<Task> run = () => runner.RunAsync();
+        await run.Should().ThrowAsync<UnsupportedLibrarySchemaException>();
+    }
+
+    [Fact]
     public async Task RunAsync_is_idempotent_for_already_applied_migrations()
     {
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();

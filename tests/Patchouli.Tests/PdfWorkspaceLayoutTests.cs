@@ -40,4 +40,84 @@ public sealed class PdfWorkspaceLayoutTests
         xaml.Should().Contain("IsVisible=\"{Binding HasNoPreviewBlocks}\"");
         xaml.Should().Contain("IsVisible=\"{Binding HasNoBoundingBoxes}\"");
     }
+
+    [Fact]
+    public void PdfWorkspace_binds_edit_text_immediately_and_exposes_save_command()
+    {
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+
+        xaml.Should().Contain("UpdateSourceTrigger=PropertyChanged");
+        xaml.Should().Contain("Command=\"{Binding SaveTextCommand}\"");
+    }
+
+    [Fact]
+    public void PdfWorkspace_exposes_box_tree_edit_commands_and_media_payload_fields()
+    {
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfBBoxViewModel.cs"));
+
+        xaml.Should().Contain("SplitSelectedCommand")
+            .And.Contain("MergeSelectedCommand")
+            .And.Contain("MoveSelectedUpCommand")
+            .And.Contain("MoveSelectedDownCommand")
+            .And.Contain("DeleteCommand")
+            .And.Contain("ToggleSuppressedCommand")
+            .And.Contain("AssetId");
+        viewModel.Should().Contain("MediaBoxPayload(AssetId")
+            .And.Contain("DeleteBoxAsync")
+            .And.Contain("SetSuppressedAsync");
+    }
+
+    [Fact]
+    public void PdfWorkspace_preview_uses_page_render_service_and_disposes_pixel_lease()
+    {
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+        string contracts = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.Ocr", "PageRenderContracts.cs"));
+
+        viewModel.Should().Contain("services.PageRenders.RenderPreviewAsync");
+        viewModel.Should().Contain("using PdfPagePixelBufferLease raster = preview.Value");
+        contracts.Should().Contain("class PdfPagePixelBufferLease : IDisposable");
+    }
+
+    [Fact]
+    public void PdfWorkspace_native_preview_renders_markdown_without_debug_labels_and_links_selection()
+    {
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        xaml.Should().NotContain("<TextBlock Text=\"{Binding Kind}\"");
+        xaml.Should().Contain("<controls:MarkdownTextBlock Markdown=\"{Binding Markdown}\" Block=\"{Binding Block}\"");
+        xaml.Should().Contain("<MenuItem Header=\"复制 Markdown\" Command=\"{Binding CopyMarkdownCommand}\" />");
+        xaml.Should().Contain("Classes.selected=\"{Binding IsSelected}\"");
+        xaml.Should().Contain("x:Name=\"PdfScrollViewer\"");
+        xaml.Should().Contain("x:Name=\"PreviewScrollViewer\"");
+        viewModel.Should().Contain("_previewSelectedBoxId = _selectedBox?.BoxId")
+            .And.Contain("block.IsSelected = block.BoxId == _previewSelectedBoxId")
+            .And.Contain("RunCurrentPageOcrCommand")
+            .And.Contain("CopyMarkdownCommand")
+            .And.Contain("LocalOcrSourceText")
+            .And.NotContain("CandidateBoxes[0]");
+        viewModel.Should().Contain("SelectionChanged?.Invoke");
+    }
+
+    [Fact]
+    public void PdfWorkspace_preview_selected_style_is_not_overridden_by_a_local_background()
+    {
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        int start = xaml.IndexOf("<Button Classes=\"PreviewBlock\"", StringComparison.Ordinal);
+
+        start.Should().BeGreaterThanOrEqualTo(0);
+        string previewButton = xaml[start..xaml.IndexOf('>', start)];
+        previewButton.Should().NotContain("Background=");
+        xaml.Should().Contain("<Style Selector=\"Button.PreviewBlock.selected\">");
+        xaml.Should().Contain("<Setter Property=\"BorderBrush\" Value=\"{DynamicResource SecondaryBrush}\" />");
+    }
 }

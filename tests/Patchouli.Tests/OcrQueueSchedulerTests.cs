@@ -341,6 +341,14 @@ public sealed class OcrQueueSchedulerTests
             return Fail("region", c);
         }
 
+        public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d, OcrPresetId p,
+            PageId page, NormalizedBBox bbox, CancellationToken c = default)
+        {
+            Calls.Add("region_candidate");
+            Token = c;
+            return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "test"));
+        }
+
         public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
             string path, CancellationToken c = default)
         {
@@ -416,6 +424,12 @@ public sealed class OcrQueueSchedulerTests
             NormalizedBBox bbox, CancellationToken c = default)
         {
             return Task.FromResult(Run());
+        }
+
+        public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId d, OcrPresetId p,
+            PageId page, NormalizedBBox bbox, CancellationToken c = default)
+        {
+            return Task.FromResult(Result<OcrRegionCandidate>.Failure("not_found", "test"));
         }
 
         public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId d, OcrPresetId p, PageId page,

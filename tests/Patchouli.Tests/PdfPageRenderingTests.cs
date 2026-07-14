@@ -91,6 +91,37 @@ public sealed class PdfPageRenderingTests
     }
 
     [Fact]
+    public async Task RenderPreview_returns_disposable_pixels_and_reuses_memory_cache()
+    {
+        await using Context c = await Context.CreateAsync();
+
+        Result<PdfPagePixelBufferLease> first = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease firstLease = first.Value;
+        firstLease.BgraBytes.Length.Should().Be(16);
+
+        Result<PdfPagePixelBufferLease> second = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease secondLease = second.Value;
+
+        c.Renderer.PixelCallCount.Should().Be(1);
+        firstLease.Dispose();
+        ObjectDisposedException? disposed = null;
+        try
+        {
+            _ = firstLease.PixelAddress;
+        }
+        catch (ObjectDisposedException exception)
+        {
+            disposed = exception;
+        }
+
+        disposed.Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task RenderPage_force_rerender_recreates_cache()
     {
         await using Context c = await Context.CreateAsync();
@@ -343,9 +374,10 @@ public sealed class PdfPageRenderingTests
         }
     }
 
-    private sealed class CountingRenderer : IPdfPageRenderer
+    private sealed class CountingRenderer : IPdfPageRenderer, IPdfPagePixelBufferRenderer
     {
         public int CallCount { get; private set; }
+        public int PixelCallCount { get; private set; }
         public bool ThrowOnRender { get; set; }
         public bool ThrowTimeout { get; set; }
 
@@ -367,6 +399,14 @@ public sealed class PdfPageRenderingTests
             await File.WriteAllBytesAsync(outputPath, [137, 80, 78, 71]);
             return new PdfPageRenderOutput(1000, 1400, 0, CoordinateBasis.NormalizedPage, 1000, 1400,
                 "fake-test-renderer-v1");
+        }
+
+        public Task<PdfPagePixelBufferOutput> RenderPageToBgraBytesAsync(string pdfPath, int pageIndex, int dpi,
+            CancellationToken cancellationToken = default)
+        {
+            PixelCallCount++;
+            return Task.FromResult(new PdfPagePixelBufferOutput(new byte[16], 2, 2, 8, 0,
+                CoordinateBasis.NormalizedPage, 2, 2, "fake-test-renderer-v1"));
         }
     }
 }

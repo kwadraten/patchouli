@@ -1,11 +1,14 @@
+using Dapper;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Coordinates;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
@@ -82,6 +85,56 @@ public sealed class OcrLifecycleBoxTreeTests
     }
 
     [Fact]
+    public async Task Apply_on_success_adopts_completed_run_through_candidate_adoption()
+    {
+        await using Context context = await Context.CreateAsync();
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Auto apply", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", true)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnDocumentAsync(
+            context.Document.DocumentInstanceId, preset.PresetId)).Value;
+
+        run.State.Should().Be(OcrRunState.Completed);
+        foreach (Page page in context.Pages)
+        {
+            DocumentTreeRevision current =
+                (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, page.PageId)).Value;
+            current.Source.Should().Be(DocumentTreeRevisionSource.OcrAdopted);
+        }
+    }
+
+    [Fact]
+    public async Task Source_bbox_is_converted_before_staging()
+    {
+        await using Context context = await Context.CreateAsync(new PixelBBoxEngine(), true);
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Pixel bbox", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnPagesAsync(
+            context.Document.DocumentInstanceId, preset.PresetId, [context.Pages[0].PageId])).Value;
+        OcrPageResult pageResult = (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Single();
+        DocumentBox box = (await context.Trees.ListBoxesAsync(pageResult.StagingTreeRevisionId!.Value)).Value.Single();
+
+        box.BBox.Should().Be(new NormalizedBBox(.1, .1, .3, .2));
+    }
+
+    [Fact]
+    public async Task Post_run_exception_fails_run_and_terminalizes_page_results()
+    {
+        await using Context context = await Context.CreateAsync(treeImporter: new ThrowingTreeImporter());
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Throwing importer", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnDocumentAsync(
+            context.Document.DocumentInstanceId, preset.PresetId)).Value;
+
+        run.State.Should().Be(OcrRunState.Failed);
+        (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Should()
+            .OnlyContain(result => result.State == OcrPageResultState.Failed &&
+                                   result.ErrorMessage!.Contains("staging exploded", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Cancelling_a_pending_run_preserves_the_current_box_trees()
     {
         await using Context context = await Context.CreateAsync();
@@ -99,6 +152,24 @@ public sealed class OcrLifecycleBoxTreeTests
             (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, page.PageId)).IsFailure
                 .Should().BeTrue();
         }
+    }
+
+    [Fact]
+    public async Task Region_candidate_is_ephemeral_and_does_not_create_an_ocr_run_or_staging_tree()
+    {
+        await using Context context = await Context.CreateAsync();
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Local candidate", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+        NormalizedBBox region = new(.2, .3, .4, .2);
+
+        Result<OcrRegionCandidate> candidate = await context.Coordinator.RecognizeRegionCandidateAsync(
+            context.Document.DocumentInstanceId, preset.PresetId, context.Pages[0].PageId, region);
+
+        candidate.IsSuccess.Should().BeTrue(candidate.ErrorMessage);
+        candidate.Value.BBox.Should().Be(region);
+        candidate.Value.Payload.Should().BeOfType<TextBoxPayload>();
+        (await context.CountAsync("select count(1) from ocr_runs;")).Should().Be(0);
+        (await context.CountAsync("select count(1) from document_tree_revisions;")).Should().Be(0);
     }
 
     private sealed class Context : IAsyncDisposable
@@ -127,7 +198,16 @@ public sealed class OcrLifecycleBoxTreeTests
         public IOcrPresetService Presets { get; }
         public OcrRunCoordinator Coordinator { get; }
 
-        public static async Task<Context> CreateAsync()
+        public async Task<int> CountAsync(string sql)
+        {
+            await using Microsoft.Data.Sqlite.SqliteConnection connection =
+                _database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            return await connection.ExecuteScalarAsync<int>(sql);
+        }
+
+        public static async Task<Context> CreateAsync(IOcrEngine? engine = null, bool configureCoordinates = false,
+            IOcrDocumentTreeImporter? treeImporter = null)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
@@ -148,9 +228,12 @@ public sealed class OcrLifecycleBoxTreeTests
             OcrRunCoordinator coordinator = new(
                 database.ConnectionFactory,
                 clock,
-                new MockOcrEngine(),
+                engine ?? new MockOcrEngine(),
                 search,
-                new OcrDocumentTreeImporter(trees));
+                treeImporter ?? new OcrDocumentTreeImporter(trees),
+                pageCoordinateService: configureCoordinates
+                    ? new PageCoordinateService(database.ConnectionFactory)
+                    : null);
             return new Context(
                 database,
                 document,
@@ -163,6 +246,35 @@ public sealed class OcrLifecycleBoxTreeTests
         public ValueTask DisposeAsync()
         {
             return _database.DisposeAsync();
+        }
+    }
+
+    private sealed class PixelBBoxEngine : IOcrEngine
+    {
+        public string EngineId => OcrEngineIds.Mock;
+
+        public Task<OcrEnginePageResult> RunPageAsync(Page page, OcrPresetVersion presetVersion,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new OcrEnginePageResult(page.PageId, true, "pixels",
+                new NormalizedBBox(0, 0, 1, 1), null, null,
+                new SourceBBox(10, 20, 30, 40, SourceBBoxCoordinateSystem.ImagePixels, 100, 200)));
+        }
+    }
+
+    private sealed class ThrowingTreeImporter : IOcrDocumentTreeImporter
+    {
+        public Task<Result<OcrDocumentTreeImportResult>> StageAsync(OcrDocumentTreeImportRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("staging exploded");
+        }
+
+        public Task<Result<IReadOnlyList<DocumentTreeRevisionId>>> AdoptAsync(
+            IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
         }
     }
 }

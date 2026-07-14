@@ -181,6 +181,113 @@ public sealed class MinerUDocumentTreeTests
         }
     }
 
+    [Fact]
+    public async Task Importer_stages_each_physical_page_from_a_multi_page_content_list()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list.json", """
+                                                     [
+                                                       {"type":"text","page_idx":0,"text":"First physical page","bbox":[0,0,800,100]},
+                                                       {"type":"text","page_idx":1,"text":"Second physical page","bbox":[0,0,800,100]}
+                                                     ]
+                                                     """);
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.StagingTreeRevisionIds.Should().HaveCount(2);
+            (await context.Trees.ListBoxesAsync(DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[0])))
+                .Value.Single().Payload.Should().Be(new TextBoxPayload("First physical page"));
+            (await context.Trees.ListBoxesAsync(DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1])))
+                .Value.Single().Payload.Should().Be(new TextBoxPayload("Second physical page"));
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_preserves_real_mineru_text_shapes_as_single_box_payloads()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[
+                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"First OCR paragraph.\n\nSecond OCR paragraph with a forced\nline break."}]},"bbox":[0,0,800,300]},
+                                                          {"type":"page_footnote","content":{"page_footnote_content":[{"type":"text","content":"1. William S. Lewis and Naojiro Murakami, eds."}]},"bbox":[0,700,800,800]},
+                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"天保三年遭難\n寶順九衆組員之墓\n乙舌、久舌、岩松等十四人"}]},"bbox":[0,400,800,650]}
+                                                        ]]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            boxes.Select(box => ((TextBoxPayload)box.Payload!).Markdown).Should().BeEquivalentTo([
+                "First OCR paragraph.\n\nSecond OCR paragraph with a forced\nline break.",
+                "1. William S. Lewis and Naojiro Murakami, eds.",
+                "天保三年遭難\n寶順九衆組員之墓\n乙舌、久舌、岩松等十四人"
+            ]);
+            MarkdigMarkdownEngine markdown = new();
+            boxes.Should().OnlyContain(box => markdown.ValidateLeaf(box.BoxType, box.Payload!).IsSuccess);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_merges_text_fully_contained_by_an_image_into_its_description()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[
+                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"天保三年遭難\n寶順九衆組員之墓\n乙舌、久舌、岩松等十四人"}]},"bbox":[501,106,547,210]},
+                                                          {"type":"image","content":{"image_source":{"path":"images/stone.jpg"},"content":"","image_caption":[],"image_footnote":[]},"bbox":[379,106,641,510]}
+                                                        ]]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.BoxesCreated.Should().Be(1);
+            result.Value.Warnings.Should().Contain("image_embedded_text_merged");
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            DocumentBox image = boxes.Should().ContainSingle().Which;
+            image.BoxType.Should().Be(DocumentBoxType.Image);
+            image.Payload.Should().Be(new MediaBoxPayload(
+                null,
+                "天保三年遭難\n寶順九衆組員之墓\n乙舌、久舌、岩松等十四人"));
+            (await context.Trees.AdoptStagingRevisionAsync(
+                    DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single())))
+                .IsSuccess.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
     private static string CreateZip(string entryName, string content)
     {
         string path = Path.Combine(Path.GetTempPath(), $"mineru-box-{Guid.NewGuid():N}.zip");
@@ -219,8 +326,12 @@ public sealed class MinerUDocumentTreeTests
                 .CreateItemAsync("document", "MinerU")).Value;
             DocumentInstance document = (await new DocumentInstanceService(database.ConnectionFactory, clock)
                 .AttachDocumentInstanceAsync(item.ItemId, null, DocumentInstanceType.PrimaryScan)).Value;
-            await new Infrastructure.Layout.PageService(database.ConnectionFactory, clock).CreatePageAsync(
+            Infrastructure.Layout.PageService pages = new(database.ConnectionFactory, clock);
+            await pages.CreatePageAsync(
                 document.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage,
+                null, null, "test", null);
+            await pages.CreatePageAsync(
+                document.DocumentInstanceId, 1, "2", null, null, 0, CoordinateBasis.NormalizedPage,
                 null, null, "test", null);
             DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
             return new Context(database, clock, library.LibraryId, document.DocumentInstanceId, trees);

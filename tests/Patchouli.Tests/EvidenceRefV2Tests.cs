@@ -1,10 +1,13 @@
+using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
+using Patchouli.Core.Results;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
@@ -46,6 +49,71 @@ public sealed class EvidenceRefV2Tests
         current.CurrentText.Should().Be("corrected evidence text");
         compared.HasTextChanged.Should().BeTrue();
         compared.HasLayoutChanged.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Rebuild_links_changed_box_id_and_reports_bbox_drift()
+    {
+        await using Context context = await Context.CreateAsync();
+        await context.CommitTextAsync("stable evidence text");
+        SearchUnitId unitId = await context.RebuildAndFindUnitAsync("stable");
+        EvidenceRefRecord record = (await context.Evidence.CreateFromSearchUnitAsync(unitId)).Value;
+
+        DocumentBoxId replacementId = DocumentBoxId.New();
+        await context.ReplaceCurrentBoxAsync(replacementId, "stable evidence text", new NormalizedBBox(.2, .2, .7, .1));
+        await context.RebuildAndFindUnitAsync("stable");
+
+        EvidenceResolutionResult current =
+            (await context.Evidence.ResolveAsync(record.EvidenceRefId, EvidenceResolutionMode.Current)).Value;
+
+        current.Status.Should().Be(EvidenceResolutionStatus.FoundCurrent);
+        current.HasBboxChanged.Should().BeTrue();
+        EvidenceReferenceCodec.Decode(current.EvidenceRefId).Value.BoxId.Should().Be(replacementId);
+        current.ChainSummary.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Deletion_creates_canonical_revision_and_rebuild_cannot_resurrect_content(bool purge)
+    {
+        await using Context context = await Context.CreateAsync();
+        DocumentTreeRevision original = await context.CommitTextAsync("deleted unique evidence");
+        SearchUnitId unitId = await context.RebuildAndFindUnitAsync("deleted unique");
+        EvidenceRefRecord record = (await context.Evidence.CreateFromSearchUnitAsync(unitId)).Value;
+
+        if (purge)
+        {
+            (await context.Evidence.PurgeAsync(record.EvidenceRefId, "privacy request")).IsSuccess.Should().BeTrue();
+        }
+        else
+        {
+            (await context.Evidence.TombstoneAsync(record.EvidenceRefId, "source retracted")).IsSuccess.Should()
+                .BeTrue();
+        }
+
+        DocumentTreeRevision current =
+            (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, context.Page.PageId))
+            .Value;
+        current.ParentTreeRevisionId.Should().Be(original.TreeRevisionId);
+        (await context.Trees.ListBoxesAsync(original.TreeRevisionId)).Value.Single().Suppressed.Should().BeFalse();
+        IReadOnlyList<DocumentBox> currentBoxes = (await context.Trees.ListBoxesAsync(current.TreeRevisionId)).Value;
+        if (purge)
+        {
+            currentBoxes.Should().BeEmpty();
+        }
+        else
+        {
+            currentBoxes.Should().ContainSingle().Which.Suppressed.Should().BeTrue();
+        }
+
+        (await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId)).IsSuccess
+            .Should().BeTrue();
+        await context.RebuildIndexAsync();
+        (await context.SearchAsync("deleted unique")).Value.Results.Should().BeEmpty();
+        (await context.GetSearchUnitStatusAsync(unitId)).Should().Be(purge
+            ? SearchUnitStatus.Deleted
+            : SearchUnitStatus.Hidden);
     }
 
     private sealed class Context : IAsyncDisposable
@@ -130,12 +198,45 @@ public sealed class EvidenceRefV2Tests
             (await Trees.CommitPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
         }
 
+        public async Task ReplaceCurrentBoxAsync(DocumentBoxId boxId, string text, NormalizedBBox bbox)
+        {
+            DocumentTreeRevision current =
+                (await Trees.GetCurrentRevisionAsync(Document.DocumentInstanceId, Page.PageId)).Value;
+            DocumentTreeRevision staged = (await Trees.StagePageAsync(
+                Document.DocumentInstanceId,
+                Page.PageId,
+                [
+                    new DocumentBoxSeed(boxId, null, 0, DocumentBoxType.Text, null, null, bbox,
+                        new TextBoxPayload(text))
+                ],
+                parentTreeRevisionId: current.TreeRevisionId)).Value;
+            (await Trees.AdoptStagingRevisionAsync(staged.TreeRevisionId)).IsSuccess.Should().BeTrue();
+        }
+
         public async Task<SearchUnitId> RebuildAndFindUnitAsync(string uniqueToken)
         {
             await Units.RebuildForDocumentInstanceAsync(Document.DocumentInstanceId);
             await _index.RebuildFtsForDocumentInstanceAsync(Document.DocumentInstanceId);
             return (await _search.SearchLibraryAsync(new SearchRequest(uniqueToken))).Value
                 .Results.Single().MatchedUnits.Single().UnitId;
+        }
+
+        public Task<Result<SearchResultPage>> SearchAsync(string query)
+        {
+            return _search.SearchLibraryAsync(new SearchRequest(query));
+        }
+
+        public Task<Result> RebuildIndexAsync()
+        {
+            return _index.RebuildFtsForDocumentInstanceAsync(Document.DocumentInstanceId);
+        }
+
+        public async Task<string?> GetSearchUnitStatusAsync(SearchUnitId unitId)
+        {
+            await using SqliteConnection connection = _database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            return await connection.ExecuteScalarAsync<string?>(
+                "select status from search_units where unit_id = @UnitId;", new { UnitId = unitId.ToString() });
         }
 
         public ValueTask DisposeAsync()

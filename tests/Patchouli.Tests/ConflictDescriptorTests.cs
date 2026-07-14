@@ -5,6 +5,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Infrastructure.Conflicts;
+using Patchouli.Core.Results;
 
 namespace Patchouli.Tests;
 
@@ -100,5 +101,49 @@ public sealed class ConflictDescriptorTests
             "confirm_changed_file",
             "reuse_revision_for_new_fingerprint",
             "keep_old_evidence");
+    }
+
+    [Fact]
+    public async Task Document_box_executor_runs_only_non_destructive_cf06_actions()
+    {
+        bool skipped = false;
+        DocumentBoxConflictActionExecutor executor = new(
+            _ => Task.FromResult(Result.Success()),
+            (_, _) => Task.FromResult(Result.Success()),
+            _ =>
+            {
+                skipped = true;
+                return Task.FromResult(Result.Success());
+            });
+        ConflictDescriptor descriptor = ConflictDescriptorMapper.DocumentBoxBBoxOrdinaryOverlap(
+            PageId.New().ToString(), DocumentBoxId.New().ToString(), DocumentBoxType.Text,
+            new NormalizedBBox(0.1, 0.1, 0.2, 0.2), DocumentBoxType.Title,
+            new NormalizedBBox(0.15, 0.15, 0.2, 0.2));
+
+        Result<ConflictExecutionResult> result = await executor.ExecuteAsync(descriptor,
+            new ConflictActionSelection("skip_candidate"));
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Descriptor.ResolutionStatus.Should().Be(ConflictResolutionStatus.Resolved);
+        skipped.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Executor_registry_rejects_duplicate_conflict_codes()
+    {
+        DocumentBoxConflictActionExecutor first = NoOpBoxExecutor();
+        DocumentBoxConflictActionExecutor second = NoOpBoxExecutor();
+
+        Action create = () => new ConflictActionExecutorRegistry([first, second]);
+
+        create.Should().Throw<ArgumentException>();
+    }
+
+    private static DocumentBoxConflictActionExecutor NoOpBoxExecutor()
+    {
+        return new DocumentBoxConflictActionExecutor(
+            _ => Task.FromResult(Result.Success()),
+            (_, _) => Task.FromResult(Result.Success()),
+            _ => Task.FromResult(Result.Success()));
     }
 }

@@ -186,6 +186,17 @@ public sealed class SnapshotBranchInspectionTests
     }
 
     [Fact]
+    public async Task BuildImportPlan_rejects_same_document_id_with_different_content()
+    {
+        await using Ctx c = await Ctx.Create();
+        await c.InsertConflictingDocumentIdentity();
+
+        Result<BranchImportPlan> plan = await c.Service.BuildImportPlanAsync((await c.Open()).Value, [c.Item], []);
+
+        plan.ErrorCode.Should().Be("id_content_collision");
+    }
+
+    [Fact]
     public async Task ApplyImportPlan_marks_search_index_stale_for_imported_document()
     {
         await using Ctx c = await Ctx.Create();
@@ -417,6 +428,15 @@ public sealed class SnapshotBranchInspectionTests
                     I = Item.ToString(), D = DocumentInstanceId.New().ToString(),
                     N = DateTimeOffset.UtcNow.ToString("O")
                 });
+        }
+
+        public async Task InsertConflictingDocumentIdentity()
+        {
+            await using SqliteConnection c = Db.ConnectionFactory.CreateConnection();
+            await c.OpenAsync();
+            await c.ExecuteAsync(
+                "insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) select @I,library_id,'book','Branch Item','[]','[]','[]','{}',@N,@N from library_metadata;insert into document_instances(document_instance_id,item_id,title,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,'Different document','supplement',0,'active',@N,@N)",
+                new { I = Item.ToString(), D = Doc.ToString(), N = DateTimeOffset.UtcNow.ToString("O") });
         }
 
         public async Task<string> Title()

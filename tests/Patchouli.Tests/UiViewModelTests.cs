@@ -1392,7 +1392,9 @@ public sealed class UiViewModelTests
             .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-loop-scan-{Guid.NewGuid():N}")).FullName;
         string zipPath = CreateMinerUZip("""
                                          [
-                                           { "type": "text", "page_idx": 0, "text": "ui selected item mineru searchable text", "bbox": [0, 0, 1000, 100] }
+                                           { "type": "text", "page_idx": 0, "text": "ui selected item mineru searchable text", "bbox": [0, 0, 1000, 100] },
+                                           { "type": "text", "page_idx": 1, "text": "second physical page", "bbox": [0, 0, 1000, 100] },
+                                           { "type": "text", "page_idx": 2, "text": "third physical page", "bbox": [0, 0, 1000, 100] }
                                          ]
                                          """);
 

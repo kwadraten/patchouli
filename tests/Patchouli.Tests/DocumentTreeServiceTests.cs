@@ -1,6 +1,7 @@
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -93,7 +94,80 @@ public sealed class DocumentTreeServiceTests
 
         overlapping.IsFailure.Should().BeTrue();
         overlapping.ErrorMessage.Should().Contain("CF-06");
+        overlapping.Conflicts.Should().ContainSingle(conflict =>
+            conflict.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap &&
+            conflict.RecommendedActions.Any(action => action.ActionId == "skip_candidate"));
         (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Batch_adoption_rolls_back_when_a_later_revision_is_invalid()
+    {
+        await using Context context = await Context.CreateAsync();
+        DocumentTreeRevision staging = (await context.Trees.StagePageAsync(
+            context.DocumentId,
+            context.PageId,
+            [
+                new DocumentBoxSeed(
+                    null,
+                    null,
+                    0,
+                    DocumentBoxType.Text,
+                    null,
+                    null,
+                    new NormalizedBBox(.1, .1, .8, .1),
+                    new TextBoxPayload("staged"))
+            ])).Value;
+
+        Result<IReadOnlyList<DocumentTreeRevision>> adopted = await context.Trees.AdoptStagingRevisionsAsync(
+            [staging.TreeRevisionId, DocumentTreeRevisionId.New()]);
+
+        adopted.IsFailure.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(staging.TreeRevisionId)).IsSuccess.Should().BeTrue();
+        (await context.Trees.GetCurrentRevisionAsync(context.DocumentId, context.PageId)).IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ocr_staging_preserves_overlaps_but_adoption_requires_cf06_resolution()
+    {
+        await using Context context = await Context.CreateAsync();
+        Result<DocumentTreeRevision> staged = await context.Trees.StagePageAsync(
+            context.DocumentId,
+            context.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.1, 0.1, 0.6, 0.4), new TextBoxPayload("First")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.2, 0.2, 0.6, 0.4), new TextBoxPayload("Second"))
+            ]);
+
+        staged.IsSuccess.Should().BeTrue(staged.ErrorMessage);
+        Result<DocumentTreeRevision> adopted =
+            await context.Trees.AdoptStagingRevisionAsync(staged.Value.TreeRevisionId);
+        adopted.IsFailure.Should().BeTrue();
+        adopted.ErrorMessage.Should().Contain("CF-06");
+        adopted.Conflicts.Should().ContainSingle(conflict =>
+            conflict.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap);
+        (await context.Trees.ListBoxesAsync(staged.Value.TreeRevisionId)).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Suppressed_auxiliary_boxes_do_not_conflict_with_document_flow_boxes()
+    {
+        await using Context context = await Context.CreateAsync();
+        Result<DocumentTreeRevision> staged = await context.Trees.StagePageAsync(
+            context.DocumentId,
+            context.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.1, 0.1, 0.6, 0.4), new TextBoxPayload("Body")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, null,
+                    new NormalizedBBox(0.1, 0.1, 0.6, 0.4), new TextBoxPayload("Header"), Suppressed: true)
+            ]);
+
+        staged.IsSuccess.Should().BeTrue(staged.ErrorMessage);
+        (await context.Trees.AdoptStagingRevisionAsync(staged.Value.TreeRevisionId))
+            .IsSuccess.Should().BeTrue();
     }
 
     [Fact]
@@ -137,18 +211,68 @@ public sealed class DocumentTreeServiceTests
     }
 
     [Fact]
-    public void Markdig_engine_rejects_raw_html_and_structural_text_but_accepts_a_gfm_table()
+    public async Task Split_and_merge_reject_empty_result_payloads_without_mutating_draft()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox first = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
+                new NormalizedBBox(.05, .05, .4, .2), new TextBoxPayload("First")))).Value;
+        DocumentBox second = (await context.Editor.DrawAndInsertLeafAsync(edit.SessionId,
+            new InsertLeafCommand(null, first.BoxId, DocumentBoxType.Text, null, null,
+                new NormalizedBBox(.55, .05, .4, .2), new TextBoxPayload("Second")))).Value;
+
+        Result<IReadOnlyList<DocumentBox>> split = await context.Editor.SplitLeafAsync(edit.SessionId,
+            new SplitLeafCommand(first.BoxId, new NormalizedBBox(.05, .05, .18, .2),
+                new TextBoxPayload("First A"), new NormalizedBBox(.27, .05, .18, .2),
+                new TextBoxPayload(" ")));
+        Result<DocumentBox> merge = await context.Editor.MergeLeavesAsync(edit.SessionId,
+            new MergeLeavesCommand([first.BoxId, second.BoxId], new TextBoxPayload("")));
+
+        split.IsFailure.Should().BeTrue();
+        merge.IsFailure.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Select(box => box.BoxId)
+            .Should().BeEquivalentTo([first.BoxId, second.BoxId]);
+    }
+
+    [Fact]
+    public void Markdig_engine_rejects_raw_html_but_allows_multiple_text_paragraphs_and_accepts_a_gfm_table()
     {
         MarkdigMarkdownEngine engine = new();
 
         engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload("<script>alert(1)</script>"))
             .IsFailure.Should().BeTrue();
         engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload("one\n\n- two"))
-            .IsFailure.Should().BeTrue();
+            .IsSuccess.Should().BeTrue();
         engine.ValidateLeaf(
                 DocumentBoxType.Table,
                 new TableBoxPayload("| A | B |\n|---|---|\n| 1 | 2 |"))
             .IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Compiler_maps_multiple_markdown_paragraphs_back_to_one_text_box()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox box = (await context.Editor.DrawAndInsertLeafAsync(
+            edit.SessionId,
+            new InsertLeafCommand(
+                null,
+                null,
+                DocumentBoxType.Text,
+                null,
+                null,
+                new NormalizedBBox(0.05, 0.05, 0.9, 0.4),
+                new TextBoxPayload("First paragraph.\n\nSecond paragraph.")))).Value;
+        DocumentTreeRevision committed = (await context.Trees.CommitPageEditAsync(edit.SessionId)).Value;
+
+        CompiledMarkdown compiled = (await context.Compiler.CompilePageMarkdownAsync(committed.TreeRevisionId)).Value;
+
+        compiled.Markdown.Should().Be("First paragraph.\n\nSecond paragraph.");
+        MarkdownSourceMapEntry map = compiled.SourceMap.Should().ContainSingle().Which;
+        map.BoxId.Should().Be(box.BoxId);
+        map.PreviewNodeCount.Should().Be(2);
     }
 
     private sealed class Context : IAsyncDisposable

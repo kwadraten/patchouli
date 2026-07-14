@@ -109,12 +109,13 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact]
-    public void Pdf_workspace_uses_pdfium_pixel_buffer_without_png_decode()
+    public void Pdf_workspace_uses_page_render_preview_buffer_without_bypassing_the_service()
     {
         string workspace = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels",
             "Ocr", "PdfWorkspaceViewModel.cs"));
 
-        workspace.Should().Contain("RenderPageToBgraBytesAsync");
+        workspace.Should().Contain("PageRenders.RenderPreviewAsync");
+        workspace.Should().NotContain("RenderPageToBgraBytesAsync");
         workspace.Should().NotContain("RenderPageToPngBytesAsync");
     }
 
