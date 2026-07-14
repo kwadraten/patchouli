@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
@@ -38,6 +37,18 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private string _newBoxType = DocumentBoxType.Text;
     private int _newHeadingLevel = 1;
     private string _newCodeLanguage = string.Empty;
+    private DocumentBox? _splitSource;
+    private NormalizedBBox? _splitFirstBBox;
+    private NormalizedBBox? _splitSecondBBox;
+    private string _splitFirstText = string.Empty;
+    private string _splitSecondText = string.Empty;
+    private string _ocrPresetId = string.Empty;
+    private OcrRegionCandidate? _localOcrCandidate;
+    private DocumentBoxId? _localOcrTargetBoxId;
+    private string _localOcrSourceText = string.Empty;
+    private DocumentBoxId? _previewSelectedBoxId;
+    private DocumentBox[] _pendingMergeBoxes = [];
+    private string _mergeText = string.Empty;
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
@@ -76,6 +87,35 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             ClearPendingBox();
             return Task.CompletedTask;
         });
+        SplitSelectedCommand = new AsyncCommand(SplitSelectedAsync);
+        ConfirmSplitCommand = new AsyncCommand(ConfirmSplitAsync);
+        CancelSplitCommand = new AsyncCommand(() =>
+        {
+            ClearSplit();
+            return Task.CompletedTask;
+        });
+        RunLocalOcrCommand = new AsyncCommand(RunLocalOcrAsync);
+        AcceptLocalOcrCommand = new AsyncCommand(AcceptLocalOcrAsync);
+        RejectLocalOcrCommand = new AsyncCommand(() =>
+        {
+            ClearLocalOcrCandidate();
+            Status = "已拒绝局部 OCR candidate；未写入 OCR run 或 staging tree。";
+            return Task.CompletedTask;
+        });
+        RunLogicalPageOcrCommand = new AsyncCommand(RunLogicalPageOcrAsync);
+        RunCurrentPageOcrCommand = new AsyncCommand(RunCurrentPageOcrAsync);
+        RunDocumentOcrCommand = new AsyncCommand(RunDocumentOcrAsync);
+        CopyMarkdownCommand = new AsyncCommand(CopyMarkdownAsync);
+        MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
+        ConfirmMergeCommand = new AsyncCommand(ConfirmMergeAsync);
+        CancelMergeCommand = new AsyncCommand(() =>
+        {
+            ClearMerge();
+            return Task.CompletedTask;
+        });
+        DeleteSelectedCommand = new AsyncCommand(DeleteSelectedAsync);
+        MoveSelectedUpCommand = new AsyncCommand(() => MoveSelectedAsync(false));
+        MoveSelectedDownCommand = new AsyncCommand(() => MoveSelectedAsync(true));
         BoundingBoxes.CollectionChanged += (_, _) => Raise(nameof(HasNoBoundingBoxes));
         PreviewBlocks.CollectionChanged += (_, _) => Raise(nameof(HasNoPreviewBlocks));
     }
@@ -141,10 +181,86 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public IReadOnlyList<string> NewBoxTypeOptions { get; } =
     [
         DocumentBoxType.Text, DocumentBoxType.Title, DocumentBoxType.RefText, DocumentBoxType.List,
-        DocumentBoxType.Table, DocumentBoxType.Code, DocumentBoxType.Equation, DocumentBoxType.LogicalPage
+        DocumentBoxType.Table, DocumentBoxType.Code, DocumentBoxType.Equation, DocumentBoxType.LogicalPage,
+        DocumentBoxType.Image, DocumentBoxType.Chart
+    ];
+
+    public IReadOnlyList<string> EditableBoxTypeOptions { get; } =
+    [
+        DocumentBoxType.Text, DocumentBoxType.Title, DocumentBoxType.RefText, DocumentBoxType.Equation,
+        DocumentBoxType.List, DocumentBoxType.Image, DocumentBoxType.Table, DocumentBoxType.Chart,
+        DocumentBoxType.Code, DocumentBoxType.ImageCaption, DocumentBoxType.ImageFootnote,
+        DocumentBoxType.TableCaption, DocumentBoxType.TableFootnote, DocumentBoxType.ChartCaption,
+        DocumentBoxType.ChartFootnote, DocumentBoxType.CodeCaption, DocumentBoxType.CodeFootnote,
+        DocumentBoxType.Header, DocumentBoxType.Footer, DocumentBoxType.PageNumber, DocumentBoxType.AsideText,
+        DocumentBoxType.PageFootnote
     ];
 
     public bool IsNewBoxPending => _pendingBBox is not null;
+    public bool IsSplitPending => _splitSource is not null;
+    public bool CanConfirmSplit => _splitFirstBBox is not null && _splitSecondBBox is not null;
+
+    public string SplitStepText => _splitFirstBBox is null
+        ? "请在页面画出第一个替代 bbox。"
+        : _splitSecondBBox is null
+            ? "请在页面画出第二个替代 bbox。"
+            : "两个 bbox 已就绪；检查两份内容后确认拆分。";
+
+    public bool HasCandidate => _localOcrCandidate is not null;
+    public string LocalOcrSourceText => _localOcrSourceText;
+    public bool IsMergePending => _pendingMergeBoxes.Length > 0;
+
+    public string MergeText
+    {
+        get => _mergeText;
+        set
+        {
+            if (_mergeText != value)
+            {
+                _mergeText = value;
+                Raise();
+            }
+        }
+    }
+
+    public string OcrPresetId
+    {
+        get => _ocrPresetId;
+        set
+        {
+            if (_ocrPresetId != value)
+            {
+                _ocrPresetId = value;
+                Raise();
+            }
+        }
+    }
+
+    public string SplitFirstText
+    {
+        get => _splitFirstText;
+        set
+        {
+            if (_splitFirstText != value)
+            {
+                _splitFirstText = value;
+                Raise();
+            }
+        }
+    }
+
+    public string SplitSecondText
+    {
+        get => _splitSecondText;
+        set
+        {
+            if (_splitSecondText != value)
+            {
+                _splitSecondText = value;
+                Raise();
+            }
+        }
+    }
 
     public string NewBoxText
     {
@@ -323,6 +439,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public System.Collections.ObjectModel.ObservableCollection<MarkdownPreviewBlockViewModel> PreviewBlocks { get; } =
         new();
 
+    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> CandidateBoxes { get; } = new();
+
     public bool HasNoBoundingBoxes => BoundingBoxes.Count == 0;
     public bool HasNoPreviewBlocks => PreviewBlocks.Count == 0;
 
@@ -347,9 +465,22 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 _selectedBox.IsSelected = true;
             }
 
+            if (_selectedBox is null || !_selectedBox.IsSuppressed)
+            {
+                _previewSelectedBoxId = _selectedBox?.BoxId;
+            }
+
+            foreach (MarkdownPreviewBlockViewModel block in PreviewBlocks)
+            {
+                block.IsSelected = block.BoxId == _previewSelectedBoxId;
+            }
+
             Raise();
+            SelectionChanged?.Invoke(_selectedBox);
         }
     }
+
+    public event Action<PdfBBoxViewModel?>? SelectionChanged;
 
     public AsyncCommand PreviousPageCommand { get; }
     public AsyncCommand NextPageCommand { get; }
@@ -363,6 +494,22 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand DrawToolCommand { get; }
     public AsyncCommand InsertPendingBoxCommand { get; }
     public AsyncCommand CancelPendingBoxCommand { get; }
+    public AsyncCommand SplitSelectedCommand { get; }
+    public AsyncCommand ConfirmSplitCommand { get; }
+    public AsyncCommand CancelSplitCommand { get; }
+    public AsyncCommand RunLocalOcrCommand { get; }
+    public AsyncCommand AcceptLocalOcrCommand { get; }
+    public AsyncCommand RejectLocalOcrCommand { get; }
+    public AsyncCommand RunLogicalPageOcrCommand { get; }
+    public AsyncCommand RunCurrentPageOcrCommand { get; }
+    public AsyncCommand RunDocumentOcrCommand { get; }
+    public AsyncCommand CopyMarkdownCommand { get; }
+    public AsyncCommand MergeSelectedCommand { get; }
+    public AsyncCommand ConfirmMergeCommand { get; }
+    public AsyncCommand CancelMergeCommand { get; }
+    public AsyncCommand DeleteSelectedCommand { get; }
+    public AsyncCommand MoveSelectedUpCommand { get; }
+    public AsyncCommand MoveSelectedDownCommand { get; }
 
     public void OnPointerPressed(double x, double y)
     {
@@ -422,6 +569,23 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         double y = Math.Clamp(SelectionTop / _heightPixels, 0, 1);
         double width = Math.Clamp(SelectionWidth / _widthPixels, 0.0001, 1 - x);
         double height = Math.Clamp(SelectionHeight / _heightPixels, 0.0001, 1 - y);
+        if (_splitSource is not null)
+        {
+            if (_splitFirstBBox is null)
+            {
+                _splitFirstBBox = new NormalizedBBox(x, y, width, height);
+            }
+            else
+            {
+                _splitSecondBBox = new NormalizedBBox(x, y, width, height);
+            }
+
+            Raise(nameof(CanConfirmSplit));
+            Raise(nameof(SplitStepText));
+            Status = SplitStepText;
+            return;
+        }
+
         _pendingBBox = new NormalizedBBox(x, y, width, height);
         NewBoxText = string.Empty;
         NewBoxType = DocumentBoxType.Text;
@@ -486,7 +650,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 ? selected.BoxId
                 : selected?.ParentBoxId;
             DocumentBoxId? after = selected?.BoxType == DocumentBoxType.LogicalPage
-                ? _loadedBoxes.LastOrDefault(box => box.ParentBoxId == selected.BoxId)?.BoxId
+                ? LastSiblingForParent(selected.BoxId)?.BoxId
                 : selected?.BoxId;
             result = await editor.DrawAndInsertLeafAsync(
                 _editSessionId.Value,
@@ -513,7 +677,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         Status = "已创建 Box；右侧文本保存到页面草稿，提交前不会影响当前版本。";
     }
 
-    private static DocumentBoxPayload CreatePayload(string boxType, string text)
+    private static DocumentBoxPayload CreatePayload(string boxType, string text, DocumentBoxPayload? existing = null)
     {
         return boxType switch
         {
@@ -521,7 +685,477 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             DocumentBoxType.Table => new TableBoxPayload(text),
             DocumentBoxType.Code => new CodeBoxPayload(text),
             DocumentBoxType.Equation => new EquationBoxPayload(text),
+            DocumentBoxType.Image or DocumentBoxType.Chart => new MediaBoxPayload(
+                (existing as MediaBoxPayload)?.AssetId, string.IsNullOrWhiteSpace(text) ? null : text),
             _ => new TextBoxPayload(text)
+        };
+    }
+
+    private async Task SplitSelectedAsync()
+    {
+        if (_editSessionId is null || SelectedBox is null || SelectedBox.IsLogicalPage)
+        {
+            Status = "请选择一个 leaf Box 后再拆分。";
+            return;
+        }
+
+        DocumentBox? original = _loadedBoxes.FirstOrDefault(box => box.BoxId == SelectedBox.BoxId);
+        if (original is null)
+        {
+            Status = "选中的 Box 已不在当前草稿中。";
+            return;
+        }
+
+        string text = SelectedBox.Text ?? string.Empty;
+        string[] parts = text.Split(["\r\n\r\n", "\n\n"], StringSplitOptions.None);
+        _splitSource = original;
+        SplitFirstText = parts.Length > 1 ? parts[0] : text[..(text.Length / 2)];
+        SplitSecondText = parts.Length > 1 ? string.Join("\n\n", parts.Skip(1)) : text[(text.Length / 2)..];
+        IsDrawToolActive = true;
+        Raise(nameof(IsSplitPending));
+        Raise(nameof(CanConfirmSplit));
+        Raise(nameof(SplitStepText));
+        Status = SplitStepText;
+        await Task.CompletedTask;
+    }
+
+    private async Task ConfirmSplitAsync()
+    {
+        if (_editSessionId is null || _splitSource is null || _splitFirstBBox is null || _splitSecondBBox is null ||
+            string.IsNullOrWhiteSpace(SplitFirstText) || string.IsNullOrWhiteSpace(SplitSecondText))
+        {
+            Status = "必须先画出两个替代 bbox，并分别填写非空内容。";
+            return;
+        }
+
+        Result<IReadOnlyList<DocumentBox>> result =
+            await (await _main.ServicesAsync()).DocumentTreeEditor.SplitLeafAsync(
+                _editSessionId.Value,
+                new SplitLeafCommand(_splitSource.BoxId, _splitFirstBBox.Value,
+                    CreatePayload(_splitSource.BoxType, SplitFirstText, _splitSource.Payload), _splitSecondBBox.Value,
+                    CreatePayload(_splitSource.BoxType, SplitSecondText, _splitSource.Payload)));
+        if (result.IsFailure)
+        {
+            Status = $"拆分 Box 失败：{result.ErrorMessage}";
+            return;
+        }
+
+        ClearSplit();
+        await RefreshBoxesAsync();
+        Status = "Box 已按两个有 bbox 的 leaf 原子拆分到页面草稿。";
+    }
+
+    private async Task RunLocalOcrAsync()
+    {
+        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId) || SelectedBox is null ||
+            string.IsNullOrWhiteSpace(OcrPresetId))
+        {
+            Status = "请先选择 leaf、填写 OCR Preset ID，并加载页面。";
+            return;
+        }
+
+        if (!Guid.TryParse(OcrPresetId, out _))
+        {
+            Status = "OCR Preset ID 格式无效。";
+            return;
+        }
+
+        DocumentBox? source = _loadedBoxes.FirstOrDefault(box => box.BoxId == SelectedBox.BoxId);
+        if (source is null || source.BoxType == DocumentBoxType.LogicalPage)
+        {
+            Status = "局部 OCR 只能作用于 leaf Box。";
+            return;
+        }
+
+        Result<OcrRegionCandidate> candidate = await (await _main.ServicesAsync()).Ocr.RecognizeRegionCandidateAsync(
+            DocumentInstanceId.Parse(Item.DocumentInstanceId), Patchouli.Core.Ids.OcrPresetId.Parse(OcrPresetId),
+            _currentPageId.Value, source.BBox);
+        if (candidate.IsFailure)
+        {
+            Status = $"局部 OCR 失败：{candidate.ErrorMessage}";
+            return;
+        }
+
+        _localOcrCandidate = candidate.Value;
+        _localOcrTargetBoxId = source.BoxId;
+        _localOcrSourceText = PayloadTextFor(source) ?? string.Empty;
+        Raise(nameof(LocalOcrSourceText));
+        CandidateBoxes.Clear();
+        CandidateBoxes.Add(new PdfBBoxViewModel(_main, this, new DocumentBox(
+            _draftRevisionId ?? _currentRevisionId ?? DocumentTreeRevisionId.New(),
+            DocumentBoxId.New(),
+            DocumentInstanceId.Parse(Item.DocumentInstanceId),
+            candidate.Value.PageId,
+            null,
+            null,
+            candidate.Value.BoxType,
+            null,
+            null,
+            candidate.Value.BBox,
+            candidate.Value.Payload,
+            candidate.Value.HeadingLevel,
+            null,
+            candidate.Value.Confidence,
+            false), _widthPixels, _heightPixels, true));
+
+        Raise(nameof(HasCandidate));
+        Status = "局部 OCR candidate 已生成；这是一个短生命周期的完整 payload diff，不会写入 OCR run 或 staging tree。";
+    }
+
+    private async Task AcceptLocalOcrAsync()
+    {
+        if (_editSessionId is null || _localOcrTargetBoxId is null || _localOcrCandidate is null)
+        {
+            Status = "请先运行局部 OCR 并选择目标 leaf。";
+            return;
+        }
+
+        DocumentBox? target = _loadedBoxes.FirstOrDefault(box => box.BoxId == _localOcrTargetBoxId.Value);
+        if (target is null)
+        {
+            Status = "candidate 与目标 Box 无法匹配。";
+            return;
+        }
+
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.AcceptLocalOcrCandidateAsync(
+            _editSessionId.Value, target.BoxId,
+            new LocalOcrCandidate(_localOcrCandidate.BoxType, _localOcrCandidate.Payload,
+                _localOcrCandidate.HeadingLevel));
+        if (result.IsFailure)
+        {
+            Status = $"接受局部 OCR candidate 失败：{result.ErrorMessage}";
+            return;
+        }
+
+        ClearLocalOcrCandidate();
+        await RefreshBoxesAsync();
+        Status = "局部 OCR candidate 已接受并写入页面草稿。";
+    }
+
+    private void ClearLocalOcrCandidate()
+    {
+        CandidateBoxes.Clear();
+        _localOcrCandidate = null;
+        _localOcrTargetBoxId = null;
+        _localOcrSourceText = string.Empty;
+        Raise(nameof(LocalOcrSourceText));
+        Raise(nameof(HasCandidate));
+    }
+
+    private async Task RunLogicalPageOcrAsync()
+    {
+        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId) ||
+            string.IsNullOrWhiteSpace(OcrPresetId) || !Guid.TryParse(OcrPresetId, out _))
+        {
+            Status = "请加载页面并填写有效的 OCR Preset ID。";
+            return;
+        }
+
+        DocumentBox[] logicalPages = _loadedBoxes.Where(box => box.BoxType == DocumentBoxType.LogicalPage).ToArray();
+        if (logicalPages.Length == 0)
+        {
+            Status = "当前物理页没有 logical page；请使用整页 OCR。";
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        Result<LogicalPageOcrResult> result = await services.LogicalPageOcr.RunAsync(
+            DocumentInstanceId.Parse(Item.DocumentInstanceId), Patchouli.Core.Ids.OcrPresetId.Parse(OcrPresetId),
+            _currentPageId.Value, OrderSiblings(logicalPages)
+                .Select(box => new LogicalPageOcrTarget(box.BoxId, box.BBox)).ToArray());
+        Status = result.IsSuccess
+            ? $"logical page OCR 已合成为 staging tree {result.Value.StagingTreeRevisionId}；bbox 已映射回物理页。"
+            : $"logical page OCR 失败：{result.ErrorMessage}";
+    }
+
+    private async Task RunDocumentOcrAsync()
+    {
+        if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId) || string.IsNullOrWhiteSpace(OcrPresetId) ||
+            !Guid.TryParse(OcrPresetId, out _))
+        {
+            Status = "请填写有效的 OCR Preset ID。";
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentId);
+        if (pages.IsFailure)
+        {
+            Status = $"读取物理页失败：{pages.ErrorMessage}";
+            return;
+        }
+
+        List<LogicalDocumentOcrPagePlan> plans = [];
+        foreach (Page page in pages.Value)
+        {
+            Result<LogicalDocumentOcrPagePlan> plan = await CreatePageOcrPlanAsync(services, documentId, page.PageId);
+            if (plan.IsFailure)
+            {
+                Status = $"读取页面 OCR 计划失败：{plan.ErrorMessage}";
+                return;
+            }
+
+            plans.Add(plan.Value);
+        }
+
+        Result<LogicalDocumentOcrResult> result = await services.LogicalPageOcr.RunDocumentAsync(
+            documentId, Patchouli.Core.Ids.OcrPresetId.Parse(OcrPresetId), plans);
+        Status = result.IsSuccess
+            ? $"文档级 OCR 已处理 {plans.Count} 个物理页并生成 {result.Value.StagingTreeRevisionIds.Count} 个 staging tree。"
+            : $"文档级 OCR 失败：{result.ErrorMessage}";
+    }
+
+    private async Task RunCurrentPageOcrAsync()
+    {
+        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId) ||
+            string.IsNullOrWhiteSpace(OcrPresetId) || !Guid.TryParse(OcrPresetId, out _))
+        {
+            Status = "请加载页面并填写有效的 OCR Preset ID。";
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        Result<LogicalDocumentOcrPagePlan> plan = await CreatePageOcrPlanAsync(
+            services, documentId, _currentPageId.Value);
+        if (plan.IsFailure)
+        {
+            Status = $"读取页面 OCR 计划失败：{plan.ErrorMessage}";
+            return;
+        }
+
+        Result<PhysicalPageOcrResult> result = await services.LogicalPageOcr.RunPageAsync(
+            documentId, Patchouli.Core.Ids.OcrPresetId.Parse(OcrPresetId), plan.Value);
+        Status = result.IsSuccess
+            ? result.Value.UsedLogicalPages
+                ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个 logical page 生成 staging tree {result.Value.StagingTreeRevisionId}。"
+                : $"本页整页 OCR 已生成 staging tree {result.Value.StagingTreeRevisionId}。"
+            : $"本页 OCR 失败：{result.ErrorMessage}";
+    }
+
+    private static async Task<Result<LogicalDocumentOcrPagePlan>> CreatePageOcrPlanAsync(
+        AppServices services,
+        DocumentInstanceId documentId,
+        PageId pageId)
+    {
+        Result<DocumentTreeRevision>
+            revision = await services.DocumentTrees.GetCurrentRevisionAsync(documentId, pageId);
+        if (revision.IsFailure)
+        {
+            return Result<LogicalDocumentOcrPagePlan>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+        }
+
+        Result<IReadOnlyList<DocumentBox>> boxes =
+            await services.DocumentTrees.ListBoxesAsync(revision.Value.TreeRevisionId);
+        if (boxes.IsFailure)
+        {
+            return Result<LogicalDocumentOcrPagePlan>.Failure(boxes.ErrorCode!, boxes.ErrorMessage!);
+        }
+
+        DocumentBox[] logicalPages = boxes.Value.Where(box => box.BoxType == DocumentBoxType.LogicalPage).ToArray();
+        return Result<LogicalDocumentOcrPagePlan>.Success(new LogicalDocumentOcrPagePlan(pageId,
+            OrderSiblings(logicalPages).Select(box => new LogicalPageOcrTarget(box.BoxId, box.BBox)).ToArray()));
+    }
+
+    private void ClearSplit()
+    {
+        _splitSource = null;
+        _splitFirstBBox = null;
+        _splitSecondBBox = null;
+        SplitFirstText = string.Empty;
+        SplitSecondText = string.Empty;
+        Raise(nameof(IsSplitPending));
+        Raise(nameof(CanConfirmSplit));
+        Raise(nameof(SplitStepText));
+    }
+
+    private async Task MergeSelectedAsync()
+    {
+        if (_editSessionId is null || SelectedBox is null)
+        {
+            Status = "请选择相邻 leaf Box 后再合并。";
+            return;
+        }
+
+        DocumentBox? selected = _loadedBoxes.FirstOrDefault(box => box.BoxId == SelectedBox.BoxId);
+        if (selected is null)
+        {
+            Status = "合并需要同一 parent 下连续的 leaf Box。";
+            return;
+        }
+
+        List<DocumentBox> ordered =
+            OrderSiblings(_loadedBoxes.Where(box => box.ParentBoxId == selected.ParentBoxId)).ToList();
+        DocumentBoxId[] selectedIds = BoundingBoxes.Where(box => box.IsMergeSelected)
+            .Select(box => box.BoxId).ToArray();
+        if (selectedIds.Length < 2)
+        {
+            DocumentBox? next = ordered.FirstOrDefault(box => box.BoxId == selected.NextSiblingBoxId);
+            selectedIds = next is null ? [] : [selected.BoxId, next.BoxId];
+        }
+
+        DocumentBox[] mergeBoxes = ordered.Where(box => selectedIds.Contains(box.BoxId)).ToArray();
+        int start = mergeBoxes.Length == 0 ? -1 : ordered.FindIndex(box => box.BoxId == mergeBoxes[0].BoxId);
+        bool consecutive = start >= 0 && ordered.Skip(start).Take(mergeBoxes.Length)
+            .Select(box => box.BoxId).SequenceEqual(mergeBoxes.Select(box => box.BoxId));
+        if (mergeBoxes.Length < 2 || !consecutive ||
+            mergeBoxes.Any(box => box.BoxType != selected.BoxType || box.HeadingLevel != selected.HeadingLevel))
+        {
+            Status = "合并需要同一 parent 下、阅读顺序连续且类型相同的 leaf。";
+            return;
+        }
+
+        _pendingMergeBoxes = mergeBoxes;
+        MergeText = string.Join("\n\n", mergeBoxes.Select(PayloadTextFor)
+            .Where(value => !string.IsNullOrWhiteSpace(value)));
+        Raise(nameof(IsMergePending));
+        Status = "请检查并编辑合并结果内容，然后显式确认。";
+        await Task.CompletedTask;
+    }
+
+    private async Task ConfirmMergeAsync()
+    {
+        if (_editSessionId is null || _pendingMergeBoxes.Length < 2 || string.IsNullOrWhiteSpace(MergeText))
+        {
+            Status = "合并结果必须提供非空内容。";
+            return;
+        }
+
+        DocumentBox selected = _pendingMergeBoxes[0];
+        Result<DocumentBox> result = await (await _main.ServicesAsync()).DocumentTreeEditor.MergeLeavesAsync(
+            _editSessionId.Value,
+            new MergeLeavesCommand(_pendingMergeBoxes.Select(box => box.BoxId).ToArray(), CreatePayload(
+                selected.BoxType, MergeText,
+                selected.Payload)));
+        if (result.IsFailure)
+        {
+            Status = $"合并 Box 失败：{result.ErrorMessage}";
+            return;
+        }
+
+        ClearMerge();
+        await RefreshBoxesAsync();
+        Status = "连续 Box 已合并到页面草稿。";
+    }
+
+    private void ClearMerge()
+    {
+        _pendingMergeBoxes = [];
+        MergeText = string.Empty;
+        Raise(nameof(IsMergePending));
+    }
+
+    private async Task DeleteSelectedAsync()
+    {
+        if (SelectedBox is null)
+        {
+            Status = "请先选择要删除的 Box。";
+            return;
+        }
+
+        await SelectedBox.DeleteCommand.ExecuteAsync();
+    }
+
+    private async Task MoveSelectedAsync(bool down)
+    {
+        if (_editSessionId is null || SelectedBox is null)
+        {
+            Status = "请先选择要移动的 Box。";
+            return;
+        }
+
+        DocumentBox? selected = _loadedBoxes.FirstOrDefault(box => box.BoxId == SelectedBox.BoxId);
+        if (selected is null)
+        {
+            return;
+        }
+
+        List<DocumentBox> ordered =
+            OrderSiblings(_loadedBoxes.Where(box => box.ParentBoxId == selected.ParentBoxId)).ToList();
+        int index = ordered.FindIndex(box => box.BoxId == selected.BoxId);
+        int target = index + (down ? 1 : -1);
+        if (index < 0 || target < 0 || target >= ordered.Count)
+        {
+            Status = "Box 已在该 parent 的边界位置。";
+            return;
+        }
+
+        DocumentBox? predecessor = down
+            ? ordered[target]
+            : target == 0
+                ? null
+                : ordered[target - 1];
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.MoveBoxAsync(
+            _editSessionId.Value, new MoveBoxCommand(selected.BoxId, selected.ParentBoxId, predecessor?.BoxId));
+        if (result.IsFailure)
+        {
+            Status = $"移动 Box 失败：{result.ErrorMessage}";
+            return;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "Box 顺序已写入页面草稿。";
+    }
+
+    internal async Task MoveBoxToAsync(PdfBBoxViewModel movingView, PdfBBoxViewModel targetView)
+    {
+        if (_editSessionId is null || movingView.BoxId == targetView.BoxId)
+        {
+            return;
+        }
+
+        DocumentBox? moving = _loadedBoxes.FirstOrDefault(box => box.BoxId == movingView.BoxId);
+        DocumentBox? target = _loadedBoxes.FirstOrDefault(box => box.BoxId == targetView.BoxId);
+        if (moving is null || target is null)
+        {
+            return;
+        }
+
+        DocumentBoxId? parent = target.BoxType == DocumentBoxType.LogicalPage ? target.BoxId : target.ParentBoxId;
+        DocumentBoxId? after = target.BoxType == DocumentBoxType.LogicalPage
+            ? LastSiblingForParent(target.BoxId)?.BoxId
+            : target.BoxId;
+        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.MoveBoxAsync(
+            _editSessionId.Value, new MoveBoxCommand(moving.BoxId, parent, after));
+        if (result.IsFailure)
+        {
+            Status = $"拖放移动失败：{result.ErrorMessage}";
+            return;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "Box 已通过树拖放移动到页面草稿。";
+    }
+
+    private static IEnumerable<DocumentBox> OrderSiblings(IEnumerable<DocumentBox> boxes)
+    {
+        DocumentBox[] values = boxes.ToArray();
+        HashSet<DocumentBoxId> ids = values.Select(box => box.BoxId).ToHashSet();
+        HashSet<DocumentBoxId> referenced = values.Where(box => box.NextSiblingBoxId is not null)
+            .Select(box => box.NextSiblingBoxId!.Value).ToHashSet();
+        DocumentBox? current = values.FirstOrDefault(box => !referenced.Contains(box.BoxId));
+        HashSet<DocumentBoxId> visited = [];
+        while (current is not null && visited.Add(current.BoxId))
+        {
+            yield return current;
+            current = current.NextSiblingBoxId is { } next && ids.Contains(next)
+                ? values.FirstOrDefault(box => box.BoxId == next)
+                : null;
+        }
+    }
+
+    private string? PayloadTextFor(DocumentBox box)
+    {
+        return box.Payload switch
+        {
+            TextBoxPayload value => value.Markdown,
+            ListBoxPayload value => value.Markdown,
+            TableBoxPayload value => value.Markdown,
+            EquationBoxPayload value => value.Latex,
+            CodeBoxPayload value => value.Code,
+            MediaBoxPayload value => value.Description,
+            _ => null
         };
     }
 
@@ -556,6 +1190,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public void Clear()
     {
+        PageEditSessionId? sessionId = _editSessionId;
         Image?.Dispose();
         Image = null;
         _pageIndex = 0;
@@ -573,9 +1208,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _draftRevisionId = null;
         _editSessionId = null;
         _loadedBoxes = [];
+        ClearSplit();
         ClearPendingBox();
+        ClearLocalOcrCandidate();
         Status = "选择题录后可预览 PDF。";
         RaiseAll();
+        if (sessionId is not null)
+        {
+            _ = DiscardClearedDraftAsync(sessionId.Value);
+        }
     }
 
     private async Task PreviousPageAsync()
@@ -671,36 +1312,22 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             _pageIndex = Math.Clamp(_pageIndex, 0, _pageCount - 1);
             Page page = pages.Value[_pageIndex];
             _currentPageId = page.PageId;
-            Result<FileResolutionResult> resolution =
-                await services.FileResolution.ResolveFileAsync(fileAssetId.Value, ResolveFilePurpose.RenderPage);
-            if (resolution.IsFailure)
+            Result<PdfPagePixelBufferLease> preview = await services.PageRenders.RenderPreviewAsync(
+                new PageRenderRequest(documentInstanceId, page.PageId, fileAssetId, 120,
+                    Purpose: PageRenderPurpose.Preview));
+            if (preview.IsFailure)
             {
-                Status = $"ERROR {resolution.ErrorCode}: {resolution.ErrorMessage}";
+                Status = $"ERROR {preview.ErrorCode}: {preview.ErrorMessage}";
                 return;
             }
 
-            if (resolution.Value.Status != FileAssetStatus.Available ||
-                string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath))
-            {
-                Status = resolution.Value.Warning ?? $"源文件不可用：{resolution.Value.Status}";
-                return;
-            }
-
-            if (!string.Equals(Path.GetExtension(resolution.Value.ResolvedPath), ".pdf",
-                    StringComparison.OrdinalIgnoreCase))
-            {
-                Status = "当前源文件不是 PDF。";
-                return;
-            }
-
-            PdfPagePixelBufferOutput raster =
-                await services.PdfPreviewRenderer.RenderPageToBgraBytesAsync(resolution.Value.ResolvedPath,
-                    page.PageIndex, 120);
             if (generation != _renderGeneration)
             {
+                preview.Value.Dispose();
                 return;
             }
 
+            using PdfPagePixelBufferLease raster = preview.Value;
             Image = CreateBitmap(raster);
             _widthPixels = raster.WidthPixels;
             _heightPixels = raster.HeightPixels;
@@ -756,18 +1383,45 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         return string.IsNullOrWhiteSpace(id) ? null : FileAssetId.Parse(id);
     }
 
-    private static WriteableBitmap CreateBitmap(PdfPagePixelBufferOutput raster)
+    private static WriteableBitmap CreateBitmap(PdfPagePixelBufferLease raster)
     {
-        GCHandle pixels = GCHandle.Alloc(raster.BgraBytes, GCHandleType.Pinned);
+        return new WriteableBitmap(PixelFormat.Bgra8888, AlphaFormat.Premul, raster.PixelAddress,
+            new PixelSize(raster.WidthPixels, raster.HeightPixels), new Vector(96, 96), raster.Stride);
+    }
+
+    private async Task DiscardClearedDraftAsync(PageEditSessionId sessionId)
+    {
         try
         {
-            return new WriteableBitmap(PixelFormat.Bgra8888, AlphaFormat.Premul, pixels.AddrOfPinnedObject(),
-                new PixelSize(raster.WidthPixels, raster.HeightPixels), new Vector(96, 96), raster.Stride);
+            Result discarded = await (await _main.ServicesAsync()).DocumentTrees.DiscardPageEditAsync(sessionId);
+            if (discarded.IsFailure)
+            {
+                _main.ReportError($"放弃页面草稿失败：{discarded.ErrorMessage}");
+            }
         }
-        finally
+        catch (Exception ex)
         {
-            pixels.Free();
+            _main.ReportError($"放弃页面草稿失败：{ex.Message}");
         }
+    }
+
+    private DocumentBox? LastSiblingForParent(DocumentBoxId parentBoxId)
+    {
+        List<DocumentBox> siblings = _loadedBoxes.Where(box => box.ParentBoxId == parentBoxId).ToList();
+        if (siblings.Count == 0)
+        {
+            return null;
+        }
+
+        HashSet<DocumentBoxId> siblingIds = siblings.Select(box => box.BoxId).ToHashSet();
+        DocumentBox? current = siblings.FirstOrDefault(box => box.NextSiblingBoxId is null ||
+                                                              !siblingIds.Contains(box.NextSiblingBoxId.Value));
+        while (current?.NextSiblingBoxId is not null && siblingIds.Contains(current.NextSiblingBoxId.Value))
+        {
+            current = siblings.First(box => box.BoxId == current.NextSiblingBoxId.Value);
+        }
+
+        return current;
     }
 
     private async Task<IReadOnlyList<DocumentBox>> LoadBoxesAsync(DocumentTreeRevisionId revisionId)
@@ -780,17 +1434,32 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isStaging)
     {
         _loadedBoxes = await LoadBoxesAsync(revisionId);
-        foreach (DocumentBox box in _loadedBoxes)
+        int readingOrder = 0;
+        foreach ((DocumentBox Box, int Depth) item in OrderedTree(_loadedBoxes))
         {
-            if (box.Suppressed && !IsEditMode)
+            DocumentBox box = item.Box;
+            BoundingBoxes.Add(new PdfBBoxViewModel(
+                _main, this, box, _widthPixels, _heightPixels, isStaging, ++readingOrder, item.Depth));
+        }
+
+        await LoadPreviewAsync(revisionId);
+    }
+
+    private static IEnumerable<(DocumentBox Box, int Depth)> OrderedTree(IReadOnlyList<DocumentBox> boxes)
+    {
+        foreach (DocumentBox root in OrderSiblings(boxes.Where(box => box.ParentBoxId is null)))
+        {
+            yield return (root, 0);
+            if (root.BoxType != DocumentBoxType.LogicalPage)
             {
                 continue;
             }
 
-            BoundingBoxes.Add(new PdfBBoxViewModel(_main, this, box, _widthPixels, _heightPixels, isStaging));
+            foreach (DocumentBox child in OrderSiblings(boxes.Where(box => box.ParentBoxId == root.BoxId)))
+            {
+                yield return (child, 1);
+            }
         }
-
-        await LoadPreviewAsync(revisionId);
     }
 
     internal async Task RefreshPreviewAsync()
@@ -802,18 +1471,31 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
+    internal async Task RefreshBoxesAsync()
+    {
+        if (_draftRevisionId is null)
+        {
+            return;
+        }
+
+        BoundingBoxes.Clear();
+        SelectedBox = null;
+        await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true);
+        Raise(nameof(HasNoBoundingBoxes));
+    }
+
     private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId)
     {
         PreviewBlocks.Clear();
         AppServices services = await _main.ServicesAsync();
         Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
-            revisionId, IsEditMode);
+            revisionId, false);
         if (compiled.IsFailure)
         {
             return;
         }
 
-        MarkdownDocumentModel model = services.Markdown.Parse(compiled.Value.Markdown);
+        MarkdownDocumentModel model = compiled.Value.Document ?? services.Markdown.Parse(compiled.Value.Markdown);
         for (int index = 0; index < model.Blocks.Count; index++)
         {
             int previewIndex = index;
@@ -822,14 +1504,53 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 previewIndex >= entry.PreviewNodeStart &&
                 previewIndex < entry.PreviewNodeStart + entry.PreviewNodeCount);
             DocumentBoxId? boxId = source?.BoxId;
+            string kind = _loadedBoxes.FirstOrDefault(box => box.BoxId == boxId)?.BoxType ?? block.Kind;
             PreviewBlocks.Add(new MarkdownPreviewBlockViewModel(
-                block.Kind, block.Text, block.Level, boxId,
+                kind, MarkdownFor(block, compiled.Value.Markdown), block, block.Level, boxId,
                 () =>
                 {
                     SelectPreviewBox(boxId);
                     return Task.CompletedTask;
                 }));
+
+            PreviewBlocks[^1].IsSelected = boxId == _previewSelectedBoxId;
         }
+    }
+
+    private async Task CopyMarkdownAsync()
+    {
+        DocumentTreeRevisionId? revisionId = IsEditMode ? _draftRevisionId : _currentRevisionId;
+        if (revisionId is null)
+        {
+            Status = "请先加载可复制 Markdown 的页面。";
+            return;
+        }
+
+        Result<CompiledMarkdown> compiled =
+            await (await _main.ServicesAsync()).DocumentMarkdown.CompilePageMarkdownAsync(
+                revisionId.Value, false);
+        if (compiled.IsFailure)
+        {
+            Status = $"复制 Markdown 失败：{compiled.ErrorMessage}";
+            return;
+        }
+
+        try
+        {
+            await _main.Clipboard.SetTextAsync(compiled.Value.Markdown);
+            Status = "已复制当前页面 Markdown。";
+        }
+        catch (Exception exception)
+        {
+            Status = $"复制 Markdown 失败：{exception.Message}";
+        }
+    }
+
+    private static string MarkdownFor(MarkdownBlock block, string markdown)
+    {
+        int start = Math.Clamp(block.Start, 0, markdown.Length);
+        int length = Math.Clamp(block.Length, 0, markdown.Length - start);
+        return markdown.Substring(start, length);
     }
 
     private void SelectPreviewBox(DocumentBoxId? boxId)
@@ -887,6 +1608,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             _draftRevisionId = null;
             _editSessionId = null;
             ClearPendingBox();
+            ClearSplit();
+            ClearLocalOcrCandidate();
             await ReloadAsync();
         }
         else
@@ -912,6 +1635,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _draftRevisionId = null;
         _editSessionId = null;
         ClearPendingBox();
+        ClearSplit();
+        ClearLocalOcrCandidate();
         await ReloadAsync();
     }
 

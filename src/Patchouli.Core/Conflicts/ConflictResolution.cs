@@ -44,7 +44,16 @@ public sealed class ConflictActionExecutorRegistry
 
     public ConflictActionExecutorRegistry(IEnumerable<IConflictActionExecutor> executors)
     {
-        _executors = executors.ToDictionary(executor => executor.ConflictCode, StringComparer.Ordinal);
+        IConflictActionExecutor[] values = executors.ToArray();
+        string? duplicate = values.GroupBy(executor => executor.ConflictCode, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1).Select(group => group.Key).FirstOrDefault();
+        if (duplicate is not null)
+        {
+            throw new ArgumentException($"Multiple conflict executors are registered for {duplicate}.",
+                nameof(executors));
+        }
+
+        _executors = values.ToDictionary(executor => executor.ConflictCode, StringComparer.Ordinal);
     }
 
     public Task<Result<ConflictExecutionResult>> ExecuteAsync(

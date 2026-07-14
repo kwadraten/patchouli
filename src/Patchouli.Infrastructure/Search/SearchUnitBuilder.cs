@@ -4,6 +4,7 @@ using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
@@ -212,21 +213,25 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
         PreviousUnitRow[] previous = (await connection.QueryAsync<PreviousUnitRow>(
             """
-            select unit_id as UnitId, box_id as BoxId
+            select unit_id as UnitId, box_id as BoxId, box_type as BoxType, ordinal as Ordinal,
+                resolved_text as ResolvedText
             from search_units
             where page_id = @PageId
               and tree_revision_id = @ParentRevisionId
-              and (status = @Current or status = @Stale);
+              and status in (@Current, @Stale, @Hidden, @Deleted);
             """,
             new
             {
                 PageId = pageId.ToString(),
                 ParentRevisionId = revision.ParentTreeRevisionId,
                 Current = SearchUnitStatus.Current,
-                Stale = SearchUnitStatus.Stale
+                Stale = SearchUnitStatus.Stale,
+                Hidden = SearchUnitStatus.Hidden,
+                Deleted = SearchUnitStatus.Deleted
             },
             transaction)).ToArray();
         Dictionary<string, PreviousUnitRow> previousByBox = previous.ToDictionary(row => row.BoxId);
+        HashSet<string> matchedPredecessors = [];
         HashSet<string> touched = [];
 
         foreach (GeneratedUnit unit in generated)
@@ -239,6 +244,20 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 new { unit.TreeRevisionId, unit.BoxId },
                 transaction);
             string unitId = existing ?? SearchUnitId.New().ToString();
+            PreviousUnitRow? predecessor = previousByBox.GetValueOrDefault(unit.BoxId);
+            predecessor ??= previous.SingleOrDefault(candidate =>
+                !matchedPredecessors.Contains(candidate.UnitId) &&
+                candidate.BoxType == unit.BoxType &&
+                candidate.ResolvedText == unit.ResolvedText);
+            predecessor ??= previous.SingleOrDefault(candidate =>
+                !matchedPredecessors.Contains(candidate.UnitId) &&
+                candidate.Ordinal == unit.Ordinal &&
+                candidate.BoxType == unit.BoxType);
+            if (predecessor is not null)
+            {
+                matchedPredecessors.Add(predecessor.UnitId);
+            }
+
             touched.Add(unitId);
             await connection.ExecuteAsync(
                 """
@@ -269,13 +288,13 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                     unit.BoxType,
                     unit.Ordinal,
                     Status = SearchUnitStatus.Current,
-                    SupersedesUnitId = previousByBox.GetValueOrDefault(unit.BoxId)?.UnitId,
+                    SupersedesUnitId = predecessor?.UnitId,
                     CreatedAt = now,
                     UpdatedAt = now
                 },
                 transaction);
 
-            if (previousByBox.TryGetValue(unit.BoxId, out PreviousUnitRow? predecessor))
+            if (predecessor is not null)
             {
                 await connection.ExecuteAsync(
                     """
@@ -349,16 +368,15 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         DocumentTreeRevisionId revisionId)
     {
         int ordinal = 0;
-        foreach (DocumentBoxRow row in OrderLeaves(rows))
+        DocumentBox[] boxes = rows.Select(row => row.ToBox(documentInstanceId, pageId, revisionId)).ToArray();
+        foreach (DocumentBox box in DocumentBoxProjection.ContentBoxes(boxes))
         {
-            if (row.Suppressed == 1)
+            if (box.Suppressed)
             {
                 continue;
             }
 
-            DocumentBoxPayload? payload = DocumentBoxPayloadSerializer.Deserialize(
-                row.BoxType, row.BaseType, row.PayloadJson);
-            string text = ResolveText(row.BoxType, payload);
+            string text = DocumentBoxProjection.PlainText(box, _markdown);
             if (string.IsNullOrWhiteSpace(text))
             {
                 continue;
@@ -367,63 +385,12 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
             yield return new GeneratedUnit(
                 documentInstanceId.ToString(),
                 pageId.ToString(),
-                row.BoxId,
+                box.BoxId.ToString(),
                 revisionId.ToString(),
                 text.Trim(),
-                JsonSerializer.Serialize(new BBoxJson(row.BBoxX, row.BBoxY, row.BBoxWidth, row.BBoxHeight)),
-                row.BoxType,
+                JsonSerializer.Serialize(new BBoxJson(box.BBox.X, box.BBox.Y, box.BBox.Width, box.BBox.Height)),
+                box.BoxType,
                 ordinal++);
-        }
-    }
-
-    private string ResolveText(string boxType, DocumentBoxPayload? payload)
-    {
-        return payload switch
-        {
-            TextBoxPayload text => _markdown.ToPlainText(text.Markdown),
-            EquationBoxPayload equation => equation.Latex,
-            ListBoxPayload list => _markdown.ToPlainText(list.Markdown),
-            TableBoxPayload table => _markdown.ToPlainText(table.Markdown),
-            CodeBoxPayload code => code.Code,
-            MediaBoxPayload media => media.Description ?? (boxType == DocumentBoxType.Chart ? "[Chart]" : "[Image]"),
-            _ => string.Empty
-        };
-    }
-
-    private static IEnumerable<DocumentBoxRow> OrderLeaves(IReadOnlyList<DocumentBoxRow> rows)
-    {
-        DocumentBoxRow[] roots = Order(rows, null).ToArray();
-        foreach (DocumentBoxRow root in roots)
-        {
-            if (root.BoxType == DocumentBoxType.LogicalPage)
-            {
-                foreach (DocumentBoxRow child in Order(rows, root.BoxId))
-                {
-                    yield return child;
-                }
-            }
-            else
-            {
-                yield return root;
-            }
-        }
-    }
-
-    private static IEnumerable<DocumentBoxRow> Order(IReadOnlyList<DocumentBoxRow> rows, string? parentId)
-    {
-        DocumentBoxRow[] siblings = rows.Where(row => row.ParentBoxId == parentId).ToArray();
-        HashSet<string> referenced = siblings
-            .Where(row => row.NextSiblingBoxId is not null)
-            .Select(row => row.NextSiblingBoxId!)
-            .ToHashSet();
-        DocumentBoxRow? current = siblings.SingleOrDefault(row => !referenced.Contains(row.BoxId));
-        HashSet<string> visited = [];
-        while (current is not null && visited.Add(current.BoxId))
-        {
-            yield return current;
-            current = current.NextSiblingBoxId is null
-                ? null
-                : siblings.SingleOrDefault(row => row.BoxId == current.NextSiblingBoxId);
         }
     }
 
@@ -619,12 +586,26 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         public double BBoxWidth { get; set; }
         public double BBoxHeight { get; set; }
         public int Suppressed { get; set; }
+
+        public DocumentBox ToBox(DocumentInstanceId documentInstanceId, PageId pageId,
+            DocumentTreeRevisionId revisionId)
+        {
+            return new DocumentBox(revisionId, DocumentBoxId.Parse(BoxId), documentInstanceId, pageId,
+                ParentBoxId is null ? null : DocumentBoxId.Parse(ParentBoxId),
+                NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, null, BaseType,
+                new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
+                DocumentBoxPayloadSerializer.Deserialize(BoxType, BaseType, PayloadJson), null, null, null,
+                Suppressed == 1);
+        }
     }
 
     private sealed class PreviousUnitRow
     {
         public string UnitId { get; set; } = string.Empty;
         public string BoxId { get; set; } = string.Empty;
+        public string BoxType { get; set; } = string.Empty;
+        public int Ordinal { get; set; }
+        public string ResolvedText { get; set; } = string.Empty;
     }
 
     private sealed class EvidenceRecordRow

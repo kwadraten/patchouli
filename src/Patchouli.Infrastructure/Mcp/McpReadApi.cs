@@ -331,8 +331,13 @@ public sealed class McpReadApi : IMcpReadApi
                 {
                     PageId = request.PageId.ToString(), RevisionId = revisionId
                 })).ToArray();
-            DocumentBoxRow[] rows = OrderBoxRows(rawRows)
-                .Where(row => request.IncludeSuppressed || row.Suppressed == 0)
+            DocumentTreeRevisionId treeRevisionId = DocumentTreeRevisionId.Parse(revisionId);
+            Dictionary<DocumentBoxId, DocumentBoxRow> rowsByBoxId =
+                rawRows.ToDictionary(row => DocumentBoxId.Parse(row.BoxId));
+            DocumentBox[] boxes = rawRows.Select(row => row.ToBox(
+                DocumentInstanceId.Parse(meta.DocumentInstanceId), request.PageId, treeRevisionId)).ToArray();
+            DocumentBox[] projectedBoxes = DocumentBoxProjection.ContentBoxes(boxes)
+                .Where(box => request.IncludeSuppressed || !box.Suppressed)
                 .ToArray();
             List<string> warnings = new();
             if (_coordinates is not null)
@@ -343,8 +348,9 @@ public sealed class McpReadApi : IMcpReadApi
 
             List<McpPageBlock> blocks = new();
             int ordinal = 0;
-            foreach (DocumentBoxRow row in rows)
+            foreach (DocumentBox box in projectedBoxes)
             {
+                DocumentBoxRow row = rowsByBoxId[box.BoxId];
                 string? evidenceRef = null;
                 if (!string.IsNullOrWhiteSpace(row.SearchUnitId))
                 {
@@ -362,16 +368,14 @@ public sealed class McpReadApi : IMcpReadApi
                 }
 
                 blocks.Add(new McpPageBlock(
-                    DocumentBoxId.Parse(row.BoxId),
-                    DocumentTreeRevisionId.Parse(revisionId),
-                    row.BoxType,
-                    PlainText(row),
+                    box.BoxId,
+                    treeRevisionId,
+                    box.BoxType,
+                    DocumentBoxProjection.PlainText(box, _markdown),
                     ordinal++,
-                    row.Suppressed == 1,
+                    box.Suppressed,
                     evidenceRef,
-                    request.IncludeBbox
-                        ? new NormalizedBBox(row.BBoxX, row.BBoxY, row.BBoxWidth, row.BBoxHeight)
-                        : null));
+                    request.IncludeBbox ? box.BBox : null));
             }
 
             return Result<McpPageBlocksResponse>.Success(new McpPageBlocksResponse(request.PageId, meta.PageLabel,
@@ -630,61 +634,6 @@ public sealed class McpReadApi : IMcpReadApi
         return string.IsNullOrWhiteSpace(warning) ? Array.Empty<string>() : new[] { warning };
     }
 
-    private IEnumerable<DocumentBoxRow> OrderBoxRows(IReadOnlyList<DocumentBoxRow> rows)
-    {
-        foreach (DocumentBoxRow root in OrderSiblingRows(rows, null))
-        {
-            if (root.BoxType == DocumentBoxType.LogicalPage)
-            {
-                foreach (DocumentBoxRow child in OrderSiblingRows(rows, root.BoxId))
-                {
-                    yield return child;
-                }
-            }
-            else
-            {
-                yield return root;
-            }
-        }
-    }
-
-    private static IEnumerable<DocumentBoxRow> OrderSiblingRows(
-        IReadOnlyList<DocumentBoxRow> rows,
-        string? parentId)
-    {
-        DocumentBoxRow[] siblings = rows.Where(row => row.ParentBoxId == parentId).ToArray();
-        HashSet<string> referenced = siblings
-            .Where(row => row.NextSiblingBoxId is not null)
-            .Select(row => row.NextSiblingBoxId!)
-            .ToHashSet();
-        DocumentBoxRow? current = siblings.SingleOrDefault(row => !referenced.Contains(row.BoxId));
-        HashSet<string> visited = [];
-        while (current is not null && visited.Add(current.BoxId))
-        {
-            yield return current;
-            current = current.NextSiblingBoxId is null
-                ? null
-                : siblings.SingleOrDefault(row => row.BoxId == current.NextSiblingBoxId);
-        }
-    }
-
-    private string PlainText(DocumentBoxRow row)
-    {
-        DocumentBoxPayload? payload = DocumentBoxPayloadSerializer.Deserialize(
-            row.BoxType, row.BaseType, row.PayloadJson);
-        return payload switch
-        {
-            TextBoxPayload text => _markdown.ToPlainText(text.Markdown),
-            EquationBoxPayload equation => equation.Latex,
-            ListBoxPayload list => _markdown.ToPlainText(list.Markdown),
-            TableBoxPayload table => _markdown.ToPlainText(table.Markdown),
-            CodeBoxPayload code => code.Code,
-            MediaBoxPayload media => media.Description ??
-                                     (row.BoxType == DocumentBoxType.Chart ? "[Chart]" : "[Image]"),
-            _ => string.Empty
-        };
-    }
-
     private sealed class PageMeta
     {
         public string PageId { get; set; } = "";
@@ -707,6 +656,17 @@ public sealed class McpReadApi : IMcpReadApi
         public double BBoxY { get; set; }
         public double BBoxWidth { get; set; }
         public double BBoxHeight { get; set; }
+
+        public DocumentBox ToBox(DocumentInstanceId documentInstanceId, PageId pageId,
+            DocumentTreeRevisionId treeRevisionId)
+        {
+            return new DocumentBox(treeRevisionId, DocumentBoxId.Parse(BoxId), documentInstanceId, pageId,
+                ParentBoxId is null ? null : DocumentBoxId.Parse(ParentBoxId),
+                NextSiblingBoxId is null ? null : DocumentBoxId.Parse(NextSiblingBoxId), BoxType, null, BaseType,
+                new NormalizedBBox(BBoxX, BBoxY, BBoxWidth, BBoxHeight),
+                DocumentBoxPayloadSerializer.Deserialize(BoxType, BaseType, PayloadJson), null, null, null,
+                Suppressed == 1);
+        }
     }
 
     private sealed class UnitBBoxRow

@@ -73,7 +73,8 @@ public class AboutViewModel : ViewModelBase
             new("Blake3", "CC0 / Apache 2.0", "https://github.com/BLAKE3-team/BLAKE3", openUrlCommand),
             new("PDFiumCore / PDFium", "Apache-2.0 / BSD-3-Clause",
                 "https://github.com/Dtronix/PDFiumCore", openUrlCommand),
-            new("Hayagriva", "Apache 2.0 / MIT", "https://github.com/typst/hayagriva", openUrlCommand)
+            new("Hayagriva", "Apache 2.0 / MIT", "https://github.com/typst/hayagriva", openUrlCommand),
+            new("Markdig", "BSD-2-Clause", "https://github.com/xoofx/markdig", openUrlCommand)
         };
     }
 }

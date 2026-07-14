@@ -44,6 +44,8 @@ internal sealed class MinerUDocumentTreeCandidateMapper
                 }
             }
 
+            boxes = MergeTextContainedByImages(boxes, page.PageId, diagnostics);
+
             if (boxes.Count > 0)
             {
                 mappedPages.Add(new OcrPageCandidate(page.PageId, page.PageIndex, boxes));
@@ -51,6 +53,84 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         }
 
         return new OcrDocumentTreeCandidate(mappedPages, diagnostics);
+    }
+
+    private static List<OcrBoxCandidate> MergeTextContainedByImages(
+        IReadOnlyList<OcrBoxCandidate> boxes,
+        Core.Ids.PageId pageId,
+        List<OcrDiagnostic> diagnostics)
+    {
+        OcrBoxCandidate[] images = boxes
+            .Where(box => box.BoxType == DocumentBoxType.Image && !box.Suppressed && box.Payload is MediaBoxPayload)
+            .ToArray();
+        if (images.Length == 0)
+        {
+            return boxes.ToList();
+        }
+
+        Dictionary<OcrBoxCandidate, List<OcrBoxCandidate>> containedByImage = [];
+        foreach (OcrBoxCandidate text in boxes.Where(box =>
+                     box.BoxType == DocumentBoxType.Text && !box.Suppressed && box.Payload is TextBoxPayload))
+        {
+            OcrBoxCandidate? image = images
+                .Where(candidate => Contains(candidate.BBox, text.BBox))
+                .MinBy(candidate => candidate.BBox.Width * candidate.BBox.Height);
+            if (image is null)
+            {
+                continue;
+            }
+
+            if (!containedByImage.TryGetValue(image, out List<OcrBoxCandidate>? contained))
+            {
+                contained = [];
+                containedByImage[image] = contained;
+            }
+
+            contained.Add(text);
+            diagnostics.Add(new OcrDiagnostic(
+                "image_embedded_text_merged",
+                "MinerU text fully contained by an image was imported as the image description.",
+                pageId,
+                text.SourceOrder));
+        }
+
+        if (containedByImage.Count == 0)
+        {
+            return boxes.ToList();
+        }
+
+        HashSet<OcrBoxCandidate> mergedText = containedByImage.Values.SelectMany(values => values).ToHashSet();
+        return boxes
+            .Where(box => !mergedText.Contains(box))
+            .Select(box => containedByImage.TryGetValue(box, out List<OcrBoxCandidate>? contained)
+                ? box with
+                {
+                    Payload = MergeImageDescription(
+                        (MediaBoxPayload)box.Payload,
+                        contained.OrderBy(text => text.SourceOrder)
+                            .Select(text => ((TextBoxPayload)text.Payload).Markdown))
+                }
+                : box)
+            .ToList();
+    }
+
+    private static MediaBoxPayload MergeImageDescription(MediaBoxPayload image, IEnumerable<string> text)
+    {
+        string[] parts = text
+            .Prepend(image.Description ?? string.Empty)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .ToArray();
+        return image with { Description = parts.Length == 0 ? null : string.Join("\n", parts) };
+    }
+
+    private static bool Contains(NormalizedBBox container, NormalizedBBox contained)
+    {
+        const double tolerance = 1e-9;
+        return contained.X >= container.X - tolerance &&
+               contained.Y >= container.Y - tolerance &&
+               contained.X + contained.Width <= container.X + container.Width + tolerance &&
+               contained.Y + contained.Height <= container.Y + container.Height + tolerance;
     }
 
     private static OcrBoxCandidate? MapBlock(

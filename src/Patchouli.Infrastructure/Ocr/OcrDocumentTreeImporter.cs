@@ -127,21 +127,16 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
         IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
         CancellationToken cancellationToken = default)
     {
-        List<DocumentTreeRevisionId> committed = [];
-        foreach (DocumentTreeRevisionId revisionId in stagingRevisionIds)
+        Result<IReadOnlyList<DocumentTreeRevision>> adopted = await _trees.AdoptStagingRevisionsAsync(
+            stagingRevisionIds, cancellationToken);
+        if (adopted.IsFailure)
         {
-            Result<DocumentTreeRevision> adopted = await _trees.AdoptStagingRevisionAsync(
-                revisionId, cancellationToken);
-            if (adopted.IsFailure)
-            {
-                return Result<IReadOnlyList<DocumentTreeRevisionId>>.Failure(
-                    adopted.ErrorCode!, adopted.ErrorMessage!, adopted.Conflicts);
-            }
-
-            committed.Add(adopted.Value.TreeRevisionId);
+            return Result<IReadOnlyList<DocumentTreeRevisionId>>.Failure(
+                adopted.ErrorCode!, adopted.ErrorMessage!, adopted.Conflicts);
         }
 
-        return Result<IReadOnlyList<DocumentTreeRevisionId>>.Success(committed);
+        return Result<IReadOnlyList<DocumentTreeRevisionId>>.Success(
+            adopted.Value.Select(revision => revision.TreeRevisionId).ToArray());
     }
 
     private static IEnumerable<DocumentBox> Order(IReadOnlyList<DocumentBox> siblings)

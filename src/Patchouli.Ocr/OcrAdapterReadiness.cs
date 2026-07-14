@@ -182,15 +182,21 @@ public sealed class MinerUOcrAdapter : IRealOcrAdapter
     public Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion,
         CancellationToken cancellationToken = default)
     {
+        bool ready = !string.IsNullOrWhiteSpace(presetVersion.ModelId);
         return Task.FromResult(new OcrEnvironmentCheckResult(EngineId, presetVersion.ModelId, presetVersion.ModelPath,
-            OcrEnvironmentStatus.Ready, true, "MinerU preset is ready; the API token is checked when the run starts.",
-            OcrRequiredAction.None, []));
+            ready ? OcrEnvironmentStatus.Ready : OcrEnvironmentStatus.NotConfigured, ready,
+            ready
+                ? "MinerU preset is ready; the API token is checked when the run starts."
+                : "MinerU requires a model identifier.",
+            ready ? OcrRequiredAction.None : OcrRequiredAction.ChooseDifferentPreset, []));
     }
 
     public Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion,
         CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(Result.Success());
+        return Task.FromResult(string.IsNullOrWhiteSpace(presetVersion.ModelId)
+            ? Result.Failure(AppErrorCodes.ValidationFailed, "MinerU OCR requires a model identifier.")
+            : Result.Success());
     }
 
     public Task<Result> ValidateInputAsync(OcrInputDescriptor input, CancellationToken cancellationToken = default)

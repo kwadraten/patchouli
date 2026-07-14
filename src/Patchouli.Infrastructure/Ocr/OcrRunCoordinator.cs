@@ -5,6 +5,7 @@ using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
@@ -34,6 +35,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly Func<MinerUConfiguration, IMinerUClient>? _minerUClientFactory;
     private readonly string _minerUCacheRoot;
     private readonly MinerUUploadLimits _minerUUploadLimits;
+    private readonly IFileResolutionService? _fileResolution;
 
     public OcrRunCoordinator(
         SqliteConnectionFactory connectionFactory,
@@ -47,7 +49,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         IMinerUResultImporter? minerUResultImporter = null,
         Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null,
         string? minerUCacheRoot = null,
-        MinerUUploadLimits? minerUUploadLimits = null)
+        MinerUUploadLimits? minerUUploadLimits = null,
+        IFileResolutionService? fileResolution = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
@@ -61,6 +64,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _minerUClientFactory = minerUClientFactory;
         _minerUCacheRoot = minerUCacheRoot ?? Path.Combine(Path.GetTempPath(), "patchouli", "mineru");
         _minerUUploadLimits = minerUUploadLimits ?? MinerUUploadLimits.Default;
+        _fileResolution = fileResolution;
     }
 
     public OcrRunCoordinator(
@@ -76,7 +80,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         IMinerUResultImporter? minerUResultImporter = null,
         Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null,
         string? minerUCacheRoot = null,
-        MinerUUploadLimits? minerUUploadLimits = null)
+        MinerUUploadLimits? minerUUploadLimits = null,
+        IFileResolutionService? fileResolution = null)
         : this(
             connectionFactory,
             clock,
@@ -89,7 +94,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             minerUResultImporter,
             minerUClientFactory,
             minerUCacheRoot,
-            minerUUploadLimits)
+            minerUUploadLimits,
+            fileResolution)
     {
         _credentialResolver = credentialResolver;
     }
@@ -139,6 +145,54 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         return pages.IsFailure
             ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
             : await RunPagesAsync(documentInstanceId, presetId, pages.Value, regionBBox, null, cancellationToken);
+    }
+
+    public async Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(
+        DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId,
+        PageId pageId,
+        NormalizedBBox regionBBox,
+        CancellationToken cancellationToken = default)
+    {
+        Result region = regionBBox.Validate();
+        if (region.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(region.ErrorCode!, region.ErrorMessage!);
+        }
+
+        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
+        if (pages.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
+        }
+
+        Result<OcrPresetVersion> version = await GetPresetVersionAsync(presetId, cancellationToken);
+        if (version.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(version.ErrorCode!, version.ErrorMessage!);
+        }
+
+        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);
+        if (adapterValidation.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
+        }
+
+        Result<OcrEnginePageResult> output = await RunEngineAsync(
+            pages.Value.Single(), version.Value, regionBBox, null, cancellationToken);
+        if (output.IsFailure || !output.Value.Succeeded || string.IsNullOrWhiteSpace(output.Value.Text))
+        {
+            return Result<OcrRegionCandidate>.Failure(
+                output.ErrorCode ?? (output.IsSuccess ? output.Value.ErrorCode : null) ?? AppErrorCodes.InvalidState,
+                output.ErrorMessage ??
+                (output.IsSuccess ? output.Value.ErrorMessage : null) ?? "OCR returned no text.");
+        }
+
+        Result<NormalizedBBox> bbox = await ResolveBBoxAsync(pageId, output.Value, regionBBox, cancellationToken);
+        return bbox.IsFailure
+            ? Result<OcrRegionCandidate>.Failure(bbox.ErrorCode!, bbox.ErrorMessage!)
+            : Result<OcrRegionCandidate>.Success(new OcrRegionCandidate(
+                pageId, bbox.Value, DocumentBoxType.Text, new TextBoxPayload(output.Value.Text.Trim())));
     }
 
     public async Task<Result<OcrRun>> RunPresetOnImagePageAsync(
@@ -283,6 +337,12 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         await gate.WaitAsync(cancellationToken);
         try
         {
+            OcrCandidateAdoption? existing = await GetExistingAdoptionAsync(runId, cancellationToken);
+            if (existing is not null)
+            {
+                return Result<OcrCandidateAdoption>.Success(existing);
+            }
+
             IReadOnlyList<OcrPageResult> results = (await ListPageResultsAsync(runId, cancellationToken)).Value;
             HashSet<PageId>? selection = selectedPages?.ToHashSet();
             OcrPageResult[] selected = results.Where(result =>
@@ -421,6 +481,12 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
+        Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);
+        if (adapterValidation.IsFailure)
+        {
+            return Result<OcrRun>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
+        }
+
         if (version.Value.EngineId == OcrEngineIds.MinerU)
         {
             return await RunMinerUDocumentAsync(
@@ -433,108 +499,121 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         int failures = 0;
         DocumentTreeRevisionId? firstStaging = null;
 
-        foreach (Page page in pages)
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing, null, null, null);
-            Result<OcrEnginePageResult> output = await RunEngineAsync(
-                page, version.Value, region, imagePath, cancellationToken);
-            if (output.IsFailure || !output.Value.Succeeded || string.IsNullOrWhiteSpace(output.Value.Text))
+            foreach (Page page in pages)
             {
-                failures++;
-                await UpdatePageResultAsync(
-                    run.OcrRunId,
-                    page.PageId,
-                    OcrPageResultState.Failed,
-                    null,
-                    output.ErrorCode ??
-                    (output.IsSuccess ? output.Value.ErrorCode : null) ?? AppErrorCodes.InvalidState,
-                    output.ErrorMessage ?? (output.IsSuccess ? output.Value.ErrorMessage : null) ??
-                    "OCR returned no text.");
-                continue;
-            }
-
-            NormalizedBBox bbox = region ?? output.Value.BBox ?? new NormalizedBBox(0, 0, 1, 1);
-            if (bbox.Validate().IsFailure)
-            {
-                failures++;
-                await UpdatePageResultAsync(
-                    run.OcrRunId,
-                    page.PageId,
-                    OcrPageResultState.Failed,
-                    null,
-                    "bbox_invalid",
-                    "OCR bbox could not be normalized to the physical page.");
-                continue;
-            }
-
-            OcrDocumentTreeCandidate candidate = new(
-                [
-                    new OcrPageCandidate(page.PageId, page.PageIndex,
-                    [
-                        new OcrBoxCandidate(
-                            DocumentBoxType.Text,
-                            null,
-                            null,
-                            0,
-                            new TextBoxPayload(output.Value.Text.Trim()),
-                            bbox,
-                            null,
-                            null,
-                            false)
-                    ])
-                ],
-                []);
-            Result<OcrDocumentTreeImportResult> staged = await _treeImporter.StageAsync(
-                new OcrDocumentTreeImportRequest(documentInstanceId, candidate),
-                cancellationToken);
-            if (staged.IsFailure)
-            {
-                failures++;
-                await UpdatePageResultAsync(
-                    run.OcrRunId,
-                    page.PageId,
-                    OcrPageResultState.Failed,
-                    null,
-                    staged.ErrorCode,
-                    staged.ErrorMessage);
-                continue;
-            }
-
-            DocumentTreeRevisionId revisionId = staged.Value.StagingRevisionIds.Single();
-            firstStaging ??= revisionId;
-            await UpdatePageResultAsync(
-                run.OcrRunId,
-                page.PageId,
-                OcrPageResultState.Succeeded,
-                revisionId,
-                null,
-                null);
-        }
-
-        string state = failures == pages.Count
-            ? OcrRunState.Failed
-            : failures > 0
-                ? OcrRunState.CompletedWithErrors
-                : OcrRunState.Completed;
-        await using (SqliteConnection connection = _connectionFactory.CreateConnection())
-        {
-            await connection.OpenAsync(cancellationToken);
-            await connection.ExecuteAsync(
-                """
-                update ocr_runs set state = @State, output_tree_revision_id = @RevisionId, updated_at = @Now
-                where ocr_run_id = @RunId;
-                """,
-                new
+                cancellationToken.ThrowIfCancellationRequested();
+                await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing, null, null, null);
+                Result<OcrEnginePageResult> output = await RunEngineAsync(
+                    page, version.Value, region, imagePath, cancellationToken);
+                if (output.IsFailure || !output.Value.Succeeded || string.IsNullOrWhiteSpace(output.Value.Text))
                 {
-                    State = state,
-                    RevisionId = firstStaging?.ToString(),
-                    Now = FormatUtc(_clock.UtcNow),
-                    RunId = run.OcrRunId.ToString()
-                });
-        }
+                    failures++;
+                    await UpdatePageResultAsync(
+                        run.OcrRunId,
+                        page.PageId,
+                        OcrPageResultState.Failed,
+                        null,
+                        output.ErrorCode ??
+                        (output.IsSuccess ? output.Value.ErrorCode : null) ?? AppErrorCodes.InvalidState,
+                        output.ErrorMessage ?? (output.IsSuccess ? output.Value.ErrorMessage : null) ??
+                        "OCR returned no text.");
+                    continue;
+                }
 
-        return await GetRunAsync(run.OcrRunId, cancellationToken);
+                Result<NormalizedBBox> bbox = await ResolveBBoxAsync(page.PageId, output.Value, region,
+                    cancellationToken);
+                if (bbox.IsFailure)
+                {
+                    failures++;
+                    await UpdatePageResultAsync(
+                        run.OcrRunId,
+                        page.PageId,
+                        OcrPageResultState.Failed,
+                        null,
+                        bbox.ErrorCode,
+                        bbox.ErrorMessage);
+                    continue;
+                }
+
+                OcrDocumentTreeCandidate candidate = new(
+                    [
+                        new OcrPageCandidate(page.PageId, page.PageIndex,
+                        [
+                            new OcrBoxCandidate(
+                                DocumentBoxType.Text,
+                                null,
+                                null,
+                                0,
+                                new TextBoxPayload(output.Value.Text.Trim()),
+                                bbox.Value,
+                                null,
+                                null,
+                                false)
+                        ])
+                    ],
+                    []);
+                Result<OcrDocumentTreeImportResult> staged = await _treeImporter.StageAsync(
+                    new OcrDocumentTreeImportRequest(documentInstanceId, candidate),
+                    cancellationToken);
+                if (staged.IsFailure)
+                {
+                    failures++;
+                    await UpdatePageResultAsync(
+                        run.OcrRunId,
+                        page.PageId,
+                        OcrPageResultState.Failed,
+                        null,
+                        staged.ErrorCode,
+                        staged.ErrorMessage);
+                    continue;
+                }
+
+                DocumentTreeRevisionId revisionId = staged.Value.StagingRevisionIds.Single();
+                firstStaging ??= revisionId;
+                await UpdatePageResultAsync(
+                    run.OcrRunId,
+                    page.PageId,
+                    OcrPageResultState.Succeeded,
+                    revisionId,
+                    null,
+                    null);
+            }
+
+            string state = failures == pages.Count
+                ? OcrRunState.Failed
+                : failures > 0
+                    ? OcrRunState.CompletedWithErrors
+                    : OcrRunState.Completed;
+            await using (SqliteConnection connection = _connectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync(cancellationToken);
+                await connection.ExecuteAsync(
+                    """
+                    update ocr_runs set state = @State, output_tree_revision_id = @RevisionId, updated_at = @Now
+                    where ocr_run_id = @RunId;
+                    """,
+                    new
+                    {
+                        State = state,
+                        RevisionId = firstStaging?.ToString(),
+                        Now = FormatUtc(_clock.UtcNow),
+                        RunId = run.OcrRunId.ToString()
+                    });
+            }
+
+            return await CompleteRunAsync(run.OcrRunId, version.Value, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, pages, exception);
+        }
     }
 
     private async Task<Result<OcrRun>> RunMinerUDocumentAsync(
@@ -565,7 +644,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             await connection.OpenAsync(cancellationToken);
             source = await connection.QuerySingleOrDefaultAsync<MinerUSourceRow>(
                 """
-                select f.original_path as SourcePath, i.library_id as LibraryId
+                select f.file_asset_id as FileAssetId, f.original_path as SourcePath, i.library_id as LibraryId
                 from document_instances d
                 join items i on i.item_id = d.item_id
                 join file_assets f on f.file_asset_id = d.file_asset_id
@@ -574,7 +653,27 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 new { DocumentInstanceId = documentInstanceId.ToString() });
         }
 
-        if (source is null || !File.Exists(source.SourcePath))
+        if (source is null)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "MinerU source PDF is unavailable.");
+        }
+
+        string? sourcePath = source.SourcePath;
+        if (_fileResolution is not null)
+        {
+            Result<FileResolutionResult> resolved = await _fileResolution.ResolveFileAsync(
+                FileAssetId.Parse(source.FileAssetId), ResolveFilePurpose.RunOcr, cancellationToken);
+            if (resolved.IsFailure || string.IsNullOrWhiteSpace(resolved.Value.ResolvedPath))
+            {
+                return Result<OcrRun>.Failure(
+                    resolved.ErrorCode ?? AppErrorCodes.NotFound,
+                    resolved.ErrorMessage ?? "MinerU source PDF could not be resolved.");
+            }
+
+            sourcePath = resolved.Value.ResolvedPath;
+        }
+
+        if (!File.Exists(sourcePath))
         {
             return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "MinerU source PDF is unavailable.");
         }
@@ -598,37 +697,66 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         await InsertPendingPageResultsAsync(run.OcrRunId, pages, cancellationToken);
         string downloadDirectory = Path.Combine(_minerUCacheRoot, run.OcrRunId.ToString());
         Directory.CreateDirectory(downloadDirectory);
-        Result<MinerUDownloadedResult> downloaded = await new MinerUResultDownloader(client, _minerUUploadLimits)
-            .UploadAndExtractAsync(source.SourcePath, downloadDirectory, cancellationToken);
-        if (downloaded.IsFailure)
+        try
         {
-            return await FailMinerURunAsync(run, pages, downloaded.ErrorCode, downloaded.ErrorMessage,
-                cancellationToken);
-        }
-
-        Result<MinerUImportResult> imported = await _minerUResultImporter.ImportResultZipAsync(
-            new MinerUImportRequest(downloaded.Value.ZipPath, documentInstanceId.ToString(), source.LibraryId),
-            cancellationToken);
-        if (imported.IsFailure || !imported.Value.Success)
-        {
-            return await FailMinerURunAsync(
-                run, pages, imported.ErrorCode,
-                imported.ErrorMessage ?? (imported.IsSuccess ? imported.Value.ErrorMessage : null), cancellationToken);
-        }
-
-        DocumentTreeRevisionId[] revisionIds = imported.Value.StagingTreeRevisionIds
-            .Select(DocumentTreeRevisionId.Parse)
-            .ToArray();
-        await using (SqliteConnection connection = _connectionFactory.CreateConnection())
-        {
-            await connection.OpenAsync(cancellationToken);
-            IEnumerable<TreePageRow> staged = await connection.QueryAsync<TreePageRow>(
-                "select tree_revision_id as TreeRevisionId, page_id as PageId from document_tree_revisions where tree_revision_id in @Ids;",
-                new { Ids = revisionIds.Select(id => id.ToString()).ToArray() });
-            foreach (TreePageRow row in staged)
+            Result<MinerUDownloadedResult> downloaded = await new MinerUResultDownloader(client, _minerUUploadLimits)
+                .UploadAndExtractAsync(sourcePath, downloadDirectory, cancellationToken);
+            if (downloaded.IsFailure)
             {
-                await UpdatePageResultAsync(run.OcrRunId, PageId.Parse(row.PageId), OcrPageResultState.Succeeded,
-                    DocumentTreeRevisionId.Parse(row.TreeRevisionId), null, null);
+                return await FailMinerURunAsync(run, pages, downloaded.ErrorCode, downloaded.ErrorMessage,
+                    cancellationToken);
+            }
+
+            Result<MinerUImportResult> imported = await _minerUResultImporter.ImportResultZipAsync(
+                new MinerUImportRequest(downloaded.Value.ZipPath, documentInstanceId.ToString(), source.LibraryId),
+                cancellationToken);
+            if (imported.IsFailure || !imported.Value.Success)
+            {
+                return await FailMinerURunAsync(
+                    run, pages, imported.ErrorCode,
+                    imported.ErrorMessage ?? (imported.IsSuccess ? imported.Value.ErrorMessage : null),
+                    cancellationToken);
+            }
+
+            DocumentTreeRevisionId[] revisionIds = imported.Value.StagingTreeRevisionIds
+                .Select(DocumentTreeRevisionId.Parse)
+                .ToArray();
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            TreePageRow[] staged = (await connection.QueryAsync<TreePageRow>(
+                "select tree_revision_id as TreeRevisionId, page_id as PageId from document_tree_revisions where tree_revision_id in @Ids;",
+                new { Ids = revisionIds.Select(id => id.ToString()).ToArray() })).ToArray();
+            Dictionary<string, TreePageRow> requested = staged
+                .Where(row => pages.Any(page => page.PageId.ToString() == row.PageId))
+                .GroupBy(row => row.PageId, StringComparer.Ordinal)
+                .Where(group => group.Count() == 1)
+                .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+            if (requested.Count != pages.Count)
+            {
+                return await FailMinerURunAsync(run, pages, AppErrorCodes.InvalidState,
+                    "MinerU result did not contain exactly one staging tree for every requested physical page.",
+                    cancellationToken);
+            }
+
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            string now = FormatUtc(_clock.UtcNow);
+            foreach (Page page in pages)
+            {
+                TreePageRow row = requested[page.PageId.ToString()];
+                await connection.ExecuteAsync(
+                    """
+                    update ocr_page_results set state=@State, staging_tree_revision_id=@Revision,
+                        error_code=null, error_message=null, updated_at=@Now
+                    where ocr_run_id=@RunId and page_id=@PageId;
+                    """,
+                    new
+                    {
+                        State = OcrPageResultState.Succeeded,
+                        Revision = row.TreeRevisionId,
+                        Now = now,
+                        RunId = run.OcrRunId.ToString(),
+                        PageId = page.PageId.ToString()
+                    }, transaction);
             }
 
             await connection.ExecuteAsync(
@@ -636,13 +764,126 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 new
                 {
                     State = OcrRunState.Completed,
-                    Revision = revisionIds.FirstOrDefault().ToString(),
-                    Now = FormatUtc(_clock.UtcNow),
+                    Revision = requested[pages[0].PageId.ToString()].TreeRevisionId,
+                    Now = now,
                     RunId = run.OcrRunId.ToString()
-                });
+                }, transaction);
+            await transaction.CommitAsync(cancellationToken);
+
+            return await CompleteRunAsync(run.OcrRunId, version, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, pages, exception);
+        }
+    }
+
+    private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken)
+    {
+        IRealOcrAdapter? adapter = _adapterRegistry?.GetAdapter(version.EngineId);
+        if (adapter is null)
+        {
+            return Result.Success();
         }
 
-        return await GetRunAsync(run.OcrRunId, cancellationToken);
+        Result preset = await adapter.ValidatePresetAsync(version, cancellationToken);
+        if (preset.IsFailure)
+        {
+            return preset;
+        }
+
+        OcrEnvironmentCheckResult environment = await adapter.CheckEnvironmentAsync(version, cancellationToken);
+        return environment.IsReady
+            ? Result.Success()
+            : Result.Failure(AppErrorCodes.InvalidState, environment.Message);
+    }
+
+    private async Task<Result<NormalizedBBox>> ResolveBBoxAsync(PageId pageId, OcrEnginePageResult output,
+        NormalizedBBox? region, CancellationToken cancellationToken)
+    {
+        if (region is not null)
+        {
+            return Result<NormalizedBBox>.Success(region.Value);
+        }
+
+        if (output.SourceBBox is not null && _pageCoordinates is not null)
+        {
+            BBoxConversionResult converted = await _pageCoordinates.ConvertToNormalizedPageAsync(
+                pageId, output.SourceBBox, cancellationToken);
+            return converted.IsSuccess && converted.NormalizedBBox is not null
+                ? Result<NormalizedBBox>.Success(converted.NormalizedBBox.Value)
+                : Result<NormalizedBBox>.Failure(
+                    converted.ErrorCode ?? BBoxErrorCodes.TransformFailed,
+                    converted.Message ?? "OCR bbox could not be normalized to the physical page.");
+        }
+
+        if (output.SourceBBox is { CoordinateSystem: SourceBBoxCoordinateSystem.NormalizedPage } sourceBBox)
+        {
+            NormalizedBBox normalized = new(sourceBBox.X, sourceBBox.Y, sourceBBox.Width, sourceBBox.Height);
+            Result sourceValidation = normalized.Validate();
+            return sourceValidation.IsSuccess
+                ? Result<NormalizedBBox>.Success(normalized)
+                : Result<NormalizedBBox>.Failure(BBoxErrorCodes.Invalid,
+                    "OCR bbox could not be normalized to the physical page.");
+        }
+
+        NormalizedBBox bbox = output.BBox ?? new NormalizedBBox(0, 0, 1, 1);
+        Result validation = bbox.Validate();
+        return validation.IsSuccess
+            ? Result<NormalizedBBox>.Success(bbox)
+            : Result<NormalizedBBox>.Failure(BBoxErrorCodes.Invalid,
+                "OCR bbox could not be normalized to the physical page.");
+    }
+
+    private async Task<Result<OcrRun>> CompleteRunAsync(OcrRunId runId, OcrPresetVersion version,
+        CancellationToken cancellationToken)
+    {
+        OcrRun completed = (await GetRunAsync(runId, cancellationToken)).Value;
+        if (!version.ApplyOnSuccess || completed.State != OcrRunState.Completed)
+        {
+            return Result<OcrRun>.Success(completed);
+        }
+
+        Result<OcrCandidateAdoption> adoption =
+            await AdoptCandidateRunAsync(runId, cancellationToken: cancellationToken);
+        if (adoption.IsSuccess)
+        {
+            return Result<OcrRun>.Success(completed);
+        }
+
+        // OCR and staging succeeded. Adoption conflicts leave a previewable candidate for explicit resolution.
+        return Result<OcrRun>.Success(completed);
+    }
+
+    private async Task<Result<OcrRun>> FailRunAfterExceptionAsync(OcrRun run, IReadOnlyList<Page> pages,
+        Exception exception)
+    {
+        return await FailMinerURunAsync(run, pages, AppErrorCodes.InvalidState,
+            $"OCR post-run processing failed: {exception.Message}", CancellationToken.None);
+    }
+
+    private async Task<OcrCandidateAdoption?> GetExistingAdoptionAsync(
+        OcrRunId runId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        AdoptionRow? row = await connection.QuerySingleOrDefaultAsync<AdoptionRow>(
+            """
+            select adoption_id as AdoptionId, ocr_run_id as OcrRunId,
+                document_instance_id as DocumentInstanceId,
+                adopted_tree_revisions_json as AdoptedTreeRevisionsJson,
+                adopted_pages_json as AdoptedPagesJson, created_at as CreatedAt
+            from ocr_candidate_adoptions where ocr_run_id = @RunId
+            order by created_at limit 1;
+            """,
+            new { RunId = runId.ToString() });
+        return row?.ToAdoption();
     }
 
     private async Task<Result<OcrRun>> FailMinerURunAsync(
@@ -652,17 +893,33 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         string? errorMessage,
         CancellationToken cancellationToken)
     {
-        foreach (Page page in pages)
-        {
-            await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Failed, null,
-                errorCode ?? AppErrorCodes.InvalidState, errorMessage ?? "MinerU OCR failed.");
-        }
-
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
+        await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+        string now = FormatUtc(_clock.UtcNow);
+        foreach (Page page in pages)
+        {
+            await connection.ExecuteAsync(
+                """
+                update ocr_page_results set state=@State, staging_tree_revision_id=null,
+                    error_code=@ErrorCode, error_message=@ErrorMessage, updated_at=@Now
+                where ocr_run_id=@RunId and page_id=@PageId;
+                """,
+                new
+                {
+                    State = OcrPageResultState.Failed,
+                    ErrorCode = errorCode ?? AppErrorCodes.InvalidState,
+                    ErrorMessage = errorMessage ?? "MinerU OCR failed.",
+                    Now = now,
+                    RunId = run.OcrRunId.ToString(),
+                    PageId = page.PageId.ToString()
+                }, transaction);
+        }
+
         await connection.ExecuteAsync(
             "update ocr_runs set state=@State, updated_at=@Now where ocr_run_id=@RunId;",
-            new { State = OcrRunState.Failed, Now = FormatUtc(_clock.UtcNow), RunId = run.OcrRunId.ToString() });
+            new { State = OcrRunState.Failed, Now = now, RunId = run.OcrRunId.ToString() }, transaction);
+        await transaction.CommitAsync(cancellationToken);
         return await GetRunAsync(run.OcrRunId, cancellationToken);
     }
 
@@ -687,7 +944,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         CancellationToken cancellationToken)
     {
         IRealOcrAdapter? adapter = _adapterRegistry?.GetAdapter(version.EngineId);
-        if (adapter is null)
+        if (adapter is null || adapter.Kind == OcrAdapterKind.Mock)
         {
             return Result<OcrEnginePageResult>.Success(await _engine.RunPageAsync(page, version, cancellationToken));
         }
@@ -1053,6 +1310,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
 
     private sealed class MinerUSourceRow
     {
+        public string FileAssetId { get; set; } = string.Empty;
         public string SourcePath { get; set; } = string.Empty;
         public string? LibraryId { get; set; }
     }
@@ -1061,6 +1319,28 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     {
         public string TreeRevisionId { get; set; } = string.Empty;
         public string PageId { get; set; } = string.Empty;
+    }
+
+    private sealed class AdoptionRow
+    {
+        public string AdoptionId { get; set; } = string.Empty;
+        public string OcrRunId { get; set; } = string.Empty;
+        public string DocumentInstanceId { get; set; } = string.Empty;
+        public string AdoptedTreeRevisionsJson { get; set; } = "[]";
+        public string AdoptedPagesJson { get; set; } = "[]";
+        public string CreatedAt { get; set; } = string.Empty;
+
+        public OcrCandidateAdoption ToAdoption()
+        {
+            string[] revisions = JsonSerializer.Deserialize<string[]>(AdoptedTreeRevisionsJson) ?? [];
+            return new OcrCandidateAdoption(
+                OcrCandidateAdoptionId.Parse(AdoptionId),
+                Patchouli.Core.Ids.OcrRunId.Parse(OcrRunId),
+                Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
+                revisions.Select(DocumentTreeRevisionId.Parse).ToArray(),
+                AdoptedPagesJson,
+                DateTimeOffset.Parse(CreatedAt));
+        }
     }
 
     private sealed record MinerUParameters(

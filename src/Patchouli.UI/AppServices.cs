@@ -134,7 +134,9 @@ public sealed class AppServices
                 IsOcr = configuration.IsOcr,
                 EnableTable = configuration.EnableTable,
                 EnableFormula = configuration.EnableFormula
-            }));
+            }),
+            fileResolution: FileResolution);
+        LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
             ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown);
@@ -190,6 +192,7 @@ public sealed class AppServices
     public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
     public IOcrRunCoordinator Ocr { get; }
+    public ILogicalPageOcrService LogicalPageOcr { get; }
     public ISearchUnitBuilder SearchUnits { get; }
     public ISearchIndexRebuilder SearchIndex { get; }
     public ISearchService Search { get; }
@@ -322,7 +325,8 @@ public sealed class AppServices
             PageCoordinates,
             MinerUImporter,
             minerUClientFactory,
-            minerUUploadLimits: uploadLimits);
+            minerUUploadLimits: uploadLimits,
+            fileResolution: FileResolution);
     }
 
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)

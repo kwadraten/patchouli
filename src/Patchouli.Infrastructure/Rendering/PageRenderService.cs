@@ -1,5 +1,6 @@
 using Dapper;
 using Microsoft.Data.Sqlite;
+using System.Collections.Concurrent;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -18,8 +19,10 @@ public sealed class PageRenderService : IPageRenderService
     private readonly ILibraryIdentityService _library;
     private readonly IFileResolutionService _fileResolution;
     private readonly IPdfPageRenderer _renderer;
+    private readonly IPdfPagePixelBufferRenderer? _pixelRenderer;
     private readonly IClock _clock;
     private readonly string _cacheRoot;
+    private readonly ConcurrentDictionary<string, PreviewPixels> _previewPixels = new(StringComparer.OrdinalIgnoreCase);
 
     public PageRenderService(SqliteConnectionFactory connectionFactory, ILibraryIdentityService library,
         IFileResolutionService fileResolution, IPdfPageRenderer renderer, IClock clock, string cacheRoot)
@@ -28,6 +31,7 @@ public sealed class PageRenderService : IPageRenderService
         _library = library;
         _fileResolution = fileResolution;
         _renderer = renderer;
+        _pixelRenderer = renderer as IPdfPagePixelBufferRenderer;
         _clock = clock;
         _cacheRoot = Path.GetFullPath(cacheRoot);
     }
@@ -199,6 +203,93 @@ public sealed class PageRenderService : IPageRenderService
                 : null);
     }
 
+    public async Task<Result<PdfPagePixelBufferLease>> RenderPreviewAsync(PageRenderRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (_pixelRenderer is null)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                "The configured PDF renderer does not support pixel previews.");
+        }
+
+        Result<PageRenderResult> rendered = await RenderPageAsync(request with { Purpose = PageRenderPurpose.Preview },
+            cancellationToken);
+        if (rendered.IsFailure)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
+        }
+
+        if (rendered.Value.Status is not (PageRenderStatus.Rendered or PageRenderStatus.FromCache))
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                rendered.Value.Warning ?? $"Page render is not ready: {rendered.Value.Status}.");
+        }
+
+        string cachePath = rendered.Value.CacheImagePath!;
+        if (!request.ForceRerender && _previewPixels.TryGetValue(cachePath, out PreviewPixels? cached))
+        {
+            return Result<PdfPagePixelBufferLease>.Success(cached.Lease());
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        string? assetId = request.FileAssetId?.ToString() ?? await connection.ExecuteScalarAsync<string?>(
+            "select file_asset_id from document_instances where document_instance_id=@Id;",
+            new { Id = request.DocumentInstanceId.ToString() });
+        if (assetId is null)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
+                "Document instance has no source file asset.");
+        }
+
+        Result<FileResolutionResult> resolution = await _fileResolution.ResolveFileAsync(FileAssetId.Parse(assetId),
+            ResolveFilePurpose.RenderPage, cancellationToken);
+        if (resolution.IsFailure)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(resolution.ErrorCode!, resolution.ErrorMessage!);
+        }
+
+        if (resolution.Value.Status != FileAssetStatus.Available ||
+            string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath))
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
+                resolution.Value.Warning ?? "Source file is unavailable.");
+        }
+
+        PagePreviewRow? page = await connection.QuerySingleOrDefaultAsync<PagePreviewRow>(
+            "select page_index as PageIndex from pages where page_id=@Id;", new { Id = request.PageId.ToString() });
+        if (page is null)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound, "Page was not found.");
+        }
+
+        try
+        {
+            PdfPagePixelBufferOutput output = await _pixelRenderer.RenderPageToBgraBytesAsync(
+                resolution.Value.ResolvedPath, page.PageIndex, request.Dpi, cancellationToken);
+            PreviewPixels pixels = new(output);
+            _previewPixels[cachePath] = pixels;
+            return Result<PdfPagePixelBufferLease>.Success(pixels.Lease());
+        }
+        catch (PdfRendererUnavailableException ex)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed, ex.Message);
+        }
+        catch (PdfRendererTimeoutException ex)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed, ex.Message);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-preview"))
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                $"PDF preview render failed: {ex.Message}");
+        }
+    }
+
     public Task<Result> ClearRenderCacheForDocumentAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
@@ -206,6 +297,11 @@ public sealed class PageRenderService : IPageRenderService
         if (Directory.Exists(directory))
         {
             Directory.Delete(directory, true);
+        }
+
+        foreach (string key in _previewPixels.Keys.Where(path => Path.GetDirectoryName(path) == directory))
+        {
+            _previewPixels.TryRemove(key, out _);
         }
 
         return Task.FromResult(Result.Success());
@@ -280,5 +376,20 @@ public sealed class PageRenderService : IPageRenderService
         public string DocumentInstanceId { get; set; } = "";
         public int PageIndex { get; set; }
         public int Rotation { get; set; }
+    }
+
+    private sealed class PagePreviewRow
+    {
+        public int PageIndex { get; set; }
+    }
+
+    private sealed record PreviewPixels(PdfPagePixelBufferOutput Output)
+    {
+        public PdfPagePixelBufferLease Lease()
+        {
+            return new PdfPagePixelBufferLease(Output.BgraBytes, Output.WidthPixels, Output.HeightPixels,
+                Output.Stride, Output.Rotation, Output.CoordinateBasis, Output.BasisWidth, Output.BasisHeight,
+                Output.RendererBasisVersion);
+        }
     }
 }

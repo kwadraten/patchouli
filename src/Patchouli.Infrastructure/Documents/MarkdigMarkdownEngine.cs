@@ -59,23 +59,9 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
                 ? Result.Success()
                 : Invalid("Image and chart boxes require media payload."),
             _ => payload is TextBoxPayload text
-                ? ValidateTextLike(text.Markdown)
+                ? RejectRawHtml(text.Markdown)
                 : Invalid("Text-like boxes require Markdown text payload.")
         };
-    }
-
-    private Result ValidateTextLike(string markdown)
-    {
-        Result html = RejectRawHtml(markdown);
-        if (html.IsFailure)
-        {
-            return html;
-        }
-
-        MarkdownDocument document = Markdown.Parse(markdown ?? string.Empty, _validationPipeline);
-        return document.Count == 1 && document[0] is ParagraphBlock
-            ? Result.Success()
-            : Invalid("Text-like boxes must contain one paragraph and cannot create sibling blocks.");
     }
 
     private Result ValidateSingleBlock<TBlock>(string markdown, string description) where TBlock : Block
@@ -129,7 +115,34 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
             ? string.Empty
             : source.Substring(start, Math.Min(length, source.Length - start));
         string text = block is ThematicBreakBlock ? "—" : Markdown.ToPlainText(markdown, _pipeline).Trim();
-        return new MarkdownBlock(kind, text, start, length, level);
+        IReadOnlyList<MarkdownInlineModel>? inlines = block is LeafBlock { Inline: { } container }
+            ? MapInlines(container.FirstChild)
+            : null;
+        return new MarkdownBlock(kind, text, start, length, level, inlines);
+    }
+
+    private static IReadOnlyList<MarkdownInlineModel> MapInlines(Inline? first)
+    {
+        List<MarkdownInlineModel> nodes = [];
+        for (Inline? current = first; current is not null; current = current.NextSibling)
+        {
+            nodes.Add(current switch
+            {
+                LiteralInline literal => new MarkdownInlineModel("text", literal.Content.ToString()),
+                LineBreakInline => new MarkdownInlineModel("line_break", "\n"),
+                EmphasisInline { DelimiterChar: '^' } superscript => new MarkdownInlineModel(
+                    "superscript", string.Empty, MapInlines(superscript.FirstChild)),
+                EmphasisInline emphasis => new MarkdownInlineModel(
+                    emphasis.DelimiterCount >= 2 ? "strong" : "emphasis", string.Empty,
+                    MapInlines(emphasis.FirstChild)),
+                LinkInline link => new MarkdownInlineModel("link", link.Url ?? string.Empty, MapInlines(link.FirstChild)),
+                ContainerInline container => new MarkdownInlineModel("container", string.Empty,
+                    MapInlines(container.FirstChild)),
+                _ => new MarkdownInlineModel("text", string.Empty)
+            });
+        }
+
+        return nodes;
     }
 
     private static Result Invalid(string message)

@@ -62,6 +62,15 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                     failed.ErrorMessage ?? "One or more OCR pages failed.", run.Value.OcrRunId, completed, failedCount);
             }
 
+            Result<OcrCandidateAdoption> adoption = await _coordinator.AdoptCandidateRunAsync(
+                run.Value.OcrRunId, cancellationToken: cancellationToken);
+            if (adoption.IsFailure)
+            {
+                return new OcrQueueExecutionResult(false, false, adoption.ErrorCode,
+                    adoption.ErrorMessage ?? "OCR candidate adoption requires attention.",
+                    run.Value.OcrRunId, completed, failedCount);
+            }
+
             if (_searchUnits is not null && _searchIndex is not null)
             {
                 Result units =

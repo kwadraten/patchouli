@@ -5,6 +5,8 @@ namespace Patchouli.Core.Documents;
 
 public interface IDocumentTreeService
 {
+    Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default);
+
     Task<Result<DocumentTreeRevision>> CreateStagingRevisionAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
@@ -36,6 +38,10 @@ public interface IDocumentTreeService
 
     Task<Result<DocumentTreeRevision>> AdoptStagingRevisionAsync(
         DocumentTreeRevisionId stagingRevisionId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<DocumentTreeRevision>>> AdoptStagingRevisionsAsync(
+        IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
         CancellationToken cancellationToken = default);
 
     Task<Result<DocumentTreeRevision>> CommitPageEditAsync(

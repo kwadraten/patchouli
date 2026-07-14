@@ -2,6 +2,7 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Conflicts;
 
 namespace Patchouli.Infrastructure.Documents;
 
@@ -14,7 +15,10 @@ internal sealed class DocumentTreeValidator
         _markdown = markdown;
     }
 
-    public Result Validate(DocumentTreeRevision revision, IReadOnlyList<DocumentBox> boxes)
+    public Result Validate(
+        DocumentTreeRevision revision,
+        IReadOnlyList<DocumentBox> boxes,
+        bool validateCollisions = true)
     {
         if (!DocumentTreeRevisionSource.IsKnown(revision.Source) ||
             !DocumentTreeRevisionStatus.IsKnown(revision.Status))
@@ -74,7 +78,7 @@ internal sealed class DocumentTreeValidator
             return cycles;
         }
 
-        return ValidateCollisions(boxes);
+        return validateCollisions ? ValidateCollisions(boxes) : Result.Success();
     }
 
     private Result ValidateBox(DocumentBox box)
@@ -256,7 +260,9 @@ internal sealed class DocumentTreeValidator
     {
         foreach (IGrouping<DocumentBoxId?, DocumentBox> group in boxes.GroupBy(box => box.ParentBoxId))
         {
-            DocumentBox[] siblings = group.Where(box => box.BoxType != DocumentBoxType.LogicalPage).ToArray();
+            DocumentBox[] siblings = group
+                .Where(box => box.BoxType != DocumentBoxType.LogicalPage && !box.Suppressed)
+                .ToArray();
             for (int first = 0; first < siblings.Length; first++)
             for (int second = first + 1; second < siblings.Length; second++)
             {
@@ -269,8 +275,13 @@ internal sealed class DocumentTreeValidator
 
                 if (HasSignificantOverlap(left.BBox, right.BBox))
                 {
-                    return Invalid(
-                        "CF-06: ordinary sibling document boxes have significantly overlapping bbox regions.");
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "CF-06: ordinary sibling document boxes have significantly overlapping bbox regions.",
+                        [
+                            ConflictDescriptorMapper.DocumentBoxBBoxOrdinaryOverlap(
+                                left.PageId.ToString(), right.BoxId.ToString(), right.BoxType, right.BBox,
+                                left.BoxType, left.BBox)
+                        ]);
                 }
             }
         }

@@ -6,6 +6,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Documents;
 using Microsoft.Data.Sqlite;
 
 namespace Patchouli.Infrastructure.Snapshots;
@@ -162,6 +163,18 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         }
 
         SnapshotManifest? manifest = validation.Value.Manifest;
+        Result treeValidation = await ValidateStagedTreesAsync(imported.Value.StagingDatabasePath, cancellationToken);
+        if (treeValidation.IsFailure)
+        {
+            return Result<SnapshotBranchInspectionInfo>.Failure(treeValidation.ErrorCode!, treeValidation.ErrorMessage!,
+                treeValidation.Conflicts);
+        }
+
+        SnapshotCurrentPointer? current = await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(
+            Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(manifestPath)!)!, "current.json"),
+            cancellationToken);
+        bool parentMismatch = current is not null && !string.Equals(manifest.ParentSnapshotId, current.SnapshotId,
+            StringComparison.OrdinalIgnoreCase);
         bool mismatch = !string.Equals(manifest.LibraryId, local.Value.LibraryId.ToString(),
             StringComparison.OrdinalIgnoreCase);
         return Result<SnapshotBranchInspectionInfo>.Success(new SnapshotBranchInspectionInfo(
@@ -169,7 +182,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             LibraryId.Parse(manifest.LibraryId),
             manifest.SnapshotId,
             manifest.ParentSnapshotId,
-            null,
+            current?.SnapshotId,
             manifest.DeviceId,
             manifest.CreatedAt,
             manifestPath,
@@ -178,7 +191,12 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             mismatch,
             mismatch
                 ? ["Branch library differs from active runtime library; import is blocked."]
-                : imported.Value.Warnings));
+                : parentMismatch
+                    ? imported.Value.Warnings
+                        .Append(
+                            "Branch parent is older than the current remote snapshot; review freshness before import.")
+                        .ToArray()
+                    : imported.Value.Warnings));
     }
 
     public async Task<Result<IReadOnlyList<BranchItemSummary>>> ListBranchItemsAsync(
@@ -358,6 +376,18 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             string[] documentList = selectedDocuments.ToArray();
             foreach (string documentId in documentList)
             {
+                DocumentContent? sourceDocument = await source.QuerySingleOrDefaultAsync<DocumentContent>(
+                    "select document_instance_id Id, item_id ItemId, file_asset_id FileAssetId, title Title, instance_type InstanceType from document_instances where document_instance_id = @Id;",
+                    new { Id = documentId });
+                DocumentContent? targetDocument = await target.QuerySingleOrDefaultAsync<DocumentContent>(
+                    "select document_instance_id Id, item_id ItemId, file_asset_id FileAssetId, title Title, instance_type InstanceType from document_instances where document_instance_id = @Id;",
+                    new { Id = documentId });
+                if (sourceDocument is not null && targetDocument is not null && sourceDocument != targetDocument)
+                {
+                    return Result<BranchImportPlan>.Failure("id_content_collision",
+                        $"Document instance {documentId} already exists with different content. Reinspect or import it under a new identity.");
+                }
+
                 int branchPrimary = await source.ExecuteScalarAsync<int>(
                     "select is_primary from document_instances where document_instance_id = @Id;",
                     new { Id = documentId });
@@ -586,6 +616,14 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
         try
         {
+            Result treeValidation = await ValidateStagedTreesAsync(plan.SourceBranch.StagingDatabasePath,
+                cancellationToken);
+            if (treeValidation.IsFailure)
+            {
+                return Result<BranchImportResult>.Failure(treeValidation.ErrorCode!, treeValidation.ErrorMessage!,
+                    treeValidation.Conflicts);
+            }
+
             await using SqliteConnection connection = _target.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync("attach database @Path as branch;",
@@ -622,23 +660,23 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                               select 1 from items where item_id = @TargetItemId
                           ));
 
-                        insert into item_identifiers
+                         insert or ignore into item_identifiers
                         select identifier_id, @TargetItemId, scheme, value, note, created_at
                         from branch.item_identifiers
                         where item_id = @SourceItemId;
 
-                        insert into item_creators
+                         insert or ignore into item_creators
                         select creator_id, @TargetItemId, role, family, given, literal, suffix, particles,
                                sequence_index, created_at
                         from branch.item_creators
                         where item_id = @SourceItemId;
 
-                        insert into item_dates
+                         insert or ignore into item_dates
                         select date_id, @TargetItemId, role, date_parts_json, circa, season, literal, created_at
                         from branch.item_dates
                         where item_id = @SourceItemId;
 
-                        insert into item_type_inferences
+                         insert or ignore into item_type_inferences
                         select inference_id, @TargetItemId, suggested_type, confidence, source, evidence_summary,
                                created_at, accepted_at
                         from branch.item_type_inferences
@@ -678,7 +716,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                         out bool primaryOverride);
                     await connection.ExecuteAsync(
                         """
-                        insert into document_instances (
+                         insert or ignore into document_instances (
                             document_instance_id, item_id, file_asset_id, title, instance_type, is_primary,
                             status, created_at, updated_at
                         )
@@ -700,13 +738,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
                 await connection.ExecuteAsync(
                     """
-                    insert into pages select * from branch.pages where document_instance_id in @Docs;
-                    insert into document_tree_revisions
+                    insert or ignore into pages select * from branch.pages where document_instance_id in @Docs;
+                    insert or ignore into document_tree_revisions
                     select * from branch.document_tree_revisions where document_instance_id in @Docs;
-                    insert into document_boxes
+                    insert or ignore into document_boxes
                     select * from branch.document_boxes where document_instance_id in @Docs;
-                    insert into search_units select * from branch.search_units where document_instance_id in @Docs;
-                    insert into evidence_ref_records select * from branch.evidence_ref_records where document_instance_id in @Docs;
+                    insert or ignore into search_units select * from branch.search_units where document_instance_id in @Docs;
+                    insert or ignore into evidence_ref_records select * from branch.evidence_ref_records where document_instance_id in @Docs;
                     """,
                     new { Docs = documents },
                     transaction);
@@ -839,6 +877,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         }.ToString());
         connection.Open();
         return connection;
+    }
+
+    private static async Task<Result> ValidateStagedTreesAsync(string path, CancellationToken cancellationToken)
+    {
+        DocumentTreeService trees = new(new SqliteConnectionFactory(path), new Core.Time.SystemClock(),
+            new MarkdigMarkdownEngine());
+        return await trees.ValidateStoredTreesAsync(cancellationToken);
     }
 
     private static string CreateConflictId(SnapshotBranchInspectionInfo branch, string conflictCode, string objectId)
@@ -999,4 +1044,11 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         public string Title { get; set; } = "";
         public string ItemType { get; set; } = "";
     }
+
+    private sealed record DocumentContent(
+        string Id,
+        string ItemId,
+        string? FileAssetId,
+        string? Title,
+        string InstanceType);
 }

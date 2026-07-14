@@ -97,6 +97,15 @@ public sealed class MigrationRunner
             }
         }
 
+        int nonMigrationTableCount = await connection.ExecuteScalarAsync<int>(
+            "select count(1) from sqlite_master where type = 'table' and name not in ('schema_migrations');");
+        int hasSchemaMigrations = await connection.ExecuteScalarAsync<int>(
+            "select count(1) from sqlite_master where type = 'table' and name = 'schema_migrations';");
+        if (hasLibraryMetadata == 0 && hasSchemaMigrations == 0 && nonMigrationTableCount > 0)
+        {
+            throw new UnsupportedLibrarySchemaException([]);
+        }
+
         int legacyTableCount = await connection.ExecuteScalarAsync<int>(
             """
             select count(1)

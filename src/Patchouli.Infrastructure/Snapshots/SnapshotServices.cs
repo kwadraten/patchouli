@@ -6,7 +6,9 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Hashing;
+using Patchouli.Infrastructure.Migrations;
 using Microsoft.Data.Sqlite;
 
 namespace Patchouli.Infrastructure.Snapshots;
@@ -116,6 +118,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             string snapshotId = Guid.NewGuid().ToString("D");
 
             await CheckpointAsync(runtimePath);
+            await ValidateDatabaseSchemaAsync(runtimePath);
             IReadOnlyList<SnapshotShard> shards = await CreateDataShardsAsync(runtimePath, syncRoot, snapshotId,
                 NormalizeTargetShardSize(request.TargetShardSizeBytes));
             foreach (SnapshotShard shard in shards)
@@ -426,7 +429,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             await connection.ExecuteAsync("pragma foreign_keys = off;");
             foreach (string table in DataTables)
             {
-                if (includedTables is null || includedTables.Contains(table))
+                // Keep the epoch marker in every shard so each independently verified shard is self-describing.
+                if (table == "library_metadata" || includedTables is null || includedTables.Contains(table))
                 {
                     continue;
                 }
@@ -570,6 +574,17 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                string.Equals(await Blake3FileAsync(path), shard.Blake3, StringComparison.OrdinalIgnoreCase);
     }
 
+    public static async Task ValidateDatabaseSchemaAsync(string path, bool checkForeignKeys = true)
+    {
+        await using SqliteConnection connection = new(BuildConnectionString(path, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync();
+        IReadOnlyList<string> errors = await SchemaInspector.InspectAsync(connection, checkForeignKeys);
+        if (errors.Count > 0)
+        {
+            throw new InvalidDataException(string.Join(" ", errors));
+        }
+    }
+
     public static Task<string> Blake3FileAsync(string path)
     {
         return Blake3Hash.ComputeFileAsync(path);
@@ -686,6 +701,16 @@ public sealed class SnapshotImporter : ISnapshotImporter
                     {
                         errors.Add($"Shard hash mismatch: {shard.FileName}");
                     }
+
+                    try
+                    {
+                        await SnapshotPublisher.ValidateDatabaseSchemaAsync(path, false);
+                    }
+                    catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                                          "infrastructure.snapshot-services"))
+                    {
+                        errors.Add($"Shard schema invalid: {shard.FileName}: {exception.Message}");
+                    }
                 }
             }
 
@@ -796,6 +821,18 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 }
 
                 await MergeDataShardIntoStagingAsync(stagingPath, shardPath, cancellationToken);
+            }
+
+            await SnapshotPublisher.ValidateDatabaseSchemaAsync(stagingPath);
+            DocumentTreeService trees = new(new SqliteConnectionFactory(stagingPath), new SystemClock(),
+                new MarkdigMarkdownEngine());
+            Result treeValidation = await trees.ValidateStoredTreesAsync(cancellationToken);
+            if (treeValidation.IsFailure)
+            {
+                File.Delete(stagingPath);
+                return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
+                    $"Imported Document Box Tree is invalid: {treeValidation.ErrorMessage}",
+                    treeValidation.Conflicts);
             }
 
             if (manifest.SensitiveMutableShards.Count > 0)

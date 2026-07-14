@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
@@ -77,6 +78,53 @@ public sealed record PdfPageRasterOutput(
     double BasisHeight,
     string RendererBasisVersion);
 
+public sealed class PdfPagePixelBufferLease : IDisposable
+{
+    private byte[]? _bgraBytes;
+    private GCHandle _handle;
+
+    public PdfPagePixelBufferLease(byte[] bgraBytes, int widthPixels, int heightPixels, int stride, int rotation,
+        string coordinateBasis, double basisWidth, double basisHeight, string rendererBasisVersion)
+    {
+        _bgraBytes = bgraBytes ?? throw new ArgumentNullException(nameof(bgraBytes));
+        _handle = GCHandle.Alloc(bgraBytes, GCHandleType.Pinned);
+        WidthPixels = widthPixels;
+        HeightPixels = heightPixels;
+        Stride = stride;
+        Rotation = rotation;
+        CoordinateBasis = coordinateBasis;
+        BasisWidth = basisWidth;
+        BasisHeight = basisHeight;
+        RendererBasisVersion = rendererBasisVersion;
+    }
+
+    public ReadOnlyMemory<byte> BgraBytes =>
+        _bgraBytes ?? throw new ObjectDisposedException(nameof(PdfPagePixelBufferLease));
+
+    public IntPtr PixelAddress => _bgraBytes is null
+        ? throw new ObjectDisposedException(nameof(PdfPagePixelBufferLease))
+        : _handle.AddrOfPinnedObject();
+
+    public int WidthPixels { get; }
+    public int HeightPixels { get; }
+    public int Stride { get; }
+    public int Rotation { get; }
+    public string CoordinateBasis { get; }
+    public double BasisWidth { get; }
+    public double BasisHeight { get; }
+    public string RendererBasisVersion { get; }
+
+    public void Dispose()
+    {
+        if (_handle.IsAllocated)
+        {
+            _handle.Free();
+        }
+
+        _bgraBytes = null;
+    }
+}
+
 public sealed record PdfPagePixelBufferOutput(
     byte[] BgraBytes,
     int WidthPixels,
@@ -124,6 +172,9 @@ public interface IPageRenderService
         CancellationToken cancellationToken = default);
 
     Task<Result<string?>> GetCachedRenderPathAsync(PageRenderRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<PdfPagePixelBufferLease>> RenderPreviewAsync(PageRenderRequest request,
         CancellationToken cancellationToken = default);
 
     Task<Result> ClearRenderCacheForDocumentAsync(DocumentInstanceId documentInstanceId,

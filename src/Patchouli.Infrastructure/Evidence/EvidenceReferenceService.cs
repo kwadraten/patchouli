@@ -304,6 +304,12 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             bool isPurge = status == EvidenceRecordStatus.Purged;
             bool isDeletionMarker = isPurge || status == EvidenceRecordStatus.Tombstoned;
             await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
+            if (isDeletionMarker)
+            {
+                await CreateDeletionRevisionAsync(connection, tx, record.Value, isPurge,
+                    _clock.UtcNow.ToUniversalTime().ToString("O"));
+            }
+
             if (isPurge)
             {
                 await connection.ExecuteAsync(
@@ -379,6 +385,76 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             tx);
     }
 
+    private static async Task CreateDeletionRevisionAsync(SqliteConnection connection, DbTransaction transaction,
+        RecordRow record, bool purge, string now)
+    {
+        CurrentRevisionRow? current = await connection.QuerySingleOrDefaultAsync<CurrentRevisionRow>(
+            """
+            select tree_revision_id as TreeRevisionId
+            from document_tree_revisions
+            where document_instance_id = @DocumentInstanceId and page_id = @PageId
+              and status = 'committed' and is_current = 1;
+            """,
+            new { record.DocumentInstanceId, record.PageId }, transaction);
+        if (current is null)
+        {
+            return;
+        }
+
+        int targetExists = await connection.ExecuteScalarAsync<int>(
+            "select count(1) from document_boxes where tree_revision_id = @RevisionId and box_id = @BoxId;",
+            new { RevisionId = current.TreeRevisionId, record.BoxId }, transaction);
+        if (targetExists == 0)
+        {
+            return;
+        }
+
+        string revisionId = DocumentTreeRevisionId.New().ToString();
+        await connection.ExecuteAsync(
+            """
+            update document_tree_revisions set is_current = 0 where tree_revision_id = @CurrentRevisionId;
+            insert into document_tree_revisions (
+                tree_revision_id, document_instance_id, page_id, parent_tree_revision_id,
+                source, status, is_current, created_at, committed_at)
+            values (@RevisionId, @DocumentInstanceId, @PageId, @CurrentRevisionId,
+                'migration', 'committed', 1, @Now, @Now);
+            """,
+            new
+            {
+                RevisionId = revisionId,
+                record.DocumentInstanceId,
+                record.PageId,
+                CurrentRevisionId = current.TreeRevisionId,
+                Now = now
+            }, transaction);
+
+        await connection.ExecuteAsync(
+            """
+            insert into document_boxes (
+                tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
+                next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                bbox_width, bbox_height, payload_json, heading_level, code_language,
+                confidence, suppressed)
+            select @RevisionId, box_id, document_instance_id, page_id, parent_box_id,
+                case when next_sibling_box_id = @BoxId then
+                    (select next_sibling_box_id from document_boxes target
+                     where target.tree_revision_id = @CurrentRevisionId and target.box_id = @BoxId)
+                    else next_sibling_box_id end,
+                box_type, sub_type, base_type, bbox_x, bbox_y, bbox_width, bbox_height,
+                payload_json, heading_level, code_language, confidence,
+                case when box_id = @BoxId then 1 else suppressed end
+            from document_boxes
+            where tree_revision_id = @CurrentRevisionId and (@Purge = 0 or box_id <> @BoxId);
+            """,
+            new
+            {
+                RevisionId = revisionId,
+                CurrentRevisionId = current.TreeRevisionId,
+                record.BoxId,
+                Purge = purge ? 1 : 0
+            }, transaction);
+    }
+
     private static async Task MarkSearchStaleAsync(SqliteConnection connection, RecordRow record,
         string reason, CancellationToken cancellationToken)
     {
@@ -414,22 +490,26 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 final.Summary, final.Warning);
         }
 
+        UnitRow? originalUnit = await UnitAsync(connection, record.UnitId, false);
         UnitRow? unit = await CurrentUnitAsync(connection, final.Record);
         return FromRecord(EvidenceResolutionStatus.FoundCurrent, final.Record,
             unit?.ResolvedText ?? final.Record.PinnedText, unit?.ResolvedText != final.Record.PinnedText,
             unit?.TreeRevisionId != final.Record.TreeRevisionId,
-            false, Array.Empty<string>(), final.Summary, null);
+            originalUnit is not null && unit is not null && originalUnit.BBoxJson != unit.BBoxJson,
+            Array.Empty<string>(), final.Summary, null);
     }
 
     private static async Task<EvidenceResolutionResult> ResolveCompareAsync(
         SqliteConnection connection, RecordRow record)
     {
         (RecordRow Record, string? Summary, string? Warning) final = await FollowChainAsync(connection, record);
+        UnitRow? originalUnit = await UnitAsync(connection, record.UnitId, false);
         UnitRow? unit = await CurrentUnitAsync(connection, final.Record);
         string currentText = unit?.ResolvedText ?? final.Record.PinnedText;
         return FromRecord(EvidenceResolutionStatus.Compared, record, currentText, currentText != record.PinnedText,
             (unit?.TreeRevisionId ?? final.Record.TreeRevisionId) != record.TreeRevisionId,
-            false, Array.Empty<string>(),
+            originalUnit is not null && unit is not null && originalUnit.BBoxJson != unit.BBoxJson,
+            Array.Empty<string>(),
             final.Summary, final.Warning);
     }
 
@@ -472,9 +552,19 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
     private static async Task<UnitRow?> CurrentUnitAsync(SqliteConnection connection,
         RecordRow record)
     {
+        return await UnitAsync(connection, record.UnitId, true);
+    }
+
+    private static async Task<UnitRow?> UnitAsync(SqliteConnection connection, string unitId, bool currentOnly)
+    {
         return await connection.QuerySingleOrDefaultAsync<UnitRow>(
-            "select resolved_text as ResolvedText, tree_revision_id as TreeRevisionId, box_id as BoxId from search_units where unit_id = @UnitId and status = 'current';",
-            new { record.UnitId });
+            """
+            select resolved_text as ResolvedText, tree_revision_id as TreeRevisionId, box_id as BoxId,
+                bbox_json as BBoxJson
+            from search_units
+            where unit_id = @UnitId and (@CurrentOnly = 0 or status = 'current');
+            """,
+            new { UnitId = unitId, CurrentOnly = currentOnly ? 1 : 0 });
     }
 
     private static async Task<IReadOnlyList<string>> SuccessorRefsAsync(
@@ -558,6 +648,12 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         public string ResolvedText { get; set; } = "";
         public string TreeRevisionId { get; set; } = "";
         public string BoxId { get; set; } = "";
+        public string BBoxJson { get; set; } = "";
+    }
+
+    private sealed class CurrentRevisionRow
+    {
+        public string TreeRevisionId { get; set; } = "";
     }
 
     private sealed class RecordRow

@@ -15,6 +15,10 @@ public interface IOcrRunCoordinator
     Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default);
 
+    Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
+        CancellationToken cancellationToken = default);
+
     Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         PageId pageId, string imagePath, CancellationToken cancellationToken = default);
 

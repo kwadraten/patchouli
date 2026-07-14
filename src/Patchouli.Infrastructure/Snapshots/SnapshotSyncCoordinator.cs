@@ -685,6 +685,16 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         string currentManifestHash = await SnapshotPublisher.Blake3FileAsync(
             plan.BranchImportPlan.SourceBranch.ManifestPath);
         string currentRuntimeHash = await SnapshotPublisher.Blake3FileAsync(binding.RuntimeDatabasePath);
+        SnapshotCurrentPointer? current = await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(
+            Path.Combine(Path.GetFullPath(binding.SyncRoot), "current.json"), CancellationToken.None);
+        if (current is not null && !string.Equals(current.SnapshotId,
+                plan.BranchImportPlan.SourceBranch.SnapshotId, StringComparison.OrdinalIgnoreCase))
+        {
+            return Result.Failure("snapshot_plan_superseded",
+                "The remote current snapshot changed after inspection. Inspect the snapshot again before applying it.",
+                plan.BranchImportPlan.Conflicts);
+        }
+
         if (string.Equals(currentManifestHash, plan.IncomingManifestFingerprint, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(currentRuntimeHash, plan.LocalContentFingerprint, StringComparison.OrdinalIgnoreCase))
         {

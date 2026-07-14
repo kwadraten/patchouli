@@ -26,6 +26,36 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         _validator = new DocumentTreeValidator(markdownEngine);
     }
 
+    public async Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            IEnumerable<DocumentTreeRevisionRow> revisions = await connection.QueryAsync<DocumentTreeRevisionRow>(
+                SelectRevisionSql + " order by tree_revision_id;");
+            foreach (DocumentTreeRevisionRow revisionRow in revisions)
+            {
+                DocumentTreeRevision revision = revisionRow.ToRevision();
+                Result validation = _validator.Validate(
+                    revision,
+                    await GetBoxesAsync(connection, null, revision.TreeRevisionId),
+                    revision.Status != DocumentTreeRevisionStatus.Staging);
+                if (validation.IsFailure)
+                {
+                    return validation;
+                }
+            }
+
+            return Result.Success();
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-tree-service"))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, exception.Message);
+        }
+    }
+
     public async Task<Result<DocumentTreeRevision>> CreateStagingRevisionAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
@@ -196,7 +226,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     seed.Confidence,
                     seed.Suppressed);
             }).ToArray();
-            Result validation = _validator.Validate(revision, staged);
+            // Provider output remains a candidate until adoption resolves any geometry conflicts.
+            Result validation = _validator.Validate(revision, staged, false);
             if (validation.IsFailure)
             {
                 return Result<DocumentTreeRevision>.Failure(
@@ -248,48 +279,82 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentTreeRevisionId stagingRevisionId,
         CancellationToken cancellationToken = default)
     {
+        Result<IReadOnlyList<DocumentTreeRevision>> result = await AdoptStagingRevisionsAsync(
+            [stagingRevisionId], cancellationToken);
+        return result.IsSuccess
+            ? Result<DocumentTreeRevision>.Success(result.Value.Single())
+            : Result<DocumentTreeRevision>.Failure(result.ErrorCode!, result.ErrorMessage!, result.Conflicts);
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentTreeRevision>>> AdoptStagingRevisionsAsync(
+        IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
+        CancellationToken cancellationToken = default)
+    {
         return await InTransactionAsync(async (connection, transaction) =>
         {
-            DocumentTreeRevisionRow? stagingRow = await GetRevisionRowAsync(connection, transaction, stagingRevisionId);
-            if (stagingRow is null || stagingRow.Status != DocumentTreeRevisionStatus.Staging)
+            List<(DocumentTreeRevision Revision, DocumentBox[] Boxes)> staging = [];
+            HashSet<(DocumentInstanceId DocumentInstanceId, PageId PageId)> pages = [];
+            foreach (DocumentTreeRevisionId stagingRevisionId in stagingRevisionIds)
             {
-                return Result<DocumentTreeRevision>.Failure(
-                    AppErrorCodes.InvalidState,
-                    "Only an existing staging document tree revision can be adopted.");
+                DocumentTreeRevisionRow? stagingRow = await GetRevisionRowAsync(
+                    connection, transaction, stagingRevisionId);
+                if (stagingRow is null || stagingRow.Status != DocumentTreeRevisionStatus.Staging)
+                {
+                    return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
+                        AppErrorCodes.InvalidState,
+                        "Only existing staging document tree revisions can be adopted.");
+                }
+
+                DocumentTreeRevision revision = stagingRow.ToRevision();
+                if (!pages.Add((revision.DocumentInstanceId, revision.PageId)))
+                {
+                    return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
+                        AppErrorCodes.InvalidState,
+                        "A physical page may only have one staging revision in an adoption batch.");
+                }
+
+                DocumentBox[] boxes = await GetBoxesAsync(connection, transaction, stagingRevisionId);
+                Result valid = _validator.Validate(revision, boxes);
+                if (valid.IsFailure)
+                {
+                    return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
+                        valid.ErrorCode!, valid.ErrorMessage!, valid.Conflicts);
+                }
+
+                staging.Add((revision, boxes));
             }
 
-            DocumentTreeRevision staging = stagingRow.ToRevision();
-            DocumentBox[] stagingBoxes = await GetBoxesAsync(connection, transaction, stagingRevisionId);
-            Result valid = _validator.Validate(staging, stagingBoxes);
-            if (valid.IsFailure)
+            List<DocumentTreeRevision> committedRevisions = [];
+            foreach ((DocumentTreeRevision stagingRevision, DocumentBox[] stagingBoxes) in staging)
             {
-                return Result<DocumentTreeRevision>.Failure(valid.ErrorCode!, valid.ErrorMessage!, valid.Conflicts);
+                DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
+                    connection, transaction, stagingRevision.DocumentInstanceId, stagingRevision.PageId);
+                DocumentTreeRevision committed = NewRevision(
+                    stagingRevision.DocumentInstanceId,
+                    stagingRevision.PageId,
+                    current is null ? null : DocumentTreeRevisionId.Parse(current.TreeRevisionId),
+                    DocumentTreeRevisionSource.OcrAdopted,
+                    DocumentTreeRevisionStatus.Committed,
+                    true,
+                    _clock.UtcNow.ToUniversalTime());
+
+                await ClearCurrentAsync(connection, transaction, stagingRevision.DocumentInstanceId,
+                    stagingRevision.PageId);
+                await InsertRevisionAsync(connection, transaction, committed, null);
+                await ReplaceBoxesAsync(
+                    connection,
+                    transaction,
+                    committed.TreeRevisionId,
+                    stagingBoxes.Select(box => box with { TreeRevisionId = committed.TreeRevisionId }).ToArray());
+                await connection.ExecuteAsync(
+                    "update document_tree_revisions set status = 'discarded' where tree_revision_id = @RevisionId;",
+                    new { RevisionId = stagingRevision.TreeRevisionId.ToString() },
+                    transaction);
+                await MarkSearchStaleAsync(connection, transaction, committed.DocumentInstanceId, committed.PageId);
+                committedRevisions.Add(committed);
             }
 
-            DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
-                connection, transaction, staging.DocumentInstanceId, staging.PageId);
-            DocumentTreeRevision committed = NewRevision(
-                staging.DocumentInstanceId,
-                staging.PageId,
-                current is null ? null : DocumentTreeRevisionId.Parse(current.TreeRevisionId),
-                DocumentTreeRevisionSource.OcrAdopted,
-                DocumentTreeRevisionStatus.Committed,
-                true,
-                _clock.UtcNow.ToUniversalTime());
-
-            await ClearCurrentAsync(connection, transaction, staging.DocumentInstanceId, staging.PageId);
-            await InsertRevisionAsync(connection, transaction, committed, null);
-            await ReplaceBoxesAsync(
-                connection,
-                transaction,
-                committed.TreeRevisionId,
-                stagingBoxes.Select(box => box with { TreeRevisionId = committed.TreeRevisionId }).ToArray());
-            await connection.ExecuteAsync(
-                "update document_tree_revisions set status = 'discarded' where tree_revision_id = @RevisionId;",
-                new { RevisionId = stagingRevisionId.ToString() },
-                transaction);
-            await MarkSearchStaleAsync(connection, transaction, committed.DocumentInstanceId, committed.PageId);
-            return Result<DocumentTreeRevision>.Success(committed);
+            return Result<IReadOnlyList<DocumentTreeRevision>>.Success(committedRevisions);
         }, cancellationToken);
     }
 
@@ -541,6 +606,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 return Mutation<IReadOnlyList<DocumentBox>>.Failure("Only an existing leaf box can be split.");
             }
 
+            if (!HasPayloadContent(command.FirstPayload) || !HasPayloadContent(command.SecondPayload))
+            {
+                return Mutation<IReadOnlyList<DocumentBox>>.Failure(
+                    "Both split leaves must provide non-empty content.");
+            }
+
             DocumentBox original = boxes[index];
             DocumentBox first = original with
             {
@@ -575,6 +646,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             if (command.BoxIds.Count < 2 || command.BoxIds.Distinct().Count() != command.BoxIds.Count)
             {
                 return Mutation<DocumentBox>.Failure("Merge requires at least two distinct leaf boxes.");
+            }
+
+            if (!HasPayloadContent(command.Payload))
+            {
+                return Mutation<DocumentBox>.Failure("A merged leaf must provide non-empty content.");
             }
 
             DocumentBox[] selected = command.BoxIds
@@ -619,6 +695,21 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             boxes.Add(merged);
             return Mutation<DocumentBox>.Success(merged);
         }, cancellationToken);
+    }
+
+    private static bool HasPayloadContent(DocumentBoxPayload payload)
+    {
+        return payload switch
+        {
+            TextBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
+            EquationBoxPayload value => !string.IsNullOrWhiteSpace(value.Latex),
+            ListBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
+            TableBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
+            CodeBoxPayload value => !string.IsNullOrWhiteSpace(value.Code),
+            MediaBoxPayload value => !string.IsNullOrWhiteSpace(value.AssetId) ||
+                                      !string.IsNullOrWhiteSpace(value.Description),
+            _ => false
+        };
     }
 
     public async Task<Result> SetSuppressedAsync(

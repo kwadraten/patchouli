@@ -33,7 +33,7 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         List<PendingMap> maps = new();
         StringBuilder output = new();
 
-        DocumentBox[] roots = Order(boxes, null).ToArray();
+        DocumentBox[] roots = DocumentBoxProjection.Siblings(boxes, null).ToArray();
         bool logicalMode = roots.All(box => box.BoxType == DocumentBoxType.LogicalPage) && roots.Length > 0;
         if (logicalMode)
         {
@@ -44,7 +44,7 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
                     AppendSeparator(output, "---");
                 }
 
-                foreach (DocumentBox child in Order(boxes, roots[index].BoxId))
+                foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, roots[index].BoxId))
                 {
                     AppendBox(output, maps, diagnostics, child, includeSuppressed);
                 }
@@ -73,30 +73,7 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
                 Math.Max(0, firstNode),
                 nodeCount);
         }).ToArray();
-        return Result<CompiledMarkdown>.Success(new CompiledMarkdown(markdown, sourceMap, diagnostics));
-    }
-
-    private static IEnumerable<DocumentBox> Order(IReadOnlyList<DocumentBox> boxes, DocumentBoxId? parentId)
-    {
-        DocumentBox[] siblings = boxes.Where(box => box.ParentBoxId == parentId).ToArray();
-        if (siblings.Length == 0)
-        {
-            yield break;
-        }
-
-        HashSet<DocumentBoxId> referenced = siblings
-            .Where(box => box.NextSiblingBoxId is not null)
-            .Select(box => box.NextSiblingBoxId!.Value)
-            .ToHashSet();
-        DocumentBox? current = siblings.SingleOrDefault(box => !referenced.Contains(box.BoxId));
-        HashSet<DocumentBoxId> visited = [];
-        while (current is not null && visited.Add(current.BoxId))
-        {
-            yield return current;
-            current = current.NextSiblingBoxId is null
-                ? null
-                : siblings.SingleOrDefault(box => box.BoxId == current.NextSiblingBoxId.Value);
-        }
+        return Result<CompiledMarkdown>.Success(new CompiledMarkdown(markdown, sourceMap, diagnostics, document));
     }
 
     private static void AppendBox(
