@@ -19,13 +19,10 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 case "$runtime" in
-  osx-arm64) rust_target="aarch64-apple-darwin"; pdfium_arch="arm64" ;;
-  osx-x64) rust_target="x86_64-apple-darwin"; pdfium_arch="x86_64" ;;
+  osx-arm64) pdfium_arch="arm64" ;;
+  osx-x64) pdfium_arch="x86_64" ;;
   *) echo "Unsupported macOS runtime: $runtime" >&2; exit 2 ;;
 esac
-
-rustup target add "$rust_target"
-cargo build --release --locked --target "$rust_target" --manifest-path "$root/tools/patchouli-hayagriva/Cargo.toml"
 
 rm -rf "$publish_dir" "$app_dir"
 mkdir -p "$publish_dir" "$macos_dir" "$resources_dir" "$dmg_dir"
@@ -40,8 +37,7 @@ dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
   -o "$publish_dir"
 
 cp -R "$publish_dir/." "$macos_dir/"
-cp "$root/tools/patchouli-hayagriva/target/$rust_target/release/patchouli-hayagriva" "$macos_dir/patchouli-hayagriva"
-chmod +x "$macos_dir/Patchouli.UI" "$macos_dir/patchouli-hayagriva"
+chmod +x "$macos_dir/Patchouli.UI"
 
 if [[ ! -f "$macos_dir/appsettings.json" ]]; then
   echo "Published appsettings.json was not found in Contents/MacOS." >&2

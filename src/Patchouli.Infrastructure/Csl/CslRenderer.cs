@@ -10,13 +10,13 @@ public sealed class CslRenderer : ICslRenderer
     private readonly IItemService _itemService;
     private readonly ICslStyleStore _styleStore;
     private readonly ICslItemMapper _itemMapper;
-    private readonly HayagrivaCli _hayagriva;
+    private readonly FsharpCiteprocProcessor _citeproc;
 
     public CslRenderer(
         IItemService itemService,
         ICslStyleStore styleStore,
         ICslItemMapper itemMapper)
-        : this(itemService, styleStore, itemMapper, new HayagrivaCli())
+        : this(itemService, styleStore, itemMapper, new FsharpCiteprocProcessor())
     {
     }
 
@@ -24,12 +24,12 @@ public sealed class CslRenderer : ICslRenderer
         IItemService itemService,
         ICslStyleStore styleStore,
         ICslItemMapper itemMapper,
-        HayagrivaCli hayagriva)
+        FsharpCiteprocProcessor citeproc)
     {
         _itemService = itemService;
         _styleStore = styleStore;
         _itemMapper = itemMapper;
-        _hayagriva = hayagriva;
+        _citeproc = citeproc;
     }
 
     public async Task<Result<CslRenderResult>> RenderAsync(CslRenderRequest request,
@@ -75,11 +75,11 @@ public sealed class CslRenderer : ICslRenderer
                 return Result<CslRenderResult>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
             }
 
-            mappedItems.Add(HayagrivaCslJsonAdapter.ToItem(mapped.Value, warnings));
+            mappedItems.Add(FsharpCiteprocJsonAdapter.ToItem(mapped.Value, warnings));
         }
 
-        Result<HayagrivaRenderResponse> rendered = await _hayagriva.RenderAsync(
-            new HayagrivaRenderRequest(style.Value.StyleId, styleContent.Value, locale.Value, mappedItems),
+        Result<FsharpCiteprocRenderResponse> rendered = _citeproc.Render(
+            new FsharpCiteprocRenderRequest(style.Value.StyleId, styleContent.Value, locale.Value, mappedItems),
             cancellationToken);
         if (rendered.IsFailure)
         {

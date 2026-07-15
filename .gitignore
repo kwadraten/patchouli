@@ -9,6 +9,6 @@
 *.db
 .env
 .tmp/
-tools/patchouli-hayagriva/target/
+tools/**/target/
 artifacts/
 artifacts/

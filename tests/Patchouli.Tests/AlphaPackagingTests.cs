@@ -104,6 +104,32 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void Csl_runtime_uses_managed_fsharp_citeproc_and_keeps_rust_tool_conventions()
+    {
+        string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
+        string infrastructure = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.Infrastructure", "Patchouli.Infrastructure.csproj"));
+        string windowsPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
+        string macosPackage = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
+        string rustTools = File.ReadAllText(TestPaths.FromRepositoryRoot("tools", "README.md"));
+
+        packages.Should().Contain("Fsharp.Citeproc");
+        infrastructure.Should().Contain("Fsharp.Citeproc");
+        windowsPackage.Should().NotContain("patchouli-hayagriva");
+        macosPackage.Should().NotContain("patchouli-hayagriva");
+        rustTools.Should().Contain("typst/biblatex").And.Contain("tools/**/target/");
+    }
+
+    [Fact]
+    public void About_lists_fsharp_citeproc_instead_of_hayagriva()
+    {
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard()));
+
+        about.ThirdPartyLibraries.Select(library => library.Name).Should()
+            .Contain("Fsharp.Citeproc").And.NotContain("Hayagriva");
+    }
+
+    [Fact]
     public void Macos_plist_describes_supported_user_selected_locations()
     {
         string plist = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "macos", "Info.plist.template"));

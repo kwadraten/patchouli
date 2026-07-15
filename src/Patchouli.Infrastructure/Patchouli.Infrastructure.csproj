@@ -9,6 +9,7 @@
   <ItemGroup>
     <PackageReference Include="Blake3" />
     <PackageReference Include="Dapper" />
+    <PackageReference Include="Fsharp.Citeproc" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
     <PackageReference Include="Markdig" />
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">

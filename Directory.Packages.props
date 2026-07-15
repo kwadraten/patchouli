@@ -9,6 +9,7 @@
     <PackageVersion Include="Avalonia.Desktop" Version="12.0.5" />
     <PackageVersion Include="Dapper" Version="2.1.66" />
     <PackageVersion Include="FluentAssertions" Version="8.8.0" />
+    <PackageVersion Include="Fsharp.Citeproc" Version="1.0.0" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="12.0.5" />
     <PackageVersion Include="Avalonia.Controls.DataGrid" Version="12.0.1" />
     <PackageVersion Include="Blake3" Version="2.2.1" />

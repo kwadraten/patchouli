@@ -1,10 +1,9 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 using Patchouli.Core.Csl;
 
 namespace Patchouli.Infrastructure.Csl;
 
-internal static partial class HayagrivaCslJsonAdapter
+internal static class FsharpCiteprocJsonAdapter
 {
     public static Dictionary<string, object?> ToItem(CslMappedItem item, ICollection<string> warnings)
     {
@@ -17,7 +16,7 @@ internal static partial class HayagrivaCslJsonAdapter
                 continue;
             }
 
-            if (TryNormalizeValue(pair.Key, pair.Value, warnings, out object? normalized))
+            if (TryNormalizeValue(pair.Value, warnings, out object? normalized))
             {
                 result[pair.Key] = normalized;
             }
@@ -53,7 +52,7 @@ internal static partial class HayagrivaCslJsonAdapter
                 continue;
             }
 
-            if (TryNormalizeValue(pair.Key, pair.Value, warnings, out object? normalized))
+            if (TryNormalizeValue(pair.Value, warnings, out object? normalized))
             {
                 target[pair.Key] = normalized;
             }
@@ -61,7 +60,6 @@ internal static partial class HayagrivaCslJsonAdapter
     }
 
     private static bool TryNormalizeValue(
-        string variable,
         object? value,
         ICollection<string> warnings,
         out object? normalized)
@@ -84,10 +82,10 @@ internal static partial class HayagrivaCslJsonAdapter
                 normalized = Convert.ToString(value, CultureInfo.InvariantCulture);
                 return normalized is not null;
             case IReadOnlyDictionary<string, object?> dictionary:
-                return TryNormalizeDictionary(variable, dictionary, warnings, out normalized);
+                return TryNormalizeDictionary(dictionary, out normalized);
             case IDictionary<string, object?> mutableDictionary:
-                return TryNormalizeDictionary(variable,
-                    new Dictionary<string, object?>(mutableDictionary, StringComparer.Ordinal), warnings,
+                return TryNormalizeDictionary(
+                    new Dictionary<string, object?>(mutableDictionary, StringComparer.Ordinal),
                     out normalized);
             case IEnumerable<object?> values when value is not string:
                 return TryNormalizeSequence(values, warnings, out normalized);
@@ -100,12 +98,10 @@ internal static partial class HayagrivaCslJsonAdapter
     }
 
     private static bool TryNormalizeDictionary(
-        string variable,
         IReadOnlyDictionary<string, object?> dictionary,
-        ICollection<string> warnings,
         out object? normalized)
     {
-        normalized = NormalizeDate(dictionary, variable, warnings);
+        normalized = NormalizeDate(dictionary);
         return normalized is not null;
     }
 
@@ -183,10 +179,7 @@ internal static partial class HayagrivaCslJsonAdapter
         return names;
     }
 
-    private static Dictionary<string, object?>? NormalizeDate(
-        IReadOnlyDictionary<string, object?> value,
-        string variable,
-        ICollection<string> warnings)
+    private static Dictionary<string, object?>? NormalizeDate(IReadOnlyDictionary<string, object?> value)
     {
         if (TryReadDateParts(value, out List<List<int>> dateParts))
         {
@@ -210,26 +203,17 @@ internal static partial class HayagrivaCslJsonAdapter
             return null;
         }
 
-        string raw = literal.Trim();
-        if (TryReadBoolean(value, "circa") && !raw.EndsWith("~", StringComparison.Ordinal))
+        Dictionary<string, object?> literalDate = new(StringComparer.Ordinal)
         {
-            raw += "~";
-        }
-
-        if (!SupportedRawDateRegex().IsMatch(raw))
-        {
-            warnings.Add(
-                $"CSL date variable '{variable}' uses a literal-only value that hayagriva cannot parse, so it was skipped.");
-            return null;
-        }
-
-        Dictionary<string, object?> rawDate = new(StringComparer.Ordinal)
-        {
-            ["raw"] = raw,
             ["literal"] = literal.Trim()
         };
-        AddIfNotBlank(rawDate, "season", ReadString(value, "season"));
-        return rawDate;
+        AddIfNotBlank(literalDate, "season", ReadString(value, "season"));
+        if (TryReadBoolean(value, "circa"))
+        {
+            literalDate["circa"] = true;
+        }
+
+        return literalDate;
     }
 
     private static bool TryReadDateParts(
@@ -305,7 +289,4 @@ internal static partial class HayagrivaCslJsonAdapter
             target[key] = value.Trim();
         }
     }
-
-    [GeneratedRegex(@"^\d{4}(-\d{2}){0,2}([/~]\d{4}(-\d{2}){0,2})?~?$", RegexOptions.Compiled)]
-    private static partial Regex SupportedRawDateRegex();
 }

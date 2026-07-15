@@ -67,7 +67,7 @@ dotnet build Patchouli.sln --no-restore
 dotnet run --project src/Patchouli.UI/Patchouli.UI.csproj
 ```
 
-`tools/patchouli-hayagriva` 是由应用调用的 Rust 辅助工具；修改它后，在该目录运行 `cargo build --release`。
+CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供，不需要额外的本机 sidecar。仓库仍保留 Rust/Cargo 工具链约定，用于后续基于 `typst/biblatex` 的 BibLaTeX 到 CSL 转换器；Rust 工具统一放在 `tools/<tool-name>` 下，并在各自目录运行 `cargo build --release`。
 
 ### 运行单元测试
 

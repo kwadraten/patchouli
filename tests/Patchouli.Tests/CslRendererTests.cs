@@ -54,7 +54,10 @@ public sealed class CslRendererTests
     public async Task Render_without_explicit_locale_uses_saved_settings_locale()
     {
         await using TestContext context = await CreateContextAsync();
-        await context.Store.SaveSettingsAsync("apa", "zh-CN");
+        await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("locale-probe", "Locale Probe", "https://example.test/locale-probe.csl", "test"),
+            LocaleProbeStyleXml());
+        await context.Store.SaveSettingsAsync("locale-probe", "zh-CN");
         Result<ItemMetadata> item = await context.Items.CreateItemAsync(
             new CreateItemRequest(
                 "book",
@@ -62,10 +65,11 @@ public sealed class CslRendererTests
                 Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, Literal: "Anonymous")]));
 
         Result<CslRenderResult> rendered =
-            await context.Renderer.RenderAsync(new CslRenderRequest([item.Value.ItemId], "apa"));
+            await context.Renderer.RenderAsync(new CslRenderRequest([item.Value.ItemId]));
 
         rendered.IsSuccess.Should().BeTrue();
         rendered.Value.Locale.Should().Be("zh-CN");
+        rendered.Value.RenderedText.Should().Contain("和");
     }
 
     [Fact]
@@ -79,6 +83,23 @@ public sealed class CslRendererTests
 
         rendered.IsFailure.Should().BeTrue();
         rendered.ErrorCode.Should().Be("general_type_not_renderable");
+    }
+
+    [Fact]
+    public async Task Render_invalid_style_returns_processor_diagnostics()
+    {
+        await using TestContext context = await CreateContextAsync();
+        await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("broken", "Broken", "https://example.test/broken.csl", "test"),
+            "<style>");
+        Result<ItemMetadata> item = await context.Items.CreateItemAsync("book", "Broken Style Item");
+
+        Result<CslRenderResult> rendered =
+            await context.Renderer.RenderAsync(new CslRenderRequest([item.Value.ItemId], "broken"));
+
+        rendered.IsFailure.Should().BeTrue();
+        rendered.ErrorCode.Should().Be("csl_render_failed");
+        rendered.ErrorMessage.Should().Contain("invalid-xml");
     }
 
     private static async Task<TestContext> CreateContextAsync()
@@ -127,6 +148,25 @@ public sealed class CslRendererTests
                   </bibliography>
                 </style>
                 """;
+    }
+
+    private static string LocaleProbeStyleXml()
+    {
+        return """
+               <?xml version="1.0" encoding="utf-8"?>
+               <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0" default-locale="en-US">
+                 <info>
+                   <title>Locale Probe</title>
+                   <id>https://example.test/styles/locale-probe</id>
+                 </info>
+                 <citation>
+                   <layout><text variable="title"/></layout>
+                 </citation>
+                 <bibliography>
+                   <layout><text term="and"/></layout>
+                 </bibliography>
+               </style>
+               """;
     }
 
     private sealed class TestContext : IAsyncDisposable
