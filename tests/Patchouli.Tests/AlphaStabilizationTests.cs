@@ -4,8 +4,26 @@ using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
 
-public sealed class AlphaStabilizationTests
+public sealed class AlphaStabilizationTests : IDisposable
 {
+    private readonly TemporaryAppSettingsFile _settings = new();
+
+    public void Dispose()
+    {
+        _settings.Dispose();
+    }
+
+    private MainWindowViewModel CreateMainWindow(IClipboardService clipboard, IAppLogger logger)
+    {
+        return new MainWindowViewModel(clipboard, logger, settingsPath: _settings.Path);
+    }
+
+    private static MainWindowViewModel WithRuntimeDatabasePath(MainWindowViewModel viewModel, string path)
+    {
+        viewModel.RuntimeDatabasePath = path;
+        return viewModel;
+    }
+
     [Theory]
     [InlineData("api_key=alpha-secret")]
     [InlineData("token: alpha-token")]
@@ -24,7 +42,7 @@ public sealed class AlphaStabilizationTests
         CapturingLogger logger = new();
         try
         {
-            MainWindowViewModel vm = new(new NoopClipboard(), logger) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new NoopClipboard(), logger), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             vm.Library.DisplayName = "Logged library";
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -48,7 +66,8 @@ public sealed class AlphaStabilizationTests
         string database = Path.Combine(Path.GetTempPath(), $"patchouli-log-fail-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new(new NoopClipboard(), new ThrowingLogger()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(
+                CreateMainWindow(new NoopClipboard(), new ThrowingLogger()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.Library.Details.Should().NotContain("ERROR");
@@ -68,7 +87,8 @@ public sealed class AlphaStabilizationTests
         string database = Path.Combine(Path.GetTempPath(), $"patchouli-validation-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new(new NoopClipboard(), new CapturingLogger()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(
+                CreateMainWindow(new NoopClipboard(), new CapturingLogger()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             vm.Library.DisplayName = " ";
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -89,7 +109,8 @@ public sealed class AlphaStabilizationTests
         string database = Path.Combine(Path.GetTempPath(), $"patchouli-missing-library-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new(new NoopClipboard(), new CapturingLogger()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(
+                CreateMainWindow(new NoopClipboard(), new CapturingLogger()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             vm.Bibliography.Title = "No library yet";
             await vm.Bibliography.CreateItemCommand.ExecuteAsync();

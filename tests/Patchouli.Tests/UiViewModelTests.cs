@@ -34,12 +34,32 @@ using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
 
-public sealed class UiViewModelTests
+public sealed class UiViewModelTests : IDisposable
 {
+    private readonly TemporaryAppSettingsFile _settings = new();
+
+    public void Dispose()
+    {
+        _settings.Dispose();
+    }
+
+    private MainWindowViewModel CreateMainWindow(IClipboardService? clipboard = null, IAppLogger? logger = null,
+        bool autoStartMcpServer = false, int mcpPort = 4536)
+    {
+        return new MainWindowViewModel(clipboard, logger, autoStartMcpServer: autoStartMcpServer, mcpPort: mcpPort,
+            settingsPath: _settings.Path);
+    }
+
+    private static MainWindowViewModel WithRuntimeDatabasePath(MainWindowViewModel viewModel, string path)
+    {
+        viewModel.RuntimeDatabasePath = path;
+        return viewModel;
+    }
+
     [Fact]
     public void Settings_page_uses_five_editable_groups_and_keeps_csl_about_outside()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
             "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源");
         vm.Settings.Categories.Select(category => category.Section is { SupportsEditing: true }).Should()
@@ -49,7 +69,7 @@ public sealed class UiViewModelTests
     [Fact]
     public void Sync_settings_expose_a_persisted_device_identity_and_name()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
         vm.Settings.Categories.Single(category => category.Title == "同步与快照").Section
             .Should().BeOfType<SyncSettingsViewModel>();
@@ -113,7 +133,8 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            vm.SettingsFilePath.Should().Be(_settings.Path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             vm.Library.DisplayName = "UI Library";
             await vm.Library.CreateCommand.ExecuteAsync();
@@ -151,7 +172,7 @@ public sealed class UiViewModelTests
                     """);
             }
 
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
 
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
@@ -176,7 +197,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.Bibliography.Title = "UI Item";
@@ -198,7 +219,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.FileDocument.FilePath = Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}.pdf");
@@ -218,7 +239,7 @@ public sealed class UiViewModelTests
     public async Task CopyEvidenceMarkdown_writes_pinned_markdown_to_clipboard()
     {
         FakeClipboard clipboard = new();
-        MainWindowViewModel vm = new(clipboard);
+        MainWindowViewModel vm = CreateMainWindow(clipboard);
         vm.SearchEvidence.Markdown = "Pinned source text";
         await vm.SearchEvidence.CopyMarkdownCommand.ExecuteAsync();
         clipboard.Text.Should().Be("Pinned source text");
@@ -228,7 +249,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task CopyEvidenceMarkdown_without_markdown_returns_validation_error()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         await vm.SearchEvidence.CopyMarkdownCommand.ExecuteAsync();
         vm.SearchEvidence.Output.Should().Contain("validation_failed");
     }
@@ -237,7 +258,7 @@ public sealed class UiViewModelTests
     public async Task CopyEvidenceRef_writes_ref_to_clipboard()
     {
         FakeClipboard clipboard = new();
-        MainWindowViewModel vm = new(clipboard);
+        MainWindowViewModel vm = CreateMainWindow(clipboard);
 
         await vm.SearchEvidence.CopyEvidenceRefAsync("evref:v1:test");
 
@@ -253,7 +274,7 @@ public sealed class UiViewModelTests
         FakeClipboard clipboard = new();
         try
         {
-            MainWindowViewModel vm = new(clipboard) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(clipboard), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -295,7 +316,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task McpPreviewViewModel_SafetyCheck_flags_specific_local_path()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.McpPreview.Output = "{\"bad\":\"/tmp/private.sqlite\"}";
         vm.McpPreview.SpecificPath = "/tmp/private.sqlite";
         await vm.McpPreview.SafetyCommand.ExecuteAsync();
@@ -305,7 +326,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task McpPreviewViewModel_SafetyCheck_passes_clean_output()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.McpPreview.Output = "{\"title\":\"A historical source\"}";
         await vm.McpPreview.SafetyCommand.ExecuteAsync();
         vm.McpPreview.Safety.Should().Be("No obvious local path or secret exposure detected.");
@@ -630,7 +651,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Library_sidebars_reopen_after_switching_tabs()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         List<string?> shellChanges = new();
         vm.Shell.PropertyChanged += (_, args) => shellChanges.Add(args.PropertyName);
 
@@ -703,7 +724,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -738,7 +759,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = database };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -843,7 +864,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task ExportEvidenceMarkdownToFile_without_evidence_ref_reports_validation_error()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
         await vm.ExportEvidenceMarkdownToFileAsync("",
             Path.Combine(Path.GetTempPath(), $"evidence-{Guid.NewGuid():N}.md"));
@@ -857,8 +878,8 @@ public sealed class UiViewModelTests
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-{Guid.NewGuid():N}.sqlite");
         int port = GetFreeTcpPort();
-        MainWindowViewModel vm = new(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port)
-            { RuntimeDatabasePath = path };
+        MainWindowViewModel vm = WithRuntimeDatabasePath(
+            CreateMainWindow(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port), path);
         try
         {
             AppServices services = await vm.ServicesAsync();
@@ -891,7 +912,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
@@ -917,7 +938,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
@@ -947,7 +968,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OcrQueue.StartCommand.ExecuteAsync();
@@ -977,7 +998,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1029,7 +1050,7 @@ public sealed class UiViewModelTests
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
                 AppServices services = await vm.ServicesAsync();
@@ -1068,10 +1089,10 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task SearchProfileViewModel_creates_rule_and_previews_plan()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"ui-profile-{Guid.NewGuid():N}.sqlite");
+        string path = _settings.CreateDatabasePath("ui-profile");
         try
         {
-            MainWindowViewModel vm = new() { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.SearchProfiles.Name = "UI variants";
@@ -1100,7 +1121,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1353,7 +1374,7 @@ public sealed class UiViewModelTests
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
@@ -1518,7 +1539,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1566,7 +1587,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-creator-remove-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1674,7 +1695,7 @@ public sealed class UiViewModelTests
         string path = Path.Combine(Path.GetTempPath(), $"ui-first-run-{Guid.NewGuid():N}.sqlite");
         try
         {
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.ShowInlineFirstRunAsync();
 
             vm.IsFirstRunVisible.Should().BeTrue();
@@ -1697,7 +1718,7 @@ public sealed class UiViewModelTests
     [Fact]
     public void Reader_mode_hides_library_sidebars()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
         vm.Shell.IsReadingMode = true;
         vm.RaiseShellSelectionChanged();
@@ -1710,7 +1731,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Workspace_singleton_tabs_reuse_existing_instances()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
         await vm.OpenSettingsAsync("mineru");
         await vm.OpenSettingsAsync("mineru");
@@ -1726,7 +1747,7 @@ public sealed class UiViewModelTests
     [Fact]
     public async Task Workspace_closing_active_tab_falls_back_to_library_and_keeps_library_open()
     {
-        MainWindowViewModel vm = new(new FakeClipboard());
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
         await vm.OpenAboutAsync();
         vm.IsLibraryTabActive.Should().BeFalse();
@@ -1751,7 +1772,7 @@ public sealed class UiViewModelTests
         {
             File.Copy(TestFixtures.RealThreePagePdf, firstPdf);
             File.Copy(TestFixtures.RealThreePagePdf, secondPdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1806,7 +1827,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1844,7 +1865,7 @@ public sealed class UiViewModelTests
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1902,7 +1923,7 @@ public sealed class UiViewModelTests
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                MainWindowViewModel vm = new(new FakeClipboard()) { RuntimeDatabasePath = path };
+                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
                 AppServices services = await vm.ServicesAsync();

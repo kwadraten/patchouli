@@ -78,7 +78,8 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void UI_version_info_viewmodel_exposes_version_schema_db_path()
     {
-        MainWindowViewModel vm = new(new TestClipboard());
+        using TemporaryAppSettingsFile settings = new();
+        MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
         vm.VersionInfo.Should().Contain("0.2.1").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
@@ -123,7 +124,8 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void About_lists_fsharp_citeproc_instead_of_hayagriva()
     {
-        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard()));
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
 
         about.ThirdPartyLibraries.Select(library => library.Name).Should()
             .Contain("Fsharp.Citeproc").And.NotContain("Hayagriva");
