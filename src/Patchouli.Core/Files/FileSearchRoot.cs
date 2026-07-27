@@ -33,6 +33,12 @@ public static class FileSearchRootAuthorizationKinds
 {
     public const string None = "none";
     public const string SecurityScopedBookmark = "security_scoped_bookmark";
+
+    /// <summary>
+    /// The path was obtained through the platform folder picker on macOS. The app is not sandboxed,
+    /// so no security-scoped bookmark payload is stored; this kind only records provenance.
+    /// </summary>
+    public const string TccPicker = "tcc_picker";
 }
 
 public static class FileSearchRootStatuses

@@ -1,4 +1,4 @@
-﻿using FluentAssertions;
+using FluentAssertions;
 using Patchouli.Core;
 using Patchouli.Ocr;
 using Patchouli.UI;
@@ -12,7 +12,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.Net");
-        BuildInfo.Version.Should().Be("0.2.1");
+        BuildInfo.Version.Should().Be("0.2.2");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -78,8 +78,9 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void UI_version_info_viewmodel_exposes_version_schema_db_path()
     {
-        MainWindowViewModel vm = new(new TestClipboard());
-        vm.VersionInfo.Should().Contain("0.2.1").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        using TemporaryAppSettingsFile settings = new();
+        MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
+        vm.VersionInfo.Should().Contain("0.2.2").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -92,15 +93,25 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.2.1");
+        BuildInfo.Version.Should().Be("0.2.2");
     }
 
     [Fact]
-    public void Macos_package_relocates_defaults_validates_plist_and_verifies_signature()
+    public void Macos_package_relocates_defaults_validates_plist_and_skips_signing()
     {
         string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
         script.Should().Contain("mv \"$macos_dir/appsettings.json\" \"$resources_dir/appsettings.json\"").And
-            .Contain("plutil -lint").And.Contain("codesign --verify --deep --strict --verbose=2");
+            .Contain("plutil -lint").And.NotContain("codesign").And.NotContain("entitlements");
+    }
+
+    [Fact]
+    public void Release_workflow_packages_windows_and_macos_from_tags()
+    {
+        string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "release.yml"));
+
+        workflow.Should().Contain("tags:").And.Contain("scripts/package-windows.ps1").And
+            .Contain("scripts/package-macos.sh osx-arm64").And.Contain("gh release create").And
+            .Contain("contents: write");
     }
 
     [Fact]
@@ -123,7 +134,8 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void About_lists_fsharp_citeproc_instead_of_hayagriva()
     {
-        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard()));
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
 
         about.ThirdPartyLibraries.Select(library => library.Name).Should()
             .Contain("Fsharp.Citeproc").And.NotContain("Hayagriva");
@@ -142,6 +154,25 @@ public sealed class AlphaPackagingTests
         {
             plist.Should().Contain($"<key>{key}</key>");
         }
+    }
+
+    [Fact]
+    public void Macos_package_builds_and_bundles_filesystem_helper()
+    {
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
+        string project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure",
+            "Patchouli.Infrastructure.csproj"));
+        script.Should().Contain("patchouli-macos-fs").And.Contain("libpatchouli-macos-fs.dylib");
+        script.Should().Contain("osx-arm64").And.Contain("fs_helper_arch=\"arm64\"").And
+            .Contain("osx-x64").And.Contain("fs_helper_arch=\"x86_64\"");
+        project.Should().Contain("'$(RuntimeIdentifier)' == 'osx-arm64'").And.Contain("arm64").And
+            .Contain("'$(RuntimeIdentifier)' == 'osx-x64'").And.Contain("x86_64").And
+            .Contain("-arch $(MacOSFsHelperArchitecture)");
+
+        string helperSource = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.m");
+        string helperHeader = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.h");
+        File.Exists(helperSource).Should().BeTrue();
+        File.Exists(helperHeader).Should().BeTrue();
     }
 
     [Fact]

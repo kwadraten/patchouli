@@ -8,6 +8,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Hashing;
 using Patchouli.Ocr;
 
@@ -18,6 +19,7 @@ public sealed class PageRenderService : IPageRenderService
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ILibraryIdentityService _library;
     private readonly IFileResolutionService _fileResolution;
+    private readonly IFileMaterializationService _fileMaterialization;
     private readonly IPdfPageRenderer _renderer;
     private readonly IPdfPagePixelBufferRenderer? _pixelRenderer;
     private readonly IClock _clock;
@@ -25,11 +27,13 @@ public sealed class PageRenderService : IPageRenderService
     private readonly ConcurrentDictionary<string, PreviewPixels> _previewPixels = new(StringComparer.OrdinalIgnoreCase);
 
     public PageRenderService(SqliteConnectionFactory connectionFactory, ILibraryIdentityService library,
-        IFileResolutionService fileResolution, IPdfPageRenderer renderer, IClock clock, string cacheRoot)
+        IFileResolutionService fileResolution, IPdfPageRenderer renderer, IClock clock, string cacheRoot,
+        IFileMaterializationService? fileMaterialization = null)
     {
         _connectionFactory = connectionFactory;
         _library = library;
         _fileResolution = fileResolution;
+        _fileMaterialization = fileMaterialization ?? new FileSearchRootAccess();
         _renderer = renderer;
         _pixelRenderer = renderer as IPdfPagePixelBufferRenderer;
         _clock = clock;
@@ -128,6 +132,14 @@ public sealed class PageRenderService : IPageRenderService
             {
                 return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.UnsupportedFile, request, page,
                     rendererBasisVersion, "Page rendering MVP supports PDF file assets only."));
+            }
+
+            Result materialized = await _fileMaterialization.EnsureAvailableAsync(resolution.Value.ResolvedPath,
+                cancellationToken);
+            if (materialized.IsFailure)
+            {
+                return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.SourceMissing, request, page,
+                    rendererBasisVersion, materialized.ErrorMessage ?? "Source file is not available locally."));
             }
 
             string sourceHash = await Blake3Hash.ComputeFileAsync(resolution.Value.ResolvedPath, cancellationToken);
@@ -254,6 +266,13 @@ public sealed class PageRenderService : IPageRenderService
         {
             return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
                 resolution.Value.Warning ?? "Source file is unavailable.");
+        }
+
+        Result materialized = await _fileMaterialization.EnsureAvailableAsync(resolution.Value.ResolvedPath,
+            cancellationToken);
+        if (materialized.IsFailure)
+        {
+            return Result<PdfPagePixelBufferLease>.Failure(materialized.ErrorCode!, materialized.ErrorMessage!);
         }
 
         PagePreviewRow? page = await connection.QuerySingleOrDefaultAsync<PagePreviewRow>(

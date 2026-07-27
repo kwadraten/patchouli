@@ -143,7 +143,9 @@ public sealed partial class PathPickerTextBox : UserControl
                 SelectedRoot = new SelectedFileSearchRoot(
                     path,
                     folders[0].Path.Scheme,
-                    FileSearchRootAuthorizationKinds.None,
+                    OperatingSystem.IsMacOS()
+                        ? FileSearchRootAuthorizationKinds.TccPicker
+                        : FileSearchRootAuthorizationKinds.None,
                     null,
                     null,
                     DateTimeOffset.UtcNow);

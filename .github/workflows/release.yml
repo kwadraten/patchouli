@@ -1,0 +1,91 @@
+name: Package release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  package-windows:
+    name: Package Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Resolve release version
+        id: version
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "A release tag must contain a version."
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+      - name: Build Windows installer
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Runtime win-x64 -Version "${{ steps.version.outputs.value }}"
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchouli-windows
+          path: artifacts/installer/*.exe
+          if-no-files-found: error
+
+  package-macos:
+    name: Package macOS
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test -n "$version"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Build macOS disk image
+        shell: bash
+        run: bash scripts/package-macos.sh osx-arm64
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+      - name: Upload macOS disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: patchouli-macos
+          path: artifacts/installer/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs:
+      - package-windows
+      - package-macos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -d '' assets < <(find release-assets -type f \( -name '*.exe' -o -name '*.dmg' \) -print0)
+          test "${#assets[@]}" -eq 2
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --title "Patchouli.Net $GITHUB_REF_NAME" \
+              --generate-notes
+          fi

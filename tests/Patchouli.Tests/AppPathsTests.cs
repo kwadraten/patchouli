@@ -1,4 +1,5 @@
 using FluentAssertions;
+using System.Text.Json;
 using Patchouli.UI;
 
 namespace Patchouli.Tests;
@@ -81,6 +82,47 @@ public sealed class AppPathsTests
             settings.Save(locations.UserSettingsPath);
             File.ReadAllText(locations.BundledDefaultsPath).Should().Be(bundledBefore);
             Directory.EnumerateFiles(Path.GetDirectoryName(locations.UserSettingsPath)!, "*.tmp").Should().BeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Bundled_appsettings_does_not_override_platform_storage_locations()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-bundled-paths-{Guid.NewGuid():N}");
+        TestAppPaths appPaths = new(root);
+        AppStorageLocations locations = appPaths.Resolve();
+        Directory.CreateDirectory(Path.GetDirectoryName(locations.BundledDefaultsPath)!);
+        File.Copy(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "appsettings.json"),
+            locations.BundledDefaultsPath);
+
+        try
+        {
+            PatchouliAppSettings settings = PatchouliAppSettings.Load(appPaths);
+
+            settings.Runtime.RuntimeDatabasePath.Should().Be(Path.Combine(locations.DataDirectory,
+                "patchouli-runtime.sqlite"));
+            settings.Runtime.DefaultSyncRoot.Should().Be(Path.Combine(locations.DataDirectory, "sync"));
+            settings.Runtime.DefaultStagingRoot.Should().Be(Path.Combine(locations.DataDirectory, "staging"));
+            settings.Runtime.LogDirectory.Should().Be(locations.LogDirectory);
+            settings.Runtime.FileSearchRoot.Should().Be(Path.Combine(locations.DataDirectory, "search"));
+
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(locations.BundledDefaultsPath));
+            JsonElement paths = document.RootElement.GetProperty("Patchouli");
+            foreach (string name in new[]
+                     {
+                         "RuntimeDatabasePath", "DefaultSyncRoot", "DefaultStagingRoot", "LogDirectory",
+                         "FileSearchRoot"
+                     })
+            {
+                paths.TryGetProperty(name, out _).Should().BeFalse($"{name} must come from PlatformAppPaths");
+            }
         }
         finally
         {
