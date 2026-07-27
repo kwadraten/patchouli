@@ -148,7 +148,14 @@ public sealed class AlphaPackagingTests
     public void Macos_package_builds_and_bundles_filesystem_helper()
     {
         string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
+        string project = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure",
+            "Patchouli.Infrastructure.csproj"));
         script.Should().Contain("patchouli-macos-fs").And.Contain("libpatchouli-macos-fs.dylib");
+        script.Should().Contain("osx-arm64").And.Contain("fs_helper_arch=\"arm64\"").And
+            .Contain("osx-x64").And.Contain("fs_helper_arch=\"x86_64\"");
+        project.Should().Contain("'$(RuntimeIdentifier)' == 'osx-arm64'").And.Contain("arm64").And
+            .Contain("'$(RuntimeIdentifier)' == 'osx-x64'").And.Contain("x86_64").And
+            .Contain("-arch $(MacOSFsHelperArchitecture)");
 
         string helperSource = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.m");
         string helperHeader = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.h");

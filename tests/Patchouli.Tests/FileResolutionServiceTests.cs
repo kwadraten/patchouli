@@ -51,6 +51,21 @@ public sealed class FileResolutionServiceTests
     }
 
     [Fact]
+    public async Task ResolveFile_materializes_the_original_path_before_fingerprinting()
+    {
+        TrackingRootAccess rootAccess = new();
+        await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync(rootAccess);
+        string file = await context.Temp.WriteFileAsync("icloud.pdf", "same content");
+        Result<FileAsset> asset = await context.FileAssetService.RegisterFileAsync(file);
+
+        Result<FileResolutionResult> result = await context.FileResolutionService.ResolveFileAsync(
+            asset.Value.FileAssetId, ResolveFilePurpose.RenderPage);
+
+        result.Value.Status.Should().Be(FileAssetStatus.Available);
+        rootAccess.MaterializedPaths.Should().Contain(Path.GetFullPath(file));
+    }
+
+    [Fact]
     public async Task ResolveFile_original_path_changed_returns_changed_and_requires_confirmation()
     {
         await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
@@ -419,7 +434,7 @@ public sealed class FileResolutionServiceTests
         public FileResolutionService FileResolutionService { get; }
         public IBlockingOperationService BlockingOperations { get; }
 
-        public static async Task<FileResolutionTestContext> CreateAsync()
+        public static async Task<FileResolutionTestContext> CreateAsync(IFileSearchRootAccess? rootAccess = null)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             TemporaryDirectory temp = TemporaryDirectory.Create();
@@ -440,7 +455,8 @@ public sealed class FileResolutionServiceTests
                 libraryService,
                 clock,
                 fingerprintService,
-                blockingOperations);
+                blockingOperations,
+                rootAccess);
 
             return new FileResolutionTestContext(
                 database,
@@ -515,6 +531,48 @@ public sealed class FileResolutionServiceTests
             _ = path;
             _ = cancellationToken;
             return Task.FromResult(Result<string>.Success(fingerprint.QuickHash));
+        }
+    }
+
+    private sealed class TrackingRootAccess : IFileSearchRootAccess
+    {
+        private readonly FileSearchRootAccess _inner = new();
+
+        public List<string> MaterializedPaths { get; } = [];
+
+        public Task<Result> EnsureAvailableAsync(string path, CancellationToken cancellationToken = default)
+        {
+            MaterializedPaths.Add(path);
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<SelectedFileSearchRoot>> SelectRootAsync(CancellationToken cancellationToken = default)
+        {
+            return _inner.SelectRootAsync(cancellationToken);
+        }
+
+        public Task<Result<ResolvedFileSearchRoot>> ReopenAsync(FileSearchRoot root,
+            CancellationToken cancellationToken = default)
+        {
+            return _inner.ReopenAsync(root, cancellationToken);
+        }
+
+        public Task<Result<ResolvedFileSearchRoot>> ResolveSelectedAsync(SelectedFileSearchRoot root,
+            CancellationToken cancellationToken = default)
+        {
+            return _inner.ResolveSelectedAsync(root, cancellationToken);
+        }
+
+        public Task<FileSearchRootScanResult> ScanPdfAsync(ResolvedFileSearchRoot root,
+            CancellationToken cancellationToken = default)
+        {
+            return _inner.ScanPdfAsync(root, cancellationToken);
+        }
+
+        public Task<FileSearchRootTraversalResult> TraverseAsync(ResolvedFileSearchRoot root,
+            CancellationToken cancellationToken = default)
+        {
+            return _inner.TraverseAsync(root, cancellationToken);
         }
     }
 }

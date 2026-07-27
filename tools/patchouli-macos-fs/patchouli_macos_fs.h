@@ -13,6 +13,7 @@ extern "C" {
  *
  * Returns:
  *   0  - success; `out` contains the resolved path
+ *   -2 - access was denied by TCC or the filesystem ACL; `err` contains a reason
  *   -1 - failure; `err` contains a user-readable message
  *
  * `out_len` and `err_len` include the null terminator.
@@ -28,6 +29,7 @@ int patchouli_resolve_path(const char* path, char* out, size_t out_len, char* er
  *   0  - the file is available locally; `out` contains the path
  *   1  - the file is an iCloud placeholder that could not be materialized
  *        within the timeout (e.g. offline or user cancelled)
+ *   -2 - access was denied by TCC or the filesystem ACL; `err` contains a reason
  *   -1 - failure; `err` contains a user-readable message
  *
  * `out_len` and `err_len` include the null terminator.

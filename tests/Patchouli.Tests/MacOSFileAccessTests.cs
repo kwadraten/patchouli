@@ -61,54 +61,69 @@ public sealed class MacOSFileAccessTests
     }
 
     [Fact]
-    public async Task MacOSNativeFileAccessAdapter_resolves_directory_symlink()
+    public async Task MacOSNativeFileAccessAdapter_resolves_finder_alias_with_interop_on_any_host()
     {
-        if (!OperatingSystem.IsMacOS())
+        TestMacOSInterop interop = new()
         {
-            return;
-        }
+            ResolveResult = new MacOSNativeCallResult(0, "/Volumes/Library/real", "")
+        };
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.Zero, TimeSpan.FromSeconds(1));
 
-        string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        try
-        {
-            string realDir = Path.Combine(tempDir, "real");
-            Directory.CreateDirectory(realDir);
-            string linkDir = Path.Combine(tempDir, "link");
-            Directory.CreateSymbolicLink(linkDir, realDir);
+        NativeDirectoryResolution resolution = await adapter.ResolveDirectoryAsync("/Users/test/Finder Alias", default);
 
-            MacOSNativeFileAccessAdapter adapter = new();
-            NativeDirectoryResolution resolution = await adapter.ResolveDirectoryAsync(linkDir, default);
-            resolution.ResolvedPath.Should().Be(Path.GetFullPath(realDir));
-        }
-        finally
-        {
-            Directory.Delete(tempDir, true);
-        }
+        resolution.ResolvedPath.Should().Be("/Volumes/Library/real");
     }
 
     [Fact]
-    public async Task MacOSNativeFileAccessAdapter_materializes_local_file()
+    public async Task MacOSNativeFileAccessAdapter_classifies_tcc_denial_with_interop_on_any_host()
     {
-        if (!OperatingSystem.IsMacOS())
+        TestMacOSInterop interop = new()
         {
-            return;
+            ResolveResult = new MacOSNativeCallResult(-2, null, "TCC denied folder access.")
+        };
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        NativeDirectoryResolution resolution = await adapter.ResolveDirectoryAsync("/Users/test/Documents", default);
+
+        resolution.ResolvedPath.Should().BeNull();
+        resolution.FailureCode.Should().Be("access_denied");
+        resolution.FailureReason.Should().Contain("TCC denied");
+    }
+
+    [Fact]
+    public async Task MacOSNativeFileAccessAdapter_waits_for_icloud_download_with_interop_on_any_host()
+    {
+        TestMacOSInterop interop = new(new MacOSNativeCallResult(1, null, "Download started."),
+            new MacOSNativeCallResult(0, "/Users/test/iCloud.pdf", ""));
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+
+        NativeFileMaterialization materialization =
+            await adapter.MaterializeFileAsync("/Users/test/iCloud.pdf", default);
+
+        materialization.IsAvailable.Should().BeTrue();
+        interop.MaterializeCallCount.Should().Be(2);
+    }
+
+    private sealed class TestMacOSInterop(params MacOSNativeCallResult[] materializeResults) : IMacOSFileSystemInterop
+    {
+        private readonly Queue<MacOSNativeCallResult> _materializeResults = new(materializeResults);
+
+        public MacOSNativeCallResult ResolveResult { get; init; } = new(0, "/resolved", "");
+        public int MaterializeCallCount { get; private set; }
+
+        public MacOSNativeCallResult ResolvePath(string path)
+        {
+            return ResolveResult;
         }
 
-        string tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(tempDir);
-        try
+        public MacOSNativeCallResult MaterializeFile(string path)
         {
-            string file = Path.Combine(tempDir, "test.pdf");
-            await File.WriteAllTextAsync(file, "pdf content");
-
-            MacOSNativeFileAccessAdapter adapter = new();
-            NativeFileMaterialization materialization = await adapter.MaterializeFileAsync(file, default);
-            materialization.IsAvailable.Should().BeTrue();
-        }
-        finally
-        {
-            Directory.Delete(tempDir, true);
+            MaterializeCallCount++;
+            return _materializeResults.Count == 0
+                ? new MacOSNativeCallResult(0, path, "")
+                : _materializeResults.Count > 1
+                    ? _materializeResults.Dequeue()
+                    : _materializeResults.Peek();
         }
     }
 }

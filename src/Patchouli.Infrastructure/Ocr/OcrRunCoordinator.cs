@@ -36,6 +36,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly string _minerUCacheRoot;
     private readonly MinerUUploadLimits _minerUUploadLimits;
     private readonly IFileResolutionService? _fileResolution;
+    private readonly IFileMaterializationService? _fileMaterialization;
 
     public OcrRunCoordinator(
         SqliteConnectionFactory connectionFactory,
@@ -50,7 +51,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null,
         string? minerUCacheRoot = null,
         MinerUUploadLimits? minerUUploadLimits = null,
-        IFileResolutionService? fileResolution = null)
+        IFileResolutionService? fileResolution = null,
+        IFileMaterializationService? fileMaterialization = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
@@ -65,6 +67,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _minerUCacheRoot = minerUCacheRoot ?? Path.Combine(Path.GetTempPath(), "patchouli", "mineru");
         _minerUUploadLimits = minerUUploadLimits ?? MinerUUploadLimits.Default;
         _fileResolution = fileResolution;
+        _fileMaterialization = fileMaterialization;
     }
 
     public OcrRunCoordinator(
@@ -81,7 +84,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         Func<MinerUConfiguration, IMinerUClient>? minerUClientFactory = null,
         string? minerUCacheRoot = null,
         MinerUUploadLimits? minerUUploadLimits = null,
-        IFileResolutionService? fileResolution = null)
+        IFileResolutionService? fileResolution = null,
+        IFileMaterializationService? fileMaterialization = null)
         : this(
             connectionFactory,
             clock,
@@ -95,7 +99,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             minerUClientFactory,
             minerUCacheRoot,
             minerUUploadLimits,
-            fileResolution)
+            fileResolution,
+            fileMaterialization)
     {
         _credentialResolver = credentialResolver;
     }
@@ -671,6 +676,15 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             }
 
             sourcePath = resolved.Value.ResolvedPath;
+        }
+
+        if (_fileMaterialization is not null)
+        {
+            Result materialized = await _fileMaterialization.EnsureAvailableAsync(sourcePath, cancellationToken);
+            if (materialized.IsFailure)
+            {
+                return Result<OcrRun>.Failure(materialized.ErrorCode!, materialized.ErrorMessage!);
+            }
         }
 
         if (!File.Exists(sourcePath))

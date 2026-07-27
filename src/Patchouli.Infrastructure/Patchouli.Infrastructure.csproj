@@ -25,11 +25,16 @@
     <MacOSFsHelperDylib>$(MSBuildProjectDirectory)\..\..\tools\patchouli-macos-fs\libpatchouli-macos-fs.dylib</MacOSFsHelperDylib>
   </PropertyGroup>
 
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <MacOSFsHelperArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">arm64</MacOSFsHelperArchitecture>
+    <MacOSFsHelperArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-x64'">x86_64</MacOSFsHelperArchitecture>
+  </PropertyGroup>
+
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <Content Include="$(MacOSFsHelperDylib)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
 
-  <Target Name="BuildMacOSFileSystemHelper" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
-    <Exec Command="clang -dynamiclib -framework Foundation -arch arm64 -install_name '@rpath/libpatchouli-macos-fs.dylib' -o '$(MacOSFsHelperDylib)' '$(MacOSFsHelperSource)'" />
+  <Target Name="BuildMacOSFileSystemHelper" BeforeTargets="BeforeBuild" Condition="$([MSBuild]::IsOSPlatform('OSX')) and '$(MacOSFsHelperArchitecture)' != ''">
+    <Exec Command="clang -dynamiclib -framework Foundation -arch $(MacOSFsHelperArchitecture) -install_name '@rpath/libpatchouli-macos-fs.dylib' -o '$(MacOSFsHelperDylib)' '$(MacOSFsHelperSource)'" />
   </Target>
 </Project>

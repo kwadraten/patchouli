@@ -113,7 +113,7 @@ public sealed class AppServices
         PdfiumPdfPageRenderer pdfRenderer = new();
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
-            Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"));
+            Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"), FileSearchRootAccess);
         PageCoordinates = new PageCoordinateService(ConnectionFactory);
         SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
         SearchUnits = searchUnitBuilder;
@@ -139,7 +139,7 @@ public sealed class AppServices
                 EnableTable = configuration.EnableTable,
                 EnableFormula = configuration.EnableFormula
             }),
-            fileResolution: FileResolution);
+            fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
@@ -330,7 +330,7 @@ public sealed class AppServices
             MinerUImporter,
             minerUClientFactory,
             minerUUploadLimits: uploadLimits,
-            fileResolution: FileResolution);
+            fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess);
     }
 
     public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)

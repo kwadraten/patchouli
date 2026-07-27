@@ -3,9 +3,8 @@ set -euo pipefail
 
 # Patchouli on macOS is intentionally not sandboxed and is not targeting the Mac App Store.
 # File access relies on the standard TCC folder picker prompts (NS*FolderUsageDescription in Info.plist).
-# Therefore this script does not use an entitlements file or App Store provisioning/profile steps.
-# No codesign step is performed (ADR 0017): the DMG is distributed as-is for testing, relying on
-# the default ad-hoc signatures that the .NET SDK and clang already place on the binaries.
+# Therefore this script has no sandbox profile, provisioning, or release-signing step.
+# The DMG is distributed as-is for testing; see ADR 0017 for the distribution model.
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
@@ -20,7 +19,7 @@ dmg_dir="$root/artifacts/installer"
 dmg_path="$dmg_dir/Patchouli.Net-$version-$runtime.dmg"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "DMG creation requires macOS because hdiutil and codesign are Apple platform tools." >&2
+  echo "DMG creation requires macOS because hdiutil and bundle tools are Apple platform tools." >&2
   exit 2
 fi
 

@@ -38,6 +38,18 @@ public sealed class PdfPageRenderingTests
     }
 
     [Fact]
+    public async Task RenderPage_materializes_source_before_opening_it()
+    {
+        await using Context c = await Context.CreateAsync();
+
+        Result<PageRenderResult> result = await c.RenderAsync();
+
+        result.Value.Status.Should().Be(PageRenderStatus.Rendered);
+        c.Materializer.Paths.Should().Contain(c.PdfPath);
+        c.Renderer.CallCount.Should().Be(1);
+    }
+
+    [Fact]
     public async Task RenderPage_missing_source_returns_source_missing()
     {
         await using Context c = await Context.CreateAsync();
@@ -119,6 +131,20 @@ public sealed class PdfPageRenderingTests
         }
 
         disposed.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task RenderPreview_materializes_source_for_the_pixel_renderer()
+    {
+        await using Context c = await Context.CreateAsync();
+
+        Result<PdfPagePixelBufferLease> preview = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease lease = preview.Value;
+
+        c.Materializer.Paths.Count.Should().Be(2);
+        c.Materializer.Paths.Should().OnlyContain(path => path == c.PdfPath);
     }
 
     [Fact]
@@ -285,7 +311,7 @@ public sealed class PdfPageRenderingTests
     {
         private Context(TemporarySqliteDatabase db, FixedClock clock, LibraryId libraryId, DocumentInstanceId doc,
             PageId page, FileAssetId asset, string pdf, string cache, string sync, PageRenderService rendererService,
-            CountingRenderer renderer, PageService pages, McpReadApi mcp)
+            CountingRenderer renderer, TrackingMaterializer materializer, PageService pages, McpReadApi mcp)
         {
             Database = db;
             Clock = clock;
@@ -298,6 +324,7 @@ public sealed class PdfPageRenderingTests
             SyncRoot = sync;
             RenderService = rendererService;
             Renderer = renderer;
+            Materializer = materializer;
             Pages = pages;
             Mcp = mcp;
         }
@@ -313,6 +340,7 @@ public sealed class PdfPageRenderingTests
         public string SyncRoot { get; }
         public PageRenderService RenderService { get; }
         public CountingRenderer Renderer { get; }
+        public TrackingMaterializer Materializer { get; }
         public PageService Pages { get; }
         public McpReadApi Mcp { get; }
 
@@ -341,9 +369,11 @@ public sealed class PdfPageRenderingTests
                 CoordinateBasis.NormalizedPage, null, null, "initial", null);
             FileResolutionService resolution = new(db.ConnectionFactory, library, clock);
             CountingRenderer renderer = new();
-            PageRenderService renderService = new(db.ConnectionFactory, library, resolution, renderer, clock, cache);
+            TrackingMaterializer materializer = new();
+            PageRenderService renderService = new(db.ConnectionFactory, library, resolution, renderer, clock, cache,
+                materializer);
             return new Context(db, clock, lib.Value.LibraryId, doc.Value.DocumentInstanceId, page.Value.PageId,
-                asset.Value.FileAssetId, pdf, cache, sync, renderService, renderer, pages,
+                asset.Value.FileAssetId, pdf, cache, sync, renderService, renderer, materializer, pages,
                 new McpReadApi(db.ConnectionFactory, new SqliteSearchService(db.ConnectionFactory),
                     new EvidenceReferenceService(db.ConnectionFactory, clock))) { RootDirectory = dir };
         }
@@ -407,6 +437,17 @@ public sealed class PdfPageRenderingTests
             PixelCallCount++;
             return Task.FromResult(new PdfPagePixelBufferOutput(new byte[16], 2, 2, 8, 0,
                 CoordinateBasis.NormalizedPage, 2, 2, "fake-test-renderer-v1"));
+        }
+    }
+
+    private sealed class TrackingMaterializer : IFileMaterializationService
+    {
+        public List<string> Paths { get; } = [];
+
+        public Task<Result> EnsureAvailableAsync(string path, CancellationToken cancellationToken = default)
+        {
+            Paths.Add(path);
+            return Task.FromResult(Result.Success());
         }
     }
 }

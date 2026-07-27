@@ -820,6 +820,12 @@ public sealed class FileResolutionService : IFileResolutionService
         string reason,
         CancellationToken cancellationToken)
     {
+        Result materialized = await _rootAccess.EnsureAvailableAsync(path, cancellationToken);
+        if (materialized.IsFailure)
+        {
+            return null;
+        }
+
         if (!File.Exists(path))
         {
             return null;

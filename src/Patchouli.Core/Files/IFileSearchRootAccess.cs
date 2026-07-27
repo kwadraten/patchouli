@@ -4,6 +4,8 @@ namespace Patchouli.Core.Files;
 
 public interface IFileSearchRootAccess
 {
+    Task<Result> EnsureAvailableAsync(string path, CancellationToken cancellationToken = default);
+
     Task<Result<SelectedFileSearchRoot>> SelectRootAsync(CancellationToken cancellationToken = default);
 
     Task<Result<ResolvedFileSearchRoot>>

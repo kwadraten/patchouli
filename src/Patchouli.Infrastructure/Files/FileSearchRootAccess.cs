@@ -57,7 +57,7 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
     }
 }
 
-public sealed class FileSearchRootAccess : IFileSearchRootAccess
+public sealed class FileSearchRootAccess : IFileSearchRootAccess, IFileMaterializationService
 {
     private readonly INativeFileAccessAdapter _native;
     private IReadOnlyList<(string Pattern, Regex Regex)> _exclusions;
@@ -71,6 +71,20 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
     public void UpdateExclusionPatterns(IEnumerable<string> exclusionPatterns)
     {
         _exclusions = CompileExclusions(exclusionPatterns);
+    }
+
+    public async Task<Result> EnsureAvailableAsync(string path, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, "A file path is required for materialization.");
+        }
+
+        NativeFileMaterialization materialized = await _native.MaterializeFileAsync(path, cancellationToken);
+        return materialized.IsAvailable
+            ? Result.Success()
+            : Result.Failure(materialized.FailureCode ?? "materialization_failed",
+                materialized.FailureReason ?? "The file could not be materialized.");
     }
 
     public static bool TryValidateExclusionPatterns(IEnumerable<string> exclusionPatterns, out string? error)
@@ -159,11 +173,11 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
 
             try
             {
-                NativeFileMaterialization materialized = await _native.MaterializeFileAsync(path, cancellationToken);
-                if (!materialized.IsAvailable)
+                Result materialized = await EnsureAvailableAsync(path, cancellationToken);
+                if (materialized.IsFailure)
                 {
-                    skippedFiles.Add(new FileSearchRootIssue(path, materialized.FailureCode ?? "materialization_failed",
-                        materialized.FailureReason ?? "The file could not be materialized."));
+                    skippedFiles.Add(new FileSearchRootIssue(path, materialized.ErrorCode ?? "materialization_failed",
+                        materialized.ErrorMessage ?? "The file could not be materialized."));
                     continue;
                 }
 

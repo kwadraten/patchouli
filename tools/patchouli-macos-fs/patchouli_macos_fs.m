@@ -30,6 +30,16 @@ static void copy_error(NSError* error, char* err, size_t err_len)
     }
 }
 
+static int error_result_code(NSError* error)
+{
+    if (error != nil && (error.code == NSFileReadNoPermissionError || error.code == NSFileWriteNoPermissionError))
+    {
+        return -2;
+    }
+
+    return -1;
+}
+
 int patchouli_resolve_path(const char* path, char* out, size_t out_len, char* err, size_t err_len)
 {
     if (path == NULL || out == NULL || out_len == 0 || err == NULL || err_len == 0)
@@ -72,13 +82,14 @@ int patchouli_resolve_path(const char* path, char* out, size_t out_len, char* er
                 else
                 {
                     copy_error(error, err, err_len);
-                    return -1;
+                    return error_result_code(error);
                 }
             }
         }
-        else if (error != nil)
+        else if (error != nil && error_result_code(error) == -2)
         {
-            // Reading the alias flag failed; keep the symlink-resolved URL and continue.
+            copy_error(error, err, err_len);
+            return -2;
         }
 
         const char* resolved_path = resolved.fileSystemRepresentation;
@@ -121,6 +132,12 @@ int patchouli_materialize_file(const char* path, char* out, size_t out_len, char
         NSNumber* is_ubiquitous = nil;
         if (![url getResourceValue:&is_ubiquitous forKey:NSURLIsUbiquitousItemKey error:&error])
         {
+            if (error_result_code(error) == -2)
+            {
+                copy_error(error, err, err_len);
+                return -2;
+            }
+
             // A non-ubiquitous path can still fail resource-value reads; keep going.
             is_ubiquitous = @NO;
         }
@@ -135,7 +152,7 @@ int patchouli_materialize_file(const char* path, char* out, size_t out_len, char
                     if (![[NSFileManager defaultManager] startDownloadingUbiquitousItemAtURL:url error:&error])
                     {
                         copy_error(error, err, err_len);
-                        return 1;
+                        return error_result_code(error) == -2 ? -2 : 1;
                     }
 
                     // If the caller provided a timeout, poll until the file becomes locally
@@ -182,7 +199,7 @@ int patchouli_materialize_file(const char* path, char* out, size_t out_len, char
             else if (error != nil)
             {
                 copy_error(error, err, err_len);
-                return -1;
+                return error_result_code(error);
             }
         }
 
