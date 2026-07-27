@@ -8,6 +8,8 @@ public static class ConflictCode
     public const string FileRelocationMultipleCandidates = "CF-04";
     public const string SourceFileChangedOrBBoxBasisStale = "CF-05";
     public const string LayoutBBoxOrdinaryOverlap = "CF-06";
+    public const string BiblatexItemFieldConflict = "CF-07";
+    public const string BiblatexBatchLinkCandidates = "CF-08";
 
     public static bool IsKnown(string value)
     {
@@ -16,6 +18,8 @@ public static class ConflictCode
             or CredentialNotImported
             or FileRelocationMultipleCandidates
             or SourceFileChangedOrBBoxBasisStale
-            or LayoutBBoxOrdinaryOverlap;
+            or LayoutBBoxOrdinaryOverlap
+            or BiblatexItemFieldConflict
+            or BiblatexBatchLinkCandidates;
     }
 }

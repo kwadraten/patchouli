@@ -2,4 +2,19 @@
 
 Patchouli keeps Rust/Cargo as a supported repository toolchain for native or format-conversion helpers. Each helper belongs under `tools/<tool-name>`; Cargo build output is ignored through `tools/**/target/`.
 
-CSL rendering itself runs in-process through the managed `Fsharp.Citeproc` package. A later bibliography-import change will add a Rust helper based on [`typst/biblatex`](https://github.com/typst/biblatex) for BibLaTeX-to-CSL conversion. Packaging scripts should only build and ship that helper once the application has a real runtime integration for it.
+## biblatex-helper
+
+Locked dependency: [`biblatex` 0.12.0](https://crates.io/crates/biblatex) (`typst/biblatex`).
+
+Build:
+
+```pwsh
+cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
+```
+
+Protocol: one JSON request on UTF-8 stdin, one JSON response on UTF-8 stdout. stderr is diagnostics only.
+
+- Parse: `{"op":"parse","text":"..."}` → `{ok, entries?, error?}`
+- Write: `{"op":"write","entries":[...]}` → `{ok, text?, error?}`
+
+CSL rendering remains in-process through `Fsharp.Citeproc`. Packaging scripts should ship `biblatex-helper` only after the application wires a runtime path to it.

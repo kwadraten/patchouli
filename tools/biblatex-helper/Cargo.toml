@@ -1,0 +1,12 @@
+[package]
+name = "biblatex-helper"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "UTF-8 JSON bridge for typst/biblatex parse and write"
+license = "GPL-3.0-or-later"
+
+[dependencies]
+biblatex = "=0.12.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

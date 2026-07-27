@@ -20,6 +20,8 @@ public sealed class ConflictDescriptorTests
         ConflictCode.IsKnown(ConflictCode.FileRelocationMultipleCandidates).Should().BeTrue();
         ConflictCode.IsKnown(ConflictCode.SourceFileChangedOrBBoxBasisStale).Should().BeTrue();
         ConflictCode.IsKnown(ConflictCode.LayoutBBoxOrdinaryOverlap).Should().BeTrue();
+        ConflictCode.IsKnown(ConflictCode.BiblatexItemFieldConflict).Should().BeTrue();
+        ConflictCode.IsKnown(ConflictCode.BiblatexBatchLinkCandidates).Should().BeTrue();
     }
 
     [Fact]
