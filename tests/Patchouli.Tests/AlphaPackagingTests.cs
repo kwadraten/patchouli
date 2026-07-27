@@ -111,7 +111,9 @@ public sealed class AlphaPackagingTests
 
         workflow.Should().Contain("tags:").And.Contain("scripts/package-windows.ps1").And
             .Contain("scripts/package-macos.sh osx-arm64").And.Contain("gh release create").And
-            .Contain("contents: write");
+            .Contain("contents: write").And.Contain("GH_REPO: ${{ github.repository }}").And
+            .Contain("actions/checkout@v7").And.Contain("actions/setup-dotnet@v6").And
+            .Contain("actions/upload-artifact@v7").And.Contain("actions/download-artifact@v8");
     }
 
     [Fact]
