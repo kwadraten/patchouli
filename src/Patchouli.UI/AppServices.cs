@@ -80,7 +80,11 @@ public sealed class AppServices
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
-        FileSearchRootAccess = new FileSearchRootAccess(exclusionPatterns: settings.FileScanning.ExclusionPatterns);
+        INativeFileAccessAdapter? nativeAdapter = OperatingSystem.IsMacOS()
+            ? new MacOSNativeFileAccessAdapter()
+            : null;
+        FileSearchRootAccess = new FileSearchRootAccess(nativeAdapter,
+            settings.FileScanning.ExclusionPatterns);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
             blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
         ConflictActions = new ConflictActionExecutorRegistry(

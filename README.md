@@ -84,6 +84,12 @@ dotnet test Patchouli.sln
 
 清理和分析脚本要求 JetBrains Command Line Tools `2026.1.4`，并会使用仓库内的 `.editorconfig` 和固定的清理配置。提交非文档改动前，请先执行这两个命令；静态分析报告输出至 `artifacts/inspectcode.sarif`。
 
+### macOS 打包与分发
+
+- macOS 版本不使用 App Sandbox，也不上架 Mac App Store；文件访问通过标准 TCC 文件夹选择提示完成。
+- 使用 `scripts/package-macos.sh` 在 macOS 上构建 `.app` 和 DMG；签名是可选的（无 `APPLE_CODESIGN_IDENTITY` 时使用 ad-hoc 签名），不需要 entitlements 文件。
+- 详见 `.agent/adr/0017-macos-filesystem-no-sandbox-only-tcc.md`。
+
 ## 反馈问题
 
 请通过 [GitHub Issues](https://github.com/kwadraten/patchouli/issues) 反馈问题，并说明操作系统、应用版本、复现步骤、预期行为和实际行为。若问题无法稳定复现，请尽量附上截图或录屏。

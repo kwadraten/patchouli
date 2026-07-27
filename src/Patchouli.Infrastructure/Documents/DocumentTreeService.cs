@@ -707,7 +707,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             TableBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
             CodeBoxPayload value => !string.IsNullOrWhiteSpace(value.Code),
             MediaBoxPayload value => !string.IsNullOrWhiteSpace(value.AssetId) ||
-                                      !string.IsNullOrWhiteSpace(value.Description),
+                                     !string.IsNullOrWhiteSpace(value.Description),
             _ => false
         };
     }

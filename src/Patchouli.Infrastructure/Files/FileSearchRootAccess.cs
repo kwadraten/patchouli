@@ -110,7 +110,7 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
     {
         cancellationToken.ThrowIfCancellationRequested();
         string kind = root.AuthorizationKind ?? FileSearchRootAuthorizationKinds.None;
-        if (!string.Equals(kind, FileSearchRootAuthorizationKinds.None, StringComparison.Ordinal))
+        if (!IsAuthorizationKindSupported(kind))
         {
             return Task.FromResult(Result<ResolvedFileSearchRoot>.Failure(
                 "authorization_unsupported",
@@ -125,7 +125,7 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (!string.Equals(root.AuthorizationKind, FileSearchRootAuthorizationKinds.None, StringComparison.Ordinal))
+        if (!IsAuthorizationKindSupported(root.AuthorizationKind))
         {
             return Task.FromResult(Result<ResolvedFileSearchRoot>.Failure("authorization_unsupported",
                 $"Authorization kind '{root.AuthorizationKind}' requires a platform adapter."));
@@ -133,6 +133,12 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess
 
         return Task.FromResult(Result<ResolvedFileSearchRoot>.Success(new ResolvedFileSearchRoot(root.DisplayPath,
             Path.GetFullPath(root.DisplayPath), root.ProviderIdentity, root.AuthorizationKind)));
+    }
+
+    private static bool IsAuthorizationKindSupported(string kind)
+    {
+        return string.Equals(kind, FileSearchRootAuthorizationKinds.None, StringComparison.Ordinal)
+               || string.Equals(kind, FileSearchRootAuthorizationKinds.TccPicker, StringComparison.Ordinal);
     }
 
     public async Task<FileSearchRootScanResult> ScanPdfAsync(ResolvedFileSearchRoot root,

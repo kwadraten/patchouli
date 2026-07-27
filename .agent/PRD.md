@@ -319,6 +319,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 - 不做 MCP 写入、OCR 触发、bbox 编辑、元数据更新或删除操作。
 - 不做自动对象级同步合并；分支冲突仍必须显式处理。
 - 不做库级加密、主密码或每设备凭据解封。
+- macOS 版本不使用 App Sandbox，也不上架 Mac App Store；仅通过标准 TCC 文件夹访问提示（Avalonia picker）获取 Documents、Desktop、Downloads 等位置的访问权限。详见 ADR `0017`。
 
 ## 7. 验收标准
 

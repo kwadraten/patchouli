@@ -1,4 +1,4 @@
-﻿using FluentAssertions;
+using FluentAssertions;
 using Patchouli.Core;
 using Patchouli.Ocr;
 using Patchouli.UI;
@@ -96,11 +96,11 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
-    public void Macos_package_relocates_defaults_validates_plist_and_verifies_signature()
+    public void Macos_package_relocates_defaults_validates_plist_and_skips_signing()
     {
         string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
         script.Should().Contain("mv \"$macos_dir/appsettings.json\" \"$resources_dir/appsettings.json\"").And
-            .Contain("plutil -lint").And.Contain("codesign --verify --deep --strict --verbose=2");
+            .Contain("plutil -lint").And.NotContain("codesign").And.NotContain("entitlements");
     }
 
     [Fact]
@@ -142,6 +142,18 @@ public sealed class AlphaPackagingTests
         {
             plist.Should().Contain($"<key>{key}</key>");
         }
+    }
+
+    [Fact]
+    public void Macos_package_builds_and_bundles_filesystem_helper()
+    {
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"));
+        script.Should().Contain("patchouli-macos-fs").And.Contain("libpatchouli-macos-fs.dylib");
+
+        string helperSource = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.m");
+        string helperHeader = TestPaths.FromRepositoryRoot("tools", "patchouli-macos-fs", "patchouli_macos_fs.h");
+        File.Exists(helperSource).Should().BeTrue();
+        File.Exists(helperHeader).Should().BeTrue();
     }
 
     [Fact]

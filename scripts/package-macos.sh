@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Patchouli on macOS is intentionally not sandboxed and is not targeting the Mac App Store.
+# File access relies on the standard TCC folder picker prompts (NS*FolderUsageDescription in Info.plist).
+# Therefore this script does not use an entitlements file or App Store provisioning/profile steps.
+# No codesign step is performed (ADR 0017): the DMG is distributed as-is for testing, relying on
+# the default ad-hoc signatures that the .NET SDK and clang already place on the binaries.
+
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
 version="${VERSION:-0.2.1}"
@@ -19,10 +25,18 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
 fi
 
 case "$runtime" in
-  osx-arm64) pdfium_arch="arm64" ;;
-  osx-x64) pdfium_arch="x86_64" ;;
+  osx-arm64) pdfium_arch="arm64"; fs_helper_arch="arm64" ;;
+  osx-x64) pdfium_arch="x86_64"; fs_helper_arch="x86_64" ;;
   *) echo "Unsupported macOS runtime: $runtime" >&2; exit 2 ;;
 esac
+
+fs_helper_dir="$root/tools/patchouli-macos-fs"
+fs_helper_dylib="libpatchouli-macos-fs.dylib"
+clang -dynamiclib -framework Foundation \
+  -arch "$fs_helper_arch" \
+  -install_name "@rpath/$fs_helper_dylib" \
+  -o "$fs_helper_dir/$fs_helper_dylib" \
+  "$fs_helper_dir/patchouli_macos_fs.m"
 
 rm -rf "$publish_dir" "$app_dir"
 mkdir -p "$publish_dir" "$macos_dir" "$resources_dir" "$dmg_dir"
@@ -37,6 +51,7 @@ dotnet publish "$root/src/Patchouli.UI/Patchouli.UI.csproj" \
   -o "$publish_dir"
 
 cp -R "$publish_dir/." "$macos_dir/"
+cp "$fs_helper_dir/$fs_helper_dylib" "$macos_dir/$fs_helper_dylib"
 chmod +x "$macos_dir/Patchouli.UI"
 
 if [[ ! -f "$macos_dir/appsettings.json" ]]; then
@@ -81,23 +96,6 @@ fi
 # Exercise the native library on the packaging host before sealing the bundle.
 dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configuration" \
   --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUResultDownloaderTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
-
-if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
-  sign_identity="$APPLE_CODESIGN_IDENTITY"
-  sign_options=(--options runtime --timestamp)
-else
-  sign_identity="-"
-  sign_options=()
-fi
-
-# Sign every native payload first, then seal the outer application bundle.
-while IFS= read -r -d '' native_file; do
-  if file "$native_file" | grep -q 'Mach-O'; then
-    codesign --force "${sign_options[@]}" --sign "$sign_identity" "$native_file"
-  fi
-done < <(find "$macos_dir" -type f -print0)
-codesign --force "${sign_options[@]}" --sign "$sign_identity" "$app_dir"
-codesign --verify --deep --strict --verbose=2 "$app_dir"
 
 rm -f "$dmg_path"
 staging="$(mktemp -d)"

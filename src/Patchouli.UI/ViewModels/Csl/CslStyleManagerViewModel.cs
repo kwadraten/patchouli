@@ -81,7 +81,16 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand SearchCommand { get; }
     public AsyncCommand SaveLocaleCommand { get; }
-    public string Locale { get => _locale ?? ""; set { _locale = value.Trim(); Raise(); } }
+
+    public string Locale
+    {
+        get => _locale ?? "";
+        set
+        {
+            _locale = value.Trim();
+            Raise();
+        }
+    }
 
     public async Task InitializeAsync()
     {
@@ -258,7 +267,8 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     private async Task SaveLocaleAsync()
     {
-        Result<CslSettings> result = await (await _main.ServicesAsync()).CslStore.SaveSettingsAsync(_defaultStyleId, _locale);
+        Result<CslSettings> result =
+            await (await _main.ServicesAsync()).CslStore.SaveSettingsAsync(_defaultStyleId, _locale);
         StatusText = result.IsSuccess ? "CSL locale 已保存。" : result.ErrorMessage ?? "CSL locale 保存失败。";
     }
 

@@ -89,7 +89,7 @@ internal sealed class FsharpCiteprocProcessor
         string payload = JsonSerializer.Serialize(
             new EngineRenderRequest(styleXml, items, [citationItems], format),
             JsonOptions);
-        FSharpResult<string, FSharpList<CiteprocError>> rendered = Fsharp.Citeproc.Citeproc.renderJson(payload);
+        FSharpResult<string, FSharpList<CiteprocError>> rendered = Citeproc.renderJson(payload);
         cancellationToken.ThrowIfCancellationRequested();
 
         if (rendered.IsError)
@@ -149,7 +149,7 @@ internal sealed class FsharpCiteprocProcessor
         return document.ToString(SaveOptions.DisableFormatting);
     }
 
-    private static string FormatDiagnostic(Fsharp.Citeproc.CiteprocError diagnostic)
+    private static string FormatDiagnostic(CiteprocError diagnostic)
     {
         string location = diagnostic.Path is null ? "" : $" at {diagnostic.Path.Value}";
         return $"{diagnostic.Code}{location}: {diagnostic.Message}";
