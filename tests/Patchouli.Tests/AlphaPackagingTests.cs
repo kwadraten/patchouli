@@ -105,6 +105,16 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void Release_workflow_packages_windows_and_macos_from_tags()
+    {
+        string workflow = File.ReadAllText(TestPaths.FromRepositoryRoot(".github", "workflows", "release.yml"));
+
+        workflow.Should().Contain("tags:").And.Contain("scripts/package-windows.ps1").And
+            .Contain("scripts/package-macos.sh osx-arm64").And.Contain("gh release create").And
+            .Contain("contents: write");
+    }
+
+    [Fact]
     public void Csl_runtime_uses_managed_fsharp_citeproc_and_keeps_rust_tool_conventions()
     {
         string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
