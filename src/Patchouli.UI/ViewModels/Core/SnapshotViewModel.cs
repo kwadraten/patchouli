@@ -122,6 +122,40 @@ public sealed class SnapshotViewModel : ViewModelBase
         ? $"同步目录已就绪（绑定 {_status.SyncRootId}）"
         : "同步目录不可用或尚未配置";
 
+    public string LibrarySummary => _status?.LibraryId is { Length: > 0 } libraryId
+        ? $"当前资料库：{libraryId}"
+        : "当前资料库身份未知";
+
+    public string DeviceSummary
+    {
+        get
+        {
+            SyncAppSettings sync = _main.AppOptions.Sync;
+            return $"本机设备：{sync.DeviceName}（{sync.DeviceId}）";
+        }
+    }
+
+    public string BranchDetailSummary
+    {
+        get
+        {
+            if (_status is null)
+            {
+                return "尚未读取同步状态。";
+            }
+
+            SnapshotSyncLocalState local = _status.LocalState;
+            return
+                $"最近发布：{local.LastPublishedSnapshotId ?? "无"}；最近应用：{local.LastAppliedSnapshotId ?? "无"}；最近远端：{local.LastSeenRemoteSnapshotId ?? "无"}";
+        }
+    }
+
+    public string LastErrorText => _status?.LocalState.LastError is { Length: > 0 } error
+        ? $"最近错误：{error}"
+        : "";
+
+    public bool HasLastError => LastErrorText.Length > 0;
+
     public string LocalSnapshotSummary => _status?.LocalState.LineageSnapshotId is { Length: > 0 } snapshotId
         ? $"本机 lineage：{snapshotId}"
         : "本机尚无已发布或已应用的快照";
@@ -198,9 +232,7 @@ public sealed class SnapshotViewModel : ViewModelBase
             new ModalOperationOptions("发布到同步目录", "正在创建并验证快照分片。", true),
             async context => await (await _main.ServicesAsync()).SnapshotSync.PublishAsync(context.CancellationToken));
         OperationMessage = result.IsSuccess
-            ? result.Value.CreatedBranch
-                ? "同步目录已有其他 current 快照。已保留本机内容，先检查传入快照后再决定下一步。"
-                : "快照已发布到同步目录。"
+            ? "快照已发布到同步目录。"
             : DescribeFailure(result);
         await RefreshAfterOperationAsync("publish_snapshot", result.IsSuccess);
     }
@@ -398,6 +430,11 @@ public sealed class SnapshotViewModel : ViewModelBase
         Raise(nameof(SyncRootSummary));
         Raise(nameof(LocalSnapshotSummary));
         Raise(nameof(RemoteSnapshotSummary));
+        Raise(nameof(LibrarySummary));
+        Raise(nameof(DeviceSummary));
+        Raise(nameof(BranchDetailSummary));
+        Raise(nameof(LastErrorText));
+        Raise(nameof(HasLastError));
     }
 
     private void RaiseIncoming()

@@ -6,7 +6,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
-using Patchouli.Ocr.MinerU;
 using Avalonia.Threading;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography.MetadataLookup;
@@ -36,7 +35,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public ObservableCollection<LibraryItemViewModel> SelectedItems { get; } = new();
     public string StatusText => _main.Status;
     public string MinerUToken { get; set; } = "";
-    public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactory { get; set; }
     public bool IsBusy { get; set; }
     private LibraryItemViewModel? _selectedItem;
 
@@ -417,58 +415,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
             AppServices services = await _main.ServicesAsync();
             OcrPresetId presetId = await EnsureMinerUPresetAsync(services);
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
-            if (MinerUClientFactory is null)
-            {
-                Result<OcrQueueTask> queued = await QueueOcrForItemAsync(services, documentInstanceId, presetId);
-                item.OcrStatus = queued.IsSuccess
-                    ? $"OCR 已加入后台队列：{queued.Value.TaskId}"
-                    : queued.ErrorMessage ?? "OCR 入队失败。";
-                _main.Report(item.OcrStatus);
-                Raise(nameof(InspectorStatus));
-                await _main.OcrQueue.RefreshAsync();
-                return;
-            }
-
-            IOcrRunCoordinator coordinator = MinerUClientFactory is null
-                ? services.Ocr
-                : services.CreateOcrRunCoordinator(MinerUClientFactory);
-
-            Result<OcrRun> run = await coordinator.RunPresetOnDocumentAsync(documentInstanceId, presetId);
-            if (run.IsFailure)
-            {
-                item.OcrStatus = run.ErrorMessage ?? "OCR 运行失败。";
-                _main.Report(item.OcrStatus);
-                Raise(nameof(InspectorStatus));
-                return;
-            }
-
-            if (run.Value.State is not (OcrRunState.Completed or OcrRunState.CompletedWithErrors))
-            {
-                item.OcrStatus = $"OCR 未完成：{run.Value.State}";
-                _main.Report(item.OcrStatus);
-                Raise(nameof(InspectorStatus));
-                return;
-            }
-
-            Result<OcrCandidateAdoption> adoption = await coordinator.AdoptCandidateRunAsync(run.Value.OcrRunId);
-            if (adoption.IsFailure)
-            {
-                item.OcrStatus = adoption.ErrorMessage ?? "OCR 候选版本采用失败。";
-                _main.Report(item.OcrStatus);
-                Raise(nameof(InspectorStatus));
-                return;
-            }
-
-            Result units = await services.SearchUnits.RebuildForDocumentInstanceAsync(documentInstanceId);
-            Result index = units.IsSuccess
-                ? await services.SearchIndex.RebuildFtsForDocumentInstanceAsync(documentInstanceId)
-                : units;
-
-            item.OcrStatus = index.IsSuccess
-                ? "OCR 完成，搜索索引已更新。"
-                : index.ErrorMessage ?? "OCR 完成，但搜索索引更新失败。";
+            Result<OcrQueueTask> queued = await QueueOcrForItemAsync(services, documentInstanceId, presetId);
+            item.OcrStatus = queued.IsSuccess
+                ? $"OCR 已加入后台队列：{queued.Value.TaskId}"
+                : queued.ErrorMessage ?? "OCR 入队失败。";
             _main.Report(item.OcrStatus);
-            await RefreshItemsAsync();
+            Raise(nameof(InspectorStatus));
+            await _main.OcrQueue.RefreshAsync();
         }
         finally
         {
@@ -600,14 +553,22 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
         string adapterKind = engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
         string? providerId = engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
-        Result<OcrQueueTask> enqueued = await queue.Value.EnqueueDocumentAsync(documentInstanceId, presetId, pageIds,
-            engineId, adapterKind, providerId, OcrQueuePriority.UserStartedDocument);
-        if (enqueued.IsSuccess)
+        return await services.Ocr.QueueDocumentOcrAsync(documentInstanceId, presetId, pageIds, engineId, adapterKind,
+            providerId, OcrQueuePriority.UserStartedDocument);
+    }
+
+    public void ApplyOcrQueueRunningState(OcrQueueTask task)
+    {
+        LibraryItemViewModel? item = Items.FirstOrDefault(candidate =>
+            string.Equals(candidate.DocumentInstanceId, task.DocumentInstanceId.ToString(),
+                StringComparison.Ordinal));
+        if (item is null)
         {
-            await queue.Value.StartAsync();
+            return;
         }
 
-        return enqueued;
+        item.OcrStatus = "OCR 正在运行...";
+        Raise(nameof(InspectorStatus));
     }
 
     public void ApplyOcrQueueTerminalState(OcrQueueTask task)
@@ -620,9 +581,12 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        item.OcrStatus = task.State == OcrQueueTaskState.Succeeded
-            ? "OCR 完成，搜索索引已更新。"
-            : $"OCR 失败：{task.LastErrorMessage ?? "OCR 任务失败。"}";
+        item.OcrStatus = task.State switch
+        {
+            OcrQueueTaskState.Succeeded => "OCR 完成，搜索索引已更新。",
+            OcrQueueTaskState.Cancelled => "OCR 已取消。",
+            _ => $"OCR 失败：{task.LastErrorMessage ?? "OCR 任务失败。"}"
+        };
         Raise(nameof(InspectorStatus));
     }
 
@@ -644,7 +608,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         return persisted;
     }
 
-    private static async Task<OcrPresetId> EnsureMinerUPresetAsync(AppServices services)
+    internal static async Task<OcrPresetId> EnsureMinerUPresetAsync(AppServices services)
     {
         await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();

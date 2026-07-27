@@ -80,7 +80,7 @@ fi
 
 # Exercise the native library on the packaging host before sealing the bundle.
 dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configuration" \
-  --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUResultDownloaderTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
+  --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUUploadPreparerTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
 
 if [[ -n "${APPLE_CODESIGN_IDENTITY:-}" ]]; then
   sign_identity="$APPLE_CODESIGN_IDENTITY"

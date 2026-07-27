@@ -357,7 +357,7 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | PDF 导入与页面 | PDF 扫描、导入 workflow、页数读取、页面记录、页面坐标基准。 | `PdfDiscoveryServiceTests`、`PdfImportWorkflowTests`、`DocumentTreeServiceTests` |
 | 页面渲染缓存 | PDF 页面渲染、缓存命名空间 `page_renders`、渲染失败/超时结果化、渲染输出用于 OCR 输入。MCP never returns cached images or image paths. | `PdfPageRenderingTests`、`RealPdfRendererTests` |
 | OCR Preset | OCR Preset 和不可变 Preset Version；模型/路径/参数变更创建新版本；ready/missing/rebind 状态。 | `OcrLifecycleBoxTreeTests`、`UiViewModelTests` |
-| OCR 提供程序 | Mock、本地占位、MinerU client/downloader/importer/Document Tree candidate mapper/content list v2 解析已存在；MinerU 是第一产品 OCR 路径的 ADR 已记录。 | `MinerUClientTests`、`MinerUResultDownloaderTests`、`MinerUDocumentTreeTests`、`MinerUContentListParserTests`、ADR `0014` |
+| OCR 提供程序 | Mock、本地占位、MinerU client/downloader/importer/Document Tree candidate mapper/content list v2 解析已存在；MinerU 是第一产品 OCR 路径的 ADR 已记录。 | `MinerUClientTests`、`MinerUUploadPreparerTests`、`MinerUDocumentTreeTests`、`MinerUContentListParserTests`、ADR `0014` |
 | OCR 生命周期 | 运行按页面保存；staging/candidate/current；取消、completed_with_errors、失败页面保留与按页候选采纳。 | `OcrLifecycleBoxTreeTests` |
 | OCR 队列 | 并发限制、优先级、老化、暂停/恢复、取消、瞬时重试、需要人工修复的失败分类。 | `OcrQueueSchedulerTests` |
 | Document Box Tree | 0.2.0 fresh schema、页级 immutable revision、typed leaf、sibling pointer、logical page、draft command、Markdig compiler/SourceMap。 | `DocumentTree*Tests`、迁移 `005`、ADR `0015` |

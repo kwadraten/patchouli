@@ -75,15 +75,13 @@ public sealed record SyncAppSettings(
     string DeviceId,
     string DeviceName,
     string SyncRoot,
-    bool SyncMcpSettings,
-    bool SyncProviderCredentials,
     bool SyncMetadataLookup,
     string SyncRootId = "",
     SnapshotSyncLocalState? SnapshotState = null)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
-        return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false, false, false);
+        return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false);
     }
 }
 
@@ -292,8 +290,6 @@ public sealed record PatchouliAppSettings(
                     ReadString(sync, "DeviceId", defaults.Sync.DeviceId),
                     ReadString(sync, "DeviceName", defaults.Sync.DeviceName),
                     ExpandPath(ReadString(sync, "SyncRoot", defaults.Sync.SyncRoot)),
-                    ReadBool(sync, "SyncMcpSettings", defaults.Sync.SyncMcpSettings),
-                    ReadBool(sync, "SyncProviderCredentials", defaults.Sync.SyncProviderCredentials),
                     ReadBool(sync, "SyncMetadataLookup", defaults.Sync.SyncMetadataLookup),
                     ReadString(sync, "SyncRootId", defaults.Sync.SyncRootId),
                     ReadSnapshotSyncState(sync, defaults.Sync.SnapshotState ?? SnapshotSyncLocalState.NotConfigured))

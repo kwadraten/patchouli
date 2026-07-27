@@ -66,6 +66,71 @@ public sealed class DocumentTreeServiceTests
     }
 
     [Fact]
+    public async Task Update_leaf_normalizes_heading_level_and_code_language_for_the_new_type()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+
+        DocumentBox text = (await context.Editor.DrawAndInsertLeafAsync(
+            edit.SessionId,
+            new InsertLeafCommand(
+                null,
+                null,
+                DocumentBoxType.Text,
+                null,
+                null,
+                new NormalizedBBox(0.05, 0.05, 0.9, 0.1),
+                new TextBoxPayload("Paragraph.")))).Value;
+        DocumentBox title = (await context.Editor.DrawAndInsertLeafAsync(
+            edit.SessionId,
+            new InsertLeafCommand(
+                null,
+                text.BoxId,
+                DocumentBoxType.Title,
+                null,
+                null,
+                new NormalizedBBox(0.05, 0.2, 0.9, 0.1),
+                new TextBoxPayload("Heading."),
+                2))).Value;
+        DocumentBox code = (await context.Editor.DrawAndInsertLeafAsync(
+            edit.SessionId,
+            new InsertLeafCommand(
+                null,
+                title.BoxId,
+                DocumentBoxType.Code,
+                null,
+                null,
+                new NormalizedBBox(0.05, 0.35, 0.9, 0.1),
+                new CodeBoxPayload("x = 1"),
+                null,
+                "python"))).Value;
+
+        (await context.Editor.UpdateLeafAsync(
+                edit.SessionId,
+                new UpdateLeafCommand(text.BoxId, DocumentBoxType.Title, new TextBoxPayload("Paragraph."))))
+            .IsSuccess.Should().BeTrue();
+        (await context.Editor.UpdateLeafAsync(
+                edit.SessionId,
+                new UpdateLeafCommand(title.BoxId, DocumentBoxType.Text, new TextBoxPayload("Heading."), 2)))
+            .IsSuccess.Should().BeTrue();
+        (await context.Editor.UpdateLeafAsync(
+                edit.SessionId,
+                new UpdateLeafCommand(code.BoxId, DocumentBoxType.Text, new TextBoxPayload("x = 1"), null, "python")))
+            .IsSuccess.Should().BeTrue();
+
+        IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+        DocumentBox promoted = boxes.Single(box => box.BoxId == text.BoxId);
+        promoted.BoxType.Should().Be(DocumentBoxType.Title);
+        promoted.HeadingLevel.Should().Be(1);
+        DocumentBox demoted = boxes.Single(box => box.BoxId == title.BoxId);
+        demoted.BoxType.Should().Be(DocumentBoxType.Text);
+        demoted.HeadingLevel.Should().BeNull();
+        DocumentBox plainCode = boxes.Single(box => box.BoxId == code.BoxId);
+        plainCode.BoxType.Should().Be(DocumentBoxType.Text);
+        plainCode.CodeLanguage.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Invalid_collision_is_rejected_without_mutating_the_draft()
     {
         await using Context context = await Context.CreateAsync();
@@ -149,6 +214,43 @@ public sealed class DocumentTreeServiceTests
         adopted.Conflicts.Should().ContainSingle(conflict =>
             conflict.ConflictCode == ConflictCode.LayoutBBoxOrdinaryOverlap);
         (await context.Trees.ListBoxesAsync(staged.Value.TreeRevisionId)).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Staging_nests_contained_boxes_under_the_largest_overlapping_box()
+    {
+        await using Context context = await Context.CreateAsync();
+        Result<DocumentTreeRevision> staged = await context.Trees.StagePageAsync(
+            context.DocumentId,
+            context.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Image, null, null,
+                    new NormalizedBBox(0.1, 0.1, 0.8, 0.8), new MediaBoxPayload(null, "Figure")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.2, 0.2, 0.2, 0.1), new TextBoxPayload("Embedded label")),
+                new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.5, 0.6, 0.2, 0.1), new TextBoxPayload("Embedded note"))
+            ]);
+
+        staged.IsSuccess.Should().BeTrue(staged.ErrorMessage);
+        IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(staged.Value.TreeRevisionId)).Value;
+        DocumentBox parent = boxes.Single(box => box.BoxType == DocumentBoxType.Image);
+        boxes.Where(box => box.BoxType == DocumentBoxType.Text)
+            .Should().OnlyContain(box => box.ParentBoxId == parent.BoxId);
+        boxes.Where(box => box.BoxType == DocumentBoxType.Text)
+            .Select(box => ((TextBoxPayload)box.Payload!).Markdown)
+            .Should().BeEquivalentTo("Embedded label", "Embedded note");
+        (await context.Trees.AdoptStagingRevisionAsync(staged.Value.TreeRevisionId))
+            .IsSuccess.Should().BeTrue();
+
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox editableChild = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value
+            .Single(box => box.Payload is TextBoxPayload { Markdown: "Embedded label" });
+        (await context.Editor.UpdateLeafAsync(
+                edit.SessionId,
+                new UpdateLeafCommand(editableChild.BoxId, DocumentBoxType.Text,
+                    new TextBoxPayload("Edited label"))))
+            .IsSuccess.Should().BeTrue();
     }
 
     [Fact]

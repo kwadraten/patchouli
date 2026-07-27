@@ -44,17 +44,14 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
                     AppendSeparator(output, "---");
                 }
 
-                foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, roots[index].BoxId))
-                {
-                    AppendBox(output, maps, diagnostics, child, includeSuppressed);
-                }
+                AppendSubtree(output, maps, diagnostics, boxes, roots[index], includeSuppressed);
             }
         }
         else
         {
             foreach (DocumentBox box in roots)
             {
-                AppendBox(output, maps, diagnostics, box, includeSuppressed);
+                AppendSubtree(output, maps, diagnostics, boxes, box, includeSuppressed);
             }
         }
 
@@ -102,6 +99,21 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         int start = output.Length;
         output.Append(fragment.Trim());
         maps.Add(new PendingMap(box.BoxId, start, output.Length - start));
+    }
+
+    private static void AppendSubtree(
+        StringBuilder output,
+        List<PendingMap> maps,
+        List<MarkdownDiagnostic> diagnostics,
+        IReadOnlyList<DocumentBox> boxes,
+        DocumentBox box,
+        bool includeSuppressed)
+    {
+        AppendBox(output, maps, diagnostics, box, includeSuppressed);
+        foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
+        {
+            AppendSubtree(output, maps, diagnostics, boxes, child, includeSuppressed);
+        }
     }
 
     private static void AppendSeparator(StringBuilder output, string separator)

@@ -1,0 +1,69 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Patchouli.UI.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="460" d:DesignHeight="420"
+        x:Class="Patchouli.UI.Views.BoxEditorDialog"
+        x:DataType="vm:PdfBBoxViewModel"
+        Title="编辑边界框"
+        Icon="/Assets/AppIcon.ico"
+        Width="460" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowDecorations="Full"
+        Background="{DynamicResource SurfaceBrush}">
+
+  <Border Padding="16">
+    <StackPanel Spacing="8">
+      <Border IsVisible="{Binding Workspace.HasCandidate}" Padding="10" CornerRadius="6"
+              BorderThickness="1"
+              BorderBrush="{DynamicResource OutlineVariantBrush}">
+        <StackPanel Spacing="6">
+          <TextBlock Text="局部 OCR 候选（接受后覆盖类型与内容）" FontWeight="SemiBold"
+                     FontSize="12" />
+          <TextBlock Text="原内容" FontSize="11"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <TextBlock Text="{Binding Workspace.LocalOcrSourceText}" TextWrapping="Wrap"
+                     FontSize="12" MaxHeight="80" />
+          <TextBlock Text="识别内容" FontSize="11"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <ItemsControl ItemsSource="{Binding Workspace.CandidateBoxes}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
+                  <TextBlock Text="{Binding BoxType}" FontWeight="SemiBold"
+                             FontSize="12" />
+                  <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap"
+                             FontSize="12" />
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+            <Button Content="拒绝" Command="{Binding Workspace.RejectLocalOcrCommand}" />
+            <Button Content="接受" Click="OnAcceptClicked" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+      <ComboBox ItemsSource="{Binding Workspace.EditableBoxTypeOptions}"
+                SelectedItem="{Binding BoxType}" HorizontalAlignment="Stretch" />
+      <NumericUpDown Value="{Binding HeadingLevel}" Minimum="1" Maximum="6"
+                     IsVisible="{Binding IsTitle}" PlaceholderText="标题级别 1-6" />
+      <TextBox Text="{Binding CodeLanguage}" IsVisible="{Binding IsCode}"
+               PlaceholderText="代码语言（可选）" />
+      <TextBox Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}"
+               AcceptsReturn="True"
+               TextWrapping="Wrap" MinHeight="120" />
+      <TextBox Text="{Binding AssetId}" IsVisible="{Binding IsMedia}"
+               PlaceholderText="资源引用（可选）" />
+      <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <Button Content="关闭" Click="OnCloseClicked" />
+        <Button Content="保存" Click="OnSaveClicked"
+                Background="{DynamicResource PrimaryBrush}"
+                Foreground="{DynamicResource OnPrimaryBrush}" />
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</Window>

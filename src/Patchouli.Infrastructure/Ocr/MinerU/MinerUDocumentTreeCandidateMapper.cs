@@ -22,37 +22,75 @@ internal sealed class MinerUDocumentTreeCandidateMapper
                 continue;
             }
 
-            List<OcrBoxCandidate> boxes = [];
-            int sourceOrder = 0;
-            foreach (MinerUContentBlock block in minerUPage.Blocks)
-            {
-                OcrBoxCandidate? mapped = MapBlock(
-                    block, page, minerUPage.Width, minerUPage.Height, sourceOrder++, false, diagnostics);
-                if (mapped is not null)
-                {
-                    boxes.Add(mapped);
-                }
-            }
-
-            foreach (MinerUContentBlock block in minerUPage.DiscardedBlocks ?? [])
-            {
-                OcrBoxCandidate? mapped = MapBlock(
-                    block, page, minerUPage.Width, minerUPage.Height, sourceOrder++, true, diagnostics);
-                if (mapped is not null)
-                {
-                    boxes.Add(mapped);
-                }
-            }
-
-            boxes = MergeTextContainedByImages(boxes, page.PageId, diagnostics);
-
-            if (boxes.Count > 0)
-            {
-                mappedPages.Add(new OcrPageCandidate(page.PageId, page.PageIndex, boxes));
-            }
+            List<OcrBoxCandidate> boxes = MapPageBoxes(minerUPage, page, null, false, diagnostics);
+            mappedPages.Add(new OcrPageCandidate(page.PageId, page.PageIndex, boxes));
         }
 
         return new OcrDocumentTreeCandidate(mappedPages, diagnostics);
+    }
+
+    public (OcrPageCandidate Page, IReadOnlyList<OcrDiagnostic> Diagnostics) MapImagePage(
+        MinerUContentListPage contentPage,
+        Page page,
+        NormalizedBBox? region)
+    {
+        List<OcrDiagnostic> diagnostics = [];
+        List<OcrBoxCandidate> boxes = MapPageBoxes(contentPage, page, region, true, diagnostics);
+        return (new OcrPageCandidate(page.PageId, page.PageIndex, boxes), diagnostics);
+    }
+
+    private static List<OcrBoxCandidate> MapPageBoxes(
+        MinerUContentListPage minerUPage,
+        Page page,
+        NormalizedBBox? region,
+        bool skipMissingBBox,
+        List<OcrDiagnostic> diagnostics)
+    {
+        List<OcrBoxCandidate> boxes = [];
+        int sourceOrder = 0;
+        foreach (MinerUContentBlock block in minerUPage.Blocks)
+        {
+            OcrBoxCandidate? mapped = MapBlock(
+                block, page, minerUPage.Width, minerUPage.Height, sourceOrder++, false, skipMissingBBox, region,
+                diagnostics);
+            if (mapped is not null)
+            {
+                boxes.Add(mapped);
+            }
+        }
+
+        foreach (MinerUContentBlock block in minerUPage.DiscardedBlocks ?? [])
+        {
+            OcrBoxCandidate? mapped = MapBlock(
+                block, page, minerUPage.Width, minerUPage.Height, sourceOrder++, true, skipMissingBBox, region,
+                diagnostics);
+            if (mapped is not null)
+            {
+                boxes.Add(mapped);
+            }
+        }
+
+        boxes = MergeTextContainedByImages(boxes, page.PageId, diagnostics);
+
+        if (boxes.Count == 0)
+        {
+            boxes.Add(new OcrBoxCandidate(
+                DocumentBoxType.LogicalPage,
+                null,
+                null,
+                0,
+                new TextBoxPayload("Blank page (MinerU returned no content)."),
+                region ?? new NormalizedBBox(0, 0, 1, 1),
+                null,
+                null,
+                false));
+            diagnostics.Add(new OcrDiagnostic(
+                "blank_page_placeholder",
+                "MinerU returned no content for this physical page; a logical-page placeholder was created.",
+                page.PageId));
+        }
+
+        return boxes;
     }
 
     private static List<OcrBoxCandidate> MergeTextContainedByImages(
@@ -140,17 +178,41 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         double pageHeight,
         int sourceOrder,
         bool discarded,
+        bool skipMissingBBox,
+        NormalizedBBox? region,
         List<OcrDiagnostic> diagnostics)
     {
         NormalizedBBox? bbox = ToNormalizedBBox(block.Bbox, pageWidth, pageHeight);
-        if (bbox is null || bbox.Value.Validate().IsFailure)
+        if (bbox is null)
+        {
+            diagnostics.Add(skipMissingBBox
+                ? new OcrDiagnostic(
+                    "bbox_missing_skipped",
+                    "MinerU image block without a bbox was skipped.",
+                    page.PageId,
+                    sourceOrder)
+                : new OcrDiagnostic(
+                    "bbox_invalid",
+                    "MinerU box bbox could not be normalized to the physical page.",
+                    page.PageId,
+                    sourceOrder,
+                    true));
+            return null;
+        }
+
+        if (region is not null)
+        {
+            bbox = ScaleIntoRegion(bbox.Value, region.Value);
+        }
+
+        if (bbox.Value.Validate().IsFailure)
         {
             diagnostics.Add(new OcrDiagnostic(
                 "bbox_invalid",
                 "MinerU box bbox could not be normalized to the physical page.",
                 page.PageId,
                 sourceOrder,
-                true));
+                !skipMissingBBox));
             return null;
         }
 
@@ -354,6 +416,15 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         double y = bbox[1] / pageHeight;
         double width = (bbox[2] - bbox[0]) / pageWidth;
         double height = (bbox[3] - bbox[1]) / pageHeight;
+        return new NormalizedBBox(x, y, width, height);
+    }
+
+    private static NormalizedBBox ScaleIntoRegion(NormalizedBBox image, NormalizedBBox region)
+    {
+        double x = region.X + image.X * region.Width;
+        double y = region.Y + image.Y * region.Height;
+        double width = Math.Max(0, Math.Min(image.Width * region.Width, 1 - x));
+        double height = Math.Max(0, Math.Min(image.Height * region.Height, 1 - y));
         return new NormalizedBBox(x, y, width, height);
     }
 

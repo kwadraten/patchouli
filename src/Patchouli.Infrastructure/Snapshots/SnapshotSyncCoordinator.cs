@@ -128,19 +128,6 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                 return published;
             }
 
-            if (published.Value.CreatedBranch)
-            {
-                SnapshotSyncLocalState branchState = NextState(
-                    binding.LocalState,
-                    SnapshotSyncOperationState.AwaitingContentConflicts,
-                    published.Value.BranchInfo?.RemoteCurrentSnapshotId,
-                    published.Value.Warning);
-                Result saved = await _bindings.SaveLocalStateAsync(branchState, cancellationToken);
-                return saved.IsSuccess
-                    ? published
-                    : Result<SnapshotPublishResult>.Failure(saved.ErrorCode!, saved.ErrorMessage!);
-            }
-
             SnapshotSyncLocalState state = NextState(
                     binding.LocalState,
                     SnapshotSyncOperationState.Published,
@@ -221,15 +208,11 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             Directory.CreateDirectory(workRoot);
             Result<SnapshotPublishResult> published = await _publisher.PublishSnapshotAsync(
                 new SnapshotPublishRequest(binding.RuntimeDatabasePath, workRoot, binding.DeviceId), cancellationToken);
-            if (published.IsFailure || published.Value.CreatedBranch)
+            if (published.IsFailure)
             {
-                string message = published.IsFailure
-                    ? published.ErrorMessage!
-                    : "Snapshot package creation unexpectedly detected a branch.";
+                string message = published.ErrorMessage!;
                 await RecordFailureAsync(binding, message, cancellationToken);
-                return Result<SnapshotExportResult>.Failure(
-                    published.IsFailure ? published.ErrorCode! : AppErrorCodes.ValidationFailed,
-                    message);
+                return Result<SnapshotExportResult>.Failure(published.ErrorCode!, message);
             }
 
             Directory.CreateDirectory(candidate);

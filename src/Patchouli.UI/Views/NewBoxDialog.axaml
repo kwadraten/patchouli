@@ -1,0 +1,39 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Patchouli.UI.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="460" d:DesignHeight="360"
+        x:Class="Patchouli.UI.Views.NewBoxDialog"
+        x:DataType="vm:PdfWorkspaceViewModel"
+        Title="新建边界框"
+        Icon="/Assets/AppIcon.ico"
+        Width="460" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        ShowInTaskbar="False"
+        Topmost="True"
+        WindowDecorations="Full"
+        Background="{DynamicResource SurfaceBrush}">
+
+  <Border Padding="16">
+    <StackPanel Spacing="8">
+      <TextBlock Text="新边界框将插入边界框列表末尾，之后可在列表中拖动调整顺序。" TextWrapping="Wrap" FontSize="11"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      <ComboBox ItemsSource="{Binding NewBoxTypeOptions}" SelectedItem="{Binding NewBoxType}"
+                HorizontalAlignment="Stretch" />
+      <NumericUpDown Minimum="1" Maximum="6" Value="{Binding NewHeadingLevel}"
+                     IsVisible="{Binding NewBoxIsTitle}" PlaceholderText="标题级别 1–6" />
+      <TextBox Text="{Binding NewCodeLanguage}" IsVisible="{Binding NewBoxIsCode}"
+               PlaceholderText="代码语言（可选）" />
+      <TextBox Text="{Binding NewBoxText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100"
+               PlaceholderText="Markdown / LaTeX / code；逻辑页可留空" />
+      <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <Button Content="OCR 预填" Command="{Binding RunPendingOcrPrefillCommand}" />
+        <Button Content="取消" Click="OnCancelClicked" />
+        <Button Content="插入草稿" Click="OnInsertClicked"
+                Background="{DynamicResource PrimaryBrush}"
+                Foreground="{DynamicResource OnPrimaryBrush}" />
+      </StackPanel>
+    </StackPanel>
+  </Border>
+</Window>

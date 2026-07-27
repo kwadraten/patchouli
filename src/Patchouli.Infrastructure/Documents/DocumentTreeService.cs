@@ -201,6 +201,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 null);
             IndexedSeed[] indexed = boxes.Select((seed, index) =>
                 new IndexedSeed(index, seed, seed.BoxId ?? DocumentBoxId.New())).ToArray();
+            indexed = NormalizeContainedBoxes(indexed);
             Dictionary<string, IndexedSeed[]> groups = indexed
                 .GroupBy(value => BoxKey(value.Seed.ParentBoxId))
                 .ToDictionary(group => group.Key, group => group.OrderBy(value => value.Seed.SourceOrder).ToArray());
@@ -226,7 +227,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     seed.Confidence,
                     seed.Suppressed);
             }).ToArray();
-            // Provider output remains a candidate until adoption resolves any geometry conflicts.
+            // Provider output remains a candidate until adoption resolves any remaining geometry conflicts.
             Result validation = _validator.Validate(revision, staged, false);
             if (validation.IsFailure)
             {
@@ -523,12 +524,17 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 return Mutation<DocumentBox>.Failure("Only an existing leaf document box can be edited.");
             }
 
+            string boxType = command.BoxType.Trim();
             DocumentBox updated = boxes[index] with
             {
-                BoxType = command.BoxType.Trim(),
+                BoxType = boxType,
                 Payload = command.Payload,
-                HeadingLevel = command.HeadingLevel,
-                CodeLanguage = NullIfWhiteSpace(command.CodeLanguage),
+                HeadingLevel = boxType == DocumentBoxType.Title
+                    ? command.HeadingLevel ?? boxes[index].HeadingLevel ?? 1
+                    : null,
+                CodeLanguage = boxType is DocumentBoxType.Code or DocumentBoxType.Algorithm
+                    ? NullIfWhiteSpace(command.CodeLanguage)
+                    : null,
                 SubType = NullIfWhiteSpace(command.SubType),
                 BaseType = NullIfWhiteSpace(command.BaseType)
             };
@@ -707,7 +713,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             TableBoxPayload value => !string.IsNullOrWhiteSpace(value.Markdown),
             CodeBoxPayload value => !string.IsNullOrWhiteSpace(value.Code),
             MediaBoxPayload value => !string.IsNullOrWhiteSpace(value.AssetId) ||
-                                      !string.IsNullOrWhiteSpace(value.Description),
+                                     !string.IsNullOrWhiteSpace(value.Description),
             _ => false
         };
     }
@@ -823,11 +829,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         if (parentId is not null)
         {
             DocumentBox? parent = boxes.SingleOrDefault(box => box.BoxId == parentId.Value);
-            if (parent is null || parent.BoxType != DocumentBoxType.LogicalPage)
+            if (parent is null)
             {
                 return Result<DocumentBoxId?>.Failure(
                     AppErrorCodes.ValidationFailed,
-                    "The insertion parent must be an existing logical_page in the draft.");
+                    "The insertion parent must be an existing box in the draft.");
             }
         }
 
@@ -1265,6 +1271,55 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     }
 
     private sealed record IndexedSeed(int Index, DocumentBoxSeed Seed, DocumentBoxId BoxId);
+
+    private static IndexedSeed[] NormalizeContainedBoxes(IReadOnlyList<IndexedSeed> indexed)
+    {
+        IndexedSeed[] normalized = indexed.ToArray();
+        foreach (IGrouping<DocumentBoxId?, IndexedSeed> group in indexed.GroupBy(value => value.Seed.ParentBoxId))
+        {
+            IndexedSeed[] siblings = group.ToArray();
+            foreach (IndexedSeed child in siblings)
+            {
+                if (child.Seed.BoxType == DocumentBoxType.LogicalPage || child.Seed.Suppressed ||
+                    DocumentBoxType.AllowsOverlap(child.Seed.BoxType))
+                {
+                    continue;
+                }
+
+                double childArea = Area(child.Seed.BBox);
+                IndexedSeed? parent = siblings
+                    .Where(candidate => candidate.Index != child.Index &&
+                                        candidate.Seed.BoxType != DocumentBoxType.LogicalPage &&
+                                        !candidate.Seed.Suppressed &&
+                                        !DocumentBoxType.AllowsOverlap(candidate.Seed.BoxType) &&
+                                        Area(candidate.Seed.BBox) > childArea &&
+                                        Contains(candidate.Seed.BBox, child.Seed.BBox))
+                    .OrderByDescending(candidate => Area(candidate.Seed.BBox))
+                    .ThenBy(candidate => candidate.Index)
+                    .FirstOrDefault();
+                if (parent is not null)
+                {
+                    normalized[child.Index] = child with { Seed = child.Seed with { ParentBoxId = parent.BoxId } };
+                }
+            }
+        }
+
+        return normalized;
+    }
+
+    private static double Area(NormalizedBBox bbox)
+    {
+        return bbox.Width * bbox.Height;
+    }
+
+    private static bool Contains(NormalizedBBox container, NormalizedBBox contained)
+    {
+        const double tolerance = 1e-9;
+        return contained.X >= container.X - tolerance &&
+               contained.Y >= container.Y - tolerance &&
+               contained.X + contained.Width <= container.X + container.Width + tolerance &&
+               contained.Y + contained.Height <= container.Y + container.Height + tolerance;
+    }
 
     private sealed class DocumentTreeRevisionRow
     {

@@ -182,6 +182,34 @@ public sealed class PageService : IPageService
         }
     }
 
+    public async Task<Result<FileAssetId>> GetFileAssetIdAsync(
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            string? fileAssetId = await connection.ExecuteScalarAsync<string?>(
+                "select file_asset_id from document_instances where document_instance_id = @DocumentInstanceId;",
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+
+            return string.IsNullOrWhiteSpace(fileAssetId)
+                ? Result<FileAssetId>.Failure(AppErrorCodes.NotFound, "Document instance has no file asset.")
+                : Result<FileAssetId>.Success(FileAssetId.Parse(fileAssetId));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.page-service"))
+        {
+            return DatabaseFailure<FileAssetId>(exception);
+        }
+    }
+
     private static Result ValidatePageInput(
         int pageIndex,
         int rotation,

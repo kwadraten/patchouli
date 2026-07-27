@@ -3,12 +3,9 @@ using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSection
+public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private string _status = "已保存";
-    private bool _isDirty;
-    private string? _lastError;
 
     public MetadataLookupSettingsViewModel(MainWindowViewModel main)
     {
@@ -24,43 +21,33 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
 
-    public bool IsDirty
-    {
-        get => _isDirty;
-        private set
-        {
-            if (_isDirty == value)
-            {
-                return;
-            }
+    public override bool SupportsEditing => true;
+    public override bool CanSave => IsDirty;
 
-            _isDirty = value;
-            Raise();
+    private bool _isDirty;
+
+    public override bool IsDirty => _isDirty;
+
+    private void SetDirty(bool value)
+    {
+        if (_isDirty == value)
+        {
+            return;
         }
+
+        _isDirty = value;
+        Raise(nameof(IsDirty));
     }
 
-    public bool SupportsEditing => true;
-    public bool CanSave => IsDirty;
-    public string SaveStateText => Status;
-    public string? LastError => _lastError;
+    public override string EffectiveSourceText => _main.AppOptions.Sync.SyncMetadataLookup
+        ? "数据库同步基准"
+        : "本机 JSON 设置";
 
-    public string Status
+    public override string ScopeText => _main.AppOptions.Sync.SyncMetadataLookup ? "随库同步" : "仅此设备";
+
+    public override async Task SaveAsync()
     {
-        get => _status;
-        private set
-        {
-            if (_status == value)
-            {
-                return;
-            }
-
-            _status = value;
-            Raise();
-        }
-    }
-
-    public async Task SaveAsync()
-    {
+        SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         MetadataLookupAppSettings settings = new(Sources
             .Select(source => new MetadataSourcePreference(source.SourceId, source.Enabled))
@@ -68,21 +55,24 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
         SettingsSaveResult saved = await _main.SaveMetadataLookupSettingsAsync(settings);
         if (saved.IsSuccess)
         {
-            IsDirty = false;
+            SetDirty(false);
+            SaveState = SettingsSaveState.Saved;
+            ValidationState = SettingsValidationState.Valid;
             Status = "已保存";
-            _lastError = null;
+            LastError = null;
         }
         else
         {
+            SaveState = SettingsSaveState.Failed;
             Status = $"保存失败：{saved.ErrorMessage}";
-            _lastError = saved.ErrorMessage;
-            Raise(nameof(LastError));
+            LastError = saved.ErrorMessage;
         }
     }
 
-    public Task DiscardAsync()
+    public override Task DiscardAsync()
     {
         Load(_main.AppOptions.MetadataLookup, false);
+        SaveState = SettingsSaveState.Clean;
         Status = "已放弃更改";
         return Task.CompletedTask;
     }
@@ -93,11 +83,15 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
         {
             Load(settings, false);
         }
+
+        Raise(nameof(EffectiveSourceText));
+        Raise(nameof(ScopeText));
     }
 
     internal void MarkDirty()
     {
-        IsDirty = true;
+        SetDirty(true);
+        SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
     }
 
@@ -130,7 +124,8 @@ public sealed class MetadataLookupSettingsViewModel : ViewModelBase, ISettingsSe
         }
 
         RefreshPositions();
-        IsDirty = dirty;
+        SetDirty(dirty);
+        SaveState = dirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
         Status = dirty ? "有未保存的更改" : "已保存";
     }
 

@@ -38,35 +38,6 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             return Result<MinerUImportResult>.Failure("invalid_id", "Document instance ID is not a valid GUID.");
         }
 
-        MinerUContentListDocument? contentList;
-        try
-        {
-            using MinerUZipReader reader = MinerUZipReader.Open(request.ZipPath);
-            string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
-                                      ?? reader.ReadFileContent("_content_list.json");
-            if (contentListJson is null)
-            {
-                return Result<MinerUImportResult>.Failure(
-                    "tree_artifact_required",
-                    "MinerU result has no verifiable content-list tree artifact; full.md cannot be imported as a pseudo box.");
-            }
-
-            contentList = new MinerUContentListParser().Parse(contentListJson);
-        }
-        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
-                                              exception,
-                                              "infrastructure.mineru-result-importer"))
-        {
-            return Result<MinerUImportResult>.Failure(
-                "zip_read_error",
-                $"Failed to read result zip: {exception.Message}");
-        }
-
-        if (contentList is null || contentList.Pages.Count == 0)
-        {
-            return Result<MinerUImportResult>.Failure("no_content", "MinerU content list is empty.");
-        }
-
         DocumentInstanceId documentInstanceId = new(documentGuid);
         Result<IReadOnlyList<Page>> pages = await GetPagesAsync(documentInstanceId, cancellationToken);
         if (pages.IsFailure)
@@ -74,8 +45,17 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
             return Result<MinerUImportResult>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
         }
 
-        OcrDocumentTreeCandidate candidate = new MinerUDocumentTreeCandidateMapper().MapDocument(
-            contentList, pages.Value);
+        IReadOnlyList<Page> mappedPages = request.RequestedPageIds is { Count: > 0 } requested
+            ? pages.Value.Where(page => requested.Contains(page.PageId)).ToArray()
+            : pages.Value;
+        Result<OcrDocumentTreeCandidate> parsed = new MinerUResultParser().ParseStructuredTree(
+            new MinerUPreparedResult(request.ZipPath, [], null), mappedPages);
+        if (parsed.IsFailure)
+        {
+            return Result<MinerUImportResult>.Failure(parsed.ErrorCode!, parsed.ErrorMessage!);
+        }
+
+        OcrDocumentTreeCandidate candidate = parsed.Value;
         Result candidateValidation = candidate.Validate();
         if (candidateValidation.IsFailure)
         {

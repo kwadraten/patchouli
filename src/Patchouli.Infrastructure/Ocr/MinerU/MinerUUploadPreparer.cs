@@ -54,13 +54,18 @@ public static class MinerUPdfChunkPlanner
     }
 }
 
-public sealed class MinerUResultDownloader
+internal sealed record MinerUPreparedResult(
+    string ZipPath,
+    IReadOnlyList<int> PageIndexMap,
+    OcrImageContext? ImageContext);
+
+public sealed class MinerUUploadPreparer
 {
     private readonly IMinerUClient _client;
     private readonly MinerUUploadLimits _limits;
     private readonly PdfiumDocumentEngine _pdfium;
 
-    public MinerUResultDownloader(IMinerUClient client, MinerUUploadLimits? limits = null,
+    public MinerUUploadPreparer(IMinerUClient client, MinerUUploadLimits? limits = null,
         PdfiumDocumentEngine? pdfium = null)
     {
         _client = client;
@@ -68,10 +73,49 @@ public sealed class MinerUResultDownloader
         _pdfium = pdfium ?? new PdfiumDocumentEngine();
     }
 
+    internal async Task<Result<MinerUPreparedResult>> PrepareAndUploadAsync(
+        OcrUploadSource source,
+        string downloadDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        return source switch
+        {
+            OcrUploadSource.WholeDocument wholeDocument => ToPrepared(
+                await UploadDocumentAsync(wholeDocument.PdfPath, downloadDirectory, cancellationToken), null),
+            OcrUploadSource.PageRanges pageRanges => await PreparePageRangesAsync(
+                pageRanges, downloadDirectory, cancellationToken),
+            OcrUploadSource.PageImage pageImage => await PrepareImageAsync(
+                pageImage.ImagePath, pageImage.Context, downloadDirectory, cancellationToken),
+            OcrUploadSource.RegionImage regionImage => await PrepareImageAsync(
+                regionImage.ImagePath, regionImage.Context, downloadDirectory, cancellationToken),
+            _ => Result<MinerUPreparedResult>.Failure("validation_failed", "Unknown OCR upload source.")
+        };
+    }
+
     public async Task<Result<MinerUDownloadedResult>> UploadAndExtractAsync(
         string pdfPath,
         string downloadDirectory,
         CancellationToken cancellationToken = default)
+    {
+        return await UploadDocumentAsync(pdfPath, downloadDirectory, cancellationToken);
+    }
+
+    public async Task<Result<string>> UploadAndExtractImageAsync(
+        string imagePath,
+        string downloadDirectory,
+        CancellationToken cancellationToken = default)
+    {
+        Result<MinerUPreparedResult> prepared = await PrepareImageAsync(
+            imagePath, new OcrImageContext(0, 0, 0, null), downloadDirectory, cancellationToken);
+        return prepared.IsFailure
+            ? Result<string>.Failure(prepared.ErrorCode!, prepared.ErrorMessage!)
+            : new MinerUResultParser().ParsePlainText(prepared.Value);
+    }
+
+    private async Task<Result<MinerUDownloadedResult>> UploadDocumentAsync(
+        string pdfPath,
+        string downloadDirectory,
+        CancellationToken cancellationToken)
     {
         FileInfo fileInfo = new(pdfPath);
         if (!fileInfo.Exists)
@@ -110,7 +154,7 @@ public sealed class MinerUResultDownloader
             return Result<MinerUDownloadedResult>.Failure(chunkFiles.ErrorCode!, chunkFiles.ErrorMessage!);
         }
 
-        List<(MinerUPdfChunk Chunk, MinerUDownloadedResult Download)> downloads = new();
+        List<(int PageIndexOffset, MinerUDownloadedResult Download)> downloads = new();
         foreach (ChunkUploadFile chunkFile in chunkFiles.Value)
         {
             Result<MinerUDownloadedResult> result = await UploadSingleAsync(chunkFile.Request,
@@ -120,10 +164,10 @@ public sealed class MinerUResultDownloader
                 return Result<MinerUDownloadedResult>.Failure(result.ErrorCode!, result.ErrorMessage!);
             }
 
-            downloads.Add((chunkFile.Chunk, result.Value));
+            downloads.Add((chunkFile.Chunk.StartPageIndex, result.Value));
         }
 
-        if (downloads.Count == 1)
+        if (downloads.Count == 1 && downloads[0].PageIndexOffset == 0)
         {
             return Result<MinerUDownloadedResult>.Success(downloads[0].Download);
         }
@@ -133,6 +177,152 @@ public sealed class MinerUResultDownloader
             ? Result<MinerUDownloadedResult>.Success(new MinerUDownloadedResult("merged-" + dataId[..12], merged.Value,
                 MinerUProviderStatus.Done))
             : Result<MinerUDownloadedResult>.Failure(merged.ErrorCode!, merged.ErrorMessage!);
+    }
+
+    private async Task<Result<MinerUPreparedResult>> PreparePageRangesAsync(
+        OcrUploadSource.PageRanges source,
+        string downloadDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (source.Ranges.Count == 0 ||
+            source.Ranges.Any(range => range.StartPageIndex < 0 || range.PageCount <= 0))
+        {
+            return Result<MinerUPreparedResult>.Failure("validation_failed",
+                "MinerU page-range uploads require non-empty, valid page ranges.");
+        }
+
+        FileInfo fileInfo = new(source.PdfPath);
+        if (!fileInfo.Exists)
+        {
+            return Result<MinerUPreparedResult>.Failure("file_not_found", "PDF file was not found.");
+        }
+
+        string dataId = await Blake3Hash.ComputeFileAsync(source.PdfPath, cancellationToken);
+        string rangesDirectory = Path.Combine(downloadDirectory, "mineru-upload-chunks",
+            Path.GetFileNameWithoutExtension(source.PdfPath) + "-" + dataId[..12]);
+        try
+        {
+            Directory.CreateDirectory(rangesDirectory);
+            List<(int PageIndexOffset, MinerUDownloadedResult Download)> downloads = new();
+            foreach (OcrPageRange range in source.Ranges)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string subPdfPath = Path.Combine(rangesDirectory, BuildRangeFileName(fileInfo.Name, range));
+                await _pdfium.ExtractPagesAsync(source.PdfPath, subPdfPath, range.StartPageIndex, range.PageCount,
+                    cancellationToken);
+                FileInfo subPdfInfo = new(subPdfPath);
+                IReadOnlyList<MinerUPdfChunk> chunks =
+                    MinerUPdfChunkPlanner.PlanChunks(range.PageCount, subPdfInfo.Length, _limits);
+                if (chunks.Count <= 1 && subPdfInfo.Length <= _limits.MaxBytesPerFile &&
+                    range.PageCount <= _limits.MaxPagesPerFile)
+                {
+                    string subDataId =
+                        $"{dataId[..Math.Min(32, dataId.Length)]}-{range.StartPageIndex + 1}-{range.StartPageIndex + range.PageCount}";
+                    MinerUUploadRequest uploadRequest = new(subPdfPath, Path.GetFileName(subPdfPath),
+                        subPdfInfo.Length, subDataId);
+                    Result<MinerUDownloadedResult> uploaded = await UploadSingleAsync(uploadRequest,
+                        Path.Combine(downloadDirectory, "mineru-results"), cancellationToken);
+                    if (uploaded.IsFailure)
+                    {
+                        return Result<MinerUPreparedResult>.Failure(uploaded.ErrorCode!, uploaded.ErrorMessage!);
+                    }
+
+                    downloads.Add((range.StartPageIndex, uploaded.Value));
+                    continue;
+                }
+
+                Result<IReadOnlyList<ChunkUploadFile>> chunkFiles = await CreateChunkFilesAsync(subPdfPath,
+                    Path.GetFileName(subPdfPath), dataId, chunks, rangesDirectory, cancellationToken);
+                if (chunkFiles.IsFailure)
+                {
+                    return Result<MinerUPreparedResult>.Failure(chunkFiles.ErrorCode!, chunkFiles.ErrorMessage!);
+                }
+
+                foreach (ChunkUploadFile chunkFile in chunkFiles.Value)
+                {
+                    Result<MinerUDownloadedResult> uploaded = await UploadSingleAsync(chunkFile.Request,
+                        Path.Combine(downloadDirectory, "mineru-results"), cancellationToken);
+                    if (uploaded.IsFailure)
+                    {
+                        return Result<MinerUPreparedResult>.Failure(uploaded.ErrorCode!, uploaded.ErrorMessage!);
+                    }
+
+                    downloads.Add((range.StartPageIndex + chunkFile.Chunk.StartPageIndex, uploaded.Value));
+                }
+            }
+
+            if (downloads.Count == 1 && downloads[0].PageIndexOffset == 0)
+            {
+                return ToPrepared(Result<MinerUDownloadedResult>.Success(downloads[0].Download), null);
+            }
+
+            Result<string> merged = MergeResultZips(downloads, downloadDirectory);
+            return ToPrepared(merged.IsSuccess
+                ? Result<MinerUDownloadedResult>.Success(new MinerUDownloadedResult(
+                    "merged-" + dataId[..12], merged.Value, MinerUProviderStatus.Done))
+                : Result<MinerUDownloadedResult>.Failure(merged.ErrorCode!, merged.ErrorMessage!), null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
+                                       "infrastructure.mineru-upload-preparer"))
+        {
+            return Result<MinerUPreparedResult>.Failure("pdf_split_failed",
+                $"Failed to split PDF for MinerU upload: {ex.Message}");
+        }
+    }
+
+    private async Task<Result<MinerUPreparedResult>> PrepareImageAsync(
+        string imagePath,
+        OcrImageContext context,
+        string downloadDirectory,
+        CancellationToken cancellationToken)
+    {
+        FileInfo fileInfo = new(imagePath);
+        if (!fileInfo.Exists)
+        {
+            return Result<MinerUPreparedResult>.Failure("file_not_found", "Image file was not found.");
+        }
+
+        string dataId = await Blake3Hash.ComputeFileAsync(imagePath, cancellationToken);
+        string fileName = fileInfo.Name.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            ? fileInfo.Name
+            : Path.GetFileNameWithoutExtension(fileInfo.Name) + ".png";
+        MinerUUploadRequest uploadRequest = new(imagePath, fileName, fileInfo.Length, dataId);
+        return ToPrepared(await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken), context);
+    }
+
+    private static Result<MinerUPreparedResult> ToPrepared(
+        Result<MinerUDownloadedResult> download,
+        OcrImageContext? imageContext)
+    {
+        if (download.IsFailure)
+        {
+            return Result<MinerUPreparedResult>.Failure(download.ErrorCode!, download.ErrorMessage!);
+        }
+
+        try
+        {
+            using MinerUZipReader reader = MinerUZipReader.Open(download.Value.ZipPath);
+            string? contentListJson = reader.ReadFileContent("_content_list_v2.json")
+                                      ?? reader.ReadFileContent("_content_list.json");
+            MinerUContentListDocument? document = contentListJson is null
+                ? null
+                : new MinerUContentListParser().Parse(contentListJson);
+            IReadOnlyList<int> pageIndexMap = document is null
+                ? []
+                : document.Pages.Select(page => page.PageNum - 1).Distinct().OrderBy(index => index).ToArray();
+            return Result<MinerUPreparedResult>.Success(
+                new MinerUPreparedResult(download.Value.ZipPath, pageIndexMap, imageContext));
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
+                                       "infrastructure.mineru-upload-preparer"))
+        {
+            return Result<MinerUPreparedResult>.Failure("zip_read_error",
+                $"Failed to read result zip: {ex.Message}");
+        }
     }
 
     private async Task<Result<MinerUDownloadedResult>> UploadSingleAsync(
@@ -201,7 +391,7 @@ public sealed class MinerUResultDownloader
             throw;
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
-                                       "infrastructure.mineru-result-downloader"))
+                                       "infrastructure.mineru-upload-preparer"))
         {
             return Result<IReadOnlyList<ChunkUploadFile>>.Failure("pdf_split_failed",
                 $"Failed to split PDF for MinerU upload: {ex.Message}");
@@ -260,8 +450,20 @@ public sealed class MinerUResultDownloader
         return $"{stem}.part-{chunk.StartPageIndex + 1:D5}-{chunk.EndPageIndex + 1:D5}{ext}";
     }
 
+    private static string BuildRangeFileName(string originalFileName, OcrPageRange range)
+    {
+        string stem = Path.GetFileNameWithoutExtension(originalFileName);
+        string ext = Path.GetExtension(originalFileName);
+        if (string.IsNullOrWhiteSpace(ext))
+        {
+            ext = ".pdf";
+        }
+
+        return $"{stem}.pages-{range.StartPageIndex + 1:D5}-{range.StartPageIndex + range.PageCount:D5}{ext}";
+    }
+
     private static Result<string> MergeResultZips(
-        IReadOnlyList<(MinerUPdfChunk Chunk, MinerUDownloadedResult Download)> downloads, string downloadDirectory)
+        IReadOnlyList<(int PageIndexOffset, MinerUDownloadedResult Download)> downloads, string downloadDirectory)
     {
         try
         {
@@ -271,19 +473,19 @@ public sealed class MinerUResultDownloader
             JsonArray contentListV2Pages = new();
             StringBuilder markdown = new();
 
-            foreach ((MinerUPdfChunk chunk, MinerUDownloadedResult download) in downloads)
+            foreach ((int pageIndexOffset, MinerUDownloadedResult download) in downloads)
             {
                 using MinerUZipReader reader = MinerUZipReader.Open(download.ZipPath);
                 string? contentListJson = reader.ReadFileContent("_content_list.json");
                 if (!string.IsNullOrWhiteSpace(contentListJson))
                 {
-                    AppendShiftedContentItems(contentItems, contentListJson, chunk.StartPageIndex);
+                    AppendShiftedContentItems(contentItems, contentListJson, pageIndexOffset);
                 }
 
                 string? contentListV2Json = reader.ReadFileContent("_content_list_v2.json");
                 if (!string.IsNullOrWhiteSpace(contentListV2Json))
                 {
-                    AppendContentListV2Pages(contentListV2Pages, contentListV2Json);
+                    AppendContentListV2Pages(contentListV2Pages, contentListV2Json, pageIndexOffset);
                 }
 
                 string? md = reader.ReadFileContent("full.md");
@@ -323,7 +525,7 @@ public sealed class MinerUResultDownloader
             return Result<string>.Success(mergedPath);
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
-                                       "infrastructure.mineru-result-downloader"))
+                                       "infrastructure.mineru-upload-preparer"))
         {
             return Result<string>.Failure("zip_merge_failed", $"Failed to merge MinerU result zips: {ex.Message}");
         }
@@ -372,12 +574,17 @@ public sealed class MinerUResultDownloader
         }
     }
 
-    private static void AppendContentListV2Pages(JsonArray target, string contentListJson)
+    private static void AppendContentListV2Pages(JsonArray target, string contentListJson, int pageIndexOffset)
     {
         JsonNode? root = JsonNode.Parse(contentListJson);
         if (root is not JsonArray pages)
         {
             return;
+        }
+
+        while (target.Count < pageIndexOffset)
+        {
+            target.Add(new JsonArray());
         }
 
         foreach (JsonNode? pageNode in pages)

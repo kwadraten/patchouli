@@ -86,6 +86,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool StatusIsError { get; set; }
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}/mcp";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
+    public bool McpServerRunning => _mcpServer?.IsRunning == true;
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
 
@@ -186,10 +187,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public BibliographyViewModel Bibliography { get; }
     public FileDocumentViewModel FileDocument { get; }
-    public PageLayoutViewModel PageLayout { get; }
-    public MockOcrViewModel MockOcr { get; }
     public OcrQueueViewModel OcrQueue { get; }
-    public PdfRenderViewModel PdfRender { get; }
     public SearchEvidenceViewModel SearchEvidence { get; }
     public SearchProfileViewModel SearchProfiles { get; }
     public McpPreviewViewModel McpPreview { get; }
@@ -422,10 +420,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Library = new LibraryViewModel(this);
         Bibliography = new BibliographyViewModel(this);
         FileDocument = new FileDocumentViewModel(this);
-        PageLayout = new PageLayoutViewModel(this);
-        MockOcr = new MockOcrViewModel(this);
         OcrQueue = new OcrQueueViewModel(this);
-        PdfRender = new PdfRenderViewModel(this);
         SearchEvidence = new SearchEvidenceViewModel(this);
         SearchProfiles = new SearchProfileViewModel(this);
         McpPreview = new McpPreviewViewModel(this);
@@ -437,10 +432,15 @@ public sealed class MainWindowViewModel : ViewModelBase
             {
                 Settings.SyncSettings.NotifySnapshotStateChanged();
             }
+
+            if (e.PropertyName is nameof(SnapshotViewModel.OperationStateText) or
+                nameof(SnapshotViewModel.OperationState))
+            {
+                RefreshSyncDescriptors();
+            }
         };
         About = new AboutViewModel(this);
         Shell.MinerUToken = "";
-        Settings.MinerUTokenInput = "";
         OpenDatabaseCommand = new AsyncCommand(async () =>
         {
             if (Settings.HasDirtySections)
@@ -516,7 +516,14 @@ public sealed class MainWindowViewModel : ViewModelBase
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
         CheckSyncStateDescriptor = new UiCommandDescriptor("sync.open_center", "打开同步中心", CheckSyncStateCommand);
-        PublishSnapshotDescriptor = new UiCommandDescriptor("sync.publish", "发布到同步目录", Snapshot.PublishCommand);
+        PublishSnapshotDescriptor = new UiCommandDescriptor(
+            "sync.publish",
+            "发布到同步目录",
+            new AsyncCommand(async () =>
+            {
+                await OpenSyncCenterAsync();
+                await Snapshot.PublishCommand.ExecuteAsync();
+            }));
         ExportSnapshotPackageDescriptor = new UiCommandDescriptor(
             "sync.export_package",
             "导出快照包…",
@@ -524,11 +531,16 @@ public sealed class MainWindowViewModel : ViewModelBase
         ReceiveSnapshotDescriptor = new UiCommandDescriptor(
             "sync.receive_current",
             "检查/接收 current 快照",
-            Snapshot.CheckCurrentCommand);
+            new AsyncCommand(async () =>
+            {
+                await OpenSyncCenterAsync();
+                await Snapshot.CheckCurrentCommand.ExecuteAsync();
+            }));
         OpenSnapshotPackageDescriptor = new UiCommandDescriptor(
             "sync.open_package",
             "从快照包打开…",
             new AsyncCommand(OpenSyncCenterAsync));
+        RefreshSyncDescriptors();
         CopyCslBibliographyDescriptor =
             new UiCommandDescriptor("csl.copy_bibliography", "复制 CSL 题录", CopyCslBibliographyCommand);
         ExportItemDescriptor = new UiCommandDescriptor("csl.export_item", "导出题录", ExportItemCommand);
@@ -1196,6 +1208,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise(nameof(McpStatusText));
             Raise(nameof(McpStatusDetail));
             Raise(nameof(McpStatusBrush));
+            Raise(nameof(McpServerRunning));
         }
 
         if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
@@ -1432,6 +1445,36 @@ public sealed class MainWindowViewModel : ViewModelBase
         return true;
     }
 
+    public async Task<bool> RemoveMinerUCredentialAsync()
+    {
+        ConfirmDialogResult? choice = await Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "移除 MinerU 凭据",
+                "将从本机凭据存储中删除 MinerU API token。移除后本机无法执行 OCR，直到重新配置。",
+                "移除",
+                confirmDanger: true));
+        if (choice != ConfirmDialogResult.Confirm)
+        {
+            return true;
+        }
+
+        AppServices services = await ServicesAsync();
+        Result removed = await services.Credentials.RemoveAsync(ProviderIds.MinerU);
+        if (removed.IsFailure)
+        {
+            ReportError(removed.ErrorMessage ?? "无法移除 MinerU API token。");
+            return false;
+        }
+
+        _settings = PatchouliAppSettings.Load(SettingsFilePath);
+        Shell.MinerUToken = "";
+        FirstRun.MinerUToken = "";
+        Settings.OcrProviderSettings.LoadPersistedToken("");
+        Shell.NotifyMinerUTokenChanged();
+        Report("MinerU 凭据已移除。");
+        return true;
+    }
+
     private async Task LoadPersistedMinerUTokenAsync()
     {
         string token = await GetPersistedMinerUTokenAsync();
@@ -1451,6 +1494,9 @@ public sealed class MainWindowViewModel : ViewModelBase
         DialogService service = new();
         service.Register<BlockingOperationDialogViewModel, BlockingOperationDialog>();
         service.Register<ConflictResolutionDialogViewModel, ConflictResolutionDialog>();
+        service.Register<ConfirmDialogViewModel, ConfirmDialog>();
+        service.Register<PdfBBoxViewModel, BoxEditorDialog>();
+        service.Register<PdfWorkspaceViewModel, NewBoxDialog>();
         return service;
     }
 
@@ -1670,6 +1716,25 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         await ActivateTabAsync(WorkspaceTabKind.SyncCenter, "SyncCenter", "同步中心", "RefreshCw", true, () => Snapshot);
         await Snapshot.RefreshAsync();
+    }
+
+    private void RefreshSyncDescriptors()
+    {
+        bool busy = Snapshot.OperationState is SnapshotSyncOperationState.Validating
+            or SnapshotSyncOperationState.Publishing
+            or SnapshotSyncOperationState.Exporting
+            or SnapshotSyncOperationState.CheckingIncoming
+            or SnapshotSyncOperationState.InspectingBranch
+            or SnapshotSyncOperationState.Applying;
+        foreach (UiCommandDescriptor descriptor in new[]
+                 {
+                     PublishSnapshotDescriptor, ExportSnapshotPackageDescriptor, ReceiveSnapshotDescriptor,
+                     OpenSnapshotPackageDescriptor
+                 })
+        {
+            descriptor.Enabled = !busy;
+            descriptor.DisabledReason = busy ? "同步操作进行中，请等待完成。" : string.Empty;
+        }
     }
 
     private async Task CopyCslBibliographyAsync()

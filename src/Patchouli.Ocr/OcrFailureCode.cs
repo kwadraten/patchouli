@@ -8,6 +8,7 @@ public static class OcrFailureCode
     public const string UnsupportedFile = "unsupported_file";
     public const string MockPageFailure = "mock_page_failure";
     public const string Cancelled = "cancelled";
+    public const string Interrupted = "interrupted";
     public const string Unknown = "unknown";
     public const string LocalOcrProcessFailed = "local_ocr_process_failed";
     public const string LocalOcrTimeout = "local_ocr_timeout";

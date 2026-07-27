@@ -60,7 +60,7 @@ internal sealed class DocumentTreeValidator
             }
         }
 
-        Result shape = ValidateShape(boxes, byId);
+        Result shape = ValidateShape(boxes);
         if (shape.IsFailure)
         {
             return shape;
@@ -101,9 +101,10 @@ internal sealed class DocumentTreeValidator
 
         if (box.BoxType == DocumentBoxType.LogicalPage)
         {
-            return box.Payload is null && box.HeadingLevel is null && box.CodeLanguage is null && !box.Suppressed
+            return box.HeadingLevel is null && box.CodeLanguage is null && !box.Suppressed &&
+                   (box.Payload is null || box.Payload is TextBoxPayload)
                 ? Result.Success()
-                : Invalid("Logical pages cannot have payload, heading level, code language, or suppression.");
+                : Invalid("Logical pages can only have optional text payloads and cannot have heading level, code language, or suppression.");
         }
 
         if (box.Payload is null)
@@ -140,9 +141,7 @@ internal sealed class DocumentTreeValidator
         return _markdown.ValidateLeaf(validationType, box.Payload);
     }
 
-    private static Result ValidateShape(
-        IReadOnlyList<DocumentBox> boxes,
-        IReadOnlyDictionary<DocumentBoxId, DocumentBox> byId)
+    private static Result ValidateShape(IReadOnlyList<DocumentBox> boxes)
     {
         DocumentBox[] roots = boxes.Where(box => box.ParentBoxId is null).ToArray();
         bool hasLogicalRoots = roots.Any(box => box.BoxType == DocumentBoxType.LogicalPage);
@@ -154,20 +153,9 @@ internal sealed class DocumentTreeValidator
 
         foreach (DocumentBox box in boxes)
         {
-            bool hasChildren = boxes.Any(candidate => candidate.ParentBoxId == box.BoxId);
-            if (hasChildren && box.BoxType != DocumentBoxType.LogicalPage)
-            {
-                return Invalid("Only logical_page boxes can own children.");
-            }
-
             if (box.BoxType == DocumentBoxType.LogicalPage && box.ParentBoxId is not null)
             {
                 return Invalid("Logical pages must be roots of the physical page tree.");
-            }
-
-            if (box.ParentBoxId is not null && byId[box.ParentBoxId.Value].BoxType != DocumentBoxType.LogicalPage)
-            {
-                return Invalid("Leaf boxes can only be nested directly under a logical_page.");
             }
         }
 

@@ -54,6 +54,47 @@ public sealed class MinerUDocumentTreeTests
     }
 
     [Fact]
+    public async Task Importer_creates_a_logical_page_placeholder_for_an_empty_mineru_page()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"First page"}]},"bbox":[0,0,1000,1000]}
+                                                          ],
+                                                          []
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.BoxesCreated.Should().Be(2);
+            result.Value.Warnings.Should().Contain("blank_page_placeholder");
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1]))).Value;
+            boxes.Should().ContainSingle().Which.Should().BeEquivalentTo(new
+            {
+                BoxType = DocumentBoxType.LogicalPage,
+                Payload = new TextBoxPayload("Blank page (MinerU returned no content).")
+            });
+            (await context.Trees.AdoptStagingRevisionAsync(
+                    DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1])))
+                .IsSuccess.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
     public async Task Importer_preserves_v2_auxiliary_content_as_suppressed_text()
     {
         await using Context context = await Context.CreateAsync();

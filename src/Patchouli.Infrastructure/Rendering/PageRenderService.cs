@@ -1,6 +1,7 @@
 using Dapper;
 using Microsoft.Data.Sqlite;
 using System.Collections.Concurrent;
+using System.Globalization;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -338,11 +339,56 @@ public sealed class PageRenderService : IPageRenderService
             rendered.Value.Warning));
     }
 
+    public async Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
+        NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default)
+    {
+        Result validation = region.Validate();
+        if (validation.IsFailure)
+        {
+            return Result<string>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
+        }
+
+        Result<OcrInputDescriptor> input = await BuildOcrInputFromRenderedPageAsync(
+            documentInstanceId, pageId, dpi, cancellationToken);
+        if (input.IsFailure || string.IsNullOrWhiteSpace(input.Value.ImagePath))
+        {
+            return Result<string>.Failure(
+                input.ErrorCode ?? AppErrorCodes.InvalidState,
+                input.ErrorMessage ?? "Rendered OCR input is unavailable.");
+        }
+
+        string fullPagePath = input.Value.ImagePath;
+        string cropPath = RegionCropPath(fullPagePath, region);
+        if (File.Exists(cropPath))
+        {
+            return Result<string>.Success(cropPath);
+        }
+
+        try
+        {
+            RegionImageCrop.CropPngToFile(fullPagePath, region, cropPath);
+            return Result<string>.Success(cropPath);
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-render"))
+        {
+            return Result<string>.Failure(AppErrorCodes.InvalidState, $"Region crop failed: {ex.Message}");
+        }
+    }
+
     public Task<PdfRendererAvailability> GetRendererAvailabilityAsync(CancellationToken cancellationToken = default)
     {
         return _renderer is IPdfPageRendererAvailability availability
             ? availability.CheckAvailabilityAsync(cancellationToken)
             : Task.FromResult(new PdfRendererAvailability(_renderer.GetType().Name, true, "Renderer is configured."));
+    }
+
+    private static string RegionCropPath(string fullPagePath, NormalizedBBox region)
+    {
+        string token = Blake3Hash.ComputeUtf8(string.Create(CultureInfo.InvariantCulture,
+            $"{region.X}|{region.Y}|{region.Width}|{region.Height}"));
+        string directory = Path.GetDirectoryName(fullPagePath)!;
+        string stem = Path.GetFileNameWithoutExtension(fullPagePath);
+        return Path.Combine(directory, $"{stem}.region-{token[..12]}.png");
     }
 
     private string GetRendererBasisVersion(int dpi)

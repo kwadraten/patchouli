@@ -16,8 +16,6 @@ public sealed record SnapshotPublishResult(
     string SnapshotId,
     string ManifestPath,
     string CurrentPointerPath,
-    bool CreatedBranch,
-    SnapshotBranchInfo? BranchInfo,
     IReadOnlyList<SnapshotShard> Shards,
     long LogicalGeneration,
     string? Warning);
@@ -41,11 +39,6 @@ public sealed record SnapshotValidationResult(
     bool IsValid,
     SnapshotManifest? Manifest,
     IReadOnlyList<string> Errors);
-
-public sealed record SnapshotBranchDetectionResult(
-    bool BranchDetected,
-    string? RemoteCurrentSnapshotId,
-    string? LocalParentSnapshotId);
 
 public sealed record SnapshotManifest(
     int ManifestVersion,
@@ -76,16 +69,6 @@ public sealed record SnapshotCurrentPointer(
     long LogicalGeneration,
     DateTimeOffset UpdatedAt);
 
-public sealed record SnapshotBranchInfo(
-    string BranchId,
-    string LibraryId,
-    string DeviceId,
-    string? LocalParentSnapshotId,
-    string RemoteCurrentSnapshotId,
-    DateTimeOffset CreatedAt,
-    string Reason,
-    string? CandidateSnapshotId);
-
 public interface ISnapshotPublisher
 {
     Task<Result<SnapshotPublishResult>> PublishSnapshotAsync(SnapshotPublishRequest request,
@@ -98,9 +81,6 @@ public interface ISnapshotImporter
         CancellationToken cancellationToken = default);
 
     Task<Result<SnapshotImportResult>> ImportSnapshotToStagingAsync(SnapshotImportRequest request,
-        CancellationToken cancellationToken = default);
-
-    Task<Result<SnapshotBranchDetectionResult>> DetectBranchAsync(string syncRoot, string localParentSnapshotId,
         CancellationToken cancellationToken = default);
 }
 

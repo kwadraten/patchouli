@@ -7,13 +7,13 @@ using System.Threading.Tasks;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Infrastructure.Files;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
+public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private string _status = "";
     private readonly ObservableCollection<FileSearchRootSettingsRowViewModel> _fileSearchRoots = new();
     private bool _rememberLastDatabase;
     private string _exclusionPatternsText;
@@ -25,12 +25,16 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
         _main = main;
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
-        SaveExclusionPatternsCommand = new AsyncCommand(SaveAsync);
         _rememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
         _persistedExclusionPatternsText =
             string.Join(Environment.NewLine, _main.AppOptions.FileScanning.ExclusionPatterns);
         _exclusionPatternsText = _persistedExclusionPatternsText;
         LoadFileSearchRootsAsync().Observe(nameof(LibrarySettingsViewModel), nameof(LoadFileSearchRootsAsync));
+    }
+
+    public override async Task LoadAsync(CancellationToken cancellationToken = default)
+    {
+        await LoadFileSearchRootsAsync();
     }
 
     public async Task LoadFileSearchRootsAsync()
@@ -46,7 +50,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
         Result<IReadOnlyList<FileSearchRoot>> roots = await services.FileResolution.ListSearchRootsAsync();
         if (roots.IsFailure)
         {
-            Status = roots.ErrorMessage ?? "无法读取文件搜索根。";
+            SetStatus(roots.ErrorMessage ?? "无法读取文件搜索根。");
             return;
         }
 
@@ -101,31 +105,14 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
     public SelectedFileSearchRoot? SelectedFileSearchRoot { get; set; }
     public ObservableCollection<FileSearchRootSettingsRowViewModel> FileSearchRoots => _fileSearchRoots;
 
-    public string Status
-    {
-        get => _status;
-        private set
-        {
-            _status = value;
-            Raise();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                _main.Report(value);
-            }
-        }
-    }
-
     public AsyncCommand AddFileSearchRootCommand { get; }
     public AsyncCommand RescanFileSearchRootsCommand { get; }
-    public AsyncCommand SaveExclusionPatternsCommand { get; }
 
-    public bool SupportsEditing => true;
-    public bool IsDirty => _isDirty;
-    public bool CanSave => _isDirty;
-    public string SaveStateText => Status;
-    public string? LastError { get; private set; }
+    public override bool SupportsEditing => true;
+    public override bool IsDirty => _isDirty;
+    public override bool CanSave => _isDirty;
 
-    public Task DiscardAsync()
+    public override Task DiscardAsync()
     {
         _rememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
         _exclusionPatternsText = _persistedExclusionPatternsText;
@@ -134,20 +121,23 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
         Raise(nameof(ExclusionPatternsText));
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
-        Status = "已放弃更改";
+        SaveState = SettingsSaveState.Clean;
+        SetStatus("已放弃更改");
         return Task.CompletedTask;
     }
 
-    public async Task SaveAsync()
+    public override async Task SaveAsync()
     {
+        SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         string[] patterns = ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
                                                                       StringSplitOptions.TrimEntries);
         if (!FileSearchRootAccess.TryValidateExclusionPatterns(patterns, out string? error))
         {
-            Status = $"排除规则无效：{error}";
+            SaveState = SettingsSaveState.Failed;
+            ValidationState = SettingsValidationState.Invalid;
+            SetStatus($"排除规则无效：{error}");
             LastError = error;
-            Raise(nameof(LastError));
             return;
         }
 
@@ -162,22 +152,34 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
             Runtime = runtime,
             FileScanning = new FileScanningAppSettings(patterns)
         });
-        Status = saved.IsSuccess ? "排除规则已保存。" : $"保存失败：{saved.ErrorMessage}";
         if (saved.IsSuccess)
         {
             _persistedExclusionPatternsText = _exclusionPatternsText;
             _isDirty = false;
             LastError = null;
+            SaveState = SettingsSaveState.Saved;
+            ValidationState = SettingsValidationState.Valid;
+            SetStatus("已保存");
         }
         else
         {
             LastError = saved.ErrorMessage;
+            SaveState = SettingsSaveState.Failed;
+            SetStatus($"保存失败：{saved.ErrorMessage}");
         }
 
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
-        Raise(nameof(LastError));
         await Task.CompletedTask;
+    }
+
+    private void SetStatus(string text)
+    {
+        Status = text;
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            _main.Report(text);
+        }
     }
 
     private void MarkDirty()
@@ -185,6 +187,7 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
         _isDirty = true;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
+        SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
     }
 
@@ -195,15 +198,14 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
             return;
         }
 
-        Status = "正在登记并扫描文件搜索根...";
+        SetStatus("正在登记并扫描文件搜索根...");
         try
         {
             AppServices services = await _main.ServicesAsync();
             Result<FileSearchRoot> added = await services.FileResolution.AddSearchRootAsync(SelectedFileSearchRoot);
             if (added.IsFailure && added.ErrorCode != AppErrorCodes.InvalidState)
             {
-                Status = added.ErrorMessage ?? "文件搜索根登记失败。";
-                _main.Report(Status);
+                SetStatus(added.ErrorMessage ?? "文件搜索根登记失败。");
                 return;
             }
 
@@ -215,13 +217,11 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
             await LoadFileSearchRootsAsync();
             await _main.RefreshSidebarPathsAsync();
             await _main.RescanFileSearchRootsAsync("文件搜索根已登记，重新扫描完成。", true);
-            Status = added.IsSuccess ? "文件搜索根已登记，扫描结果已记录。" : "文件搜索根已存在，已刷新状态。";
-            _main.Report(Status);
+            SetStatus(added.IsSuccess ? "文件搜索根已登记，扫描结果已记录。" : "文件搜索根已存在，已刷新状态。");
         }
         catch (Exception ex)
         {
-            Status = $"保存失败：{ex.Message}";
-            _main.Report(Status);
+            SetStatus($"保存失败：{ex.Message}");
         }
     }
 
@@ -231,24 +231,35 @@ public sealed class LibrarySettingsViewModel : ViewModelBase, ISettingsSection
         if (result.IsSuccess)
         {
             await LoadFileSearchRootsAsync();
-            Status =
-                $"手动重新扫描完成：新增 {result.Value.ImportedPdfCount} 个，已存在 {result.Value.SkippedKnownPdfCount} 个，失败 {result.Value.FailedPdfCount} 个。";
+            SetStatus(
+                $"手动重新扫描完成：新增 {result.Value.ImportedPdfCount} 个，已存在 {result.Value.SkippedKnownPdfCount} 个，失败 {result.Value.FailedPdfCount} 个。");
         }
     }
 
     internal async Task DeleteFileSearchRootAsync(FileSearchRootId rootId, string rootPath)
     {
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "移除搜索目录",
+                $"将停止跟踪目录：\n{rootPath}\n\n已导入的文献不受影响。",
+                "移除",
+                confirmDanger: true));
+        if (choice != ConfirmDialogResult.Confirm)
+        {
+            return;
+        }
+
         AppServices services = await _main.ServicesAsync();
         Result deleted = await services.FileResolution.DeleteSearchRootAsync(rootId);
         if (deleted.IsFailure)
         {
-            Status = deleted.ErrorMessage ?? "文件搜索根删除失败。";
+            SetStatus(deleted.ErrorMessage ?? "文件搜索根删除失败。");
             return;
         }
 
         await LoadFileSearchRootsAsync();
         await _main.RefreshSidebarPathsAsync();
-        Status = $"已删除文件搜索根：{rootPath}";
+        SetStatus($"已删除文件搜索根：{rootPath}");
     }
 }
 

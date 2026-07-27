@@ -2,12 +2,13 @@ using System.IO.Compression;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using System.Text.Json.Nodes;
 
 namespace Patchouli.Tests;
 
-public sealed class MinerUResultDownloaderTests
+public sealed class MinerUUploadPreparerTests
 {
     [Fact]
     public async Task UploadAndExtract_uses_blake3_data_id_instead_of_long_file_name()
@@ -21,7 +22,7 @@ public sealed class MinerUResultDownloaderTests
 
         try
         {
-            MinerUResultDownloader downloader = new(client);
+            MinerUUploadPreparer downloader = new(client);
 
             Result<MinerUDownloadedResult> result = await downloader.UploadAndExtractAsync(pdfPath, tempDir);
 
@@ -48,7 +49,7 @@ public sealed class MinerUResultDownloaderTests
 
         try
         {
-            MinerUResultDownloader downloader = new(
+            MinerUUploadPreparer downloader = new(
                 client,
                 new MinerUUploadLimits(1, 200 * 1024 * 1024));
 
@@ -104,7 +105,7 @@ public sealed class MinerUResultDownloaderTests
 
         try
         {
-            MinerUResultDownloader downloader = new(
+            MinerUUploadPreparer downloader = new(
                 client,
                 new MinerUUploadLimits(1, 200 * 1024 * 1024));
 
@@ -135,7 +136,7 @@ public sealed class MinerUResultDownloaderTests
 
         try
         {
-            MinerUResultDownloader downloader = new(
+            MinerUUploadPreparer downloader = new(
                 client,
                 new MinerUUploadLimits(1, 200 * 1024 * 1024));
 
@@ -151,6 +152,43 @@ public sealed class MinerUResultDownloaderTests
             pages.Select(page =>
                     page!.AsArray()[0]!["content"]!["paragraph_content"]![0]!["content"]!.GetValue<string>())
                 .Should().Equal("chunk 1", "chunk 2", "chunk 3");
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task PrepareAndUpload_page_ranges_uploads_sub_pdfs_and_pads_merged_v2_pages_to_original_indexes()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-ranges-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string pdfPath = Path.Combine(tempDir, "three-pages.pdf");
+        File.Copy(TestFixtures.RealThreePagePdf, pdfPath);
+        CapturingMinerUClient client = new() { WriteContentListV2 = true };
+
+        try
+        {
+            MinerUUploadPreparer preparer = new(client);
+
+            Result<MinerUPreparedResult> result = await preparer.PrepareAndUploadAsync(
+                new OcrUploadSource.PageRanges(pdfPath, [new OcrPageRange(0, 1), new OcrPageRange(2, 1)]),
+                tempDir);
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            client.UploadRequests.Should().HaveCount(2);
+            client.UploadRequests.Should().OnlyContain(request =>
+                request.LocalPath != pdfPath && File.Exists(request.LocalPath));
+            using ZipArchive archive = ZipFile.OpenRead(result.Value.ZipPath);
+            ZipArchiveEntry entry = archive.Entries.Single(e =>
+                e.Name.EndsWith("_content_list_v2.json", StringComparison.OrdinalIgnoreCase));
+            using StreamReader reader = new(entry.Open());
+            JsonArray pages = JsonNode.Parse(await reader.ReadToEndAsync())!.AsArray();
+            pages.Should().HaveCount(3);
+            pages[0]!.AsArray().Should().NotBeEmpty();
+            pages[1]!.AsArray().Should().BeEmpty();
+            pages[2]!.AsArray().Should().NotBeEmpty();
         }
         finally
         {

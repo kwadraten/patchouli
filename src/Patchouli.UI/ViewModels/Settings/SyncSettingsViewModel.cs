@@ -3,12 +3,11 @@ using Patchouli.Infrastructure.Snapshots;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
+public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private SyncAppSettings _persisted;
     private SyncAppSettings _draft;
-    private string _status = "已保存";
 
     public SyncSettingsViewModel(MainWindowViewModel main)
     {
@@ -18,6 +17,8 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
         OpenSyncCenterCommand = new AsyncCommand(main.OpenSyncCenterAsync);
         PublishSnapshotCommand = new AsyncCommand(PublishSnapshotAsync);
         CheckIncomingSnapshotCommand = new AsyncCommand(CheckIncomingSnapshotAsync);
+        ExportSnapshotPackageCommand = new AsyncCommand(ExportSnapshotPackageAsync);
+        Status = "已保存";
     }
 
     public string DeviceId => _draft.DeviceId;
@@ -50,34 +51,6 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
         }
     }
 
-    public bool SyncMcpSettings
-    {
-        get => _draft.SyncMcpSettings;
-        set
-        {
-            if (_draft.SyncMcpSettings != value)
-            {
-                _draft = _draft with { SyncMcpSettings = value };
-                MarkDirty();
-                Raise();
-            }
-        }
-    }
-
-    public bool SyncProviderCredentials
-    {
-        get => _draft.SyncProviderCredentials;
-        set
-        {
-            if (_draft.SyncProviderCredentials != value)
-            {
-                _draft = _draft with { SyncProviderCredentials = value };
-                MarkDirty();
-                Raise();
-            }
-        }
-    }
-
     public bool SyncMetadataLookup
     {
         get => _draft.SyncMetadataLookup;
@@ -95,18 +68,21 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
     public AsyncCommand OpenSyncCenterCommand { get; }
     public AsyncCommand PublishSnapshotCommand { get; }
     public AsyncCommand CheckIncomingSnapshotCommand { get; }
+    public AsyncCommand ExportSnapshotPackageCommand { get; }
     public string SnapshotOperationStateText => _main.Snapshot.OperationStateText;
     public string SnapshotOperationMessage => _main.Snapshot.OperationMessage;
-    public bool SupportsEditing => true;
-    public bool IsDirty { get; private set; }
-    public bool CanSave => IsDirty && !string.IsNullOrWhiteSpace(_draft.SyncRoot);
-    public string SaveStateText => _status;
-    public string? LastError { get; private set; }
+    public override bool SupportsEditing => true;
 
-    public async Task SaveAsync()
+    private bool _isDirty;
+
+    public override bool IsDirty => _isDirty;
+
+    public override bool CanSave => _isDirty && !string.IsNullOrWhiteSpace(_draft.SyncRoot);
+
+    public override async Task SaveAsync()
     {
-        _status = "正在保存...";
-        Raise(nameof(SaveStateText));
+        SaveState = SettingsSaveState.Saving;
+        Status = "正在保存...";
         bool rootChanged = !string.Equals(
             Path.GetFullPath(_persisted.SyncRoot),
             Path.GetFullPath(_draft.SyncRoot),
@@ -130,28 +106,29 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
         {
             _persisted = savedDraft;
             _draft = savedDraft;
-            IsDirty = false;
+            _isDirty = false;
             LastError = null;
-            _status = "已保存";
+            SaveState = SettingsSaveState.Saved;
+            Status = "已保存";
         }
         else
         {
             LastError = result.ErrorMessage;
-            _status = $"保存失败：{result.ErrorMessage}";
+            SaveState = SettingsSaveState.Failed;
+            Status = $"保存失败：{result.ErrorMessage}";
         }
 
         RaiseState();
     }
 
-    public Task DiscardAsync()
+    public override Task DiscardAsync()
     {
         _draft = _persisted;
-        IsDirty = false;
-        _status = "已放弃更改";
+        _isDirty = false;
+        SaveState = SettingsSaveState.Clean;
+        Status = "已放弃更改";
         Raise(nameof(DeviceName));
         Raise(nameof(SyncRoot));
-        Raise(nameof(SyncMcpSettings));
-        Raise(nameof(SyncProviderCredentials));
         Raise(nameof(SyncMetadataLookup));
         RaiseState();
         return Task.CompletedTask;
@@ -159,8 +136,9 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
 
     private void MarkDirty()
     {
-        IsDirty = true;
-        _status = "有未保存的更改";
+        _isDirty = true;
+        SaveState = SettingsSaveState.Dirty;
+        Status = "有未保存的更改";
         RaiseState();
     }
 
@@ -168,8 +146,6 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
     {
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
-        Raise(nameof(SaveStateText));
-        Raise(nameof(LastError));
     }
 
     public void NotifySnapshotStateChanged()
@@ -200,6 +176,16 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
         await _main.Snapshot.CheckCurrentCommand.ExecuteAsync();
     }
 
+    private async Task ExportSnapshotPackageAsync()
+    {
+        if (!CanRunOperation())
+        {
+            return;
+        }
+
+        await _main.OpenSyncCenterAsync();
+    }
+
     private bool CanRunOperation()
     {
         if (!IsDirty)
@@ -208,7 +194,7 @@ public sealed class SyncSettingsViewModel : ViewModelBase, ISettingsSection
         }
 
         LastError = "请先保存或放弃同步设置，再执行同步操作。";
-        _status = LastError;
+        Status = LastError;
         RaiseState();
         return false;
     }

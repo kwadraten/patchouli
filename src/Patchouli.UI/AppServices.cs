@@ -5,6 +5,7 @@ using Patchouli.Core.Csl;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
@@ -46,7 +47,7 @@ namespace Patchouli.UI;
 
 public sealed class AppServices
 {
-    private IOcrQueueScheduler? _ocrQueue;
+    private readonly OcrRunEngine _ocrEngine;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
 
@@ -123,19 +124,25 @@ public sealed class AppServices
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
         Credentials = new CredentialStore(settingsPath);
-        Ocr = new OcrRunCoordinator(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
+        _ocrEngine = new OcrRunEngine(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
             pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
-            configuration => new MinerUClient(new MinerUOptions
-            {
-                Token = configuration.Token,
-                BaseUrl = configuration.BaseUrl ?? settings.MinerU.BaseUrl,
-                ModelVersion = configuration.ModelVersion ?? settings.MinerU.ModelVersion,
-                IsOcr = configuration.IsOcr,
-                EnableTable = configuration.EnableTable,
-                EnableFormula = configuration.EnableFormula
-            }),
+            configuration => (MinerUClientFactoryOverride ?? CreateMinerUClient)(configuration),
             fileResolution: FileResolution);
+        OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex);
+        OcrQueueScheduler ocrQueueScheduler = new(
+            async cancellationToken =>
+            {
+                Result<LibraryMetadata> library = await Library.GetCurrentLibraryAsync(cancellationToken);
+                return library.IsFailure
+                    ? Result<LibraryId>.Failure(library.ErrorCode!, library.ErrorMessage!)
+                    : Result<LibraryId>.Success(library.Value.LibraryId);
+            },
+            Clock,
+            ocrQueueExecutor,
+            loopErrorLogger: exception =>
+                UnexpectedExceptions.Sink.Report(exception, "ocr-scheduler", "scheduler-loop"));
+        Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
@@ -192,6 +199,7 @@ public sealed class AppServices
     public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
     public IOcrRunCoordinator Ocr { get; }
+    public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }
     public ISearchUnitBuilder SearchUnits { get; }
     public ISearchIndexRebuilder SearchIndex { get; }
@@ -310,46 +318,9 @@ public sealed class AppServices
                 index)).ToArray();
     }
 
-    public IOcrRunCoordinator CreateOcrRunCoordinator(Func<MinerUConfiguration, IMinerUClient> minerUClientFactory,
-        MinerUUploadLimits? uploadLimits = null)
+    public Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)
     {
-        return new OcrRunCoordinator(
-            ConnectionFactory,
-            Clock,
-            Credentials.GetActiveSecretForProviderAsync,
-            Settings.Runtime.UseMockOcrOnly ? (IOcrEngine)new MockOcrEngine() : new UnavailableOcrEngine(),
-            new SearchUnitBuilder(ConnectionFactory, Clock, Markdown),
-            new OcrDocumentTreeImporter(DocumentTrees),
-            OcrAdapters,
-            PageRenders,
-            PageCoordinates,
-            MinerUImporter,
-            minerUClientFactory,
-            minerUUploadLimits: uploadLimits,
-            fileResolution: FileResolution);
-    }
-
-    public async Task<Result<IOcrQueueScheduler>> GetOcrQueueAsync(CancellationToken cancellationToken = default)
-    {
-        if (_ocrQueue is not null)
-        {
-            return Result<IOcrQueueScheduler>.Success(_ocrQueue);
-        }
-
-        Result<LibraryMetadata> library = await Library.GetCurrentLibraryAsync(cancellationToken);
-        if (library.IsFailure)
-        {
-            return Result<IOcrQueueScheduler>.Failure(library.ErrorCode!, library.ErrorMessage!);
-        }
-
-        OcrQueueTaskExecutor executor = new(Ocr, SearchUnits, SearchIndex);
-        _ocrQueue = new OcrQueueScheduler(
-            library.Value.LibraryId,
-            Clock,
-            executor,
-            loopErrorLogger: exception =>
-                UnexpectedExceptions.Sink.Report(exception, "ocr-scheduler", "scheduler-loop"));
-        return Result<IOcrQueueScheduler>.Success(_ocrQueue);
+        return Task.FromResult(Result<IOcrQueueScheduler>.Success(((QueuedOcrRunCoordinator)Ocr).Queue));
     }
 
     public async Task<Result<IOcrQueueRowService>> GetOcrQueueRowsAsync(CancellationToken cancellationToken = default)
@@ -358,6 +329,19 @@ public sealed class AppServices
         return queue.IsFailure
             ? Result<IOcrQueueRowService>.Failure(queue.ErrorCode!, queue.ErrorMessage!)
             : Result<IOcrQueueRowService>.Success(new OcrQueueRowService(queue.Value, ConnectionFactory));
+    }
+
+    private IMinerUClient CreateMinerUClient(MinerUConfiguration configuration)
+    {
+        return new MinerUClient(new MinerUOptions
+        {
+            Token = configuration.Token,
+            BaseUrl = configuration.BaseUrl ?? Settings.MinerU.BaseUrl,
+            ModelVersion = configuration.ModelVersion ?? Settings.MinerU.ModelVersion,
+            IsOcr = configuration.IsOcr,
+            EnableTable = configuration.EnableTable,
+            EnableFormula = configuration.EnableFormula
+        });
     }
 
     public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
@@ -380,6 +364,22 @@ public sealed class AppServices
 
         AppServices services = new(path, settings, settingsPath);
         await services.MigrationRunner.RunAsync();
+        Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
+        if (ocrReconcile.IsFailure)
+        {
+            try
+            {
+                await logger.LogAsync("ocr-reconcile",
+                    ocrReconcile.ErrorMessage ?? "OCR startup reconciliation failed.");
+            }
+            catch (Exception exception)
+            {
+                UnexpectedExceptions.Sink.Report(exception, "operation-log", "ocr-reconcile");
+            }
+        }
+
+        await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
+
         await services.ApplySyncedMetadataLookupAsync(settings);
         try
         {
