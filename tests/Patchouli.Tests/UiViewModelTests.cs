@@ -53,6 +53,12 @@ public sealed class UiViewModelTests : IDisposable
             settingsPath: _settings.Path);
     }
 
+    private MainWindow CreateMainWindowShell(IClipboardService? clipboard = null, bool autoStartMcpServer = false,
+        int mcpPort = 4536)
+    {
+        return new MainWindow(CreateMainWindow(clipboard, autoStartMcpServer: autoStartMcpServer, mcpPort: mcpPort));
+    }
+
     private static MainWindowViewModel WithRuntimeDatabasePath(MainWindowViewModel viewModel, string path)
     {
         viewModel.RuntimeDatabasePath = path;
@@ -488,7 +494,7 @@ public sealed class UiViewModelTests : IDisposable
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         session.Dispatch(() =>
         {
-            MainWindow window = new();
+            MainWindow window = CreateMainWindowShell();
             window.Close();
         }, CancellationToken.None);
     }
@@ -499,11 +505,9 @@ public sealed class UiViewModelTests : IDisposable
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         await session.Dispatch(async () =>
         {
-            MainWindow window = new()
-            {
-                Width = 1280,
-                Height = 820
-            };
+            MainWindow window = CreateMainWindowShell();
+            window.Width = 1280;
+            window.Height = 820;
             window.Show();
             try
             {
@@ -518,6 +522,7 @@ public sealed class UiViewModelTests : IDisposable
                 bitmap.Render(window);
 
                 vm.IsItemEditorVisible.Should().BeTrue();
+                await vm.StopMcpServerAsync();
             }
             finally
             {
@@ -534,7 +539,9 @@ public sealed class UiViewModelTests : IDisposable
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         await session.Dispatch(async () =>
         {
-            MainWindow window = new() { Width = 1280, Height = 820 };
+            MainWindow window = CreateMainWindowShell();
+            window.Width = 1280;
+            window.Height = 820;
             window.Show();
             try
             {
@@ -551,6 +558,7 @@ public sealed class UiViewModelTests : IDisposable
                 vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.Library);
                 vm.Shell.IsReadingMode.Should().BeFalse();
                 window.GetVisualDescendants().OfType<UI.Views.LibraryPage>().Should().ContainSingle();
+                await vm.StopMcpServerAsync();
             }
             finally
             {
@@ -1807,21 +1815,22 @@ public sealed class UiViewModelTests : IDisposable
             .CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-general-editor-{Guid.NewGuid():N}")).FullName;
         string path = Path.Combine(root, "runtime.sqlite");
         string pdf = Path.Combine(root, "general.pdf");
+        string userSettingsPath = new PlatformAppPaths().Resolve().UserSettingsPath;
+        string? userSettingsBefore = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                MainWindow window = new()
-                {
-                    Width = 1280,
-                    Height = 820
-                };
+                MainWindow window = CreateMainWindowShell();
+                window.Width = 1280;
+                window.Height = 820;
                 window.Show();
                 try
                 {
                     MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
+                    vm.SettingsFilePath.Should().Be(_settings.Path);
                     vm.RuntimeDatabasePath = path;
                     await vm.OpenDatabaseCommand.ExecuteAsync();
                     await vm.Library.CreateCommand.ExecuteAsync();
@@ -1843,6 +1852,7 @@ public sealed class UiViewModelTests : IDisposable
                     vm.ItemEditor.IsGeneralTypeWarningVisible.Should().BeTrue();
                     vm.ItemEditor.Fields.Should().Contain(field => field.Key == "Publisher");
                     vm.ItemEditor.Fields.Should().Contain(field => field.Key == "Pages");
+                    await vm.StopMcpServerAsync();
                 }
                 finally
                 {
@@ -1854,9 +1864,54 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            string? userSettingsAfter = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
+            userSettingsAfter.Should().Be(userSettingsBefore);
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Headless_MainWindow_open_database_does_not_mutate_user_settings()
+    {
+        string userSettingsPath = new PlatformAppPaths().Resolve().UserSettingsPath;
+        string? userSettingsBefore = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
+        string path = _settings.CreateDatabasePath("ui-isolation");
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        try
+        {
+            await session.Dispatch(async () =>
+            {
+                MainWindow window = CreateMainWindowShell();
+                try
+                {
+                    MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
+                    vm.SettingsFilePath.Should().Be(_settings.Path);
+                    vm.RuntimeDatabasePath = path;
+                    await vm.OpenDatabaseCommand.ExecuteAsync();
+                    Path.GetFullPath(PatchouliAppSettings.Load(_settings.Path).Runtime.RuntimeDatabasePath)
+                        .Should().Be(Path.GetFullPath(path));
+                    await vm.StopMcpServerAsync();
+                }
+                finally
+                {
+                    window.Close();
+                }
+
+                return true;
+            }, CancellationToken.None);
+        }
+        finally
+        {
+            string? userSettingsAfter = File.Exists(userSettingsPath) ? File.ReadAllText(userSettingsPath) : null;
+            userSettingsAfter.Should().Be(userSettingsBefore);
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
             }
         }
     }
@@ -2516,47 +2571,75 @@ public sealed class UiViewModelTests : IDisposable
         }
 
         public Task<Result<IReadOnlyList<PageId>>> ListPageIdsAsync(DocumentInstanceId documentInstanceId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<Result> ReconcileInterruptedRunsAsync(CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
+
+        public Task<Result> ReconcileInterruptedRunsAsync(CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, IReadOnlyList<PageId> pageIds, string engineId, string adapterKind,
-            string? providerId, string priority, CancellationToken cancellationToken = default) =>
+            string? providerId, string priority, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            OcrPresetId presetId, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-            IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default) =>
+            IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
             OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default) =>
+            OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, PageId pageId, int dpi = 200, CancellationToken cancellationToken = default) =>
+            OcrPresetId presetId, PageId pageId, int dpi = 200, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
-        public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default) =>
+        public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result> UnsetCurrentOcrAsync(DocumentInstanceId documentInstanceId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
-
-        public Task<Result> HideOcrRunAsync(OcrRunId runId, CancellationToken cancellationToken = default) =>
+            CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
+
+        public Task<Result> HideOcrRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId,
-            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default) =>
+            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
     }
 
     private sealed class StubLogicalPageTrees : IDocumentTreeService
@@ -2621,27 +2704,46 @@ public sealed class UiViewModelTests : IDisposable
                 false, DateTimeOffset.UtcNow, null)));
         }
 
-        public Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default) =>
+        public Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<DocumentTreeRevision>> CreateStagingRevisionAsync(DocumentInstanceId documentInstanceId,
             PageId pageId, string source, DocumentTreeRevisionId? parentTreeRevisionId = null,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<PageEditSession>> BeginPageEditAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<DocumentTreeRevision>> AdoptStagingRevisionAsync(DocumentTreeRevisionId stagingRevisionId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result<IReadOnlyList<DocumentTreeRevision>>> AdoptStagingRevisionsAsync(
-            IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds, CancellationToken cancellationToken = default) =>
+            IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds, CancellationToken cancellationToken = default)
+        {
             throw new NotSupportedException();
+        }
 
         public Task<Result<DocumentTreeRevision>> CommitPageEditAsync(PageEditSessionId sessionId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
 
         public Task<Result> DiscardPageEditAsync(PageEditSessionId sessionId,
-            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

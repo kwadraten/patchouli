@@ -39,10 +39,25 @@ public sealed class TemporaryAppSettingsFile : IDisposable
 
     public void Dispose()
     {
-        SqliteConnection.ClearAllPools();
-        if (Directory.Exists(_root))
+        for (int attempt = 0; attempt < 10; attempt++)
         {
-            Directory.Delete(_root, true);
+            SqliteConnection.ClearAllPools();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            SqliteConnection.ClearAllPools();
+            try
+            {
+                if (Directory.Exists(_root))
+                {
+                    Directory.Delete(_root, true);
+                }
+
+                return;
+            }
+            catch (IOException) when (attempt < 9)
+            {
+                Thread.Sleep(50);
+            }
         }
     }
 }

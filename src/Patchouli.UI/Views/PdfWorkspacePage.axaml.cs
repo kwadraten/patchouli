@@ -20,6 +20,7 @@ public sealed partial class PdfWorkspacePage : UserControl
     private DateTimeOffset _lastTreeClick;
     private PdfBBoxViewModel? _lastTreeBox;
     private PdfBBoxViewModel? _draggedTreeBox;
+    private PdfBBoxViewModel? _treePendingSelectBox;
     private Point _treeDragStart;
     private bool _isTreeDragging;
     private Border? _dropTargetRow;
@@ -284,9 +285,23 @@ public sealed partial class PdfWorkspacePage : UserControl
         }
 
         PointerPointProperties properties = e.GetCurrentPoint(control).Properties;
-        if (!properties.IsRightButtonPressed || !bbox.IsSelected)
+        bool additive = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+        if (properties.IsRightButtonPressed)
         {
-            _workspace.SelectBox(bbox, e.KeyModifiers.HasFlag(KeyModifiers.Control));
+            if (!bbox.IsSelected)
+            {
+                _workspace.SelectBox(bbox, additive);
+            }
+        }
+        else if (additive || !bbox.IsSelected)
+        {
+            _workspace.SelectBox(bbox, additive);
+        }
+        else
+        {
+            // Left press on an already-selected box: keep the multi-selection so a tree
+            // drag can move the whole selection; collapse to this box on release if no drag occurs.
+            _treePendingSelectBox = bbox;
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -344,7 +359,12 @@ public sealed partial class PdfWorkspacePage : UserControl
         {
             _ = _workspace.MoveBoxToAsync(moving, target, _dropAbove);
         }
+        else if (!_isTreeDragging && _treePendingSelectBox is { } pending && _workspace is not null)
+        {
+            _workspace.SelectBox(pending, false);
+        }
 
+        _treePendingSelectBox = null;
         ClearDropIndicator();
         _isTreeDragging = false;
         _draggedTreeBox = null;

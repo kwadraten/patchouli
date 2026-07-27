@@ -121,6 +121,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         DeleteSelectedCommand = new AsyncCommand(DeleteSelectedAsync);
         MoveSelectedUpCommand = new AsyncCommand(() => MoveSelectedAsync(false));
         MoveSelectedDownCommand = new AsyncCommand(() => MoveSelectedAsync(true));
+        ToggleSuppressedCommand = new AsyncCommand(ToggleSelectedSuppressedAsync);
         BoundingBoxes.CollectionChanged += (_, _) => Raise(nameof(HasNoBoundingBoxes));
         PreviewBlocks.CollectionChanged += (_, _) => Raise(nameof(HasNoPreviewBlocks));
     }
@@ -570,6 +571,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand DeleteSelectedCommand { get; }
     public AsyncCommand MoveSelectedUpCommand { get; }
     public AsyncCommand MoveSelectedDownCommand { get; }
+    public AsyncCommand ToggleSuppressedCommand { get; }
 
     public void OnPointerPressed(double x, double y)
     {
@@ -1298,45 +1300,131 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
+    private async Task ToggleSelectedSuppressedAsync()
+    {
+        PdfBBoxViewModel[] targets = SelectedBoxes.ToArray();
+        if (targets.Length == 0)
+        {
+            Status = "请先选择要排除/纳入的边界框。";
+            return;
+        }
+
+        foreach (PdfBBoxViewModel target in targets)
+        {
+            await target.ToggleSuppressedAsync();
+        }
+
+        if (targets.Length > 1)
+        {
+            Status = $"已切换 {targets.Length} 个边界框的文档流状态。";
+        }
+    }
+
     private async Task MoveSelectedAsync(bool down)
     {
-        if (_editSessionId is null || SelectedBox is null)
+        if (_editSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移动的边界框。";
             return;
         }
 
-        DocumentBox? selected = _loadedBoxes.FirstOrDefault(box => box.BoxId == SelectedBox.BoxId);
-        if (selected is null)
+        PageEditSessionId sessionId = _editSessionId.Value;
+        HashSet<DocumentBoxId> selectedIds = SelectedBoxes.Select(box => box.BoxId).ToHashSet();
+        List<DocumentBoxId?> parents = _loadedBoxes
+            .Where(box => selectedIds.Contains(box.BoxId))
+            .Select(box => box.ParentBoxId)
+            .Distinct()
+            .ToList();
+        if (parents.Count == 0)
         {
             return;
         }
 
-        List<DocumentBox> ordered =
-            OrderSiblings(_loadedBoxes.Where(box => box.ParentBoxId == selected.ParentBoxId)).ToList();
-        int index = ordered.FindIndex(box => box.BoxId == selected.BoxId);
-        int target = index + (down ? 1 : -1);
-        if (index < 0 || target < 0 || target >= ordered.Count)
+        bool moved = false;
+        foreach (DocumentBoxId? parent in parents)
+        {
+            moved |= await MoveSiblingGroupAsync(sessionId, parent, selectedIds, down);
+        }
+
+        if (!moved)
         {
             Status = "边界框已在该父级的边界位置。";
             return;
         }
 
-        DocumentBox? predecessor = down
-            ? ordered[target]
-            : target == 0
-                ? null
-                : ordered[target - 1];
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.MoveBoxAsync(
-            _editSessionId.Value, new MoveBoxCommand(selected.BoxId, selected.ParentBoxId, predecessor?.BoxId));
-        if (result.IsFailure)
-        {
-            Status = $"移动边界框失败：{result.ErrorMessage}";
-            return;
-        }
-
         await RefreshBoxesAsync();
         Status = "边界框顺序已写入页面草稿。";
+    }
+
+    // Moves every selected sibling within one parent one step up/down as a block:
+    // each contiguous run of selected boxes swaps with the unselected box next to it.
+    private async Task<bool> MoveSiblingGroupAsync(
+        PageEditSessionId sessionId,
+        DocumentBoxId? parentId,
+        HashSet<DocumentBoxId> selectedIds,
+        bool down)
+    {
+        List<DocumentBox> ordered = OrderSiblings(_loadedBoxes.Where(box => box.ParentBoxId == parentId)).ToList();
+        List<DocumentBox> desired = [.. ordered];
+        for (int i = 0; i < desired.Count;)
+        {
+            if (!selectedIds.Contains(desired[i].BoxId))
+            {
+                i++;
+                continue;
+            }
+
+            int runStart = i;
+            while (i < desired.Count && selectedIds.Contains(desired[i].BoxId))
+            {
+                i++;
+            }
+
+            int runEnd = i;
+            int swapIndex = down ? runEnd : runStart - 1;
+            if (swapIndex < 0 || swapIndex >= desired.Count)
+            {
+                continue;
+            }
+
+            DocumentBox other = desired[swapIndex];
+            desired.RemoveAt(swapIndex);
+            desired.Insert(down ? runStart : runEnd - 1, other);
+            if (down)
+            {
+                i = runEnd + 1;
+            }
+        }
+
+        // Apply only the moves needed to reach the desired order, top to bottom,
+        // so each box is anchored after a predecessor that is already in place.
+        bool moved = false;
+        List<DocumentBox> current = [.. ordered];
+        for (int position = 0; position < desired.Count; position++)
+        {
+            DocumentBox box = desired[position];
+            DocumentBoxId? after = position > 0 ? desired[position - 1].BoxId : null;
+            int currentIndex = current.FindIndex(candidate => candidate.BoxId == box.BoxId);
+            DocumentBoxId? currentPredecessor = currentIndex > 0 ? current[currentIndex - 1].BoxId : null;
+            if (Equals(currentPredecessor, after))
+            {
+                continue;
+            }
+
+            Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.MoveBoxAsync(
+                sessionId, new MoveBoxCommand(box.BoxId, parentId, after));
+            if (result.IsFailure)
+            {
+                Status = $"移动边界框失败：{result.ErrorMessage}";
+                return moved;
+            }
+
+            current.RemoveAt(currentIndex);
+            current.Insert(after is null ? 0 : current.FindIndex(candidate => candidate.BoxId == after) + 1, box);
+            moved = true;
+        }
+
+        return moved;
     }
 
     internal async Task MoveBoxToAsync(PdfBBoxViewModel movingView, PdfBBoxViewModel targetView, bool insertBefore)
@@ -1346,9 +1434,18 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        DocumentBox? moving = _loadedBoxes.FirstOrDefault(box => box.BoxId == movingView.BoxId);
+        // Dragging a box that belongs to a multi-selection moves the whole selection,
+        // keeping the selection's reading order.
+        List<PdfBBoxViewModel> movingViews = SelectedBoxes.Count > 1 && SelectedBoxes.Contains(movingView)
+            ? SelectedBoxes.OrderBy(view => BoundingBoxes.IndexOf(view)).ToList()
+            : [movingView];
+        if (movingViews.Any(view => view.BoxId == targetView.BoxId))
+        {
+            return;
+        }
+
         DocumentBox? target = _loadedBoxes.FirstOrDefault(box => box.BoxId == targetView.BoxId);
-        if (moving is null || target is null)
+        if (target is null)
         {
             return;
         }
@@ -1376,16 +1473,30 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
         }
 
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.MoveBoxAsync(
-            _editSessionId.Value, new MoveBoxCommand(moving.BoxId, parent, after));
-        if (result.IsFailure)
+        IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        foreach (PdfBBoxViewModel view in movingViews)
         {
-            Status = $"拖放移动失败：{result.ErrorMessage}";
-            return;
+            DocumentBox? moving = _loadedBoxes.FirstOrDefault(box => box.BoxId == view.BoxId);
+            if (moving is null)
+            {
+                continue;
+            }
+
+            Result result = await editor.MoveBoxAsync(
+                _editSessionId.Value, new MoveBoxCommand(moving.BoxId, parent, after));
+            if (result.IsFailure)
+            {
+                Status = $"拖放移动失败：{result.ErrorMessage}";
+                return;
+            }
+
+            after = moving.BoxId;
         }
 
         await RefreshBoxesAsync();
-        Status = "边界框已通过拖放移动到页面草稿。";
+        Status = movingViews.Count > 1
+            ? "选中边界框已通过拖放移动到页面草稿。"
+            : "边界框已通过拖放移动到页面草稿。";
     }
 
     internal async Task OpenBoxEditorAsync(PdfBBoxViewModel box)

@@ -5,6 +5,23 @@
              xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:PdfWorkspaceViewModel">
+  <UserControl.Resources>
+    <!-- Shared context menu for canvas boxes and the edit-mode box tree.
+         DataContext is the PdfBBoxViewModel of the control the flyout is attached to. -->
+    <MenuFlyout x:Key="BBoxContextMenu" x:DataType="vm:PdfBBoxViewModel">
+      <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
+      <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}"
+                IsVisible="{Binding Workspace.IsSingleSelection}" />
+      <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}"
+                IsVisible="{Binding Workspace.IsSingleSelection}" />
+      <MenuItem Header="合并选中" Command="{Binding Workspace.MergeSelectedCommand}"
+                IsVisible="{Binding Workspace.IsMultiSelection}" />
+      <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
+      <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
+      <MenuItem Header="从文档流排除/纳入" Command="{Binding Workspace.ToggleSuppressedCommand}" />
+      <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
+    </MenuFlyout>
+  </UserControl.Resources>
   <UserControl.Styles>
     <Style Selector="Button.ToolbarButton">
       <Setter Property="Background" Value="Transparent" />
@@ -223,24 +240,11 @@
                                 Width="{Binding Width}"
                                 Height="{Binding Height}"
                                 Cursor="Hand"
+                                ContextFlyout="{StaticResource BBoxContextMenu}"
                                 PointerPressed="OnBBoxPointerPressed"
                                 PointerMoved="OnBBoxPointerMoved"
                                 PointerReleased="OnBBoxPointerReleased"
                                 ContextRequested="OnBBoxContextRequested">
-                          <Border.ContextMenu>
-                            <ContextMenu>
-                              <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
-                              <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}" />
-                              <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}"
-                                        IsVisible="{Binding Workspace.IsSingleSelection}" />
-                              <MenuItem Header="合并选中" Command="{Binding Workspace.MergeSelectedCommand}"
-                                        IsVisible="{Binding Workspace.IsMultiSelection}" />
-                              <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
-                              <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
-                              <MenuItem Header="从文档流排除/纳入" Command="{Binding ToggleSuppressedCommand}" />
-                              <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
-                            </ContextMenu>
-                          </Border.ContextMenu>
                           <Panel IsVisible="{Binding ShowHandles}" IsHitTestVisible="False">
                             <lucide:Lucide Icon="Move" Width="14" Height="14"
                                            HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -448,23 +452,10 @@
                                 Classes.selected="{Binding IsSelected}"
                                 Classes.suppressed="{Binding IsSuppressed}"
                                 Margin="{Binding TreeMargin}"
+                                ContextFlyout="{StaticResource BBoxContextMenu}"
                                 PointerPressed="OnTreeNodePointerPressed"
                                 PointerMoved="OnTreeNodePointerMoved"
                                 PointerReleased="OnTreeNodePointerReleased">
-                          <Border.ContextMenu>
-                            <ContextMenu>
-                              <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
-                              <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}" />
-                              <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}"
-                                        IsVisible="{Binding Workspace.IsSingleSelection}" />
-                              <MenuItem Header="合并选中" Command="{Binding Workspace.MergeSelectedCommand}"
-                                        IsVisible="{Binding Workspace.IsMultiSelection}" />
-                              <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
-                              <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
-                              <MenuItem Header="从文档流排除/纳入" Command="{Binding ToggleSuppressedCommand}" />
-                              <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
-                            </ContextMenu>
-                          </Border.ContextMenu>
                           <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8">
                             <TextBlock Text="{Binding ReadingOrder, StringFormat='#{0}'}" FontSize="11"
                                        VerticalAlignment="Center"

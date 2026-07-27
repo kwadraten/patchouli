@@ -55,7 +55,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Depth = depth;
         IsStaging = isStaging;
         SaveTextCommand = new AsyncCommand(SaveTextAsync);
-        ToggleSuppressedCommand = new AsyncCommand(ToggleSuppressedAsync);
         DeleteCommand = new AsyncCommand(DeleteAsync);
         SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync);
     }
@@ -182,7 +181,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     }
 
     public AsyncCommand SaveTextCommand { get; }
-    public AsyncCommand ToggleSuppressedCommand { get; }
     public AsyncCommand DeleteCommand { get; }
     public AsyncCommand SaveBBoxCommand { get; }
 
@@ -270,7 +268,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Workspace.Status = "边界框已从页面草稿删除；提交后才会生成新版本。";
     }
 
-    private async Task ToggleSuppressedAsync()
+    internal async Task ToggleSuppressedAsync()
     {
         PageEditSessionId? sessionId = Workspace.EditSessionId;
         if (sessionId is null || IsLogicalPage)
