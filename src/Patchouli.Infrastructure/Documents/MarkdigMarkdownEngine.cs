@@ -129,9 +129,12 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
             nodes.Add(current switch
             {
                 LiteralInline literal => new MarkdownInlineModel("text", literal.Content.ToString()),
+                CodeInline code => new MarkdownInlineModel("code", code.Content.ToString()),
                 LineBreakInline => new MarkdownInlineModel("line_break", "\n"),
                 EmphasisInline { DelimiterChar: '^' } superscript => new MarkdownInlineModel(
                     "superscript", string.Empty, MapInlines(superscript.FirstChild)),
+                EmphasisInline { DelimiterChar: '~' } strikethrough => new MarkdownInlineModel(
+                    "strikethrough", string.Empty, MapInlines(strikethrough.FirstChild)),
                 EmphasisInline emphasis => new MarkdownInlineModel(
                     emphasis.DelimiterCount >= 2 ? "strong" : "emphasis", string.Empty,
                     MapInlines(emphasis.FirstChild)),

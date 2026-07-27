@@ -6,6 +6,10 @@ namespace Patchouli.Ocr;
 
 public interface IOcrRunCoordinator
 {
+    Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
+        IReadOnlyList<PageId> pageIds, string engineId, string adapterKind, string? providerId, string priority,
+        CancellationToken cancellationToken = default);
+
     Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         CancellationToken cancellationToken = default);
 

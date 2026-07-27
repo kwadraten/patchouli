@@ -12,6 +12,7 @@
         WindowStartupLocation="CenterOwner"
         CanResize="True"
         ShowInTaskbar="False"
+        Topmost="True"
         WindowDecorations="Full"
         Background="{DynamicResource SurfaceBrush}">
 

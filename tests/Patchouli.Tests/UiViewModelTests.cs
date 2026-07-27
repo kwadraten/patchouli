@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.IO.Compression;
 using System.Net.Sockets;
 using System.Reflection;
@@ -22,11 +22,14 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
@@ -103,8 +106,6 @@ public sealed class UiViewModelTests : IDisposable
                     "Test device",
                     runtime.DefaultSyncRoot,
                     false,
-                    false,
-                    false,
                     "sync-root-a")
             };
             settings.Save(settingsPath).IsSuccess.Should().BeTrue();
@@ -117,6 +118,122 @@ public sealed class UiViewModelTests : IDisposable
             typeof(SnapshotViewModel).GetProperty("SyncRoot").Should().BeNull();
             typeof(SnapshotViewModel).GetProperty("StagingRoot").Should().BeNull();
             typeof(SnapshotViewModel).GetProperty("DeviceId").Should().BeNull();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public void Sync_center_page_shows_library_device_branch_details_and_path_pickers()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SyncCenterPage.axaml"));
+
+        xaml.Should().Contain("Text=\"{Binding LibrarySummary}\"");
+        xaml.Should().Contain("Text=\"{Binding DeviceSummary}\"");
+        xaml.Should().Contain("Text=\"{Binding BranchDetailSummary}\"");
+        xaml.Should().Contain("Text=\"{Binding LastErrorText}\"");
+        xaml.Split("<controls:PathPickerTextBox").Length.Should().Be(4);
+        xaml.Should().NotContain("<TextBox Text=\"{Binding ExportDestinationDirectory}\"");
+        xaml.Should().NotContain("<TextBox Text=\"{Binding PackageManifestPath}\"");
+        xaml.Should().NotContain("<TextBox Text=\"{Binding IncomingCopyDestinationPath}\"");
+    }
+
+    [Fact]
+    public void Sync_settings_page_offers_export_snapshot_package_button()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+
+        xaml.Should().Contain("Command=\"{Binding ExportSnapshotPackageCommand}\"");
+    }
+
+    [Fact]
+    public async Task Sync_center_presents_device_and_branch_details_and_enabled_descriptors()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-sync-ui-{Guid.NewGuid():N}");
+        string settingsPath = Path.Combine(root, "settings.json");
+        try
+        {
+            AppRuntimeOptions runtime = PatchouliAppSettings.Default().Runtime with
+            {
+                RuntimeDatabasePath = Path.Combine(root, "runtime.sqlite"),
+                DefaultSyncRoot = Path.Combine(root, "sync"),
+                DefaultStagingRoot = Path.Combine(root, "staging"),
+                LogDirectory = Path.Combine(root, "logs")
+            };
+            PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+            {
+                Runtime = runtime,
+                Sync = new SyncAppSettings(
+                    "device-a",
+                    "Test device",
+                    runtime.DefaultSyncRoot,
+                    false,
+                    "sync-root-a")
+            };
+            settings.Save(settingsPath).IsSuccess.Should().BeTrue();
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath);
+
+            await vm.OpenSyncCenterAsync();
+
+            vm.Snapshot.DeviceSummary.Should().Contain("Test device");
+            vm.Snapshot.DeviceSummary.Should().Contain("device-a");
+            vm.Snapshot.LibrarySummary.Should().NotBeNullOrWhiteSpace();
+            vm.Snapshot.BranchDetailSummary.Should().NotBeNullOrWhiteSpace();
+            vm.Snapshot.HasLastError.Should().BeFalse();
+            vm.PublishSnapshotDescriptor.Enabled.Should().BeTrue();
+            vm.PublishSnapshotDescriptor.DisabledReason.Should().BeEmpty();
+            vm.ReceiveSnapshotDescriptor.Enabled.Should().BeTrue();
+            vm.ExportSnapshotPackageDescriptor.Enabled.Should().BeTrue();
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Publish_snapshot_menu_descriptor_opens_sync_center_first()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-sync-ui-{Guid.NewGuid():N}");
+        string settingsPath = Path.Combine(root, "settings.json");
+        try
+        {
+            AppRuntimeOptions runtime = PatchouliAppSettings.Default().Runtime with
+            {
+                RuntimeDatabasePath = Path.Combine(root, "runtime.sqlite"),
+                DefaultSyncRoot = Path.Combine(root, "sync"),
+                DefaultStagingRoot = Path.Combine(root, "staging"),
+                LogDirectory = Path.Combine(root, "logs")
+            };
+            PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+            {
+                Runtime = runtime,
+                Sync = new SyncAppSettings(
+                    "device-a",
+                    "Test device",
+                    runtime.DefaultSyncRoot,
+                    false,
+                    "sync-root-a")
+            };
+            settings.Save(settingsPath).IsSuccess.Should().BeTrue();
+            MainWindowViewModel vm = new(new FakeClipboard(), dialogs: new FakeDialogService(),
+                settingsPath: settingsPath);
+
+            await vm.PublishSnapshotDescriptor.ExecuteAsync();
+
+            vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.SyncCenter);
+            vm.ActiveTab.Content.Should().BeSameAs(vm.Snapshot);
+            vm.Snapshot.OperationMessage.Should().NotBeNullOrWhiteSpace();
         }
         finally
         {
@@ -915,6 +1032,8 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
+            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+            await queue.PauseAsync(OcrPauseScope.Global);
             vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
             vm.OcrQueue.PresetId = OcrPresetId.New().ToString();
             vm.OcrQueue.PageIds = PageId.New().ToString();
@@ -941,6 +1060,8 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
+            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+            await queue.PauseAsync(OcrPauseScope.Global);
             vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
             vm.OcrQueue.PresetId = OcrPresetId.New().ToString();
             vm.OcrQueue.PageIds = PageId.New().ToString();
@@ -988,6 +1109,33 @@ public sealed class UiViewModelTests : IDisposable
                 File.Delete(path);
             }
         }
+    }
+
+    [Fact]
+    public async Task Logical_page_ocr_service_runs_region_ocr_through_the_queue()
+    {
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.New();
+        PageId pageId = PageId.New();
+        StubLogicalPageTrees trees = new(documentInstanceId, pageId);
+        RecordingRegionEngine engine = new(documentInstanceId, pageId, trees.RegionRevisionId);
+        OcrQueueTaskExecutor executor = new(engine);
+        OcrQueueScheduler scheduler = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow), executor,
+            loopInterval: TimeSpan.FromMilliseconds(10));
+        QueuedOcrRunCoordinator facade = new(scheduler, engine);
+        LogicalPageOcrService service = new(facade, trees);
+        LogicalPageOcrTarget target = new(trees.LogicalPageBoxId, new NormalizedBBox(.1, .2, .3, .4));
+
+        Result<LogicalPageOcrResult> result = await service.RunAsync(
+            documentInstanceId, engine.Run.PresetId, pageId, [target]);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.RegionRunIds.Should().Equal(engine.Run.OcrRunId);
+        engine.Calls.Should().Equal("region");
+        OcrQueueTask task = (await scheduler.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
+        task.TaskKind.Should().Be(OcrQueueTaskKind.Region);
+        task.State.Should().Be(OcrQueueTaskState.Succeeded);
+        task.RunId.Should().Be(engine.Run.OcrRunId);
+        task.RegionBBox.Should().Be(target.BBox);
     }
 
     [Fact]
@@ -1179,7 +1327,7 @@ public sealed class UiViewModelTests : IDisposable
             vm.Shell.SelectedItem.OcrStatus.Should().Contain("设置");
             vm.IsSettingsVisible.Should().BeTrue();
             vm.ShowSettingsTab.Should().BeTrue();
-            vm.Settings.MinerUCredentialStatus.Should().Contain("未配置");
+            vm.Settings.OcrProviderSettings.MinerUCredentialStatus.Should().Contain("未配置");
             vm.Status.Should().Contain("MinerU API token");
         }
         finally
@@ -1266,9 +1414,9 @@ public sealed class UiViewModelTests : IDisposable
             selectedModel.Should().NotBeNull();
             ((IEnumerable<string>)modelOptions!.GetValue(section)!).Should().Equal("vlm", "pipeline");
             selectedModel!.SetValue(section, "pipeline");
-            vm.Settings.MinerUTokenInput = "saved-token";
+            vm.Settings.OcrProviderSettings.MinerUTokenInput = "saved-token";
 
-            await vm.Settings.SaveMinerUSettingsCommand.ExecuteAsync();
+            await vm.Settings.SaveCommand.ExecuteAsync();
 
             AppServices services = await vm.ServicesAsync();
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
@@ -1443,7 +1591,7 @@ public sealed class UiViewModelTests : IDisposable
             byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
             string? tokenUsed = null;
             string? modelVersionUsed = "not-called";
-            vm.Shell.MinerUClientFactory = config =>
+            services.MinerUClientFactoryOverride = config =>
             {
                 tokenUsed = config.Token;
                 modelVersionUsed = config.ModelVersion;
@@ -1451,9 +1599,15 @@ public sealed class UiViewModelTests : IDisposable
             };
             await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
 
+            IOcrQueueScheduler queue = (await services.GetOcrQueueAsync()).Value;
+            await queue.WaitForIdleAsync();
+            await vm.Shell.RefreshItemsAsync();
+
             File.ReadAllText(PatchouliAppSettings.ResolvePath()).Should().Contain("token");
             modelVersionUsed.Should().BeNull("the app settings own the MinerU API model version fallback");
-            vm.Status.Should().Contain("OCR 完成");
+            tokenUsed.Should().Be("token");
+            OcrQueueTask ocrTask = (await queue.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
+            ocrTask.State.Should().Be(OcrQueueTaskState.Succeeded);
             vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
             Result<McpSearchLibraryResponse> search =
                 await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
@@ -1505,9 +1659,27 @@ public sealed class UiViewModelTests : IDisposable
             preset.IsSuccess.Should().BeTrue(preset.ErrorMessage);
             await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token", "token");
             PageLimitedMinerUClient client = new(1);
-            IOcrRunCoordinator coordinator = services.CreateOcrRunCoordinator(
+            OcrRunEngine engine = new(
+                services.ConnectionFactory,
+                services.Clock,
+                services.Credentials.GetActiveSecretForProviderAsync,
+                services.Settings.Runtime.UseMockOcrOnly
+                    ? (IOcrEngine)new MockOcrEngine()
+                    : new UnavailableOcrEngine(),
+                new SearchUnitBuilder(services.ConnectionFactory, services.Clock, services.Markdown),
+                new OcrDocumentTreeImporter(services.DocumentTrees),
+                services.OcrAdapters,
+                services.PageRenders,
+                services.PageCoordinates,
+                services.MinerUImporter,
                 _ => client,
-                new MinerUUploadLimits(1, MinerUUploadLimits.OfficialMaxBytesPerFile));
+                minerUUploadLimits: new MinerUUploadLimits(1, MinerUUploadLimits.OfficialMaxBytesPerFile),
+                fileResolution: services.FileResolution);
+            LibraryId libraryId = (await services.Library.GetCurrentLibraryAsync()).Value.LibraryId;
+            OcrQueueTaskExecutor executor = new(engine, services.SearchUnits, services.SearchIndex);
+            OcrQueueScheduler scheduler = new(libraryId, services.Clock, executor,
+                loopInterval: TimeSpan.FromMilliseconds(10));
+            IOcrRunCoordinator coordinator = new QueuedOcrRunCoordinator(scheduler, engine);
 
             Result<OcrRun> result = await coordinator.RunPresetOnDocumentAsync(
                 DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), preset.Value.PresetId);
@@ -1953,6 +2125,144 @@ public sealed class UiViewModelTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Settings_page_header_shows_save_state_scope_source_and_reload_status()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
+
+        xaml.Should().Contain("Text=\"{Binding ActiveSaveStateText}\"");
+        xaml.Should().Contain("Text=\"{Binding ActiveScopeText}\"");
+        xaml.Should().Contain("ActiveEffectiveSourceText");
+        xaml.Should().Contain("IsVisible=\"{Binding ActiveRequiresReload}\"");
+        xaml.Should().Contain("IsVisible=\"{Binding ActiveHasLastError}\"");
+        xaml.Should().Contain("Command=\"{Binding SaveAndRestartCommand}\"");
+        xaml.Should().Contain("Command=\"{Binding RemoveMinerUCredentialCommand}\"");
+        xaml.Should().Contain("添加并扫描");
+        xaml.Should().Contain("立即重新扫描");
+    }
+
+    [Fact]
+    public async Task Mcp_settings_save_marks_saved_state_without_reload_when_server_stopped()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-state-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            McpSettingsViewModel mcp = vm.Settings.McpSettings;
+            await mcp.LoadAsync();
+            mcp.Port = 4567;
+            mcp.IsDirty.Should().BeTrue();
+            mcp.SaveState.Should().Be(SettingsSaveState.Dirty);
+
+            await mcp.SaveAsync();
+
+            mcp.SaveState.Should().Be(SettingsSaveState.Saved);
+            mcp.SaveStateText.Should().Be("已保存");
+            mcp.IsDirty.Should().BeFalse();
+            mcp.RequiresReload.Should().BeFalse();
+            mcp.LastError.Should().BeNull();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Remove_mineru_credential_with_confirmation_clears_persisted_token()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-cred-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = WriteSettingsFile("");
+        FakeDialogService dialogs = new() { Result = ConfirmDialogResult.Confirm };
+        try
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), dialogs: dialogs, settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            (await vm.SaveMinerUSettingsAsync("token-to-remove", "vlm")).Should().BeTrue();
+            vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeTrue();
+
+            (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
+
+            AppServices services = await vm.ServicesAsync();
+            (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).IsFailure.Should()
+                .BeTrue();
+            vm.Shell.MinerUToken.Should().Be("");
+            vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeFalse();
+            vm.Settings.OcrProviderSettings.MinerUTokenInput.Should().Be("");
+        }
+        finally
+        {
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Remove_mineru_credential_cancel_keeps_persisted_token()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-cred-{Guid.NewGuid():N}.sqlite");
+        string settingsPath = WriteSettingsFile("");
+        FakeDialogService dialogs = new() { Result = ConfirmDialogResult.Cancel };
+        try
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), dialogs: dialogs, settingsPath: settingsPath)
+                { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            (await vm.SaveMinerUSettingsAsync("token-to-keep", "vlm")).Should().BeTrue();
+
+            (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
+
+            AppServices services = await vm.ServicesAsync();
+            (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
+                .Be("token-to-keep");
+            vm.Shell.MinerUToken.Should().Be("token-to-keep");
+            vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeTrue();
+        }
+        finally
+        {
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    private sealed class FakeDialogService : IDialogService
+    {
+        public object? Result { get; init; }
+
+        public Task ShowDialogAsync(object viewModel)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
+        {
+            return Task.FromResult((TResult?)Result);
+        }
+    }
+
     private sealed class FakeClipboard : IClipboardService
     {
         public string? Text { get; private set; }
@@ -2153,5 +2463,185 @@ public sealed class UiViewModelTests : IDisposable
             return Task.FromResult(Result<MinerUDownloadedResult>.Success(
                 new MinerUDownloadedResult(batchId, zipPath, MinerUProviderStatus.Done)));
         }
+    }
+
+    private sealed class RecordingRegionEngine : IOcrRunEngine
+    {
+        private readonly PageId _pageId;
+        private readonly DocumentTreeRevisionId _regionRevisionId;
+
+        public RecordingRegionEngine(DocumentInstanceId documentInstanceId, PageId pageId,
+            DocumentTreeRevisionId regionRevisionId)
+        {
+            _pageId = pageId;
+            _regionRevisionId = regionRevisionId;
+            OcrPresetVersion version = new(OcrPresetVersionId.New(), OcrPresetId.New(), OcrEngineIds.Mock, "model",
+                null, "{}", false, DateTimeOffset.UtcNow);
+            Version = version;
+            Run = new OcrRun(OcrRunId.New(), documentInstanceId, version.PresetId, version.PresetVersionId,
+                version.EngineId, version.ModelId, "{}", null, null, null, OcrRunState.Completed,
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        }
+
+        public List<string> Calls { get; } = [];
+        public OcrPresetVersion Version { get; }
+        public OcrRun Run { get; }
+
+        public Task<Result<OcrPresetVersion>> ResolvePresetVersionAsync(OcrPresetId presetId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<OcrPresetVersion>.Success(Version));
+        }
+
+        public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,
+            OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
+            CancellationToken cancellationToken = default)
+        {
+            Calls.Add("region");
+            return Task.FromResult(Result<OcrRun>.Success(Run));
+        }
+
+        public Task<Result<IReadOnlyList<OcrPageResult>>> ListPageResultsAsync(OcrRunId runId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<OcrPageResult>>.Success([
+                new OcrPageResult(OcrPageResultId.New(), runId, _pageId, OcrPageResultState.Succeeded,
+                    _regionRevisionId, null, null, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
+            ]));
+        }
+
+        public Task<Result<OcrRun>> GetRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<OcrRun>.Success(Run));
+        }
+
+        public Task<Result<IReadOnlyList<PageId>>> ListPageIdsAsync(DocumentInstanceId documentInstanceId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result> ReconcileInterruptedRunsAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(DocumentInstanceId documentInstanceId,
+            OcrPresetId presetId, IReadOnlyList<PageId> pageIds, string engineId, string adapterKind,
+            string? providerId, string priority, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId,
+            OcrPresetId presetId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
+            IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
+            OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result<OcrRun>> RunPresetOnImagePageAsync(DocumentInstanceId documentInstanceId,
+            OcrPresetId presetId, PageId pageId, string imagePath, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<OcrRun>> RunPresetOnRenderedPdfPageAsync(DocumentInstanceId documentInstanceId,
+            OcrPresetId presetId, PageId pageId, int dpi = 200, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result> CancelRunAsync(OcrRunId runId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result> UnsetCurrentOcrAsync(DocumentInstanceId documentInstanceId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result> HideOcrRunAsync(OcrRunId runId, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId,
+            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class StubLogicalPageTrees : IDocumentTreeService
+    {
+        private readonly DocumentInstanceId _documentInstanceId;
+        private readonly PageId _pageId;
+        private readonly DocumentTreeRevision _currentRevision;
+
+        public StubLogicalPageTrees(DocumentInstanceId documentInstanceId, PageId pageId)
+        {
+            _documentInstanceId = documentInstanceId;
+            _pageId = pageId;
+            _currentRevision = new DocumentTreeRevision(DocumentTreeRevisionId.New(), documentInstanceId, pageId, null,
+                DocumentTreeRevisionSource.Import, "current", true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        }
+
+        public DocumentBoxId LogicalPageBoxId { get; } = DocumentBoxId.New();
+        public DocumentTreeRevisionId RegionRevisionId { get; } = DocumentTreeRevisionId.New();
+
+        public Task<Result<DocumentTreeRevision>> GetCurrentRevisionAsync(DocumentInstanceId documentInstanceId,
+            PageId pageId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<DocumentTreeRevision>.Success(_currentRevision));
+        }
+
+        public Task<Result<IReadOnlyList<DocumentBox>>> ListBoxesAsync(DocumentTreeRevisionId treeRevisionId,
+            CancellationToken cancellationToken = default)
+        {
+            IReadOnlyList<DocumentBox> boxes;
+            if (treeRevisionId == _currentRevision.TreeRevisionId)
+            {
+                boxes =
+                [
+                    new DocumentBox(_currentRevision.TreeRevisionId, LogicalPageBoxId, _documentInstanceId, _pageId,
+                        null, null, DocumentBoxType.LogicalPage, null, null, new NormalizedBBox(0, 0, 1, 1), null,
+                        null, null, null, false)
+                ];
+            }
+            else if (treeRevisionId == RegionRevisionId)
+            {
+                boxes =
+                [
+                    new DocumentBox(RegionRevisionId, DocumentBoxId.New(), _documentInstanceId, _pageId,
+                        LogicalPageBoxId, null, DocumentBoxType.Text, null, null, new NormalizedBBox(.1, .2, .3, .4),
+                        new TextBoxPayload("queued region text"), null, null, null, false)
+                ];
+            }
+            else
+            {
+                boxes = [];
+            }
+
+            return Task.FromResult(Result<IReadOnlyList<DocumentBox>>.Success(boxes));
+        }
+
+        public Task<Result<DocumentTreeRevision>> StagePageAsync(DocumentInstanceId documentInstanceId, PageId pageId,
+            IReadOnlyList<DocumentBoxSeed> boxes, string source = DocumentTreeRevisionSource.Import,
+            DocumentTreeRevisionId? parentTreeRevisionId = null, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<DocumentTreeRevision>.Success(new DocumentTreeRevision(
+                DocumentTreeRevisionId.New(), documentInstanceId, pageId, parentTreeRevisionId, source, "staging",
+                false, DateTimeOffset.UtcNow, null)));
+        }
+
+        public Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<DocumentTreeRevision>> CreateStagingRevisionAsync(DocumentInstanceId documentInstanceId,
+            PageId pageId, string source, DocumentTreeRevisionId? parentTreeRevisionId = null,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result<PageEditSession>> BeginPageEditAsync(DocumentInstanceId documentInstanceId, PageId pageId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result<DocumentTreeRevision>> AdoptStagingRevisionAsync(DocumentTreeRevisionId stagingRevisionId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result<IReadOnlyList<DocumentTreeRevision>>> AdoptStagingRevisionsAsync(
+            IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<Result<DocumentTreeRevision>> CommitPageEditAsync(PageEditSessionId sessionId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task<Result> DiscardPageEditAsync(PageEditSessionId sessionId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 }

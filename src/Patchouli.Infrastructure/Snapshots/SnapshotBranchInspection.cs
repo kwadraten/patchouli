@@ -15,14 +15,11 @@ public sealed record SnapshotBranchInspectionInfo(
     string BranchId,
     LibraryId LibraryId,
     string SnapshotId,
-    string? ParentSnapshotId,
-    string? LocalCurrentSnapshotId,
     string DeviceId,
     DateTimeOffset CreatedAt,
     string ManifestPath,
     string StagingDatabasePath,
     bool IsLibraryMatch,
-    bool IsCurrentParentMismatch,
     IReadOnlyList<string> Warnings);
 
 public sealed record BranchItemSummary(
@@ -170,33 +167,20 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 treeValidation.Conflicts);
         }
 
-        SnapshotCurrentPointer? current = await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(
-            Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(manifestPath)!)!, "current.json"),
-            cancellationToken);
-        bool parentMismatch = current is not null && !string.Equals(manifest.ParentSnapshotId, current.SnapshotId,
-            StringComparison.OrdinalIgnoreCase);
         bool mismatch = !string.Equals(manifest.LibraryId, local.Value.LibraryId.ToString(),
             StringComparison.OrdinalIgnoreCase);
         return Result<SnapshotBranchInspectionInfo>.Success(new SnapshotBranchInspectionInfo(
             Guid.NewGuid().ToString("D"),
             LibraryId.Parse(manifest.LibraryId),
             manifest.SnapshotId,
-            manifest.ParentSnapshotId,
-            current?.SnapshotId,
             manifest.DeviceId,
             manifest.CreatedAt,
             manifestPath,
             imported.Value.StagingDatabasePath,
             !mismatch,
-            mismatch,
             mismatch
                 ? ["Branch library differs from active runtime library; import is blocked."]
-                : parentMismatch
-                    ? imported.Value.Warnings
-                        .Append(
-                            "Branch parent is older than the current remote snapshot; review freshness before import.")
-                        .ToArray()
-                    : imported.Value.Warnings));
+                : imported.Value.Warnings));
     }
 
     public async Task<Result<IReadOnlyList<BranchItemSummary>>> ListBranchItemsAsync(

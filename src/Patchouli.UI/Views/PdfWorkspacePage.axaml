@@ -49,6 +49,41 @@
       <Setter Property="Background" Value="{DynamicResource SecondaryContainerBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource SecondaryBrush}" />
     </Style>
+    <Style Selector="Border.TreeRow">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="8,5" />
+    </Style>
+    <Style Selector="Border.TreeRow.selected">
+      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Border.TreeRow.suppressed">
+      <Setter Property="Opacity" Value="0.45" />
+    </Style>
+    <Style Selector="Border.TreeRow.dropAbove">
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderThickness" Value="1,3,1,1" />
+    </Style>
+    <Style Selector="Border.TreeRow.dropBelow">
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderThickness" Value="1,1,1,3" />
+    </Style>
+    <Style Selector="Border.WizardCard">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Padding" Value="14" />
+      <Setter Property="Margin" Value="12,0,12,12" />
+    </Style>
+    <Style Selector="Border.SidebarHeader">
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+      <Setter Property="BorderThickness" Value="0,0,0,1" />
+      <Setter Property="Padding" Value="14,10" />
+    </Style>
   </UserControl.Styles>
   <Grid RowDefinitions="44,*">
     <!-- Toolbar -->
@@ -87,46 +122,47 @@
 
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="8,0" />
 
-          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding !IsDrawToolActive}"
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSelectToolActive}"
                         Command="{Binding SelectToolCommand}" ToolTip.Tip="点选工具">
             <lucide:Lucide Icon="MousePointer2" Width="16" Height="16" Margin="0,-2,0,0" />
           </ToggleButton>
-          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsDrawToolActive}"
-                        Command="{Binding DrawToolCommand}" ToolTip.Tip="框选工具">
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsMarqueeToolActive}"
+                        Command="{Binding MarqueeToolCommand}" ToolTip.Tip="框选工具（拖出矩形选择多个边界框）">
             <lucide:Lucide Icon="SquareDashed" Width="16" Height="16" Margin="0,-2,0,0" />
+          </ToggleButton>
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsCreateBoxToolActive}"
+                        Command="{Binding CreateBoxToolCommand}" IsEnabled="{Binding IsEditMode}"
+                        ToolTip.Tip="新建边界框（在页面上框出区域）">
+            <lucide:Lucide Icon="Plus" Width="16" Height="16" Margin="0,-2,0,0" />
           </ToggleButton>
         </StackPanel>
 
         <!-- Edit Mode Controls -->
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
-          <Button Command="{Binding RunCurrentPageOcrCommand}" IsVisible="{Binding IsEditMode}"
-                  Content="本页 OCR" />
-          <Button Command="{Binding RunDocumentOcrCommand}" IsVisible="{Binding IsEditMode}"
-                  Content="文档级 OCR" />
+          <Button IsVisible="{Binding IsEditMode}" ToolTip.Tip="{Binding OcrPresetStatusText}">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <lucide:Lucide Icon="ScanText" Width="14" Height="14" />
+              <TextBlock Text="OCR" FontSize="12" />
+            </StackPanel>
+            <Button.Flyout>
+              <MenuFlyout>
+                <MenuItem Header="本页 OCR" Command="{Binding RunCurrentPageOcrCommand}" />
+                <MenuItem Header="逻辑页 OCR" Command="{Binding RunLogicalPageOcrCommand}" />
+                <MenuItem Header="文档级 OCR" Command="{Binding RunDocumentOcrCommand}" />
+              </MenuFlyout>
+            </Button.Flyout>
+          </Button>
           <Button Command="{Binding EnterEditModeCommand}" IsVisible="{Binding !IsEditMode}" Background="Transparent">
             <StackPanel Orientation="Horizontal" Spacing="4">
               <lucide:Lucide Icon="Pencil" Width="14" Height="14" />
-              <TextBlock Text="编辑 Box Tree" FontSize="12" />
-            </StackPanel>
-          </Button>
-          <Button Command="{Binding SaveAndExitCommand}" IsVisible="{Binding IsEditMode}"
-                  Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}">
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <lucide:Lucide Icon="Save" Width="14" Height="14" />
-              <TextBlock Text="保存并退出" FontSize="12" />
-            </StackPanel>
-          </Button>
-          <Button Command="{Binding CancelEditModeCommand}" IsVisible="{Binding IsEditMode}" Background="Transparent"
-                  Foreground="{DynamicResource ErrorBrush}">
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <lucide:Lucide Icon="X" Width="14" Height="14" />
-              <TextBlock Text="放弃更改" FontSize="12" />
+              <TextBlock Text="编辑 OCR 结果" FontSize="12" />
             </StackPanel>
           </Button>
 
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0" />
 
-          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}" ToolTip.Tip="切换侧边栏">
+          <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}"
+                        IsEnabled="{Binding !IsEditMode}" ToolTip.Tip="切换侧边栏">
             <lucide:Lucide Icon="List" Width="14" Height="14" />
           </ToggleButton>
         </StackPanel>
@@ -145,138 +181,161 @@
 
       <!-- Left: PDF Viewer Canvas -->
       <Border Background="{DynamicResource SurfaceContainerHighestBrush}">
-        <ScrollViewer x:Name="PdfScrollViewer" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-          <LayoutTransformControl HorizontalAlignment="Center" VerticalAlignment="Top" Margin="20">
-            <LayoutTransformControl.LayoutTransform>
-              <ScaleTransform ScaleX="{Binding Zoom}" ScaleY="{Binding Zoom}" />
-            </LayoutTransformControl.LayoutTransform>
-            <Border Background="#FFFFFF" BorderThickness="1" BorderBrush="#CAC4D5" CornerRadius="4"
-                    BoxShadow="0 4 16 #22000000">
-              <Grid MinWidth="360" MinHeight="480">
-                <Image Source="{Binding Image}" Width="{Binding ActualWidthPixels}"
-                       Height="{Binding ActualHeightPixels}" Stretch="None" IsVisible="{Binding HasImage}" />
+        <Panel>
+          <ScrollViewer x:Name="PdfScrollViewer" HorizontalScrollBarVisibility="Auto"
+                        VerticalScrollBarVisibility="Auto"
+                        PointerPressed="OnScrollPointerPressed"
+                        PointerMoved="OnScrollPointerMoved"
+                        PointerReleased="OnScrollPointerReleased">
+            <LayoutTransformControl HorizontalAlignment="Center" VerticalAlignment="Top" Margin="20">
+              <LayoutTransformControl.LayoutTransform>
+                <ScaleTransform ScaleX="{Binding Zoom}" ScaleY="{Binding Zoom}" />
+              </LayoutTransformControl.LayoutTransform>
+              <Border Background="#FFFFFF" BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                      CornerRadius="4" BoxShadow="0 4 16 #22000000">
+                <Grid MinWidth="360" MinHeight="480">
+                  <Border Background="Transparent" PointerPressed="OnCanvasBackgroundPressed" />
+                  <Image Source="{Binding Image}" Width="{Binding ActualWidthPixels}"
+                         Height="{Binding ActualHeightPixels}" Stretch="None" IsVisible="{Binding HasImage}"
+                         IsHitTestVisible="False" />
 
-                <ItemsControl x:Name="BBoxItems" ItemsSource="{Binding BoundingBoxes}"
-                              Width="{Binding ActualWidthPixels}"
-                              Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
-                  <ItemsControl.ItemContainerTheme>
-                    <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfBBoxViewModel">
-                      <Setter Property="Canvas.Left" Value="{Binding Left}" />
-                      <Setter Property="Canvas.Top" Value="{Binding Top}" />
-                    </ControlTheme>
-                  </ItemsControl.ItemContainerTheme>
-                  <ItemsControl.ItemsPanel>
-                    <ItemsPanelTemplate>
-                      <Canvas />
-                    </ItemsPanelTemplate>
-                  </ItemsControl.ItemsPanel>
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                      <Border Classes="BBox"
-                              Classes.selected="{Binding IsSelected}"
-                              Classes.staging="{Binding IsStaging}"
-                              Classes.suppressed="{Binding IsSuppressed}"
-                              BorderBrush="{Binding VisualBoxColor}"
-                              Width="{Binding Width}"
-                              Height="{Binding Height}"
-                              Cursor="Hand"
-                              PointerPressed="OnBBoxPointerPressed"
-                              PointerMoved="OnBBoxPointerMoved"
-                              PointerReleased="OnBBoxPointerReleased">
+                  <ItemsControl x:Name="BBoxItems" ItemsSource="{Binding BoundingBoxes}"
+                                Width="{Binding ActualWidthPixels}"
+                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
+                    <ItemsControl.ItemContainerTheme>
+                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfBBoxViewModel">
+                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                      </ControlTheme>
+                    </ItemsControl.ItemContainerTheme>
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <Canvas />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:PdfBBoxViewModel">
+                        <Border Classes="BBox"
+                                Classes.selected="{Binding IsSelected}"
+                                Classes.staging="{Binding IsStaging}"
+                                Classes.suppressed="{Binding IsSuppressed}"
+                                BorderBrush="{Binding VisualBoxColor}"
+                                Width="{Binding Width}"
+                                Height="{Binding Height}"
+                                Cursor="Hand"
+                                PointerPressed="OnBBoxPointerPressed"
+                                PointerMoved="OnBBoxPointerMoved"
+                                PointerReleased="OnBBoxPointerReleased"
+                                ContextRequested="OnBBoxContextRequested">
+                          <Border.ContextMenu>
+                            <ContextMenu>
+                              <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
+                              <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}" />
+                              <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}"
+                                        IsVisible="{Binding Workspace.IsSingleSelection}" />
+                              <MenuItem Header="合并选中" Command="{Binding Workspace.MergeSelectedCommand}"
+                                        IsVisible="{Binding Workspace.IsMultiSelection}" />
+                              <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
+                              <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
+                              <MenuItem Header="从文档流排除/纳入" Command="{Binding ToggleSuppressedCommand}" />
+                              <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
+                            </ContextMenu>
+                          </Border.ContextMenu>
+                          <Panel IsVisible="{Binding ShowHandles}" IsHitTestVisible="False">
+                            <lucide:Lucide Icon="Move" Width="14" Height="14"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           StrokeBrush="{Binding VisualBoxColor}" />
+                            <Ellipse Width="10" Height="10" Fill="White"
+                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                     HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-5" />
+                            <Ellipse Width="10" Height="10" Fill="White"
+                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                     HorizontalAlignment="Right" VerticalAlignment="Top" Margin="-5" />
+                            <Ellipse Width="10" Height="10" Fill="White"
+                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                     HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="-5" />
+                            <Ellipse Width="10" Height="10" Fill="White"
+                                     Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
+                                     HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="-5" />
+                          </Panel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
 
-                        <!-- Popup Toolbar -->
-                        <Popup IsOpen="{Binding IsSelected}" Placement="RightEdgeAlignedTop"
-                               IsLightDismissEnabled="False">
-                          <Border Background="{DynamicResource SurfaceBrush}" BorderThickness="1"
-                                  BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="4" Padding="4"
-                                  BoxShadow="0 2 8 #11000000" IsVisible="{Binding Workspace.IsEditMode}">
-                            <StackPanel Orientation="Horizontal" Spacing="4">
-                              <Button Command="{Binding IgnoreCommand}" Background="Transparent"
-                                      Foreground="{DynamicResource ErrorBrush}" Padding="8,4">
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                  <lucide:Lucide Icon="Trash2" Width="14" Height="14" />
-                                  <TextBlock Text="忽略" FontSize="12" />
-                                </StackPanel>
-                              </Button>
-                              <Button Command="{Binding ToggleSuppressedCommand}" Background="Transparent"
-                                      Padding="8,4">
-                                <TextBlock Text="切换文档流" FontSize="12" />
-                              </Button>
-                              <Button Command="{Binding Workspace.MoveSelectedUpCommand}" Background="Transparent"
-                                      Padding="8,4">
-                                <TextBlock Text="上移" FontSize="12" />
-                              </Button>
-                              <Button Command="{Binding Workspace.MoveSelectedDownCommand}" Background="Transparent"
-                                      Padding="8,4">
-                                <TextBlock Text="下移" FontSize="12" />
-                              </Button>
-                              <Button Command="{Binding DeleteCommand}" Background="Transparent" Padding="8,4">
-                                <StackPanel Orientation="Horizontal" Spacing="4">
-                                  <lucide:Lucide Icon="Trash2" Width="14" Height="14" />
-                                  <TextBlock Text="删除" FontSize="12" />
-                                </StackPanel>
-                              </Button>
-                              <Button Command="{Binding Workspace.SplitSelectedCommand}" Background="Transparent"
-                                      IsVisible="{Binding !IsLogicalPage}" Padding="8,4">
-                                <TextBlock Text="拆分" FontSize="12" />
-                              </Button>
-                              <Button Command="{Binding Workspace.MergeSelectedCommand}" Background="Transparent"
-                                      IsVisible="{Binding !IsLogicalPage}" Padding="8,4">
-                                <TextBlock Text="合并下一个" FontSize="12" />
-                              </Button>
-                              <Button Command="{Binding SaveTextCommand}" Background="Transparent"
-                                      IsVisible="{Binding !IsLogicalPage}" Padding="8,4">
-                                <TextBlock Text="保存" FontSize="12" />
-                              </Button>
-                            </StackPanel>
-                          </Border>
-                        </Popup>
-                      </Border>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                  <!-- Drawing Overlay (Captures mouse events) -->
+                  <Border Background="Transparent"
+                          Width="{Binding ActualWidthPixels}"
+                          Height="{Binding ActualHeightPixels}"
+                          IsVisible="{Binding HasImage}"
+                          IsHitTestVisible="{Binding IsRectToolActive}"
+                          PointerPressed="OnCanvasPointerPressed"
+                          PointerMoved="OnCanvasPointerMoved"
+                          PointerReleased="OnCanvasPointerReleased" />
 
-                <!-- Drawing Overlay (Captures mouse events) -->
-                <Border Background="Transparent"
-                        Width="{Binding ActualWidthPixels}"
-                        Height="{Binding ActualHeightPixels}"
-                        IsVisible="{Binding HasImage}"
-                        IsHitTestVisible="{Binding IsDrawToolActive}"
-                        PointerPressed="OnCanvasPointerPressed"
-                        PointerMoved="OnCanvasPointerMoved"
-                        PointerReleased="OnCanvasPointerReleased" />
+                  <!-- Selection Drawing Preview -->
+                  <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
+                          IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                    <Border Classes="BBox staging"
+                            BorderBrush="DarkOrange"
+                            Canvas.Left="{Binding SelectionLeft}"
+                            Canvas.Top="{Binding SelectionTop}"
+                            Width="{Binding SelectionWidth}"
+                            Height="{Binding SelectionHeight}"
+                            IsVisible="{Binding SelectionVisible}" />
+                  </Canvas>
 
-                <!-- Selection Drawing Preview -->
-                <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
-                        IsVisible="{Binding HasImage}" IsHitTestVisible="False">
-                  <Border Classes="BBox staging"
-                          BorderBrush="DarkOrange"
-                          Canvas.Left="{Binding SelectionLeft}"
-                          Canvas.Top="{Binding SelectionTop}"
-                          Width="{Binding SelectionWidth}"
-                          Height="{Binding SelectionHeight}"
-                          IsVisible="{Binding SelectionVisible}" />
-                </Canvas>
+                  <!-- Split Draft Boxes Overlay -->
+                  <ItemsControl ItemsSource="{Binding SplitDraftBoxes}"
+                                Width="{Binding ActualWidthPixels}"
+                                Height="{Binding ActualHeightPixels}"
+                                IsVisible="{Binding HasImage}" IsHitTestVisible="False">
+                    <ItemsControl.ItemContainerTheme>
+                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:SplitDraftBoxViewModel">
+                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                      </ControlTheme>
+                    </ItemsControl.ItemContainerTheme>
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <Canvas />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
+                        <Border Classes="BBox staging"
+                                BorderBrush="DarkOrange"
+                                Width="{Binding Width}"
+                                Height="{Binding Height}">
+                          <TextBlock Text="{Binding Label}" FontSize="11" FontWeight="Bold"
+                                     Foreground="DarkOrange" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
 
-                <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center"
-                            IsVisible="{Binding HasNoImage}">
-                  <lucide:Lucide Icon="FolderOpen" Width="32" Height="32" StrokeBrush="{DynamicResource PrimaryBrush}" />
-                  <TextBlock Text="工作台预览" FontSize="13" FontWeight="SemiBold"
-                             Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
-                  <TextBlock Text="{Binding Item.Title}"
-                             FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}"
-                             Width="400" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
-                  <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding IsBusy}" />
-                </StackPanel>
+                  <StackPanel Spacing="16" HorizontalAlignment="Center" VerticalAlignment="Center"
+                              IsVisible="{Binding HasNoImage}">
+                    <lucide:Lucide Icon="FolderOpen" Width="32" Height="32"
+                                   StrokeBrush="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="工作台预览" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{DynamicResource PrimaryBrush}" HorizontalAlignment="Center" />
+                    <TextBlock Text="{Binding Item.Title}"
+                               FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}"
+                               Width="400" TextWrapping="Wrap" HorizontalAlignment="Center" TextAlignment="Center" />
+                    <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding IsBusy}" />
+                  </StackPanel>
 
-                <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left"
-                        VerticalAlignment="Top" Margin="10" IsVisible="{Binding HasImage}">
-                  <TextBlock Text="{Binding PageNumberText}" FontSize="11" Foreground="#5F5A66" />
-                </Border>
-              </Grid>
-            </Border>
-          </LayoutTransformControl>
-        </ScrollViewer>
+                  <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left"
+                          VerticalAlignment="Top" Margin="10" IsVisible="{Binding HasImage}">
+                    <TextBlock Text="{Binding PageNumberText}" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </Border>
+                </Grid>
+              </Border>
+            </LayoutTransformControl>
+          </ScrollViewer>
+        </Panel>
       </Border>
 
       <!-- Splitter -->
@@ -286,90 +345,59 @@
       <!-- Right: Sidebar Viewer/Editor -->
       <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding IsSidebarOpen}">
         <Grid RowDefinitions="Auto,Auto,*">
-          <Border IsVisible="{Binding IsNewBoxPending}" Margin="12" Padding="12" CornerRadius="6"
-                  BorderThickness="1" BorderBrush="DarkOrange">
-            <StackPanel Spacing="8">
-              <TextBlock Text="插入新 Box" FontWeight="SemiBold" />
-              <TextBlock Text="先在 PDF/列表点选明确的父级或前置 sibling。" TextWrapping="Wrap"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" FontSize="11" />
-              <ComboBox ItemsSource="{Binding NewBoxTypeOptions}" SelectedItem="{Binding NewBoxType}" />
-              <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                <NumericUpDown Minimum="1" Maximum="6" Value="{Binding NewHeadingLevel}"
-                               PlaceholderText="标题级别 1–6" />
-                <TextBox Grid.Column="1" Text="{Binding NewCodeLanguage}" PlaceholderText="代码语言（可选）" />
-              </Grid>
-              <TextBox Text="{Binding NewBoxText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72"
-                       PlaceholderText="Markdown / LaTeX / code；logical_page 可留空" />
-              <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                <Button Content="取消" Command="{Binding CancelPendingBoxCommand}" />
-                <Button Content="插入草稿" Command="{Binding InsertPendingBoxCommand}"
-                        Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
-              </StackPanel>
-            </StackPanel>
-          </Border>
-          <Border Grid.Row="1" IsVisible="{Binding IsSplitPending}" Margin="12,0,12,12" Padding="12"
-                  CornerRadius="6" BorderThickness="1" BorderBrush="{DynamicResource PrimaryBrush}">
-            <StackPanel Spacing="8">
-              <TextBlock Text="拆分 Box" FontWeight="SemiBold" />
-              <TextBlock Text="{Binding SplitStepText}" TextWrapping="Wrap"
+          <!-- Split wizard -->
+          <Border Classes="WizardCard" Grid.RowSpan="3" IsVisible="{Binding IsSplitPending}">
+            <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8">
+              <TextBlock Text="拆分边界框" FontWeight="SemiBold" FontSize="14" />
+              <TextBlock Grid.Row="1" Text="{Binding SplitStepText}" TextWrapping="Wrap" FontSize="12"
                          Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <Grid ColumnDefinitions="*,*" ColumnSpacing="8">
-                <TextBox Text="{Binding SplitFirstText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72"
-                         PlaceholderText="第一个 Box 内容" />
+              <Grid Grid.Row="2" ColumnDefinitions="*,*" ColumnSpacing="8">
+                <TextBox Text="{Binding SplitFirstText}" AcceptsReturn="True" TextWrapping="Wrap"
+                         PlaceholderText="第一个边界框内容" />
                 <TextBox Grid.Column="1" Text="{Binding SplitSecondText}" AcceptsReturn="True" TextWrapping="Wrap"
-                         MinHeight="72" PlaceholderText="第二个 Box 内容" />
+                         PlaceholderText="第二个边界框内容" />
               </Grid>
-              <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+              <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                 <Button Content="取消拆分" Command="{Binding CancelSplitCommand}" />
                 <Button Content="确认拆分" Command="{Binding ConfirmSplitCommand}"
-                        IsEnabled="{Binding CanConfirmSplit}" />
+                        IsEnabled="{Binding CanConfirmSplit}"
+                        Background="{DynamicResource PrimaryBrush}"
+                        Foreground="{DynamicResource OnPrimaryBrush}" />
               </StackPanel>
-            </StackPanel>
+            </Grid>
           </Border>
-          <Border Grid.Row="1" IsVisible="{Binding HasCandidate}" Margin="12,0,12,12" Padding="12"
-                  CornerRadius="6" BorderThickness="1" BorderBrush="DarkOrange">
+          <!-- Merge wizard -->
+          <Border Grid.Row="1" Classes="WizardCard" IsVisible="{Binding IsMergePending}">
             <StackPanel Spacing="8">
-              <TextBlock Text="局部 OCR candidate diff" FontWeight="SemiBold" />
-              <TextBlock Text="原内容" FontWeight="SemiBold" />
-              <TextBlock Text="{Binding LocalOcrSourceText}" TextWrapping="Wrap"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Text="识别内容" FontWeight="SemiBold" />
-              <ItemsControl ItemsSource="{Binding CandidateBoxes}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8">
-                      <TextBlock Text="{Binding BoxType}" FontWeight="SemiBold" />
-                      <TextBlock Grid.Column="1" Text="{Binding Text}" TextWrapping="Wrap" />
-                    </Grid>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-              <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                <Button Content="拒绝" Command="{Binding RejectLocalOcrCommand}" />
-                <Button Content="接受到选中 Box" Command="{Binding AcceptLocalOcrCommand}" />
-              </StackPanel>
-            </StackPanel>
-          </Border>
-          <Border Grid.Row="1" IsVisible="{Binding IsMergePending}" Margin="12,0,12,12" Padding="12"
-                  CornerRadius="6" BorderThickness="1" BorderBrush="{DynamicResource PrimaryBrush}">
-            <StackPanel Spacing="8">
-              <TextBlock Text="确认合并内容" FontWeight="SemiBold" />
+              <TextBlock Text="确认合并内容" FontWeight="SemiBold" FontSize="14" />
               <TextBox Text="{Binding MergeText}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100"
                        PlaceholderText="合并结果内容（必填）" />
               <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
                 <Button Content="取消合并" Command="{Binding CancelMergeCommand}" />
-                <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}" />
+                <Button Content="确认合并" Command="{Binding ConfirmMergeCommand}"
+                        Background="{DynamicResource PrimaryBrush}"
+                        Foreground="{DynamicResource OnPrimaryBrush}" />
               </StackPanel>
             </StackPanel>
           </Border>
-          <TabControl Grid.Row="2">
-            <TabItem Header="原生预览">
-              <Grid>
-                <Grid.ContextMenu>
-                  <ContextMenu>
-                    <MenuItem Header="复制 Markdown" Command="{Binding CopyMarkdownCommand}" />
-                  </ContextMenu>
-                </Grid.ContextMenu>
+
+          <Grid Grid.Row="2" IsVisible="{Binding !IsSplitPending}">
+            <!-- View mode: read-only Markdown preview -->
+            <Grid RowDefinitions="Auto,*" IsVisible="{Binding !IsEditMode}">
+              <Border Classes="SidebarHeader">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Text="页面预览" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+                  <Button Grid.Column="1" Command="{Binding CopyMarkdownCommand}" Background="Transparent"
+                          ToolTip.Tip="复制当前页面的规范 Markdown">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                      <lucide:Lucide Icon="Copy" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                      <TextBlock Text="复制 Markdown" FontSize="12" />
+                    </StackPanel>
+                  </Button>
+                </Grid>
+              </Border>
+              <Grid Grid.Row="1">
                 <ScrollViewer x:Name="PreviewScrollViewer">
                   <ItemsControl x:Name="PreviewItems" ItemsSource="{Binding PreviewBlocks}" Margin="16">
                     <ItemsControl.ItemTemplate>
@@ -404,90 +432,54 @@
                            Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
                            IsVisible="{Binding HasNoPreviewBlocks}" />
               </Grid>
-            </TabItem>
-            <TabItem Header="Box 编辑">
-              <Grid>
+            </Grid>
+
+            <!-- Edit mode: Box tree -->
+            <Grid RowDefinitions="Auto,*,Auto" IsVisible="{Binding IsEditMode}">
+              <Border Classes="SidebarHeader">
+                <TextBlock Text="边界框列表" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+              </Border>
+              <Grid Grid.Row="1">
                 <ScrollViewer>
-                  <ItemsControl ItemsSource="{Binding BoundingBoxes}" Margin="16">
+                  <ItemsControl x:Name="BoxTreeItems" ItemsSource="{Binding BoundingBoxes}" Margin="12">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:PdfBBoxViewModel">
-                        <Border Margin="{Binding TreeMargin}"
-                                Background="{DynamicResource SurfaceContainerLowestBrush}"
-                                BorderThickness="1" BorderBrush="{DynamicResource OutlineVariantBrush}"
-                                CornerRadius="6"
-                                Padding="12">
-                          <StackPanel Spacing="8">
-                            <StackPanel Orientation="Horizontal" Spacing="6">
-                              <CheckBox IsChecked="{Binding IsMergeSelected}"
-                                        IsVisible="{Binding Workspace.IsEditMode}"
-                                        ToolTip.Tip="勾选连续 Box 后合并" />
-                              <TextBlock Text="{Binding ReadingOrder, StringFormat='#{0}'}" VerticalAlignment="Center"
-                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                              <Border Background="{Binding BoxColor}" CornerRadius="4" Padding="6,2">
-                                <TextBlock Text="{Binding BoxType}" FontSize="11" Foreground="#FFFFFF"
-                                           FontWeight="Bold" />
-                              </Border>
-                              <TextBlock Text="已排除" IsVisible="{Binding IsSuppressed}" VerticalAlignment="Center"
-                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            </StackPanel>
-                            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6"
-                                  IsVisible="{Binding Workspace.IsEditMode}">
-                              <TextBox Text="{Binding Workspace.OcrPresetId}" PlaceholderText="OCR Preset ID" />
-                              <Button Grid.Column="1" Content="局部 OCR"
-                                      Command="{Binding Workspace.RunLocalOcrCommand}"
-                                      IsVisible="{Binding !IsLogicalPage}" />
-                              <Button Grid.Column="2" Content="逻辑页 OCR"
-                                      Command="{Binding Workspace.RunLogicalPageOcrCommand}"
-                                      IsVisible="{Binding IsLogicalPage}" />
-                            </Grid>
-                            <ComboBox ItemsSource="{Binding Workspace.EditableBoxTypeOptions}"
-                                      SelectedItem="{Binding BoxType}"
-                                      IsVisible="False" />
-                            <TextBlock Text="{Binding Summary}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"
-                                       PointerPressed="OnTreeNodePointerPressed"
-                                       PointerReleased="OnTreeNodePointerReleased">
-                              <TextBlock.ContextMenu>
-                                <ContextMenu>
-                                  <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
-                                  <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
-                                  <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
-                                  <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}" />
-                                  <MenuItem Header="合并选中项" Command="{Binding Workspace.MergeSelectedCommand}" />
-                                  <MenuItem Header="从文档流排除/纳入" Command="{Binding ToggleSuppressedCommand}" />
-                                  <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
-                                </ContextMenu>
-                              </TextBlock.ContextMenu>
-                            </TextBlock>
-                            <Popup IsOpen="{Binding IsEditorOpen}" Placement="Pointer" IsLightDismissEnabled="False"
-                                   HorizontalOffset="{Binding EditorOffsetX}" VerticalOffset="{Binding EditorOffsetY}">
-                              <Border Background="{DynamicResource SurfaceBrush}" BorderThickness="1"
-                                      BorderBrush="{DynamicResource OutlineBrush}" CornerRadius="8" Padding="16"
-                                      Width="420" BoxShadow="0 4 16 #33000000">
-                                <StackPanel Spacing="8">
-                                  <Border Background="{DynamicResource SurfaceContainerHighBrush}" Padding="8"
-                                          Cursor="SizeAll" PointerPressed="OnBoxEditorDragPressed"
-                                          PointerMoved="OnBoxEditorDragMoved" PointerReleased="OnBoxEditorDragReleased">
-                                    <TextBlock Text="编辑 Box（拖动标题移动窗口）" FontWeight="SemiBold" />
-                                  </Border>
-                                  <ComboBox ItemsSource="{Binding Workspace.EditableBoxTypeOptions}"
-                                            SelectedItem="{Binding BoxType}" />
-                                  <NumericUpDown Value="{Binding HeadingLevel}" Minimum="1" Maximum="6"
-                                                 IsVisible="{Binding IsTitle}" PlaceholderText="标题级别 1-6" />
-                                  <TextBox Text="{Binding CodeLanguage}" IsVisible="{Binding IsCode}"
-                                           PlaceholderText="代码语言（可选）" />
-                                  <TextBox Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}"
-                                           AcceptsReturn="True"
-                                           TextWrapping="Wrap" MinHeight="120" />
-                                  <TextBox Text="{Binding AssetId}" IsVisible="{Binding IsMedia}"
-                                           PlaceholderText="资源引用（可选）" />
-                                  <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
-                                    <Button Content="关闭" Click="OnCloseBoxEditor" />
-                                    <Button Content="保存" Command="{Binding SaveTextCommand}" Click="OnCloseBoxEditor" />
-                                  </StackPanel>
-                                </StackPanel>
-                              </Border>
-                            </Popup>
-                          </StackPanel>
+                        <Border Classes="TreeRow"
+                                Classes.selected="{Binding IsSelected}"
+                                Classes.suppressed="{Binding IsSuppressed}"
+                                Margin="{Binding TreeMargin}"
+                                PointerPressed="OnTreeNodePointerPressed"
+                                PointerMoved="OnTreeNodePointerMoved"
+                                PointerReleased="OnTreeNodePointerReleased">
+                          <Border.ContextMenu>
+                            <ContextMenu>
+                              <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
+                              <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}" />
+                              <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}"
+                                        IsVisible="{Binding Workspace.IsSingleSelection}" />
+                              <MenuItem Header="合并选中" Command="{Binding Workspace.MergeSelectedCommand}"
+                                        IsVisible="{Binding Workspace.IsMultiSelection}" />
+                              <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
+                              <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
+                              <MenuItem Header="从文档流排除/纳入" Command="{Binding ToggleSuppressedCommand}" />
+                              <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
+                            </ContextMenu>
+                          </Border.ContextMenu>
+                          <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8">
+                            <TextBlock Text="{Binding ReadingOrder, StringFormat='#{0}'}" FontSize="11"
+                                       VerticalAlignment="Center"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            <Border Grid.Column="1" Background="{Binding BoxColor}" CornerRadius="4" Padding="6,1"
+                                    VerticalAlignment="Center">
+                              <TextBlock Text="{Binding BoxType}" FontSize="11" Foreground="#FFFFFF"
+                                         FontWeight="Bold" />
+                            </Border>
+                            <TextBlock Grid.Column="2" Text="{Binding Summary}" FontSize="13"
+                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            <TextBlock Grid.Column="3" Text="已排除" FontSize="11" VerticalAlignment="Center"
+                                       IsVisible="{Binding IsSuppressed}"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          </Grid>
                         </Border>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -497,8 +489,23 @@
                            Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
                            IsVisible="{Binding HasNoBoundingBoxes}" />
               </Grid>
-            </TabItem>
-          </TabControl>
+              <Border Grid.Row="2" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,1,0,0"
+                      Padding="14,10">
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+                  <Button Content="放弃更改" Command="{Binding CancelEditModeCommand}"
+                          Foreground="{DynamicResource ErrorBrush}" Background="Transparent" />
+                  <Button Command="{Binding SaveAndExitCommand}"
+                          Background="{DynamicResource PrimaryBrush}"
+                          Foreground="{DynamicResource OnPrimaryBrush}">
+                    <StackPanel Orientation="Horizontal" Spacing="4">
+                      <lucide:Lucide Icon="Save" Width="14" Height="14" />
+                      <TextBlock Text="保存并退出" FontSize="12" />
+                    </StackPanel>
+                  </Button>
+                </StackPanel>
+              </Border>
+            </Grid>
+          </Grid>
         </Grid>
       </Border>
 

@@ -12,7 +12,7 @@
         WindowStartupLocation="CenterOwner"
         CanResize="True"
         ShowInTaskbar="False"
-        WindowDecorations="BorderOnly"
+        WindowDecorations="Full"
         Background="{DynamicResource SurfaceBrush}">
 
   <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
@@ -21,8 +21,6 @@
       <!-- 标题与简要说明 -->
       <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <StackPanel Spacing="6">
-          <TextBlock Text="{Binding Title}" FontSize="20" FontWeight="Bold"
-                     Foreground="{DynamicResource OnSurfaceBrush}" />
           <TextBlock Text="{Binding ConflictDescription}" FontSize="14"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
           <TextBlock Text="{Binding SeverityDescription}" FontSize="12"

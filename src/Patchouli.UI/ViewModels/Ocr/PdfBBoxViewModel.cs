@@ -22,10 +22,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     private int? _headingLevel;
     private string? _codeLanguage;
     private string? _assetId;
-    private bool _isMergeSelected;
-    private bool _isEditorOpen;
-    private double _editorOffsetX;
-    private double _editorOffsetY;
 
     public PdfBBoxViewModel(
         MainWindowViewModel main,
@@ -59,7 +55,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Depth = depth;
         IsStaging = isStaging;
         SaveTextCommand = new AsyncCommand(SaveTextAsync);
-        IgnoreCommand = new AsyncCommand(IgnoreAsync);
         ToggleSuppressedCommand = new AsyncCommand(ToggleSuppressedAsync);
         DeleteCommand = new AsyncCommand(DeleteAsync);
         SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync);
@@ -86,6 +81,11 @@ public sealed class PdfBBoxViewModel : ViewModelBase
             }
 
             _boxType = value;
+            if (value == DocumentBoxType.Title && HeadingLevel is null)
+            {
+                HeadingLevel = 1;
+            }
+
             Raise();
             Raise(nameof(BoxColor));
             Raise(nameof(IsLogicalPage));
@@ -141,64 +141,12 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public bool IsSuppressed { get; }
     public int ReadingOrder { get; }
     public int Depth { get; }
-    public Thickness TreeMargin => new(Depth * 20, 0, 0, 12);
+    public Thickness TreeMargin => new(Depth * 20, 0, 0, 4);
     public string Summary => string.IsNullOrWhiteSpace(Text) ? "（无文本内容）" : Text.ReplaceLineEndings(" ").Trim();
     public bool IsLogicalPage => BoxType == DocumentBoxType.LogicalPage;
     public bool IsMedia => BoxType is DocumentBoxType.Image or DocumentBoxType.Chart;
     public bool IsTitle => BoxType == DocumentBoxType.Title;
     public bool IsCode => BoxType is DocumentBoxType.Code or DocumentBoxType.Algorithm;
-
-    public bool IsMergeSelected
-    {
-        get => _isMergeSelected;
-        set
-        {
-            if (_isMergeSelected != value)
-            {
-                _isMergeSelected = value;
-                Raise();
-            }
-        }
-    }
-
-    public bool IsEditorOpen
-    {
-        get => _isEditorOpen;
-        set
-        {
-            if (_isEditorOpen != value)
-            {
-                _isEditorOpen = value;
-                Raise();
-            }
-        }
-    }
-
-    public double EditorOffsetX
-    {
-        get => _editorOffsetX;
-        set
-        {
-            if (!_editorOffsetX.Equals(value))
-            {
-                _editorOffsetX = value;
-                Raise();
-            }
-        }
-    }
-
-    public double EditorOffsetY
-    {
-        get => _editorOffsetY;
-        set
-        {
-            if (!_editorOffsetY.Equals(value))
-            {
-                _editorOffsetY = value;
-                Raise();
-            }
-        }
-    }
 
     public bool IsSelected
     {
@@ -212,8 +160,11 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 
             _isSelected = value;
             Raise();
+            Raise(nameof(ShowHandles));
         }
     }
+
+    public bool ShowHandles => IsSelected && Workspace.IsEditMode;
 
     public string? Text
     {
@@ -231,7 +182,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     }
 
     public AsyncCommand SaveTextCommand { get; }
-    public AsyncCommand IgnoreCommand { get; }
     public AsyncCommand ToggleSuppressedCommand { get; }
     public AsyncCommand DeleteCommand { get; }
     public AsyncCommand SaveBBoxCommand { get; }
@@ -301,32 +251,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         };
     }
 
-    private async Task IgnoreAsync()
-    {
-        if (BoxType == DocumentBoxType.LogicalPage)
-        {
-            Workspace.Status = "logical_page 不能作为普通内容抑制；请移动或删除其子 Box。";
-            return;
-        }
-
-        PageEditSessionId? sessionId = Workspace.EditSessionId;
-        if (sessionId is null)
-        {
-            return;
-        }
-
-        Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.SetSuppressedAsync(
-            sessionId.Value, BoxId, true);
-        if (result.IsSuccess)
-        {
-            await Workspace.RefreshBoxesAsync();
-        }
-        else
-        {
-            Workspace.Status = $"抑制 Box 失败: {result.ErrorMessage}";
-        }
-    }
-
     private async Task DeleteAsync()
     {
         PageEditSessionId? sessionId = Workspace.EditSessionId;
@@ -338,12 +262,12 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.DeleteBoxAsync(sessionId.Value, BoxId);
         if (result.IsFailure)
         {
-            Workspace.Status = $"删除 Box 失败: {result.ErrorMessage}";
+            Workspace.Status = $"删除边界框失败: {result.ErrorMessage}";
             return;
         }
 
         await Workspace.RefreshBoxesAsync();
-        Workspace.Status = "Box 已从页面草稿删除；提交后才会进入新 revision。";
+        Workspace.Status = "边界框已从页面草稿删除；提交后才会生成新版本。";
     }
 
     private async Task ToggleSuppressedAsync()
@@ -363,7 +287,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         }
 
         await Workspace.RefreshBoxesAsync();
-        Workspace.Status = IsSuppressed ? "Box 已重新纳入文档流。" : "Box 已从文档流排除。";
+        Workspace.Status = IsSuppressed ? "边界框已重新纳入文档流。" : "边界框已从文档流排除。";
     }
 
     internal async Task SaveBBoxAsync()
@@ -378,7 +302,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Result valid = bbox.Validate();
         if (valid.IsFailure)
         {
-            Workspace.Status = $"bbox 无效: {valid.ErrorMessage}";
+            Workspace.Status = $"区域无效: {valid.ErrorMessage}";
             return;
         }
 
@@ -386,12 +310,12 @@ public sealed class PdfBBoxViewModel : ViewModelBase
             sessionId.Value, BoxId, bbox);
         if (result.IsFailure)
         {
-            Workspace.Status = $"更新 bbox 失败: {result.ErrorMessage}";
+            Workspace.Status = $"更新区域失败: {result.ErrorMessage}";
             return;
         }
 
         await Workspace.RefreshBoxesAsync();
-        Workspace.Status = "bbox 已写入页面草稿。";
+        Workspace.Status = "区域已写入页面草稿。";
     }
 
     internal void SetCanvasBBox(double left, double top, double width, double height)

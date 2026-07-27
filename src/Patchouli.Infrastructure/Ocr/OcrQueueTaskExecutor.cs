@@ -6,14 +6,14 @@ namespace Patchouli.Infrastructure.Ocr;
 
 public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
 {
-    private readonly IOcrRunCoordinator _coordinator;
+    private readonly IOcrRunEngine _engine;
     private readonly ISearchUnitBuilder? _searchUnits;
     private readonly ISearchIndexRebuilder? _searchIndex;
 
-    public OcrQueueTaskExecutor(IOcrRunCoordinator coordinator, ISearchUnitBuilder? searchUnits = null,
+    public OcrQueueTaskExecutor(IOcrRunEngine engine, ISearchUnitBuilder? searchUnits = null,
         ISearchIndexRebuilder? searchIndex = null)
     {
-        _coordinator = coordinator;
+        _engine = engine;
         _searchUnits = searchUnits;
         _searchIndex = searchIndex;
     }
@@ -24,14 +24,16 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
         {
             Result<OcrRun>? run = task.TaskKind switch
             {
-                OcrQueueTaskKind.Document => await _coordinator.RunPresetOnDocumentAsync(task.DocumentInstanceId,
+                OcrQueueTaskKind.Document => await _engine.RunPresetOnDocumentAsync(task.DocumentInstanceId,
                     task.PresetId, cancellationToken),
-                OcrQueueTaskKind.MockPages => await _coordinator.RunPresetOnPagesAsync(task.DocumentInstanceId,
+                OcrQueueTaskKind.MockPages => await _engine.RunPresetOnPagesAsync(task.DocumentInstanceId,
                     task.PresetId, task.PageIds, cancellationToken),
-                OcrQueueTaskKind.ImagePage => await _coordinator.RunPresetOnImagePageAsync(task.DocumentInstanceId,
+                OcrQueueTaskKind.ImagePage => await _engine.RunPresetOnImagePageAsync(task.DocumentInstanceId,
                     task.PresetId, task.PageIds.Single(), task.ImagePath!, cancellationToken),
-                OcrQueueTaskKind.RenderedPdfPage => await _coordinator.RunPresetOnRenderedPdfPageAsync(
+                OcrQueueTaskKind.RenderedPdfPage => await _engine.RunPresetOnRenderedPdfPageAsync(
                     task.DocumentInstanceId, task.PresetId, task.PageIds.Single(), task.Dpi ?? 200, cancellationToken),
+                OcrQueueTaskKind.Region => await _engine.RunPresetOnRegionAsync(task.DocumentInstanceId,
+                    task.PresetId, task.PageIds.Single(), task.RegionBBox!.Value, cancellationToken),
                 _ => null
             };
             if (run is null)
@@ -46,7 +48,7 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
             }
 
             Result<IReadOnlyList<OcrPageResult>> pages =
-                await _coordinator.ListPageResultsAsync(run.Value.OcrRunId, cancellationToken);
+                await _engine.ListPageResultsAsync(run.Value.OcrRunId, cancellationToken);
             if (pages.IsFailure)
             {
                 return new OcrQueueExecutionResult(false, false, pages.ErrorCode, pages.ErrorMessage);
@@ -62,31 +64,35 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                     failed.ErrorMessage ?? "One or more OCR pages failed.", run.Value.OcrRunId, completed, failedCount);
             }
 
-            Result<OcrCandidateAdoption> adoption = await _coordinator.AdoptCandidateRunAsync(
-                run.Value.OcrRunId, cancellationToken: cancellationToken);
-            if (adoption.IsFailure)
+            if (task.AdoptOnCompletion)
             {
-                return new OcrQueueExecutionResult(false, false, adoption.ErrorCode,
-                    adoption.ErrorMessage ?? "OCR candidate adoption requires attention.",
-                    run.Value.OcrRunId, completed, failedCount);
-            }
-
-            if (_searchUnits is not null && _searchIndex is not null)
-            {
-                Result units =
-                    await _searchUnits.RebuildForDocumentInstanceAsync(task.DocumentInstanceId, cancellationToken);
-                if (units.IsFailure)
+                Result<OcrCandidateAdoption> adoption = await _engine.AdoptCandidateRunAsync(
+                    run.Value.OcrRunId, cancellationToken: cancellationToken);
+                if (adoption.IsFailure)
                 {
-                    return new OcrQueueExecutionResult(false, false, units.ErrorCode, units.ErrorMessage,
+                    return new OcrQueueExecutionResult(false, false, adoption.ErrorCode,
+                        adoption.ErrorMessage ?? "OCR candidate adoption requires attention.",
                         run.Value.OcrRunId, completed, failedCount);
                 }
 
-                Result index =
-                    await _searchIndex.RebuildFtsForDocumentInstanceAsync(task.DocumentInstanceId, cancellationToken);
-                if (index.IsFailure)
+                if (_searchUnits is not null && _searchIndex is not null)
                 {
-                    return new OcrQueueExecutionResult(false, false, index.ErrorCode, index.ErrorMessage,
-                        run.Value.OcrRunId, completed, failedCount);
+                    Result units =
+                        await _searchUnits.RebuildForDocumentInstanceAsync(task.DocumentInstanceId, cancellationToken);
+                    if (units.IsFailure)
+                    {
+                        return new OcrQueueExecutionResult(false, false, units.ErrorCode, units.ErrorMessage,
+                            run.Value.OcrRunId, completed, failedCount);
+                    }
+
+                    Result index =
+                        await _searchIndex.RebuildFtsForDocumentInstanceAsync(task.DocumentInstanceId,
+                            cancellationToken);
+                    if (index.IsFailure)
+                    {
+                        return new OcrQueueExecutionResult(false, false, index.ErrorCode, index.ErrorMessage,
+                            run.Value.OcrRunId, completed, failedCount);
+                    }
                 }
             }
 

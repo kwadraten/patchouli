@@ -1,6 +1,8 @@
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Ocr;
 
@@ -9,7 +11,8 @@ public sealed class OcrRetryPolicy : IOcrRetryPolicy
     private static readonly HashSet<string> Transient =
     [
         "network_timeout", "temporary_provider_error", "rate_limited", "quota_exceeded_retryable", "worker_crashed",
-        OcrFailureCode.LocalOcrTimeout
+        OcrFailureCode.LocalOcrTimeout, MinerUProviderStatus.DownloadFailed, MinerUProviderStatus.Timeout,
+        MinerUProviderStatus.UploadFailed, MinerUProviderStatus.UploadUrlFailed
     ];
 
     private static readonly HashSet<string> Manual =
@@ -53,17 +56,26 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
     private readonly HashSet<string> _pauses = new();
     private readonly Dictionary<OcrQueueTaskId, CancellationTokenSource> _running = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly LibraryId _libraryId;
+    private readonly Func<CancellationToken, Task<Result<LibraryId>>> _libraryIdResolver;
     private readonly Action<Exception>? _loopErrorLogger;
     private readonly TimeSpan _loopInterval;
+    private LibraryId? _libraryId;
     private CancellationTokenSource? _loop;
     private Task? _loopTask;
 
     public OcrQueueScheduler(LibraryId libraryId, IClock clock, IOcrQueueTaskExecutor executor,
         IOcrRetryPolicy? retry = null, OcrQueueLimits? limits = null, TimeSpan? loopInterval = null,
         Action<Exception>? loopErrorLogger = null)
+        : this(_ => Task.FromResult(Result<LibraryId>.Success(libraryId)), clock, executor, retry, limits,
+            loopInterval, loopErrorLogger)
     {
-        _libraryId = libraryId;
+    }
+
+    public OcrQueueScheduler(Func<CancellationToken, Task<Result<LibraryId>>> libraryIdResolver, IClock clock,
+        IOcrQueueTaskExecutor executor, IOcrRetryPolicy? retry = null, OcrQueueLimits? limits = null,
+        TimeSpan? loopInterval = null, Action<Exception>? loopErrorLogger = null)
+    {
+        _libraryIdResolver = libraryIdResolver;
         _clock = clock;
         _executor = executor;
         _retry = retry ?? new OcrRetryPolicy();
@@ -107,6 +119,15 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         return EnqueueAsync(
             new OcrQueueTaskRequest(d, p, [page], OcrQueueTaskKind.RenderedPdfPage, OcrEngineIds.LocalPlaceholder,
                 OcrAdapterKind.LocalProcess, null, priority, null, dpi), c);
+    }
+
+    public Task<Result<OcrQueueTask>> EnqueueRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
+        NormalizedBBox regionBBox, string engineId, string adapterKind, string? providerId, string priority,
+        CancellationToken c = default)
+    {
+        return EnqueueAsync(
+            new OcrQueueTaskRequest(d, p, [page], OcrQueueTaskKind.Region, engineId, adapterKind, providerId,
+                priority, RegionBBox: regionBBox, AdoptOnCompletion: false), c);
     }
 
     public Task StartAsync(CancellationToken c = default)
@@ -194,11 +215,24 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         await _gate.WaitAsync(c);
         try
         {
+            if (_libraryId is null)
+            {
+                Result<LibraryId> libraryId = await _libraryIdResolver(c);
+                if (libraryId.IsFailure)
+                {
+                    return Result<OcrQueueTask>.Failure(libraryId.ErrorCode!, libraryId.ErrorMessage!);
+                }
+
+                _libraryId = libraryId.Value;
+            }
+
             DateTimeOffset now = _clock.UtcNow;
-            task = new OcrQueueTask(OcrQueueTaskId.New(), _libraryId, request.DocumentInstanceId, request.PresetId,
+            task = new OcrQueueTask(OcrQueueTaskId.New(), _libraryId.Value, request.DocumentInstanceId,
+                request.PresetId,
                 request.PageIds, request.TaskKind, request.EngineId, request.AdapterKind, request.ProviderId,
                 request.Priority, now, now, OcrQueueTaskState.Queued, 0, Math.Max(1, request.MaxAttempts), null, null,
-                null, null, request.ImagePath, request.Dpi);
+                null, null, request.ImagePath, request.Dpi, RegionBBox: request.RegionBBox,
+                AdoptOnCompletion: request.AdoptOnCompletion);
             _tasks[task.TaskId] = task;
         }
         finally
@@ -212,38 +246,74 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
 
     public async Task RunOneSchedulingTickAsync(CancellationToken c = default)
     {
-        OcrQueueTask? task = null;
-        CancellationTokenSource? cts = null;
+        List<(OcrQueueTask Task, CancellationTokenSource Cts)> claimed = [];
         await _gate.WaitAsync(c);
         try
         {
-            task = _tasks.Values
+            OcrQueueTask[] eligible = _tasks.Values
                 .Where(t => t.State == OcrQueueTaskState.Queued &&
-                            (t.ScheduledAfter is null || t.ScheduledAfter <= _clock.UtcNow) && !Paused(t) && CanRun(t))
+                            (t.ScheduledAfter is null || t.ScheduledAfter <= _clock.UtcNow) && !Paused(t))
                 .OrderByDescending(Score)
                 .ThenBy(t => t.CreatedAt)
-                .FirstOrDefault();
-            if (task is null)
+                .ToArray();
+            foreach (OcrQueueTask candidate in eligible)
             {
-                return;
-            }
+                if (!CanRun(candidate))
+                {
+                    continue;
+                }
 
-            task = task with
-            {
-                State = OcrQueueTaskState.Running, UpdatedAt = _clock.UtcNow, CompletedPageCount = 0,
-                FailedPageCount = 0
-            };
-            _tasks[task.TaskId] = task;
-            cts = new CancellationTokenSource();
-            _running[task.TaskId] = cts;
+                OcrQueueTask task = candidate with
+                {
+                    State = OcrQueueTaskState.Running, UpdatedAt = _clock.UtcNow, CompletedPageCount = 0,
+                    FailedPageCount = 0
+                };
+                _tasks[task.TaskId] = task;
+                CancellationTokenSource cts = new();
+                _running[task.TaskId] = cts;
+                claimed.Add((task, cts));
+            }
         }
         finally
         {
             _gate.Release();
         }
 
-        OnChanged(task, OcrQueueChangeKind.Updated);
+        foreach ((OcrQueueTask task, CancellationTokenSource cts) in claimed)
+        {
+            OnChanged(task, OcrQueueChangeKind.Updated);
+            _ = Task.Run(() => ExecuteAndCompleteAsync(task, cts), CancellationToken.None);
+        }
+    }
 
+    public async Task WaitForIdleAsync(CancellationToken c = default)
+    {
+        while (true)
+        {
+            await _gate.WaitAsync(c);
+            try
+            {
+                DateTimeOffset now = _clock.UtcNow;
+                bool idle = _tasks.Values.All(t =>
+                    t.State != OcrQueueTaskState.Running &&
+                    (t.State != OcrQueueTaskState.Queued ||
+                     (t.ScheduledAfter is not null && t.ScheduledAfter > now)));
+                if (idle)
+                {
+                    return;
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+
+            await Task.Delay(20, c);
+        }
+    }
+
+    private async Task ExecuteAndCompleteAsync(OcrQueueTask task, CancellationTokenSource cts)
+    {
         OcrQueueExecutionResult result;
         try
         {
@@ -269,7 +339,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         }
 
         OcrQueueTask updated;
-        await _gate.WaitAsync(c);
+        await _gate.WaitAsync();
         try
         {
             _running.Remove(task.TaskId);

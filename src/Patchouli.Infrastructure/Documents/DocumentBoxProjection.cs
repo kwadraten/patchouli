@@ -9,16 +9,24 @@ internal static class DocumentBoxProjection
     {
         foreach (DocumentBox root in Siblings(boxes, null))
         {
-            if (root.BoxType == DocumentBoxType.LogicalPage)
+            foreach (DocumentBox box in Descendants(boxes, root))
             {
-                foreach (DocumentBox child in Siblings(boxes, root.BoxId))
+                if (box.BoxType != DocumentBoxType.LogicalPage || box.Payload is not null)
                 {
-                    yield return child;
+                    yield return box;
                 }
             }
-            else
+        }
+    }
+
+    private static IEnumerable<DocumentBox> Descendants(IReadOnlyList<DocumentBox> boxes, DocumentBox box)
+    {
+        yield return box;
+        foreach (DocumentBox child in Siblings(boxes, box.BoxId))
+        {
+            foreach (DocumentBox descendant in Descendants(boxes, child))
             {
-                yield return root;
+                yield return descendant;
             }
         }
     }

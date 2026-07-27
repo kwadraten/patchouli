@@ -45,6 +45,33 @@
     <Style Selector="ListBox.SidebarListBox ListBoxItem:selected lucide|Lucide.ItemIcon">
       <Setter Property="StrokeBrush" Value="{DynamicResource PrimaryBrush}" />
     </Style>
+    <Style Selector="Border.StatePill">
+      <Setter Property="CornerRadius" Value="10" />
+      <Setter Property="Padding" Value="10,2" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceVariantBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill TextBlock">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill.saved">
+      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill.saved TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill.failed">
+      <Setter Property="Background" Value="{DynamicResource ErrorContainerBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill.failed TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource OnErrorContainerBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill.warning">
+      <Setter Property="Background" Value="{DynamicResource ErrorContainerBrush}" />
+    </Style>
+    <Style Selector="Border.StatePill.warning TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource OnErrorContainerBrush}" />
+    </Style>
   </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*">
     <!-- Sidebar -->
@@ -77,17 +104,28 @@
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="4" VerticalAlignment="Center">
             <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ActiveEffectiveSourceText, StringFormat='生效来源：\{0\}'}" FontSize="11"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <TextBlock Text="{Binding ActiveLastError}" FontSize="11" TextWrapping="Wrap"
+                       Foreground="{DynamicResource ErrorBrush}"
+                       IsVisible="{Binding ActiveHasLastError}" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <TextBlock Text="{Binding ActiveSaveStateText}" VerticalAlignment="Center"
-                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-            <TextBlock Text="{Binding ActiveValidationStateText}" VerticalAlignment="Center"
-                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+            <Border Classes="StatePill" VerticalAlignment="Center">
+              <TextBlock Text="{Binding ActiveScopeText}" />
+            </Border>
+            <Border Classes="StatePill warning" VerticalAlignment="Center"
+                    IsVisible="{Binding ActiveRequiresReload}">
+              <TextBlock Text="需重启服务生效" />
+            </Border>
+            <Border Classes="StatePill" Classes.saved="{Binding ActiveSaved}"
+                    Classes.failed="{Binding ActiveSaveFailed}" VerticalAlignment="Center">
+              <TextBlock Text="{Binding ActiveSaveStateText}" />
+            </Border>
             <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
                     IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardActiveSection}" />
-            <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32"
-                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanSaveActiveSection}"
-                    Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
+            <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32" Classes="Primary"
+                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanSaveActiveSection}" />
           </StackPanel>
         </Grid>
       </Border>
@@ -121,9 +159,15 @@
                         BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
                         Padding="18">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="启动选项" FontSize="16" FontWeight="SemiBold"
+                    <TextBlock Text="设备设置" FontSize="16" FontWeight="SemiBold"
                                Foreground="{DynamicResource PrimaryBrush}" />
                     <CheckBox Content="记住上次打开的数据库" IsChecked="{Binding RememberLastDatabase}" />
+                    <TextBlock Text="排除规则（每行一个正则表达式，匹配以 / 分隔的相对路径）" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBox Text="{Binding ExclusionPatternsText}" AcceptsReturn="True" MinHeight="120"
+                             FontFamily="Consolas, Menlo, monospace" />
+                    <TextBlock Text="以上修改需要点击顶部「保存设置」后生效。" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
 
@@ -137,14 +181,11 @@
                       <controls:PathPickerTextBox Path="{Binding FileSearchRootInput}"
                                                   SelectedRoot="{Binding SelectedFileSearchRoot}" PickerMode="Folder"
                                                   DialogTitle="选择文件搜索根目录" PlaceholderText="目录路径" />
-                      <Button Classes="FormFieldAction" Grid.Column="1" Content="添加"
+                      <Button Classes="FormFieldAction" Grid.Column="1" Content="添加并扫描"
                               Command="{Binding AddFileSearchRootCommand}" Padding="16,0" />
                     </Grid>
-                    <Button Content="重新扫描" Command="{Binding RescanFileSearchRootsCommand}" HorizontalAlignment="Left" />
-                    <TextBlock Text="排除规则（每行一个正则表达式，匹配以 / 分隔的相对路径）" FontSize="12"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBox Text="{Binding ExclusionPatternsText}" AcceptsReturn="True" MinHeight="120"
-                             FontFamily="Consolas, Menlo, monospace" />
+                    <Button Content="立即重新扫描" Command="{Binding RescanFileSearchRootsCommand}"
+                            HorizontalAlignment="Left" />
                     <ItemsControl ItemsSource="{Binding FileSearchRoots}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="settings:FileSearchRootSettingsRowViewModel">
@@ -152,12 +193,14 @@
                             <TextBlock Text="{Binding RootPath}" FontSize="12"
                                        Foreground="{DynamicResource OnSurfaceVariantBrush}"
                                        TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RootPath}" />
-                            <Button Grid.Column="1" Content="删除" Command="{Binding DeleteCommand}" Classes="Danger"
+                            <Button Grid.Column="1" Content="移除" Command="{Binding DeleteCommand}" Classes="Danger"
                                     Padding="10,2" />
                           </Grid>
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                    <TextBlock Text="以上操作立即生效，不受「放弃更改」影响。" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
               </StackPanel>
@@ -174,7 +217,8 @@
                                Foreground="{DynamicResource PrimaryBrush}" />
                     <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
                     <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
-                    <TextBox Text="{Binding SyncRoot}" PlaceholderText="本机同步目录" />
+                    <controls:PathPickerTextBox Path="{Binding SyncRoot}" PickerMode="Folder"
+                                                DialogTitle="选择本机同步目录" PlaceholderText="本机同步目录" />
                     <TextBlock Text="{Binding SnapshotOperationStateText, StringFormat='最近同步状态：{0}'}"
                                FontSize="12" Foreground="{DynamicResource PrimaryBrush}" />
                     <TextBlock Text="{Binding SnapshotOperationMessage}" FontSize="12" TextWrapping="Wrap"
@@ -193,6 +237,7 @@
                       <Button Content="打开同步中心" Command="{Binding OpenSyncCenterCommand}" />
                       <Button Content="立即发布" Command="{Binding PublishSnapshotCommand}" />
                       <Button Content="检查传入快照" Command="{Binding CheckIncomingSnapshotCommand}" />
+                      <Button Content="导出快照包" Command="{Binding ExportSnapshotPackageCommand}" />
                     </StackPanel>
                   </StackPanel>
                 </Border>
@@ -219,8 +264,20 @@
                   <StackPanel Spacing="10">
                     <TextBlock Text="运行状态" FontSize="16" FontWeight="SemiBold"
                                Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="{Binding McpStatusText}" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <Border Background="{DynamicResource ErrorContainerBrush}"
+                            BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
+                            Padding="12" IsVisible="{Binding RequiresReload}">
+                      <StackPanel Spacing="6">
+                        <TextBlock Text="设置已保存，需重启服务后生效" FontWeight="Bold"
+                                   Foreground="{DynamicResource OnErrorContainerBrush}" />
+                        <Button Content="保存并重启服务" Command="{Binding SaveAndRestartCommand}"
+                                HorizontalAlignment="Left" Classes="Primary" />
+                      </StackPanel>
+                    </Border>
                   </StackPanel>
                 </Border>
 
@@ -353,6 +410,13 @@
                     <ComboBox ItemsSource="{Binding MinerUModelVersionOptions}"
                               SelectedItem="{Binding MinerUModelVersion}" />
                     <TextBox Text="{Binding MinerUTokenInput}" PasswordChar="•" PlaceholderText="在此输入 Token" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                      <TextBlock Text="{Binding MinerUCredentialStatus}" FontSize="12" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <Button Grid.Column="1" Content="移除凭据" Classes="Danger"
+                              Command="{Binding RemoveMinerUCredentialCommand}"
+                              IsEnabled="{Binding HasPersistedCredential}" />
+                    </Grid>
                   </StackPanel>
                 </Border>
               </StackPanel>

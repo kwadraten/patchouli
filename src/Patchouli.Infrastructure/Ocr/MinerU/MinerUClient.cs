@@ -257,7 +257,8 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
                         "Extraction completed but no result zip URL was provided.");
                 }
 
-                return await DownloadZipAsync(batchId, poll.Value.FullZipUrl, downloadDirectory, cancellationToken);
+                return await DownloadZipWithRetriesAsync(batchId, poll.Value.FullZipUrl, downloadDirectory,
+                    cancellationToken);
             }
 
             if (status == MinerUProviderStatus.Failed)
@@ -280,31 +281,70 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.Timeout, "Polling was cancelled.");
     }
 
+    private async Task<Result<MinerUDownloadedResult>> DownloadZipWithRetriesAsync(
+        string batchId, string zipUrl, string downloadDirectory, CancellationToken cancellationToken)
+    {
+        int maxAttempts = Math.Max(1, _options.DownloadMaxAttempts);
+        Result<MinerUDownloadedResult> download =
+            await DownloadZipAsync(batchId, zipUrl, downloadDirectory, cancellationToken);
+
+        for (int attempt = 2; attempt <= maxAttempts && download.IsFailure &&
+                                download.ErrorCode == MinerUProviderStatus.DownloadFailed; attempt++)
+        {
+            // Re-poll for a fresh URL before retrying: signed URLs can expire.
+            Result<MinerUPollResult> repoll = await PollExtractResultAsync(batchId, cancellationToken);
+            if (repoll.IsFailure || repoll.Value.Status != MinerUProviderStatus.Done ||
+                string.IsNullOrEmpty(repoll.Value.FullZipUrl))
+            {
+                return download;
+            }
+
+            await Task.Delay(_options.DownloadRetryDelayMs * (attempt - 1), cancellationToken);
+
+            download = await DownloadZipAsync(batchId, repoll.Value.FullZipUrl, downloadDirectory, cancellationToken);
+        }
+
+        return download;
+    }
+
     private async Task<Result<MinerUDownloadedResult>> DownloadZipAsync(
         string batchId, string zipUrl, string downloadDirectory, CancellationToken cancellationToken)
     {
+        string? zipPath = null;
         try
         {
             Directory.CreateDirectory(downloadDirectory);
-            string zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
+            zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
+
+            using CancellationTokenSource downloadTimeout = new();
+            downloadTimeout.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, _options.DownloadTimeoutSeconds)));
+            using CancellationTokenSource linkedCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, downloadTimeout.Token);
 
             using HttpRequestMessage request = new(HttpMethod.Get, zipUrl);
             using HttpResponseMessage response =
-                await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCancellation.Token);
 
             if (!response.IsSuccessStatusCode)
             {
                 return Result<MinerUDownloadedResult>.Failure(
-                    MinerUProviderStatus.Failed,
+                    MinerUProviderStatus.DownloadFailed,
                     SanitizeErrorMessage($"Download failed: {response.StatusCode}", _options.Token));
             }
 
-            await using Stream sourceStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using Stream sourceStream = await response.Content.ReadAsStreamAsync(linkedCancellation.Token);
             await using FileStream destStream = File.Create(zipPath);
-            await sourceStream.CopyToAsync(destStream, cancellationToken);
+            await sourceStream.CopyToAsync(destStream, linkedCancellation.Token);
 
             return Result<MinerUDownloadedResult>.Success(
                 new MinerUDownloadedResult(batchId, zipPath, MinerUProviderStatus.Done));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            DeletePartialDownload(zipPath);
+            return Result<MinerUDownloadedResult>.Failure(
+                MinerUProviderStatus.DownloadFailed,
+                "MinerU result download timed out.");
         }
         catch (OperationCanceledException)
         {
@@ -312,13 +352,23 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         }
         catch (HttpRequestException ex)
         {
-            return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.Failed,
+            DeletePartialDownload(zipPath);
+            return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.DownloadFailed,
                 SanitizeErrorMessage($"Download network error: {ex.Message}", _options.Token));
         }
         catch (IOException ex)
         {
-            return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.Failed,
+            DeletePartialDownload(zipPath);
+            return Result<MinerUDownloadedResult>.Failure(MinerUProviderStatus.DownloadFailed,
                 SanitizeErrorMessage($"File write error: {ex.Message}", _options.Token));
+        }
+    }
+
+    private static void DeletePartialDownload(string? zipPath)
+    {
+        if (!string.IsNullOrWhiteSpace(zipPath) && File.Exists(zipPath))
+        {
+            File.Delete(zipPath);
         }
     }
 
@@ -391,7 +441,7 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
             "converting" => MinerUProviderStatus.Converting,
             "done" => MinerUProviderStatus.Done,
             "failed" => MinerUProviderStatus.Failed,
-            _ => MinerUProviderStatus.Failed
+            _ => MinerUProviderStatus.Running
         };
     }
 

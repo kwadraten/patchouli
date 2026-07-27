@@ -144,7 +144,8 @@ public sealed class PdfPageRenderingTests
         using PdfPagePixelBufferLease lease = preview.Value;
 
         c.Materializer.Paths.Count.Should().Be(2);
-        c.Materializer.Paths.Should().OnlyContain(path => path == c.PdfPath);
+        string pdfPath = c.PdfPath;
+        c.Materializer.Paths.Should().OnlyContain(path => path == pdfPath);
     }
 
     [Fact]

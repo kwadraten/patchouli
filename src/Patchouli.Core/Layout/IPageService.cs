@@ -26,4 +26,8 @@ public interface IPageService
     Task<Result<Page>> GetPageAsync(
         PageId pageId,
         CancellationToken cancellationToken = default);
+
+    Task<Result<FileAssetId>> GetFileAssetIdAsync(
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default);
 }

@@ -155,6 +155,67 @@ public sealed class OcrLifecycleBoxTreeTests
     }
 
     [Fact]
+    public async Task Startup_reconciliation_fails_interrupted_runs_and_page_results()
+    {
+        await using Context context = await Context.CreateAsync();
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Reconcile", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+        OcrRun completed = (await context.Coordinator.RunPresetOnDocumentAsync(
+            context.Document.DocumentInstanceId, preset.PresetId)).Value;
+        completed.State.Should().Be(OcrRunState.Completed);
+        OcrRun pending = (await context.Coordinator.CreatePendingRunForTestAsync(
+            context.Document.DocumentInstanceId, preset.PresetId)).Value;
+        OcrRun running = (await context.Coordinator.CreatePendingRunForTestAsync(
+            context.Document.DocumentInstanceId, preset.PresetId)).Value;
+        string now = DateTimeOffset.UtcNow.ToString("O");
+        await context.ExecuteAsync(
+            """
+            update ocr_runs set state = 'running' where ocr_run_id = @RunId;
+            insert into ocr_page_results (
+                result_id, ocr_run_id, page_id, state, staging_tree_revision_id,
+                error_code, error_message, created_at, updated_at)
+            values (@ResultId, @RunId, @PageId, @State, null, null, null, @Now, @Now);
+            """,
+            new
+            {
+                RunId = running.OcrRunId.ToString(),
+                ResultId = OcrPageResultId.New().ToString(),
+                PageId = context.Pages[0].PageId.ToString(),
+                State = OcrPageResultState.Processing,
+                Now = now
+            });
+        await context.ExecuteAsync(
+            """
+            insert into ocr_page_results (
+                result_id, ocr_run_id, page_id, state, staging_tree_revision_id,
+                error_code, error_message, created_at, updated_at)
+            values (@ResultId, @RunId, @PageId, @State, null, null, null, @Now, @Now);
+            """,
+            new
+            {
+                RunId = pending.OcrRunId.ToString(),
+                ResultId = OcrPageResultId.New().ToString(),
+                PageId = context.Pages[0].PageId.ToString(),
+                State = OcrPageResultState.Pending,
+                Now = now
+            });
+
+        Result reconcile = await context.Coordinator.ReconcileInterruptedRunsAsync();
+
+        reconcile.IsSuccess.Should().BeTrue(reconcile.ErrorMessage);
+        (await context.Coordinator.GetRunAsync(pending.OcrRunId)).Value.State.Should().Be(OcrRunState.Failed);
+        (await context.Coordinator.GetRunAsync(running.OcrRunId)).Value.State.Should().Be(OcrRunState.Failed);
+        (await context.Coordinator.GetRunAsync(completed.OcrRunId)).Value.State.Should()
+            .Be(OcrRunState.Completed);
+        (await context.Coordinator.ListPageResultsAsync(running.OcrRunId)).Value.Should().OnlyContain(result =>
+            result.State == OcrPageResultState.Failed && result.ErrorCode == OcrFailureCode.Interrupted);
+        (await context.Coordinator.ListPageResultsAsync(pending.OcrRunId)).Value.Should().OnlyContain(result =>
+            result.State == OcrPageResultState.Failed && result.ErrorCode == OcrFailureCode.Interrupted);
+        (await context.Coordinator.ListPageResultsAsync(completed.OcrRunId)).Value.Should().OnlyContain(result =>
+            result.State == OcrPageResultState.Succeeded);
+    }
+
+    [Fact]
     public async Task Region_candidate_is_ephemeral_and_does_not_create_an_ocr_run_or_staging_tree()
     {
         await using Context context = await Context.CreateAsync();
@@ -182,7 +243,7 @@ public sealed class OcrLifecycleBoxTreeTests
             IReadOnlyList<Page> pages,
             IDocumentTreeService trees,
             IOcrPresetService presets,
-            OcrRunCoordinator coordinator)
+            OcrRunEngine coordinator)
         {
             _database = database;
             Document = document;
@@ -196,7 +257,7 @@ public sealed class OcrLifecycleBoxTreeTests
         public IReadOnlyList<Page> Pages { get; }
         public IDocumentTreeService Trees { get; }
         public IOcrPresetService Presets { get; }
-        public OcrRunCoordinator Coordinator { get; }
+        public OcrRunEngine Coordinator { get; }
 
         public async Task<int> CountAsync(string sql)
         {
@@ -204,6 +265,14 @@ public sealed class OcrLifecycleBoxTreeTests
                 _database.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();
             return await connection.ExecuteScalarAsync<int>(sql);
+        }
+
+        public async Task ExecuteAsync(string sql, object parameters)
+        {
+            await using Microsoft.Data.Sqlite.SqliteConnection connection =
+                _database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(sql, parameters);
         }
 
         public static async Task<Context> CreateAsync(IOcrEngine? engine = null, bool configureCoordinates = false,
@@ -225,7 +294,7 @@ public sealed class OcrLifecycleBoxTreeTests
                 CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
             IDocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
             SearchUnitBuilder search = new(database.ConnectionFactory, clock, new MarkdigMarkdownEngine());
-            OcrRunCoordinator coordinator = new(
+            OcrRunEngine coordinator = new(
                 database.ConnectionFactory,
                 clock,
                 engine ?? new MockOcrEngine(),

@@ -50,20 +50,6 @@ public sealed class SettingsViewModel : ViewModelBase
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
 
-    public string MinerUTokenInput
-    {
-        get => OcrProviderSettings.MinerUTokenInput;
-        set
-        {
-            OcrProviderSettings.MinerUTokenInput = value;
-            Raise();
-            Raise(nameof(MinerUCredentialStatus));
-        }
-    }
-
-    public string MinerUCredentialStatus => OcrProviderSettings.MinerUCredentialStatus;
-    public AsyncCommand SaveMinerUSettingsCommand => OcrProviderSettings.SaveMinerUSettingsCommand;
-
     public ObservableCollection<SettingsCategoryViewModel> Categories { get; }
 
     public SettingsCategoryViewModel ActiveCategory
@@ -83,16 +69,7 @@ public sealed class SettingsViewModel : ViewModelBase
             _activeCategory = value;
             Raise();
             RaiseActiveSectionState();
-            if (ReferenceEquals(value.Content, McpSettings))
-            {
-                McpSettings.LoadAsync().Observe(nameof(SettingsViewModel), nameof(McpSettings.LoadAsync));
-            }
-
-            if (ReferenceEquals(value.Content, LibrarySettings))
-            {
-                LibrarySettings.LoadFileSearchRootsAsync().Observe(nameof(SettingsViewModel),
-                    nameof(LibrarySettings.LoadFileSearchRootsAsync));
-            }
+            value.Section?.LoadAsync().Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
         }
     }
 
@@ -127,6 +104,34 @@ public sealed class SettingsViewModel : ViewModelBase
     public string ActiveLastError => ActiveCategory.Section?.LastError ?? "";
     public string ActiveValidationStateText => ActiveCategory.Section?.ValidationState.ToString() ?? "Unknown";
     public bool ActiveRequiresReload => ActiveCategory.Section?.RequiresReload == true;
+    public string ActiveScopeText => ActiveCategory.Section?.ScopeText ?? "";
+    public string ActiveEffectiveSourceText => ActiveCategory.Section?.EffectiveSourceText ?? "";
+    public bool ActiveHasLastError => !string.IsNullOrWhiteSpace(ActiveCategory.Section?.LastError);
+    public bool ActiveSaveFailed => ActiveCategory.Section?.SaveState == SettingsSaveState.Failed;
+    public bool ActiveSaved => ActiveCategory.Section?.SaveState == SettingsSaveState.Saved;
+
+    public async Task<bool> SaveAllDirtySectionsAsync()
+    {
+        foreach (SettingsCategoryViewModel category in Categories)
+        {
+            ISettingsSection? section = category.Section;
+            if (section?.SupportsEditing != true || !section.IsDirty)
+            {
+                continue;
+            }
+
+            await section.SaveAsync();
+            if (section.SaveState == SettingsSaveState.Failed)
+            {
+                GlobalStatus = $"「{category.Title}」保存失败：{section.LastError ?? section.SaveStateText}";
+                return false;
+            }
+        }
+
+        Raise(nameof(HasDirtySections));
+        RaiseActiveSectionState();
+        return true;
+    }
 
     private async Task SaveActiveSectionAsync()
     {
@@ -182,6 +187,11 @@ public sealed class SettingsViewModel : ViewModelBase
         Raise(nameof(ActiveLastError));
         Raise(nameof(ActiveValidationStateText));
         Raise(nameof(ActiveRequiresReload));
+        Raise(nameof(ActiveScopeText));
+        Raise(nameof(ActiveEffectiveSourceText));
+        Raise(nameof(ActiveHasLastError));
+        Raise(nameof(ActiveSaveFailed));
+        Raise(nameof(ActiveSaved));
         Raise(nameof(HasDirtySections));
     }
 

@@ -15,6 +15,9 @@ Original PDFs/images remain in user-managed folders. Patchouli stores FileAsset 
 **Cache boundary**:
 Page renders, thumbnails, OCR intermediate images, and overlays are local rebuildable caches. `page_renders` is a local cache namespace only. MCP never returns cached images or image paths.
 
+**Desktop storage and PDF rendering**:
+Mutable application state uses platform application-data locations rather than an application bundle or sync root. FileSearchRoot paths and authorization payloads are device-local. PDFiumCore is the sole native page-rendering backend; its version is part of the renderer basis so page-render caches can be invalidated safely.
+
 **OCR adoption**:
 OCR output is staging or candidate output until adopted. Only the committed current DocumentTreeRevision of each physical page feeds default search, evidence resolution, and MCP reads. Failed bbox coordinate conversion blocks that page from OCR/Box Tree/search/MCP exposure.
 

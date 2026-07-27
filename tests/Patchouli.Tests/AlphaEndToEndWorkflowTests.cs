@@ -16,7 +16,7 @@ public sealed class AlphaEndToEndWorkflowTests
     public void EndToEnd_OcrQueue_MockOcr_Adopt_Search_Mcp()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Ocr",
-                "OcrRunCoordinator.cs"))
+                "OcrRunEngine.cs"))
             .Should().Contain("RunPresetOnPagesAsync");
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Infrastructure", "Mcp", "McpReadApi.cs"))
             .Should().Contain("GetPageText");

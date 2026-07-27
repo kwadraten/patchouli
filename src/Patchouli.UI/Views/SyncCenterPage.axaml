@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="Patchouli.UI.Views.SyncCenterPage"
              x:DataType="local:SnapshotViewModel"
+             xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:local="using:Patchouli.UI.ViewModels">
   <ScrollViewer VerticalScrollBarVisibility="Auto">
     <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="18" MaxWidth="900"
@@ -17,9 +18,15 @@
           <TextBlock Text="当前状态" FontSize="16" FontWeight="SemiBold" />
           <TextBlock Text="{Binding OperationStateText}" FontWeight="SemiBold"
                      Foreground="{DynamicResource PrimaryBrush}" />
+          <TextBlock Text="{Binding LibrarySummary}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding DeviceSummary}" TextWrapping="Wrap" />
           <TextBlock Text="{Binding SyncRootSummary}" TextWrapping="Wrap" />
           <TextBlock Text="{Binding LocalSnapshotSummary}" TextWrapping="Wrap" />
           <TextBlock Text="{Binding RemoteSnapshotSummary}" TextWrapping="Wrap" />
+          <TextBlock Text="{Binding BranchDetailSummary}" TextWrapping="Wrap" FontSize="12"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <TextBlock Text="{Binding LastErrorText}" TextWrapping="Wrap"
+                     Foreground="{DynamicResource ErrorBrush}" IsVisible="{Binding HasLastError}" />
           <TextBlock Text="{Binding OperationMessage}" TextWrapping="Wrap"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
           <Button Content="刷新状态" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" />
@@ -34,7 +41,8 @@
           <Button Content="发布到同步目录" Command="{Binding PublishCommand}" HorizontalAlignment="Left" />
           <TextBlock Text="导出目录包不更新任何同步目录的 current 指针。请选择一个尚不存在的目录。"
                      TextWrapping="Wrap" />
-          <TextBox Text="{Binding ExportDestinationDirectory}" PlaceholderText="快照包目标目录" />
+          <controls:PathPickerTextBox Path="{Binding ExportDestinationDirectory}" PickerMode="Folder"
+                                      DialogTitle="选择快照包目标目录" PlaceholderText="快照包目标目录" />
           <Button Content="导出快照目录包" Command="{Binding ExportCommand}" HorizontalAlignment="Left" />
         </StackPanel>
       </Border>
@@ -45,7 +53,8 @@
           <TextBlock Text="传入快照会先验证 manifest、hash、schema、库身份和路径，再导入 staging 供检查。"
                      TextWrapping="Wrap" />
           <Button Content="检查同步目录中的 current 快照" Command="{Binding CheckCurrentCommand}" HorizontalAlignment="Left" />
-          <TextBox Text="{Binding PackageManifestPath}" PlaceholderText="目录包中的 manifests/快照.json" />
+          <controls:PathPickerTextBox Path="{Binding PackageManifestPath}" PickerMode="OpenFile"
+                                      DialogTitle="选择快照包 manifest" PlaceholderText="目录包中的 manifests/快照.json" />
           <Button Content="从快照包打开" Command="{Binding OpenPackageCommand}" HorizontalAlignment="Left" />
           <TextBlock Text="{Binding IncomingSummary}" TextWrapping="Wrap" FontWeight="SemiBold" />
           <TextBlock Text="{Binding WarningCount, StringFormat='警告：{0}'}" />
@@ -61,7 +70,8 @@
                      TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
           <Button Content="丢弃已检查的内容" Command="{Binding DiscardIncomingCommand}"
                   IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
-          <TextBox Text="{Binding IncomingCopyDestinationPath}" PlaceholderText="独立资料库副本目标路径" />
+          <controls:PathPickerTextBox Path="{Binding IncomingCopyDestinationPath}" PickerMode="Folder"
+                                      DialogTitle="选择独立资料库副本目标路径" PlaceholderText="独立资料库副本目标路径" />
           <Button Content="保留为独立资料库副本" Command="{Binding KeepIncomingCopyCommand}"
                   IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
         </StackPanel>

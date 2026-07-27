@@ -284,56 +284,27 @@ public sealed class SnapshotTests
     }
 
     [Fact]
-    public async Task PublishSnapshot_detects_parent_mismatch_and_does_not_overwrite_current()
+    public async Task PublishSnapshot_explicitly_replaces_current_when_parent_is_not_current()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
         Result<SnapshotPublishResult> first = await c.PublishAsync();
-        Result<SnapshotPublishResult> conflict = await c.PublishAsync("different-parent");
-        conflict.Value.CreatedBranch.Should().BeTrue();
+        Result<SnapshotPublishResult> published = await c.PublishAsync("different-parent");
+        published.IsSuccess.Should().BeTrue();
+        published.Value.SnapshotId.Should().NotBe(first.Value.SnapshotId);
         SnapshotCurrentPointer? current =
             await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(Path.Combine(c.SyncRoot, "current.json"),
                 default);
-        current!.SnapshotId.Should().Be(first.Value.SnapshotId);
+        current!.SnapshotId.Should().Be(published.Value.SnapshotId);
     }
 
     [Fact]
-    public async Task PublishSnapshot_writes_branch_metadata_on_conflict()
+    public async Task PublishSnapshot_does_not_create_a_branches_directory()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        await c.PublishAsync();
-        Result<SnapshotPublishResult> conflict = await c.PublishAsync("different-parent");
-        conflict.Value.BranchInfo.Should().NotBeNull();
-        Directory.EnumerateFiles(Path.Combine(c.SyncRoot, "branches"), "*.json").Should().HaveCount(1);
-    }
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
 
-    [Fact]
-    public async Task DetectBranch_returns_false_when_parent_matches()
-    {
-        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        Result<SnapshotPublishResult> first = await c.PublishAsync();
-        (await c.Importer.DetectBranchAsync(c.SyncRoot, first.Value.SnapshotId)).Value.BranchDetected.Should()
-            .BeFalse();
-    }
-
-    [Fact]
-    public async Task DetectBranch_returns_true_when_parent_differs()
-    {
-        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        await c.PublishAsync();
-        (await c.Importer.DetectBranchAsync(c.SyncRoot, "old")).Value.BranchDetected.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task Branch_conflict_never_silent_last_writer_wins()
-    {
-        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        Result<SnapshotPublishResult> first = await c.PublishAsync();
-        Result<SnapshotPublishResult> conflict = await c.PublishAsync("old");
-        conflict.Value.SnapshotId.Should().BeEmpty();
-        SnapshotCurrentPointer? current =
-            await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(Path.Combine(c.SyncRoot, "current.json"),
-                default);
-        current!.SnapshotId.Should().Be(first.Value.SnapshotId);
+        published.IsSuccess.Should().BeTrue();
+        Directory.Exists(Path.Combine(c.SyncRoot, "branches")).Should().BeFalse();
     }
 
     [Fact]

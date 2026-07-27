@@ -19,7 +19,7 @@ using Patchouli.Search;
 
 namespace Patchouli.Infrastructure.Ocr;
 
-public sealed class OcrRunCoordinator : IOcrRunCoordinator
+public sealed class OcrRunEngine : IOcrRunEngine
 {
     private static readonly ConcurrentDictionary<string, SemaphoreSlim> AdoptionLocks = new();
     private readonly SqliteConnectionFactory _connectionFactory;
@@ -38,7 +38,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
     private readonly IFileResolutionService? _fileResolution;
     private readonly IFileMaterializationService? _fileMaterialization;
 
-    public OcrRunCoordinator(
+    public OcrRunEngine(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
         IOcrEngine? engine = null,
@@ -70,7 +70,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         _fileMaterialization = fileMaterialization;
     }
 
-    public OcrRunCoordinator(
+    public OcrRunEngine(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
         Func<string, CancellationToken, Task<Result<string>>> credentialResolver,
@@ -103,6 +103,75 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             fileMaterialization)
     {
         _credentialResolver = credentialResolver;
+    }
+
+    public async Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(
+        DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId,
+        IReadOnlyList<PageId> pageIds,
+        string engineId,
+        string adapterKind,
+        string? providerId,
+        string priority,
+        CancellationToken cancellationToken = default)
+    {
+        await Task.CompletedTask;
+        return Result<OcrQueueTask>.Failure(AppErrorCodes.UnsupportedOperation,
+            "OCR queue access requires the queued run coordinator façade.");
+    }
+
+    public async Task<Result<IReadOnlyList<PageId>>> ListPageIdsAsync(
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            string[] ids = (await connection.QueryAsync<string>(
+                """
+                select page_id from pages
+                where document_instance_id = @DocumentInstanceId
+                order by page_index, page_id;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() })).ToArray();
+            return Result<IReadOnlyList<PageId>>.Success(ids.Select(PageId.Parse).ToArray());
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return Result<IReadOnlyList<PageId>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result> ReconcileInterruptedRunsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await connection.ExecuteAsync(
+                """
+                update ocr_runs set state = @Failed, updated_at = @Now
+                where state in (@Pending, @Running);
+                update ocr_page_results set state = @Failed, error_code = @Interrupted, updated_at = @Now
+                where state in (@Pending, @Processing);
+                """,
+                new
+                {
+                    Failed = OcrRunState.Failed,
+                    Now = FormatUtc(_clock.UtcNow),
+                    Pending = OcrRunState.Pending,
+                    Running = OcrRunState.Running,
+                    Processing = OcrPageResultState.Processing,
+                    Interrupted = OcrFailureCode.Interrupted
+                });
+            return Result.Success();
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
     }
 
     public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(
@@ -171,7 +240,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRegionCandidate>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
         }
 
-        Result<OcrPresetVersion> version = await GetPresetVersionAsync(presetId, cancellationToken);
+        Result<OcrPresetVersion> version = await ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
         {
             return Result<OcrRegionCandidate>.Failure(version.ErrorCode!, version.ErrorMessage!);
@@ -181,6 +250,12 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         if (adapterValidation.IsFailure)
         {
             return Result<OcrRegionCandidate>.Failure(adapterValidation.ErrorCode!, adapterValidation.ErrorMessage!);
+        }
+
+        if (version.Value.EngineId == OcrEngineIds.MinerU)
+        {
+            return await RecognizeRegionWithMinerUAsync(
+                documentInstanceId, pages.Value.Single(), regionBBox, version.Value, cancellationToken);
         }
 
         Result<OcrEnginePageResult> output = await RunEngineAsync(
@@ -461,7 +536,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         OcrPresetId presetId,
         CancellationToken cancellationToken = default)
     {
-        Result<OcrPresetVersion> version = await GetPresetVersionAsync(presetId, cancellationToken);
+        Result<OcrPresetVersion> version = await ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
         {
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
@@ -480,7 +555,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         string? imagePath,
         CancellationToken cancellationToken)
     {
-        Result<OcrPresetVersion> version = await GetPresetVersionAsync(presetId, cancellationToken);
+        Result<OcrPresetVersion> version = await ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
         {
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
@@ -495,7 +570,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         if (version.Value.EngineId == OcrEngineIds.MinerU)
         {
             return await RunMinerUDocumentAsync(
-                documentInstanceId, presetId, version.Value, pages, cancellationToken);
+                documentInstanceId, presetId, version.Value, pages, region, imagePath, cancellationToken);
         }
 
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
@@ -626,6 +701,8 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         OcrPresetId presetId,
         OcrPresetVersion version,
         IReadOnlyList<Page> pages,
+        NormalizedBBox? region,
+        string? imagePath,
         CancellationToken cancellationToken)
     {
         if (_minerUResultImporter is null || _minerUClientFactory is null || _credentialResolver is null)
@@ -633,6 +710,18 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(
                 AppErrorCodes.UnsupportedOperation,
                 "MinerU document OCR is not configured.");
+        }
+
+        if (region is not null)
+        {
+            return await RunMinerURegionAsync(
+                documentInstanceId, presetId, version, pages.Single(), region.Value, cancellationToken);
+        }
+
+        if (imagePath is not null)
+        {
+            return await RunMinerUImagePageAsync(
+                documentInstanceId, presetId, version, pages.Single(), imagePath, cancellationToken);
         }
 
         Result<string> secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
@@ -644,6 +733,7 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         }
 
         MinerUSourceRow? source;
+        int totalPageCount;
         await using (SqliteConnection connection = _connectionFactory.CreateConnection())
         {
             await connection.OpenAsync(cancellationToken);
@@ -655,6 +745,9 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
                 join file_assets f on f.file_asset_id = d.file_asset_id
                 where d.document_instance_id = @DocumentInstanceId;
                 """,
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+            totalPageCount = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from pages where document_instance_id = @DocumentInstanceId;",
                 new { DocumentInstanceId = documentInstanceId.ToString() });
         }
 
@@ -692,19 +785,18 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
             return Result<OcrRun>.Failure(AppErrorCodes.NotFound, "MinerU source PDF is unavailable.");
         }
 
-        MinerUParameters parameters = ParseMinerUParameters(version.ParametersJson);
-        MinerUConfiguration configuration = new(
-            secret.Value,
-            parameters.BaseUrl,
-            parameters.ModelVersion,
-            parameters.IsOcr,
-            parameters.EnableTable,
-            parameters.EnableFormula);
-        IMinerUClient client = _minerUClientFactory(configuration);
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
         if (!client.IsConfigured)
         {
             return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "MinerU client is not configured.");
         }
+
+        IReadOnlyList<OcrPageRange> ranges = BuildPageRanges(pages);
+        bool coversAllPages = ranges.Count == 1 && ranges[0].StartPageIndex == 0 &&
+                              ranges[0].PageCount == totalPageCount;
+        OcrUploadSource uploadSource = coversAllPages
+            ? new OcrUploadSource.WholeDocument(sourcePath)
+            : new OcrUploadSource.PageRanges(sourcePath, ranges);
 
         OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
         await InsertRunAsync(run, cancellationToken);
@@ -713,16 +805,20 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         Directory.CreateDirectory(downloadDirectory);
         try
         {
-            Result<MinerUDownloadedResult> downloaded = await new MinerUResultDownloader(client, _minerUUploadLimits)
-                .UploadAndExtractAsync(sourcePath, downloadDirectory, cancellationToken);
-            if (downloaded.IsFailure)
+            Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client, _minerUUploadLimits)
+                .PrepareAndUploadAsync(uploadSource, downloadDirectory, cancellationToken);
+            if (prepared.IsFailure)
             {
-                return await FailMinerURunAsync(run, pages, downloaded.ErrorCode, downloaded.ErrorMessage,
+                return await FailMinerURunAsync(run, pages, prepared.ErrorCode, prepared.ErrorMessage,
                     cancellationToken);
             }
 
             Result<MinerUImportResult> imported = await _minerUResultImporter.ImportResultZipAsync(
-                new MinerUImportRequest(downloaded.Value.ZipPath, documentInstanceId.ToString(), source.LibraryId),
+                new MinerUImportRequest(
+                    prepared.Value.ZipPath,
+                    documentInstanceId.ToString(),
+                    source.LibraryId,
+                    coversAllPages ? null : pages.Select(page => page.PageId).ToArray()),
                 cancellationToken);
             if (imported.IsFailure || !imported.Value.Success)
             {
@@ -795,6 +891,246 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         {
             return await FailRunAfterExceptionAsync(run, pages, exception);
         }
+    }
+
+    private async Task<Result<OcrRun>> RunMinerURegionAsync(
+        DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId,
+        OcrPresetVersion version,
+        Page page,
+        NormalizedBBox regionBBox,
+        CancellationToken cancellationToken)
+    {
+        if (_pageRenderService is null)
+        {
+            return Result<OcrRun>.Failure(
+                AppErrorCodes.UnsupportedOperation,
+                "MinerU region OCR is not configured.");
+        }
+
+        Result<string> secret = await _credentialResolver!(ProviderIds.MinerU, cancellationToken);
+        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+        {
+            return Result<OcrRun>.Failure(
+                secret.ErrorCode ?? AppErrorCodes.InvalidState,
+                secret.ErrorMessage ?? "MinerU credential is unavailable.");
+        }
+
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
+        if (!client.IsConfigured)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "MinerU client is not configured.");
+        }
+
+        OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
+        await InsertRunAsync(run, cancellationToken);
+        await InsertPendingPageResultsAsync(run.OcrRunId, [page], cancellationToken);
+        Result<string> crop;
+        try
+        {
+            crop = await _pageRenderService.RenderRegionPngAsync(
+                documentInstanceId, page.PageId, regionBBox, cancellationToken: cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, [page], exception);
+        }
+
+        if (crop.IsFailure)
+        {
+            return await FailMinerURunAsync(run, [page], crop.ErrorCode, crop.ErrorMessage, cancellationToken);
+        }
+
+        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200, regionBBox);
+        return await RunMinerUImageRunAsync(
+            run, version, page, new OcrUploadSource.RegionImage(crop.Value, context), client, cancellationToken);
+    }
+
+    private async Task<Result<OcrRun>> RunMinerUImagePageAsync(
+        DocumentInstanceId documentInstanceId,
+        OcrPresetId presetId,
+        OcrPresetVersion version,
+        Page page,
+        string imagePath,
+        CancellationToken cancellationToken)
+    {
+        Result<string> secret = await _credentialResolver!(ProviderIds.MinerU, cancellationToken);
+        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+        {
+            return Result<OcrRun>.Failure(
+                secret.ErrorCode ?? AppErrorCodes.InvalidState,
+                secret.ErrorMessage ?? "MinerU credential is unavailable.");
+        }
+
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
+        if (!client.IsConfigured)
+        {
+            return Result<OcrRun>.Failure(AppErrorCodes.InvalidState, "MinerU client is not configured.");
+        }
+
+        OcrRun run = NewRun(documentInstanceId, presetId, version, OcrRunState.Running);
+        await InsertRunAsync(run, cancellationToken);
+        await InsertPendingPageResultsAsync(run.OcrRunId, [page], cancellationToken);
+        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 0, null);
+        return await RunMinerUImageRunAsync(
+            run, version, page, new OcrUploadSource.PageImage(imagePath, context), client, cancellationToken);
+    }
+
+    private async Task<Result<OcrRun>> RunMinerUImageRunAsync(
+        OcrRun run,
+        OcrPresetVersion version,
+        Page page,
+        OcrUploadSource uploadSource,
+        IMinerUClient client,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            string downloadDirectory = Path.Combine(_minerUCacheRoot, run.OcrRunId.ToString());
+            Directory.CreateDirectory(downloadDirectory);
+            Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client, _minerUUploadLimits)
+                .PrepareAndUploadAsync(uploadSource, downloadDirectory, cancellationToken);
+            if (prepared.IsFailure)
+            {
+                return await FailMinerURunAsync(
+                    run, [page], prepared.ErrorCode, prepared.ErrorMessage, cancellationToken);
+            }
+
+            Result<OcrDocumentTreeCandidate> candidate =
+                new MinerUResultParser().ParseImageStructuredTree(prepared.Value, page);
+            if (candidate.IsFailure)
+            {
+                return await FailMinerURunAsync(
+                    run, [page], candidate.ErrorCode, candidate.ErrorMessage, cancellationToken);
+            }
+
+            Result<OcrDocumentTreeImportResult> staged = await _treeImporter.StageAsync(
+                new OcrDocumentTreeImportRequest(run.DocumentInstanceId, candidate.Value), cancellationToken);
+            if (staged.IsFailure)
+            {
+                return await FailMinerURunAsync(
+                    run, [page], staged.ErrorCode, staged.ErrorMessage, cancellationToken);
+            }
+
+            DocumentTreeRevisionId revisionId = staged.Value.StagingRevisionIds.Single();
+            await UpdatePageResultAsync(
+                run.OcrRunId, page.PageId, OcrPageResultState.Succeeded, revisionId, null, null);
+            await using (SqliteConnection connection = _connectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync(cancellationToken);
+                await connection.ExecuteAsync(
+                    "update ocr_runs set state=@State, output_tree_revision_id=@Revision, updated_at=@Now where ocr_run_id=@RunId;",
+                    new
+                    {
+                        State = OcrRunState.Completed,
+                        Revision = revisionId.ToString(),
+                        Now = FormatUtc(_clock.UtcNow),
+                        RunId = run.OcrRunId.ToString()
+                    });
+            }
+
+            return await CompleteRunAsync(run.OcrRunId, version, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelRunAsync(run.OcrRunId, CancellationToken.None);
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception, "infrastructure.ocr-run"))
+        {
+            return await FailRunAfterExceptionAsync(run, [page], exception);
+        }
+    }
+
+    private IMinerUClient CreateMinerUClient(OcrPresetVersion version, string secret)
+    {
+        MinerUParameters parameters = ParseMinerUParameters(version.ParametersJson);
+        MinerUConfiguration configuration = new(
+            secret,
+            parameters.BaseUrl,
+            parameters.ModelVersion,
+            parameters.IsOcr,
+            parameters.EnableTable,
+            parameters.EnableFormula);
+        return _minerUClientFactory!(configuration);
+    }
+
+    private static IReadOnlyList<OcrPageRange> BuildPageRanges(IReadOnlyList<Page> pages)
+    {
+        List<OcrPageRange> ranges = [];
+        foreach (Page page in pages.OrderBy(page => page.PageIndex))
+        {
+            OcrPageRange? last = ranges.Count > 0 ? ranges[^1] : null;
+            if (last is not null && last.StartPageIndex + last.PageCount == page.PageIndex)
+            {
+                ranges[^1] = last with { PageCount = last.PageCount + 1 };
+            }
+            else
+            {
+                ranges.Add(new OcrPageRange(page.PageIndex, 1));
+            }
+        }
+
+        return ranges;
+    }
+
+    private async Task<Result<OcrRegionCandidate>> RecognizeRegionWithMinerUAsync(
+        DocumentInstanceId documentInstanceId,
+        Page page,
+        NormalizedBBox regionBBox,
+        OcrPresetVersion version,
+        CancellationToken cancellationToken)
+    {
+        if (_pageRenderService is null || _minerUClientFactory is null || _credentialResolver is null)
+        {
+            return Result<OcrRegionCandidate>.Failure(
+                AppErrorCodes.UnsupportedOperation,
+                "MinerU region OCR is not configured.");
+        }
+
+        Result<string> secret = await _credentialResolver(ProviderIds.MinerU, cancellationToken);
+        if (secret.IsFailure || string.IsNullOrWhiteSpace(secret.Value))
+        {
+            return Result<OcrRegionCandidate>.Failure(
+                secret.ErrorCode ?? AppErrorCodes.InvalidState,
+                secret.ErrorMessage ?? "MinerU credential is unavailable.");
+        }
+
+        Result<string> crop = await _pageRenderService.RenderRegionPngAsync(
+            documentInstanceId, page.PageId, regionBBox, cancellationToken: cancellationToken);
+        if (crop.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(crop.ErrorCode!, crop.ErrorMessage!);
+        }
+
+        IMinerUClient client = CreateMinerUClient(version, secret.Value);
+        if (!client.IsConfigured)
+        {
+            return Result<OcrRegionCandidate>.Failure(AppErrorCodes.InvalidState,
+                "MinerU client is not configured.");
+        }
+
+        OcrImageContext context = new(page.Width ?? 0, page.Height ?? 0, 200, regionBBox);
+        Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client, _minerUUploadLimits)
+            .PrepareAndUploadAsync(new OcrUploadSource.RegionImage(crop.Value, context),
+                Path.Combine(_minerUCacheRoot, "regions"), cancellationToken);
+        if (prepared.IsFailure)
+        {
+            return Result<OcrRegionCandidate>.Failure(prepared.ErrorCode!, prepared.ErrorMessage!);
+        }
+
+        Result<string> text = new MinerUResultParser().ParsePlainText(prepared.Value);
+        return text.IsFailure || string.IsNullOrWhiteSpace(text.Value)
+            ? Result<OcrRegionCandidate>.Failure(
+                text.ErrorCode ?? AppErrorCodes.InvalidState,
+                text.ErrorMessage ?? "OCR returned no text.")
+            : Result<OcrRegionCandidate>.Success(new OcrRegionCandidate(
+                page.PageId, regionBBox, DocumentBoxType.Text, new TextBoxPayload(text.Value.Trim())));
     }
 
     private async Task<Result> ValidateAdapterAsync(OcrPresetVersion version, CancellationToken cancellationToken)
@@ -1047,9 +1383,9 @@ public sealed class OcrRunCoordinator : IOcrRunCoordinator
         }
     }
 
-    private async Task<Result<OcrPresetVersion>> GetPresetVersionAsync(
+    public async Task<Result<OcrPresetVersion>> ResolvePresetVersionAsync(
         OcrPresetId presetId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);

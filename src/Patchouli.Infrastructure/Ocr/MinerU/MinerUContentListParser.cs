@@ -93,6 +93,7 @@ internal sealed class MinerUContentListParser
             if (item.ValueKind == JsonValueKind.Array)
             {
                 int pageIdx = pageOrdinal++;
+                pages.TryAdd(pageIdx, []);
                 foreach (JsonElement block in item.EnumerateArray())
                 {
                     AddFlatItem(pages, block, pageIdx);

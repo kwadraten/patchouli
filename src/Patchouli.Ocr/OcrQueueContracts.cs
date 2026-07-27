@@ -1,4 +1,5 @@
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Ocr;
@@ -9,6 +10,7 @@ public static class OcrQueueTaskKind
     public const string MockPages = "mock_pages";
     public const string ImagePage = "image_page";
     public const string RenderedPdfPage = "rendered_pdf_page";
+    public const string Region = "region";
 }
 
 public static class OcrQueuePriority
@@ -80,7 +82,9 @@ public sealed record OcrQueueTask(
     int? Dpi,
     OcrRunId? RunId = null,
     int CompletedPageCount = 0,
-    int FailedPageCount = 0);
+    int FailedPageCount = 0,
+    NormalizedBBox? RegionBBox = null,
+    bool AdoptOnCompletion = true);
 
 public sealed record OcrQueueTaskRequest(
     DocumentInstanceId DocumentInstanceId,
@@ -93,7 +97,9 @@ public sealed record OcrQueueTaskRequest(
     string Priority,
     string? ImagePath = null,
     int? Dpi = null,
-    int MaxAttempts = 3);
+    int MaxAttempts = 3,
+    NormalizedBBox? RegionBBox = null,
+    bool AdoptOnCompletion = true);
 
 public sealed record OcrQueueLimits(
     int GlobalMaxConcurrent,
@@ -131,7 +137,8 @@ public sealed record OcrQueueExecutionResult(
     string? ErrorMessage = null,
     OcrRunId? RunId = null,
     int CompletedPageCount = 0,
-    int FailedPageCount = 0);
+    int FailedPageCount = 0,
+    string? ResultText = null);
 
 public sealed record OcrQueueChangedEventArgs(OcrQueueTask? Task, string ChangeKind);
 
@@ -164,8 +171,13 @@ public interface IOcrQueueScheduler
     Task<Result<OcrQueueTask>> EnqueueRenderedPdfPageAsync(DocumentInstanceId d, OcrPresetId p, PageId page, int dpi,
         string priority, CancellationToken c = default);
 
+    Task<Result<OcrQueueTask>> EnqueueRegionAsync(DocumentInstanceId d, OcrPresetId p, PageId page,
+        NormalizedBBox regionBBox, string engineId, string adapterKind, string? providerId, string priority,
+        CancellationToken c = default);
+
     Task StartAsync(CancellationToken c = default);
     Task StopAsync(CancellationToken c = default);
+    Task WaitForIdleAsync(CancellationToken c = default);
     Task<Result> PauseAsync(string scope, string? target = null, CancellationToken c = default);
     Task<Result> ResumeAsync(string scope, string? target = null, CancellationToken c = default);
     Task<Result> CancelTaskAsync(OcrQueueTaskId id, CancellationToken c = default);

@@ -1,3 +1,4 @@
+using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Ocr.MinerU;
@@ -31,7 +32,8 @@ public sealed record MinerUDownloadedResult(
 public sealed record MinerUImportRequest(
     string ZipPath,
     string DocumentInstanceId,
-    string? LibraryId);
+    string? LibraryId,
+    IReadOnlyList<PageId>? RequestedPageIds = null);
 
 public sealed record MinerUImportResult(
     bool Success,
@@ -45,6 +47,7 @@ public static class MinerUProviderStatus
     public const string NotConfigured = "not_configured";
     public const string UploadUrlFailed = "upload_url_failed";
     public const string UploadFailed = "upload_failed";
+    public const string DownloadFailed = "download_failed";
     public const string WaitingFile = "waiting_file";
     public const string Pending = "pending";
     public const string Running = "running";

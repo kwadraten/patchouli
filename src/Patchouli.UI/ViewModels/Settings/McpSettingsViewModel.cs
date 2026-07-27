@@ -8,10 +8,9 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
+public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private string _status = "";
     private McpServerSettings _settings = new(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
 
     private McpServerSettings _persistedSettings =
@@ -26,27 +25,7 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         GenerateTokenCommand = new AsyncCommand(GenerateTokenAsync);
         StartMcpCommand = new AsyncCommand(StartMcpAsync);
         StopMcpCommand = new AsyncCommand(StopMcpAsync);
-    }
-
-    public string Status
-    {
-        get => _status;
-        private set
-        {
-            _status = value;
-            Raise();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("无法", StringComparison.Ordinal))
-                {
-                    _main.ReportError(value);
-                }
-                else
-                {
-                    _main.Report(value);
-                }
-            }
-        }
+        SaveAndRestartCommand = new AsyncCommand(SaveAndRestartAsync);
     }
 
     public int Port
@@ -175,17 +154,17 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
 
     public string McpEndpoint => _main.McpEndpoint;
     public string McpStatusText => _main.McpStatusText;
+    public bool McpServerRunning => _main.McpServerRunning;
 
     public AsyncCommand GenerateTokenCommand { get; }
     public AsyncCommand StartMcpCommand { get; }
     public AsyncCommand StopMcpCommand { get; }
-    public bool SupportsEditing => true;
-    public bool IsDirty => _isDirty;
-    public bool CanSave => _isDirty;
-    public string SaveStateText => Status;
-    public string? LastError { get; private set; }
+    public AsyncCommand SaveAndRestartCommand { get; }
+    public override bool SupportsEditing => true;
+    public override bool IsDirty => _isDirty;
+    public override bool CanSave => _isDirty;
 
-    public Task DiscardAsync()
+    public override Task DiscardAsync()
     {
         _settings = _persistedSettings;
         _isDirty = false;
@@ -193,7 +172,8 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         RaiseAllSettings();
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
-        Status = "已放弃更改";
+        SaveState = SettingsSaveState.Clean;
+        SetStatus("已放弃更改");
         return Task.CompletedTask;
     }
 
@@ -215,12 +195,26 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         return _main.StopMcpServerAsync("用户手动停止");
     }
 
-    public async Task LoadAsync()
+    private async Task SaveAndRestartAsync()
+    {
+        await SaveAsync();
+        if (SaveState != SettingsSaveState.Saved)
+        {
+            return;
+        }
+
+        await _main.StopMcpServerAsync("应用新设置");
+        await _main.StartMcpServerAsync();
+        RequiresReload = false;
+    }
+
+    public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
         if (result.IsFailure)
         {
-            Status = result.ErrorMessage ?? "无法读取 MCP 设置。";
+            LastError = result.ErrorMessage;
+            SetStatus(result.ErrorMessage ?? "无法读取 MCP 设置。");
             return;
         }
 
@@ -229,22 +223,25 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         _isDirty = false;
         ReloadToolOverrides();
         RaiseAllSettings();
-        Status = "已加载数据库 MCP 设置。";
+        SaveState = SettingsSaveState.Clean;
+        LastError = null;
+        SetStatus("已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }
 
-    public async Task SaveAsync()
+    public override async Task SaveAsync()
     {
+        SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         long revision = _editRevision;
         McpServerSettings draft = _settings;
         Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(draft);
         if (result.IsFailure)
         {
-            Status = result.ErrorMessage ?? "MCP 设置保存失败。";
+            SaveState = SettingsSaveState.Failed;
             LastError = result.ErrorMessage;
-            Raise(nameof(LastError));
+            SetStatus(result.ErrorMessage ?? "MCP 设置保存失败。");
             return;
         }
 
@@ -253,17 +250,19 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         {
             _settings = result.Value;
             _isDirty = false;
-            Status = "已保存 (重启服务生效)";
+            SaveState = SettingsSaveState.Saved;
+            RequiresReload = McpServerRunning;
+            SetStatus(McpServerRunning ? "已保存（需重启服务生效）" : "已保存");
         }
         else
         {
-            Status = "已保存旧版本，仍有新的未保存更改";
+            SaveState = SettingsSaveState.Dirty;
+            SetStatus("已保存旧版本，仍有新的未保存更改");
         }
 
         LastError = null;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
-        Raise(nameof(LastError));
     }
 
     internal void UpdateToolOverride(string toolName, bool enabled)
@@ -281,12 +280,31 @@ public sealed class McpSettingsViewModel : ViewModelBase, ISettingsSection
         MarkDirty();
     }
 
+    private void SetStatus(string text)
+    {
+        Status = text;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        if (text.Contains("失败", StringComparison.Ordinal) || text.Contains("无法", StringComparison.Ordinal))
+        {
+            _main.ReportError(text);
+        }
+        else
+        {
+            _main.Report(text);
+        }
+    }
+
     private void MarkDirty()
     {
         _editRevision++;
         _isDirty = true;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
+        SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
     }
 

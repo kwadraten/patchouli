@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Ocr;
@@ -182,6 +183,9 @@ public interface IPageRenderService
 
     Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(DocumentInstanceId documentInstanceId,
         PageId pageId, int dpi = 200, CancellationToken cancellationToken = default);
+
+    Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
+        NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default);
 
     Task<PdfRendererAvailability> GetRendererAvailabilityAsync(CancellationToken cancellationToken = default);
 }

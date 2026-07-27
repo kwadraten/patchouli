@@ -89,27 +89,9 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
         Directory.CreateDirectory(Path.Combine(syncRoot, "manifests"));
         Directory.CreateDirectory(Path.Combine(syncRoot, "shards"));
-        Directory.CreateDirectory(Path.Combine(syncRoot, "branches"));
 
         string currentPath = Path.Combine(syncRoot, "current.json");
         SnapshotCurrentPointer? current = await ReadJsonAsync<SnapshotCurrentPointer>(currentPath, cancellationToken);
-        if (current is not null && current.SnapshotId != request.ParentSnapshotId)
-        {
-            SnapshotBranchInfo branch = new(
-                Guid.NewGuid().ToString("D"),
-                current.LibraryId,
-                request.DeviceId,
-                request.ParentSnapshotId,
-                current.SnapshotId,
-                _clock.UtcNow.ToUniversalTime(),
-                "parent_mismatch",
-                null);
-            string branchPath = Path.Combine(syncRoot, "branches", $"{branch.BranchId}.json");
-            await WriteJsonAtomicAsync(branchPath, branch, cancellationToken);
-            return Result<SnapshotPublishResult>.Success(new SnapshotPublishResult("", "", currentPath, true, branch,
-                Array.Empty<SnapshotShard>(), current.LogicalGeneration,
-                "Remote current snapshot no longer matches local parent; branch metadata was written and current pointer was not overwritten."));
-        }
 
         try
         {
@@ -141,7 +123,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             await WriteJsonAtomicAsync(currentPath, pointer, cancellationToken);
 
             return Result<SnapshotPublishResult>.Success(new SnapshotPublishResult(snapshotId, manifestPath,
-                currentPath, false, null, shards, generation,
+                currentPath, shards, generation,
                 shards.Count > 1
                     ? "Runtime database exceeded the snapshot shard target; data was split into multiple immutable shards. FTS rows are cleared in data shards; persisted search_units remain canonical."
                     : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical."));
@@ -882,23 +864,6 @@ public sealed class SnapshotImporter : ISnapshotImporter
             return Result<SnapshotImportResult>.Failure(AppErrorCodes.DatabaseError,
                 $"Snapshot import failed: {exception.Message}");
         }
-    }
-
-    public async Task<Result<SnapshotBranchDetectionResult>> DetectBranchAsync(string syncRoot,
-        string localParentSnapshotId, CancellationToken cancellationToken = default)
-    {
-        string currentPath = Path.Combine(syncRoot, "current.json");
-        SnapshotCurrentPointer? current =
-            await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(currentPath, cancellationToken);
-        if (current is null)
-        {
-            return Result<SnapshotBranchDetectionResult>.Success(
-                new SnapshotBranchDetectionResult(false, null, localParentSnapshotId));
-        }
-
-        return Result<SnapshotBranchDetectionResult>.Success(
-            new SnapshotBranchDetectionResult(current.SnapshotId != localParentSnapshotId, current.SnapshotId,
-                localParentSnapshotId));
     }
 
     private static async Task MergeDataShardIntoStagingAsync(string stagingPath, string shardPath,

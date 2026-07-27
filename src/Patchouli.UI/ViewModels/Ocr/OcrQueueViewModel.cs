@@ -346,6 +346,14 @@ public sealed class OcrQueueViewModel : ViewModelBase
             });
             RefreshLibraryAsync().Observe("ocr-queue-ui", "refresh-library-after-failure");
         }
+        else if (e.Task?.State == OcrQueueTaskState.Cancelled)
+        {
+            PostStatus(() => _main.Shell.ApplyOcrQueueTerminalState(e.Task));
+        }
+        else if (e.Task?.State == OcrQueueTaskState.Running)
+        {
+            PostStatus(() => _main.Shell.ApplyOcrQueueRunningState(e.Task));
+        }
 
         ScheduleRefresh();
         if (e.Task?.State == OcrQueueTaskState.Running || e.ChangeKind == OcrQueueChangeKind.Started)

@@ -209,6 +209,313 @@ public sealed class MinerUClientTests
     }
 
     [Fact]
+    public async Task WaitForCompletionAndDownload_returns_an_error_when_the_result_download_times_out()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        try
+        {
+            using DownloadTimeoutHandler handler = new();
+            using HttpClient httpClient = new(handler);
+            MinerUOptions options = new()
+            {
+                Token = "t",
+                BaseUrl = "https://mineru.example.test",
+                DownloadTimeoutSeconds = 1,
+                DownloadMaxAttempts = 1
+            };
+            using MinerUClient client = new(httpClient, options);
+
+            Result<MinerUDownloadedResult> result = await client.WaitForCompletionAndDownloadAsync("b1", tempDir);
+
+            result.IsFailure.Should().BeTrue();
+            result.ErrorCode.Should().Be(MinerUProviderStatus.DownloadFailed);
+            result.ErrorMessage.Should().Be("MinerU result download timed out.");
+            handler.DownloadAttempts.Should().Be(1);
+            Directory.Exists(tempDir).Should().BeTrue();
+            Directory.GetFiles(tempDir).Should().BeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task WaitForCompletionAndDownload_retries_failed_download_and_succeeds()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        try
+        {
+            int downloadRequests = 0;
+            FakeHttpMessageHandler handler = new(request =>
+            {
+                if (request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/b1")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                                                    {
+                                                      "code": 0,
+                                                      "data": {
+                                                        "batch_id": "b1",
+                                                        "extract_result": [
+                                                          {
+                                                            "file_name": "a.pdf",
+                                                            "state": "done",
+                                                            "full_zip_url": "https://cdn.example.test/result.zip"
+                                                          }
+                                                        ]
+                                                      }
+                                                    }
+                                                    """)
+                    };
+                }
+
+                if (request.RequestUri!.Host == "cdn.example.test")
+                {
+                    downloadRequests++;
+                    return downloadRequests == 1
+                        ? new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                        : new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new ByteArrayContent([1, 2, 3])
+                        };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            MinerUOptions options = new()
+            {
+                Token = "t",
+                BaseUrl = "https://mineru.example.test",
+                PollingIntervalMs = 1,
+                DownloadRetryDelayMs = 1
+            };
+            using MinerUClient client = new(new HttpClient(handler), options);
+
+            Result<MinerUDownloadedResult> result = await client.WaitForCompletionAndDownloadAsync("b1", tempDir);
+
+            result.IsSuccess.Should().BeTrue();
+            downloadRequests.Should().Be(2);
+            File.ReadAllBytes(result.Value.ZipPath).Should().Equal([1, 2, 3]);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task WaitForCompletionAndDownload_repolls_for_fresh_zip_url_before_retry()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        try
+        {
+            List<string> requestLog = [];
+            List<string> downloadUrls = [];
+            int pollRequests = 0;
+            FakeHttpMessageHandler handler = new(request =>
+            {
+                if (request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/b1")
+                {
+                    pollRequests++;
+                    requestLog.Add("poll");
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent($$"""
+                                                    {
+                                                      "code": 0,
+                                                      "data": {
+                                                        "batch_id": "b1",
+                                                        "extract_result": [
+                                                          {
+                                                            "file_name": "a.pdf",
+                                                            "state": "done",
+                                                            "full_zip_url": "https://cdn.example.test/result-{{pollRequests}}.zip"
+                                                          }
+                                                        ]
+                                                      }
+                                                    }
+                                                    """)
+                    };
+                }
+
+                if (request.RequestUri!.Host == "cdn.example.test")
+                {
+                    requestLog.Add("download");
+                    downloadUrls.Add(request.RequestUri!.AbsolutePath);
+                    return request.RequestUri.AbsolutePath == "/result-1.zip"
+                        ? new HttpResponseMessage(HttpStatusCode.InternalServerError)
+                        : new HttpResponseMessage(HttpStatusCode.OK)
+                        {
+                            Content = new ByteArrayContent([1, 2, 3])
+                        };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            MinerUOptions options = new()
+            {
+                Token = "t",
+                BaseUrl = "https://mineru.example.test",
+                PollingIntervalMs = 1,
+                DownloadRetryDelayMs = 1
+            };
+            using MinerUClient client = new(new HttpClient(handler), options);
+
+            Result<MinerUDownloadedResult> result = await client.WaitForCompletionAndDownloadAsync("b1", tempDir);
+
+            result.IsSuccess.Should().BeTrue();
+            requestLog.Should().Equal("poll", "download", "poll", "download");
+            downloadUrls.Should().Equal("/result-1.zip", "/result-2.zip");
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task WaitForCompletionAndDownload_returns_an_error_when_download_attempts_are_exhausted()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        try
+        {
+            int downloadRequests = 0;
+            FakeHttpMessageHandler handler = new(request =>
+            {
+                if (request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/b1")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent("""
+                                                    {
+                                                      "code": 0,
+                                                      "data": {
+                                                        "batch_id": "b1",
+                                                        "extract_result": [
+                                                          {
+                                                            "file_name": "a.pdf",
+                                                            "state": "done",
+                                                            "full_zip_url": "https://cdn.example.test/result.zip"
+                                                          }
+                                                        ]
+                                                      }
+                                                    }
+                                                    """)
+                    };
+                }
+
+                if (request.RequestUri!.Host == "cdn.example.test")
+                {
+                    downloadRequests++;
+                    return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            MinerUOptions options = new()
+            {
+                Token = "t",
+                BaseUrl = "https://mineru.example.test",
+                PollingIntervalMs = 1,
+                DownloadMaxAttempts = 2,
+                DownloadRetryDelayMs = 1
+            };
+            using MinerUClient client = new(new HttpClient(handler), options);
+
+            Result<MinerUDownloadedResult> result = await client.WaitForCompletionAndDownloadAsync("b1", tempDir);
+
+            result.IsFailure.Should().BeTrue();
+            result.ErrorCode.Should().Be(MinerUProviderStatus.DownloadFailed);
+            downloadRequests.Should().Be(2);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task WaitForCompletionAndDownload_keeps_polling_on_unknown_provider_status()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
+        try
+        {
+            int pollRequests = 0;
+            FakeHttpMessageHandler handler = new(request =>
+            {
+                if (request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/b1")
+                {
+                    pollRequests++;
+                    string state = pollRequests == 1 ? "some-new-state" : "done";
+                    string zipUrl = pollRequests == 1 ? "" : "https://cdn.example.test/result.zip";
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent($$"""
+                                                    {
+                                                      "code": 0,
+                                                      "data": {
+                                                        "batch_id": "b1",
+                                                        "extract_result": [
+                                                          {
+                                                            "file_name": "a.pdf",
+                                                            "state": "{{state}}",
+                                                            "full_zip_url": "{{zipUrl}}"
+                                                          }
+                                                        ]
+                                                      }
+                                                    }
+                                                    """)
+                    };
+                }
+
+                if (request.RequestUri!.Host == "cdn.example.test")
+                {
+                    return new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new ByteArrayContent([1, 2, 3])
+                    };
+                }
+
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            });
+            MinerUOptions options = new()
+            {
+                Token = "t",
+                BaseUrl = "https://mineru.example.test",
+                PollingIntervalMs = 1
+            };
+            using MinerUClient client = new(new HttpClient(handler), options);
+
+            Result<MinerUDownloadedResult> result = await client.WaitForCompletionAndDownloadAsync("b1", tempDir);
+
+            result.IsSuccess.Should().BeTrue();
+            pollRequests.Should().Be(2);
+            File.ReadAllBytes(result.Value.ZipPath).Should().Equal([1, 2, 3]);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir))
+            {
+                Directory.Delete(tempDir, true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task RequestUploadUrls_reports_official_api_error_without_leaking_secrets()
     {
         FakeHttpMessageHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK)
@@ -256,6 +563,42 @@ public sealed class MinerUClientTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(_handler(request));
+        }
+    }
+
+    private sealed class DownloadTimeoutHandler : HttpMessageHandler
+    {
+        public int DownloadAttempts { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (request.RequestUri!.AbsolutePath == "/api/v4/extract-results/batch/b1")
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                                                {
+                                                  "code": 0,
+                                                  "data": {
+                                                    "batch_id": "b1",
+                                                    "extract_result": [
+                                                      {
+                                                        "file_name": "a.pdf",
+                                                        "state": "done",
+                                                        "full_zip_url": "https://cdn.example.test/result.zip"
+                                                      }
+                                                    ]
+                                                  }
+                                                }
+                                                """)
+                };
+            }
+
+            DownloadAttempts++;
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The download delay should have been cancelled.");
         }
     }
 }

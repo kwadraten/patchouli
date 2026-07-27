@@ -45,10 +45,12 @@ public sealed class PdfWorkspaceLayoutTests
     public void PdfWorkspace_binds_edit_text_immediately_and_exposes_save_command()
     {
         string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
-            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+            "src", "Patchouli.UI", "Views", "BoxEditorDialog.axaml"));
+        string codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "BoxEditorDialog.axaml.cs"));
 
         xaml.Should().Contain("UpdateSourceTrigger=PropertyChanged");
-        xaml.Should().Contain("Command=\"{Binding SaveTextCommand}\"");
+        codeBehind.Should().Contain("SaveTextCommand");
     }
 
     [Fact]
@@ -56,6 +58,8 @@ public sealed class PdfWorkspaceLayoutTests
     {
         string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string editorXaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "BoxEditorDialog.axaml"));
         string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfBBoxViewModel.cs"));
 
@@ -64,8 +68,8 @@ public sealed class PdfWorkspaceLayoutTests
             .And.Contain("MoveSelectedUpCommand")
             .And.Contain("MoveSelectedDownCommand")
             .And.Contain("DeleteCommand")
-            .And.Contain("ToggleSuppressedCommand")
-            .And.Contain("AssetId");
+            .And.Contain("ToggleSuppressedCommand");
+        editorXaml.Should().Contain("AssetId");
         viewModel.Should().Contain("MediaBoxPayload(AssetId")
             .And.Contain("DeleteBoxAsync")
             .And.Contain("SetSuppressedAsync");
@@ -94,7 +98,8 @@ public sealed class PdfWorkspaceLayoutTests
 
         xaml.Should().NotContain("<TextBlock Text=\"{Binding Kind}\"");
         xaml.Should().Contain("<controls:MarkdownTextBlock Markdown=\"{Binding Markdown}\" Block=\"{Binding Block}\"");
-        xaml.Should().Contain("<MenuItem Header=\"复制 Markdown\" Command=\"{Binding CopyMarkdownCommand}\" />");
+        xaml.Should().Contain("Text=\"复制 Markdown\"");
+        xaml.Should().Contain("Command=\"{Binding CopyMarkdownCommand}\"");
         xaml.Should().Contain("Classes.selected=\"{Binding IsSelected}\"");
         xaml.Should().Contain("x:Name=\"PdfScrollViewer\"");
         xaml.Should().Contain("x:Name=\"PreviewScrollViewer\"");
@@ -104,7 +109,6 @@ public sealed class PdfWorkspaceLayoutTests
             .And.Contain("CopyMarkdownCommand")
             .And.Contain("LocalOcrSourceText")
             .And.NotContain("CandidateBoxes[0]");
-        viewModel.Should().Contain("SelectionChanged?.Invoke");
     }
 
     [Fact]
