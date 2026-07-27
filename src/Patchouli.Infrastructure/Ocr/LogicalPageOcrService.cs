@@ -114,22 +114,66 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
                 AppErrorCodes.ValidationFailed, "Document OCR requires distinct physical page plans.");
         }
 
-        List<DocumentTreeRevisionId> revisions = [];
+        // Plans arrive in document order: the caller builds them from the page table ordered by
+        // page_index, so adjacent target-less plans are consecutive physical pages and share one
+        // cloud upload. A non-contiguous subset would still be correct because the run engine
+        // splits non-adjacent pages into separate ranges within that single upload.
+        DocumentTreeRevisionId?[] revisions = new DocumentTreeRevisionId?[pages.Count];
         List<OcrRunId> runIds = [];
-        foreach (LogicalDocumentOcrPagePlan page in pages)
+        int index = 0;
+        while (index < pages.Count)
         {
-            Result<PhysicalPageOcrResult> result = await RunPageAsync(
-                documentInstanceId, presetId, page, cancellationToken);
-            if (result.IsFailure)
+            if (pages[index].LogicalPageTargets.Count > 0)
             {
-                return Result<LogicalDocumentOcrResult>.Failure(result.ErrorCode!, result.ErrorMessage!);
+                Result<PhysicalPageOcrResult> result = await RunPageAsync(
+                    documentInstanceId, presetId, pages[index], cancellationToken);
+                if (result.IsFailure)
+                {
+                    return Result<LogicalDocumentOcrResult>.Failure(result.ErrorCode!, result.ErrorMessage!);
+                }
+
+                revisions[index] = result.Value.StagingTreeRevisionId;
+                runIds.AddRange(result.Value.RunIds);
+                index++;
+                continue;
             }
 
-            revisions.Add(result.Value.StagingTreeRevisionId);
-            runIds.AddRange(result.Value.RunIds);
+            int groupStart = index;
+            while (index < pages.Count && pages[index].LogicalPageTargets.Count == 0)
+            {
+                index++;
+            }
+
+            PageId[] groupPageIds = pages.Skip(groupStart).Take(index - groupStart)
+                .Select(page => page.PageId).ToArray();
+            Result<OcrRun> run = await _ocr.RunPresetOnPagesAsync(
+                documentInstanceId, presetId, groupPageIds, cancellationToken);
+            if (run.IsFailure)
+            {
+                return Result<LogicalDocumentOcrResult>.Failure(run.ErrorCode!, run.ErrorMessage!);
+            }
+
+            runIds.Add(run.Value.OcrRunId);
+            Result<IReadOnlyList<OcrPageResult>> pageResults = await _ocr.ListPageResultsAsync(
+                run.Value.OcrRunId, cancellationToken);
+            for (int groupIndex = groupStart; groupIndex < index; groupIndex++)
+            {
+                DocumentTreeRevisionId? revision = pageResults.IsSuccess
+                    ? pageResults.Value.SingleOrDefault(result => result.PageId == pages[groupIndex].PageId)
+                        ?.StagingTreeRevisionId
+                    : null;
+                if (revision is null)
+                {
+                    return Result<LogicalDocumentOcrResult>.Failure(
+                        AppErrorCodes.InvalidState, "A physical page did not produce a staging tree.");
+                }
+
+                revisions[groupIndex] = revision.Value;
+            }
         }
 
-        return Result<LogicalDocumentOcrResult>.Success(new LogicalDocumentOcrResult(revisions, runIds));
+        return Result<LogicalDocumentOcrResult>.Success(new LogicalDocumentOcrResult(
+            revisions.Select(revision => revision!.Value).ToArray(), runIds));
     }
 
     public async Task<Result<PhysicalPageOcrResult>> RunPageAsync(

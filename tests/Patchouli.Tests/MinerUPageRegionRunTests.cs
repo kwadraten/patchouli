@@ -129,6 +129,73 @@ public sealed class MinerUPageRegionRunTests
     }
 
     [Fact]
+    public async Task Document_run_batches_consecutive_plain_pages_into_one_upload()
+    {
+        await using Context context = await Context.CreateAsync(pageCount: 3);
+        LogicalPageOcrService service = new(new DirectOcrRunCoordinator(context.Engine), context.Trees);
+        LogicalDocumentOcrPagePlan[] plans = context.Pages
+            .Select(page => new LogicalDocumentOcrPagePlan(page.PageId, []))
+            .ToArray();
+
+        Result<LogicalDocumentOcrResult> result = await service.RunDocumentAsync(
+            context.Document.DocumentInstanceId, context.Preset.PresetId, plans);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        context.MinerUClient.UploadRequests.Should().ContainSingle().Which.FileName
+            .EndsWith(".pdf", StringComparison.OrdinalIgnoreCase).Should().BeTrue();
+        context.MinerUClient.UploadedPdfPageCounts.Should().Equal(3);
+        result.Value.RunIds.Should().HaveCount(1);
+        result.Value.StagingTreeRevisionIds.Should().HaveCount(3);
+        result.Value.StagingTreeRevisionIds.Should().OnlyHaveUniqueItems();
+
+        IReadOnlyList<OcrPageResult> pageResults =
+            (await context.Engine.ListPageResultsAsync(result.Value.RunIds[0])).Value;
+        foreach ((LogicalDocumentOcrPagePlan plan, DocumentTreeRevisionId revision) in
+                 plans.Zip(result.Value.StagingTreeRevisionIds))
+        {
+            pageResults.Single(pageResult => pageResult.PageId == plan.PageId)
+                .StagingTreeRevisionId.Should().Be(revision);
+        }
+    }
+
+    [Fact]
+    public async Task Document_run_splits_uploads_around_targeted_pages()
+    {
+        await using Context context = await Context.CreateAsync(pageCount: 4);
+        Page targetedPage = context.Pages[2];
+        DocumentTreeRevision staged = (await context.Trees.StagePageAsync(
+            context.Document.DocumentInstanceId,
+            targetedPage.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.LogicalPage, null, null,
+                    new NormalizedBBox(0, 0, 1, 1), null)
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        DocumentTreeRevision committed =
+            (await context.Trees.AdoptStagingRevisionAsync(staged.TreeRevisionId)).Value;
+        DocumentBox root = (await context.Trees.ListBoxesAsync(committed.TreeRevisionId)).Value.Single();
+        LogicalPageOcrService service = new(new DirectOcrRunCoordinator(context.Engine), context.Trees);
+        LogicalDocumentOcrPagePlan[] plans = context.Pages
+            .Select(page => new LogicalDocumentOcrPagePlan(page.PageId,
+                page.PageId == targetedPage.PageId
+                    ? [new LogicalPageOcrTarget(root.BoxId, new NormalizedBBox(0.1, 0.1, 0.3, 0.3))]
+                    : []))
+            .ToArray();
+
+        Result<LogicalDocumentOcrResult> result = await service.RunDocumentAsync(
+            context.Document.DocumentInstanceId, context.Preset.PresetId, plans);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        context.MinerUClient.UploadRequests.Should().HaveCount(3);
+        context.MinerUClient.UploadRequests.Count(request =>
+            request.FileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase)).Should().Be(1);
+        context.MinerUClient.UploadedPdfPageCounts.Should().Equal(2, 1);
+        result.Value.RunIds.Should().HaveCount(3);
+        result.Value.StagingTreeRevisionIds.Should().HaveCount(4);
+        result.Value.StagingTreeRevisionIds.Should().OnlyHaveUniqueItems();
+    }
+
+    [Fact]
     public void Image_structured_parse_skips_blocks_without_a_bbox()
     {
         Page page = NewPage();
@@ -219,7 +286,14 @@ public sealed class MinerUPageRegionRunTests
             string rootDirectory = Directory.CreateDirectory(
                 Path.Combine(Path.GetTempPath(), $"patchouli-mineru-runs-{Guid.NewGuid():N}")).FullName;
             string sourcePdfPath = Path.Combine(rootDirectory, "source.pdf");
-            File.Copy(TestFixtures.RealThreePagePdf, sourcePdfPath);
+            if (pageCount <= 3)
+            {
+                File.Copy(TestFixtures.RealThreePagePdf, sourcePdfPath);
+            }
+            else
+            {
+                WriteBlankPdf(sourcePdfPath, pageCount);
+            }
             string regionPngPath = Path.Combine(rootDirectory, "region.png");
             WriteSolidPng(regionPngPath);
             await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
@@ -278,6 +352,20 @@ public sealed class MinerUPageRegionRunTests
             using SKImage image = SKImage.FromBitmap(bitmap);
             using SKData png = image.Encode(SKEncodedImageFormat.Png, 100);
             File.WriteAllBytes(path, png.ToArray());
+        }
+
+        private static void WriteBlankPdf(string path, int pageCount)
+        {
+            using FileStream stream = File.Create(path);
+            using SKDocument document = SKDocument.CreatePdf(stream);
+            for (int index = 0; index < pageCount; index++)
+            {
+                using SKCanvas canvas = document.BeginPage(612, 792);
+                canvas.Clear(SKColors.White);
+                document.EndPage();
+            }
+
+            document.Close();
         }
     }
 
