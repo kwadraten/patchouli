@@ -60,6 +60,18 @@ if (-not (Test-Path -LiteralPath $helperSource)) {
 }
 Copy-Item -LiteralPath $helperSource -Destination (Join-Path $publishDir $helperName) -Force
 
+$shellName = "patchouli-shell-sidecar.exe"
+$shellSource = Join-Path $root "tools\patchouli-shell-sidecar\target\release\$shellName"
+if (-not (Test-Path -LiteralPath $shellSource)) {
+    Write-Host "Building patchouli-shell-sidecar..."
+    cargo build --release --manifest-path (Join-Path $root "tools\patchouli-shell-sidecar\Cargo.toml")
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
+}
+if (-not (Test-Path -LiteralPath $shellSource)) {
+    throw "patchouli-shell-sidecar was not found at '$shellSource'."
+}
+Copy-Item -LiteralPath $shellSource -Destination (Join-Path $publishDir $shellName) -Force
+
 $iss = Join-Path $root "packaging\windows\Patchouli.Net.iss"
 & $iscc "/DSourceDir=$publishDir" "/DOutputDir=$installerDir" "/DAppVersion=$Version" $iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }

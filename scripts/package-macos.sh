@@ -64,6 +64,17 @@ fi
 cp "$helper_bin" "$macos_dir/biblatex-helper"
 chmod +x "$macos_dir/biblatex-helper"
 
+shell_bin="$root/tools/patchouli-shell-sidecar/target/release/patchouli-shell-sidecar"
+if [[ ! -x "$shell_bin" ]]; then
+  cargo build --release --manifest-path "$root/tools/patchouli-shell-sidecar/Cargo.toml"
+fi
+if [[ ! -x "$shell_bin" ]]; then
+  echo "patchouli-shell-sidecar was not found at $shell_bin" >&2
+  exit 1
+fi
+cp "$shell_bin" "$macos_dir/patchouli-shell-sidecar"
+chmod +x "$macos_dir/patchouli-shell-sidecar"
+
 if [[ ! -f "$macos_dir/appsettings.json" ]]; then
   echo "Published appsettings.json was not found in Contents/MacOS." >&2
   exit 1

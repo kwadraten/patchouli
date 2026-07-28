@@ -163,6 +163,19 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void Readme_documents_both_current_rust_release_helpers()
+    {
+        string readme = File.ReadAllText(TestPaths.FromRepositoryRoot("README.md"));
+
+        readme.Should().Contain("tools/biblatex-helper")
+            .And.Contain("typst/biblatex 0.12.0")
+            .And.Contain("tools/patchouli-shell-sidecar")
+            .And.Contain("Bashkit 0.14.4")
+            .And.Contain("cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml")
+            .And.Contain("cargo build --release --manifest-path tools/patchouli-shell-sidecar/Cargo.toml");
+    }
+
+    [Fact]
     public void About_lists_fsharp_citeproc_instead_of_hayagriva()
     {
         using TemporaryAppSettingsFile settings = new();
@@ -170,6 +183,18 @@ public sealed class AlphaPackagingTests
 
         about.ThirdPartyLibraries.Select(library => library.Name).Should()
             .Contain("Fsharp.Citeproc").And.NotContain("Hayagriva");
+    }
+
+    [Fact]
+    public void About_lists_locked_rust_text_dependencies()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
+
+        about.ThirdPartyLibraries.Should()
+            .Contain(library => library.Name == "Bashkit 0.14.4" && library.License == "MIT")
+            .And.Contain(library => library.Name == "typst/biblatex 0.12.0" &&
+                                    library.License == "MIT OR Apache-2.0");
     }
 
     [Fact]

@@ -13,22 +13,22 @@
 - 不再有卡到爆的webview和来自前端项目的屎山代码，本项目尽可能使用.net或rust等原生轮子实现功能，保证性能。
 - 不会擅自移动、重命名或接管PDF源文件，本项目用文件哈希追踪PDF文件位置，文件爱放哪就放哪。
 - OCR 识别错了也不浪费，文本、表格、类型、顺序和 bbox 进入页级不可变边界框树，PDF 工作台可在草稿中持续校正后再提交。
-- 带有良好的全文检索功能的MCP服务器，可以与任何本地的AI Agent配合使用。
+- 带有虚拟bash的MCP服务器，允许AI Agent像探索代码库一样渐进式地探索你的文献库。
 
 ## 功能列表 / 路线图
 
 - [x] 现代化的桌面应用UI：题录管理、PDF查看和OCR内容原生Markdown预览、页级边界框树与不可变修订、设置管理、阻塞任务处理、冲突处理
 - [x] 合理的基础数据模型：贴合CSL规范的题录模型、基于文件哈希的文件资产模型、完整支持MinerU OCR特性的OCR结果模型
 - [x] OCR支持：支持文档、页面、逻辑页面、区域等不同粒度的OCR，目前针对MinerU OCR提供一等支持
-- [x] 题录支持：目前可以正确输出绝大部分CSL题录的文本和HTML结果
-- [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zetero官方列表和中文社区样式列表获取CSL样式
+- [x] 题录支持：支持biblatex导入和导出，目前可以正确输出绝大部分CSL题录的文本和HTML结果
+- [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
 - [x] 快照同步支持：支持将本机数据库发布为快照，可自行配置通过网盘/同步盘同步快照，支持处理快照间冲突
-- [x] MCP支持：支持AI Agent通过MCP只读访问文献库内容、输出CSL题录，MCP高度可配置
+- [x] MCP支持：基于虚拟文件系统和虚拟bash环境沙箱的只读MCP
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
-- [ ] 完善题录系统：扩展题录类型、扩展 CSL 字段、加入biblatex支持、批量CSL/biblatex导出、实装标签系统、提供基于标签的更加细分的筛选器 （施工中）
-- [ ] 渐进式探索MCP：基于虚拟文件系统和虚拟bash环境的MCP（施工中）
+- [ ] 完善题录系统：扩展题录类型、扩展 CSL 字段、批量CSL/biblatex导出、实装标签系统、提供基于标签的更加细分的筛选器 （施工中）
 - [ ] 支持更多OCR：多模态LLM OCR 支持、基于onnx运行时的本地OCR支持
+- [ ] 可写入MCP支持：允许AI Agent通过向虚拟环境中写文件的方式和程序进行交互，将优先允许写题录和CSL样式
 
 ## 开发指南
 
@@ -43,7 +43,19 @@ dotnet build Patchouli.sln --no-restore
 dotnet run --project src/Patchouli.UI/Patchouli.UI.csproj
 ```
 
-CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供，不需要额外的本机 sidecar。仓库仍保留 Rust/Cargo 工具链约定，用于后续基于 `typst/biblatex` 的 BibLaTeX 到 CSL 转换器；Rust 工具统一放在 `tools/<tool-name>` 下，并在各自目录运行 `cargo build --release`。
+CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含两个需要随桌面应用发布的 Rust 工具：
+
+- `tools/biblatex-helper`：基于锁定的 `typst/biblatex 0.12.0` 解析 BibLaTeX；
+- `tools/patchouli-shell-sidecar`：基于锁定的 `Bashkit 0.14.4` 提供 MCP 只读虚拟 Shell。
+
+可分别构建：
+
+```pwsh
+cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
+cargo build --release --manifest-path tools/patchouli-shell-sidecar/Cargo.toml
+```
+
+Windows/macOS 打包脚本会构建并把这两个可执行文件复制到应用目录；更详细的协议与工具说明见 `tools/README.md`。
 
 ### 运行单元测试
 
@@ -59,12 +71,6 @@ dotnet test Patchouli.sln
 ```
 
 清理和分析脚本要求 JetBrains Command Line Tools `2026.1.4`，并会使用仓库内的 `.editorconfig` 和固定的清理配置。提交非文档改动前，请先执行这两个命令；静态分析报告输出至 `artifacts/inspectcode.sarif`。
-
-### macOS 打包与分发
-
-- macOS 版本不使用 App Sandbox，也不上架 Mac App Store；文件访问通过标准 TCC 文件夹选择提示完成。
-- 使用 `scripts/package-macos.sh` 在 macOS 上构建 `.app` 和 DMG；签名是可选的（无 `APPLE_CODESIGN_IDENTITY` 时使用 ad-hoc 签名），不需要 entitlements 文件。
-- 详见 `.agent/adr/0017-macos-filesystem-no-sandbox-only-tcc.md`。
 
 ## 反馈问题
 

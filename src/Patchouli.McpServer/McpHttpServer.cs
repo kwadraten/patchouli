@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -6,9 +7,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Patchouli.Core.Mcp;
+using Patchouli.Infrastructure.Shell;
 using Patchouli.Mcp;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Primitives;
 
 namespace Patchouli.McpServer;
 
@@ -16,23 +19,26 @@ public sealed class McpHttpServer : IAsyncDisposable
 {
     private readonly McpProtocolHandler _handler;
     private readonly McpServerSettings _settings;
+    private readonly ShellSidecarHost? _shell;
     private readonly Action<Exception, string>? _unexpectedException;
+    private readonly ConcurrentDictionary<string, byte> _sessions = new(StringComparer.Ordinal);
     private long _activeConnectionCount;
     private long _totalConnectionCount;
     private WebApplication? _app;
 
     public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort,
-        Action<Exception, string>? unexpectedException = null)
+        Action<Exception, string>? unexpectedException = null, ShellSidecarHost? shell = null)
         : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow),
-            unexpectedException)
+            unexpectedException, shell)
     {
     }
 
     public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings,
-        Action<Exception, string>? unexpectedException = null)
+        Action<Exception, string>? unexpectedException = null, ShellSidecarHost? shell = null)
     {
         _handler = handler;
         _settings = settings;
+        _shell = shell;
         _unexpectedException = unexpectedException;
         Endpoint = $"http://{DisplayHost(settings.BindAddress)}:{settings.Port}/mcp";
     }
@@ -144,7 +150,11 @@ public sealed class McpHttpServer : IAsyncDisposable
         app.MapGet("/health", () => Results.Json(new { status = "ok" }));
         app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
         app.MapPost("/mcp",
-            (HttpContext context, CancellationToken ct) => HandleMcpRequestAsync(context, _handler, _settings, ct));
+            (HttpContext context, CancellationToken ct) =>
+                HandleMcpRequestAsync(context, _handler, _settings, _shell, _sessions, ct));
+        app.MapDelete("/mcp",
+            (HttpContext context, CancellationToken ct) =>
+                HandleMcpDeleteAsync(context, _settings, _shell, _sessions, ct));
         app.MapMethods("/mcp", ["OPTIONS"], (HttpContext context) => HandleMcpOptions(context, _settings));
         return app;
     }
@@ -202,6 +212,8 @@ public sealed class McpHttpServer : IAsyncDisposable
         HttpContext context,
         McpProtocolHandler handler,
         McpServerSettings settings,
+        ShellSidecarHost? shell,
+        ConcurrentDictionary<string, byte> sessions,
         CancellationToken cancellationToken)
     {
         if (RequiresAuthentication(settings) && !IsAuthorized(context, settings.Token))
@@ -224,14 +236,56 @@ public sealed class McpHttpServer : IAsyncDisposable
             return Results.BadRequest(new { error = "Request body is required." });
         }
 
+        string? sessionId = GetSessionId(context);
+        bool isInitialize = IsInitializeRequest(request);
+        if (isInitialize && string.IsNullOrWhiteSpace(sessionId))
+        {
+            sessionId = Guid.NewGuid().ToString("N");
+        }
+
+        if (!string.IsNullOrWhiteSpace(sessionId))
+        {
+            sessions[sessionId] = 0;
+            context.Response.Headers["Mcp-Session-Id"] = sessionId;
+        }
+
         if (IsJsonRpcNotification(request))
         {
-            await handler.HandleAsync(request, cancellationToken);
+            await handler.HandleAsync(request, sessionId, cancellationToken);
             return Results.Accepted();
         }
 
-        string response = await handler.HandleAsync(request, cancellationToken);
+        string response = await handler.HandleAsync(request, sessionId, cancellationToken);
         return Results.Text(response, "application/json");
+    }
+
+    private static async Task<IResult> HandleMcpDeleteAsync(
+        HttpContext context,
+        McpServerSettings settings,
+        ShellSidecarHost? shell,
+        ConcurrentDictionary<string, byte> sessions,
+        CancellationToken cancellationToken)
+    {
+        if (RequiresAuthentication(settings) && !IsAuthorized(context, settings.Token))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Results.Json(new { error = McpErrorCodes.Unauthorized },
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        string? sessionId = GetSessionId(context);
+        if (string.IsNullOrWhiteSpace(sessionId))
+        {
+            return Results.BadRequest(new { error = "Mcp-Session-Id is required." });
+        }
+
+        sessions.TryRemove(sessionId, out _);
+        if (shell is not null)
+        {
+            await shell.CloseSessionAsync(sessionId, cancellationToken);
+        }
+
+        return Results.NoContent();
     }
 
     private static async Task HandleMcpSseAsync(
@@ -283,11 +337,39 @@ public sealed class McpHttpServer : IAsyncDisposable
         {
             string origin = settings.AllowedOrigins.Count == 0 ? "*" : string.Join(", ", settings.AllowedOrigins);
             context.Response.Headers.AccessControlAllowOrigin = origin;
-            context.Response.Headers.AccessControlAllowMethods = "GET, POST, OPTIONS";
-            context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, Accept";
+            context.Response.Headers.AccessControlAllowMethods = "GET, POST, DELETE, OPTIONS";
+            context.Response.Headers.AccessControlAllowHeaders =
+                "Content-Type, Authorization, Accept, Mcp-Session-Id";
         }
 
         return Results.NoContent();
+    }
+
+    private static string? GetSessionId(HttpContext context)
+    {
+        if (!context.Request.Headers.TryGetValue("Mcp-Session-Id", out StringValues values))
+        {
+            return null;
+        }
+
+        string? value = values.FirstOrDefault();
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static bool IsInitializeRequest(string request)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(request);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                   && document.RootElement.TryGetProperty("method", out JsonElement method)
+                   && method.ValueKind == JsonValueKind.String
+                   && string.Equals(method.GetString(), "initialize", StringComparison.Ordinal);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static async Task WriteSseCommentAsync(HttpContext context, string comment,

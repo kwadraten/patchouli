@@ -7,10 +7,12 @@ using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
+using Patchouli.Infrastructure.Shell;
 using Patchouli.McpServer;
 
 if (args.Contains("--help"))
@@ -72,7 +74,11 @@ try
     ItemService items = new(db, library, clock);
     CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations);
     CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
+    BiblatexHelperClient biblatexHelper = new();
     McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
+    ShellDomainService shellDomain = new(db, api, search, evidence, cslStore, cslRenderer, biblatexHelper, items,
+        library);
+    await using ShellSidecarHost shell = new(shellDomain);
 
     static void ReportUnexpected(Exception exception, string operation)
     {
@@ -80,9 +86,21 @@ try
             McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
     }
 
-    McpProtocolHandler handler = new(api, db, effectiveSettings, ReportUnexpected);
-    await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected);
+    try
+    {
+        await shell.StartAsync();
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine(McpOutputSanitizer.Sanitize($"Shell sidecar failed to start: {ex.Message}"));
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    McpProtocolHandler handler = new(api, db, effectiveSettings, ReportUnexpected, shell);
+    await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected, shell);
     await server.RunAsync();
+    await shell.StopAsync();
 }
 catch (Exception ex)
 {
