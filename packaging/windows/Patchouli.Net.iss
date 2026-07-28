@@ -42,6 +42,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
 
+; Wipe the migrations folder on upgrade so removed SQL files cannot survive side-by-side installs.
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\migrations"
+
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "*.pdb"; Flags: ignoreversion recursesubdirs createallsubdirs
 

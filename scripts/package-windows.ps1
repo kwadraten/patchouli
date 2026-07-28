@@ -17,6 +17,9 @@ if (-not $iscc) {
     throw "Inno Setup 6 was not found. Install it or add ISCC.exe to a standard installation directory."
 }
 
+if (Test-Path -LiteralPath $publishDir) {
+    Remove-Item -LiteralPath $publishDir -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $publishDir, $installerDir | Out-Null
 dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
     -c $Configuration `
@@ -28,6 +31,22 @@ dotnet publish (Join-Path $root "src\Patchouli.UI\Patchouli.UI.csproj") `
     -p:DebugSymbols=false `
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE." }
+
+$migrationsDir = Join-Path $publishDir "migrations"
+if (-not (Test-Path -LiteralPath $migrationsDir)) {
+    throw "Published migrations directory was not found at '$migrationsDir'."
+}
+$legacyMigrationMarkers = @(
+    "005_create_pages_and_layout.sql",
+    "014_add_table_cell_metadata.sql",
+    "024_add_layout_revision_source_basis.sql"
+)
+$legacyPresent = Get-ChildItem -LiteralPath $migrationsDir -File |
+    Where-Object { $legacyMigrationMarkers -contains $_.Name -or $_.Name -match 'layout' } |
+    Select-Object -ExpandProperty Name
+if ($legacyPresent) {
+    throw "Published migrations still contain legacy layout schema files: $($legacyPresent -join ', ')"
+}
 
 $iss = Join-Path $root "packaging\windows\Patchouli.Net.iss"
 & $iscc "/DSourceDir=$publishDir" "/DOutputDir=$installerDir" "/DAppVersion=$Version" $iss

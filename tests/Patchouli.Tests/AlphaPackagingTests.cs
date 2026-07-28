@@ -117,6 +117,35 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void Source_migrations_exclude_legacy_layout_schema()
+    {
+        string[] names = Directory.GetFiles(TestPaths.MigrationsDirectory, "*.sql")
+            .Select(Path.GetFileName)
+            .Where(name => name is not null)
+            .Select(name => name!)
+            .ToArray();
+
+        names.Should().Contain("005_create_pages_and_document_trees.sql");
+        names.Should().NotContain([
+            "005_create_pages_and_layout.sql",
+            "014_add_table_cell_metadata.sql",
+            "024_add_layout_revision_source_basis.sql"
+        ]);
+        names.Should().NotContain(name => name.Contains("layout", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Windows_package_cleans_publish_dir_and_install_migrations()
+    {
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
+        string iss = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "windows", "Patchouli.Net.iss"));
+
+        script.Should().Contain("Remove-Item -LiteralPath $publishDir -Recurse -Force");
+        script.Should().Contain("legacy layout schema files");
+        iss.Should().Contain("[InstallDelete]").And.Contain(@"{app}\migrations");
+    }
+
+    [Fact]
     public void Csl_runtime_uses_managed_fsharp_citeproc_and_keeps_rust_tool_conventions()
     {
         string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));
