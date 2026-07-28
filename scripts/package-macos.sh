@@ -8,7 +8,7 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.2.2}"
+version="${VERSION:-0.2.3}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/artifacts/publish/$runtime"
 app_dir="$root/artifacts/macos/Patchouli.Net.app"
