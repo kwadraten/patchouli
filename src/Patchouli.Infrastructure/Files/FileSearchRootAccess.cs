@@ -1,6 +1,9 @@
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
+using Microsoft.Win32.SafeHandles;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 
 namespace Patchouli.Infrastructure.Files;
@@ -39,11 +42,42 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
         }
     }
 
-    public ValueTask<NativeFileMaterialization> MaterializeFileAsync(string path, CancellationToken cancellationToken)
+    public async ValueTask<NativeFileMaterialization> MaterializeFileAsync(string path,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        // Windows/Linux do not emulate Finder aliases, security bookmarks, or iCloud materialization.
-        return ValueTask.FromResult(new NativeFileMaterialization(true));
+        if (OperatingSystem.IsWindows())
+        {
+            FileLocalityAssessment locality = FileLocalityClassifier.Assess(path);
+            if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+            {
+                try
+                {
+                    await WindowsCloudFileHydrator.HydrateAsync(path, cancellationToken);
+                    return new NativeFileMaterialization(true);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (IOException exception)
+                {
+                    return new NativeFileMaterialization(
+                        false,
+                        Classify(exception),
+                        exception.Message);
+                }
+                catch (UnauthorizedAccessException exception)
+                {
+                    return new NativeFileMaterialization(
+                        false,
+                        Classify(exception),
+                        exception.Message);
+                }
+            }
+        }
+
+        return new NativeFileMaterialization(true);
     }
 
     internal static string Classify(Exception exception)
@@ -55,16 +89,110 @@ public sealed class PortableNativeFileAccessAdapter : INativeFileAccessAdapter
             _ => "io_error"
         };
     }
+
+    [SupportedOSPlatform("windows")]
+    private static class WindowsCloudFileHydrator
+    {
+        private const int BufferSize = 1024 * 1024;
+        private const long CfEof = -1;
+
+        public static async Task HydrateAsync(string path, CancellationToken cancellationToken)
+        {
+            try
+            {
+                // The synchronous API is isolated from the UI thread. WaitAsync lets the scan
+                // stop promptly when cancelled even if a provider is still completing its request.
+                await Task.Run(() => HydrateWithCloudFilesApi(path), CancellationToken.None)
+                    .WaitAsync(cancellationToken);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (IOException)
+            {
+                // Fall back to read-to-download.
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // Fall back to read-to-download.
+            }
+            catch (ExternalException)
+            {
+                // Fall back to read-to-download.
+            }
+            catch (DllNotFoundException)
+            {
+                // Fall back to read-to-download.
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Some third-party sync clients expose placeholder attributes but do not fully
+                // support CfHydratePlaceholder. Sequential reads retain their read-to-download
+                // compatibility and are cancellable.
+            }
+
+            await HydrateByReadingAsync(path, cancellationToken);
+        }
+
+        private static void HydrateWithCloudFilesApi(string path)
+        {
+            using SafeFileHandle handle = File.OpenHandle(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            int result = CfHydratePlaceholder(handle, 0, CfEof, 0, IntPtr.Zero);
+            if (result < 0)
+            {
+                throw Marshal.GetExceptionForHR(result) ?? new ExternalException(
+                    $"CfHydratePlaceholder failed with HRESULT 0x{result:X8}.",
+                    result);
+            }
+        }
+
+        private static async Task HydrateByReadingAsync(string path, CancellationToken cancellationToken)
+        {
+            await using FileStream stream = new(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete,
+                BufferSize,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+            byte[] buffer = GC.AllocateUninitializedArray<byte>(BufferSize);
+            while (await stream.ReadAsync(buffer, cancellationToken) > 0)
+            {
+                // Reading all bytes asks read-to-download providers to fully hydrate the file.
+            }
+        }
+
+        [DllImport("cldapi.dll")]
+        private static extern int CfHydratePlaceholder(
+            SafeFileHandle fileHandle,
+            long startingOffset,
+            long length,
+            int hydrateFlags,
+            IntPtr overlapped);
+    }
 }
 
 public sealed class FileSearchRootAccess : IFileSearchRootAccess, IFileMaterializationService
 {
+    private const int MaterializationStatePollCount = 40;
+    private static readonly TimeSpan MaterializationStatePollInterval = TimeSpan.FromMilliseconds(250);
     private readonly INativeFileAccessAdapter _native;
+    private readonly Func<string, FileLocalityAssessment> _assess;
     private IReadOnlyList<(string Pattern, Regex Regex)> _exclusions;
 
-    public FileSearchRootAccess(INativeFileAccessAdapter? native = null, IEnumerable<string>? exclusionPatterns = null)
+    public FileSearchRootAccess(
+        INativeFileAccessAdapter? native = null,
+        IEnumerable<string>? exclusionPatterns = null,
+        Func<string, FileLocalityAssessment>? localityClassifier = null)
     {
         _native = native ?? new PortableNativeFileAccessAdapter();
+        _assess = localityClassifier ?? FileLocalityClassifier.Assess;
         _exclusions = CompileExclusions(exclusionPatterns ?? Array.Empty<string>());
     }
 
@@ -81,10 +209,34 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess, IFileMateriali
         }
 
         NativeFileMaterialization materialized = await _native.MaterializeFileAsync(path, cancellationToken);
-        return materialized.IsAvailable
-            ? Result.Success()
-            : Result.Failure(materialized.FailureCode ?? "materialization_failed",
+        if (!materialized.IsAvailable)
+        {
+            return Result.Failure(materialized.FailureCode ?? "materialization_failed",
                 materialized.FailureReason ?? "The file could not be materialized.");
+        }
+
+        for (int attempt = 0; attempt < MaterializationStatePollCount; attempt++)
+        {
+            FileLocalityAssessment locality = _assess(path);
+            if (locality.Readiness != FileLocalityReadiness.CloudUnready)
+            {
+                return Result.Success();
+            }
+
+            await Task.Delay(MaterializationStatePollInterval, cancellationToken);
+        }
+
+        FileLocalityAssessment finalLocality = _assess(path);
+        return finalLocality.Readiness != FileLocalityReadiness.CloudUnready
+            ? Result.Success()
+            : Result.Failure(
+                finalLocality.ReasonCode ?? FileLocalityCodes.CloudNotDownloaded,
+                finalLocality.Reason ?? "Cloud file materialization did not complete.");
+    }
+
+    public FileLocalityAssessment Assess(string path)
+    {
+        return _assess(path);
     }
 
     public static bool TryValidateExclusionPatterns(IEnumerable<string> exclusionPatterns, out string? error)
@@ -173,6 +325,23 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess, IFileMateriali
 
             try
             {
+                FileLocalityAssessment locality = _assess(path);
+                if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+                {
+                    // Preserve placeholders in the queue without opening or hashing them.
+                    // Importers process local/ready candidates first, then hydrate this tier.
+                    candidates.Add(new PdfCandidate(
+                        path,
+                        Path.GetFileName(path),
+                        0,
+                        null,
+                        null,
+                        "awaiting_download",
+                        FileLocalityReadiness.CloudUnready,
+                        true));
+                    continue;
+                }
+
                 Result materialized = await EnsureAvailableAsync(path, cancellationToken);
                 if (materialized.IsFailure)
                 {
@@ -181,9 +350,28 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess, IFileMateriali
                     continue;
                 }
 
+                // Re-assess after materialization (macOS iCloud may still report not ready).
+                locality = _assess(path);
+                if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+                {
+                    skippedFiles.Add(new FileSearchRootIssue(
+                        path,
+                        locality.ReasonCode ?? FileLocalityCodes.CloudNotDownloaded,
+                        locality.Reason ?? "Cloud file is not downloaded yet."));
+                    continue;
+                }
+
                 FileInfo info = new(path);
                 candidates.Add(
-                    new PdfCandidate(path, info.Name, info.Length, info.LastWriteTimeUtc, null, "discovered"));
+                    new PdfCandidate(
+                        path,
+                        info.Name,
+                        info.Length,
+                        info.LastWriteTimeUtc,
+                        null,
+                        "discovered",
+                        locality.Readiness,
+                        locality.IsCloudPath));
             }
             catch (OperationCanceledException)
             {
@@ -352,9 +540,12 @@ public sealed class FileSearchRootAccess : IFileSearchRootAccess, IFileMateriali
         IReadOnlyList<FileSearchRootIssue> directories, IReadOnlyList<FileSearchRootIssue> files,
         IReadOnlyList<FileSearchRootExcludedEntry> excludedEntries, string rootStatus, string scanStatus)
     {
-        return new FileSearchRootScanResult(
-            candidates.OrderBy(candidate => candidate.FileName, StringComparer.OrdinalIgnoreCase).ToArray(),
-            directories, files, excludedEntries, rootStatus, scanStatus);
+        // Local-ready first, then hydrated cloud paths, then placeholders that the importer
+        // downloads after all immediately readable candidates have finished.
+        PdfCandidate[] ordered = FileLocalityClassifier
+            .OrderForImport(candidates, static c => c.Readiness, static c => c.FileName)
+            .ToArray();
+        return new FileSearchRootScanResult(ordered, directories, files, excludedEntries, rootStatus, scanStatus);
     }
 
     private static string RootStatus(string? code)

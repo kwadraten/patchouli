@@ -14,6 +14,18 @@ public sealed class PdfDiscoveryService
         _rootAccess = rootAccess ?? new FileSearchRootAccess();
     }
 
+    public Task<Result> EnsureAvailableAsync(string path, CancellationToken cancellationToken = default)
+    {
+        return _rootAccess.EnsureAvailableAsync(path, cancellationToken);
+    }
+
+    public FileLocalityAssessment Assess(string path)
+    {
+        return _rootAccess is FileSearchRootAccess access
+            ? access.Assess(path)
+            : FileLocalityClassifier.Assess(path);
+    }
+
     public async Task<PdfScanResult> ScanDirectoryAsync(SelectedFileSearchRoot selectedRoot,
         CancellationToken cancellationToken = default)
     {

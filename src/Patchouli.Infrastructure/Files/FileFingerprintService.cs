@@ -27,6 +27,14 @@ public sealed class FileFingerprintService : IFileFingerprintService
                 return Result<FileFingerprint>.Failure(AppErrorCodes.NotFound, "File was not found.");
             }
 
+            FileLocalityAssessment locality = FileLocalityClassifier.Assess(normalizedPath);
+            if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+            {
+                return Result<FileFingerprint>.Failure(
+                    locality.ReasonCode ?? FileLocalityCodes.CloudNotDownloaded,
+                    locality.Reason ?? "Cloud file is not downloaded yet.");
+            }
+
             Result<string> quickHash = await ComputeQuickHashAsync(normalizedPath, cancellationToken);
             if (quickHash.IsFailure)
             {

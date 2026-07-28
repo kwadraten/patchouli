@@ -181,6 +181,47 @@ public sealed class FirstRunViewModelTests
     }
 
     [Fact]
+    public async Task ScanAndImport_imports_local_before_downloading_and_importing_cloud_placeholder()
+    {
+        bool cloudHydrated = false;
+        RecordingHydrationAdapter adapter = new(() => cloudHydrated = true);
+
+        FileLocalityAssessment Assess(string path)
+        {
+            if (!string.Equals(Path.GetFileName(path), "b-cloud.pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                return new FileLocalityAssessment(FileLocalityReadiness.LocalReady, false);
+            }
+
+            return cloudHydrated
+                ? new FileLocalityAssessment(FileLocalityReadiness.CloudReady, true)
+                : new FileLocalityAssessment(
+                    FileLocalityReadiness.CloudUnready,
+                    true,
+                    FileLocalityCodes.CloudNotDownloaded,
+                    "Test cloud placeholder.");
+        }
+
+        FileSearchRootAccess rootAccess = new(adapter, localityClassifier: Assess);
+        await using ScanImportContext context = await ScanImportContext.CreateAsync(rootAccess);
+        TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "a-local.pdf");
+        string cloudPath = TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "b-cloud.pdf");
+        List<string> progressMessages = [];
+
+        FirstRunImportResult result = await context.Workflow.ScanAndImportAsync(
+            SelectedRoot(context.ScanRoot),
+            null,
+            progress: (_, _, message, _) => progressMessages.Add(message));
+
+        result.ImportedCount.Should().Be(2);
+        result.FailedCount.Should().Be(0);
+        adapter.MaterializedPaths.Should().Equal(cloudPath);
+        progressMessages.IndexOf("已导入：a-local.pdf").Should()
+            .BeLessThan(progressMessages.IndexOf("正在下载云端文件：b-cloud.pdf"));
+        progressMessages.Should().Contain("已导入：b-cloud.pdf");
+    }
+
+    [Fact]
     public async Task ScanDirectoryCommand_records_completed_initial_root_scan()
     {
         await using ScanImportContext context = await ScanImportContext.CreateAsync();
@@ -311,7 +352,7 @@ public sealed class FirstRunViewModelTests
         public FirstRunWorkflow Workflow { get; }
         public IBlockingOperationService BlockingOperations { get; }
 
-        public static async Task<ScanImportContext> CreateAsync()
+        public static async Task<ScanImportContext> CreateAsync(IFileSearchRootAccess? rootAccess = null)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
@@ -326,7 +367,11 @@ public sealed class FirstRunViewModelTests
                 new PdfMetadataReader(),
                 clock);
             BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
-            FirstRunWorkflow workflow = new(library, new PdfDiscoveryService(), pdfImport, blockingOperations);
+            FirstRunWorkflow workflow = new(
+                library,
+                new PdfDiscoveryService(rootAccess),
+                pdfImport,
+                blockingOperations);
             string scanRoot = Directory
                 .CreateDirectory(Path.Combine(Path.GetTempPath(), $"patchouli-scan-{Guid.NewGuid():N}")).FullName;
             return new ScanImportContext(database, scanRoot, workflow, blockingOperations);
@@ -340,6 +385,34 @@ public sealed class FirstRunViewModelTests
             }
 
             await Database.DisposeAsync();
+        }
+    }
+
+    private sealed class RecordingHydrationAdapter(Action hydrate) : INativeFileAccessAdapter
+    {
+        private readonly PortableNativeFileAccessAdapter _inner = new();
+
+        public List<string> MaterializedPaths { get; } = [];
+
+        public ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(
+            string path,
+            CancellationToken cancellationToken)
+        {
+            return _inner.ResolveDirectoryAsync(path, cancellationToken);
+        }
+
+        public ValueTask<NativeFileMaterialization> MaterializeFileAsync(
+            string path,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.Equals(Path.GetFileName(path), "b-cloud.pdf", StringComparison.OrdinalIgnoreCase))
+            {
+                MaterializedPaths.Add(path);
+                hydrate();
+            }
+
+            return ValueTask.FromResult(new NativeFileMaterialization(true));
         }
     }
 }

@@ -5,6 +5,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Files;
+using Patchouli.Infrastructure.Files;
 
 namespace Patchouli.Infrastructure.Workflows;
 
@@ -117,18 +118,40 @@ public sealed class FirstRunWorkflow
             int failedCount = 0;
             string? lastDocumentInstanceId = null;
             string? lastPdfPath = null;
-            progress?.Invoke(0, scan.Candidates.Count, $"已找到 {scan.Candidates.Count} 个 PDF，准备导入。", null);
+            IReadOnlyList<PdfCandidate> orderedCandidates = FileLocalityClassifier
+                .OrderForImport(scan.Candidates, static c => c.Readiness, static c => c.FileName)
+                .ToArray();
+            progress?.Invoke(0, orderedCandidates.Count, $"已找到 {orderedCandidates.Count} 个 PDF，准备导入。", null);
 
-            for (int index = 0; index < scan.Candidates.Count; index++)
+            for (int index = 0; index < orderedCandidates.Count; index++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                PdfCandidate candidate = scan.Candidates[index];
-                progress?.Invoke(index, scan.Candidates.Count, $"正在导入：{candidate.FileName}", candidate.Path);
+                PdfCandidate candidate = orderedCandidates[index];
+                FileLocalityAssessment locality = _pdfDiscoveryService.Assess(candidate.Path);
+                if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+                {
+                    progress?.Invoke(index, orderedCandidates.Count, $"正在下载云端文件：{candidate.FileName}",
+                        candidate.Path);
+                    Result materialized =
+                        await _pdfDiscoveryService.EnsureAvailableAsync(candidate.Path, cancellationToken);
+                    locality = _pdfDiscoveryService.Assess(candidate.Path);
+                    if (materialized.IsFailure)
+                    {
+                        failedCount++;
+                        progress?.Invoke(index + 1, orderedCandidates.Count, $"云端文件下载失败：{candidate.FileName}",
+                            materialized.ErrorMessage ?? locality.Reason);
+                        continue;
+                    }
+                }
+
+                string tier = locality.Readiness == FileLocalityReadiness.LocalReady ? "local" : "cloud";
+                progress?.Invoke(index, orderedCandidates.Count, $"正在导入 ({tier})：{candidate.FileName}",
+                    candidate.Path);
                 await TryUpdateInitialRootScanAsync(
                     operationId,
                     index,
-                    scan.Candidates.Count,
-                    $"Importing {candidate.FileName}.",
+                    orderedCandidates.Count,
+                    $"Importing {candidate.FileName} ({tier}).",
                     cancellationToken);
                 FirstRunWorkflowState importState = await ImportPdfAsync(
                     new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
@@ -146,7 +169,7 @@ public sealed class FirstRunWorkflow
 
                 progress?.Invoke(
                     index + 1,
-                    scan.Candidates.Count,
+                    orderedCandidates.Count,
                     string.IsNullOrWhiteSpace(importState.LastError)
                         ? $"已导入：{candidate.FileName}"
                         : $"导入失败：{candidate.FileName}",

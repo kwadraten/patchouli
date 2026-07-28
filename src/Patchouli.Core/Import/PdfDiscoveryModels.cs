@@ -6,7 +6,9 @@ public sealed record PdfCandidate(
     long SizeBytes,
     DateTimeOffset? ModifiedAt,
     int? PageCount,
-    string Status);
+    string Status,
+    string Readiness = Files.FileLocalityReadiness.LocalReady,
+    bool IsCloudPath = false);
 
 public sealed record PdfScanResult(
     IReadOnlyList<PdfCandidate> Candidates,
