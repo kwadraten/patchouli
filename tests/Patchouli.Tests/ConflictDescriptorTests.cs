@@ -17,6 +17,8 @@ public sealed class ConflictDescriptorTests
         ConflictCode.IsKnown(ConflictCode.CredentialNotImported).Should().BeTrue();
         ConflictCode.IsKnown(ConflictCode.FileRelocationMultipleCandidates).Should().BeTrue();
         ConflictCode.IsKnown(ConflictCode.SourceFileChangedOrBBoxBasisStale).Should().BeTrue();
+        ConflictCode.IsKnown(ConflictCode.BiblatexItemFieldConflict).Should().BeTrue();
+        ConflictCode.IsKnown(ConflictCode.BiblatexBatchLinkCandidates).Should().BeTrue();
     }
 
     [Fact]

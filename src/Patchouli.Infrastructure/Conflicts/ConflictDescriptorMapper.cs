@@ -142,6 +142,106 @@ public static class ConflictDescriptorMapper
             Options: ToOptions(changedCandidates));
     }
 
+    public static ConflictDescriptor BiblatexItemFieldConflict(
+        string targetItemId,
+        string sourceEntryKey,
+        IReadOnlyList<(string FieldKey, string Label, string? LocalValue, string IncomingValue)> fields)
+    {
+        return new ConflictDescriptor(
+            ConflictCode.BiblatexItemFieldConflict,
+            ConflictDomain.BibliographyImport,
+            ConflictSeverity.Blocking,
+            "item",
+            targetItemId,
+            "Imported BibLaTeX fields differ from the target item and require per-field choices.",
+            Serialize(new
+            {
+                item_id = targetItemId,
+                fields = fields.Select(field => new
+                {
+                    field = field.FieldKey,
+                    label = field.Label,
+                    local = field.LocalValue
+                }).ToArray()
+            }),
+            Serialize(new
+            {
+                source_entry_key = sourceEntryKey,
+                fields = fields.Select(field => new
+                {
+                    field = field.FieldKey,
+                    label = field.Label,
+                    incoming = field.IncomingValue
+                }).ToArray()
+            }),
+            [
+                new ConflictAction("choose_fields", "Choose fields",
+                    "For each conflicting field, keep the local value or adopt the imported value.",
+                    RequiresOption: true)
+            ],
+            Options: fields.Select(field => new ConflictActionOption(
+                field.FieldKey,
+                field.Label,
+                $"local={field.LocalValue ?? "(empty)"} | incoming={field.IncomingValue}")).ToArray());
+    }
+
+    public static ConflictDescriptor BiblatexBatchLinkCandidates(
+        string batchId,
+        IReadOnlyList<(string SourceEntryKey, string SourceTitle,
+                IReadOnlyList<(string ItemId, string Title, int MatchCount)> Candidates)>
+            relations)
+    {
+        return new ConflictDescriptor(
+            ConflictCode.BiblatexBatchLinkCandidates,
+            ConflictDomain.BibliographyImport,
+            ConflictSeverity.Blocking,
+            "bibliography_import_batch",
+            batchId,
+            "One or more BibLaTeX source entries have candidate items and require explicit link-or-create choices.",
+            Serialize(new
+            {
+                batch_id = batchId,
+                sources = relations.Select(relation => new
+                {
+                    source_entry_key = relation.SourceEntryKey,
+                    title = relation.SourceTitle
+                }).ToArray()
+            }),
+            Serialize(new
+            {
+                relations = relations.Select(relation => new
+                {
+                    source_entry_key = relation.SourceEntryKey,
+                    title = relation.SourceTitle,
+                    candidates = relation.Candidates.Select(candidate => new
+                    {
+                        item_id = candidate.ItemId,
+                        title = candidate.Title,
+                        match_count = candidate.MatchCount
+                    }).ToArray()
+                }).ToArray()
+            }),
+            [
+                new ConflictAction("resolve_links", "Resolve links",
+                    "For each source entry, choose a candidate item or create a new item.", RequiresOption: true)
+            ],
+            Options: relations.SelectMany(relation =>
+            {
+                List<ConflictActionOption> options =
+                [
+                    new(
+                        $"{relation.SourceEntryKey}|new",
+                        $"{relation.SourceEntryKey}: 新建题录",
+                        relation.SourceTitle)
+                ];
+                options.AddRange(relation.Candidates.Select(candidate => new ConflictActionOption(
+                    $"{relation.SourceEntryKey}|{candidate.ItemId}",
+                    $"{relation.SourceEntryKey}: {candidate.Title}",
+                    $"match_count={candidate.MatchCount}")));
+                return options;
+            }).ToArray());
+    }
+
     private static string Serialize(object value)
     {
         return JsonSerializer.Serialize(value);

@@ -7,6 +7,8 @@ public static class ConflictCode
     public const string CredentialNotImported = "CF-03";
     public const string FileRelocationMultipleCandidates = "CF-04";
     public const string SourceFileChangedOrBBoxBasisStale = "CF-05";
+    public const string BiblatexItemFieldConflict = "CF-06";
+    public const string BiblatexBatchLinkCandidates = "CF-07";
 
     public static bool IsKnown(string value)
     {
@@ -14,6 +16,8 @@ public static class ConflictCode
             or PrimaryDocumentConflict
             or CredentialNotImported
             or FileRelocationMultipleCandidates
-            or SourceFileChangedOrBBoxBasisStale;
+            or SourceFileChangedOrBBoxBasisStale
+            or BiblatexItemFieldConflict
+            or BiblatexBatchLinkCandidates;
     }
 }

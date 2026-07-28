@@ -11,7 +11,7 @@ Two mechanisms replace the blocking check:
 
 **Consequences**
 
-- `CF-06` is removed from `ConflictCode`; the conflict vocabulary is CF-01 to CF-05 with domains `snapshot_sync` and `file_resolution`. `DocumentBoxConflictActionExecutor` and the CF-06 descriptor mapper are deleted.
+- Layout sibling-overlap `CF-06` is removed from `ConflictCode`. `DocumentBoxConflictActionExecutor` and the layout-overlap descriptor mapper are deleted. Ordinary bbox overlap is never a structured conflict again; later bibliography import reuses the free `CF-06`/`CF-07` slots for unrelated codes (see ADR 0021).
 - Adoption and commit no longer roll back on overlaps; overlap remediation is an explicit, incremental user action in the workspace rather than an import-time gate.
 - Equal-area duplicate boxes are never auto-nested (strict area comparison); they surface as overlap warnings for explicit handling.
 - Manual edits do not auto-reparent; the containment normalization runs once at staging.
