@@ -26,7 +26,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             mappedPages.Add(new OcrPageCandidate(page.PageId, page.PageIndex, boxes));
         }
 
-        return new OcrDocumentTreeCandidate(mappedPages, diagnostics);
+        return new OcrDocumentTreeCandidate(LinkContinuations(mappedPages, diagnostics), diagnostics);
     }
 
     public (OcrPageCandidate Page, IReadOnlyList<OcrDiagnostic> Diagnostics) MapImagePage(
@@ -36,7 +36,71 @@ internal sealed class MinerUDocumentTreeCandidateMapper
     {
         List<OcrDiagnostic> diagnostics = [];
         List<OcrBoxCandidate> boxes = MapPageBoxes(contentPage, page, region, true, diagnostics);
-        return (new OcrPageCandidate(page.PageId, page.PageIndex, boxes), diagnostics);
+        OcrPageCandidate candidate = LinkContinuations(
+            [new OcrPageCandidate(page.PageId, page.PageIndex, boxes)], diagnostics)[0];
+        return (candidate, diagnostics);
+    }
+
+    // MinerU keeps the full text of a paragraph split across pages or columns in the first
+    // box and emits the remaining regions as paragraph blocks with empty content. Link each
+    // empty region back to the box that holds the text so the workspace can draw the dashed
+    // connection instead of showing a mysterious empty box.
+    private static IReadOnlyList<OcrPageCandidate> LinkContinuations(
+        IReadOnlyList<OcrPageCandidate> pages,
+        List<OcrDiagnostic> diagnostics)
+    {
+        List<OcrBoxCandidate>[] boxesByPage = pages.Select(page => page.Boxes.ToList()).ToArray();
+        (int Page, int Index)? headPosition = null;
+
+        for (int pageIndex = 0; pageIndex < boxesByPage.Length; pageIndex++)
+        {
+            List<OcrBoxCandidate> boxes = boxesByPage[pageIndex];
+            for (int boxIndex = 0; boxIndex < boxes.Count; boxIndex++)
+            {
+                OcrBoxCandidate box = boxes[boxIndex];
+                if (IsContinuationRegion(box))
+                {
+                    if (headPosition is null)
+                    {
+                        continue;
+                    }
+
+                    OcrBoxCandidate head = boxesByPage[headPosition.Value.Page][headPosition.Value.Index];
+                    if (head.PreassignedBoxId is null)
+                    {
+                        head = head with { PreassignedBoxId = Core.Ids.DocumentBoxId.New() };
+                        boxesByPage[headPosition.Value.Page][headPosition.Value.Index] = head;
+                    }
+
+                    boxes[boxIndex] = box with { ContinuesFromBoxId = head.PreassignedBoxId };
+                    diagnostics.Add(new OcrDiagnostic(
+                        "paragraph_continuation_linked",
+                        "MinerU paragraph continuation region was linked to the box holding its text.",
+                        pages[pageIndex].PageId,
+                        box.SourceOrder));
+                    continue;
+                }
+
+                if (IsContinuationHead(box))
+                {
+                    headPosition = (pageIndex, boxIndex);
+                }
+            }
+        }
+
+        return pages.Select((page, index) => page with { Boxes = boxesByPage[index] }).ToArray();
+    }
+
+    private static bool IsContinuationRegion(OcrBoxCandidate box)
+    {
+        return box.BoxType == DocumentBoxType.Text && !box.Suppressed &&
+               box.Payload is TextBoxPayload text && string.IsNullOrWhiteSpace(text.Markdown);
+    }
+
+    private static bool IsContinuationHead(OcrBoxCandidate box)
+    {
+        return box.BoxType == DocumentBoxType.Text && !box.Suppressed &&
+               box.Payload is TextBoxPayload text && !string.IsNullOrWhiteSpace(text.Markdown);
     }
 
     private static List<OcrBoxCandidate> MapPageBoxes(

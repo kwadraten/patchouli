@@ -55,7 +55,8 @@ public sealed record DocumentBox(
     int? HeadingLevel,
     string? CodeLanguage,
     double? Confidence,
-    bool Suppressed);
+    bool Suppressed,
+    DocumentBoxId? ContinuesFromBoxId = null);
 
 public abstract record DocumentBoxPayload;
 
@@ -188,4 +189,5 @@ public sealed record DocumentBoxSeed(
     int? HeadingLevel = null,
     string? CodeLanguage = null,
     double? Confidence = null,
-    bool Suppressed = false);
+    bool Suppressed = false,
+    DocumentBoxId? ContinuesFromBoxId = null);

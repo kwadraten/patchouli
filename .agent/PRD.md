@@ -152,12 +152,12 @@ v2 必须把 OCR 编辑器从 alpha 预览推进到可用工作台。
 - 支持局部 OCR 结果作为短生命周期 leaf payload diff；接受前不得修改 bbox、parent、sibling 或 suppressed，也不污染 current/search/MCP。
 - 支持候选结果对比、按区域/页面采纳、撤销采纳前操作。
 - 支持显式 insert/update/move/split/merge/delete、bbox 与 suppressed 命令；所有命令只修改 page draft。
-- 对普通 bbox 重叠显示冲突，而不是静默保存。
+- 对普通 bbox 重叠在 PDF 工作台画布上以重叠区域标记显示警告，而不是静默保存，也不再阻止保存。
 - ruby、边注等允许重叠类型必须有显式节点类型或样式声明。
 - OCR 编辑器中所有会改变证据 current 的操作都应显示 search index stale/partial 的后果。
 - 局部 OCR 的输入是 page + normalized bbox + OCR Preset Version；输出仍进入 MinerU-compatible 中间结构。
 - 局部 OCR 采纳默认只替换用户显式选中的节点或空区域，不自动推断删除周边节点。
-- 普通 sibling bbox overlap 必须产生结构化冲突 `CF-06`，且失败命令不得部分修改 draft。
+- 普通 sibling bbox overlap 不再产生结构化冲突，也不阻止保存或采纳；暂存时把几乎完全被包含的框规范化为最小容器框的子级（包含即父子），剩余同级重叠由工作台在重叠处画警告标记，用户显式处理。
 
 ### 3.6 生产 OCR Provider
 
@@ -267,7 +267,8 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | CF-03 | 快照同步 | 凭据丢失警告 | 分支数据库中关联的 Preset 凭据不进行合并（`credential_not_imported`）。 | 非阻塞警告；导入后对应 preset 标记 `credential_missing`，引导用户在设置页重新配置。 |
 | CF-04 | 文件解析 | 文件多路径冲突 | relocation 扫描匹配到多个大小与快速哈希相同的本地文件（`ChooseCandidate` / `FileAssetStatus.Conflict`）。 | 文件解析面板列出候选路径、mtime、大小、hash 置信度；要求用户选择或保持 unresolved。 |
 | CF-05 | 文件解析 | 源文件被修改 | 绑定路径上的文件哈希改变，导致版面 bbox 对应发生漂移（`FileAssetStatus.Changed`）。 | 文档页显示 source_changed/bbox_basis_stale；current 证据显示警告；允许重新绑定、确认新源或保留旧证据。 |
-| CF-06 | 版面编辑 | BBox 选区普通重叠 | 手工编辑或局部重新 OCR 时 bbox 与已有文本块重合，且不属于允许重叠类型。 | OCR 编辑器阻止采纳；高亮冲突节点；提供调整 bbox、改为允许类型、跳过候选的动作。 |
+
+普通 sibling bbox 重叠不再是结构化冲突：导入暂存时按“包含即父子”规范化嵌套（最小容器为直接父级），剩余同级重叠由 PDF 工作台在画布重叠处显示警告标记，用户通过调整 bbox、修改类型、排除/纳入或删除显式处理。
 
 对于 CF-01 到 CF-05，UI 处理应采用独立的冲突解决模态对话框。弹窗必须提供双栏对比视窗（左侧本地现状，右侧传入状态），并在底部提供明确的互斥行动按钮，例如：替换为主文档、作为备用文档保留、跳过。
 
@@ -275,8 +276,8 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 
 实现层需要统一冲突模型，例如 `ConflictDescriptor`：
 
-- `conflict_code`：CF-01 到 CF-06。
-- `domain`：snapshot_sync、file_resolution、layout_edit。
+- `conflict_code`：CF-01 到 CF-05。
+- `domain`：snapshot_sync、file_resolution。
 - `severity`：blocking、warning、info。
 - `object_type` / `object_id`
 - `summary`
@@ -304,9 +305,9 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | 切换 item type | 不删除隐藏字段。隐藏字段保留并显示在“其他已保存字段”区域。 |
 | 新建题录标识符 | 新建时 identifiers 暂存，保存时与 item 一起提交。 |
 | OCR schema | provider 不能直接写 `document_boxes`；必须先转换为 `OcrDocumentTreeCandidate`，再走统一 import/adoption。 |
-| 局部 OCR | 区域 OCR 不自动删除重叠块；只替换显式选中节点；普通重叠生成 CF-06。 |
+| 局部 OCR | 区域 OCR 不自动删除重叠块；只替换显式选中节点；普通重叠以工作台重叠标记警告呈现。 |
 | FileSearchRoot 扫描 | AddSearchRoot 不是单纯 insert；添加 root 必须创建 scan run，并以阻塞操作表达。 |
-| 冲突 code | UI 不解析错误字符串；CF-01 到 CF-06 必须是结构化 code/DTO。 |
+| 冲突 code | UI 不解析错误字符串；CF-01 到 CF-05 必须是结构化 code/DTO。 |
 | 分支导入 | `credential_not_imported` 是非阻塞 warning/conflict item；导入可继续，但相关 preset 必须进入 `credential_missing`。 |
 | 菜单 | v2 需要集中 command descriptor，菜单/右键/快捷键共享。 |
 | Mock/历史本地 CLI OCR | 不删除测试能力；从生产 UI、默认 preset、首轮初始化和用户菜单清除。 |
@@ -331,11 +332,11 @@ UI 不得为每个阻塞流程自造状态字符串；所有阻塞弹窗、设�
 | V2-AC4 | MCP 可以返回 CSL 样式列表和题录渲染结果，且不暴露本地路径或 secret。 | MCP CSL contract tests |
 | V2-AC5 | 题录编辑器按 `CslItemTypeProfile` 显示 type-aware 字段，切换 type 不丢字段，creator/date/identifier 可在新建时完整编辑。 | Item editor profile + UI tests |
 | V2-AC6 | 初次 PDF 扫描/导入不把未知题录静默确认为 CSL `document`；未知题录进入 `general`，保存时明确警告需要细分，CSL 复制/导出/MCP 渲染必须阻止 `general` 并返回 warning/error。 | Pdf import classification + CSL warning tests |
-| V2-AC7 | PDF 工作台使用页级 draft/commit/discard、显式 Box 命令、原生 Markdig 预览、区域候选 diff 和 CF-06 冲突阻止。 | DocumentTree/UI/Markdown tests |
+| V2-AC7 | PDF 工作台使用页级 draft/commit/discard、显式 Box 命令、原生 Markdig 预览、区域候选 diff 和同级重叠警告标记。 | DocumentTree/UI/Markdown tests |
 | V2-AC8 | 生产 UI 不再暴露 Mock/历史本地 CLI OCR/local placeholder OCR；测试路径仍可使用 mock。 | UI/menu/settings boundary tests |
 | V2-AC9 | MinerU 是首选生产 OCR；所有 provider 把输出规范化为 `OcrDocumentTreeCandidate`，并且无 tree artifact 时拒绝 `full.md` fallback。 | MinerU Document Tree tests |
 | V2-AC10 | 初始化扫描和新增文件搜索根扫描以阻塞式任务表达，完成前状态不可误报为 ready。 | Blocking workflow tests |
-| V2-AC11 | CF-01 到 CF-06 均有 UI 表达、状态 code、推荐动作和测试覆盖。 | Conflict workflow tests |
+| V2-AC11 | CF-01 到 CF-05 均有 UI 表达、状态 code、推荐动作和测试覆盖；同级重叠警告在 PDF 工作台画布可见并有测试覆盖。 | Conflict workflow tests |
 | V2-AC12 | 菜单栏和右键菜单按对象/任务组织，不出现 alpha/dev-only 命令。 | XAML/ViewModel menu tests |
 | V2-AC13 | AddSearchRoot、首次初始化扫描、快照导入验证和 MCP 启动验证都通过统一 BlockingOperation 模型表达。 | BlockingOperation service tests |
 | V2-AC14 | 所有 OCR provider 通过同一 Document Tree import/adoption service 写入 staging，不允许 provider 直写 `document_boxes`。 | OCR schema boundary tests |

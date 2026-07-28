@@ -1,9 +1,7 @@
 using FluentAssertions;
 using Patchouli.Core.Conflicts;
-using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
-using Patchouli.Core.Layout;
 using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Core.Results;
 
@@ -19,7 +17,6 @@ public sealed class ConflictDescriptorTests
         ConflictCode.IsKnown(ConflictCode.CredentialNotImported).Should().BeTrue();
         ConflictCode.IsKnown(ConflictCode.FileRelocationMultipleCandidates).Should().BeTrue();
         ConflictCode.IsKnown(ConflictCode.SourceFileChangedOrBBoxBasisStale).Should().BeTrue();
-        ConflictCode.IsKnown(ConflictCode.LayoutBBoxOrdinaryOverlap).Should().BeTrue();
     }
 
     [Fact]
@@ -57,24 +54,6 @@ public sealed class ConflictDescriptorTests
     }
 
     [Fact]
-    public void Document_box_overlap_conflict_uses_cf06_and_adjust_bbox_action()
-    {
-        ConflictDescriptor descriptor = ConflictDescriptorMapper.DocumentBoxBBoxOrdinaryOverlap(
-            PageId.New().ToString(),
-            DocumentBoxId.New().ToString(),
-            DocumentBoxType.Text,
-            new NormalizedBBox(0.1, 0.1, 0.2, 0.2),
-            DocumentBoxType.Title,
-            new NormalizedBBox(0.15, 0.15, 0.2, 0.2));
-
-        descriptor.Domain.Should().Be(ConflictDomain.LayoutEdit);
-        descriptor.ConflictCode.Should().Be(ConflictCode.LayoutBBoxOrdinaryOverlap);
-        descriptor.RecommendedActions.Should().ContainSingle(action => action.ActionId == "adjust_bbox");
-        descriptor.RecommendedActions.Select(action => action.ActionId).Should().BeEquivalentTo(
-            "adjust_bbox", "change_to_allowed_type", "skip_candidate");
-    }
-
-    [Fact]
     public void Primary_document_conflict_offers_only_non_destructive_import_choices()
     {
         ConflictDescriptor descriptor = ConflictDescriptorMapper.PrimaryDocumentConflict(
@@ -104,46 +83,31 @@ public sealed class ConflictDescriptorTests
     }
 
     [Fact]
-    public async Task Document_box_executor_runs_only_non_destructive_cf06_actions()
-    {
-        bool skipped = false;
-        DocumentBoxConflictActionExecutor executor = new(
-            _ => Task.FromResult(Result.Success()),
-            (_, _) => Task.FromResult(Result.Success()),
-            _ =>
-            {
-                skipped = true;
-                return Task.FromResult(Result.Success());
-            });
-        ConflictDescriptor descriptor = ConflictDescriptorMapper.DocumentBoxBBoxOrdinaryOverlap(
-            PageId.New().ToString(), DocumentBoxId.New().ToString(), DocumentBoxType.Text,
-            new NormalizedBBox(0.1, 0.1, 0.2, 0.2), DocumentBoxType.Title,
-            new NormalizedBBox(0.15, 0.15, 0.2, 0.2));
-
-        Result<ConflictExecutionResult> result = await executor.ExecuteAsync(descriptor,
-            new ConflictActionSelection("skip_candidate"));
-
-        result.IsSuccess.Should().BeTrue();
-        result.Value.Descriptor.ResolutionStatus.Should().Be(ConflictResolutionStatus.Resolved);
-        skipped.Should().BeTrue();
-    }
-
-    [Fact]
     public void Executor_registry_rejects_duplicate_conflict_codes()
     {
-        DocumentBoxConflictActionExecutor first = NoOpBoxExecutor();
-        DocumentBoxConflictActionExecutor second = NoOpBoxExecutor();
+        StubExecutor first = new(ConflictCode.CredentialNotImported);
+        StubExecutor second = new(ConflictCode.CredentialNotImported);
 
         Action create = () => new ConflictActionExecutorRegistry([first, second]);
 
         create.Should().Throw<ArgumentException>();
     }
 
-    private static DocumentBoxConflictActionExecutor NoOpBoxExecutor()
+    private sealed class StubExecutor : IConflictActionExecutor
     {
-        return new DocumentBoxConflictActionExecutor(
-            _ => Task.FromResult(Result.Success()),
-            (_, _) => Task.FromResult(Result.Success()),
-            _ => Task.FromResult(Result.Success()));
+        public StubExecutor(string conflictCode)
+        {
+            ConflictCode = conflictCode;
+        }
+
+        public string ConflictCode { get; }
+
+        public Task<Result<ConflictExecutionResult>> ExecuteAsync(
+            ConflictDescriptor conflict,
+            ConflictActionSelection selection,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<ConflictExecutionResult>.Success(new ConflictExecutionResult(conflict)));
+        }
     }
 }

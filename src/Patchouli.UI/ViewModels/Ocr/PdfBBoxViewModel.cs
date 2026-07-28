@@ -11,6 +11,9 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private bool _isSelected;
+    private bool _hasOverlapWarning;
+    private bool _hasChildren;
+    private bool _isTreeExpanded = true;
     private string? _text;
     private double _normalizedX;
     private double _normalizedY;
@@ -22,6 +25,8 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     private int? _headingLevel;
     private string? _codeLanguage;
     private string? _assetId;
+    private string? _continuationHeadText;
+    private string? _continuationSourceLabel;
 
     public PdfBBoxViewModel(
         MainWindowViewModel main,
@@ -38,6 +43,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         BoxId = box.BoxId;
         ParentBoxId = box.ParentBoxId;
         NextSiblingBoxId = box.NextSiblingBoxId;
+        ContinuesFromBoxId = box.ContinuesFromBoxId;
         _boxType = box.BoxType;
         Payload = box.Payload;
         _headingLevel = box.HeadingLevel;
@@ -57,6 +63,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         SaveTextCommand = new AsyncCommand(SaveTextAsync);
         DeleteCommand = new AsyncCommand(DeleteAsync);
         SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync);
+        JumpToContinuationSourceCommand = new AsyncCommand(JumpToContinuationSourceAsync);
     }
 
     public PdfWorkspaceViewModel Workspace { get; }
@@ -64,6 +71,40 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public DocumentBoxPayload? Payload { get; }
     public DocumentBoxId? ParentBoxId { get; }
     public DocumentBoxId? NextSiblingBoxId { get; }
+    public DocumentBoxId? ContinuesFromBoxId { get; }
+    public bool IsContinuation => ContinuesFromBoxId is not null;
+
+    public string? ContinuationHeadText
+    {
+        get => _continuationHeadText;
+        internal set
+        {
+            if (_continuationHeadText == value)
+            {
+                return;
+            }
+
+            _continuationHeadText = value;
+            Raise();
+            Raise(nameof(Summary));
+        }
+    }
+
+    public string? ContinuationSourceLabel
+    {
+        get => _continuationSourceLabel;
+        internal set
+        {
+            if (_continuationSourceLabel == value)
+            {
+                return;
+            }
+
+            _continuationSourceLabel = value;
+            Raise();
+        }
+    }
+
     public double Left => NormalizedX * _imageWidth;
     public double Top => NormalizedY * _imageHeight;
     public double Width => NormalizedWidth * _imageWidth;
@@ -141,7 +182,15 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public int ReadingOrder { get; }
     public int Depth { get; }
     public Thickness TreeMargin => new(Depth * 20, 0, 0, 4);
-    public string Summary => string.IsNullOrWhiteSpace(Text) ? "（无文本内容）" : Text.ReplaceLineEndings(" ").Trim();
+
+    public string Summary => IsContinuation
+        ? "↳ " + (string.IsNullOrWhiteSpace(ContinuationHeadText)
+            ? "（续接区域，文字在源框）"
+            : ContinuationHeadText!.ReplaceLineEndings(" ").Trim())
+        : string.IsNullOrWhiteSpace(Text)
+            ? "（无文本内容）"
+            : Text.ReplaceLineEndings(" ").Trim();
+
     public bool IsLogicalPage => BoxType == DocumentBoxType.LogicalPage;
     public bool IsMedia => BoxType is DocumentBoxType.Image or DocumentBoxType.Chart;
     public bool IsTitle => BoxType == DocumentBoxType.Title;
@@ -165,6 +214,54 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 
     public bool ShowHandles => IsSelected && Workspace.IsEditMode;
 
+    public bool HasOverlapWarning
+    {
+        get => _hasOverlapWarning;
+        internal set
+        {
+            if (_hasOverlapWarning == value)
+            {
+                return;
+            }
+
+            _hasOverlapWarning = value;
+            Raise();
+        }
+    }
+
+    public bool HasChildren
+    {
+        get => _hasChildren;
+        internal set
+        {
+            if (_hasChildren == value)
+            {
+                return;
+            }
+
+            _hasChildren = value;
+            Raise();
+        }
+    }
+
+    public bool IsTreeExpanded
+    {
+        get => _isTreeExpanded;
+        internal set
+        {
+            if (_isTreeExpanded == value)
+            {
+                return;
+            }
+
+            _isTreeExpanded = value;
+            Raise();
+            Raise(nameof(TreeChevronAngle));
+        }
+    }
+
+    public double TreeChevronAngle => IsTreeExpanded ? 90 : 0;
+
     public string? Text
     {
         get => _text;
@@ -183,6 +280,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public AsyncCommand SaveTextCommand { get; }
     public AsyncCommand DeleteCommand { get; }
     public AsyncCommand SaveBBoxCommand { get; }
+    public AsyncCommand JumpToContinuationSourceCommand { get; }
 
     public double NormalizedX
     {
@@ -316,6 +414,11 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Workspace.Status = "区域已写入页面草稿。";
     }
 
+    private async Task JumpToContinuationSourceAsync()
+    {
+        await Workspace.JumpToContinuationSourceAsync(this);
+    }
+
     internal void SetCanvasBBox(double left, double top, double width, double height)
     {
         NormalizedX = Math.Clamp(left / _imageWidth, 0, 1);
@@ -336,7 +439,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         Raise(pixelProperty);
     }
 
-    private static string? PayloadText(DocumentBoxPayload? payload)
+    internal static string? PayloadText(DocumentBoxPayload? payload)
     {
         return payload switch
         {

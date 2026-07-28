@@ -329,6 +329,131 @@ public sealed class MinerUDocumentTreeTests
         }
     }
 
+    [Fact]
+    public async Task Importer_links_an_empty_paragraph_region_to_the_box_holding_its_text()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Full paragraph text kept in the first box."}]},"bbox":[100,600,900,800]},
+                                                            {"type":"page_footer","content":{"page_footer_content":[{"type":"text","content":"footer"}]},"bbox":[400,900,600,950]}
+                                                          ],
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[]},"bbox":[100,100,900,300]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"A new paragraph."}]},"bbox":[100,400,900,600]}
+                                                          ]
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().Contain("paragraph_continuation_linked");
+            DocumentBox head = (await context.Trees.ListBoxesAsync(
+                    DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[0]))).Value
+                .Single(box => box.BoxType == DocumentBoxType.Text);
+            IReadOnlyList<DocumentBox> pageTwo = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1]))).Value;
+            DocumentBox continuation = pageTwo.Single(box =>
+                box.Payload is TextBoxPayload text && string.IsNullOrWhiteSpace(text.Markdown));
+            continuation.ContinuesFromBoxId.Should().Be(head.BoxId);
+
+            foreach (string revisionId in result.Value.StagingTreeRevisionIds)
+            {
+                (await context.Trees.AdoptStagingRevisionAsync(DocumentTreeRevisionId.Parse(revisionId)))
+                    .IsSuccess.Should().BeTrue();
+            }
+
+            DocumentBox adoptedContinuation = (await context.Trees.ListBoxesAsync(
+                continuation.TreeRevisionId)).Value.Single(box => box.BoxId == continuation.BoxId);
+            adoptedContinuation.ContinuesFromBoxId.Should().Be(head.BoxId);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_links_in_page_and_chained_continuation_regions_to_the_same_head()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Column bottom text."}]},"bbox":[100,800,400,900]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[]},"bbox":[600,100,900,250]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[]},"bbox":[600,300,900,380]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Next paragraph."}]},"bbox":[600,450,900,600]}
+                                                          ]
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            DocumentBox head = boxes.Single(box =>
+                box.Payload is TextBoxPayload text && text.Markdown == "Column bottom text.");
+            DocumentBox[] continuations = boxes
+                .Where(box => box.Payload is TextBoxPayload text && string.IsNullOrWhiteSpace(text.Markdown))
+                .ToArray();
+            continuations.Should().HaveCount(2);
+            continuations.Should().OnlyContain(box => box.ContinuesFromBoxId == head.BoxId);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
+    [Fact]
+    public async Task Importer_leaves_a_headless_empty_paragraph_unlinked()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [
+                                                          [
+                                                            {"type":"paragraph","content":{"paragraph_content":[]},"bbox":[100,100,900,300]},
+                                                            {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Some text."}]},"bbox":[100,400,900,600]}
+                                                          ]
+                                                        ]
+                                                        """);
+
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.Warnings.Should().NotContain("paragraph_continuation_linked");
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            boxes.Should().OnlyContain(box => box.ContinuesFromBoxId == null);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
     private static string CreateZip(string entryName, string content)
     {
         string path = Path.Combine(Path.GetTempPath(), $"mineru-box-{Guid.NewGuid():N}.zip");

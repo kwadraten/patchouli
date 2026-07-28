@@ -67,12 +67,40 @@ public sealed class PdfWorkspaceLayoutTests
             .And.Contain("MergeSelectedCommand")
             .And.Contain("MoveSelectedUpCommand")
             .And.Contain("MoveSelectedDownCommand")
+            .And.Contain("IndentSelectedCommand")
+            .And.Contain("OutdentSelectedCommand")
             .And.Contain("DeleteCommand")
-            .And.Contain("ToggleSuppressedCommand");
+            .And.Contain("ToggleSuppressedCommand")
+            .And.Contain("TreeBoxes")
+            .And.Contain("OnTreeExpandToggle")
+            .And.Contain("OnPageNumberKeyDown");
         editorXaml.Should().Contain("AssetId");
         viewModel.Should().Contain("MediaBoxPayload(AssetId")
             .And.Contain("DeleteBoxAsync")
             .And.Contain("SetSuppressedAsync");
+    }
+
+    [Fact]
+    public void PdfWorkspace_renders_paragraph_continuation_links_and_cross_page_badges()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+        string codeBehind = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml.cs"));
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        xaml.Should().Contain("x:Name=\"ContinuationItems\"")
+            .And.Contain("ItemsSource=\"{Binding ContinuationLinks}\"")
+            .And.Contain("x:Name=\"CrossPageContinuationItems\"")
+            .And.Contain("Classes=\"continuationLink\"")
+            .And.Contain("Classes=\"crossPageMark\"")
+            .And.Contain("Classes.continuation=\"{Binding IsContinuation}\"")
+            .And.Contain("跳转到续接源框")
+            .And.Contain("JumpToContinuationSourceCommand");
+        codeBehind.Should().Contain("OnCrossPageMarkPressed");
+        viewModel.Should().Contain("UpdateContinuationLinksAsync")
+            .And.Contain("JumpToContinuationSourceAsync");
     }
 
     [Fact]

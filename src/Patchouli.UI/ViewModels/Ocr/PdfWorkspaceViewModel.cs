@@ -30,6 +30,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private PageEditSessionId? _editSessionId;
     private PageId? _currentPageId;
     private IReadOnlyList<DocumentBox> _loadedBoxes = [];
+    private IReadOnlyList<Page> _pages = [];
+
+    private readonly Dictionary<DocumentBoxId, (int PageIndex, DocumentBoxId HeadBoxId)>
+        _crossPageContinuationSources = [];
+
+    private readonly HashSet<DocumentBoxId> _collapsedBoxIds = [];
     private bool _isDrawing;
     private Point _selectionStartPoint;
     private NormalizedBBox? _pendingBBox;
@@ -121,6 +127,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         DeleteSelectedCommand = new AsyncCommand(DeleteSelectedAsync);
         MoveSelectedUpCommand = new AsyncCommand(() => MoveSelectedAsync(false));
         MoveSelectedDownCommand = new AsyncCommand(() => MoveSelectedAsync(true));
+        IndentSelectedCommand = new AsyncCommand(IndentSelectedAsync);
+        OutdentSelectedCommand = new AsyncCommand(OutdentSelectedAsync);
         ToggleSuppressedCommand = new AsyncCommand(ToggleSelectedSuppressedAsync);
         BoundingBoxes.CollectionChanged += (_, _) => Raise(nameof(HasNoBoundingBoxes));
         PreviewBlocks.CollectionChanged += (_, _) => Raise(nameof(HasNoPreviewBlocks));
@@ -460,8 +468,24 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> CandidateBoxes { get; } = new();
 
+    public System.Collections.ObjectModel.ObservableCollection<PdfOverlapMarkerViewModel> OverlapMarkers { get; } =
+        new();
+
+    public System.Collections.ObjectModel.ObservableCollection<PdfContinuationLinkViewModel>
+        ContinuationLinks { get; } =
+        new();
+
+    public System.Collections.ObjectModel.ObservableCollection<PdfCrossPageContinuationViewModel>
+        CrossPageContinuationMarkers { get; } = new();
+
+    // Visible rows of the edit-mode box tree: BoundingBoxes minus collapsed subtrees.
+    public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> TreeBoxes { get; } = new();
+
     public bool HasNoBoundingBoxes => BoundingBoxes.Count == 0;
     public bool HasNoPreviewBlocks => PreviewBlocks.Count == 0;
+    public bool HasOverlapWarnings => OverlapMarkers.Count > 0;
+    public bool HasContinuationLinks => ContinuationLinks.Count > 0;
+    public bool HasCrossPageContinuationMarkers => CrossPageContinuationMarkers.Count > 0;
     public bool IsSingleSelection => SelectedBoxes.Count <= 1;
     public bool IsMultiSelection => SelectedBoxes.Count > 1;
 
@@ -474,6 +498,42 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public void SelectBox(PdfBBoxViewModel box, bool additive)
     {
         ApplySelection([box], additive);
+    }
+
+    internal void SelectOverlapPair(PdfOverlapMarkerViewModel marker)
+    {
+        ApplySelection([marker.First, marker.Second], false);
+    }
+
+    internal void ToggleTreeExpansion(PdfBBoxViewModel box)
+    {
+        if (!_collapsedBoxIds.Remove(box.BoxId))
+        {
+            _collapsedBoxIds.Add(box.BoxId);
+        }
+
+        box.IsTreeExpanded = !_collapsedBoxIds.Contains(box.BoxId);
+        RebuildTreeBoxes();
+    }
+
+    private void RebuildTreeBoxes()
+    {
+        TreeBoxes.Clear();
+        int skipBelowDepth = -1;
+        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        {
+            if (skipBelowDepth >= 0 && box.Depth >= skipBelowDepth)
+            {
+                continue;
+            }
+
+            skipBelowDepth = -1;
+            TreeBoxes.Add(box);
+            if (box.HasChildren && !box.IsTreeExpanded)
+            {
+                skipBelowDepth = box.Depth + 1;
+            }
+        }
     }
 
     public void ClearSelection()
@@ -571,6 +631,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand DeleteSelectedCommand { get; }
     public AsyncCommand MoveSelectedUpCommand { get; }
     public AsyncCommand MoveSelectedDownCommand { get; }
+    public AsyncCommand IndentSelectedCommand { get; }
+    public AsyncCommand OutdentSelectedCommand { get; }
     public AsyncCommand ToggleSuppressedCommand { get; }
 
     public void OnPointerPressed(double x, double y)
@@ -1509,6 +1571,134 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         await _main.Dialogs.ShowDialogAsync(box);
     }
 
+    private List<DocumentBox> OrderedSelectedLoadedBoxes()
+    {
+        HashSet<DocumentBoxId> selectedIds = SelectedBoxes.Select(box => box.BoxId).ToHashSet();
+        return OrderedTree(_loadedBoxes)
+            .Select(item => item.Box)
+            .Where(box => selectedIds.Contains(box.BoxId))
+            .ToList();
+    }
+
+    // Level changes require a single-level selection: multi-select either reorders within one
+    // parent (move up/down, drag) or changes level as a whole group, never both at once.
+    private async Task IndentSelectedAsync()
+    {
+        if (_editSessionId is null || SelectedBoxes.Count == 0)
+        {
+            Status = "请先选择要移入的边界框。";
+            return;
+        }
+
+        List<DocumentBox> selected = OrderedSelectedLoadedBoxes();
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        DocumentBoxId? parent = selected[0].ParentBoxId;
+        if (selected.Any(box => box.ParentBoxId != parent))
+        {
+            Status = "多选移入/移出要求选区在同一父级下。";
+            return;
+        }
+
+        if (selected.Any(box => box.BoxType == DocumentBoxType.LogicalPage))
+        {
+            Status = "逻辑页不能移入其他边界框。";
+            return;
+        }
+
+        HashSet<DocumentBoxId> selectedIds = selected.Select(box => box.BoxId).ToHashSet();
+        List<DocumentBox> siblings = OrderSiblings(_loadedBoxes.Where(box => box.ParentBoxId == parent)).ToList();
+        int firstIndex = siblings.FindIndex(box => selectedIds.Contains(box.BoxId));
+        DocumentBox? newParent = null;
+        for (int i = firstIndex - 1; i >= 0; i--)
+        {
+            if (!selectedIds.Contains(siblings[i].BoxId))
+            {
+                newParent = siblings[i];
+                break;
+            }
+        }
+
+        if (newParent is null)
+        {
+            Status = "上方没有可作为父级的兄弟边界框。";
+            return;
+        }
+
+        IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        DocumentBoxId? after = LastSiblingForParent(newParent.BoxId)?.BoxId;
+        foreach (DocumentBox box in selected)
+        {
+            Result result = await editor.MoveBoxAsync(
+                _editSessionId.Value, new MoveBoxCommand(box.BoxId, newParent.BoxId, after));
+            if (result.IsFailure)
+            {
+                Status = $"移入边界框失败：{result.ErrorMessage}";
+                return;
+            }
+
+            after = box.BoxId;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "选中边界框已移入上方兄弟框。";
+    }
+
+    private async Task OutdentSelectedAsync()
+    {
+        if (_editSessionId is null || SelectedBoxes.Count == 0)
+        {
+            Status = "请先选择要移出的边界框。";
+            return;
+        }
+
+        List<DocumentBox> selected = OrderedSelectedLoadedBoxes();
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        DocumentBoxId? parent = selected[0].ParentBoxId;
+        if (selected.Any(box => box.ParentBoxId != parent))
+        {
+            Status = "多选移入/移出要求选区在同一父级下。";
+            return;
+        }
+
+        if (parent is null)
+        {
+            Status = "选中的边界框已在顶层，无法移出。";
+            return;
+        }
+
+        DocumentBox? parentBox = _loadedBoxes.FirstOrDefault(box => box.BoxId == parent.Value);
+        if (parentBox is null)
+        {
+            return;
+        }
+
+        IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
+        DocumentBoxId? after = parent.Value;
+        foreach (DocumentBox box in selected)
+        {
+            Result result = await editor.MoveBoxAsync(
+                _editSessionId.Value, new MoveBoxCommand(box.BoxId, parentBox.ParentBoxId, after));
+            if (result.IsFailure)
+            {
+                Status = $"移出边界框失败：{result.ErrorMessage}";
+                return;
+            }
+
+            after = box.BoxId;
+        }
+
+        await RefreshBoxesAsync();
+        Status = "选中边界框已移出到上一级。";
+    }
+
     private async Task OpenNewBoxEditorAsync()
     {
         await _main.Dialogs.ShowDialogAsync(this);
@@ -1593,12 +1783,19 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IsSidebarOpen = false;
         SetActiveTool(PdfWorkspaceTool.Select);
         BoundingBoxes.Clear();
+        TreeBoxes.Clear();
+        OverlapMarkers.Clear();
+        ContinuationLinks.Clear();
+        CrossPageContinuationMarkers.Clear();
+        _crossPageContinuationSources.Clear();
+        _pages = [];
         PreviewBlocks.Clear();
         SelectedBox = null;
         _currentRevisionId = null;
         _draftRevisionId = null;
         _editSessionId = null;
         _loadedBoxes = [];
+        _collapsedBoxIds.Clear();
         ClearSplit();
         ClearPendingBox();
         ClearLocalOcrCandidate();
@@ -1641,6 +1838,31 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
 
         _pageIndex++;
+        await RenderCurrentPageAsync();
+    }
+
+    internal async Task GoToPageAsync(int pageNumber)
+    {
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再切换页面。";
+            Raise(nameof(PageNumberText));
+            return;
+        }
+
+        if (_pageCount <= 0)
+        {
+            return;
+        }
+
+        int target = Math.Clamp(pageNumber - 1, 0, _pageCount - 1);
+        if (target == _pageIndex)
+        {
+            Raise(nameof(PageNumberText));
+            return;
+        }
+
+        _pageIndex = target;
         await RenderCurrentPageAsync();
     }
 
@@ -1699,6 +1921,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
 
             _pageCount = pages.Value.Count;
+            _pages = pages.Value;
             if (_pageCount == 0)
             {
                 Status = "该文档还没有页面记录。";
@@ -1834,7 +2057,139 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 _main, this, box, _widthPixels, _heightPixels, isStaging, ++readingOrder, item.Depth));
         }
 
+        foreach (PdfBBoxViewModel view in BoundingBoxes)
+        {
+            view.HasChildren = _loadedBoxes.Any(box => box.ParentBoxId == view.BoxId);
+            view.IsTreeExpanded = !_collapsedBoxIds.Contains(view.BoxId);
+        }
+
+        RebuildTreeBoxes();
+        UpdateOverlapWarnings();
+        await UpdateContinuationLinksAsync();
         await LoadPreviewAsync(revisionId);
+    }
+
+    private async Task UpdateContinuationLinksAsync()
+    {
+        ContinuationLinks.Clear();
+        CrossPageContinuationMarkers.Clear();
+        _crossPageContinuationSources.Clear();
+        Dictionary<DocumentBoxId, PdfBBoxViewModel> byId = BoundingBoxes.ToDictionary(box => box.BoxId);
+        List<PdfBBoxViewModel> unresolved = [];
+        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        {
+            box.ContinuationHeadText = null;
+            box.ContinuationSourceLabel = null;
+            if (box.ContinuesFromBoxId is not { } headId)
+            {
+                continue;
+            }
+
+            if (byId.TryGetValue(headId, out PdfBBoxViewModel? head))
+            {
+                box.ContinuationHeadText = head.Text;
+                ContinuationLinks.Add(new PdfContinuationLinkViewModel(head, box));
+            }
+            else
+            {
+                unresolved.Add(box);
+            }
+        }
+
+        if (unresolved.Count > 0 && !string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            AppServices services = await _main.ServicesAsync();
+            DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+            for (int pageIndex = Math.Min(_pageIndex - 1, _pages.Count - 1);
+                 pageIndex >= 0 && unresolved.Count > 0;
+                 pageIndex--)
+            {
+                Result<DocumentTreeRevision> revision = await services.DocumentTrees
+                    .GetCurrentRevisionAsync(documentInstanceId, _pages[pageIndex].PageId);
+                if (revision.IsFailure)
+                {
+                    continue;
+                }
+
+                IReadOnlyList<DocumentBox> candidates = await LoadBoxesAsync(revision.Value.TreeRevisionId);
+                foreach (PdfBBoxViewModel box in unresolved.ToArray())
+                {
+                    DocumentBox? head = candidates.FirstOrDefault(candidate =>
+                        candidate.BoxId == box.ContinuesFromBoxId);
+                    if (head is null)
+                    {
+                        continue;
+                    }
+
+                    box.ContinuationHeadText = PdfBBoxViewModel.PayloadText(head.Payload);
+                    box.ContinuationSourceLabel = $"续接自第 {pageIndex + 1} 页";
+                    _crossPageContinuationSources[box.BoxId] = (pageIndex, head.BoxId);
+                    CrossPageContinuationMarkers.Add(
+                        new PdfCrossPageContinuationViewModel(box, pageIndex + 1));
+                    unresolved.Remove(box);
+                }
+            }
+        }
+
+        Raise(nameof(HasContinuationLinks));
+        Raise(nameof(HasCrossPageContinuationMarkers));
+    }
+
+    internal async Task JumpToContinuationSourceAsync(PdfBBoxViewModel box)
+    {
+        if (box.ContinuesFromBoxId is not { } headId)
+        {
+            return;
+        }
+
+        PdfBBoxViewModel? local = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == headId);
+        if (local is not null)
+        {
+            SelectedBox = local;
+            Status = "已选中同页的续接源框。";
+            return;
+        }
+
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再跳转到续接源框。";
+            return;
+        }
+
+        if (!_crossPageContinuationSources.TryGetValue(
+                box.BoxId, out (int PageIndex, DocumentBoxId HeadBoxId) target))
+        {
+            Status = "未能定位续接源框。";
+            return;
+        }
+
+        _pageIndex = target.PageIndex;
+        await RenderCurrentPageAsync();
+        SelectedBox = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == target.HeadBoxId);
+    }
+
+    private void UpdateOverlapWarnings()
+    {
+        OverlapMarkers.Clear();
+        Dictionary<DocumentBoxId, PdfBBoxViewModel> byId = BoundingBoxes.ToDictionary(box => box.BoxId);
+        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        {
+            box.HasOverlapWarning = false;
+        }
+
+        foreach (DocumentBoxOverlap overlap in DocumentBoxOverlapDetector.Detect(_loadedBoxes))
+        {
+            if (byId.TryGetValue(overlap.First.BoxId, out PdfBBoxViewModel? first) &&
+                byId.TryGetValue(overlap.Second.BoxId, out PdfBBoxViewModel? second))
+            {
+                first.HasOverlapWarning = true;
+                second.HasOverlapWarning = true;
+                OverlapMarkers.Add(new PdfOverlapMarkerViewModel(
+                    first, second, overlap.Intersection, _widthPixels, _heightPixels));
+            }
+        }
+
+        Raise(nameof(HasOverlapWarnings));
     }
 
     private static IEnumerable<(DocumentBox Box, int Depth)> OrderedTree(IReadOnlyList<DocumentBox> boxes)

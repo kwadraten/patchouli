@@ -39,8 +39,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 DocumentTreeRevision revision = revisionRow.ToRevision();
                 Result validation = _validator.Validate(
                     revision,
-                    await GetBoxesAsync(connection, null, revision.TreeRevisionId),
-                    revision.Status != DocumentTreeRevisionStatus.Staging);
+                    await GetBoxesAsync(connection, null, revision.TreeRevisionId));
                 if (validation.IsFailure)
                 {
                     return validation;
@@ -144,11 +143,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
                         next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
                         bbox_width, bbox_height, payload_json, heading_level, code_language,
-                        confidence, suppressed)
+                        confidence, suppressed, continues_from_box_id)
                     select @DraftRevisionId, box_id, document_instance_id, page_id, parent_box_id,
                         next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
                         bbox_width, bbox_height, payload_json, heading_level, code_language,
-                        confidence, suppressed
+                        confidence, suppressed, continues_from_box_id
                     from document_boxes where tree_revision_id = @CurrentRevisionId;
                     """,
                     new
@@ -225,10 +224,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     seed.HeadingLevel,
                     seed.CodeLanguage,
                     seed.Confidence,
-                    seed.Suppressed);
+                    seed.Suppressed,
+                    seed.ContinuesFromBoxId);
             }).ToArray();
-            // Provider output remains a candidate until adoption resolves any remaining geometry conflicts.
-            Result validation = _validator.Validate(revision, staged, false);
+            // Overlaps no longer block staging or adoption; they surface as workspace warnings.
+            Result validation = _validator.Validate(revision, staged);
             if (validation.IsFailure)
             {
                 return Result<DocumentTreeRevision>.Failure(
@@ -631,10 +631,14 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 BoxId = DocumentBoxId.New(),
                 BBox = command.SecondBBox,
                 Payload = command.SecondPayload,
-                NextSiblingBoxId = original.NextSiblingBoxId
+                NextSiblingBoxId = original.NextSiblingBoxId,
+                // The tail fragment carries its own text, so it is no longer a visual continuation.
+                ContinuesFromBoxId = null
             };
             first = first with { NextSiblingBoxId = second.BoxId };
             ReplacePredecessor(boxes, original, first.BoxId);
+            // Continuation regions that pointed at the original now follow the tail fragment.
+            RepointContinuation(boxes, [original.BoxId], second.BoxId);
             boxes.RemoveAt(index);
             boxes.Add(first);
             boxes.Add(second);
@@ -694,9 +698,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 NextSiblingBoxId = last.NextSiblingBoxId,
                 Confidence = selected.All(box => box.Confidence is not null)
                     ? selected.Average(box => box.Confidence!.Value)
-                    : null
+                    : null,
+                // The merged leaf holds real text, so it is no longer a visual continuation.
+                ContinuesFromBoxId = null
             };
             ReplacePredecessor(boxes, first, merged.BoxId);
+            RepointContinuation(boxes, command.BoxIds, merged.BoxId);
             boxes.RemoveAll(box => command.BoxIds.Contains(box.BoxId));
             boxes.Add(merged);
             return Mutation<DocumentBox>.Success(merged);
@@ -753,6 +760,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
             DocumentBox deleted = boxes[index];
             Unlink(boxes, deleted);
+            RepointContinuation(boxes, [boxId], null);
             boxes.RemoveAt(index);
             return Mutation<DocumentBox>.Success(deleted);
         }, cancellationToken);
@@ -888,6 +896,20 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         if (predecessor >= 0)
         {
             boxes[predecessor] = boxes[predecessor] with { NextSiblingBoxId = replacementId };
+        }
+    }
+
+    private static void RepointContinuation(
+        List<DocumentBox> boxes,
+        IReadOnlyCollection<DocumentBoxId> replacedIds,
+        DocumentBoxId? targetId)
+    {
+        for (int i = 0; i < boxes.Count; i++)
+        {
+            if (boxes[i].ContinuesFromBoxId is { } link && replacedIds.Contains(link))
+            {
+                boxes[i] = boxes[i] with { ContinuesFromBoxId = targetId };
+            }
         }
     }
 
@@ -1132,11 +1154,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
                     next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
                     bbox_width, bbox_height, payload_json, heading_level, code_language,
-                    confidence, suppressed)
+                    confidence, suppressed, continues_from_box_id)
                 values (@TreeRevisionId, @BoxId, @DocumentInstanceId, @PageId, @ParentBoxId,
                     @NextSiblingBoxId, @BoxType, @SubType, @BaseType, @BBoxX, @BBoxY,
                     @BBoxWidth, @BBoxHeight, @PayloadJson, @HeadingLevel, @CodeLanguage,
-                    @Confidence, @Suppressed);
+                    @Confidence, @Suppressed, @ContinuesFromBoxId);
                 """,
                 new
                 {
@@ -1157,7 +1179,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     box.HeadingLevel,
                     box.CodeLanguage,
                     box.Confidence,
-                    Suppressed = box.Suppressed ? 1 : 0
+                    Suppressed = box.Suppressed ? 1 : 0,
+                    ContinuesFromBoxId = box.ContinuesFromBoxId?.ToString()
                 },
                 transaction);
         }
@@ -1231,7 +1254,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             heading_level as HeadingLevel,
             code_language as CodeLanguage,
             confidence as Confidence,
-            suppressed as Suppressed
+            suppressed as Suppressed,
+            continues_from_box_id as ContinuesFromBoxId
         from document_boxes
         """;
 
@@ -1281,20 +1305,24 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             foreach (IndexedSeed child in siblings)
             {
                 if (child.Seed.BoxType == DocumentBoxType.LogicalPage || child.Seed.Suppressed ||
+                    child.Seed.ContinuesFromBoxId is not null ||
                     DocumentBoxType.AllowsOverlap(child.Seed.BoxType))
                 {
                     continue;
                 }
 
                 double childArea = Area(child.Seed.BBox);
+                // The immediate container (smallest containing box) becomes the parent, so
+                // multi-level nesting chains resolve into a proper hierarchy.
                 IndexedSeed? parent = siblings
                     .Where(candidate => candidate.Index != child.Index &&
                                         candidate.Seed.BoxType != DocumentBoxType.LogicalPage &&
                                         !candidate.Seed.Suppressed &&
+                                        candidate.Seed.ContinuesFromBoxId is null &&
                                         !DocumentBoxType.AllowsOverlap(candidate.Seed.BoxType) &&
                                         Area(candidate.Seed.BBox) > childArea &&
                                         Contains(candidate.Seed.BBox, child.Seed.BBox))
-                    .OrderByDescending(candidate => Area(candidate.Seed.BBox))
+                    .OrderBy(candidate => Area(candidate.Seed.BBox))
                     .ThenBy(candidate => candidate.Index)
                     .FirstOrDefault();
                 if (parent is not null)
@@ -1312,13 +1340,21 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return bbox.Width * bbox.Height;
     }
 
+    // Ratio-based containment: OCR coordinates are noisy, so a box that protrudes slightly
+    // outside its container still counts as contained.
     private static bool Contains(NormalizedBBox container, NormalizedBBox contained)
     {
-        const double tolerance = 1e-9;
-        return contained.X >= container.X - tolerance &&
-               contained.Y >= container.Y - tolerance &&
-               contained.X + contained.Width <= container.X + container.Width + tolerance &&
-               contained.Y + contained.Height <= container.Y + container.Height + tolerance;
+        const double containedRatio = 0.98;
+        double width = Math.Min(container.X + container.Width, contained.X + contained.Width) -
+                       Math.Max(container.X, contained.X);
+        double height = Math.Min(container.Y + container.Height, contained.Y + contained.Height) -
+                        Math.Max(container.Y, contained.Y);
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        return width * height / Area(contained) >= containedRatio;
     }
 
     private sealed class DocumentTreeRevisionRow
@@ -1368,6 +1404,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         public string? CodeLanguage { get; set; }
         public double? Confidence { get; set; }
         public int Suppressed { get; set; }
+        public string? ContinuesFromBoxId { get; set; }
 
         public DocumentBox ToBox()
         {
@@ -1386,7 +1423,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 HeadingLevel,
                 CodeLanguage,
                 Confidence,
-                Suppressed == 1);
+                Suppressed == 1,
+                ContinuesFromBoxId is null ? null : DocumentBoxId.Parse(ContinuesFromBoxId));
         }
     }
 }

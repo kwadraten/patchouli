@@ -66,6 +66,13 @@ public sealed partial class PdfWorkspacePage : UserControl
             return;
         }
 
+        if (properties.IsRightButtonPressed && !pdf.IsEditMode)
+        {
+            // View mode: the right button is fully disabled (no selection, no context menu).
+            e.Handled = true;
+            return;
+        }
+
         bool additive = !properties.IsRightButtonPressed && e.KeyModifiers.HasFlag(KeyModifiers.Control);
         bool wasSelected = bbox.IsSelected;
         if (!properties.IsRightButtonPressed || !wasSelected)
@@ -402,6 +409,64 @@ public sealed partial class PdfWorkspacePage : UserControl
         if (sender is Control { DataContext: PdfBBoxViewModel bbox } && _workspace is not null)
         {
             _ = _workspace.OpenBoxEditorAsync(bbox);
+        }
+    }
+
+    private void OnOverlapMarkerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is Control { DataContext: PdfOverlapMarkerViewModel marker } && _workspace is not null)
+        {
+            _workspace.SelectOverlapPair(marker);
+            e.Handled = true;
+        }
+    }
+
+    private void OnCrossPageMarkPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is Control { DataContext: PdfCrossPageContinuationViewModel marker } && _workspace is not null)
+        {
+            _ = marker.Continuation.JumpToContinuationSourceCommand.ExecuteAsync();
+            e.Handled = true;
+        }
+    }
+
+    private void OnTreeExpandToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: PdfBBoxViewModel box } && _workspace is not null)
+        {
+            _workspace.ToggleTreeExpansion(box);
+        }
+    }
+
+    // Keep chevron presses from bubbling to the row (selection / drag / double-click editor).
+    private void OnTreeExpandTogglePressed(object? sender, PointerPressedEventArgs e)
+    {
+        e.Handled = true;
+    }
+
+    private void OnPageNumberKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || sender is not TextBox textBox || _workspace is null)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        if (int.TryParse(textBox.Text, out int pageNumber))
+        {
+            _ = _workspace.GoToPageAsync(pageNumber);
+        }
+        else
+        {
+            textBox.Text = _workspace.PageNumberText;
+        }
+    }
+
+    private void OnPageNumberGotFocus(object? sender, FocusChangedEventArgs e)
+    {
+        if (sender is TextBox textBox)
+        {
+            textBox.SelectAll();
         }
     }
 }

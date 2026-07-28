@@ -27,7 +27,6 @@ public static class ConflictDomain
 {
     public const string SnapshotSync = "snapshot_sync";
     public const string FileResolution = "file_resolution";
-    public const string LayoutEdit = "layout_edit";
 }
 
 public static class ConflictSeverity

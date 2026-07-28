@@ -25,7 +25,9 @@ public sealed class DocumentTreeSchemaTests
         AppSchemaVersion.Current.Should().Be(2);
         tables.Should().Contain(["document_tree_revisions", "document_boxes"]);
         tables.Should().NotContain(["layout_revisions", "layout_nodes"]);
-        columns.Should().Contain(["parent_box_id", "next_sibling_box_id", "payload_json", "suppressed"]);
+        columns.Should().Contain([
+            "parent_box_id", "next_sibling_box_id", "payload_json", "suppressed", "continues_from_box_id"
+        ]);
         columns.Should().NotContain(["reading_order", "text_policy", "row_index", "col_index"]);
     }
 

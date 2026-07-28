@@ -10,6 +10,8 @@
          DataContext is the PdfBBoxViewModel of the control the flyout is attached to. -->
     <MenuFlyout x:Key="BBoxContextMenu" x:DataType="vm:PdfBBoxViewModel">
       <MenuItem Header="编辑" Click="OnOpenBoxEditor" />
+      <MenuItem Header="跳转到续接源框" Command="{Binding JumpToContinuationSourceCommand}"
+                IsVisible="{Binding IsContinuation}" />
       <MenuItem Header="局部 OCR" Command="{Binding Workspace.RunLocalOcrCommand}"
                 IsVisible="{Binding Workspace.IsSingleSelection}" />
       <MenuItem Header="拆分" Command="{Binding Workspace.SplitSelectedCommand}"
@@ -18,6 +20,8 @@
                 IsVisible="{Binding Workspace.IsMultiSelection}" />
       <MenuItem Header="上移" Command="{Binding Workspace.MoveSelectedUpCommand}" />
       <MenuItem Header="下移" Command="{Binding Workspace.MoveSelectedDownCommand}" />
+      <MenuItem Header="移入为上方兄弟的子级" Command="{Binding Workspace.IndentSelectedCommand}" />
+      <MenuItem Header="移出到上一级" Command="{Binding Workspace.OutdentSelectedCommand}" />
       <MenuItem Header="从文档流排除/纳入" Command="{Binding Workspace.ToggleSuppressedCommand}" />
       <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
     </MenuFlyout>
@@ -88,6 +92,37 @@
       <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
       <Setter Property="BorderThickness" Value="1,1,1,3" />
     </Style>
+    <Style Selector="Border.BBox.overlapWarning">
+      <Setter Property="Background" Value="#55FF8C00" />
+    </Style>
+    <Style Selector="Border.TreeRow.overlapWarning">
+      <Setter Property="BorderBrush" Value="DarkOrange" />
+      <Setter Property="BorderThickness" Value="2" />
+    </Style>
+    <Style Selector="Rectangle.overlapMark">
+      <Setter Property="Fill" Value="#44FF8C00" />
+      <Setter Property="Stroke" Value="DarkOrange" />
+      <Setter Property="StrokeThickness" Value="2" />
+      <Setter Property="StrokeDashArray" Value="4,2" />
+      <Setter Property="RadiusX" Value="3" />
+      <Setter Property="RadiusY" Value="3" />
+    </Style>
+    <Style Selector="Line.continuationLink">
+      <Setter Property="Stroke" Value="#2E7D32" />
+      <Setter Property="StrokeThickness" Value="2" />
+      <Setter Property="StrokeDashArray" Value="4,2" />
+      <Setter Property="Opacity" Value="0.85" />
+    </Style>
+    <Style Selector="Border.crossPageMark">
+      <Setter Property="Background" Value="#DDEEDC" />
+      <Setter Property="BorderBrush" Value="#2E7D32" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="5,2" />
+    </Style>
+    <Style Selector="Border.TreeRow.continuation">
+      <Setter Property="Opacity" Value="0.75" />
+    </Style>
     <Style Selector="Border.WizardCard">
       <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
@@ -113,9 +148,10 @@
             <lucide:Lucide Icon="ChevronLeft" Width="14" Height="14"
                            StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
           </Button>
-          <TextBox Text="{Binding PageNumberText}" Width="36" Height="24" FontSize="12" BorderThickness="1"
+          <TextBox Text="{Binding PageNumberText, Mode=OneWay}" Width="36" Height="24" FontSize="12" BorderThickness="1"
                    BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3"
-                   HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0" IsReadOnly="True" />
+                   HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0"
+                   KeyDown="OnPageNumberKeyDown" GotFocus="OnPageNumberGotFocus" />
           <TextBlock Text="{Binding PageTotalText}" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                      VerticalAlignment="Center" Margin="4,0" />
           <Button Classes="ToolbarButton" Command="{Binding NextPageCommand}">
@@ -236,6 +272,7 @@
                                 Classes.selected="{Binding IsSelected}"
                                 Classes.staging="{Binding IsStaging}"
                                 Classes.suppressed="{Binding IsSuppressed}"
+                                Classes.overlapWarning="{Binding HasOverlapWarning}"
                                 BorderBrush="{Binding VisualBoxColor}"
                                 Width="{Binding Width}"
                                 Height="{Binding Height}"
@@ -262,6 +299,80 @@
                                      Stroke="{Binding VisualBoxColor}" StrokeThickness="2"
                                      HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="-5" />
                           </Panel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Overlap warning markers (drawn over the intersection of overlapping boxes) -->
+                  <ItemsControl x:Name="OverlapItems" ItemsSource="{Binding OverlapMarkers}"
+                                Width="{Binding ActualWidthPixels}"
+                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
+                    <ItemsControl.ItemContainerTheme>
+                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfOverlapMarkerViewModel">
+                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                      </ControlTheme>
+                    </ItemsControl.ItemContainerTheme>
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <Canvas />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:PdfOverlapMarkerViewModel">
+                        <Rectangle Classes="overlapMark"
+                                   Width="{Binding Width}"
+                                   Height="{Binding Height}"
+                                   Cursor="Hand"
+                                   ToolTip.Tip="边界框重叠,点击选中两个框"
+                                   PointerPressed="OnOverlapMarkerPressed" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Paragraph continuation links (dashed connectors between same-paragraph boxes) -->
+                  <ItemsControl x:Name="ContinuationItems" ItemsSource="{Binding ContinuationLinks}"
+                                Width="{Binding ActualWidthPixels}"
+                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}"
+                                IsHitTestVisible="False">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <Canvas />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:PdfContinuationLinkViewModel">
+                        <Line Classes="continuationLink"
+                              StartPoint="{Binding Start}"
+                              EndPoint="{Binding End}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+
+                  <!-- Cross-page continuation badges (source paragraph text lives on an earlier page) -->
+                  <ItemsControl x:Name="CrossPageContinuationItems"
+                                ItemsSource="{Binding CrossPageContinuationMarkers}"
+                                Width="{Binding ActualWidthPixels}"
+                                Height="{Binding ActualHeightPixels}" IsVisible="{Binding HasImage}">
+                    <ItemsControl.ItemContainerTheme>
+                      <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfCrossPageContinuationViewModel">
+                        <Setter Property="Canvas.Left" Value="{Binding Left}" />
+                        <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                      </ControlTheme>
+                    </ItemsControl.ItemContainerTheme>
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <Canvas />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:PdfCrossPageContinuationViewModel">
+                        <Border Classes="crossPageMark"
+                                Cursor="Hand"
+                                ToolTip.Tip="该框与上一页的源框属于同一段落,点击跳转到源框"
+                                PointerPressed="OnCrossPageMarkPressed">
+                          <TextBlock Text="{Binding Label}" FontSize="11" Foreground="#1B5E20" />
                         </Border>
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
@@ -445,29 +556,45 @@
               </Border>
               <Grid Grid.Row="1">
                 <ScrollViewer>
-                  <ItemsControl x:Name="BoxTreeItems" ItemsSource="{Binding BoundingBoxes}" Margin="12">
+                  <ItemsControl x:Name="BoxTreeItems" ItemsSource="{Binding TreeBoxes}" Margin="12">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:PdfBBoxViewModel">
                         <Border Classes="TreeRow"
                                 Classes.selected="{Binding IsSelected}"
                                 Classes.suppressed="{Binding IsSuppressed}"
+                                Classes.overlapWarning="{Binding HasOverlapWarning}"
+                                Classes.continuation="{Binding IsContinuation}"
                                 Margin="{Binding TreeMargin}"
                                 ContextFlyout="{StaticResource BBoxContextMenu}"
                                 PointerPressed="OnTreeNodePointerPressed"
                                 PointerMoved="OnTreeNodePointerMoved"
                                 PointerReleased="OnTreeNodePointerReleased">
-                          <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8">
-                            <TextBlock Text="{Binding ReadingOrder, StringFormat='#{0}'}" FontSize="11"
+                          <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="8">
+                            <Border Width="16" VerticalAlignment="Center">
+                              <Button IsVisible="{Binding HasChildren}" Background="Transparent"
+                                      BorderThickness="0" Padding="0" Cursor="Hand"
+                                      PointerPressed="OnTreeExpandTogglePressed"
+                                      Click="OnTreeExpandToggle">
+                                <lucide:Lucide Icon="ChevronRight" Width="12" Height="12"
+                                               RenderTransformOrigin="50%,50%"
+                                               StrokeBrush="{DynamicResource OnSurfaceVariantBrush}">
+                                  <lucide:Lucide.RenderTransform>
+                                    <RotateTransform Angle="{Binding TreeChevronAngle}" />
+                                  </lucide:Lucide.RenderTransform>
+                                </lucide:Lucide>
+                              </Button>
+                            </Border>
+                            <TextBlock Grid.Column="1" Text="{Binding ReadingOrder, StringFormat='#{0}'}" FontSize="11"
                                        VerticalAlignment="Center"
                                        Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                            <Border Grid.Column="1" Background="{Binding BoxColor}" CornerRadius="4" Padding="6,1"
+                            <Border Grid.Column="2" Background="{Binding BoxColor}" CornerRadius="4" Padding="6,1"
                                     VerticalAlignment="Center">
                               <TextBlock Text="{Binding BoxType}" FontSize="11" Foreground="#FFFFFF"
                                          FontWeight="Bold" />
                             </Border>
-                            <TextBlock Grid.Column="2" Text="{Binding Summary}" FontSize="13"
+                            <TextBlock Grid.Column="3" Text="{Binding Summary}" FontSize="13"
                                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                            <TextBlock Grid.Column="3" Text="已排除" FontSize="11" VerticalAlignment="Center"
+                            <TextBlock Grid.Column="4" Text="已排除" FontSize="11" VerticalAlignment="Center"
                                        IsVisible="{Binding IsSuppressed}"
                                        Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                           </Grid>

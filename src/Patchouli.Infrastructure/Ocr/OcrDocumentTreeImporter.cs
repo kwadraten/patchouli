@@ -88,7 +88,7 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
             }
 
             seeds.AddRange(page.Boxes.Select(box => new DocumentBoxSeed(
-                null,
+                box.PreassignedBoxId,
                 box.ParentLogicalPageBoxId,
                 box.SourceOrder,
                 box.BoxType,
@@ -99,7 +99,8 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                 box.HeadingLevel,
                 null,
                 box.Confidence,
-                box.Suppressed)));
+                box.Suppressed,
+                box.ContinuesFromBoxId)));
             Result<DocumentTreeRevision> staged = await _trees.StagePageAsync(
                 request.DocumentInstanceId,
                 page.PageId,

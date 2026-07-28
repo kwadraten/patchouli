@@ -2,7 +2,6 @@ using System.Text.Json;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
-using Patchouli.Core.Layout;
 
 namespace Patchouli.Infrastructure.Conflicts;
 
@@ -141,54 +140,6 @@ public static class ConflictDescriptorMapper
                     "Keep the old fingerprint and pinned evidence unchanged; the source-change warning remains.", false)
             ],
             Options: ToOptions(changedCandidates));
-    }
-
-    public static ConflictDescriptor DocumentBoxBBoxOrdinaryOverlap(
-        string pageId,
-        string siblingBoxId,
-        string siblingBoxType,
-        NormalizedBBox siblingBBox,
-        string proposedBoxType,
-        NormalizedBBox proposedBBox)
-    {
-        return new ConflictDescriptor(
-            ConflictCode.LayoutBBoxOrdinaryOverlap,
-            ConflictDomain.LayoutEdit,
-            ConflictSeverity.Blocking,
-            "document_box",
-            siblingBoxId,
-            "The proposed document Box bbox overlaps an existing ordinary sibling Box.",
-            Serialize(new
-            {
-                page_id = pageId,
-                box_id = siblingBoxId,
-                box_type = siblingBoxType,
-                bbox = siblingBBox
-            }),
-            Serialize(new
-            {
-                page_id = pageId,
-                box_type = proposedBoxType,
-                bbox = proposedBBox
-            }),
-            [
-                new ConflictAction("adjust_bbox", "Adjust bbox",
-                    "Change the Box bbox or structure so ordinary siblings no longer overlap."),
-                new ConflictAction("change_to_allowed_type", "Use an overlapping Box type",
-                    "Change the candidate to an explicitly overlap-compatible node type.", false, true),
-                new ConflictAction("skip_candidate", "Skip candidate",
-                    "Discard this candidate without changing the current layout.", false)
-            ],
-            Options:
-            [
-                new ConflictActionOption("ruby", "Ruby", "Ruby annotations may overlap their base text."),
-                new ConflictActionOption("annotation", "Annotation",
-                    "Annotations may overlap layout content."),
-                new ConflictActionOption("aside", "Aside",
-                    "Marginalia may overlap layout content."),
-                new ConflictActionOption("seal", "Seal", "Seals may overlap layout content."),
-                new ConflictActionOption("warichu", "Warichu", "Warichu may overlap layout content.")
-            ]);
     }
 
     private static string Serialize(object value)

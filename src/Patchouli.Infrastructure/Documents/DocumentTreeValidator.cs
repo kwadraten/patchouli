@@ -2,7 +2,6 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Conflicts;
 
 namespace Patchouli.Infrastructure.Documents;
 
@@ -17,8 +16,7 @@ internal sealed class DocumentTreeValidator
 
     public Result Validate(
         DocumentTreeRevision revision,
-        IReadOnlyList<DocumentBox> boxes,
-        bool validateCollisions = true)
+        IReadOnlyList<DocumentBox> boxes)
     {
         if (!DocumentTreeRevisionSource.IsKnown(revision.Source) ||
             !DocumentTreeRevisionStatus.IsKnown(revision.Status))
@@ -78,7 +76,7 @@ internal sealed class DocumentTreeValidator
             return cycles;
         }
 
-        return validateCollisions ? ValidateCollisions(boxes) : Result.Success();
+        return Result.Success();
     }
 
     private Result ValidateBox(DocumentBox box)
@@ -104,7 +102,8 @@ internal sealed class DocumentTreeValidator
             return box.HeadingLevel is null && box.CodeLanguage is null && !box.Suppressed &&
                    (box.Payload is null || box.Payload is TextBoxPayload)
                 ? Result.Success()
-                : Invalid("Logical pages can only have optional text payloads and cannot have heading level, code language, or suppression.");
+                : Invalid(
+                    "Logical pages can only have optional text payloads and cannot have heading level, code language, or suppression.");
         }
 
         if (box.Payload is null)
@@ -242,53 +241,6 @@ internal sealed class DocumentTreeValidator
         }
 
         return Result.Success();
-    }
-
-    private static Result ValidateCollisions(IReadOnlyList<DocumentBox> boxes)
-    {
-        foreach (IGrouping<DocumentBoxId?, DocumentBox> group in boxes.GroupBy(box => box.ParentBoxId))
-        {
-            DocumentBox[] siblings = group
-                .Where(box => box.BoxType != DocumentBoxType.LogicalPage && !box.Suppressed)
-                .ToArray();
-            for (int first = 0; first < siblings.Length; first++)
-            for (int second = first + 1; second < siblings.Length; second++)
-            {
-                DocumentBox left = siblings[first];
-                DocumentBox right = siblings[second];
-                if (DocumentBoxType.AllowsOverlap(left.BoxType) || DocumentBoxType.AllowsOverlap(right.BoxType))
-                {
-                    continue;
-                }
-
-                if (HasSignificantOverlap(left.BBox, right.BBox))
-                {
-                    return Result.Failure(AppErrorCodes.ValidationFailed,
-                        "CF-06: ordinary sibling document boxes have significantly overlapping bbox regions.",
-                        [
-                            ConflictDescriptorMapper.DocumentBoxBBoxOrdinaryOverlap(
-                                left.PageId.ToString(), right.BoxId.ToString(), right.BoxType, right.BBox,
-                                left.BoxType, left.BBox)
-                        ]);
-                }
-            }
-        }
-
-        return Result.Success();
-    }
-
-    private static bool HasSignificantOverlap(NormalizedBBox left, NormalizedBBox right)
-    {
-        double width = Math.Min(left.X + left.Width, right.X + right.Width) - Math.Max(left.X, right.X);
-        double height = Math.Min(left.Y + left.Height, right.Y + right.Height) - Math.Max(left.Y, right.Y);
-        if (width <= 0 || height <= 0)
-        {
-            return false;
-        }
-
-        double intersection = width * height;
-        double smallerArea = Math.Min(left.Width * left.Height, right.Width * right.Height);
-        return intersection / smallerArea >= 0.1;
     }
 
     private static Result Invalid(string message)

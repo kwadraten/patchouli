@@ -434,7 +434,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
                 next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
-                confidence, suppressed)
+                confidence, suppressed, continues_from_box_id)
             select @RevisionId, box_id, document_instance_id, page_id, parent_box_id,
                 case when next_sibling_box_id = @BoxId then
                     (select next_sibling_box_id from document_boxes target
@@ -442,7 +442,9 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                     else next_sibling_box_id end,
                 box_type, sub_type, base_type, bbox_x, bbox_y, bbox_width, bbox_height,
                 payload_json, heading_level, code_language, confidence,
-                case when box_id = @BoxId then 1 else suppressed end
+                case when box_id = @BoxId then 1 else suppressed end,
+                case when @Purge = 1 and continues_from_box_id = @BoxId then null
+                    else continues_from_box_id end
             from document_boxes
             where tree_revision_id = @CurrentRevisionId and (@Purge = 0 or box_id <> @BoxId);
             """,

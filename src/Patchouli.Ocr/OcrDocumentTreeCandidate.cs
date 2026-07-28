@@ -73,7 +73,9 @@ public sealed record OcrBoxCandidate(
     int? HeadingLevel,
     double? Confidence,
     bool Suppressed,
-    DocumentBoxId? ParentLogicalPageBoxId = null);
+    DocumentBoxId? ParentLogicalPageBoxId = null,
+    DocumentBoxId? PreassignedBoxId = null,
+    DocumentBoxId? ContinuesFromBoxId = null);
 
 public sealed record OcrDiagnostic(
     string Code,
