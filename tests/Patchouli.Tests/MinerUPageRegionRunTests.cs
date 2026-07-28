@@ -26,7 +26,7 @@ public sealed class MinerUPageRegionRunTests
     [Fact]
     public async Task Pages_run_uploads_only_the_requested_pages_and_stages_no_orphan_trees()
     {
-        await using Context context = await Context.CreateAsync(pageCount: 3);
+        await using Context context = await Context.CreateAsync(3);
         Page[] requested = [context.Pages[0], context.Pages[2]];
 
         Result<OcrRun> run = await context.Engine.RunPresetOnPagesAsync(
@@ -60,7 +60,7 @@ public sealed class MinerUPageRegionRunTests
     [Fact]
     public async Task Region_run_uploads_a_png_and_maps_boxes_back_to_page_coordinates()
     {
-        await using Context context = await Context.CreateAsync(pageCount: 1);
+        await using Context context = await Context.CreateAsync(1);
         context.MinerUClient.ContentListJson = """
                                                [{"type":"text","page_idx":0,"text":"center block","bbox":[500,500,600,600]},{"type":"text","page_idx":0,"text":"corner block","bbox":[0,0,100,100]}]
                                                """;
@@ -95,7 +95,7 @@ public sealed class MinerUPageRegionRunTests
     [Fact]
     public async Task Logical_page_ocr_uploads_one_png_per_region_and_no_pdf()
     {
-        await using Context context = await Context.CreateAsync(pageCount: 1);
+        await using Context context = await Context.CreateAsync(1);
         context.MinerUClient.ContentListJson = """
                                                [{"type":"text","page_idx":0,"text":"region text","bbox":[100,100,200,200]}]
                                                """;
@@ -131,7 +131,7 @@ public sealed class MinerUPageRegionRunTests
     [Fact]
     public async Task Document_run_batches_consecutive_plain_pages_into_one_upload()
     {
-        await using Context context = await Context.CreateAsync(pageCount: 3);
+        await using Context context = await Context.CreateAsync(3);
         LogicalPageOcrService service = new(new DirectOcrRunCoordinator(context.Engine), context.Trees);
         LogicalDocumentOcrPagePlan[] plans = context.Pages
             .Select(page => new LogicalDocumentOcrPagePlan(page.PageId, []))
@@ -161,7 +161,7 @@ public sealed class MinerUPageRegionRunTests
     [Fact]
     public async Task Document_run_splits_uploads_around_targeted_pages()
     {
-        await using Context context = await Context.CreateAsync(pageCount: 4);
+        await using Context context = await Context.CreateAsync(4);
         Page targetedPage = context.Pages[2];
         DocumentTreeRevision staged = (await context.Trees.StagePageAsync(
             context.Document.DocumentInstanceId,
@@ -294,6 +294,7 @@ public sealed class MinerUPageRegionRunTests
             {
                 WriteBlankPdf(sourcePdfPath, pageCount);
             }
+
             string regionPngPath = Path.Combine(rootDirectory, "region.png");
             WriteSolidPng(regionPngPath);
             await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();

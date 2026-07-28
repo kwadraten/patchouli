@@ -268,6 +268,13 @@
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBlock Text="{Binding ShellSandboxStatusText, StringFormat='Shell sandbox status：\{0\}'}"
+                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <Button Content="强制重启 Shell 沙箱" Command="{Binding ForceRestartShellSandboxCommand}"
+                            HorizontalAlignment="Left" />
+                    <TextBlock Text="Sidecar 崩溃或协议故障后不会自动恢复，可在此手动强制重启只读 Shell 沙箱。"
+                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               TextWrapping="Wrap" />
                     <Border Background="{DynamicResource ErrorContainerBrush}"
                             BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
                             Padding="12" IsVisible="{Binding RequiresReload}">

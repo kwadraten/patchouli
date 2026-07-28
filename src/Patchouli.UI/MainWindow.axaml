@@ -131,7 +131,7 @@
         </Menu>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <TextBox Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1"
-                   BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库..."
+                   BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库或输入 patchouli:// URI..."
                    IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}"
                    VerticalContentAlignment="Center">
             <TextBox.InnerLeftContent>

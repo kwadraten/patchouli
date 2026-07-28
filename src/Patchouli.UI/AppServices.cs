@@ -30,6 +30,7 @@ using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
+using Patchouli.Infrastructure.Shell;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
@@ -157,6 +158,9 @@ public sealed class AppServices
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
             ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown);
+        ShellDomain = new ShellDomainService(
+            ConnectionFactory, Mcp, Search, Evidence, CslStore, CslRenderer, BiblatexHelper, Items, Library);
+        ShellSidecar = new ShellSidecarHost(ShellDomain);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -221,6 +225,8 @@ public sealed class AppServices
     public IEvidenceReferenceService Evidence { get; }
     public IMcpReadApi Mcp { get; }
     public IMcpServerSettingsService McpSettings { get; }
+    public ShellDomainService ShellDomain { get; }
+    public ShellSidecarHost ShellSidecar { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
     public ISnapshotBranchInspectionService BranchInspection { get; }

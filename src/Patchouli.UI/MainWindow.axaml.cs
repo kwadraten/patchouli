@@ -94,6 +94,14 @@ public sealed partial class MainWindow : Window
         catch (Exception exception)
         {
             UnexpectedExceptions.Sink.Report(exception, "window-shutdown", "stop-mcp-server");
+            try
+            {
+                _viewModel.ForceKillShellSandbox();
+            }
+            catch (Exception killException)
+            {
+                UnexpectedExceptions.Sink.Report(killException, "window-shutdown", "force-kill-shell");
+            }
         }
         finally
         {

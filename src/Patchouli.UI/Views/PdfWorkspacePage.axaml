@@ -148,7 +148,8 @@
             <lucide:Lucide Icon="ChevronLeft" Width="14" Height="14"
                            StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
           </Button>
-          <TextBox Text="{Binding PageNumberText, Mode=OneWay}" Width="36" Height="24" FontSize="12" BorderThickness="1"
+          <TextBox Text="{Binding PageNumberText, Mode=OneWay}" Width="36" Height="24" FontSize="12"
+                   BorderThickness="1"
                    BorderBrush="{DynamicResource OutlineVariantBrush}" CornerRadius="3"
                    HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Padding="0"
                    KeyDown="OnPageNumberKeyDown" GotFocus="OnPageNumberGotFocus" />

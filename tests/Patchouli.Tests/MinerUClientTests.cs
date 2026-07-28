@@ -329,20 +329,20 @@ public sealed class MinerUClientTests
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent($$"""
-                                                    {
-                                                      "code": 0,
-                                                      "data": {
-                                                        "batch_id": "b1",
-                                                        "extract_result": [
-                                                          {
-                                                            "file_name": "a.pdf",
-                                                            "state": "done",
-                                                            "full_zip_url": "https://cdn.example.test/result-{{pollRequests}}.zip"
-                                                          }
-                                                        ]
+                                                      {
+                                                        "code": 0,
+                                                        "data": {
+                                                          "batch_id": "b1",
+                                                          "extract_result": [
+                                                            {
+                                                              "file_name": "a.pdf",
+                                                              "state": "done",
+                                                              "full_zip_url": "https://cdn.example.test/result-{{pollRequests}}.zip"
+                                                            }
+                                                          ]
+                                                        }
                                                       }
-                                                    }
-                                                    """)
+                                                      """)
                     };
                 }
 
@@ -465,20 +465,20 @@ public sealed class MinerUClientTests
                     return new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent($$"""
-                                                    {
-                                                      "code": 0,
-                                                      "data": {
-                                                        "batch_id": "b1",
-                                                        "extract_result": [
-                                                          {
-                                                            "file_name": "a.pdf",
-                                                            "state": "{{state}}",
-                                                            "full_zip_url": "{{zipUrl}}"
-                                                          }
-                                                        ]
+                                                      {
+                                                        "code": 0,
+                                                        "data": {
+                                                          "batch_id": "b1",
+                                                          "extract_result": [
+                                                            {
+                                                              "file_name": "a.pdf",
+                                                              "state": "{{state}}",
+                                                              "full_zip_url": "{{zipUrl}}"
+                                                            }
+                                                          ]
+                                                        }
                                                       }
-                                                    }
-                                                    """)
+                                                      """)
                     };
                 }
 

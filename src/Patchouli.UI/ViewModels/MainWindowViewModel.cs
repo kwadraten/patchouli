@@ -22,10 +22,12 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
+using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
+using Patchouli.Infrastructure.Shell;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Search;
@@ -44,6 +46,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 {
     private AppServices? _services;
     private McpHttpServer? _mcpServer;
+    private ShellSidecarHost? _shellSidecar;
     private readonly bool _autoStartMcpServer;
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
@@ -92,6 +95,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool McpServerRunning => _mcpServer?.IsRunning == true;
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
+    public string ShellSandboxStatusText => _shellSidecar?.Status ?? ShellSandboxStatus.Stopped;
 
     public string VersionInfo =>
         $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
@@ -461,7 +465,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 return;
             }
 
-            await StopMcpServerAsync("正在切换运行数据库。");
+            await BeginLibrarySwitchAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
             try
             {
@@ -865,7 +869,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                     continue;
                 }
 
-                // A partial scan (e.g. iCloud placeholders skipped, a directory timed out) still
+                // A partial scan (e.g. a directory timed out) still
                 // imports the candidates that were discovered; the next rescan picks up the rest.
                 if (scan.ScanStatus == FileSearchRootScanStatuses.Partial)
                 {
@@ -874,15 +878,52 @@ public sealed class MainWindowViewModel : ViewModelBase
                 }
 
                 scanned += scan.Candidates.Count;
-                foreach (PdfCandidate candidate in scan.Candidates)
+                // Local-ready first, then hydrated cloud files, then placeholders. The last tier
+                // is hydrated only after all immediately readable files have been imported.
+                List<PdfCandidate> importQueue = FileLocalityClassifier
+                    .OrderForImport(scan.Candidates, static c => c.Readiness, static c => c.FileName)
+                    .ToList();
+                int importIndex = 0;
+                foreach (PdfCandidate candidate in importQueue)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    importIndex++;
                     string normalizedPath = Path.GetFullPath(candidate.Path);
                     if (knownPaths.Contains(normalizedPath))
                     {
                         skipped++;
                         continue;
                     }
+
+                    FileLocalityAssessment locality = services.FileSearchRootAccess.Assess(normalizedPath);
+                    if (locality.Readiness == FileLocalityReadiness.CloudUnready)
+                    {
+                        progress?.Invoke(processedRoots, roots.Value.Count,
+                            $"正在下载云端文件：{candidate.FileName}", normalizedPath);
+                        await LogOperationAsync("file-scan",
+                            $"Hydrating cloud file (trigger={trigger}): {normalizedPath}");
+                        Result materialized =
+                            await services.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath,
+                                cancellationToken);
+                        locality = services.FileSearchRootAccess.Assess(normalizedPath);
+                        if (materialized.IsFailure)
+                        {
+                            failed++;
+                            string error = materialized.ErrorMessage ?? locality.Reason ?? "云端文件下载未完成。";
+                            progress?.Invoke(processedRoots, roots.Value.Count,
+                                $"云端文件下载失败：{candidate.FileName}", error);
+                            await LogOperationAsync("file-scan",
+                                $"Cloud hydration failed (trigger={trigger}): {normalizedPath} - {error}");
+                            continue;
+                        }
+                    }
+
+                    string tier = locality.Readiness == FileLocalityReadiness.LocalReady ? "local" : "cloud";
+                    progress?.Invoke(processedRoots, roots.Value.Count,
+                        $"正在导入 ({importIndex}/{importQueue.Count}, {tier})：{candidate.FileName}",
+                        normalizedPath);
+                    await LogOperationAsync("file-scan",
+                        $"Importing (trigger={trigger}, {importIndex}/{importQueue.Count}, tier={tier}): {normalizedPath}");
 
                     PdfImportResult importedPdf =
                         await services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
@@ -899,6 +940,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                         failed++;
                         progress?.Invoke(processedRoots, roots.Value.Count, $"导入失败：{candidate.FileName}",
                             importedPdf.ErrorMessage);
+                        await LogOperationAsync("file-scan",
+                            $"Import failed (trigger={trigger}): {normalizedPath} - {importedPdf.ErrorMessage}");
                     }
                 }
 
@@ -1169,7 +1212,66 @@ public sealed class MainWindowViewModel : ViewModelBase
             _mcpServer = null;
         }
 
+        await StopShellSidecarAsync();
         SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
+    }
+
+    public async Task ForceRestartShellSandboxAsync()
+    {
+        if (_shellSidecar is null)
+        {
+            AppServices services = await ServicesAsync();
+            _shellSidecar = services.ShellSidecar;
+            _shellSidecar.StatusChanged -= OnShellStatusChanged;
+            _shellSidecar.StatusChanged += OnShellStatusChanged;
+        }
+
+        await _shellSidecar.ForceRestartAsync();
+        Raise(nameof(ShellSandboxStatusText));
+        if (_mcpServer?.IsRunning == true)
+        {
+            SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
+        }
+        else
+        {
+            Report($"Shell 沙箱已重启：{ShellSandboxStatusText}");
+        }
+    }
+
+    /// <summary>
+    /// Stops MCP, rejects shell calls, tears down sessions/sidecar before a library/DB switch.
+    /// Caller starts MCP again after the new library is ready when appropriate.
+    /// </summary>
+    public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
+    {
+        if (_shellSidecar is not null)
+        {
+            // Reject new execute calls immediately while teardown runs.
+            try
+            {
+                await _shellSidecar.StopForLibrarySwitchAsync();
+            }
+            catch (Exception ex)
+            {
+                UnexpectedExceptions.Sink.Report(ex, "mcp-server", "library-switch-stop-shell");
+                _shellSidecar.ForceKill();
+            }
+        }
+
+        await StopMcpServerAsync(detail);
+    }
+
+    public void ForceKillShellSandbox()
+    {
+        _shellSidecar?.ForceKill();
+        try
+        {
+            _services?.ShellSidecar.ForceKill();
+        }
+        catch
+        {
+            // Services may not be initialized.
+        }
     }
 
     private async Task StartMcpServerAsync(AppServices services)
@@ -1231,8 +1333,28 @@ public sealed class MainWindowViewModel : ViewModelBase
             UnexpectedExceptions.Sink.Report(exception, "mcp-server", operation);
         }
 
-        McpProtocolHandler handler = new(services.Mcp, services.ConnectionFactory, serverSettings, ReportMcpException);
-        McpHttpServer server = new(handler, serverSettings, ReportMcpException);
+        try
+        {
+            await StartShellSidecarAsync(services);
+        }
+        catch (Exception ex)
+        {
+            UnexpectedExceptions.Sink.Report(ex, "mcp-server", "start-shell-sidecar");
+            string shellMessage = McpOutputSanitizer.Sanitize(ex.Message);
+            if (operationId is not null)
+            {
+                await services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, shellMessage,
+                    "Shell sidecar 启动失败。", ["检查 patchouli-shell-sidecar 是否已打包"], CancellationToken.None);
+            }
+
+            SetMcpStatus("MCP: 错误", shellMessage, Brushes.IndianRed);
+            await LogOperationAsync("mcp_shell_start_failed", shellMessage);
+            return;
+        }
+
+        McpProtocolHandler handler = new(services.Mcp, services.ConnectionFactory, serverSettings, ReportMcpException,
+            services.ShellSidecar);
+        McpHttpServer server = new(handler, serverSettings, ReportMcpException, services.ShellSidecar);
         server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
         {
@@ -1261,6 +1383,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 UnexpectedExceptions.Sink.Report(disposeException, "mcp-server", "dispose-after-start-failure");
             }
 
+            await StopShellSidecarAsync();
             string message = McpOutputSanitizer.Sanitize(ex.Message);
             if (operationId is not null)
             {
@@ -1270,6 +1393,57 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
             await LogOperationAsync("mcp_http_start_failed", message);
+        }
+    }
+
+    private async Task StartShellSidecarAsync(AppServices services)
+    {
+        _shellSidecar = services.ShellSidecar;
+        _shellSidecar.StatusChanged -= OnShellStatusChanged;
+        _shellSidecar.StatusChanged += OnShellStatusChanged;
+        await _shellSidecar.StartAsync();
+        Raise(nameof(ShellSandboxStatusText));
+    }
+
+    private async Task StopShellSidecarAsync()
+    {
+        if (_shellSidecar is null)
+        {
+            return;
+        }
+
+        _shellSidecar.StatusChanged -= OnShellStatusChanged;
+        try
+        {
+            await _shellSidecar.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            UnexpectedExceptions.Sink.Report(ex, "mcp-server", "stop-shell-sidecar");
+        }
+
+        _shellSidecar = null;
+        Raise(nameof(ShellSandboxStatusText));
+    }
+
+    private void OnShellStatusChanged(object? sender, EventArgs e)
+    {
+        void Update()
+        {
+            Raise(nameof(ShellSandboxStatusText));
+            if (_mcpServer?.IsRunning == true)
+            {
+                SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
+            }
+        }
+
+        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
+        {
+            Update();
+        }
+        else
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
         }
     }
 
@@ -1323,7 +1497,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         long active = _mcpServer?.ActiveConnectionCount ?? 0;
         long total = _mcpServer?.TotalConnectionCount ?? 0;
-        return $"连接数: {active} / {total}";
+        string shell = ShellSandboxStatusText;
+        return $"连接数: {active} / {total} | shell: {shell}";
     }
 
     private void OnMcpConnectionCountsChanged(object? sender, EventArgs e)
@@ -1725,9 +1900,112 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task RunToolbarSearchAsync()
     {
+        PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(SearchEvidence.Query);
+        if (navigation.HasProtocolPrefix)
+        {
+            if (navigation.Target is null)
+            {
+                ReportError(navigation.ErrorMessage ?? "无法解析 Patchouli URI。");
+                return;
+            }
+
+            await NavigateToPatchouliUriAsync(navigation.Target);
+            return;
+        }
+
         await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search", true,
             () => SearchEvidence);
         await SearchEvidence.SearchCommand.ExecuteAsync();
+    }
+
+    private async Task NavigateToPatchouliUriAsync(PatchouliNavigationTarget target)
+    {
+        switch (target.Kind)
+        {
+            case PatchouliNavigationKind.Item:
+                await NavigateToItemUriAsync(target);
+                return;
+            case PatchouliNavigationKind.TextDocument:
+            case PatchouliNavigationKind.TextPage:
+                await NavigateToTextUriAsync(target);
+                return;
+            case PatchouliNavigationKind.CslStyle:
+                await OpenCslStyleManagerAsync();
+                Report($"已打开 CSL 样式管理：{target.ResourceId}");
+                return;
+            default:
+                ReportError("不支持的 Patchouli URI。");
+                return;
+        }
+    }
+
+    private async Task NavigateToItemUriAsync(PatchouliNavigationTarget target)
+    {
+        await Shell.RefreshItemsAsync();
+        LibraryItemViewModel? item = Shell.Items.FirstOrDefault(candidate =>
+            string.Equals(candidate.ItemId, target.ResourceId, StringComparison.OrdinalIgnoreCase));
+        if (item is null)
+        {
+            ReportError($"题录不存在：{target.CanonicalUri}");
+            return;
+        }
+
+        Shell.SelectedItem = item;
+        await EditItemByIdAsync(item.ItemId);
+        Report($"已打开题录：{item.Title}");
+    }
+
+    private async Task NavigateToTextUriAsync(PatchouliNavigationTarget target)
+    {
+        AppServices services = await ServicesAsync();
+        await Shell.RefreshItemsAsync();
+        LibraryItemViewModel? item = await Shell.ResolveDocumentItemAsync(target.ResourceId);
+        if (item is null)
+        {
+            ReportError($"文档或其关联题录不可用：{target.CanonicalUri}");
+            return;
+        }
+
+        Shell.SelectedItem = item;
+        await ShowReadingAsync(item);
+        if (ActiveTab?.Content is not PdfWorkspaceViewModel pdf)
+        {
+            return;
+        }
+
+        int pageIndex = target.PageIndex ?? 0;
+        await pdf.GoToPageAsync(pageIndex + 1);
+        if (target.EvidenceRef is null)
+        {
+            Report($"已打开文档第 {pageIndex + 1} 页。");
+            return;
+        }
+
+        Result<EvidenceResolutionResult> resolved =
+            await services.Evidence.ResolveAsync(target.EvidenceRef, EvidenceResolutionMode.Pinned);
+        Result<EvidenceReference> decoded = EvidenceReferenceCodec.Decode(target.EvidenceRef);
+        bool resourceMatches = decoded.IsSuccess &&
+                               string.Equals(decoded.Value.DocumentInstanceId.ToString(), target.ResourceId,
+                                   StringComparison.OrdinalIgnoreCase) &&
+                               resolved.IsSuccess &&
+                               resolved.Value.PageIndex == pageIndex;
+        bool highlighted = resourceMatches && pdf.TryHighlightBox(decoded.Value.BoxId);
+        if (resolved.IsFailure)
+        {
+            ReportError($"证据校验失败：{resolved.ErrorMessage}");
+        }
+        else if (!resourceMatches)
+        {
+            ReportError($"已打开基础页面，但证据与该页面不匹配：{resolved.Value.Status}");
+        }
+        else if (!highlighted)
+        {
+            Report($"已打开 pinned 证据页面；当前布局中没有可高亮的原 Box（{resolved.Value.Status}）。");
+        }
+        else
+        {
+            Report($"已打开并高亮 pinned 证据（{resolved.Value.Status}）。");
+        }
     }
 
     private async Task OpenNewItemEditorAsync()
@@ -1848,23 +2126,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        BiblatexMappedItem source;
-        if (mapped.Value.Count == 1)
-        {
-            BiblatexImportPreviewDialogViewModel preview = new(
-                mapped.Value,
-                false,
-                BuildSinglePreviewSummary(mapped.Value[0], targetItemId));
-            BiblatexImportPreviewResult? confirmed =
-                await Dialogs.ShowDialogAsync<BiblatexImportPreviewResult>(preview);
-            if (confirmed is not { Confirmed: true })
-            {
-                return;
-            }
-
-            source = mapped.Value[0];
-        }
-        else
+        BiblatexMappedItem source = mapped.Value[0];
+        if (mapped.Value.Count > 1)
         {
             BiblatexImportPreviewDialogViewModel preview = new(
                 mapped.Value,
@@ -1923,12 +2186,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         {
             await EditItemByIdAsync(createdId);
         }
-    }
-
-    private static string BuildSinglePreviewSummary(BiblatexMappedItem source, ItemId? targetItemId)
-    {
-        string target = targetItemId is null ? "新题录" : $"题录 {targetItemId}";
-        return $"将导入条目 {source.SourceEntryKey}（@{source.SourceEntryType}）到{target}：{source.Title}";
     }
 
     private async Task<IReadOnlyDictionary<string, string>?> ResolveBiblatexFieldChoicesAsync(

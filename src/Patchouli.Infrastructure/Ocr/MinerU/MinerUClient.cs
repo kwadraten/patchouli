@@ -288,8 +288,10 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
         Result<MinerUDownloadedResult> download =
             await DownloadZipAsync(batchId, zipUrl, downloadDirectory, cancellationToken);
 
-        for (int attempt = 2; attempt <= maxAttempts && download.IsFailure &&
-                                download.ErrorCode == MinerUProviderStatus.DownloadFailed; attempt++)
+        for (int attempt = 2;
+             attempt <= maxAttempts && download.IsFailure &&
+             download.ErrorCode == MinerUProviderStatus.DownloadFailed;
+             attempt++)
         {
             // Re-poll for a fresh URL before retrying: signed URLs can expire.
             Result<MinerUPollResult> repoll = await PollExtractResultAsync(batchId, cancellationToken);
@@ -323,7 +325,8 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
 
             using HttpRequestMessage request = new(HttpMethod.Get, zipUrl);
             using HttpResponseMessage response =
-                await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, linkedCancellation.Token);
+                await _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                    linkedCancellation.Token);
 
             if (!response.IsSuccessStatusCode)
             {

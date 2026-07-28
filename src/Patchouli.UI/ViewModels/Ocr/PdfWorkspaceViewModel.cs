@@ -1878,6 +1878,20 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         await RenderCurrentPageAsync();
     }
 
+    internal bool TryHighlightBox(DocumentBoxId boxId)
+    {
+        PdfBBoxViewModel? box = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == boxId);
+        if (box is null)
+        {
+            return false;
+        }
+
+        SelectedBox = box;
+        IsSidebarOpen = true;
+        Raise(nameof(IsSidebarOpen));
+        return true;
+    }
+
     private Task ReloadAsync()
     {
         return RenderCurrentPageAsync();

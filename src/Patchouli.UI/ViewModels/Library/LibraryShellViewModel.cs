@@ -380,9 +380,80 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(NoSelectedItem));
     }
 
+    public async Task<LibraryItemViewModel?> ResolveDocumentItemAsync(string documentInstanceId)
+    {
+        AppServices services = await _main.ServicesAsync();
+        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        DocumentNavigationRow? row = await connection.QuerySingleOrDefaultAsync<DocumentNavigationRow>(
+            """
+            select di.item_id as ItemId,
+                   di.document_instance_id as DocumentInstanceId,
+                   di.file_asset_id as FileAssetId,
+                   coalesce(fa.file_name, '') as FileName,
+                   coalesce(fa.original_path, '') as SourcePath,
+                   (select count(1) from pages p where p.document_instance_id = di.document_instance_id) as PageCount,
+                   (select count(1) from search_units su
+                    where su.document_instance_id = di.document_instance_id and su.status = 'current') as SearchUnitCount,
+                   coalesce((select sis.status from search_index_status sis
+                             where sis.scope_type = 'document_instance'
+                               and sis.scope_id = di.document_instance_id), 'not_indexed') as IndexStatus
+            from document_instances di
+            left join file_assets fa on fa.file_asset_id = di.file_asset_id
+            where di.document_instance_id = @DocumentInstanceId;
+            """,
+            new { DocumentInstanceId = documentInstanceId });
+        if (row is null)
+        {
+            return null;
+        }
+
+        LibraryItemViewModel? item = Items.FirstOrDefault(candidate =>
+            string.Equals(candidate.ItemId, row.ItemId, StringComparison.OrdinalIgnoreCase));
+        if (item is null)
+        {
+            return null;
+        }
+
+        if (string.Equals(item.DocumentInstanceId, row.DocumentInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return item;
+        }
+
+        return new LibraryItemViewModel(
+            item.ItemId,
+            item.Title,
+            item.ItemType,
+            item.Authors,
+            item.Year,
+            item.PublicationTitle,
+            row.DocumentInstanceId,
+            row.FileAssetId,
+            row.FileName,
+            row.SourcePath,
+            row.PageCount,
+            row.SearchUnitCount,
+            row.IndexStatus,
+            RunOcrForItemAsync,
+            EditMetadataForItemAsync,
+            ViewPdfForItemAsync);
+    }
+
     private Task RefreshItemsOnUiThreadAsync()
     {
         return DispatcherTasks.RunAsync(RefreshItemsAsync);
+    }
+
+    private sealed class DocumentNavigationRow
+    {
+        public string ItemId { get; init; } = "";
+        public string DocumentInstanceId { get; init; } = "";
+        public string? FileAssetId { get; init; }
+        public string FileName { get; init; } = "";
+        public string SourcePath { get; init; } = "";
+        public int PageCount { get; init; }
+        public int SearchUnitCount { get; init; }
+        public string IndexStatus { get; init; } = "";
     }
 
     public async Task RunOcrForItemAsync(LibraryItemViewModel item)

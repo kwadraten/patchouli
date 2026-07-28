@@ -25,7 +25,9 @@ using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Search;
+using Patchouli.Infrastructure.Shell;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
@@ -64,6 +66,161 @@ public sealed class UiViewModelTests : IDisposable
     {
         viewModel.RuntimeDatabasePath = path;
         return viewModel;
+    }
+
+    [Fact]
+    public void Toolbar_uri_parser_recognizes_protocol_case_and_markdown_links()
+    {
+        string itemId = ItemId.New().ToString();
+        PatchouliNavigationParseResult parsed =
+            PatchouliUriNavigationParser.ParseInput($"引用：[题录](PATCHOULI://ITEMS/{itemId}.bib)");
+
+        parsed.HasProtocolPrefix.Should().BeTrue();
+        parsed.IsSuccess.Should().BeTrue(parsed.ErrorMessage);
+        parsed.Target!.Kind.Should().Be(PatchouliNavigationKind.Item);
+        parsed.Target.ResourceId.Should().Be(itemId);
+
+        PatchouliUriNavigationParser.ParseInput("patchouli knowledge")
+            .HasProtocolPrefix.Should().BeFalse();
+        PatchouliUriNavigationParser.ParseInput(
+                $"patchouli://texts/{DocumentInstanceId.New()}/page-0.md?evref=one&evref=two")
+            .IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Biblatex_conflict_dialog_is_localized_and_formats_structured_values()
+    {
+        const string creators =
+            """[{"role":"author","family":"司门","given":"西门","literal":null,"suffix":null,"particles":null}]""";
+        const string dates =
+            """[{"role":"issued","date_parts_json":"[[2019]]","circa":false,"season":null,"literal":null}]""";
+        ConflictResolutionDialogViewModel vm = new(
+            Infrastructure.Conflicts.ConflictDescriptorMapper.BiblatexItemFieldConflict(
+                ItemId.New().ToString(),
+                "source",
+                [
+                    ("item_type", "题录类型", "general", "book"),
+                    ("creators", "责任者", null, creators),
+                    ("dates", "日期", null, dates)
+                ]));
+
+        vm.Title.Should().Be("处理题录字段冲突");
+        vm.Title.Should().NotContain("CF-");
+        vm.ConflictDescription.Should().Be("导入的 BibLaTeX 字段与目标题录不同，请逐项选择处理方式。");
+        vm.Severity.Should().Be("必须处理");
+        vm.Actions.Select(static action => action.Label).Should().Equal("应用字段选择", "暂不处理");
+        vm.FieldChoices.Single(choice => choice.FieldKey == "item_type").LocalValue.Should().Be("通用");
+        vm.FieldChoices.Single(choice => choice.FieldKey == "item_type").IncomingValue.Should().Be("图书");
+        vm.FieldChoices.Single(choice => choice.FieldKey == "creators").IncomingValue.Should().Be("作者：西门 司门");
+        vm.FieldChoices.Single(choice => choice.FieldKey == "dates").IncomingValue.Should().Be("出版日期：2019");
+        vm.FieldChoices.SelectMany(static choice => new[] { choice.LocalValue, choice.IncomingValue })
+            .Should().NotContain(value => value.Contains("\"role\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Biblatex_conflict_dialog_uses_non_overlapping_choice_cards()
+    {
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "Views", "ConflictResolutionDialog.axaml"));
+
+        xaml.Should().Contain("Content=\"保留本地值\"");
+        xaml.Should().Contain("Content=\"采用导入值\"");
+        xaml.Should().Contain("<Grid Grid.Row=\"1\" ColumnDefinitions=\"*,*\"");
+        xaml.Should().Contain("<RadioButton Grid.Row=\"0\" Content=\"保留本地值\"");
+        xaml.Should().Contain("<TextBlock Grid.Row=\"1\" Text=\"{Binding LocalValue}\"");
+        xaml.Should().NotContain("Background=\"{DynamicResource PrimaryContainerBrush}\"");
+        xaml.Should().NotContain("Foreground=\"{DynamicResource OnPrimaryBrush}\"");
+        xaml.Should().NotContain("Content=\"Choose fields\"");
+    }
+
+    [Fact]
+    public async Task Single_biblatex_entry_skips_selection_and_opens_conflict_handling()
+    {
+        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
+        {
+            return;
+        }
+
+        string path = Path.Combine(Path.GetTempPath(), $"ui-biblatex-single-{Guid.NewGuid():N}.sqlite");
+        CapturingDialogService dialogs = new();
+        try
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), dialogs: dialogs, settingsPath: _settings.Path)
+                { RuntimeDatabasePath = path };
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            Result<ItemMetadata> created =
+                await (await vm.ServicesAsync()).Items.CreateItemAsync("book", "本地标题");
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+
+            await vm.ImportBiblatexTextIntoEditorAsync(
+                """
+                @book{only-entry,
+                  author = {Doe, Jane},
+                  title = {导入标题},
+                  publisher = {Test Press},
+                  date = {2020}
+                }
+                """,
+                null,
+                created.Value.ItemId);
+
+            dialogs.ViewModels.Should().ContainSingle("当前状态：{0}", vm.Status);
+            dialogs.ViewModels.Single().Should().BeOfType<ConflictResolutionDialogViewModel>();
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Toolbar_patchouli_uri_opens_item_and_zero_based_text_page()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.sqlite");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.pdf");
+        try
+        {
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            AppServices services = await vm.ServicesAsync();
+            PdfImportResult imported =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "URI navigation", null, 3));
+            imported.Success.Should().BeTrue(imported.ErrorMessage);
+            await vm.Shell.RefreshItemsAsync();
+
+            vm.SearchEvidence.Query =
+                $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-1.md";
+            await vm.RunToolbarSearchCommand.ExecuteAsync();
+
+            vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
+            ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
+
+            vm.SearchEvidence.Query =
+                $"[URI navigation](patchouli://items/{imported.CreatedItemId}.bib)";
+            await vm.RunToolbarSearchCommand.ExecuteAsync();
+
+            vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
+            vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
+        }
+        finally
+        {
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
+            }
+
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     [Fact]
@@ -1100,6 +1257,9 @@ public sealed class UiViewModelTests : IDisposable
         settingsXaml.Should().Contain("搜索配置");
         settingsXaml.Should().Contain("MCP");
         settingsXaml.Should().Contain("Streamable HTTP");
+        settingsXaml.Should().Contain("强制重启 Shell 沙箱");
+        settingsXaml.Should().Contain("ForceRestartShellSandboxCommand");
+        settingsXaml.Should().Contain("ShellSandboxStatusText");
         settingsXaml.Should().NotContain("SSE（默认）");
         settingsXaml.Should().NotContain("普通 JSON-RPC");
     }
@@ -1134,7 +1294,9 @@ public sealed class UiViewModelTests : IDisposable
 
             vm.McpEndpoint.Should().Be($"http://localhost:{port}/mcp");
             vm.McpStatusText.Should().Be("MCP: 运行中");
-            vm.McpStatusDetail.Should().Be("连接数: 0 / 0");
+            vm.McpStatusDetail.Should().StartWith("连接数: 0 / 0").And.Contain("shell:");
+            vm.ShellSandboxStatusText.Should().BeOneOf(ShellSandboxStatus.Ready, ShellSandboxStatus.Faulted,
+                ShellSandboxStatus.Starting);
             using HttpClient http = new();
             string health = await http.GetStringAsync($"http://localhost:{port}/health");
             health.Should().Contain("ok");
@@ -2439,16 +2601,19 @@ public sealed class UiViewModelTests : IDisposable
     private sealed class CapturingDialogService : IDialogService
     {
         public object? LastViewModel { get; private set; }
+        public List<object> ViewModels { get; } = [];
 
         public Task ShowDialogAsync(object viewModel)
         {
             LastViewModel = viewModel;
+            ViewModels.Add(viewModel);
             return Task.CompletedTask;
         }
 
         public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
         {
             LastViewModel = viewModel;
+            ViewModels.Add(viewModel);
             return Task.FromResult(default(TResult?));
         }
     }

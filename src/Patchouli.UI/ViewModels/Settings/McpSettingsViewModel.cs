@@ -22,10 +22,28 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     public McpSettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
+        _main.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(MainWindowViewModel.McpStatusText)
+                or nameof(MainWindowViewModel.McpEndpoint)
+                or nameof(MainWindowViewModel.McpServerRunning)
+                or nameof(MainWindowViewModel.ShellSandboxStatusText))
+            {
+                Raise(args.PropertyName switch
+                {
+                    nameof(MainWindowViewModel.McpStatusText) => nameof(McpStatusText),
+                    nameof(MainWindowViewModel.McpEndpoint) => nameof(McpEndpoint),
+                    nameof(MainWindowViewModel.McpServerRunning) => nameof(McpServerRunning),
+                    nameof(MainWindowViewModel.ShellSandboxStatusText) => nameof(ShellSandboxStatusText),
+                    _ => args.PropertyName ?? string.Empty
+                });
+            }
+        };
         GenerateTokenCommand = new AsyncCommand(GenerateTokenAsync);
         StartMcpCommand = new AsyncCommand(StartMcpAsync);
         StopMcpCommand = new AsyncCommand(StopMcpAsync);
         SaveAndRestartCommand = new AsyncCommand(SaveAndRestartAsync);
+        ForceRestartShellSandboxCommand = new AsyncCommand(ForceRestartShellSandboxAsync);
     }
 
     public int Port
@@ -155,11 +173,13 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     public string McpEndpoint => _main.McpEndpoint;
     public string McpStatusText => _main.McpStatusText;
     public bool McpServerRunning => _main.McpServerRunning;
+    public string ShellSandboxStatusText => _main.ShellSandboxStatusText;
 
     public AsyncCommand GenerateTokenCommand { get; }
     public AsyncCommand StartMcpCommand { get; }
     public AsyncCommand StopMcpCommand { get; }
     public AsyncCommand SaveAndRestartCommand { get; }
+    public AsyncCommand ForceRestartShellSandboxCommand { get; }
     public override bool SupportsEditing => true;
     public override bool IsDirty => _isDirty;
     public override bool CanSave => _isDirty;
@@ -206,6 +226,22 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         await _main.StopMcpServerAsync("应用新设置");
         await _main.StartMcpServerAsync();
         RequiresReload = false;
+    }
+
+    private async Task ForceRestartShellSandboxAsync()
+    {
+        try
+        {
+            SetStatus("正在强制重启 Shell 沙箱…");
+            await _main.ForceRestartShellSandboxAsync();
+            Raise(nameof(ShellSandboxStatusText));
+            Raise(nameof(McpStatusText));
+            SetStatus($"Shell 沙箱状态：{ShellSandboxStatusText}");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"强制重启 Shell 沙箱失败：{ex.Message}");
+        }
     }
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
@@ -334,9 +370,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private static readonly string[] KnownTools =
     [
-        "search_library", "get_item_metadata", "get_document_status", "get_page_text", "get_page_blocks",
-        "get_search_result_context", "list_csl_styles", "get_csl_style", "render_item_bibliography",
-        "render_items_bibliography"
+        "patchouli_shell"
     ];
 }
 
