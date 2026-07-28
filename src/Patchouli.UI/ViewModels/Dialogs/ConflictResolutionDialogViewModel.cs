@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Conflicts;
 
@@ -20,8 +21,8 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
     {
         FieldKey = fieldKey;
         Label = label;
-        LocalValue = localValue ?? "(empty)";
-        IncomingValue = incomingValue;
+        LocalValue = FormatValue(fieldKey, localValue);
+        IncomingValue = FormatValue(fieldKey, incomingValue);
     }
 
     public string FieldKey { get; }
@@ -69,6 +70,204 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
             }
         }
     }
+
+    private static string FormatValue(string fieldKey, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "（空）";
+        }
+
+        return fieldKey switch
+        {
+            "item_type" => LocalizeItemType(value),
+            "creators" => FormatCreators(value),
+            "dates" => FormatDates(value),
+            "tags" => FormatStringArray(value),
+            "identifiers" => FormatIdentifiers(value),
+            _ => value
+        };
+    }
+
+    private static string LocalizeItemType(string value)
+    {
+        return value switch
+        {
+            "general" => "通用",
+            "book" => "图书",
+            "article-journal" => "期刊论文",
+            "chapter" => "图书章节",
+            "thesis" => "学位论文",
+            "report" => "报告",
+            "webpage" => "网页",
+            "manuscript" => "手稿",
+            "paper-conference" => "会议论文",
+            "patent" => "专利",
+            "standard" => "标准",
+            _ => value
+        };
+    }
+
+    private static string FormatCreators(string value)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(value);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return value;
+            }
+
+            string[] creators = document.RootElement.EnumerateArray()
+                .Select(FormatCreator)
+                .Where(static creator => creator.Length > 0)
+                .ToArray();
+            return creators.Length == 0 ? "（空）" : string.Join("；", creators);
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
+    }
+
+    private static string FormatCreator(JsonElement creator)
+    {
+        string role = ReadString(creator, "role") switch
+        {
+            ItemCreatorRoles.Author => "作者",
+            ItemCreatorRoles.Editor => "编者",
+            ItemCreatorRoles.Translator => "译者",
+            ItemCreatorRoles.ContainerAuthor => "文献责任者",
+            _ => "责任者"
+        };
+        string? literal = ReadString(creator, "literal");
+        string name = literal ?? string.Join(" ", new[]
+            {
+                ReadString(creator, "given"),
+                ReadString(creator, "particles"),
+                ReadString(creator, "family"),
+                ReadString(creator, "suffix")
+            }
+            .Where(static part => !string.IsNullOrWhiteSpace(part)));
+        return string.IsNullOrWhiteSpace(name) ? "" : $"{role}：{name}";
+    }
+
+    private static string FormatDates(string value)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(value);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return value;
+            }
+
+            string[] dates = document.RootElement.EnumerateArray()
+                .Select(FormatDate)
+                .Where(static date => date.Length > 0)
+                .ToArray();
+            return dates.Length == 0 ? "（空）" : string.Join("；", dates);
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
+    }
+
+    private static string FormatDate(JsonElement date)
+    {
+        string role = ReadString(date, "role") switch
+        {
+            ItemDateRoles.Issued => "出版日期",
+            ItemDateRoles.Accessed => "访问日期",
+            ItemDateRoles.OriginalDate => "原始日期",
+            _ => "日期"
+        };
+        string? literal = ReadString(date, "literal");
+        string? datePartsJson = ReadString(date, "date_parts_json");
+        string display = literal ?? FormatDateParts(datePartsJson);
+        return string.IsNullOrWhiteSpace(display) ? "" : $"{role}：{display}";
+    }
+
+    private static string FormatDateParts(string? datePartsJson)
+    {
+        if (string.IsNullOrWhiteSpace(datePartsJson))
+        {
+            return "";
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(datePartsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return datePartsJson;
+            }
+
+            return string.Join("；", document.RootElement.EnumerateArray().Select(static parts =>
+                string.Join("-", parts.EnumerateArray().Select(static part => part.ToString()))));
+        }
+        catch (JsonException)
+        {
+            return datePartsJson;
+        }
+    }
+
+    private static string FormatStringArray(string value)
+    {
+        try
+        {
+            string[]? values = JsonSerializer.Deserialize<string[]>(value);
+            return values is null || values.Length == 0 ? "（空）" : string.Join("、", values);
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
+    }
+
+    private static string FormatIdentifiers(string value)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(value);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return value;
+            }
+
+            string[] identifiers = document.RootElement.EnumerateArray()
+                .Select(static identifier =>
+                {
+                    string? scheme = ReadString(identifier, "scheme");
+                    string? identifierValue = ReadString(identifier, "value");
+                    return string.IsNullOrWhiteSpace(identifierValue)
+                        ? ""
+                        : string.IsNullOrWhiteSpace(scheme)
+                            ? identifierValue
+                            : $"{scheme.ToUpperInvariant()}：{identifierValue}";
+                })
+                .Where(static identifier => identifier.Length > 0)
+                .ToArray();
+            return identifiers.Length == 0 ? "（空）" : string.Join("；", identifiers);
+        }
+        catch (JsonException)
+        {
+            return value;
+        }
+    }
+
+    private static string? ReadString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out JsonElement property) ||
+            property.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        string value = property.ToString().Trim();
+        return value.Length == 0 ? null : value;
+    }
 }
 
 public sealed class ConflictLinkChoiceViewModel : ViewModelBase
@@ -112,8 +311,18 @@ public sealed class ConflictDialogActionViewModel : ViewModelBase
     public ConflictDialogActionViewModel(ConflictAction action, ConflictResolutionDialogViewModel owner)
     {
         ActionId = action.ActionId;
-        Label = action.Label;
-        Description = action.Description ?? "";
+        Label = action.ActionId switch
+        {
+            "choose_fields" => "应用字段选择",
+            "resolve_links" => "应用关联选择",
+            _ => action.Label
+        };
+        Description = action.ActionId switch
+        {
+            "choose_fields" => "逐项选择保留本地值或采用导入值，然后继续导入。",
+            "resolve_links" => "为每个源条目选择候选题录或新建题录。",
+            _ => action.Description ?? ""
+        };
         IsRecommended = action.IsRecommended;
         RequiresOption = action.RequiresOption;
         _owner = owner;
@@ -165,12 +374,29 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
         IReadOnlyList<ConflictDialogOption>? options = null)
     {
         ConflictCode = descriptor.ConflictCode;
-        Title = $"检测到冲突 {descriptor.ConflictCode}";
-        ConflictDescription = descriptor.Summary;
-        Severity = descriptor.Severity;
+        Title = descriptor.ConflictCode switch
+        {
+            Patchouli.Core.Conflicts.ConflictCode.BiblatexItemFieldConflict => "处理题录字段冲突",
+            Patchouli.Core.Conflicts.ConflictCode.BiblatexBatchLinkCandidates => "处理题录关联冲突",
+            _ => "处理冲突"
+        };
+        ConflictDescription = descriptor.ConflictCode switch
+        {
+            Patchouli.Core.Conflicts.ConflictCode.BiblatexItemFieldConflict =>
+                "导入的 BibLaTeX 字段与目标题录不同，请逐项选择处理方式。",
+            Patchouli.Core.Conflicts.ConflictCode.BiblatexBatchLinkCandidates =>
+                "一个或多个 BibLaTeX 源条目存在候选题录，请明确选择关联现有题录或新建题录。",
+            _ => descriptor.Summary
+        };
+        Severity = descriptor.Severity switch
+        {
+            ConflictSeverity.Blocking => "必须处理",
+            ConflictSeverity.Warning => "警告",
+            _ => "提示"
+        };
         SeverityDescription = descriptor.Severity switch
         {
-            ConflictSeverity.Blocking => "必须处理后才能继续危险操作。",
+            ConflictSeverity.Blocking => "必须先处理此冲突，才能继续当前操作。",
             ConflictSeverity.Warning => "可以继续，但风险和恢复操作会保留。",
             _ => "此信息不阻止继续操作。"
         };

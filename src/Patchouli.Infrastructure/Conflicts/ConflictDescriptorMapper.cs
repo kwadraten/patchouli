@@ -153,7 +153,7 @@ public static class ConflictDescriptorMapper
             ConflictSeverity.Blocking,
             "item",
             targetItemId,
-            "Imported BibLaTeX fields differ from the target item and require per-field choices.",
+            "导入的 BibLaTeX 字段与目标题录不同，请逐项选择处理方式。",
             Serialize(new
             {
                 item_id = targetItemId,
@@ -175,14 +175,14 @@ public static class ConflictDescriptorMapper
                 }).ToArray()
             }),
             [
-                new ConflictAction("choose_fields", "Choose fields",
-                    "For each conflicting field, keep the local value or adopt the imported value.",
+                new ConflictAction("choose_fields", "应用字段选择",
+                    "逐项选择保留本地值或采用导入值，然后继续导入。",
                     RequiresOption: true)
             ],
             Options: fields.Select(field => new ConflictActionOption(
                 field.FieldKey,
                 field.Label,
-                $"local={field.LocalValue ?? "(empty)"} | incoming={field.IncomingValue}")).ToArray());
+                $"本地值={field.LocalValue ?? "（空）"}｜导入值={field.IncomingValue}")).ToArray());
     }
 
     public static ConflictDescriptor BiblatexBatchLinkCandidates(
@@ -197,7 +197,7 @@ public static class ConflictDescriptorMapper
             ConflictSeverity.Blocking,
             "bibliography_import_batch",
             batchId,
-            "One or more BibLaTeX source entries have candidate items and require explicit link-or-create choices.",
+            "一个或多个 BibLaTeX 源条目存在候选题录，请明确选择关联现有题录或新建题录。",
             Serialize(new
             {
                 batch_id = batchId,
@@ -222,8 +222,8 @@ public static class ConflictDescriptorMapper
                 }).ToArray()
             }),
             [
-                new ConflictAction("resolve_links", "Resolve links",
-                    "For each source entry, choose a candidate item or create a new item.", RequiresOption: true)
+                new ConflictAction("resolve_links", "应用关联选择",
+                    "为每个源条目选择候选题录或新建题录。", RequiresOption: true)
             ],
             Options: relations.SelectMany(relation =>
             {
@@ -237,7 +237,7 @@ public static class ConflictDescriptorMapper
                 options.AddRange(relation.Candidates.Select(candidate => new ConflictActionOption(
                     $"{relation.SourceEntryKey}|{candidate.ItemId}",
                     $"{relation.SourceEntryKey}: {candidate.Title}",
-                    $"match_count={candidate.MatchCount}")));
+                    $"匹配字段数：{candidate.MatchCount}")));
                 return options;
             }).ToArray());
     }

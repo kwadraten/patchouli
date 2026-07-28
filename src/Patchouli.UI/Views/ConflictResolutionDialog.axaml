@@ -55,23 +55,35 @@
         </Border>
       </Grid>
 
-      <ScrollViewer Grid.Row="1" IsVisible="{Binding IsFieldChoiceMode}">
+      <ScrollViewer Grid.Row="1" IsVisible="{Binding IsFieldChoiceMode}"
+                    HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <ItemsControl ItemsSource="{Binding FieldChoices}">
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:ConflictFieldChoiceViewModel">
-              <Border Margin="0,0,0,10" Padding="10" BorderBrush="{DynamicResource OutlineVariantBrush}"
+              <Border Margin="0,0,0,12" Padding="14" BorderBrush="{DynamicResource OutlineVariantBrush}"
                       BorderThickness="1" CornerRadius="4">
-                <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
-                  <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
-                  <StackPanel Orientation="Horizontal" Spacing="16">
-                    <RadioButton Content="保留本地" IsChecked="{Binding KeepLocal}" GroupName="{Binding FieldKey}" />
-                    <RadioButton Content="采用导入" IsChecked="{Binding UseIncoming}" GroupName="{Binding FieldKey}" />
-                  </StackPanel>
-                  <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
-                    <TextBlock Grid.Column="0" Text="{Binding LocalValue}" TextWrapping="Wrap" FontSize="12"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Grid.Column="1" Text="{Binding IncomingValue}" TextWrapping="Wrap" FontSize="12"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+                  <TextBlock Grid.Row="0" Text="{Binding Label}" FontWeight="SemiBold" FontSize="14"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="12">
+                    <Border Grid.Column="0" Padding="10" CornerRadius="4"
+                            Background="{DynamicResource SurfaceContainerBrush}">
+                      <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+                        <RadioButton Grid.Row="0" Content="保留本地值" IsChecked="{Binding KeepLocal}"
+                                     GroupName="{Binding FieldKey}" FontWeight="SemiBold" />
+                        <TextBlock Grid.Row="1" Text="{Binding LocalValue}" TextWrapping="Wrap" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      </Grid>
+                    </Border>
+                    <Border Grid.Column="1" Padding="10" CornerRadius="4"
+                            Background="{DynamicResource SurfaceContainerBrush}">
+                      <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+                        <RadioButton Grid.Row="0" Content="采用导入值" IsChecked="{Binding UseIncoming}"
+                                     GroupName="{Binding FieldKey}" FontWeight="SemiBold" />
+                        <TextBlock Grid.Row="1" Text="{Binding IncomingValue}" TextWrapping="Wrap" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      </Grid>
+                    </Border>
                   </Grid>
                 </Grid>
               </Border>
