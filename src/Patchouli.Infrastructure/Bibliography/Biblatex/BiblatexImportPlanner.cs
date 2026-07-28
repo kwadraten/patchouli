@@ -143,13 +143,3 @@ public static class BiblatexImportPlanner
         }
     }
 }
-
-public sealed record BiblatexSingleImportPlan(
-    BiblatexMappedItem Source,
-    IReadOnlyList<BiblatexFieldConflict> FieldConflicts,
-    ConflictDescriptor? FieldConflictDescriptor);
-
-public sealed record BiblatexBatchImportPlan(
-    IReadOnlyList<BiblatexSourceMatchGroup> Groups,
-    bool HasCandidates,
-    ConflictDescriptor? LinkConflictDescriptor);

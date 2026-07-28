@@ -48,6 +48,18 @@ if ($legacyPresent) {
     throw "Published migrations still contain legacy layout schema files: $($legacyPresent -join ', ')"
 }
 
+$helperName = "biblatex-helper.exe"
+$helperSource = Join-Path $root "tools\biblatex-helper\target\release\$helperName"
+if (-not (Test-Path -LiteralPath $helperSource)) {
+    Write-Host "Building biblatex-helper..."
+    cargo build --release --manifest-path (Join-Path $root "tools\biblatex-helper\Cargo.toml")
+    if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
+}
+if (-not (Test-Path -LiteralPath $helperSource)) {
+    throw "biblatex-helper was not found at '$helperSource'."
+}
+Copy-Item -LiteralPath $helperSource -Destination (Join-Path $publishDir $helperName) -Force
+
 $iss = Join-Path $root "packaging\windows\Patchouli.Net.iss"
 & $iscc "/DSourceDir=$publishDir" "/DOutputDir=$installerDir" "/DAppVersion=$Version" $iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }

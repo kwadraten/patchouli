@@ -2378,6 +2378,11 @@ public sealed class UiViewModelTests : IDisposable
             Text = text;
             return Task.CompletedTask;
         }
+
+        public Task<string?> GetTextAsync()
+        {
+            return Task.FromResult(Text);
+        }
     }
 
     private sealed class CapturingLogger : IAppLogger

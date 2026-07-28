@@ -6,6 +6,8 @@ using System.Windows.Input;
 using Avalonia.Media;
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Bibliography;
+using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Csl;
@@ -19,6 +21,7 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Evidence;
+using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
@@ -99,6 +102,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
     public bool HasOpenRuntimeDatabase => _services is not null;
     public IClipboardService Clipboard { get; }
+    public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
     public IModalOperationRunner ModalOperations { get; }
     public IAppLogger Logger { get; }
@@ -208,6 +212,9 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand CheckSyncStateCommand { get; }
     public AsyncCommand CopyCslBibliographyCommand { get; }
     public AsyncCommand ExportItemCommand { get; }
+    public AsyncCommand ImportBiblatexBatchCommand { get; }
+    public AsyncCommand ExportBiblatexCommand { get; }
+    public AsyncCommand CopyBiblatexCommand { get; }
     public AsyncCommand CreateItemMenuCommand { get; }
     public AsyncCommand OpenItemEditorCommand { get; }
     public AsyncCommand EditSelectedItemCommand { get; }
@@ -230,6 +237,9 @@ public sealed class MainWindowViewModel : ViewModelBase
     public UiCommandDescriptor OpenSnapshotPackageDescriptor { get; }
     public UiCommandDescriptor CopyCslBibliographyDescriptor { get; }
     public UiCommandDescriptor ExportItemDescriptor { get; }
+    public UiCommandDescriptor ImportBiblatexBatchDescriptor { get; }
+    public UiCommandDescriptor ExportBiblatexDescriptor { get; }
+    public UiCommandDescriptor CopyBiblatexDescriptor { get; }
 
     public PatchouliAppSettings AppOptions => _settings;
 
@@ -364,7 +374,8 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null,
         IDialogService? dialogs = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort,
-        string? settingsPath = null, IModalOperationRunner? modalOperations = null)
+        string? settingsPath = null, IModalOperationRunner? modalOperations = null,
+        IFilePickerService? filePicker = null)
     {
         _settingsPath = settingsPath;
         SettingsLoadFailure? settingsLoadFailure = null;
@@ -409,6 +420,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         _autoStartMcpServer = autoStartMcpServer;
         McpEndpoint = $"http://localhost:{mcpPort}/mcp";
         Clipboard = clipboard ?? new AvaloniaClipboardService();
+        FilePicker = filePicker ?? new AvaloniaFilePickerService();
         Dialogs = dialogs ?? CreateDialogService();
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
@@ -496,6 +508,9 @@ public sealed class MainWindowViewModel : ViewModelBase
         CheckSyncStateCommand = new AsyncCommand(OpenSyncCenterAsync);
         CopyCslBibliographyCommand = new AsyncCommand(CopyCslBibliographyAsync);
         ExportItemCommand = new AsyncCommand(ExportSelectedItemBibliographyAsync);
+        ImportBiblatexBatchCommand = new AsyncCommand(ImportBiblatexBatchAsync);
+        ExportBiblatexCommand = new AsyncCommand(ExportBiblatexAsync);
+        CopyBiblatexCommand = new AsyncCommand(CopyBiblatexAsync);
         CreateItemMenuCommand = new AsyncCommand(OpenNewItemEditorAsync);
         OpenItemEditorCommand = new AsyncCommand(OpenItemEditorTabAsync);
         EditSelectedItemCommand = new AsyncCommand(EditSelectedItemAsync);
@@ -543,7 +558,13 @@ public sealed class MainWindowViewModel : ViewModelBase
         RefreshSyncDescriptors();
         CopyCslBibliographyDescriptor =
             new UiCommandDescriptor("csl.copy_bibliography", "复制 CSL 题录", CopyCslBibliographyCommand);
-        ExportItemDescriptor = new UiCommandDescriptor("csl.export_item", "导出题录", ExportItemCommand);
+        ExportItemDescriptor = new UiCommandDescriptor("csl.export_item", "导出 CSL 题录", ExportItemCommand);
+        ImportBiblatexBatchDescriptor =
+            new UiCommandDescriptor("biblatex.import_batch", "从 BibLaTeX 批量导入…", ImportBiblatexBatchCommand);
+        ExportBiblatexDescriptor =
+            new UiCommandDescriptor("biblatex.export", "导出 BibLaTeX…", ExportBiblatexCommand);
+        CopyBiblatexDescriptor =
+            new UiCommandDescriptor("biblatex.copy", "复制 BibLaTeX", CopyBiblatexCommand);
     }
 
     private void OnLayoutPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -1531,6 +1552,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         DialogService service = new();
         service.Register<BlockingOperationDialogViewModel, BlockingOperationDialog>();
         service.Register<ConflictResolutionDialogViewModel, ConflictResolutionDialog>();
+        service.Register<BiblatexImportPreviewDialogViewModel, BiblatexImportPreviewDialog>();
         service.Register<ConfirmDialogViewModel, ConfirmDialog>();
         service.Register<PdfBBoxViewModel, BoxEditorDialog>();
         service.Register<PdfWorkspaceViewModel, NewBoxDialog>();
@@ -1703,6 +1725,17 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
+    public async Task EditItemByIdAsync(string itemId)
+    {
+        string tabId = $"ItemEditor_{itemId}";
+        await ActivateTabAsync(WorkspaceTabKind.ItemEditor, tabId, "编辑题录", "Pencil", true,
+            () => new ItemEditorViewModel(this));
+        if (ActiveTab?.Content is ItemEditorViewModel editor)
+        {
+            await editor.LoadAsync(itemId);
+        }
+    }
+
     private async Task EditSelectedItemAsync()
     {
         LibraryItemViewModel? item = Shell.SelectedItem;
@@ -1773,6 +1806,278 @@ public sealed class MainWindowViewModel : ViewModelBase
             descriptor.DisabledReason = busy ? "同步操作进行中，请等待完成。" : string.Empty;
         }
     }
+
+
+    public async Task ImportBiblatexTextIntoEditorAsync(string text, string? bibFileDirectory, ItemId? targetItemId)
+    {
+        AppServices services = await ServicesAsync();
+        Result<IReadOnlyList<BiblatexEntryDto>> parsed = await services.BiblatexImport.ParseTextAsync(text);
+        if (parsed.IsFailure)
+        {
+            Report($"BibLaTeX 解析失败：{parsed.ErrorCode} {parsed.ErrorMessage}");
+            return;
+        }
+
+        Result<IReadOnlyList<BiblatexMappedItem>> mapped = BiblatexImportPlanner.MapVisibleEntries(parsed.Value);
+        if (mapped.IsFailure)
+        {
+            Report($"BibLaTeX 映射失败：{mapped.ErrorCode} {mapped.ErrorMessage}");
+            return;
+        }
+
+        if (mapped.Value.Count == 0)
+        {
+            Report("没有可导入的 BibLaTeX 条目（@xdata 不会创建题录）。");
+            return;
+        }
+
+        BiblatexMappedItem source;
+        if (mapped.Value.Count == 1)
+        {
+            BiblatexImportPreviewDialogViewModel preview = new(
+                mapped.Value,
+                false,
+                BuildSinglePreviewSummary(mapped.Value[0], targetItemId));
+            BiblatexImportPreviewResult? confirmed =
+                await Dialogs.ShowDialogAsync<BiblatexImportPreviewResult>(preview);
+            if (confirmed is not { Confirmed: true })
+            {
+                return;
+            }
+
+            source = mapped.Value[0];
+        }
+        else
+        {
+            BiblatexImportPreviewDialogViewModel preview = new(
+                mapped.Value,
+                true,
+                "源文件包含多条可见条目。请选择一条导入当前题录；批量导入请使用菜单「从 BibLaTeX 批量导入」。");
+            BiblatexImportPreviewResult? confirmed =
+                await Dialogs.ShowDialogAsync<BiblatexImportPreviewResult>(preview);
+            if (confirmed is not { Confirmed: true } || string.IsNullOrWhiteSpace(confirmed.SelectedEntryKey))
+            {
+                return;
+            }
+
+            source = mapped.Value.Single(item =>
+                string.Equals(item.SourceEntryKey, confirmed.SelectedEntryKey, StringComparison.Ordinal));
+        }
+
+        BiblatexEntryDto entry = parsed.Value.First(candidate =>
+            string.Equals(candidate.Key, source.SourceEntryKey, StringComparison.Ordinal) && !candidate.IsXdata);
+        Result<BiblatexSingleImportPreview> plan =
+            await services.BiblatexImport.PreviewSingleAsync(entry, targetItemId);
+        if (plan.IsFailure)
+        {
+            Report($"BibLaTeX 预览失败：{plan.ErrorCode} {plan.ErrorMessage}");
+            return;
+        }
+
+        IReadOnlyDictionary<string, string>? fieldChoices = null;
+        if (plan.Value.FieldConflictDescriptor is { } conflict)
+        {
+            fieldChoices = await ResolveBiblatexFieldChoicesAsync(conflict);
+            if (fieldChoices is null)
+            {
+                Report("已取消 BibLaTeX 导入。");
+                return;
+            }
+        }
+
+        Result<BiblatexImportApplyResult> applied = await services.BiblatexImport.ApplySingleAsync(
+            plan.Value.Source,
+            targetItemId,
+            fieldChoices,
+            bibFileDirectory);
+        if (applied.IsFailure)
+        {
+            Report($"BibLaTeX 导入失败：{applied.ErrorCode} {applied.ErrorMessage}");
+            return;
+        }
+
+        Report(applied.Value.StatusMessage);
+        await Shell.RefreshItemsAsync();
+        if (targetItemId is { } existingItemId)
+        {
+            await EditItemByIdAsync(existingItemId.ToString());
+        }
+        else if (applied.Value.CreatedItemIds is [string createdId, ..])
+        {
+            await EditItemByIdAsync(createdId);
+        }
+    }
+
+    private static string BuildSinglePreviewSummary(BiblatexMappedItem source, ItemId? targetItemId)
+    {
+        string target = targetItemId is null ? "新题录" : $"题录 {targetItemId}";
+        return $"将导入条目 {source.SourceEntryKey}（@{source.SourceEntryType}）到{target}：{source.Title}";
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>?> ResolveBiblatexFieldChoicesAsync(
+        ConflictDescriptor conflict)
+    {
+        ConflictResolutionDialogViewModel dialog = new(conflict);
+        ConflictDialogResult? choice = await Dialogs.ShowDialogAsync<ConflictDialogResult>(dialog);
+        if (choice is null ||
+            string.Equals(choice.ActionId, "leave_unresolved", StringComparison.Ordinal) ||
+            choice.Choices is null)
+        {
+            return null;
+        }
+
+        Result<ConflictExecutionResult> executed =
+            await (await ServicesAsync()).ConflictActions.ExecuteAsync(
+                conflict,
+                new ConflictActionSelection(choice.ActionId, choice.OptionId, choice.Choices));
+        return executed.IsSuccess ? choice.Choices : null;
+    }
+
+    private async Task<IReadOnlyDictionary<string, string>?> ResolveBiblatexLinkChoicesAsync(
+        ConflictDescriptor conflict)
+    {
+        ConflictResolutionDialogViewModel dialog = new(conflict);
+        ConflictDialogResult? choice = await Dialogs.ShowDialogAsync<ConflictDialogResult>(dialog);
+        if (choice is null ||
+            string.Equals(choice.ActionId, "leave_unresolved", StringComparison.Ordinal) ||
+            choice.Choices is null)
+        {
+            return null;
+        }
+
+        Result<ConflictExecutionResult> executed =
+            await (await ServicesAsync()).ConflictActions.ExecuteAsync(
+                conflict,
+                new ConflictActionSelection(choice.ActionId, choice.OptionId, choice.Choices));
+        return executed.IsSuccess ? choice.Choices : null;
+    }
+
+    private async Task ImportBiblatexBatchAsync()
+    {
+        string? path = await FilePicker.OpenFileAsync("选择 BibLaTeX 文件", "BibLaTeX", ["*.bib"]);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        AppServices services = await ServicesAsync();
+        Result<IReadOnlyList<BiblatexEntryDto>> parsed = await services.BiblatexImport.ParseFileAsync(path);
+        if (parsed.IsFailure)
+        {
+            Report($"BibLaTeX 解析失败：{parsed.ErrorCode} {parsed.ErrorMessage}");
+            return;
+        }
+
+        Result<BiblatexBatchImportPreview> preview = await services.BiblatexImport.PreviewBatchAsync(parsed.Value);
+        if (preview.IsFailure)
+        {
+            Report($"BibLaTeX 批量预览失败：{preview.ErrorCode} {preview.ErrorMessage}");
+            return;
+        }
+
+        IReadOnlyDictionary<string, string>? linkChoices = null;
+        if (preview.Value.Plan.LinkConflictDescriptor is { } conflict)
+        {
+            linkChoices = await ResolveBiblatexLinkChoicesAsync(conflict);
+            if (linkChoices is null)
+            {
+                Report("已取消 BibLaTeX 批量导入。");
+                return;
+            }
+        }
+        else
+        {
+            BiblatexImportPreviewDialogViewModel confirm = new(
+                preview.Value.Plan.Groups.Select(static group => group.Source).ToArray(),
+                false,
+                $"将静默新建 {preview.Value.Plan.Groups.Count} 条题录（无关联候选）。");
+            BiblatexImportPreviewResult? ok =
+                await Dialogs.ShowDialogAsync<BiblatexImportPreviewResult>(confirm);
+            if (ok is not { Confirmed: true })
+            {
+                return;
+            }
+        }
+
+        string? directory = Path.GetDirectoryName(path);
+        Result<BiblatexImportApplyResult> applied = await services.BiblatexImport.ApplyBatchAsync(
+            preview.Value.Plan,
+            linkChoices,
+            directory);
+        if (applied.IsFailure)
+        {
+            Report($"BibLaTeX 批量导入失败：{applied.ErrorCode} {applied.ErrorMessage}");
+            return;
+        }
+
+        Report(applied.Value.StatusMessage);
+        await Shell.RefreshItemsAsync();
+    }
+
+    private async Task ExportBiblatexAsync()
+    {
+        IReadOnlyList<ItemId> ids = GetSelectedItemIds();
+        if (ids.Count == 0)
+        {
+            Report("请先选择一个或多个题录。");
+            return;
+        }
+
+        AppServices services = await ServicesAsync();
+        Result<string> text = await services.BiblatexImport.ExportItemsAsync(ids);
+        if (text.IsFailure)
+        {
+            Report($"BibLaTeX 导出失败：{text.ErrorCode} {text.ErrorMessage}");
+            return;
+        }
+
+        string? path = await FilePicker.SaveFileAsync(
+            "导出 BibLaTeX",
+            ids.Count == 1 ? "export.bib" : "export-batch.bib",
+            "BibLaTeX",
+            ["*.bib"]);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        await File.WriteAllTextAsync(path, text.Value, new System.Text.UTF8Encoding(false));
+        Report($"已导出 {ids.Count} 条 BibLaTeX 到 {path}");
+    }
+
+    private async Task CopyBiblatexAsync()
+    {
+        IReadOnlyList<ItemId> ids = GetSelectedItemIds();
+        if (ids.Count == 0)
+        {
+            Report("请先选择一个或多个题录。");
+            return;
+        }
+
+        AppServices services = await ServicesAsync();
+        Result<string> text = await services.BiblatexImport.ExportItemsAsync(ids);
+        if (text.IsFailure)
+        {
+            Report($"BibLaTeX 复制失败：{text.ErrorCode} {text.ErrorMessage}");
+            return;
+        }
+
+        await Clipboard.SetTextAsync(text.Value);
+        Report($"已复制 {ids.Count} 条 BibLaTeX 到剪贴板。");
+    }
+
+    private IReadOnlyList<ItemId> GetSelectedItemIds()
+    {
+        if (Shell.HasBatchSelection)
+        {
+            return Shell.SelectedItems.Select(static item => ItemId.Parse(item.ItemId)).ToArray();
+        }
+
+        return Shell.SelectedItem is null
+            ? Array.Empty<ItemId>()
+            : new[] { ItemId.Parse(Shell.SelectedItem.ItemId) };
+    }
+
 
     private async Task CopyCslBibliographyAsync()
     {

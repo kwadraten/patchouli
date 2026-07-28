@@ -45,7 +45,7 @@ public sealed class ConflictResolutionCoordinator : IConflictCoordinator
                 false));
         }
 
-        ConflictActionSelection selection = new(choice.ActionId, choice.OptionId);
+        ConflictActionSelection selection = new(choice.ActionId, choice.OptionId, choice.Choices);
         Result<ConflictExecutionResult> executed = executor is null
             ? await _executors.ExecuteAsync(conflict, selection, cancellationToken)
             : await executor.ExecuteAsync(conflict, selection, cancellationToken);

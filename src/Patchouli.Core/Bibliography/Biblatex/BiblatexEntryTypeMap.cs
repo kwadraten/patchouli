@@ -4,7 +4,7 @@ namespace Patchouli.Core.Bibliography.Biblatex;
 /// BibLaTeX entry-type tables transplanted from Citation.js
 /// <c>@citation-js/plugin-bibtex</c> <c>src/mapping/biblatexTypes.json</c>
 /// (MIT License). Locked upstream revision is recorded in
-/// <c>.agent/adr/0019-biblatex-import-export-via-typst-biblatex-helper.md</c>.
+/// <c>.agent/adr/0021-biblatex-import-export-via-typst-biblatex-helper.md</c>.
 /// </summary>
 public static class BiblatexEntryTypeMap
 {
