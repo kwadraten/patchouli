@@ -67,7 +67,7 @@ public sealed class MacOSFileAccessTests
         {
             ResolveResult = new MacOSNativeCallResult(0, "/Volumes/Library/real", "")
         };
-        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.FromSeconds(1));
 
         NativeDirectoryResolution resolution = await adapter.ResolveDirectoryAsync("/Users/test/Finder Alias", default);
 
@@ -81,7 +81,7 @@ public sealed class MacOSFileAccessTests
         {
             ResolveResult = new MacOSNativeCallResult(-2, null, "TCC denied folder access.")
         };
-        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.FromSeconds(1));
 
         NativeDirectoryResolution resolution = await adapter.ResolveDirectoryAsync("/Users/test/Documents", default);
 
@@ -91,17 +91,107 @@ public sealed class MacOSFileAccessTests
     }
 
     [Fact]
-    public async Task MacOSNativeFileAccessAdapter_waits_for_icloud_download_with_interop_on_any_host()
+    public async Task MacOSNativeFileAccessAdapter_times_out_when_native_resolve_blocks()
     {
-        TestMacOSInterop interop = new(new MacOSNativeCallResult(1, null, "Download started."),
-            new MacOSNativeCallResult(0, "/Users/test/iCloud.pdf", ""));
-        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+        // Not disposed on purpose: the handler may still run on the abandoned timeout thread
+        // after the test finishes, and disposing the gate would race with that access.
+        ManualResetEventSlim release = new(false);
+        TestMacOSInterop interop = new()
+        {
+            ResolveHandler = _ =>
+            {
+                release.Wait();
+                return new MacOSNativeCallResult(0, "/late", "");
+            }
+        };
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.FromMilliseconds(50));
+
+        NativeDirectoryResolution resolution = await adapter.ResolveDirectoryAsync("/Users/test/wedged", default);
+        release.Set();
+
+        resolution.ResolvedPath.Should().BeNull();
+        resolution.FailureCode.Should().Be("resolve_timeout");
+        resolution.FailureReason.Should().Contain("/Users/test/wedged");
+    }
+
+    [Fact]
+    public async Task MacOSNativeFileAccessAdapter_skips_icloud_placeholder_immediately()
+    {
+        TestMacOSInterop interop = new(new MacOSNativeCallResult(1, null, "Download started."));
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.FromSeconds(1));
 
         NativeFileMaterialization materialization =
             await adapter.MaterializeFileAsync("/Users/test/iCloud.pdf", default);
 
-        materialization.IsAvailable.Should().BeTrue();
-        interop.MaterializeCallCount.Should().Be(2);
+        materialization.IsAvailable.Should().BeFalse();
+        materialization.FailureCode.Should().Be("icloud_not_downloaded");
+        interop.MaterializeCallCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task MacOSNativeFileAccessAdapter_times_out_when_native_materialize_blocks()
+    {
+        // Not disposed on purpose: the handler may still run on the abandoned timeout thread
+        // after the test finishes, and disposing the gate would race with that access.
+        ManualResetEventSlim release = new(false);
+        TestMacOSInterop interop = new()
+        {
+            MaterializeHandler = _ =>
+            {
+                release.Wait();
+                return new MacOSNativeCallResult(0, "/late", "");
+            }
+        };
+        MacOSNativeFileAccessAdapter adapter = new(interop, TimeSpan.FromMilliseconds(50));
+
+        NativeFileMaterialization materialization =
+            await adapter.MaterializeFileAsync("/Users/test/stuck.pdf", default);
+        release.Set();
+
+        materialization.IsAvailable.Should().BeFalse();
+        materialization.FailureCode.Should().Be("icloud_not_downloaded");
+    }
+
+    [Fact]
+    public async Task FileSearchRootAccess_skips_directory_when_native_resolution_times_out()
+    {
+        string dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"macos-scan-{Guid.NewGuid():N}"))
+            .FullName;
+        string wedged = Directory.CreateDirectory(Path.Combine(dir, "wedged")).FullName;
+        try
+        {
+            TestFixtures.CopyRealThreePagePdfTo(dir, "available.pdf");
+            TestFixtures.CopyRealThreePagePdfTo(wedged, "hidden.pdf");
+            // Not disposed on purpose: the handler may still run on the abandoned timeout thread
+            // after the test finishes, and disposing the gate would race with that access.
+            ManualResetEventSlim release = new(false);
+            TestMacOSInterop interop = new()
+            {
+                ResolveHandler = path =>
+                {
+                    if (path.StartsWith(wedged, StringComparison.OrdinalIgnoreCase))
+                    {
+                        release.Wait();
+                    }
+
+                    return new MacOSNativeCallResult(0, path, "");
+                }
+            };
+            FileSearchRootAccess access =
+                new(new MacOSNativeFileAccessAdapter(interop, TimeSpan.FromMilliseconds(50)));
+            ResolvedFileSearchRoot root = new(dir, dir, "test", FileSearchRootAuthorizationKinds.None);
+
+            FileSearchRootScanResult scan = await access.ScanPdfAsync(root);
+            release.Set();
+
+            scan.Candidates.Should().ContainSingle(candidate => candidate.FileName == "available.pdf");
+            scan.SkippedDirectories.Should().ContainSingle(issue => issue.Code == "resolve_timeout");
+            scan.ScanStatus.Should().Be(FileSearchRootScanStatuses.Partial);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
     }
 
     private sealed class TestMacOSInterop(params MacOSNativeCallResult[] materializeResults) : IMacOSFileSystemInterop
@@ -109,16 +199,23 @@ public sealed class MacOSFileAccessTests
         private readonly Queue<MacOSNativeCallResult> _materializeResults = new(materializeResults);
 
         public MacOSNativeCallResult ResolveResult { get; init; } = new(0, "/resolved", "");
+        public Func<string, MacOSNativeCallResult>? ResolveHandler { get; init; }
+        public Func<string, MacOSNativeCallResult>? MaterializeHandler { get; init; }
         public int MaterializeCallCount { get; private set; }
 
         public MacOSNativeCallResult ResolvePath(string path)
         {
-            return ResolveResult;
+            return ResolveHandler?.Invoke(path) ?? ResolveResult;
         }
 
         public MacOSNativeCallResult MaterializeFile(string path)
         {
             MaterializeCallCount++;
+            if (MaterializeHandler is not null)
+            {
+                return MaterializeHandler(path);
+            }
+
             return _materializeResults.Count == 0
                 ? new MacOSNativeCallResult(0, path, "")
                 : _materializeResults.Count > 1

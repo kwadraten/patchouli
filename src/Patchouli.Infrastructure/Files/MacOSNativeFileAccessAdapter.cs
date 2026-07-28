@@ -6,48 +6,43 @@ namespace Patchouli.Infrastructure.Files;
 /// </summary>
 public sealed class MacOSNativeFileAccessAdapter : INativeFileAccessAdapter
 {
-    private const int DefaultMaterializeTimeoutMs = 5000;
+    private const int DefaultNativeCallTimeoutMs = 3000;
     private readonly IMacOSFileSystemInterop _interop;
-    private readonly TimeSpan _pollInterval;
-    private readonly TimeSpan _materializeTimeout;
+    private readonly TimeSpan _nativeCallTimeout;
 
     public MacOSNativeFileAccessAdapter()
-        : this(new PInvokeMacOSFileSystemInterop(), TimeSpan.FromMilliseconds(50),
-            TimeSpan.FromMilliseconds(DefaultMaterializeTimeoutMs))
+        : this(new PInvokeMacOSFileSystemInterop(), TimeSpan.FromMilliseconds(DefaultNativeCallTimeoutMs))
     {
     }
 
-    internal MacOSNativeFileAccessAdapter(IMacOSFileSystemInterop interop, TimeSpan pollInterval,
-        TimeSpan materializeTimeout)
+    internal MacOSNativeFileAccessAdapter(IMacOSFileSystemInterop interop, TimeSpan nativeCallTimeout)
     {
         _interop = interop;
-        _pollInterval = pollInterval;
-        _materializeTimeout = materializeTimeout;
+        _nativeCallTimeout = nativeCallTimeout;
     }
 
-    public ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(string path,
+    public async ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(string path,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         try
         {
-            MacOSNativeCallResult result = _interop.ResolvePath(path);
+            MacOSNativeCallResult result = await RunNativeCall(() => _interop.ResolvePath(path),
+                cancellationToken);
             return result.Code == 0
-                ? ValueTask.FromResult(new NativeDirectoryResolution(result.Path ?? path))
-                : ValueTask.FromResult(new NativeDirectoryResolution(null,
-                    result.Code == -2 ? "access_denied" : "io_error", result.Error));
+                ? new NativeDirectoryResolution(result.Path ?? path)
+                : new NativeDirectoryResolution(null,
+                    result.Code == -2 ? "access_denied" : "io_error", result.Error);
         }
-        catch (UnauthorizedAccessException exception)
+        catch (TimeoutException)
         {
-            return ValueTask.FromResult(
-                new NativeDirectoryResolution(null, PortableNativeFileAccessAdapter.Classify(exception),
-                    exception.Message));
+            return new NativeDirectoryResolution(null, "resolve_timeout",
+                $"Directory resolution timed out after {_nativeCallTimeout.TotalMilliseconds:0} ms: {path}");
         }
-        catch (IOException exception)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return ValueTask.FromResult(
-                new NativeDirectoryResolution(null, PortableNativeFileAccessAdapter.Classify(exception),
-                    exception.Message));
+            return new NativeDirectoryResolution(null, PortableNativeFileAccessAdapter.Classify(exception),
+                exception.Message);
         }
     }
 
@@ -55,47 +50,43 @@ public sealed class MacOSNativeFileAccessAdapter : INativeFileAccessAdapter
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
-        using CancellationTokenSource timeoutSource = new(_materializeTimeout);
-        using CancellationTokenSource linkedSource =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
-
         try
         {
-            while (!linkedSource.Token.IsCancellationRequested)
+            MacOSNativeCallResult result = await RunNativeCall(() => _interop.MaterializeFile(path),
+                cancellationToken);
+            if (result.Code == 0)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                MacOSNativeCallResult result = _interop.MaterializeFile(path);
-                if (result.Code == 0)
-                {
-                    return new NativeFileMaterialization(true);
-                }
-
-                if (result.Code < 0)
-                {
-                    return new NativeFileMaterialization(false, result.Code == -2 ? "access_denied" : "io_error",
-                        result.Error);
-                }
-
-                // Code 1 means the file is an iCloud placeholder and the download was started.
-                // Wait a short interval before asking the helper again.
-                await Task.Delay(_pollInterval, cancellationToken).ConfigureAwait(false);
+                return new NativeFileMaterialization(true);
             }
 
-            return timeoutSource.Token.IsCancellationRequested
-                ? new NativeFileMaterialization(false, "icloud_not_downloaded",
-                    "iCloud file download timed out.")
-                : new NativeFileMaterialization(false, "cancelled", "File materialization was cancelled.");
+            if (result.Code < 0)
+            {
+                return new NativeFileMaterialization(false, result.Code == -2 ? "access_denied" : "io_error",
+                    result.Error);
+            }
+
+            // Code 1 means the file is an iCloud placeholder and the download was started.
+            // Skip the file instead of polling: the file-search-root watcher triggers a rescan
+            // once the download lands on disk, which picks the file up.
+            return new NativeFileMaterialization(false, "icloud_not_downloaded",
+                "iCloud file is not downloaded; the download was started and the file will be " +
+                "picked up by the next rescan.");
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (OperationCanceledException)
+        catch (TimeoutException)
         {
             return new NativeFileMaterialization(false, "icloud_not_downloaded",
-                "iCloud file download timed out.");
+                $"File materialization timed out after {_nativeCallTimeout.TotalMilliseconds:0} ms: {path}");
         }
+    }
+
+    private async Task<MacOSNativeCallResult> RunNativeCall(Func<MacOSNativeCallResult> call,
+        CancellationToken cancellationToken)
+    {
+        // Native Foundation calls cannot be cancelled once entered; run them on a background
+        // thread and bound the wait instead. On timeout the abandoned task may stay blocked
+        // inside the OS call until process exit. That leak is bounded by the number of wedged
+        // paths and only occurs when the OS call itself hangs (dead Finder alias, unreachable
+        // network volume, pending TCC handling).
+        return await Task.Run(call, cancellationToken).WaitAsync(_nativeCallTimeout, cancellationToken);
     }
 }

@@ -202,7 +202,14 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
         try
         {
             AppServices services = await _main.ServicesAsync();
-            Result<FileSearchRoot> added = await services.FileResolution.AddSearchRootAsync(SelectedFileSearchRoot);
+            SelectedFileSearchRoot selectedRoot = SelectedFileSearchRoot;
+            // Registration traverses the whole directory tree (on macOS via native filesystem
+            // calls); keep it off the UI thread.
+            Result<FileSearchRoot> added =
+                await Task.Run(() => services.FileResolution.AddSearchRootAsync(selectedRoot));
+            await _main.LogOperationAsync("file-scan",
+                $"Search root registration (trigger=add-root): {selectedRoot.DisplayPath} -> " +
+                (added.IsSuccess ? "registered" : $"{added.ErrorCode}: {added.ErrorMessage}"));
             if (added.IsFailure && added.ErrorCode != AppErrorCodes.InvalidState)
             {
                 SetStatus(added.ErrorMessage ?? "文件搜索根登记失败。");
@@ -216,7 +223,8 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
 
             await LoadFileSearchRootsAsync();
             await _main.RefreshSidebarPathsAsync();
-            await _main.RescanFileSearchRootsAsync("文件搜索根已登记，重新扫描完成。", true);
+            await _main.RescanFileSearchRootsAsync("文件搜索根已登记，重新扫描完成。", true,
+                trigger: "add-root");
             SetStatus(added.IsSuccess ? "文件搜索根已登记，扫描结果已记录。" : "文件搜索根已存在，已刷新状态。");
         }
         catch (Exception ex)

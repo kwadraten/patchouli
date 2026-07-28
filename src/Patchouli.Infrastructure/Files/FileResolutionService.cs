@@ -78,39 +78,46 @@ public sealed class FileResolutionService : IFileResolutionService
                 selectedRoot.SelectedAt.ToUniversalTime());
             BlockingOperationId? scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
 
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
-            await connection.OpenAsync(cancellationToken);
-            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
-
-            int duplicate = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from file_search_roots where library_id = @LibraryId and root_path = @RootPath;",
-                new { LibraryId = root.LibraryId.ToString(), root.RootPath },
-                transaction);
-
-            if (duplicate > 0)
+            // Register the root in a short write transaction. The traversal below stays outside
+            // both the transaction and the execution gate: on macOS it performs native
+            // filesystem calls that can take an unbounded amount of time per directory.
+            using (IDisposable registrationGate = await _connectionFactory.EnterExclusiveAsync(cancellationToken))
             {
-                await transaction.RollbackAsync(cancellationToken);
-                await TryFailRootScanAsync(
-                    scanOperationId,
-                    AppErrorCodes.InvalidState,
-                    "This search root is already registered for the current library.",
-                    "Search root scan blocked by duplicate registration.",
-                    ["Choose a different search root"],
-                    cancellationToken);
-                return Result<FileSearchRoot>.Failure(
-                    AppErrorCodes.InvalidState,
-                    "This search root is already registered for the current library.");
-            }
+                await using SqliteConnection connection = _connectionFactory.CreateConnection();
+                await connection.OpenAsync(cancellationToken);
+                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-            await connection.ExecuteAsync(
-                """
-                insert into file_search_roots (root_id, library_id, root_path, is_available, created_at, updated_at,
-                    authorization_kind, authorization_payload, authorization_payload_version, authorization_updated_at)
-                values (@RootId, @LibraryId, @RootPath, @IsAvailable, @CreatedAt, @UpdatedAt,
-                    @AuthorizationKind, @AuthorizationPayload, @AuthorizationPayloadVersion, @AuthorizationUpdatedAt);
-                """,
-                ToParameters(root),
-                transaction);
+                int duplicate = await connection.ExecuteScalarAsync<int>(
+                    "select count(1) from file_search_roots where library_id = @LibraryId and root_path = @RootPath;",
+                    new { LibraryId = root.LibraryId.ToString(), root.RootPath },
+                    transaction);
+
+                if (duplicate > 0)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    await TryFailRootScanAsync(
+                        scanOperationId,
+                        AppErrorCodes.InvalidState,
+                        "This search root is already registered for the current library.",
+                        "Search root scan blocked by duplicate registration.",
+                        ["Choose a different search root"],
+                        cancellationToken);
+                    return Result<FileSearchRoot>.Failure(
+                        AppErrorCodes.InvalidState,
+                        "This search root is already registered for the current library.");
+                }
+
+                await connection.ExecuteAsync(
+                    """
+                    insert into file_search_roots (root_id, library_id, root_path, is_available, created_at, updated_at,
+                        authorization_kind, authorization_payload, authorization_payload_version, authorization_updated_at)
+                    values (@RootId, @LibraryId, @RootPath, @IsAvailable, @CreatedAt, @UpdatedAt,
+                        @AuthorizationKind, @AuthorizationPayload, @AuthorizationPayloadVersion, @AuthorizationUpdatedAt);
+                    """,
+                    ToParameters(root),
+                    transaction);
+                await transaction.CommitAsync(cancellationToken);
+            }
 
             Result<ResolvedFileSearchRoot> reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
             FileSearchRootTraversalResult scanSummary = reopened.IsSuccess
@@ -128,13 +135,13 @@ public sealed class FileResolutionService : IFileResolutionService
             if (root.IsAvailable != scanComplete)
             {
                 root = root with { IsAvailable = scanComplete, UpdatedAt = _clock.UtcNow.ToUniversalTime() };
+                using IDisposable availabilityGate = await _connectionFactory.EnterExclusiveAsync(cancellationToken);
+                await using SqliteConnection connection = _connectionFactory.CreateConnection();
+                await connection.OpenAsync(cancellationToken);
                 await connection.ExecuteAsync(
                     "update file_search_roots set is_available = @IsAvailable, updated_at = @UpdatedAt where root_id = @RootId;",
-                    new { IsAvailable = scanComplete, UpdatedAt = root.UpdatedAt, RootId = root.RootId.ToString() },
-                    transaction);
+                    new { IsAvailable = scanComplete, UpdatedAt = root.UpdatedAt, RootId = root.RootId.ToString() });
             }
-
-            await transaction.CommitAsync(cancellationToken);
 
             if (scanSummary.ScanStatus == FileSearchRootScanStatuses.Cancelled)
             {

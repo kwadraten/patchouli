@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO.Compression;
 using System.Net.Sockets;
@@ -899,6 +900,56 @@ public sealed class UiViewModelTests : IDisposable
             second.Value.ImportedPdfCount.Should().Be(0);
             second.Value.SkippedKnownPdfCount.Should().BeGreaterThanOrEqualTo(1);
             vm.Shell.Items.Should().ContainSingle(item => item.FileName == "new-source.pdf");
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MainWindowViewModel_logs_file_scan_and_file_watcher_events()
+    {
+        string root = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"ui-scan-log-{Guid.NewGuid():N}"))
+            .FullName;
+        string database = Path.Combine(root, "ui.sqlite");
+        string pdf = Path.Combine(root, "logged-source.pdf");
+        try
+        {
+            File.Copy(TestFixtures.RealThreePagePdf, pdf);
+            CapturingLogger logger = new();
+            MainWindowViewModel vm =
+                WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard(), logger), database);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            AppServices services = await vm.ServicesAsync();
+            await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
+
+            Result<FileSearchRootRescanSummary> result = await vm.RescanFileSearchRootsAsync();
+
+            result.IsSuccess.Should().BeTrue();
+            logger.Messages.Should().Contain(message =>
+                message.Operation == "file-scan" && message.Message.Contains("Rescan started") &&
+                message.Message.Contains("trigger=manual"));
+            logger.Messages.Should().Contain(message =>
+                message.Operation == "file-scan" && message.Message.Contains("Root scan finished") &&
+                message.Message.Contains(Path.GetFullPath(root)));
+            logger.Messages.Should().Contain(message =>
+                message.Operation == "file-scan" && message.Message.Contains("Rescan finished") &&
+                message.Message.Contains("imported=1"));
+
+            File.Copy(TestFixtures.RealThreePagePdf, Path.Combine(root, "watched.pdf"));
+            bool sawWatcherLog = false;
+            for (int attempt = 0; attempt < 40 && !sawWatcherLog; attempt++)
+            {
+                await Task.Delay(250);
+                sawWatcherLog = logger.Messages.Any(message => message.Operation == "file-watcher");
+            }
+
+            sawWatcherLog.Should().BeTrue("the file watcher should log changes under the search root");
         }
         finally
         {
@@ -2325,6 +2376,17 @@ public sealed class UiViewModelTests : IDisposable
         public Task SetTextAsync(string text)
         {
             Text = text;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class CapturingLogger : IAppLogger
+    {
+        public ConcurrentQueue<(string Operation, string Message)> Messages { get; } = new();
+
+        public Task LogAsync(string operation, string message)
+        {
+            Messages.Enqueue((operation, message));
             return Task.CompletedTask;
         }
     }

@@ -151,12 +151,15 @@ public sealed class FirstRunWorkflow
                 importState.LastError);
         }
 
+        int skippedPathCount = (scan.SkippedDirectories?.Count ?? 0) + (scan.SkippedFiles?.Count ?? 0);
         FirstRunWorkflowState state = importedCount > 0
             ? new FirstRunWorkflowState(
                 FirstRunStep.MinerUConfig,
-                failedCount == 0
-                    ? $"已导入 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
-                    : $"已导入 {importedCount} 个 PDF 题录；{failedCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
+                scan.ScanStatus == FileSearchRootScanStatuses.Partial
+                    ? $"目录扫描不完整（跳过 {skippedPathCount} 个路径），已导入发现的 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
+                    : failedCount == 0
+                        ? $"已导入 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
+                        : $"已导入 {importedCount} 个 PDF 题录；{failedCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
                 lastPdfPath, libraryId, null, null, lastDocumentInstanceId, null, false)
             : new FirstRunWorkflowState(
                 FirstRunStep.Scan, "扫描到了 PDF 文件，但没有任何文件成功导入。", null,
@@ -164,15 +167,19 @@ public sealed class FirstRunWorkflow
 
         if (importedCount > 0)
         {
+            string completionDetail = scan.ScanStatus == FileSearchRootScanStatuses.Partial
+                ? $"Scan incomplete ({skippedPathCount} path(s) skipped); imported {importedCount} of " +
+                  $"{scan.TotalCount} discovered PDF candidate(s)."
+                : $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).";
             await TryUpdateInitialRootScanAsync(
                 operationId,
                 scan.Candidates.Count,
                 scan.Candidates.Count,
-                $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).",
+                completionDetail,
                 cancellationToken);
             await TryCompleteInitialRootScanAsync(
                 operationId,
-                $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).",
+                completionDetail,
                 cancellationToken);
         }
         else
@@ -258,6 +265,13 @@ public sealed class FirstRunWorkflow
 
             return new FirstRunWorkflowState(FirstRunStep.Scan, "扫描已取消。", null, null, null, null, null,
                 "扫描已取消。", false);
+        }
+
+        if (scan.ScanStatus == FileSearchRootScanStatuses.Partial && scan.Candidates.Count > 0)
+        {
+            // A partial scan (iCloud placeholders skipped, a directory timed out, ...) still
+            // imports the discovered candidates; skipped paths are picked up by later rescans.
+            return null;
         }
 
         string code = scan.ScanStatus == FileSearchRootScanStatuses.Partial

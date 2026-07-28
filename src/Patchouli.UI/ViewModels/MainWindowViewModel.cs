@@ -695,7 +695,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         string completionMessage = "文件重新扫描完成。",
         bool showBlockingDialog = false,
         CancellationToken cancellationToken = default,
-        Action<int?, int?, string, string?>? progress = null)
+        Action<int?, int?, string, string?>? progress = null,
+        string trigger = "manual")
     {
         AppServices services = await ServicesAsync();
         Result<FileSearchRootRescanSummary> result;
@@ -707,13 +708,14 @@ public sealed class MainWindowViewModel : ViewModelBase
                     "正在扫描文件搜索根并导入新发现的 PDF。",
                     true),
                 context => RescanFileSearchRootsCoreAsync(services, completionMessage, context.CancellationToken,
-                    context.Report),
+                    context.Report, trigger),
                 cancellationToken);
         }
         else
         {
             result = await Task.Run(
-                () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress),
+                () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress,
+                    trigger),
                 cancellationToken);
         }
 
@@ -725,17 +727,23 @@ public sealed class MainWindowViewModel : ViewModelBase
         AppServices services,
         string completionMessage,
         CancellationToken cancellationToken,
-        Action<int?, int?, string, string?>? progress)
+        Action<int?, int?, string, string?>? progress,
+        string trigger)
     {
         BlockingOperationId? operationId = null;
         try
         {
+            using IDisposable databaseExecution =
+                await services.ConnectionFactory.EnterExclusiveAsync(cancellationToken);
             Result<IReadOnlyList<FileSearchRoot>> roots =
                 await services.FileResolution.ListSearchRootsAsync(cancellationToken);
             if (roots.IsFailure)
             {
                 return Result<FileSearchRootRescanSummary>.Failure(roots.ErrorCode!, roots.ErrorMessage!);
             }
+
+            await LogOperationAsync("file-scan",
+                $"Rescan started (trigger={trigger}): {roots.Value.Count} file search root(s).");
 
             Result<BlockingOperation> started = await services.BlockingOperations.StartAsync(
                 BlockingOperationTypes.FileSearchRootScan,
@@ -783,6 +791,16 @@ public sealed class MainWindowViewModel : ViewModelBase
                 using IDisposable? resolvedRoot = reopened.Value.AccessLease;
                 FileSearchRootScanResult scan =
                     await services.FileSearchRootAccess.ScanPdfAsync(reopened.Value, cancellationToken);
+                await LogOperationAsync("file-scan",
+                    $"Root scan finished (trigger={trigger}): {root.RootPath} status={scan.ScanStatus}, " +
+                    $"candidates={scan.Candidates.Count}, skippedDirectories={scan.SkippedDirectories.Count}, " +
+                    $"skippedFiles={scan.SkippedFiles.Count}.");
+                foreach (FileSearchRootIssue issue in scan.SkippedDirectories.Concat(scan.SkippedFiles))
+                {
+                    await LogOperationAsync("file-scan",
+                        $"Skipped (trigger={trigger}): [{issue.Code}] {issue.Path} - {issue.Reason}");
+                }
+
                 bool available = scan.ScanStatus == FileSearchRootScanStatuses.Complete &&
                                  scan.RootStatus == FileSearchRootStatuses.Available;
                 await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, available, cancellationToken);
@@ -809,12 +827,20 @@ public sealed class MainWindowViewModel : ViewModelBase
                     }
                 }
 
-                if (scan.ScanStatus != FileSearchRootScanStatuses.Complete)
+                if (scan.ScanStatus is FileSearchRootScanStatuses.Failed or FileSearchRootScanStatuses.Cancelled)
                 {
                     processedRoots++;
                     progress?.Invoke(processedRoots, roots.Value.Count,
                         $"文件搜索根扫描未完成：{scan.ScanStatus}", root.RootPath);
                     continue;
+                }
+
+                // A partial scan (e.g. iCloud placeholders skipped, a directory timed out) still
+                // imports the candidates that were discovered; the next rescan picks up the rest.
+                if (scan.ScanStatus == FileSearchRootScanStatuses.Partial)
+                {
+                    progress?.Invoke(processedRoots, roots.Value.Count,
+                        "文件搜索根扫描不完整，仍导入已发现的 PDF。", root.RootPath);
                 }
 
                 scanned += scan.Candidates.Count;
@@ -864,6 +890,10 @@ public sealed class MainWindowViewModel : ViewModelBase
                 unavailableRoots, skippedDirectories, skippedFiles);
             string message = BuildFileSearchRootRescanMessage(summary, completionMessage);
             progress?.Invoke(roots.Value.Count, roots.Value.Count, "文件重新扫描完成。", message);
+            await LogOperationAsync("file-scan",
+                $"Rescan finished (trigger={trigger}): scanned={scanned}, imported={imported}, " +
+                $"known={skipped}, failed={failed}, partialRoots={partialRoots}, " +
+                $"unavailableRoots={unavailableRoots}.");
             if (operationId is not null)
             {
                 await services.BlockingOperations.CompleteAsync(operationId.Value, message, Array.Empty<string>(),
@@ -874,6 +904,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
         catch (OperationCanceledException)
         {
+            await LogOperationAsync("file-scan", $"Rescan cancelled (trigger={trigger}).");
             if (operationId is not null)
             {
                 await services.BlockingOperations.CancelAsync(
@@ -887,6 +918,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
         catch (Exception ex)
         {
+            await LogOperationAsync("file-scan", $"Rescan failed (trigger={trigger}): {ex.Message}");
             string message = $"文件重新扫描失败：{ex.Message}";
             if (operationId is not null)
             {
@@ -1020,9 +1052,12 @@ public sealed class MainWindowViewModel : ViewModelBase
                     Filter = "*.pdf",
                     EnableRaisingEvents = true
                 };
-                FileSystemEventHandler changed = (_, _) => ScheduleFileSearchRootRescan();
-                RenamedEventHandler renamed = (_, _) => ScheduleFileSearchRootRescan();
-                ErrorEventHandler error = (_, _) => ScheduleFileSearchRootRescan();
+                FileSystemEventHandler changed = (_, e) =>
+                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}");
+                RenamedEventHandler renamed = (_, e) =>
+                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}");
+                ErrorEventHandler error = (_, e) =>
+                    ScheduleFileSearchRootRescan($"Error: {e.GetException()?.Message ?? "unknown"}");
                 watcher.Created += changed;
                 watcher.Changed += changed;
                 watcher.Deleted += changed;
@@ -1037,8 +1072,9 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    private void ScheduleFileSearchRootRescan()
+    private void ScheduleFileSearchRootRescan(string changeDescription)
     {
+        _ = LogOperationAsync("file-watcher", $"Change detected: {changeDescription}; rescan scheduled.");
         _fileSearchRootWatchDebounce?.Cancel();
         _fileSearchRootWatchDebounce?.Dispose();
         CancellationTokenSource cts = new();
@@ -1049,7 +1085,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task DebounceFileSearchRootRescanAsync(CancellationToken cancellationToken)
     {
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-        await DispatcherTasks.RunAsync(() => RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。"));
+        await DispatcherTasks.RunAsync(() =>
+            RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", trigger: "file-watcher"));
     }
 
     private void ResetFileSearchRootWatchers()
