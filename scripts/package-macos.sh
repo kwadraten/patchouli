@@ -53,6 +53,17 @@ cp -R "$publish_dir/." "$macos_dir/"
 cp "$fs_helper_dir/$fs_helper_dylib" "$macos_dir/$fs_helper_dylib"
 chmod +x "$macos_dir/Patchouli.UI"
 
+helper_bin="$root/tools/biblatex-helper/target/release/biblatex-helper"
+if [[ ! -x "$helper_bin" ]]; then
+  cargo build --release --manifest-path "$root/tools/biblatex-helper/Cargo.toml"
+fi
+if [[ ! -x "$helper_bin" ]]; then
+  echo "biblatex-helper was not found at $helper_bin" >&2
+  exit 1
+fi
+cp "$helper_bin" "$macos_dir/biblatex-helper"
+chmod +x "$macos_dir/biblatex-helper"
+
 if [[ ! -f "$macos_dir/appsettings.json" ]]; then
   echo "Published appsettings.json was not found in Contents/MacOS." >&2
   exit 1

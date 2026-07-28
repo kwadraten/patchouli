@@ -2,7 +2,10 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Core.Conflicts;
 
-public sealed record ConflictActionSelection(string ActionId, string? OptionId = null);
+public sealed record ConflictActionSelection(
+    string ActionId,
+    string? OptionId = null,
+    IReadOnlyDictionary<string, string>? Choices = null);
 
 public enum ConflictExecutionDisposition
 {
@@ -96,10 +99,11 @@ public static class ConflictResolutionTransitions
 
         if (action.RequiresOption)
         {
+            bool hasMultiChoice = selection.Choices is { Count: > 0 };
             bool validOption = !string.IsNullOrWhiteSpace(selection.OptionId) &&
                                conflict.AvailableOptions.Any(option =>
                                    string.Equals(option.OptionId, selection.OptionId, StringComparison.Ordinal));
-            if (!validOption)
+            if (!hasMultiChoice && !validOption)
             {
                 return Result<ConflictDescriptor>.Failure(
                     "conflict_option_required",

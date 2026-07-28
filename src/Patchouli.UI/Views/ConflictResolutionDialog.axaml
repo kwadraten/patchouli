@@ -3,12 +3,12 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
-        mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="600"
+        mc:Ignorable="d" d:DesignWidth="900" d:DesignHeight="640"
         x:Class="Patchouli.UI.Views.ConflictResolutionDialog"
         x:DataType="vm:ConflictResolutionDialogViewModel"
         Title="{Binding Title}"
         Icon="/Assets/AppIcon.ico"
-        Width="800" Height="600"
+        Width="900" Height="640"
         WindowStartupLocation="CenterOwner"
         CanResize="True"
         ShowInTaskbar="False"
@@ -18,7 +18,6 @@
   <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
           CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
     <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="14">
-      <!-- 标题与简要说明 -->
       <Grid Grid.Row="0" ColumnDefinitions="*,Auto" ColumnSpacing="16">
         <StackPanel Spacing="6">
           <TextBlock Text="{Binding ConflictDescription}" FontSize="14"
@@ -33,10 +32,7 @@
         </Border>
       </Grid>
 
-      <!-- 双栏对比区 -->
-      <Grid Grid.Row="1" ColumnDefinitions="*,20,*">
-
-        <!-- 本地版本 -->
+      <Grid Grid.Row="1" IsVisible="{Binding ShowSnapshotPanels}" ColumnDefinitions="*,20,*">
         <Border Grid.Column="0" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
                 CornerRadius="4" Padding="10">
           <Grid RowDefinitions="Auto,*">
@@ -47,8 +43,6 @@
             </ScrollViewer>
           </Grid>
         </Border>
-
-        <!-- 传入版本 -->
         <Border Grid.Column="2" BorderBrush="{DynamicResource PrimaryBrush}" BorderThickness="1" CornerRadius="4"
                 Padding="10">
           <Grid RowDefinitions="Auto,*">
@@ -59,8 +53,63 @@
             </ScrollViewer>
           </Grid>
         </Border>
-
       </Grid>
+
+      <ScrollViewer Grid.Row="1" IsVisible="{Binding IsFieldChoiceMode}">
+        <ItemsControl ItemsSource="{Binding FieldChoices}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:ConflictFieldChoiceViewModel">
+              <Border Margin="0,0,0,10" Padding="10" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                      BorderThickness="1" CornerRadius="4">
+                <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="6">
+                  <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
+                  <StackPanel Orientation="Horizontal" Spacing="16">
+                    <RadioButton Content="保留本地" IsChecked="{Binding KeepLocal}" GroupName="{Binding FieldKey}" />
+                    <RadioButton Content="采用导入" IsChecked="{Binding UseIncoming}" GroupName="{Binding FieldKey}" />
+                  </StackPanel>
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+                    <TextBlock Grid.Column="0" Text="{Binding LocalValue}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding IncomingValue}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource PrimaryBrush}" />
+                  </Grid>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
+
+      <ScrollViewer Grid.Row="1" IsVisible="{Binding IsLinkChoiceMode}">
+        <ItemsControl ItemsSource="{Binding LinkChoices}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:ConflictLinkChoiceViewModel">
+              <Border Margin="0,0,0,10" Padding="10" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                      BorderThickness="1" CornerRadius="4">
+                <Grid ColumnDefinitions="2*,3*" ColumnSpacing="12">
+                  <StackPanel>
+                    <TextBlock Text="{Binding SourceEntryKey}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding SourceTitle}" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+                  <ComboBox Grid.Column="1" ItemsSource="{Binding Options}"
+                            SelectedItem="{Binding SelectedOption}" HorizontalAlignment="Stretch">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:ConflictDialogOption">
+                        <StackPanel>
+                          <TextBlock Text="{Binding Label}" />
+                          <TextBlock Text="{Binding Detail}" FontSize="11"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        </StackPanel>
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </ScrollViewer>
 
       <ListBox Grid.Row="2" ItemsSource="{Binding Options}" SelectedItem="{Binding SelectedOption}"
                IsVisible="{Binding HasOptions}" MaxHeight="140">

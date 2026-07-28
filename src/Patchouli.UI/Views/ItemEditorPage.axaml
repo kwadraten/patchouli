@@ -11,6 +11,8 @@
                    Foreground="{DynamicResource OnSurfaceBrush}" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+        <Button Content="粘贴 BibLaTeX" Command="{Binding ImportBiblatexFromClipboardCommand}" Height="32" />
+        <Button Content="导入 .bib" Command="{Binding ImportBiblatexFromFileCommand}" Height="32" />
         <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger" />
         <Button Content="保存题录" Command="{Binding SaveCommand}" Height="32"
                 Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />

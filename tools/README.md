@@ -17,4 +17,4 @@ Protocol: one JSON request on UTF-8 stdin, one JSON response on UTF-8 stdout. st
 - Parse: `{"op":"parse","text":"..."}` → `{ok, entries?, error?}`
 - Write: `{"op":"write","entries":[...]}` → `{ok, text?, error?}`
 
-CSL rendering remains in-process through `Fsharp.Citeproc`. Packaging scripts should ship `biblatex-helper` only after the application wires a runtime path to it.
+CSL rendering remains in-process through `Fsharp.Citeproc`. Windows and macOS packaging scripts build and ship `biblatex-helper` next to the application binary.

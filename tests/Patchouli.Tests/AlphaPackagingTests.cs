@@ -260,5 +260,10 @@ public sealed class AlphaPackagingTests
         {
             return Task.CompletedTask;
         }
+
+        public Task<string?> GetTextAsync()
+        {
+            return Task.FromResult<string?>(null);
+        }
     }
 }

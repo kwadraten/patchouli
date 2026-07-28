@@ -1,0 +1,31 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        x:Class="Patchouli.UI.Views.BiblatexImportPreviewDialog"
+        x:DataType="vm:BiblatexImportPreviewDialogViewModel"
+        Title="{Binding Title}"
+        Icon="/Assets/AppIcon.ico"
+        Width="640" Height="420"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}">
+  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+          CornerRadius="8">
+    <Grid RowDefinitions="Auto,*,Auto" RowSpacing="12">
+      <TextBlock Text="{Binding Summary}" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      <ListBox Grid.Row="1" ItemsSource="{Binding Entries}" SelectedItem="{Binding SelectedEntry}">
+        <ListBox.ItemTemplate>
+          <DataTemplate x:DataType="vm:BiblatexEntryChoiceViewModel">
+            <TextBlock Text="{Binding Display}" Margin="4" TextWrapping="Wrap" />
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+      <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+        <Button Content="取消" Command="{Binding CancelCommand}" />
+        <Button Content="确认导入" Command="{Binding ConfirmCommand}" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>

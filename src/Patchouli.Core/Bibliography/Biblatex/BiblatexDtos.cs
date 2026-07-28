@@ -134,3 +134,13 @@ public interface IBiblatexHelperClient
         IReadOnlyList<BiblatexWriteEntryDto> entries,
         CancellationToken cancellationToken = default);
 }
+
+public sealed record BiblatexSingleImportPlan(
+    BiblatexMappedItem Source,
+    IReadOnlyList<BiblatexFieldConflict> FieldConflicts,
+    Conflicts.ConflictDescriptor? FieldConflictDescriptor);
+
+public sealed record BiblatexBatchImportPlan(
+    IReadOnlyList<BiblatexSourceMatchGroup> Groups,
+    bool HasCandidates,
+    Conflicts.ConflictDescriptor? LinkConflictDescriptor);

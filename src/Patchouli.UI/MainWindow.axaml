@@ -103,6 +103,13 @@
                       ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
             <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}"
                       ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
+            <Separator />
+            <MenuItem Header="{Binding ImportBiblatexBatchDescriptor.Label}"
+                      Command="{Binding ImportBiblatexBatchDescriptor}" />
+            <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}"
+                      Command="{Binding ExportBiblatexDescriptor}" />
+            <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}"
+                      Command="{Binding CopyBiblatexDescriptor}" />
           </MenuItem>
           <MenuItem Header="OCR">
             <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />

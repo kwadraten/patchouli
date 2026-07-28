@@ -15,7 +15,9 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
 using Patchouli.Evidence;
+using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
 using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Csl;
@@ -88,10 +90,14 @@ public sealed class AppServices
             settings.FileScanning.ExclusionPatterns);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
             blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
+        BiblatexHelper = new BiblatexHelperClient();
+        BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents);
         ConflictActions = new ConflictActionExecutorRegistry(
         [
             new FileConflictActionExecutor(FileResolution, ConflictCode.FileRelocationMultipleCandidates),
-            new FileConflictActionExecutor(FileResolution, ConflictCode.SourceFileChangedOrBBoxBasisStale)
+            new FileConflictActionExecutor(FileResolution, ConflictCode.SourceFileChangedOrBBoxBasisStale),
+            new BiblatexConflictActionExecutor(ConflictCode.BiblatexItemFieldConflict),
+            new BiblatexConflictActionExecutor(ConflictCode.BiblatexBatchLinkCandidates)
         ]);
         Pages = new PageService(ConnectionFactory, Clock);
         Markdown = new MarkdigMarkdownEngine();
@@ -189,6 +195,8 @@ public sealed class AppServices
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
+    public IBiblatexHelperClient BiblatexHelper { get; }
+    public IBiblatexImportService BiblatexImport { get; }
     public ConflictActionExecutorRegistry ConflictActions { get; }
     public FileSearchRootAccess FileSearchRootAccess { get; }
     public IPageService Pages { get; }

@@ -357,6 +357,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
         AddCreatorCommand = new AsyncCommand(AddCreatorAsync);
         AddIdentifierCommand = new AsyncCommand(AddIdentifierAsync);
         RegisterFileCommand = new AsyncCommand(RegisterFileAsync);
+        ImportBiblatexFromClipboardCommand = new AsyncCommand(ImportBiblatexFromClipboardAsync);
+        ImportBiblatexFromFileCommand = new AsyncCommand(ImportBiblatexFromFileAsync);
 
         BuildFields(null);
     }
@@ -540,6 +542,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public AsyncCommand AddCreatorCommand { get; }
     public AsyncCommand AddIdentifierCommand { get; }
     public AsyncCommand RegisterFileCommand { get; }
+    public AsyncCommand ImportBiblatexFromClipboardCommand { get; }
+    public AsyncCommand ImportBiblatexFromFileCommand { get; }
 
     public string FilePath { get; set; } = "";
 
@@ -863,6 +867,56 @@ public sealed class ItemEditorViewModel : ViewModelBase
         await RefreshIdentifiersAsync();
         RaiseAll();
         _main.Report(Status);
+    }
+
+    private async Task ImportBiblatexFromClipboardAsync()
+    {
+        string? text = await _main.Clipboard.GetTextAsync();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            Status = "剪贴板没有可导入的 BibLaTeX 文本。";
+            Raise(nameof(Status));
+            _main.Report(Status);
+            return;
+        }
+
+        await _main.ImportBiblatexTextIntoEditorAsync(text, null, _itemId);
+        if (_itemId is not null)
+        {
+            await LoadAsync(_itemId.Value.ToString());
+        }
+    }
+
+    private async Task ImportBiblatexFromFileAsync()
+    {
+        string? path = await _main.FilePicker.OpenFileAsync("导入 BibLaTeX", "BibLaTeX", ["*.bib"]);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        await ImportBiblatexFromPathAsync(path);
+    }
+
+    public async Task ImportBiblatexFromPathAsync(string path)
+    {
+        byte[] bytes = await File.ReadAllBytesAsync(path);
+        Result utf8 = Infrastructure.Bibliography.Biblatex.BiblatexImportPlanner.ReadUtf8Strict(
+            bytes, out string text);
+        if (utf8.IsFailure)
+        {
+            Status = utf8.ErrorMessage ?? "编码错误";
+            Raise(nameof(Status));
+            _main.Report(Status);
+            return;
+        }
+
+        string? directory = Path.GetDirectoryName(path);
+        await _main.ImportBiblatexTextIntoEditorAsync(text, directory, _itemId);
+        if (_itemId is not null)
+        {
+            await LoadAsync(_itemId.Value.ToString());
+        }
     }
 
     private async Task RegisterFileAsync()
