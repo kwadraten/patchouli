@@ -36,6 +36,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
                 tx);
             foreach (UnitRow unit in units)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 await InsertFtsAsync(connection, tx, unit);
             }
 
@@ -80,6 +81,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
                 tx);
             foreach (UnitRow unit in units)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 await InsertFtsAsync(connection, tx, unit);
             }
 

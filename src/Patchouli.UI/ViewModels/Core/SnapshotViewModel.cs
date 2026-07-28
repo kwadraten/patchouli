@@ -114,6 +114,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         SnapshotSyncOperationState.AwaitingContentConflicts => "等待内容冲突处理",
         SnapshotSyncOperationState.Applying => "正在应用",
         SnapshotSyncOperationState.Applied => "已应用",
+        SnapshotSyncOperationState.Cancelled => "已取消",
         SnapshotSyncOperationState.Failed => "操作失败",
         _ => OperationState.ToString()
     };
@@ -228,26 +229,43 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private async Task PublishAsync()
     {
-        Result<SnapshotPublishResult> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions("发布到同步目录", "正在创建并验证快照分片。", true),
-            async context => await (await _main.ServicesAsync()).SnapshotSync.PublishAsync(context.CancellationToken));
-        OperationMessage = result.IsSuccess
-            ? "快照已发布到同步目录。"
-            : DescribeFailure(result);
-        await RefreshAfterOperationAsync("publish_snapshot", result.IsSuccess);
+        try
+        {
+            Result<SnapshotPublishResult> result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("发布到同步目录", "正在创建并验证快照分片。", true),
+                async context =>
+                    await (await _main.ServicesAsync()).SnapshotSync.PublishAsync(context.CancellationToken));
+            OperationMessage = result.IsSuccess
+                ? "快照已发布到同步目录。"
+                : DescribeFailure(result);
+            await RefreshAfterOperationAsync("publish_snapshot", result.IsSuccess);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            OperationMessage = "操作已取消。";
+            await RefreshAfterCancellationAsync("publish_snapshot");
+        }
     }
 
     private async Task ExportAsync()
     {
-        Result<SnapshotExportResult> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions("导出快照包", "正在创建可移动的目录快照包。", true),
-            async context => await (await _main.ServicesAsync()).SnapshotSync.ExportAsync(
-                new SnapshotExportRequest(ExportDestinationDirectory),
-                context.CancellationToken));
-        OperationMessage = result.IsSuccess
-            ? "快照目录包已导出；未改动任何同步目录的 current 指针。"
-            : DescribeFailure(result);
-        await RefreshAfterOperationAsync("export_snapshot_package", result.IsSuccess);
+        try
+        {
+            Result<SnapshotExportResult> result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("导出快照包", "正在创建可移动的目录快照包。", true),
+                async context => await (await _main.ServicesAsync()).SnapshotSync.ExportAsync(
+                    new SnapshotExportRequest(ExportDestinationDirectory),
+                    context.CancellationToken));
+            OperationMessage = result.IsSuccess
+                ? "快照目录包已导出；未改动任何同步目录的 current 指针。"
+                : DescribeFailure(result);
+            await RefreshAfterOperationAsync("export_snapshot_package", result.IsSuccess);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            OperationMessage = "操作已取消。";
+            await RefreshAfterCancellationAsync("export_snapshot_package");
+        }
     }
 
     private async Task CheckCurrentAsync()
@@ -265,27 +283,35 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private async Task InspectAsync(SnapshotIncomingRequest request, string title, string operation)
     {
-        Result<SnapshotIncomingPlan> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions(title, "正在验证、staging 并检查传入快照。", true),
-            async context => await (await _main.ServicesAsync()).SnapshotSync.InspectIncomingAsync(request,
-                context.CancellationToken));
-        if (result.IsSuccess)
+        try
         {
-            _incoming = result.Value;
-            _contentPlan = result.Value.ContentPlan;
-            ConfirmApply = false;
-            OperationMessage = BlockingConflictCount > 0
-                ? "传入快照已检查；阻塞冲突必须通过统一冲突工作流处理后才能应用。"
-                : "传入快照已检查。请确认后再应用。";
-        }
-        else
-        {
-            _incoming = null;
-            _contentPlan = null;
-            OperationMessage = DescribeFailure(result);
-        }
+            Result<SnapshotIncomingPlan> result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions(title, "正在验证、staging 并检查传入快照。", true),
+                async context => await (await _main.ServicesAsync()).SnapshotSync.InspectIncomingAsync(request,
+                    context.CancellationToken));
+            if (result.IsSuccess)
+            {
+                _incoming = result.Value;
+                _contentPlan = result.Value.ContentPlan;
+                ConfirmApply = false;
+                OperationMessage = BlockingConflictCount > 0
+                    ? "传入快照已检查；阻塞冲突必须通过统一冲突工作流处理后才能应用。"
+                    : "传入快照已检查。请确认后再应用。";
+            }
+            else
+            {
+                _incoming = null;
+                _contentPlan = null;
+                OperationMessage = DescribeFailure(result);
+            }
 
-        await RefreshAfterOperationAsync(operation, result.IsSuccess);
+            await RefreshAfterOperationAsync(operation, result.IsSuccess);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            OperationMessage = "操作已取消。";
+            await RefreshAfterCancellationAsync(operation);
+        }
     }
 
     private async Task ApplyAsync()
@@ -297,23 +323,31 @@ public sealed class SnapshotViewModel : ViewModelBase
             return;
         }
 
-        Result<SnapshotApplyResult> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions("应用快照内容", "正在重新验证并事务性应用导入计划。", true),
-            async context => await (await _main.ServicesAsync()).SnapshotSync.ApplyAsync(
-                _contentPlan with { IsExplicitlyConfirmed = ConfirmApply },
-                context.CancellationToken));
-        if (result.IsSuccess)
+        try
         {
-            ClearIncomingPlan();
-            await _main.RefreshSyncedMetadataLookupAsync();
-            OperationMessage = "快照内容已应用；相关本地 FTS 索引已标记为 stale。";
-        }
-        else
-        {
-            OperationMessage = DescribeFailure(result);
-        }
+            Result<SnapshotApplyResult> result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("应用快照内容", "正在重新验证并事务性应用导入计划。", true),
+                async context => await (await _main.ServicesAsync()).SnapshotSync.ApplyAsync(
+                    _contentPlan with { IsExplicitlyConfirmed = ConfirmApply },
+                    context.CancellationToken));
+            if (result.IsSuccess)
+            {
+                ClearIncomingPlan();
+                await _main.RefreshSyncedMetadataLookupAsync();
+                OperationMessage = "快照内容已应用；相关本地 FTS 索引已标记为 stale。";
+            }
+            else
+            {
+                OperationMessage = DescribeFailure(result);
+            }
 
-        await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess);
+            await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            OperationMessage = "操作已取消。";
+            await RefreshAfterCancellationAsync("apply_snapshot_plan");
+        }
     }
 
     private async Task DiscardIncomingAsync()
@@ -325,22 +359,30 @@ public sealed class SnapshotViewModel : ViewModelBase
             return;
         }
 
-        Result result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions("丢弃传入快照", "正在清理已检查的 staging 分支。", true),
-            async context => await (await _main.ServicesAsync()).SnapshotSync.DiscardIncomingAsync(
-                _contentPlan,
-                context.CancellationToken));
-        if (result.IsSuccess)
+        try
         {
-            ClearIncomingPlan();
-            OperationMessage = "已丢弃传入快照的 staging 分支；活动资料库未被修改。";
-        }
-        else
-        {
-            OperationMessage = DescribeFailure(result);
-        }
+            Result result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("丢弃传入快照", "正在清理已检查的 staging 分支。", true),
+                async context => await (await _main.ServicesAsync()).SnapshotSync.DiscardIncomingAsync(
+                    _contentPlan,
+                    context.CancellationToken));
+            if (result.IsSuccess)
+            {
+                ClearIncomingPlan();
+                OperationMessage = "已丢弃传入快照的 staging 分支；活动资料库未被修改。";
+            }
+            else
+            {
+                OperationMessage = DescribeFailure(result);
+            }
 
-        await RefreshAfterOperationAsync("discard_snapshot_branch", result.IsSuccess);
+            await RefreshAfterOperationAsync("discard_snapshot_branch", result.IsSuccess);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            OperationMessage = "操作已取消。";
+            await RefreshAfterCancellationAsync("discard_snapshot_branch");
+        }
     }
 
     private async Task KeepIncomingCopyAsync()
@@ -352,23 +394,32 @@ public sealed class SnapshotViewModel : ViewModelBase
             return;
         }
 
-        Result<string> result = await _main.ModalOperations.RunAsync(
-            new ModalOperationOptions("保留传入副本", "正在创建独立资料库副本并清理 staging 分支。", true),
-            async context => await (await _main.ServicesAsync()).SnapshotSync.KeepIncomingAsSeparateLibraryCopyAsync(
-                _contentPlan,
-                IncomingCopyDestinationPath,
-                context.CancellationToken));
-        if (result.IsSuccess)
+        try
         {
-            ClearIncomingPlan();
-            OperationMessage = $"已保留独立资料库副本：{result.Value}";
-        }
-        else
-        {
-            OperationMessage = DescribeFailure(result);
-        }
+            Result<string> result = await _main.ModalOperations.RunAsync(
+                new ModalOperationOptions("保留传入副本", "正在创建独立资料库副本并清理 staging 分支。", true),
+                async context =>
+                    await (await _main.ServicesAsync()).SnapshotSync.KeepIncomingAsSeparateLibraryCopyAsync(
+                        _contentPlan,
+                        IncomingCopyDestinationPath,
+                        context.CancellationToken));
+            if (result.IsSuccess)
+            {
+                ClearIncomingPlan();
+                OperationMessage = $"已保留独立资料库副本：{result.Value}";
+            }
+            else
+            {
+                OperationMessage = DescribeFailure(result);
+            }
 
-        await RefreshAfterOperationAsync("keep_snapshot_branch_copy", result.IsSuccess);
+            await RefreshAfterOperationAsync("keep_snapshot_branch_copy", result.IsSuccess);
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            OperationMessage = "操作已取消。";
+            await RefreshAfterCancellationAsync("keep_snapshot_branch_copy");
+        }
     }
 
     private async Task ResolveConflictsAsync()
@@ -413,6 +464,17 @@ public sealed class SnapshotViewModel : ViewModelBase
     {
         await _main.LogOperationAsync(operation,
             succeeded ? "Snapshot sync operation completed." : "Snapshot sync operation failed.");
+        await RefreshStatusAsync();
+    }
+
+    private async Task RefreshAfterCancellationAsync(string operation)
+    {
+        await _main.LogOperationAsync(operation, "Snapshot sync operation cancelled.");
+        await RefreshStatusAsync();
+    }
+
+    private async Task RefreshStatusAsync()
+    {
         Result<SnapshotSyncStatus> status = await (await _main.ServicesAsync()).SnapshotSync.GetStatusAsync();
         if (status.IsSuccess)
         {

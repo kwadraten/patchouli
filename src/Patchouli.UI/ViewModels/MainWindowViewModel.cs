@@ -472,8 +472,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 string epochs = exception.SchemaVersions.Count == 0
                     ? "未知"
                     : string.Join("、", exception.SchemaVersions.Order());
-                ReportError($"无法打开资料库：检测到不受 Patchouli 0.2.3 支持的数据库 schema epoch（{epochs}）。" +
-                            "0.2.3 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                ReportError($"无法打开资料库：检测到不受 Patchouli 0.2.4 支持的数据库 schema epoch（{epochs}）。" +
+                            "0.2.4 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                 return;
             }
 
@@ -721,27 +721,36 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         AppServices services = await ServicesAsync();
         Result<FileSearchRootRescanSummary> result;
-        if (showBlockingDialog)
+        try
         {
-            result = await ModalOperations.RunAsync(
-                new ModalOperationOptions(
-                    "文件重新扫描",
-                    "正在扫描文件搜索根并导入新发现的 PDF。",
-                    true),
-                context => RescanFileSearchRootsCoreAsync(services, completionMessage, context.CancellationToken,
-                    context.Report, trigger),
-                cancellationToken);
-        }
-        else
-        {
-            result = await Task.Run(
-                () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress,
-                    trigger),
-                cancellationToken);
-        }
+            if (showBlockingDialog)
+            {
+                result = await ModalOperations.RunAsync(
+                    new ModalOperationOptions(
+                        "文件重新扫描",
+                        "正在扫描文件搜索根并导入新发现的 PDF。",
+                        true),
+                    context => RescanFileSearchRootsCoreAsync(services, completionMessage, context.CancellationToken,
+                        context.Report, trigger),
+                    cancellationToken);
+            }
+            else
+            {
+                result = await Task.Run(
+                    () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress,
+                        trigger),
+                    cancellationToken);
+            }
 
-        await ApplyFileSearchRootRescanResultAsync(result, completionMessage);
-        return result;
+            await ApplyFileSearchRootRescanResultAsync(result, completionMessage);
+            return result;
+        }
+        catch (OperationCanceledException exception) when (
+            cancellationToken.IsCancellationRequested || exception.CancellationToken.IsCancellationRequested)
+        {
+            Report("文件重新扫描已取消。");
+            throw;
+        }
     }
 
     private async Task<Result<FileSearchRootRescanSummary>> RescanFileSearchRootsCoreAsync(
@@ -923,7 +932,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             return Result<FileSearchRootRescanSummary>.Success(summary);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             await LogOperationAsync("file-scan", $"Rescan cancelled (trigger={trigger}).");
             if (operationId is not null)
@@ -994,56 +1003,64 @@ public sealed class MainWindowViewModel : ViewModelBase
     private async Task RebuildSearchIndexAsync()
     {
         AppServices services = await ServicesAsync();
-        await ModalOperations.RunAsync(
-            new ModalOperationOptions(
-                "重建搜索索引",
-                "正在重建本地 FTS 搜索索引。",
-                true),
-            async context =>
-            {
-                Result<BlockingOperation> started = await services.BlockingOperations.StartAsync(
-                    BlockingOperationTypes.SearchIndexRebuild,
-                    BlockingOperationScopeTypes.SearchIndex,
-                    "library",
-                    true,
+        try
+        {
+            await ModalOperations.RunAsync(
+                new ModalOperationOptions(
+                    "重建搜索索引",
                     "正在重建本地 FTS 搜索索引。",
-                    cancellationToken: context.CancellationToken);
-                BlockingOperationId? operationId =
-                    started.IsSuccess ? started.Value.OperationId : (BlockingOperationId?)null;
-                try
+                    true),
+                async context =>
                 {
-                    Result result = await services.SearchIndex.RebuildFtsForLibraryAsync(context.CancellationToken);
-                    if (result.IsFailure)
+                    Result<BlockingOperation> started = await services.BlockingOperations.StartAsync(
+                        BlockingOperationTypes.SearchIndexRebuild,
+                        BlockingOperationScopeTypes.SearchIndex,
+                        "library",
+                        true,
+                        "正在重建本地 FTS 搜索索引。",
+                        cancellationToken: context.CancellationToken);
+                    BlockingOperationId? operationId =
+                        started.IsSuccess ? started.Value.OperationId : (BlockingOperationId?)null;
+                    try
+                    {
+                        Result result =
+                            await services.SearchIndex.RebuildFtsForLibraryAsync(context.CancellationToken);
+                        if (result.IsFailure)
+                        {
+                            if (operationId is not null)
+                            {
+                                await services.BlockingOperations.FailAsync(operationId.Value, result.ErrorCode!,
+                                    result.ErrorMessage!, cancellationToken: CancellationToken.None);
+                            }
+
+                            throw new InvalidOperationException(result.ErrorMessage);
+                        }
+
+                        if (operationId is not null)
+                        {
+                            await services.BlockingOperations.CompleteAsync(operationId.Value, "本地 FTS 搜索索引已重建。",
+                                cancellationToken: CancellationToken.None);
+                        }
+
+                        return true;
+                    }
+                    catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested)
                     {
                         if (operationId is not null)
                         {
-                            await services.BlockingOperations.FailAsync(operationId.Value, result.ErrorCode!,
-                                result.ErrorMessage!, cancellationToken: CancellationToken.None);
+                            await services.BlockingOperations.CancelAsync(operationId.Value, "搜索索引重建已取消。",
+                                cancellationToken: CancellationToken.None);
                         }
 
-                        throw new InvalidOperationException(result.ErrorMessage);
+                        throw;
                     }
-
-                    if (operationId is not null)
-                    {
-                        await services.BlockingOperations.CompleteAsync(operationId.Value, "本地 FTS 搜索索引已重建。",
-                            cancellationToken: CancellationToken.None);
-                    }
-
-                    return true;
-                }
-                catch (OperationCanceledException)
-                {
-                    if (operationId is not null)
-                    {
-                        await services.BlockingOperations.CancelAsync(operationId.Value, "搜索索引重建已取消。",
-                            cancellationToken: CancellationToken.None);
-                    }
-
-                    throw;
-                }
-            });
-        Report("本地 FTS 搜索索引已重建。");
+                });
+            Report("本地 FTS 搜索索引已重建。");
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            Report("搜索索引重建已取消。");
+        }
     }
 
     private void RefreshFileSearchRootWatchers(IReadOnlyList<FileSearchRoot> roots)

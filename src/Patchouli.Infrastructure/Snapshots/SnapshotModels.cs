@@ -120,6 +120,7 @@ public enum SnapshotSyncOperationState
     AwaitingContentConflicts,
     Applying,
     Applied,
+    Cancelled,
     Failed
 }
 

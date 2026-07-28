@@ -60,6 +60,7 @@ public sealed class FileResolutionService : IFileResolutionService
             return Result<FileSearchRoot>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
         }
 
+        BlockingOperationId? scanOperationId = null;
         try
         {
             DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
@@ -76,7 +77,7 @@ public sealed class FileResolutionService : IFileResolutionService
                 selectedRoot.AuthorizationPayload,
                 selectedRoot.AuthorizationPayloadVersion,
                 selectedRoot.SelectedAt.ToUniversalTime());
-            BlockingOperationId? scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
+            scanOperationId = await TryStartRootScanAsync(root.RootPath, cancellationToken);
 
             // Register the root in a short write transaction. The traversal below stays outside
             // both the transaction and the execution gate: on macOS it performs native
@@ -175,8 +176,17 @@ public sealed class FileResolutionService : IFileResolutionService
 
             return Result<FileSearchRoot>.Success(root);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            if (_blockingOperations is not null && scanOperationId is not null)
+            {
+                await _blockingOperations.CancelAsync(
+                    scanOperationId.Value,
+                    "Search root scan was cancelled.",
+                    ["Retry the root scan"],
+                    CancellationToken.None);
+            }
+
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,

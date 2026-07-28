@@ -142,8 +142,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                 ? published
                 : Result<SnapshotPublishResult>.Failure(stateSaved.ErrorCode!, stateSaved.ErrorMessage!);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await RecordCancellationAsync(binding);
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -255,8 +256,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                     published.Value.Shards,
                     published.Value.Warning));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await RecordCancellationAsync(binding);
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -376,8 +378,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                 importPlan.Value.Conflicts,
                 importPlan.Value.Warnings.Concat(branch.Value.Warnings).Distinct(StringComparer.Ordinal).ToArray()));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await RecordCancellationAsync(binding);
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -451,8 +454,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch, cancellationToken);
             return Result<SnapshotApplyResult>.Success(new SnapshotApplyResult(applied.Value, state));
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            await RecordCancellationAsync(binding);
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -468,11 +472,19 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         SnapshotContentResolutionPlan plan,
         CancellationToken cancellationToken = default)
     {
-        Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
-            cancellationToken);
-        return discarded.IsFailure
-            ? discarded
-            : await SetReadyAfterIncomingDispositionAsync(cancellationToken);
+        try
+        {
+            Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
+                cancellationToken);
+            return discarded.IsFailure
+                ? discarded
+                : await SetReadyAfterIncomingDispositionAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await RecordCancellationAsync();
+            throw;
+        }
     }
 
     public async Task<Result<string>> KeepIncomingAsSeparateLibraryCopyAsync(
@@ -486,26 +498,34 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                 "Choose a destination for the separate library copy.");
         }
 
-        Result<string> copied = await _branchInspection.KeepBranchAsSeparateLibraryCopyAsync(
-            plan.BranchImportPlan.SourceBranch,
-            destinationPath,
-            cancellationToken);
-        if (copied.IsFailure)
+        try
         {
-            return copied;
-        }
+            Result<string> copied = await _branchInspection.KeepBranchAsSeparateLibraryCopyAsync(
+                plan.BranchImportPlan.SourceBranch,
+                destinationPath,
+                cancellationToken);
+            if (copied.IsFailure)
+            {
+                return copied;
+            }
 
-        Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
-            cancellationToken);
-        if (discarded.IsFailure)
+            Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
+                cancellationToken);
+            if (discarded.IsFailure)
+            {
+                return Result<string>.Failure(discarded.ErrorCode!, discarded.ErrorMessage!);
+            }
+
+            Result ready = await SetReadyAfterIncomingDispositionAsync(cancellationToken);
+            return ready.IsSuccess
+                ? copied
+                : Result<string>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return Result<string>.Failure(discarded.ErrorCode!, discarded.ErrorMessage!);
+            await RecordCancellationAsync();
+            throw;
         }
-
-        Result ready = await SetReadyAfterIncomingDispositionAsync(cancellationToken);
-        return ready.IsSuccess
-            ? copied
-            : Result<string>.Failure(ready.ErrorCode!, ready.ErrorMessage!);
     }
 
     public async Task<Result<SnapshotContentResolutionPlan>> ResolveContentConflictAsync(
@@ -721,6 +741,56 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         catch (Exception)
         {
             // The operation's original failure remains useful even when its diagnostic state could not be persisted.
+        }
+    }
+
+    private async Task RecordCancellationAsync(SnapshotSyncBinding binding)
+    {
+        try
+        {
+            Result saved = await _bindings.SaveLocalStateAsync(
+                NextState(binding.LocalState, SnapshotSyncOperationState.Cancelled, null, null),
+                CancellationToken.None);
+            if (saved.IsFailure)
+            {
+                UnexpectedExceptionReporter.Report(
+                    new InvalidOperationException(saved.ErrorMessage),
+                    "infrastructure.snapshot-sync-coordinator",
+                    "record-cancellation");
+            }
+        }
+        catch (Exception exception) // Reported below; the original cancellation remains authoritative.
+        {
+            UnexpectedExceptionReporter.Report(
+                exception,
+                "infrastructure.snapshot-sync-coordinator",
+                "record-cancellation");
+        }
+    }
+
+    private async Task RecordCancellationAsync()
+    {
+        try
+        {
+            Result<SnapshotSyncBinding> resolved = await _bindings.GetBindingAsync(CancellationToken.None);
+            if (resolved.IsSuccess)
+            {
+                await RecordCancellationAsync(resolved.Value);
+            }
+            else
+            {
+                UnexpectedExceptionReporter.Report(
+                    new InvalidOperationException(resolved.ErrorMessage),
+                    "infrastructure.snapshot-sync-coordinator",
+                    "resolve-binding-to-record-cancellation");
+            }
+        }
+        catch (Exception exception) // Reported below; the original cancellation remains authoritative.
+        {
+            UnexpectedExceptionReporter.Report(
+                exception,
+                "infrastructure.snapshot-sync-coordinator",
+                "resolve-binding-to-record-cancellation");
         }
     }
 

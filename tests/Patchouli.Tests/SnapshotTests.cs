@@ -481,6 +481,37 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public async Task Sync_coordinator_records_cancelled_state_when_publish_is_cancelled()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "sync-root-a",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-a",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        using CancellationTokenSource cancellation = new();
+        CancellationToken cancellationToken = cancellation.Token;
+        SnapshotSyncCoordinator coordinator = new(
+            new CancellingSnapshotPublisher(cancellation),
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+
+        Func<Task> action = async () => await coordinator.PublishAsync(cancellationToken);
+
+        await action.Should().ThrowAsync<OperationCanceledException>();
+        bindings.State.OperationState.Should().Be(SnapshotSyncOperationState.Cancelled);
+        bindings.State.LastError.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Sync_coordinator_exports_a_valid_portable_package_without_a_current_pointer()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
@@ -885,6 +916,25 @@ public sealed class SnapshotTests
             _ = cancellationToken;
             _binding = _binding with { LocalState = state };
             return Task.FromResult(Result.Success());
+        }
+    }
+
+    private sealed class CancellingSnapshotPublisher : ISnapshotPublisher
+    {
+        private readonly CancellationTokenSource _cancellation;
+
+        public CancellingSnapshotPublisher(CancellationTokenSource cancellation)
+        {
+            _cancellation = cancellation;
+        }
+
+        public Task<Result<SnapshotPublishResult>> PublishSnapshotAsync(
+            SnapshotPublishRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            _ = request;
+            _cancellation.Cancel();
+            return Task.FromCanceled<Result<SnapshotPublishResult>>(cancellationToken);
         }
     }
 }

@@ -301,7 +301,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.2.3 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.2.4 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }
@@ -826,6 +826,8 @@ public sealed class UiViewModelTests : IDisposable
 
         xaml.Should().Contain("Content=\"关闭\"");
         xaml.Should().Contain("CancelCommand");
+        xaml.Should().Contain("Content=\"取消\"");
+        xaml.Should().Contain("IsVisible=\"{Binding CanCancel}\"");
         xaml.Should().Contain("ConfirmCommand");
         xaml.Should().Contain("ToggleDetailsCommand");
         xaml.Should().Contain("Height=\"150\"");
@@ -838,6 +840,71 @@ public sealed class UiViewModelTests : IDisposable
         vm.OperationState.Should().Be("已成功");
         vm.StatusMessage.Should().Be("操作已成功完成。");
         closeResult.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task BlockingOperationDialog_cancel_invokes_action_when_enabled()
+    {
+        int cancelCalls = 0;
+        BlockingOperationDialogViewModel vm = new(() => cancelCalls++)
+        {
+            CanCancel = true
+        };
+
+        await vm.CancelCommand.ExecuteAsync();
+
+        cancelCalls.Should().Be(1);
+        vm.CanCancel.Should().BeFalse();
+        vm.StatusMessage.Should().Be("正在取消操作...");
+        vm.IsRunning.Should().BeTrue();
+
+        vm.MarkCancelled();
+        vm.IsRunning.Should().BeFalse();
+        vm.OperationState.Should().Be("已取消");
+        vm.IsTerminal.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ModalOperationRunner_cancel_marks_dialog_cancelled_and_rethrows()
+    {
+        CapturingDialogService dialogs = new();
+        ModalOperationRunner runner = new(dialogs);
+
+        Func<Task> action = () => runner.RunAsync(
+            new ModalOperationOptions("t", "s", true),
+            async context =>
+            {
+                context.CancellationToken.ThrowIfCancellationRequested();
+                await Task.Yield();
+                BlockingOperationDialogViewModel dialog =
+                    dialogs.LastViewModel.Should().BeOfType<BlockingOperationDialogViewModel>().Subject;
+                await dialog.CancelCommand.ExecuteAsync();
+                context.CancellationToken.ThrowIfCancellationRequested();
+                return true;
+            });
+
+        await action.Should().ThrowAsync<OperationCanceledException>();
+        BlockingOperationDialogViewModel closed =
+            dialogs.LastViewModel.Should().BeOfType<BlockingOperationDialogViewModel>().Subject;
+        closed.OperationState.Should().Be("已取消");
+        closed.IsTerminal.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ModalOperationRunner_cancelled_outcome_marks_dialog_cancelled()
+    {
+        CapturingDialogService dialogs = new();
+        ModalOperationRunner runner = new(dialogs);
+
+        IOperationOutcome result = await runner.RunAsync(
+            new ModalOperationOptions("t", "s", true),
+            _ => Task.FromResult<IOperationOutcome>(new CancelledOutcome()));
+
+        result.IsCancelled.Should().BeTrue();
+        BlockingOperationDialogViewModel closed =
+            dialogs.LastViewModel.Should().BeOfType<BlockingOperationDialogViewModel>().Subject;
+        closed.OperationState.Should().Be("已取消");
+        closed.IsTerminal.Should().BeTrue();
     }
 
     [Fact]
@@ -2367,6 +2434,30 @@ public sealed class UiViewModelTests : IDisposable
         {
             return Task.FromResult((TResult?)Result);
         }
+    }
+
+    private sealed class CapturingDialogService : IDialogService
+    {
+        public object? LastViewModel { get; private set; }
+
+        public Task ShowDialogAsync(object viewModel)
+        {
+            LastViewModel = viewModel;
+            return Task.CompletedTask;
+        }
+
+        public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
+        {
+            LastViewModel = viewModel;
+            return Task.FromResult(default(TResult?));
+        }
+    }
+
+    private sealed record CancelledOutcome : IOperationOutcome
+    {
+        public bool IsSuccess => false;
+        public bool IsCancelled => true;
+        public string ErrorMessage => "cancelled";
     }
 
     private sealed class FakeClipboard : IClipboardService

@@ -88,118 +88,134 @@ public sealed class FirstRunWorkflow
         string normalizedRoot = Path.GetFullPath(selectedRoot.DisplayPath);
         progress?.Invoke(null, null, "正在扫描 PDF 目录。", $"扫描目录：{normalizedRoot}");
         BlockingOperationId? operationId = await TryStartInitialRootScanAsync(normalizedRoot, cancellationToken);
-        PdfScanResult scan = await _pdfDiscoveryService.ScanDirectoryAsync(selectedRoot, cancellationToken);
-        FirstRunWorkflowState? scanFailure = await MapIncompleteScanAsync(operationId, scan, cancellationToken);
-        if (scanFailure is not null)
+        try
         {
-            return new FirstRunImportResult(scanFailure with { CreatedLibraryId = libraryId }, scan, 0, 0);
-        }
-
-        if (scan.Candidates.Count == 0)
-        {
-            await TryFailInitialRootScanAsync(
-                operationId,
-                AppErrorCodes.NotFound,
-                "No PDF files were found in the selected folder.",
-                "Initial PDF root scan found no PDFs.",
-                ["Choose a different PDF folder", "Add PDFs to the folder and retry"],
-                cancellationToken);
-            progress?.Invoke(0, 0, "未找到可导入的 PDF。", "扫描完成：所选目录中没有 PDF 文件。");
-            return new FirstRunImportResult(
-                new FirstRunWorkflowState(FirstRunStep.Scan, "未在指定目录中找到 PDF 文件。", null,
-                    libraryId, null, null, null, "未找到 PDF 文件。", false),
-                scan, 0, 0);
-        }
-
-        int importedCount = 0;
-        int failedCount = 0;
-        string? lastDocumentInstanceId = null;
-        string? lastPdfPath = null;
-        progress?.Invoke(0, scan.Candidates.Count, $"已找到 {scan.Candidates.Count} 个 PDF，准备导入。", null);
-
-        for (int index = 0; index < scan.Candidates.Count; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            PdfCandidate candidate = scan.Candidates[index];
-            progress?.Invoke(index, scan.Candidates.Count, $"正在导入：{candidate.FileName}", candidate.Path);
-            await TryUpdateInitialRootScanAsync(
-                operationId,
-                index,
-                scan.Candidates.Count,
-                $"Importing {candidate.FileName}.",
-                cancellationToken);
-            FirstRunWorkflowState importState = await ImportPdfAsync(
-                new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
-                cancellationToken);
-            if (string.IsNullOrWhiteSpace(importState.LastError))
+            PdfScanResult scan = await _pdfDiscoveryService.ScanDirectoryAsync(selectedRoot, cancellationToken);
+            FirstRunWorkflowState? scanFailure = await MapIncompleteScanAsync(operationId, scan, cancellationToken);
+            if (scanFailure is not null)
             {
-                importedCount++;
-                lastDocumentInstanceId = importState.CreatedDocumentInstanceId;
-                lastPdfPath = candidate.Path;
+                return new FirstRunImportResult(scanFailure with { CreatedLibraryId = libraryId }, scan, 0, 0);
+            }
+
+            if (scan.Candidates.Count == 0)
+            {
+                await TryFailInitialRootScanAsync(
+                    operationId,
+                    AppErrorCodes.NotFound,
+                    "No PDF files were found in the selected folder.",
+                    "Initial PDF root scan found no PDFs.",
+                    ["Choose a different PDF folder", "Add PDFs to the folder and retry"],
+                    cancellationToken);
+                progress?.Invoke(0, 0, "未找到可导入的 PDF。", "扫描完成：所选目录中没有 PDF 文件。");
+                return new FirstRunImportResult(
+                    new FirstRunWorkflowState(FirstRunStep.Scan, "未在指定目录中找到 PDF 文件。", null,
+                        libraryId, null, null, null, "未找到 PDF 文件。", false),
+                    scan, 0, 0);
+            }
+
+            int importedCount = 0;
+            int failedCount = 0;
+            string? lastDocumentInstanceId = null;
+            string? lastPdfPath = null;
+            progress?.Invoke(0, scan.Candidates.Count, $"已找到 {scan.Candidates.Count} 个 PDF，准备导入。", null);
+
+            for (int index = 0; index < scan.Candidates.Count; index++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PdfCandidate candidate = scan.Candidates[index];
+                progress?.Invoke(index, scan.Candidates.Count, $"正在导入：{candidate.FileName}", candidate.Path);
+                await TryUpdateInitialRootScanAsync(
+                    operationId,
+                    index,
+                    scan.Candidates.Count,
+                    $"Importing {candidate.FileName}.",
+                    cancellationToken);
+                FirstRunWorkflowState importState = await ImportPdfAsync(
+                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
+                    cancellationToken);
+                if (string.IsNullOrWhiteSpace(importState.LastError))
+                {
+                    importedCount++;
+                    lastDocumentInstanceId = importState.CreatedDocumentInstanceId;
+                    lastPdfPath = candidate.Path;
+                }
+                else
+                {
+                    failedCount++;
+                }
+
+                progress?.Invoke(
+                    index + 1,
+                    scan.Candidates.Count,
+                    string.IsNullOrWhiteSpace(importState.LastError)
+                        ? $"已导入：{candidate.FileName}"
+                        : $"导入失败：{candidate.FileName}",
+                    importState.LastError);
+            }
+
+            int skippedPathCount = (scan.SkippedDirectories?.Count ?? 0) + (scan.SkippedFiles?.Count ?? 0);
+            FirstRunWorkflowState state = importedCount > 0
+                ? new FirstRunWorkflowState(
+                    FirstRunStep.MinerUConfig,
+                    scan.ScanStatus == FileSearchRootScanStatuses.Partial
+                        ? $"目录扫描不完整（跳过 {skippedPathCount} 个路径），已导入发现的 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
+                        : failedCount == 0
+                            ? $"已导入 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
+                            : $"已导入 {importedCount} 个 PDF 题录；{failedCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
+                    lastPdfPath, libraryId, null, null, lastDocumentInstanceId, null, false)
+                : new FirstRunWorkflowState(
+                    FirstRunStep.Scan, "扫描到了 PDF 文件，但没有任何文件成功导入。", null,
+                    libraryId, null, null, null, "没有任何 PDF 文件被成功导入。", false);
+
+            if (importedCount > 0)
+            {
+                string completionDetail = scan.ScanStatus == FileSearchRootScanStatuses.Partial
+                    ? $"Scan incomplete ({skippedPathCount} path(s) skipped); imported {importedCount} of " +
+                      $"{scan.TotalCount} discovered PDF candidate(s)."
+                    : $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).";
+                await TryUpdateInitialRootScanAsync(
+                    operationId,
+                    scan.Candidates.Count,
+                    scan.Candidates.Count,
+                    completionDetail,
+                    cancellationToken);
+                await TryCompleteInitialRootScanAsync(
+                    operationId,
+                    completionDetail,
+                    cancellationToken);
             }
             else
             {
-                failedCount++;
+                await TryFailInitialRootScanAsync(
+                    operationId,
+                    AppErrorCodes.InvalidState,
+                    "No discovered PDF files could be imported.",
+                    "Initial PDF import failed.",
+                    ["Review the PDF files and retry"],
+                    cancellationToken);
             }
 
             progress?.Invoke(
-                index + 1,
                 scan.Candidates.Count,
-                string.IsNullOrWhiteSpace(importState.LastError)
-                    ? $"已导入：{candidate.FileName}"
-                    : $"导入失败：{candidate.FileName}",
-                importState.LastError);
+                scan.Candidates.Count,
+                importedCount > 0 ? "PDF 导入完成。" : "PDF 导入未完成。",
+                $"成功 {importedCount} 个，失败 {failedCount} 个。");
+
+            return new FirstRunImportResult(state, scan, importedCount, failedCount);
         }
-
-        int skippedPathCount = (scan.SkippedDirectories?.Count ?? 0) + (scan.SkippedFiles?.Count ?? 0);
-        FirstRunWorkflowState state = importedCount > 0
-            ? new FirstRunWorkflowState(
-                FirstRunStep.MinerUConfig,
-                scan.ScanStatus == FileSearchRootScanStatuses.Partial
-                    ? $"目录扫描不完整（跳过 {skippedPathCount} 个路径），已导入发现的 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
-                    : failedCount == 0
-                        ? $"已导入 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
-                        : $"已导入 {importedCount} 个 PDF 题录；{failedCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
-                lastPdfPath, libraryId, null, null, lastDocumentInstanceId, null, false)
-            : new FirstRunWorkflowState(
-                FirstRunStep.Scan, "扫描到了 PDF 文件，但没有任何文件成功导入。", null,
-                libraryId, null, null, null, "没有任何 PDF 文件被成功导入。", false);
-
-        if (importedCount > 0)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            string completionDetail = scan.ScanStatus == FileSearchRootScanStatuses.Partial
-                ? $"Scan incomplete ({skippedPathCount} path(s) skipped); imported {importedCount} of " +
-                  $"{scan.TotalCount} discovered PDF candidate(s)."
-                : $"Imported {importedCount} of {scan.TotalCount} PDF candidate(s).";
-            await TryUpdateInitialRootScanAsync(
-                operationId,
-                scan.Candidates.Count,
-                scan.Candidates.Count,
-                completionDetail,
-                cancellationToken);
-            await TryCompleteInitialRootScanAsync(
-                operationId,
-                completionDetail,
-                cancellationToken);
-        }
-        else
-        {
-            await TryFailInitialRootScanAsync(
-                operationId,
-                AppErrorCodes.InvalidState,
-                "No discovered PDF files could be imported.",
-                "Initial PDF import failed.",
-                ["Review the PDF files and retry"],
-                cancellationToken);
-        }
+            if (_blockingOperations is not null && operationId is not null)
+            {
+                await _blockingOperations.CancelAsync(
+                    operationId.Value,
+                    "Initial PDF root scan/import was cancelled.",
+                    ["Retry the scan"],
+                    CancellationToken.None);
+            }
 
-        progress?.Invoke(
-            scan.Candidates.Count,
-            scan.Candidates.Count,
-            importedCount > 0 ? "PDF 导入完成。" : "PDF 导入未完成。",
-            $"成功 {importedCount} 个，失败 {failedCount} 个。");
-
-        return new FirstRunImportResult(state, scan, importedCount, failedCount);
+            throw;
+        }
     }
 
     public async Task<FirstRunWorkflowState> ImportPdfAsync(
@@ -379,5 +395,6 @@ public sealed record FirstRunImportResult(
     int FailedCount) : IOperationOutcome
 {
     public bool IsSuccess => string.IsNullOrWhiteSpace(State.LastError);
+    public bool IsCancelled => ScanResult.ScanStatus == FileSearchRootScanStatuses.Cancelled;
     public string? ErrorMessage => State.LastError;
 }

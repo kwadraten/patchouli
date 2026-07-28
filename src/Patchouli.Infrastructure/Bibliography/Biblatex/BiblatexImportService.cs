@@ -459,10 +459,23 @@ public sealed class BiblatexImportService : IBiblatexImportService
                 skips.Add(new BiblatexFileSkip(document.ErrorMessage ?? "attach failed", 1));
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        catch (IOException exception)
         {
-            skips.Add(new BiblatexFileSkip(ex.Message, 1));
+            AddFileSkip(skips, exception);
         }
+        catch (UnauthorizedAccessException exception)
+        {
+            AddFileSkip(skips, exception);
+        }
+        catch (ArgumentException exception)
+        {
+            AddFileSkip(skips, exception);
+        }
+    }
+
+    private static void AddFileSkip(ICollection<BiblatexFileSkip> skips, Exception exception)
+    {
+        skips.Add(new BiblatexFileSkip(exception.Message, 1));
     }
 
     private async Task<Result> SyncIdentifiersAsync(

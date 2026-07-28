@@ -117,7 +117,11 @@ public sealed class ModalOperationRunner : IModalOperationRunner
                 : await Task.Run(
                     async () => await operation(context).ConfigureAwait(false),
                     source.Token);
-            if (result is IOperationOutcome { IsSuccess: false } outcome)
+            if (result is IOperationOutcome { IsCancelled: true })
+            {
+                viewModel.MarkCancelled();
+            }
+            else if (result is IOperationOutcome { IsSuccess: false } outcome)
             {
                 viewModel.MarkFailed(outcome.ErrorMessage ?? "操作未完成。");
             }

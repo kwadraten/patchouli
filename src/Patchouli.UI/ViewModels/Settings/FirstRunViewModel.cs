@@ -379,6 +379,19 @@ public sealed class FirstRunViewModel : ViewModelBase
             Raise(nameof(ImportedPdfCount));
             Raise(nameof(FailedImportCount));
         }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            State = new FirstRunWorkflowState(
+                FirstRunStep.Scan,
+                "扫描与导入已取消。",
+                _state.SelectedPdfPath,
+                _state.CreatedLibraryId,
+                _state.CreatedItemId,
+                _state.CreatedFileAssetId,
+                _state.CreatedDocumentInstanceId,
+                "操作已取消。",
+                false);
+        }
         finally
         {
             IsBusy = false;
@@ -414,6 +427,19 @@ public sealed class FirstRunViewModel : ViewModelBase
                         "正在读取 PDF 并创建题录。",
                         true),
                     context => _workflow.ImportPdfAsync(request, context.CancellationToken));
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+            State = new FirstRunWorkflowState(
+                FirstRunStep.Import,
+                "PDF 导入已取消。",
+                SelectedPdf.Path,
+                _state.CreatedLibraryId,
+                _state.CreatedItemId,
+                _state.CreatedFileAssetId,
+                _state.CreatedDocumentInstanceId,
+                "操作已取消。",
+                false);
         }
         finally
         {

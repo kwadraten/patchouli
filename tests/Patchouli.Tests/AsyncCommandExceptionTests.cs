@@ -37,4 +37,32 @@ public sealed class AsyncCommandExceptionTests
         await action.Should().ThrowAsync<InvalidOperationException>();
         reports.Should().Be(0);
     }
+
+    [Fact]
+    public async Task ICommand_execute_swallows_operation_canceled()
+    {
+        int reports = 0;
+        RecordingUnexpectedExceptionSink sink = new((_, _, _) => reports++);
+        AsyncCommand command = new(() => Task.FromCanceled(new CancellationToken(true)), sink, "cancel-command");
+
+        command.Execute(null);
+        await Task.Delay(50);
+
+        reports.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ICommand_execute_reports_operation_canceled_without_a_cancelled_token()
+    {
+        TaskCompletionSource<Exception> reported = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingUnexpectedExceptionSink sink = new((exception, _, _) => reported.TrySetResult(exception));
+        AsyncCommand command = new(
+            () => Task.FromException(new OperationCanceledException("unexpected")),
+            sink,
+            "unexpected-cancel-command");
+
+        command.Execute(null);
+
+        (await reported.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeOfType<OperationCanceledException>();
+    }
 }

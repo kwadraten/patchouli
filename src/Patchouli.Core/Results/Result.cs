@@ -5,6 +5,7 @@ namespace Patchouli.Core.Results;
 public interface IOperationOutcome
 {
     bool IsSuccess { get; }
+    bool IsCancelled => false;
     string? ErrorMessage { get; }
 }
 

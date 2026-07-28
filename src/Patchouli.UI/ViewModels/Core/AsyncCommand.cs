@@ -57,6 +57,9 @@ public sealed class AsyncCommand : ICommand
         {
             await _run();
         }
+        catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
+        {
+        }
         catch (Exception exception)
         {
             _unexpectedExceptions.Report(exception, "ui-command", _operation);

@@ -140,12 +140,25 @@ public sealed class BiblatexHelperClient : IBiblatexHelperClient
 
             return Result<BiblatexHelperResponse>.Success(response);
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or JsonException)
+        catch (IOException exception)
         {
-            return Result<BiblatexHelperResponse>.Failure(
-                AppErrorCodes.BiblatexHelperFailed,
-                ex.Message);
+            return HelperFailure(exception);
         }
+        catch (InvalidOperationException exception)
+        {
+            return HelperFailure(exception);
+        }
+        catch (JsonException exception)
+        {
+            return HelperFailure(exception);
+        }
+    }
+
+    private static Result<BiblatexHelperResponse> HelperFailure(Exception exception)
+    {
+        return Result<BiblatexHelperResponse>.Failure(
+            AppErrorCodes.BiblatexHelperFailed,
+            exception.Message);
     }
 
     private static string MapErrorCode(string? helperCode, string fallback)

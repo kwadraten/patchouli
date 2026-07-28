@@ -27,6 +27,35 @@ namespace Patchouli.Tests;
 public sealed class FirstRunViewModelTests
 {
     [Fact]
+    public void FirstRunImportResult_reports_cancelled_scan_as_cancelled_outcome()
+    {
+        FirstRunWorkflowState state = new(
+            FirstRunStep.Scan,
+            "扫描已取消。",
+            null,
+            null,
+            null,
+            null,
+            null,
+            "扫描已取消。",
+            false);
+        PdfScanResult scan = new(
+            [],
+            0,
+            "root",
+            [],
+            [],
+            [],
+            FileSearchRootStatuses.Available,
+            FileSearchRootScanStatuses.Cancelled);
+
+        FirstRunImportResult result = new(state, scan, 0, 0);
+
+        result.IsCancelled.Should().BeTrue();
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task OpenDatabaseCommand_moves_from_database_to_library_step()
     {
         string openedPath = "";
