@@ -117,6 +117,24 @@ public sealed class PdfWorkspaceLayoutTests
     }
 
     [Fact]
+    public void PdfWorkspace_document_ocr_uses_background_queue_without_modal_operation()
+    {
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+        int start = viewModel.IndexOf("private async Task RunDocumentOcrAsync()", StringComparison.Ordinal);
+        int end = viewModel.IndexOf("private async Task RunCurrentPageOcrAsync()", start, StringComparison.Ordinal);
+
+        start.Should().BeGreaterThanOrEqualTo(0);
+        end.Should().BeGreaterThan(start);
+        string method = viewModel[start..end];
+        method.Should().Contain("QueueDocumentOcrAsync")
+            .And.Contain("OcrQueue.ObserveQueue")
+            .And.Contain("OcrQueuePriority.UserStartedDocument")
+            .And.NotContain("RunOcrModalAsync")
+            .And.NotContain("LogicalPageOcr.RunDocumentAsync");
+    }
+
+    [Fact]
     public void PdfWorkspace_native_preview_renders_markdown_without_debug_labels_and_links_selection()
     {
         string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(

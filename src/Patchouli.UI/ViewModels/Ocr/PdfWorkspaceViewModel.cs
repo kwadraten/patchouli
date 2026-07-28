@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using Patchouli.Core.Credentials;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Documents;
@@ -1143,43 +1144,54 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        await RunOcrModalAsync("文档级 OCR", "正在处理整份文档...", async () =>
+        AppServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentId);
+        if (pages.IsFailure)
         {
-            AppServices services = await _main.ServicesAsync();
-            DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-            Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentId);
-            if (pages.IsFailure)
-            {
-                Status = $"读取物理页失败：{pages.ErrorMessage}";
-                return Result.Failure(pages.ErrorCode!, pages.ErrorMessage!);
-            }
+            Status = $"读取物理页失败：{pages.ErrorMessage}";
+            return;
+        }
 
-            List<LogicalDocumentOcrPagePlan> plans = [];
-            foreach (Page page in pages.Value)
-            {
-                Result<LogicalDocumentOcrPagePlan> plan =
-                    await CreatePageOcrPlanAsync(services, documentId, page.PageId);
-                if (plan.IsFailure)
-                {
-                    Status = $"读取页面 OCR 计划失败：{plan.ErrorMessage}";
-                    return Result.Failure(plan.ErrorCode!, plan.ErrorMessage!);
-                }
+        PageId[] pageIds = pages.Value.Select(page => page.PageId).ToArray();
+        if (pageIds.Length == 0)
+        {
+            Status = "该文档没有可识别的物理页。";
+            return;
+        }
 
-                plans.Add(plan.Value);
-            }
+        Result<OcrPresetVersion> version = await services.OcrPresets.GetCurrentVersionAsync(presetId.Value);
+        if (version.IsFailure)
+        {
+            Status = $"读取 OCR preset 版本失败：{version.ErrorMessage}";
+            return;
+        }
 
-            Result<LogicalDocumentOcrResult> result = await services.LogicalPageOcr.RunDocumentAsync(
-                documentId, presetId.Value, plans);
-            if (result.IsFailure)
-            {
-                Status = $"文档级 OCR 失败：{result.ErrorMessage}";
-                return Result.Failure(result.ErrorCode!, result.ErrorMessage!);
-            }
+        Result<IOcrQueueScheduler> queue = await services.GetOcrQueueAsync();
+        if (queue.IsFailure)
+        {
+            Status = $"OCR 队列不可用：{queue.ErrorMessage}";
+            return;
+        }
 
-            Status =
-                $"文档级 OCR 已处理 {plans.Count} 个物理页并生成 {result.Value.StagingTreeRevisionIds.Count} 个暂存树。";
-            return Result.Success();
-        });
+        _main.OcrQueue.ObserveQueue(queue.Value);
+        string adapterKind = version.Value.EngineId == OcrEngineIds.MinerU
+            ? OcrAdapterKind.CloudApi
+            : OcrAdapterKind.LocalLibrary;
+        string? providerId = version.Value.EngineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        Result<OcrQueueTask> queued = await services.Ocr.QueueDocumentOcrAsync(
+            documentId, presetId.Value, pageIds, version.Value.EngineId, adapterKind, providerId,
+            OcrQueuePriority.UserStartedDocument);
+        if (queued.IsFailure)
+        {
+            Status = $"文档级 OCR 入队失败：{queued.ErrorMessage}";
+            return;
+        }
+
+        Status = $"文档级 OCR 已加入后台队列：{queued.Value.TaskId}";
+        Item.OcrStatus = Status;
+        _main.Report(Status);
+        await _main.OcrQueue.RefreshAsync();
     }
 
     private async Task RunCurrentPageOcrAsync()
