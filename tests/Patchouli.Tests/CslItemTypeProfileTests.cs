@@ -16,17 +16,19 @@ public sealed class CslItemTypeProfileTests
 
         profiles.IsSuccess.Should().BeTrue();
         profiles.Value.Select(profile => profile.ItemType).Should().BeEquivalentTo(
-            "general",
-            "book",
-            "article-journal",
-            "chapter",
-            "thesis",
-            "report",
-            "webpage",
-            "manuscript",
-            "paper-conference",
-            "patent",
-            "standard");
+            CslItemTypeDisplayNames.Names.Keys);
+    }
+
+    [Fact]
+    public async Task Profile_display_names_come_from_the_shared_display_name_table()
+    {
+        Result<IReadOnlyList<CslItemTypeProfile>> profiles = await _service.ListProfilesAsync();
+
+        profiles.IsSuccess.Should().BeTrue();
+        foreach (CslItemTypeProfile profile in profiles.Value)
+        {
+            profile.DisplayName.Should().Be(CslItemTypeDisplayNames.For(profile.ItemType));
+        }
     }
 
     [Fact]
@@ -37,5 +39,18 @@ public sealed class CslItemTypeProfileTests
         profile.IsSuccess.Should().BeTrue();
         profile.Value.IsRenderableInCsl.Should().BeFalse();
         profile.Value.Description.Should().Contain("catch-all");
+    }
+
+    [Fact]
+    public async Task Every_concrete_type_recommends_the_url_identifier()
+    {
+        Result<IReadOnlyList<CslItemTypeProfile>> profiles = await _service.ListProfilesAsync();
+
+        profiles.IsSuccess.Should().BeTrue();
+        foreach (CslItemTypeProfile profile in profiles.Value.Where(profile => profile.ItemType != "general"))
+        {
+            profile.IdentifierSchemes.Should().Contain(BuiltInIdentifierSchemes.URL,
+                $"type '{profile.ItemType}' should recommend a URL");
+        }
     }
 }

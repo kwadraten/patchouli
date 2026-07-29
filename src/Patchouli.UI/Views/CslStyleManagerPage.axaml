@@ -14,8 +14,7 @@
 
     <Grid Grid.Row="1" ColumnDefinitions="*,32,*">
       <!-- Local Installed Styles -->
-      <Border Grid.Column="0" Background="{DynamicResource SurfaceContainerLowestBrush}"
-              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+      <Border Grid.Column="0" Classes="Card">
         <Grid RowDefinitions="Auto,16,*">
           <TextBlock Text="已安装样式" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
 
@@ -23,8 +22,7 @@
             <ItemsControl ItemsSource="{Binding InstalledStyles}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="csl:CslStyleViewModel">
-                  <Border Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="12"
-                          Margin="0,0,0,8">
+                  <Border Classes="CardTile" Margin="0,0,0,8">
                     <Grid ColumnDefinitions="*,Auto,Auto">
                       <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
@@ -55,8 +53,7 @@
       </Border>
 
       <!-- Remote Catalog -->
-      <Border Grid.Column="2" Background="{DynamicResource SurfaceContainerLowestBrush}"
-              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+      <Border Grid.Column="2" Classes="Card">
         <Grid RowDefinitions="Auto,8,Auto,16,*">
           <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
             <TextBlock Grid.Column="0" Text="样式源" VerticalAlignment="Center" FontSize="14"
@@ -94,8 +91,7 @@
             <ItemsControl ItemsSource="{Binding RemoteStyles}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="csl:CslCatalogStyleViewModel">
-                  <Border Background="{DynamicResource SurfaceContainerBrush}" CornerRadius="6" Padding="12"
-                          Margin="0,0,0,8">
+                  <Border Classes="CardTile" Margin="0,0,0,8">
                     <Grid ColumnDefinitions="*,Auto">
                       <StackPanel Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
                         <TextBlock Text="{Binding Title}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />

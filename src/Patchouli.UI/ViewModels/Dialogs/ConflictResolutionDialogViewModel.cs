@@ -91,21 +91,7 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
 
     private static string LocalizeItemType(string value)
     {
-        return value switch
-        {
-            "general" => "通用",
-            "book" => "图书",
-            "article-journal" => "期刊论文",
-            "chapter" => "图书章节",
-            "thesis" => "学位论文",
-            "report" => "报告",
-            "webpage" => "网页",
-            "manuscript" => "手稿",
-            "paper-conference" => "会议论文",
-            "patent" => "专利",
-            "standard" => "标准",
-            _ => value
-        };
+        return CslItemTypeDisplayNames.For(value);
     }
 
     private static string FormatCreators(string value)
@@ -132,14 +118,10 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
 
     private static string FormatCreator(JsonElement creator)
     {
-        string role = ReadString(creator, "role") switch
-        {
-            ItemCreatorRoles.Author => "作者",
-            ItemCreatorRoles.Editor => "编者",
-            ItemCreatorRoles.Translator => "译者",
-            ItemCreatorRoles.ContainerAuthor => "文献责任者",
-            _ => "责任者"
-        };
+        string roleKey = ReadString(creator, "role") ?? "";
+        string role = ItemCreatorRoles.Supported.Contains(roleKey)
+            ? ItemCreatorRoles.DisplayLabelFor(roleKey)
+            : "责任者";
         string? literal = ReadString(creator, "literal");
         string name = literal ?? string.Join(" ", new[]
             {
@@ -181,6 +163,8 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
             ItemDateRoles.Issued => "出版日期",
             ItemDateRoles.Accessed => "访问日期",
             ItemDateRoles.OriginalDate => "原始日期",
+            ItemDateRoles.EventDate => "事件日期",
+            ItemDateRoles.Submitted => "提交日期",
             _ => "日期"
         };
         string? literal = ReadString(date, "literal");

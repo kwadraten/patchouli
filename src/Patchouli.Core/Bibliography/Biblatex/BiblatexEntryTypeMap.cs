@@ -106,20 +106,7 @@ public static class BiblatexEntryTypeMap
         };
 
     public static readonly IReadOnlySet<string> SupportedPatchouliTypes =
-        new HashSet<string>(StringComparer.Ordinal)
-        {
-            "general",
-            "book",
-            "article-journal",
-            "chapter",
-            "thesis",
-            "report",
-            "webpage",
-            "manuscript",
-            "paper-conference",
-            "patent",
-            "standard"
-        };
+        new HashSet<string>(CslItemTypeDisplayNames.Names.Keys, StringComparer.Ordinal);
 
     public static string ResolvePatchouliItemType(string biblatexEntryType, out string? retainedOriginalType)
     {

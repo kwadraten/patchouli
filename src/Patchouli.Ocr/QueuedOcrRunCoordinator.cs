@@ -44,7 +44,8 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
     public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         Result<IReadOnlyList<PageId>> pages = await _engine.ListPageIdsAsync(documentInstanceId, cancellationToken);
         if (pages.IsFailure)
@@ -75,7 +76,8 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
         IReadOnlyList<PageId> pageIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)

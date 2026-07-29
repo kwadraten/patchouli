@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using FluentAssertions;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Tests;
@@ -188,7 +189,8 @@ public sealed class MinerUImageExtractionTests
         public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
             string batchId,
             string downloadDirectory,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             Directory.CreateDirectory(downloadDirectory);
             string zipPath = Path.Combine(downloadDirectory, $"{Guid.NewGuid():N}.zip");

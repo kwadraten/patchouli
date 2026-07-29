@@ -470,7 +470,8 @@ public sealed class MinerUPageRegionRunTests
         public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
             string batchId,
             string downloadDirectory,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             Directory.CreateDirectory(downloadDirectory);
             string zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
@@ -517,15 +518,17 @@ public sealed class MinerUPageRegionRunTests
         }
 
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, CancellationToken cancellationToken = default)
+            OcrPresetId presetId, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
-            return _engine.RunPresetOnDocumentAsync(documentInstanceId, presetId, cancellationToken);
+            return _engine.RunPresetOnDocumentAsync(documentInstanceId, presetId, cancellationToken, progress);
         }
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default)
+            OcrPresetId presetId, IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
-            return _engine.RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken);
+            return _engine.RunPresetOnPagesAsync(documentInstanceId, presetId, pageIds, cancellationToken, progress);
         }
 
         public Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId,

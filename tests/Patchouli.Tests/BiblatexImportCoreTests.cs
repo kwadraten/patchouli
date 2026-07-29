@@ -31,14 +31,37 @@ public sealed class BiblatexImportCoreTests
             .Should().Be("chapter");
 
         BiblatexEntryTypeMap.ResolvePatchouliItemType("misc", out retained)
+            .Should().Be("document");
+        retained.Should().BeNull();
+
+        BiblatexEntryTypeMap.ResolvePatchouliItemType("totally-unknown", out retained)
             .Should().Be("general");
-        retained.Should().Be("misc");
+        retained.Should().Be("totally-unknown");
 
         BiblatexEntryTypeMap.TryMapExportEntryType("article-journal", out string export)
             .Should().BeTrue();
         export.Should().Be("article");
 
         BiblatexEntryTypeMap.TryMapExportEntryType("general", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("movie", "motion_picture")]
+    [InlineData("video", "motion_picture")]
+    [InlineData("jurisdiction", "legal_case")]
+    [InlineData("legislation", "legislation")]
+    [InlineData("music", "musical_score")]
+    [InlineData("artwork", "graphic")]
+    [InlineData("letter", "personal_communication")]
+    [InlineData("performance", "performance")]
+    [InlineData("audio", "song")]
+    [InlineData("dataset", "dataset")]
+    [InlineData("periodical", "periodical")]
+    public void Expanded_patchouli_types_no_longer_degrade_to_general(string biblatexType, string expectedType)
+    {
+        BiblatexEntryTypeMap.ResolvePatchouliItemType(biblatexType, out string? retained)
+            .Should().Be(expectedType);
+        retained.Should().BeNull();
     }
 
     [Fact]
@@ -228,6 +251,50 @@ public sealed class BiblatexImportCoreTests
     {
         ItemMetadata general = SampleItem("G", "general", null);
         BiblatexExportMapper.MapItem(general).IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Submitted_date_maps_in_both_import_and_export_directions()
+    {
+        BiblatexEntryDto entry = new(
+            "submitted-1",
+            "article",
+            false,
+            new Dictionary<string, string>
+            {
+                ["title"] = "Submitted paper",
+                ["submitted"] = "2025-03-04"
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>(),
+            new Dictionary<string, BiblatexDateDto>(),
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> imported = BiblatexFieldMapper.MapVisibleEntry(entry);
+        imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+        imported.Value.Dates.Should().ContainSingle(date =>
+            date.Role == ItemDateRoles.Submitted && date.Literal == "2025-03-04");
+
+        ItemMetadata source = SampleItem("Submitted paper", "article-journal", null) with
+        {
+            Dates =
+            [
+                new ItemDate(
+                    Guid.NewGuid().ToString(),
+                    ItemId.New(),
+                    ItemDateRoles.Submitted,
+                    "[[2025,3,4]]",
+                    false,
+                    null,
+                    null,
+                    DateTimeOffset.UtcNow)
+            ]
+        };
+        Result<BiblatexWriteEntryDto> exported = BiblatexExportMapper.MapItem(source);
+        exported.IsSuccess.Should().BeTrue(exported.ErrorMessage);
+        exported.Value.Fields["submitted"].Should().Be("2025-03-04");
     }
 
     [Fact]

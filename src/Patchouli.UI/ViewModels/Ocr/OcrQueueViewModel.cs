@@ -22,12 +22,11 @@ public sealed class OcrQueueViewModel : ViewModelBase
         EnqueueMockCommand = new AsyncCommand(EnqueueMockAsync);
         StartCommand = new AsyncCommand(StartAsync);
         StopCommand = new AsyncCommand(StopAsync);
-        CancelCommand = new AsyncCommand(CancelByInputAsync);
         PauseGlobalCommand = new AsyncCommand(() => PauseAsync(OcrPauseScope.Global));
         ResumeGlobalCommand = new AsyncCommand(() => ResumeAsync(OcrPauseScope.Global));
+        ClearFinishedCommand = new AsyncCommand(ClearFinishedAsync);
     }
 
-    public string Output { get; private set; } = "OCR 队列仅在当前进程内运行，应用重启后不会保留；MCP 不能控制 OCR 队列。";
     private string _statusSummary = "";
 
     public string StatusSummary
@@ -40,22 +39,54 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
     }
 
-    public string DocumentInstanceId { get; set; } = "";
-    public string PresetId { get; set; } = "";
-    public string PageIds { get; set; } = "";
-    public string TaskId { get; set; } = "";
-    public ObservableCollection<string> Tasks { get; } = new();
-    public ObservableCollection<OcrQueueTaskViewModel> TaskRows { get; } = new();
-    public bool HasTasks => TaskRows.Count > 0;
-    public bool NoTasks => !HasTasks;
+    private bool _isQueueRunning;
+
+    public bool IsQueueRunning
+    {
+        get => _isQueueRunning;
+        private set
+        {
+            _isQueueRunning = value;
+            Raise();
+            Raise(nameof(IsQueueStopped));
+        }
+    }
+
+    public bool IsQueueStopped => !IsQueueRunning;
+
+    private bool _isGloballyPaused;
+
+    public bool IsGloballyPaused
+    {
+        get => _isGloballyPaused;
+        private set
+        {
+            _isGloballyPaused = value;
+            Raise();
+            Raise(nameof(IsGloballyResumed));
+        }
+    }
+
+    public bool IsGloballyResumed => !IsGloballyPaused;
+
+    public ObservableCollection<OcrQueueTaskViewModel> ActiveTaskRows { get; } = new();
+    public ObservableCollection<OcrQueueTaskViewModel> FinishedTaskRows { get; } = new();
+    public int ActiveTaskCount => ActiveTaskRows.Count;
+    public int FinishedTaskCount => FinishedTaskRows.Count;
+    public string ActiveTabHeader => $"进行中 ({ActiveTaskCount})";
+    public string FinishedTabHeader => $"已完成 ({FinishedTaskCount})";
+    public bool HasActiveTasks => ActiveTaskRows.Count > 0;
+    public bool NoActiveTasks => !HasActiveTasks;
+    public bool HasFinishedTasks => FinishedTaskRows.Count > 0;
+    public bool NoFinishedTasks => !HasFinishedTasks;
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand EnqueueMockCommand { get; }
     public AsyncCommand StartCommand { get; }
     public AsyncCommand StopCommand { get; }
-    public AsyncCommand CancelCommand { get; }
     public AsyncCommand PauseGlobalCommand { get; }
     public AsyncCommand ResumeGlobalCommand { get; }
+    public AsyncCommand ClearFinishedCommand { get; }
 
     private async Task EnqueueMockAsync()
     {
@@ -65,23 +96,15 @@ public sealed class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        try
+        Result<OcrQueueTask> result = await queue.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        if (result.IsSuccess)
         {
-            PageId[] pages = PageIds.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(PageId.Parse)
-                .ToArray();
-            Result<OcrQueueTask> result = await queue.EnqueueMockPagesAsync(
-                Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId),
-                OcrPresetId.Parse(PresetId),
-                pages,
-                OcrQueuePriority.UserStartedDocument);
-            Output = result.IsSuccess
-                ? $"Queued mock OCR task：{result.Value.TaskId}"
-                : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+            _main.Report("已加入模拟 OCR 任务。");
         }
-        catch (Exception ex)
+        else
         {
-            Output = $"ERROR validation_failed: {ex.Message}";
+            _main.ReportError($"加入模拟 OCR 任务失败：{result.ErrorMessage}");
         }
 
         await RefreshAsync();
@@ -97,7 +120,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
 
         await queue.StartAsync();
         EnsureAutoRefreshLoop();
-        Output = "OCR 队列已启动。";
+        _main.Report("OCR 队列已启动。");
         await RefreshAsync();
     }
 
@@ -110,13 +133,21 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         await queue.StopAsync();
-        Output = "OCR 队列已停止。";
+        _main.Report("OCR 队列已停止。");
         await RefreshAsync();
     }
 
-    private Task CancelByInputAsync()
+    private async Task ClearFinishedAsync()
     {
-        return CancelAsync(TaskId);
+        IOcrQueueScheduler? queue = await GetQueueAsync();
+        if (queue is null)
+        {
+            return;
+        }
+
+        queue.ClearFinishedTasks();
+        _main.Report("已清空完成的任务。");
+        await RefreshAsync();
     }
 
     internal async Task PauseAsync(string scope, string? target = null)
@@ -128,9 +159,15 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         Result result = await queue.PauseAsync(scope, target);
-        Output = result.IsSuccess
-            ? $"已暂停：{DescribePauseScope(scope)}。"
-            : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+        if (result.IsSuccess)
+        {
+            _main.Report($"已暂停：{DescribePauseScope(scope)}。");
+        }
+        else
+        {
+            _main.ReportError($"暂停失败：{result.ErrorMessage}");
+        }
+
         await RefreshAsync();
     }
 
@@ -143,9 +180,15 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         Result result = await queue.ResumeAsync(scope, target);
-        Output = result.IsSuccess
-            ? $"已恢复：{DescribePauseScope(scope)}。"
-            : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+        if (result.IsSuccess)
+        {
+            _main.Report($"已恢复：{DescribePauseScope(scope)}。");
+        }
+        else
+        {
+            _main.ReportError($"恢复失败：{result.ErrorMessage}");
+        }
+
         await RefreshAsync();
     }
 
@@ -160,11 +203,18 @@ public sealed class OcrQueueViewModel : ViewModelBase
         try
         {
             Result result = await queue.CancelTaskAsync(OcrQueueTaskId.Parse(taskId));
-            Output = result.IsSuccess ? "已请求取消任务。" : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
+            if (result.IsSuccess)
+            {
+                _main.Report("已请求取消任务。");
+            }
+            else
+            {
+                _main.ReportError($"取消任务失败：{result.ErrorMessage}");
+            }
         }
         catch (Exception ex)
         {
-            Output = $"ERROR validation_failed: {ex.Message}";
+            _main.ReportError($"取消任务失败：{ex.Message}");
         }
 
         await RefreshAsync();
@@ -180,11 +230,10 @@ public sealed class OcrQueueViewModel : ViewModelBase
 
         Result<OcrQueueStatus> status = await queue.GetQueueStatusAsync();
         Result<IReadOnlyList<OcrQueueTask>> tasks =
-            await queue.ListTasksAsync(new OcrQueueTaskFilter(IncludeCompleted: false));
+            await queue.ListTasksAsync(new OcrQueueTaskFilter(IncludeCompleted: true));
         if (status.IsFailure || tasks.IsFailure)
         {
-            Output = $"ERROR {status.ErrorCode ?? tasks.ErrorCode}: {status.ErrorMessage ?? tasks.ErrorMessage}";
-            Raise(nameof(Output));
+            _main.ReportError($"读取队列状态失败：{status.ErrorMessage ?? tasks.ErrorMessage}");
             return;
         }
 
@@ -197,11 +246,9 @@ public sealed class OcrQueueViewModel : ViewModelBase
         List<string> docs = tasks.Value.Select(t => t.DocumentInstanceId.ToString()).Distinct().ToList();
         if (docs.Count > 0)
         {
-            DynamicParameters p = new();
-            p.Add("@docs", docs);
             IEnumerable<(string DocId, string Title)> query = await connection.QueryAsync<(string DocId, string Title)>(
                 "select di.document_instance_id as DocId, i.title as Title from document_instances di join items i on di.item_id = i.item_id where di.document_instance_id in @docs",
-                new { docs = docs });
+                new { docs });
             foreach ((string DocId, string Title) row in query)
             {
                 titles[row.DocId] = row.Title;
@@ -243,28 +290,88 @@ public sealed class OcrQueueViewModel : ViewModelBase
             }
         }
 
+        IsQueueRunning = status.Value.IsRunning;
+        IsGloballyPaused = status.Value.PausedScopes.Contains("global:");
         StatusSummary =
-            $"{(status.Value.IsRunning ? "运行中 (running)" : "已停止 (stopped)")}；排队={status.Value.Queued}，运行={status.Value.Running}，成功={status.Value.Succeeded}，失败={status.Value.Failed}，已取消={status.Value.Cancelled}，阻塞={status.Value.Blocked}；暂停范围={FormatPausedScopes(status.Value.PausedScopes)}";
-        Tasks.Clear();
-        TaskRows.Clear();
+            $"{(status.Value.IsRunning ? "运行中" : "已停止")}；排队 {status.Value.Queued}，运行 {status.Value.Running}，成功 {status.Value.Succeeded}，失败 {status.Value.Failed}，已取消 {status.Value.Cancelled}，阻塞 {status.Value.Blocked}{FormatPausedScopes(status.Value.PausedScopes)}";
+
+        List<OcrQueueTask> active = [];
+        List<OcrQueueTask> finished = [];
         foreach (OcrQueueTask task in tasks.Value)
         {
+            (IsActiveState(task.State) ? active : finished).Add(task);
+        }
+
+        SyncRows(ActiveTaskRows, active, queue, titles, progress);
+        SyncRows(FinishedTaskRows, finished, queue, titles, progress);
+
+        Raise(nameof(ActiveTaskCount));
+        Raise(nameof(FinishedTaskCount));
+        Raise(nameof(ActiveTabHeader));
+        Raise(nameof(FinishedTabHeader));
+        Raise(nameof(HasActiveTasks));
+        Raise(nameof(NoActiveTasks));
+        Raise(nameof(HasFinishedTasks));
+        Raise(nameof(NoFinishedTasks));
+    }
+
+    private static bool IsActiveState(string state)
+    {
+        return state is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused;
+    }
+
+    private void SyncRows(
+        ObservableCollection<OcrQueueTaskViewModel> collection,
+        List<OcrQueueTask> tasks,
+        IOcrQueueScheduler queue,
+        Dictionary<string, string> titles,
+        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        for (int i = collection.Count - 1; i >= 0; i--)
+        {
+            if (tasks.All(task => task.TaskId.ToString() != collection[i].TaskId))
+            {
+                collection.RemoveAt(i);
+            }
+        }
+
+        for (int i = 0; i < tasks.Count; i++)
+        {
+            OcrQueueTask task = tasks[i];
+            string taskId = task.TaskId.ToString();
             string title = titles.TryGetValue(task.DocumentInstanceId.ToString(), out string? t)
                 ? t
                 : task.DocumentInstanceId.ToString();
-            Tasks.Add(
-                $"{task.TaskId} | {task.TaskKind} | {title} | {task.Priority} | {task.State} | {task.EngineId} | {task.ProviderId ?? "-"} | attempts={task.AttemptCount} | error={task.LastErrorCode ?? "-"}");
-            TaskRows.Add(new OcrQueueTaskViewModel(task, title, this, progress.GetValueOrDefault(task.TaskId)));
+            OcrQueueProgress? pageProgress = progress.GetValueOrDefault(task.TaskId);
+            OcrTaskProgressReport? stage = queue.GetTaskProgress(task.TaskId);
+            DateTimeOffset? finishedAt = queue.GetTaskFinishedAt(task.TaskId);
+
+            int existingIndex = -1;
+            for (int j = 0; j < collection.Count; j++)
+            {
+                if (collection[j].TaskId == taskId)
+                {
+                    existingIndex = j;
+                    break;
+                }
+            }
+
+            if (existingIndex < 0)
+            {
+                collection.Insert(Math.Min(i, collection.Count),
+                    new OcrQueueTaskViewModel(task, title, this, pageProgress, stage, finishedAt, now));
+            }
+            else
+            {
+                collection[existingIndex].Update(task, title, pageProgress, stage, finishedAt, now);
+                if (existingIndex != i)
+                {
+                    collection.Move(existingIndex, i);
+                }
+            }
         }
-
-        Raise(nameof(StatusSummary));
-        Raise(nameof(Tasks));
-        Raise(nameof(TaskRows));
-        Raise(nameof(HasTasks));
-        Raise(nameof(NoTasks));
-        Raise(nameof(Output));
     }
-
 
     private async Task<IOcrQueueScheduler?> GetQueueAsync()
     {
@@ -275,8 +382,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
             return serviceResult.Value;
         }
 
-        Output = $"ERROR {serviceResult.ErrorCode}: {serviceResult.ErrorMessage}";
-        Raise(nameof(Output));
+        _main.ReportError($"OCR 队列不可用：{serviceResult.ErrorMessage}");
         return null;
     }
 
@@ -296,12 +402,8 @@ public sealed class OcrQueueViewModel : ViewModelBase
     private static string FormatPausedScopes(IReadOnlyList<string> scopes)
     {
         return scopes.Count == 0
-            ? "无"
-            : string.Join("，", scopes.Select(scope =>
-            {
-                string[] parts = scope.Split(':', 2);
-                return $"{scope.TrimEnd(':')}:{DescribePauseScope(parts[0])}";
-            }));
+            ? ""
+            : $"；已暂停：{string.Join("，", scopes.Select(scope => DescribePauseScope(scope.Split(':', 2)[0])))}";
     }
 
     private void SubscribeQueue(IOcrQueueScheduler queue)
@@ -449,34 +551,42 @@ public sealed class OcrQueueViewModel : ViewModelBase
     }
 }
 
-public sealed class OcrQueueTaskViewModel
+public sealed class OcrQueueTaskViewModel : ViewModelBase
 {
+    private string? _stageKey;
+    private DateTimeOffset _stageStartedAt;
+
     public OcrQueueTaskViewModel(OcrQueueTask task, string title, OcrQueueViewModel queueViewModel,
-        OcrQueueProgress? progress = null)
+        OcrQueueProgress? pageProgress, OcrTaskProgressReport? stage, DateTimeOffset? finishedAt,
+        DateTimeOffset now)
     {
         TaskId = task.TaskId.ToString();
         ShortTaskId = TaskId.Length <= 8 ? TaskId : TaskId[..8];
-        DocumentTitle = title;
         Kind = task.TaskKind;
-        State = task.State;
         Priority = task.Priority;
-        EngineId = task.EngineId;
-        ProviderId = task.ProviderId ?? "-";
-        PageCount = task.PageIds.Count;
-        AttemptText = $"{task.AttemptCount}/{task.MaxAttempts}";
-        LastError = string.IsNullOrWhiteSpace(task.LastErrorCode) ? "-" : task.LastErrorCode;
-        ScheduledAfterText = task.ScheduledAfter?.ToLocalTime().ToString("g") ?? "-";
-        ProgressText = BuildProgressText(task, progress);
 
         PauseCommand = new AsyncCommand(() => queueViewModel.PauseAsync(OcrPauseScope.Task, TaskId));
         ResumeCommand = new AsyncCommand(() => queueViewModel.ResumeAsync(OcrPauseScope.Task, TaskId));
         CancelCommand = new AsyncCommand(() => queueViewModel.CancelAsync(TaskId));
+
+        Update(task, title, pageProgress, stage, finishedAt, now);
     }
 
     public string TaskId { get; }
     public string ShortTaskId { get; }
-    public string DocumentTitle { get; }
     public string Kind { get; }
+
+    private int _pageCount;
+
+    public int PageCount
+    {
+        get => _pageCount;
+        private set
+        {
+            _pageCount = value;
+            Raise();
+        }
+    }
 
     public string KindText => Kind switch
     {
@@ -484,21 +594,8 @@ public sealed class OcrQueueTaskViewModel
         OcrQueueTaskKind.Document => "文档 OCR",
         OcrQueueTaskKind.ImagePage => "图片页 OCR",
         OcrQueueTaskKind.RenderedPdfPage => "PDF 渲染页 OCR",
+        OcrQueueTaskKind.Region => "区域 OCR",
         _ => Kind
-    };
-
-    public string State { get; }
-
-    public string StateText => State switch
-    {
-        OcrQueueTaskState.Queued => "排队中",
-        OcrQueueTaskState.Running => "运行中",
-        OcrQueueTaskState.Succeeded => "已完成",
-        OcrQueueTaskState.Failed => "失败",
-        OcrQueueTaskState.Cancelled => "已取消",
-        OcrQueueTaskState.Blocked => "阻塞",
-        OcrQueueTaskState.Paused => "已暂停",
-        _ => State
     };
 
     public string Priority { get; }
@@ -514,26 +611,286 @@ public sealed class OcrQueueTaskViewModel
         _ => Priority
     };
 
-    public string EngineId { get; }
-    public string ProviderId { get; }
-    public int PageCount { get; }
-    public string AttemptText { get; }
-    public string LastError { get; }
-    public string ScheduledAfterText { get; }
-    public string ProgressText { get; }
+    private string _documentTitle = "";
+
+    public string DocumentTitle
+    {
+        get => _documentTitle;
+        private set
+        {
+            _documentTitle = value;
+            Raise();
+        }
+    }
+
+    private string _state = "";
+
+    public string State
+    {
+        get => _state;
+        private set
+        {
+            _state = value;
+            Raise();
+            Raise(nameof(StateText));
+        }
+    }
+
+    public string StateText => State switch
+    {
+        OcrQueueTaskState.Queued => "排队中",
+        OcrQueueTaskState.Running => "运行中",
+        OcrQueueTaskState.Succeeded => "已完成",
+        OcrQueueTaskState.Failed => "失败",
+        OcrQueueTaskState.Cancelled => "已取消",
+        OcrQueueTaskState.Blocked => "阻塞",
+        OcrQueueTaskState.Paused => "已暂停",
+        _ => State
+    };
+
+    private bool _isFailed;
+
+    public bool IsFailed
+    {
+        get => _isFailed;
+        private set
+        {
+            _isFailed = value;
+            Raise();
+        }
+    }
+
+    private bool _isActive;
+
+    public bool IsActive
+    {
+        get => _isActive;
+        private set
+        {
+            _isActive = value;
+            Raise();
+        }
+    }
+
+    private double _progressValue;
+
+    public double ProgressValue
+    {
+        get => _progressValue;
+        private set
+        {
+            _progressValue = value;
+            Raise();
+            Raise(nameof(ProgressPercentText));
+        }
+    }
+
+    public string ProgressPercentText => $"{ProgressValue:F0}%";
+
+    private string _stageText = "";
+
+    public string StageText
+    {
+        get => _stageText;
+        private set
+        {
+            _stageText = value;
+            Raise();
+        }
+    }
+
+    private string _errorText = "";
+
+    public string ErrorText
+    {
+        get => _errorText;
+        private set
+        {
+            _errorText = value;
+            Raise();
+            Raise(nameof(HasError));
+        }
+    }
+
+    public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
+
+    private string _metaText = "";
+
+    public string MetaText
+    {
+        get => _metaText;
+        private set
+        {
+            _metaText = value;
+            Raise();
+        }
+    }
 
     public AsyncCommand PauseCommand { get; }
     public AsyncCommand ResumeCommand { get; }
     public AsyncCommand CancelCommand { get; }
 
-    private static string BuildProgressText(OcrQueueTask task, OcrQueueProgress? progress)
+    public void Update(OcrQueueTask task, string title, OcrQueueProgress? pageProgress,
+        OcrTaskProgressReport? stage, DateTimeOffset? finishedAt, DateTimeOffset now)
     {
-        int total = progress?.Total > 0 ? progress.Total : task.PageIds.Count;
-        int succeeded = progress?.Succeeded ?? task.CompletedPageCount;
-        int failed = progress?.Failed ?? task.FailedPageCount;
-        int processing = progress?.Processing ??
-                         (task.State == OcrQueueTaskState.Running ? Math.Max(0, total - succeeded - failed) : 0);
-        return $"进度：{succeeded}/{total} 页完成，处理中 {processing}，失败 {failed}";
+        DocumentTitle = title;
+        State = task.State;
+        PageCount = task.PageIds.Count;
+        IsActive = task.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused;
+        IsFailed = task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked;
+        ErrorText = !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorMessage)
+            ? task.LastErrorMessage!
+            : !IsActive && !string.IsNullOrWhiteSpace(task.LastErrorCode)
+                ? task.LastErrorCode!
+                : "";
+
+        if (stage is not null && stage.Stage != _stageKey)
+        {
+            _stageKey = stage.Stage;
+            _stageStartedAt = now;
+        }
+
+        ProgressValue = ComputeProgress(task, pageProgress, stage, now);
+        StageText = BuildStageText(task, pageProgress, stage, now);
+        MetaText = BuildMetaText(task, finishedAt);
+    }
+
+    private double ComputeProgress(OcrQueueTask task, OcrQueueProgress? pageProgress,
+        OcrTaskProgressReport? stage, DateTimeOffset now)
+    {
+        if (task.State == OcrQueueTaskState.Succeeded)
+        {
+            return 100;
+        }
+
+        if (stage is not null)
+        {
+            (double floor, double ceiling) = StageBand(stage.Stage);
+            double value;
+            if (stage.Fraction is { } fraction)
+            {
+                value = floor + (ceiling - floor) * Math.Clamp(fraction, 0, 1);
+            }
+            else
+            {
+                // Unmeasurable stage: ease toward the band ceiling with elapsed time.
+                double elapsedSeconds = Math.Max(0, (now - _stageStartedAt).TotalSeconds);
+                double creep = 1 - Math.Exp(-elapsedSeconds / 30.0);
+                value = floor + (ceiling - floor) * 0.9 * creep;
+            }
+
+            return Math.Min(stage.Stage == OcrTaskStage.Importing ? 99 : 95, value);
+        }
+
+        int total = pageProgress?.Total > 0 ? pageProgress.Total : Math.Max(1, task.PageIds.Count);
+        int done = pageProgress?.Succeeded ?? task.CompletedPageCount;
+        return Math.Min(95, 100.0 * done / total);
+    }
+
+    private string BuildStageText(OcrQueueTask task, OcrQueueProgress? pageProgress,
+        OcrTaskProgressReport? stage, DateTimeOffset now)
+    {
+        if (stage is null)
+        {
+            int total = pageProgress?.Total > 0 ? pageProgress.Total : Math.Max(1, task.PageIds.Count);
+            int done = pageProgress?.Succeeded ?? task.CompletedPageCount;
+            return $"{done}/{total} 页";
+        }
+
+        string label = StageLabel(stage.Stage);
+        string? detail = stage.Stage switch
+        {
+            OcrTaskStage.Uploading => FormatChunkDetail(stage.Detail),
+            OcrTaskStage.WaitingCloud => FormatWaitingDetail(stage.Detail, now),
+            OcrTaskStage.Downloading => FormatBytesDetail(stage.Detail),
+            _ => null
+        };
+        return detail is null ? label : $"{label} · {detail}";
+    }
+
+    private string FormatWaitingDetail(string? providerStatus, DateTimeOffset now)
+    {
+        string status = providerStatus switch
+        {
+            "waiting_file" => "等待文件",
+            "pending" => "排队中",
+            "running" => "识别中",
+            "converting" => "生成结果中",
+            "done" => "完成",
+            "failed" => "失败",
+            _ => providerStatus ?? "等待中"
+        };
+        TimeSpan elapsed = TimeSpan.FromSeconds(Math.Max(0, (now - _stageStartedAt).TotalSeconds));
+        string elapsedText = elapsed.TotalMinutes >= 1
+            ? $"{(int)elapsed.TotalMinutes} 分 {elapsed.Seconds} 秒"
+            : $"{elapsed.Seconds} 秒";
+        return $"{status}（已等待 {elapsedText}）";
+    }
+
+    private static string FormatChunkDetail(string? detail)
+    {
+        if (detail is not null && detail.StartsWith("chunk:", StringComparison.Ordinal))
+        {
+            string[] parts = detail["chunk:".Length..].Split('/');
+            if (parts.Length == 2)
+            {
+                return $"分片 {parts[0]}/{parts[1]}";
+            }
+        }
+
+        return "准备上传";
+    }
+
+    private static string FormatBytesDetail(string? detail)
+    {
+        if (detail is not null && detail.StartsWith("bytes:", StringComparison.Ordinal))
+        {
+            string[] parts = detail["bytes:".Length..].Split('/');
+            if (parts.Length == 2 && long.TryParse(parts[0], out long received) &&
+                long.TryParse(parts[1], out long total))
+            {
+                return $"{FormatMegabytes(received)}/{FormatMegabytes(total)} MB";
+            }
+        }
+
+        return "";
+    }
+
+    private static string FormatMegabytes(long bytes)
+    {
+        return (bytes / (1024.0 * 1024.0)).ToString("F1");
+    }
+
+    private string BuildMetaText(OcrQueueTask task, DateTimeOffset? finishedAt)
+    {
+        string meta = $"任务 {ShortTaskId} · {KindText} · {PriorityText} · {task.PageIds.Count} 页";
+        return finishedAt is null ? meta : $"{meta} · 完成于 {finishedAt.Value.ToLocalTime():g}";
+    }
+
+    private static (double Floor, double Ceiling) StageBand(string stage)
+    {
+        return stage switch
+        {
+            OcrTaskStage.Preparing => (0, 5),
+            OcrTaskStage.Uploading => (5, 30),
+            OcrTaskStage.WaitingCloud => (30, 80),
+            OcrTaskStage.Downloading => (80, 95),
+            OcrTaskStage.Importing => (95, 100),
+            _ => (0, 5)
+        };
+    }
+
+    private static string StageLabel(string stage)
+    {
+        return stage switch
+        {
+            OcrTaskStage.Preparing => "准备中",
+            OcrTaskStage.Uploading => "上传",
+            OcrTaskStage.WaitingCloud => "等待云端",
+            OcrTaskStage.Downloading => "下载结果",
+            OcrTaskStage.Importing => "导入数据库",
+            _ => stage
+        };
     }
 }
 

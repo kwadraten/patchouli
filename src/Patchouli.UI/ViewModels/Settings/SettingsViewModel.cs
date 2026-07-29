@@ -9,7 +9,7 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed class SettingsViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private SettingsCategoryViewModel _activeCategory = null!;
+    private NavCategoryViewModel _activeCategory = null!;
     private string _globalStatus = "";
     private bool _isRoutingCommand;
     private Task _activeSectionLoad = Task.CompletedTask;
@@ -29,7 +29,7 @@ public sealed class SettingsViewModel : ViewModelBase
             ((INotifyPropertyChanged)section).PropertyChanged += SectionPropertyChanged;
         }
 
-        Categories = new ObservableCollection<SettingsCategoryViewModel>
+        Categories = new ObservableCollection<NavCategoryViewModel>
         {
             new("库与本机路径", "Database", LibrarySettings),
             new("同步与快照", "Cloud", SyncSettings),
@@ -40,9 +40,9 @@ public sealed class SettingsViewModel : ViewModelBase
 
         ActiveCategory = Categories.First();
 
-        SaveCommand = new AsyncCommand(SaveActiveSectionAsync);
+        SaveCommand = new AsyncCommand(SaveAllSectionsAsync);
 
-        DiscardCommand = new AsyncCommand(DiscardActiveSectionAsync);
+        DiscardCommand = new AsyncCommand(DiscardAllSectionsAsync);
     }
 
     public LibrarySettingsViewModel LibrarySettings { get; }
@@ -51,9 +51,9 @@ public sealed class SettingsViewModel : ViewModelBase
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
 
-    public ObservableCollection<SettingsCategoryViewModel> Categories { get; }
+    public ObservableCollection<NavCategoryViewModel> Categories { get; }
 
-    public SettingsCategoryViewModel ActiveCategory
+    public NavCategoryViewModel ActiveCategory
     {
         get => _activeCategory;
         set
@@ -63,18 +63,12 @@ public sealed class SettingsViewModel : ViewModelBase
                 return;
             }
 
-            if (_activeCategory is not null && _activeCategory.Section?.IsDirty == true)
-            {
-                GlobalStatus = "当前设置分组有未保存的更改；请先保存或放弃更改。";
-                Raise(nameof(ActiveCategory));
-                RaiseActiveSectionState();
-                return;
-            }
-
+            // Unsaved drafts stay in memory when switching sections; the header save/discard
+            // acts on all dirty sections at once.
             _activeCategory = value;
             Raise();
             RaiseActiveSectionState();
-            _activeSectionLoad = value.Section?.LoadAsync() ?? Task.CompletedTask;
+            _activeSectionLoad = SectionOf(value)?.LoadAsync() ?? Task.CompletedTask;
             _activeSectionLoad.Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
         }
     }
@@ -95,17 +89,20 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
-    public bool HasDirtySections => Categories.Any(category => category.Section?.IsDirty == true);
+    public bool HasDirtySections => Categories.Any(category => SectionOf(category)?.IsDirty == true);
 
-    public bool ShowSaveControls => ActiveCategory.Section?.SupportsEditing == true;
+    public bool ShowSaveControls => SectionOf(ActiveCategory)?.SupportsEditing == true;
 
-    public bool CanSaveActiveSection => ActiveCategory.Section?.SupportsEditing == true &&
-                                        ActiveCategory.Section.CanSave && !_isRoutingCommand;
+    /// <summary>The header save commits every dirty section in one action.</summary>
+    public bool CanSaveAll => HasDirtySections &&
+                              Categories.Select(SectionOf)
+                                  .OfType<ISettingsSection>()
+                                  .Where(section => section.IsDirty)
+                                  .All(section => section.SupportsEditing && section.CanSave) &&
+                              !_isRoutingCommand;
 
-    public bool CanDiscardActiveSection => ActiveCategory.Section?.SupportsEditing == true &&
-                                           ActiveCategory.Section.IsDirty && !_isRoutingCommand;
-
-    public bool IsActiveSectionDirty => ActiveCategory.Section?.IsDirty == true;
+    /// <summary>The header discard reverts every dirty section in one action.</summary>
+    public bool CanDiscardAll => HasDirtySections && !_isRoutingCommand;
 
     public Task WaitForActiveSectionLoadAsync()
     {
@@ -116,7 +113,7 @@ public sealed class SettingsViewModel : ViewModelBase
     {
         await _activeSectionLoad;
         foreach (ISettingsSection section in Categories
-                     .Select(category => category.Section)
+                     .Select(SectionOf)
                      .OfType<ISettingsSection>()
                      .Where(section => !section.IsDirty))
         {
@@ -137,11 +134,15 @@ public sealed class SettingsViewModel : ViewModelBase
         SyncSettings.NotifyLibraryContextChanged();
     }
 
+    /// <summary>Saves every dirty section in one pass. On success the aggregated status is reported
+    /// once; a section that requires a service reload (MCP) surfaces a single restart hint.</summary>
     public async Task<bool> SaveAllDirtySectionsAsync()
     {
-        foreach (SettingsCategoryViewModel category in Categories)
+        List<string> savedTitles = [];
+        bool requiresReload = false;
+        foreach (NavCategoryViewModel category in Categories)
         {
-            ISettingsSection? section = category.Section;
+            ISettingsSection? section = SectionOf(category);
             if (section?.SupportsEditing != true || !section.IsDirty)
             {
                 continue;
@@ -153,6 +154,15 @@ public sealed class SettingsViewModel : ViewModelBase
                 GlobalStatus = $"「{category.Title}」保存失败：{section.LastError ?? section.SaveStateText}";
                 return false;
             }
+
+            savedTitles.Add(category.Title);
+            requiresReload |= section.RequiresReload;
+        }
+
+        if (savedTitles.Count > 0)
+        {
+            GlobalStatus = $"已保存：{string.Join("、", savedTitles)}。" +
+                           (requiresReload ? "MCP 服务需重启后生效，可在「MCP 服务与安全」中保存并重启。" : "");
         }
 
         Raise(nameof(HasDirtySections));
@@ -160,10 +170,9 @@ public sealed class SettingsViewModel : ViewModelBase
         return true;
     }
 
-    private async Task SaveActiveSectionAsync()
+    private async Task SaveAllSectionsAsync()
     {
-        ISettingsSection? section = ActiveCategory.Section;
-        if (section is null || !section.SupportsEditing || !section.CanSave)
+        if (!HasDirtySections)
         {
             return;
         }
@@ -172,8 +181,7 @@ public sealed class SettingsViewModel : ViewModelBase
         RaiseActiveSectionState();
         try
         {
-            await section.SaveAsync();
-            GlobalStatus = section.SaveStateText;
+            await SaveAllDirtySectionsAsync();
         }
         finally
         {
@@ -182,10 +190,9 @@ public sealed class SettingsViewModel : ViewModelBase
         }
     }
 
-    private async Task DiscardActiveSectionAsync()
+    private async Task DiscardAllSectionsAsync()
     {
-        ISettingsSection? section = ActiveCategory.Section;
-        if (section is null || !section.SupportsEditing || !section.IsDirty)
+        if (!HasDirtySections)
         {
             return;
         }
@@ -194,8 +201,15 @@ public sealed class SettingsViewModel : ViewModelBase
         RaiseActiveSectionState();
         try
         {
-            await section.DiscardAsync();
-            GlobalStatus = section.SaveStateText;
+            foreach (ISettingsSection section in Categories
+                         .Select(SectionOf)
+                         .OfType<ISettingsSection>()
+                         .Where(section => section.SupportsEditing && section.IsDirty))
+            {
+                await section.DiscardAsync();
+            }
+
+            GlobalStatus = "已放弃所有未保存的更改。";
         }
         finally
         {
@@ -207,18 +221,19 @@ public sealed class SettingsViewModel : ViewModelBase
     private void RaiseActiveSectionState()
     {
         Raise(nameof(ShowSaveControls));
-        Raise(nameof(CanSaveActiveSection));
-        Raise(nameof(CanDiscardActiveSection));
-        Raise(nameof(IsActiveSectionDirty));
+        Raise(nameof(CanSaveAll));
+        Raise(nameof(CanDiscardAll));
         Raise(nameof(HasDirtySections));
     }
 
     private void SectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        Raise(nameof(HasDirtySections));
-        if (ReferenceEquals(sender, ActiveCategory.Section))
-        {
-            RaiseActiveSectionState();
-        }
+        // Header save/discard targets all dirty sections, so any section's state change matters.
+        RaiseActiveSectionState();
+    }
+
+    private static ISettingsSection? SectionOf(NavCategoryViewModel category)
+    {
+        return category.Content as ISettingsSection;
     }
 }

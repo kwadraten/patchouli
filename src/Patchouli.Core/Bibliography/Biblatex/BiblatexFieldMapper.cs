@@ -208,13 +208,36 @@ public static class BiblatexFieldMapper
         return string.Equals(a, b, StringComparison.Ordinal);
     }
 
+    private static readonly (string RoleKey, string ItemRole)[] PersonRoleMap =
+    [
+        ("author", ItemCreatorRoles.Author),
+        ("editor", ItemCreatorRoles.Editor),
+        ("editora", ItemCreatorRoles.Editor),
+        ("editorb", ItemCreatorRoles.Editor),
+        ("editorc", ItemCreatorRoles.Editor),
+        ("translator", ItemCreatorRoles.Translator),
+        ("bookauthor", ItemCreatorRoles.ContainerAuthor)
+    ];
+
     private static IReadOnlyList<ItemCreatorInput> MapCreators(BiblatexEntryDto entry)
     {
         List<ItemCreatorInput> creators = [];
-        AppendPersons(creators, entry, "author", ItemCreatorRoles.Author);
-        AppendPersons(creators, entry, "editor", ItemCreatorRoles.Editor);
-        AppendPersons(creators, entry, "translator", ItemCreatorRoles.Translator);
-        AppendPersons(creators, entry, "bookauthor", ItemCreatorRoles.ContainerAuthor);
+        HashSet<string> handledKeys = new(StringComparer.Ordinal);
+        foreach ((string roleKey, string itemRole) in PersonRoleMap)
+        {
+            handledKeys.Add(roleKey);
+            AppendPersons(creators, entry, roleKey, itemRole);
+        }
+
+        // Pass through any remaining name lists whose key is already a supported creator
+        // role (e.g. director, composer, performer) instead of silently dropping them.
+        foreach (string roleKey in entry.Persons.Keys
+                     .Where(key => !handledKeys.Contains(key) && ItemCreatorRoles.Supported.Contains(key))
+                     .OrderBy(static key => key, StringComparer.Ordinal))
+        {
+            AppendPersons(creators, entry, roleKey, roleKey);
+        }
+
         return creators;
     }
 
@@ -260,6 +283,18 @@ public static class BiblatexFieldMapper
             dates.Add(original);
         }
 
+        if (TryMapDate(entry, "eventdate", ItemDateRoles.EventDate, out ItemDateInput? eventDate) &&
+            eventDate is not null)
+        {
+            dates.Add(eventDate);
+        }
+
+        if (TryMapDate(entry, "submitted", ItemDateRoles.Submitted, out ItemDateInput? submitted) &&
+            submitted is not null)
+        {
+            dates.Add(submitted);
+        }
+
         return dates;
     }
 
@@ -272,7 +307,14 @@ public static class BiblatexFieldMapper
         date = null;
         if (!entry.Dates.TryGetValue(key, out BiblatexDateDto? dto))
         {
-            return false;
+            string? literal = Field(entry, key);
+            if (string.IsNullOrWhiteSpace(literal))
+            {
+                return false;
+            }
+
+            date = new ItemDateInput(role, "[]", Literal: literal.Trim());
+            return true;
         }
 
         if (!string.IsNullOrWhiteSpace(dto.Literal) && dto.Parts.Count == 0)

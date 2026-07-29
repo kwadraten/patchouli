@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Patchouli.Core.Results;
+using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Infrastructure.Ocr.MinerU;
@@ -228,7 +229,8 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
     }
 
     public async Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
-        string batchId, string downloadDirectory, CancellationToken cancellationToken = default)
+        string batchId, string downloadDirectory, CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         if (!IsConfigured)
         {
@@ -258,8 +260,10 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
                 }
 
                 return await DownloadZipWithRetriesAsync(batchId, poll.Value.FullZipUrl, downloadDirectory,
-                    cancellationToken);
+                    cancellationToken, progress);
             }
+
+            progress?.Report(new OcrTaskStageProgress(OcrTaskStage.WaitingCloud, null, status));
 
             if (status == MinerUProviderStatus.Failed)
             {
@@ -282,11 +286,12 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
     }
 
     private async Task<Result<MinerUDownloadedResult>> DownloadZipWithRetriesAsync(
-        string batchId, string zipUrl, string downloadDirectory, CancellationToken cancellationToken)
+        string batchId, string zipUrl, string downloadDirectory, CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress)
     {
         int maxAttempts = Math.Max(1, _options.DownloadMaxAttempts);
         Result<MinerUDownloadedResult> download =
-            await DownloadZipAsync(batchId, zipUrl, downloadDirectory, cancellationToken);
+            await DownloadZipAsync(batchId, zipUrl, downloadDirectory, cancellationToken, progress);
 
         for (int attempt = 2;
              attempt <= maxAttempts && download.IsFailure &&
@@ -303,14 +308,16 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
 
             await Task.Delay(_options.DownloadRetryDelayMs * (attempt - 1), cancellationToken);
 
-            download = await DownloadZipAsync(batchId, repoll.Value.FullZipUrl, downloadDirectory, cancellationToken);
+            download = await DownloadZipAsync(batchId, repoll.Value.FullZipUrl, downloadDirectory, cancellationToken,
+                progress);
         }
 
         return download;
     }
 
     private async Task<Result<MinerUDownloadedResult>> DownloadZipAsync(
-        string batchId, string zipUrl, string downloadDirectory, CancellationToken cancellationToken)
+        string batchId, string zipUrl, string downloadDirectory, CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress)
     {
         string? zipPath = null;
         try
@@ -337,7 +344,18 @@ public sealed class MinerUClient : IMinerUClient, IDisposable
 
             await using Stream sourceStream = await response.Content.ReadAsStreamAsync(linkedCancellation.Token);
             await using FileStream destStream = File.Create(zipPath);
-            await sourceStream.CopyToAsync(destStream, linkedCancellation.Token);
+            long? totalBytes = response.Content.Headers.ContentLength;
+            byte[] buffer = new byte[81920];
+            long receivedBytes = 0;
+            int read;
+            while ((read = await sourceStream.ReadAsync(buffer, linkedCancellation.Token)) > 0)
+            {
+                await destStream.WriteAsync(buffer.AsMemory(0, read), linkedCancellation.Token);
+                receivedBytes += read;
+                progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Downloading,
+                    totalBytes is > 0 ? Math.Min(1.0, (double)receivedBytes / totalBytes.Value) : null,
+                    totalBytes is > 0 ? $"bytes:{receivedBytes}/{totalBytes.Value}" : null));
+            }
 
             return Result<MinerUDownloadedResult>.Success(
                 new MinerUDownloadedResult(batchId, zipPath, MinerUProviderStatus.Done));

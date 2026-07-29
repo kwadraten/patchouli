@@ -3,82 +3,117 @@
              x:Class="Patchouli.UI.Views.SyncCenterPage"
              x:DataType="local:SnapshotViewModel"
              xmlns:controls="using:Patchouli.UI.Controls"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:local="using:Patchouli.UI.ViewModels">
-  <ScrollViewer VerticalScrollBarVisibility="Auto">
-    <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,Auto,Auto" RowSpacing="18" MaxWidth="900"
-          HorizontalAlignment="Left">
-      <StackPanel Spacing="6">
-        <TextBlock Text="同步中心" FontSize="26" FontWeight="SemiBold" />
-        <TextBlock Text="发布经过验证的快照、导出目录包，或先在 staging 中检查传入内容。活动运行数据库不会直接同步。"
-                   TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-      </StackPanel>
+  <Grid ColumnDefinitions="Auto,*">
+    <!-- Sidebar -->
+    <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
+      <Border Background="{DynamicResource SurfaceContainerLowBrush}">
+        <Grid RowDefinitions="Auto,*" Margin="0,10,0,0">
+          <TextBlock Text="同步中心" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}"
+                     Margin="16,6,16,16" />
 
-      <Border Grid.Row="1" Padding="16" CornerRadius="8" Background="{DynamicResource SurfaceContainerBrush}">
-        <StackPanel Spacing="7">
-          <TextBlock Text="当前状态" FontSize="16" FontWeight="SemiBold" />
-          <TextBlock Text="{Binding OperationStateText}" FontWeight="SemiBold"
-                     Foreground="{DynamicResource PrimaryBrush}" />
-          <TextBlock Text="{Binding LibrarySummary}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding DeviceSummary}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding SyncRootSummary}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding LocalSnapshotSummary}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding RemoteSnapshotSummary}" TextWrapping="Wrap" />
-          <TextBlock Text="{Binding BranchDetailSummary}" TextWrapping="Wrap" FontSize="12"
-                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <TextBlock Text="{Binding LastErrorText}" TextWrapping="Wrap"
-                     Foreground="{DynamicResource ErrorBrush}" IsVisible="{Binding HasLastError}" />
-          <TextBlock Text="{Binding OperationMessage}" TextWrapping="Wrap"
-                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <Button Content="刷新状态" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" />
-        </StackPanel>
+          <ListBox Grid.Row="1" Classes="SidebarListBox" ItemsSource="{Binding NavSections}"
+                   SelectedItem="{Binding ActiveNavSection}">
+            <ListBox.ItemTemplate>
+              <DataTemplate DataType="local:NavCategoryViewModel">
+                <Border Classes="ItemBorder">
+                  <StackPanel Orientation="Horizontal" Spacing="10">
+                    <lucide:Lucide Classes="ItemIcon" Icon="{Binding IconName}" Width="13" Height="13" />
+                    <TextBlock Classes="ItemText" Text="{Binding Title}" FontSize="13" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+    </Border>
+
+    <!-- Content Area: no save controls — every button is an immediate operation -->
+    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+      <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="32,16">
+        <TextBlock Text="同步中心" FontSize="24" FontWeight="SemiBold" VerticalAlignment="Center" />
       </Border>
 
-      <Border Grid.Row="2" Padding="16" CornerRadius="8" Background="{DynamicResource SurfaceContainerBrush}">
-        <StackPanel Spacing="10">
-          <TextBlock Text="发布与导出" FontSize="16" FontWeight="SemiBold" />
-          <TextBlock Text="发布会复用同步目录中的同 hash 分片，并在验证后更新 current 指针。"
-                     TextWrapping="Wrap" />
-          <Button Content="发布到同步目录" Command="{Binding PublishCommand}" HorizontalAlignment="Left" />
-          <TextBlock Text="导出目录包不更新任何同步目录的 current 指针。请选择一个尚不存在的目录。"
-                     TextWrapping="Wrap" />
-          <controls:PathPickerTextBox Path="{Binding ExportDestinationDirectory}" PickerMode="Folder"
-                                      DialogTitle="选择快照包目标目录" PlaceholderText="快照包目标目录" />
-          <Button Content="导出快照目录包" Command="{Binding ExportCommand}" HorizontalAlignment="Left" />
-        </StackPanel>
-      </Border>
+      <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="32" Spacing="18" MaxWidth="1000" HorizontalAlignment="Left">
 
-      <Border Grid.Row="3" Padding="16" CornerRadius="8" Background="{DynamicResource SurfaceContainerBrush}">
-        <StackPanel Spacing="10">
-          <TextBlock Text="接收与检查" FontSize="16" FontWeight="SemiBold" />
-          <TextBlock Text="传入快照会先验证 manifest、hash、schema、库身份和路径，再导入 staging 供检查。"
-                     TextWrapping="Wrap" />
-          <Button Content="检查同步目录中的 current 快照" Command="{Binding CheckCurrentCommand}" HorizontalAlignment="Left" />
-          <controls:PathPickerTextBox Path="{Binding PackageManifestPath}" PickerMode="OpenFile"
-                                      DialogTitle="选择快照包 manifest" PlaceholderText="目录包中的 manifests/快照.json" />
-          <Button Content="从快照包打开" Command="{Binding OpenPackageCommand}" HorizontalAlignment="Left" />
-          <TextBlock Text="{Binding IncomingSummary}" TextWrapping="Wrap" FontWeight="SemiBold" />
-          <TextBlock Text="{Binding WarningCount, StringFormat='警告：{0}'}" />
-          <TextBlock Text="{Binding BlockingConflictCount, StringFormat='阻塞冲突：{0}'}"
-                     Foreground="{DynamicResource ErrorBrush}" />
-          <Button Content="解决内容冲突" Command="{Binding ResolveConflictsCommand}"
-                  IsEnabled="{Binding CanResolveContentConflicts}" HorizontalAlignment="Left" />
-          <CheckBox Content="我已检查传入内容并确认应用" IsChecked="{Binding ConfirmApply}" IsEnabled="{Binding HasIncomingPlan}" />
-          <Button Content="应用已检查的内容" Command="{Binding ApplyCommand}" IsEnabled="{Binding CanApply}"
-                  HorizontalAlignment="Left" />
-          <Separator />
-          <TextBlock Text="不应用时，可丢弃 staging 分支，或将它保留为独立资料库副本。两者均不会修改当前资料库。"
-                     TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <Button Content="丢弃已检查的内容" Command="{Binding DiscardIncomingCommand}"
-                  IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
-          <controls:PathPickerTextBox Path="{Binding IncomingCopyDestinationPath}" PickerMode="Folder"
-                                      DialogTitle="选择独立资料库副本目标路径" PlaceholderText="独立资料库副本目标路径" />
-          <Button Content="保留为独立资料库副本" Command="{Binding KeepIncomingCopyCommand}"
-                  IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
-        </StackPanel>
-      </Border>
+          <!-- 状态概览 -->
+          <Border Classes="Card" IsVisible="{Binding IsOverviewSectionActive}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="当前状态" Classes="CardTitle" />
+              <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="6">
+                <TextBlock Text="运行状态" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Grid.Column="1" Text="{Binding OperationStateText}" FontWeight="SemiBold"
+                           Foreground="{DynamicResource PrimaryBrush}" />
+                <TextBlock Grid.Row="1" Text="资料库" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding LibrarySummary}" TextWrapping="Wrap" />
+                <TextBlock Grid.Row="2" Text="本机设备" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DeviceSummary}" TextWrapping="Wrap" />
+                <TextBlock Grid.Row="3" Text="同步目录" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SyncRootSummary}" TextWrapping="Wrap" />
+              </Grid>
+              <Expander Header="技术细节">
+                <StackPanel Spacing="6" Margin="0,8,0,0">
+                  <TextBlock Text="{Binding LocalSnapshotSummary}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding RemoteSnapshotSummary}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="{Binding BranchDetailSummary}" FontSize="12" TextWrapping="Wrap"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                </StackPanel>
+              </Expander>
+              <TextBlock Text="{Binding LastErrorText}" TextWrapping="Wrap"
+                         Foreground="{DynamicResource ErrorBrush}" IsVisible="{Binding HasLastError}" />
+              <TextBlock Text="{Binding OperationMessage}" TextWrapping="Wrap"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <Button Content="刷新状态" Command="{Binding RefreshCommand}" HorizontalAlignment="Left" />
+            </StackPanel>
+          </Border>
 
-      <TextBlock Grid.Row="4" Text="遇到阻塞冲突时，应用会停止；同步中心不会静默合并或采用最后写入者胜出。"
-                 TextWrapping="Wrap" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <!-- 发布与导出 -->
+          <Border Classes="Card" IsVisible="{Binding IsPublishSectionActive}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="发布与导出" Classes="CardTitle" />
+              <Button Content="发布到同步目录" Command="{Binding PublishCommand}" Classes="Primary"
+                      HorizontalAlignment="Left" />
+              <controls:PathPickerTextBox Path="{Binding ExportDestinationDirectory}" PickerMode="Folder"
+                                          DialogTitle="选择快照包目标目录" PlaceholderText="快照包目标目录" />
+              <Button Content="导出快照目录包" Command="{Binding ExportCommand}" HorizontalAlignment="Left" />
+            </StackPanel>
+          </Border>
+
+          <!-- 接收与检查 -->
+          <Border Classes="Card" IsVisible="{Binding IsReceiveSectionActive}">
+            <StackPanel Spacing="10">
+              <TextBlock Text="接收与检查" Classes="CardTitle" />
+              <Button Content="检查同步目录的更新" Command="{Binding CheckCurrentCommand}" HorizontalAlignment="Left" />
+              <controls:PathPickerTextBox Path="{Binding PackageManifestPath}" PickerMode="OpenFile"
+                                          DialogTitle="选择快照包 manifest" PlaceholderText="目录包中的 manifests/快照.json" />
+              <Button Content="从快照包打开" Command="{Binding OpenPackageCommand}" HorizontalAlignment="Left" />
+              <TextBlock Text="{Binding IncomingSummary}" TextWrapping="Wrap" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding WarningCount, StringFormat='警告：{0}'}" />
+              <TextBlock Text="{Binding BlockingConflictCount, StringFormat='阻塞冲突：{0}'}"
+                         Foreground="{DynamicResource ErrorBrush}" />
+              <Button Content="解决内容冲突" Command="{Binding ResolveConflictsCommand}"
+                      IsEnabled="{Binding CanResolveContentConflicts}" HorizontalAlignment="Left" />
+              <CheckBox Content="我已检查传入内容并确认应用" IsChecked="{Binding ConfirmApply}"
+                        IsEnabled="{Binding HasIncomingPlan}" />
+              <Button Content="应用已检查的内容" Command="{Binding ApplyCommand}" IsEnabled="{Binding CanApply}"
+                      Classes="Primary" HorizontalAlignment="Left" />
+              <Separator />
+              <Button Content="丢弃已检查的内容" Command="{Binding DiscardIncomingCommand}"
+                      IsEnabled="{Binding HasIncomingPlan}" Classes="Danger" HorizontalAlignment="Left" />
+              <controls:PathPickerTextBox Path="{Binding IncomingCopyDestinationPath}" PickerMode="Folder"
+                                          DialogTitle="选择独立资料库副本目标路径" PlaceholderText="独立资料库副本目标路径" />
+              <Button Content="保留为独立资料库副本" Command="{Binding KeepIncomingCopyCommand}"
+                      IsEnabled="{Binding HasIncomingPlan}" HorizontalAlignment="Left" />
+            </StackPanel>
+          </Border>
+
+        </StackPanel>
+      </ScrollViewer>
     </Grid>
-  </ScrollViewer>
+  </Grid>
 </UserControl>

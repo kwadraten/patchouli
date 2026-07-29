@@ -24,8 +24,7 @@
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
         </StackPanel>
 
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="16">
+        <Border Classes="Card">
           <StackPanel Spacing="8">
             <TextBlock Text="{Binding IndexStatus, StringFormat='索引状态：\{0\}'}" FontSize="12" FontWeight="SemiBold"
                        Foreground="{DynamicResource PrimaryBrush}" />
@@ -43,9 +42,7 @@
         <ItemsControl ItemsSource="{Binding Results}" IsVisible="{Binding HasResults}">
           <ItemsControl.ItemTemplate>
             <DataTemplate x:DataType="vm:SearchPageResultViewModel">
-              <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                      BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                      Padding="16" Margin="0,0,0,12">
+              <Border Classes="Card" Margin="0,0,0,12">
                 <StackPanel Spacing="10">
                   <StackPanel Spacing="4">
                     <TextBlock Text="{Binding ItemTitle}" FontSize="16" FontWeight="SemiBold"
@@ -59,9 +56,7 @@
                   <ItemsControl ItemsSource="{Binding MatchedUnits}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:SearchMatchedUnitViewModel">
-                        <Border Background="{DynamicResource SurfaceBrush}"
-                                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
-                                CornerRadius="6" Padding="12" Margin="0,0,0,8">
+                        <Border Classes="CardTile" Margin="0,0,0,8">
                           <Border.ContextMenu>
                             <ContextMenu>
                               <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceRefClick" />

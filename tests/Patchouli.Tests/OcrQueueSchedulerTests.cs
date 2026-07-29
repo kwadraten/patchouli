@@ -420,7 +420,8 @@ public sealed class OcrQueueSchedulerTests
         private TaskCompletionSource<OcrQueueExecutionResult> Gate { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken)
+        public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+            IProgress<OcrTaskProgressReport>? progress = null)
         {
             lock (_sync)
             {
@@ -464,7 +465,8 @@ public sealed class OcrQueueSchedulerTests
 
         private TaskCompletionSource Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken)
+        public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+            IProgress<OcrTaskProgressReport>? progress = null)
         {
             lock (_sync)
             {
@@ -494,13 +496,14 @@ public sealed class OcrQueueSchedulerTests
         }
 
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId d, OcrPresetId p,
-            CancellationToken c = default)
+            CancellationToken c = default, IProgress<OcrTaskStageProgress>? progress = null)
         {
             return Fail("document", c);
         }
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
-            IReadOnlyList<PageId> pages, CancellationToken c = default)
+            IReadOnlyList<PageId> pages, CancellationToken c = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             return Fail("mock", c);
         }
@@ -602,13 +605,14 @@ public sealed class OcrQueueSchedulerTests
         }
 
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId d, OcrPresetId p,
-            CancellationToken c = default)
+            CancellationToken c = default, IProgress<OcrTaskStageProgress>? progress = null)
         {
             return Task.FromResult(Run());
         }
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
-            IReadOnlyList<PageId> pages, CancellationToken c = default)
+            IReadOnlyList<PageId> pages, CancellationToken c = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             return Task.FromResult(Run());
         }
@@ -699,7 +703,8 @@ public sealed class OcrQueueSchedulerTests
 
     private sealed class ThrowingExecutor : IOcrQueueTaskExecutor
     {
-        public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken)
+        public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+            IProgress<OcrTaskProgressReport>? progress = null)
         {
             throw new InvalidOperationException("boom");
         }

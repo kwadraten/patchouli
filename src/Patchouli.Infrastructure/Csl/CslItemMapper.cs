@@ -52,7 +52,9 @@ public sealed class CslItemMapper : ICslItemMapper
                 {
                     ["family"] = creator.Family,
                     ["given"] = creator.Given,
-                    ["literal"] = creator.Literal
+                    ["literal"] = creator.Literal,
+                    ["suffix"] = creator.Suffix,
+                    ["particles"] = creator.Particles
                 }).ToArray(),
                 StringComparer.Ordinal);
         foreach (KeyValuePair<string, object?> creatorGroup in creators)
@@ -80,6 +82,16 @@ public sealed class CslItemMapper : ICslItemMapper
                          StringComparison.OrdinalIgnoreCase))
             {
                 variables["ISSN"] = identifier.Value;
+            }
+            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.URL,
+                         StringComparison.OrdinalIgnoreCase))
+            {
+                variables["URL"] = identifier.Value;
+            }
+            else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.CallNumber,
+                         StringComparison.OrdinalIgnoreCase))
+            {
+                variables["call-number"] = identifier.Value;
             }
         }
 

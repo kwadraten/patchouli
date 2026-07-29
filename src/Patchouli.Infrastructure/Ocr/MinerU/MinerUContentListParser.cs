@@ -91,7 +91,7 @@ internal sealed class MinerUContentListParser
                 GetInt(page, "page_num") ?? index + 1,
                 GetDouble(page, "width") ?? 1000,
                 GetDouble(page, "height") ?? 1000,
-                ParseBlocks(page, "blocks", index),
+                ParseBlocks(page, "blocks", index) ?? [],
                 ParseBlocks(page, "discarded_blocks", index)))
             .ToArray());
     }

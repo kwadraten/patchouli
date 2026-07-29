@@ -3,49 +3,9 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:controls="using:Patchouli.UI.Controls"
+             xmlns:vm="using:Patchouli.UI.ViewModels"
              xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
              x:DataType="settings:SettingsViewModel">
-  <UserControl.Styles>
-    <Style Selector="ListBox.SidebarListBox">
-      <Setter Property="Background" Value="Transparent" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem">
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="Margin" Value="0,1" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem /template/ ContentPresenter">
-      <Setter Property="Background" Value="Transparent" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem:pointerover /template/ ContentPresenter">
-      <Setter Property="Background" Value="{DynamicResource SurfaceVariantBrush}" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem:selected /template/ ContentPresenter">
-      <Setter Property="Background" Value="Transparent" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem Border.ItemBorder">
-      <Setter Property="BorderThickness" Value="3,0,0,0" />
-      <Setter Property="BorderBrush" Value="Transparent" />
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Padding" Value="16,8" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem:selected Border.ItemBorder">
-      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
-      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem TextBlock.ItemText">
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem:selected TextBlock.ItemText">
-      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
-      <Setter Property="FontWeight" Value="SemiBold" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem lucide|Lucide.ItemIcon">
-      <Setter Property="StrokeBrush" Value="{DynamicResource OnSurfaceVariantBrush}" />
-    </Style>
-    <Style Selector="ListBox.SidebarListBox ListBoxItem:selected lucide|Lucide.ItemIcon">
-      <Setter Property="StrokeBrush" Value="{DynamicResource PrimaryBrush}" />
-    </Style>
-  </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*">
     <!-- Sidebar -->
     <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
@@ -57,10 +17,10 @@
           <ListBox Grid.Row="1" Classes="SidebarListBox" ItemsSource="{Binding Categories}"
                    SelectedItem="{Binding ActiveCategory}">
             <ListBox.ItemTemplate>
-              <DataTemplate DataType="settings:SettingsCategoryViewModel">
+              <DataTemplate DataType="vm:NavCategoryViewModel">
                 <Border Classes="ItemBorder">
                   <StackPanel Orientation="Horizontal" Spacing="10">
-                    <lucide:Lucide Classes="ItemIcon" Icon="{Binding Icon}" Width="13" Height="13" />
+                    <lucide:Lucide Classes="ItemIcon" Icon="{Binding IconName}" Width="13" Height="13" />
                     <TextBlock Classes="ItemText" Text="{Binding Title}" FontSize="13" />
                   </StackPanel>
                 </Border>
@@ -80,9 +40,9 @@
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
-                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardActiveSection}" />
+                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardAll}" />
             <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32" Classes="Primary"
-                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanSaveActiveSection}" />
+                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanSaveAll}" />
           </StackPanel>
         </Grid>
       </Border>
@@ -99,12 +59,9 @@
                              Foreground="{DynamicResource OnSurfaceBrush}" />
                 </StackPanel>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="路径信息" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="路径信息" Classes="CardTitle" />
                     <TextBlock Text="{Binding RuntimeDatabasePath, StringFormat='运行数据库：\{0\}'}" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                     <TextBlock Text="{Binding DefaultSyncRootPath, StringFormat='同步根目录：\{0\}'}" FontSize="12"
@@ -112,12 +69,9 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="设备设置" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="设备设置" Classes="CardTitle" />
                     <CheckBox Content="记住上次打开的数据库" IsChecked="{Binding RememberLastDatabase}" />
                     <TextBlock Text="排除规则（每行一个正则表达式，匹配以 / 分隔的相对路径）" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
@@ -128,12 +82,9 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="文件搜索目录" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="文件搜索目录" Classes="CardTitle" />
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                       <controls:PathPickerTextBox Path="{Binding FileSearchRootInput}"
                                                   SelectedRoot="{Binding SelectedFileSearchRoot}" PickerMode="Folder"
@@ -166,12 +117,9 @@
             <DataTemplate DataType="settings:SyncSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
                 <TextBlock Text="同步与快照" FontSize="24" FontWeight="SemiBold" />
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="本机同步绑定" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="本机同步绑定" Classes="CardTitle" />
                     <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
                     <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
                     <controls:PathPickerTextBox Path="{Binding SyncRoot}" PickerMode="Folder"
@@ -184,8 +132,7 @@
                                FontSize="12" TextWrapping="Wrap"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <Separator />
-                    <TextBlock Text="随库同步的非秘密设置" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="随库同步的非秘密设置" Classes="CardTitle" />
                     <CheckBox Content="随库同步元数据来源优先级" IsChecked="{Binding SyncMetadataLookup}" />
                     <ItemsControl ItemsSource="{Binding SettingScopeRows}">
                       <ItemsControl.ItemTemplate>
@@ -244,12 +191,9 @@
                   </StackPanel>
                 </Grid>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="运行状态" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="运行状态" Classes="CardTitle" />
                     <TextBlock Text="{Binding McpStatusText}" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
@@ -274,12 +218,9 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="监听设置" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="监听设置" Classes="CardTitle" />
                     <TextBlock Text="端口" FontSize="12" FontWeight="SemiBold"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <NumericUpDown Value="{Binding Port}" Minimum="1024" Maximum="65535" />
@@ -293,12 +234,9 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="外部访问控制" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="外部访问控制" Classes="CardTitle" />
                     <CheckBox Content="允许局域网访问" IsChecked="{Binding AllowExternalAccess}" />
                     <CheckBox Content="JSON-RPC 请求需要 Bearer Token" IsChecked="{Binding AuthRequired}" />
 
@@ -315,12 +253,9 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="安全鉴权 (Server Token)" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="安全鉴权 (Server Token)" Classes="CardTitle" />
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                       <TextBox Text="{Binding ServerToken}" PlaceholderText="留空则无鉴权" />
                       <Button Grid.Column="1" Content="随机生成" Command="{Binding GenerateTokenCommand}" />
@@ -328,24 +263,18 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="CORS" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="CORS" Classes="CardTitle" />
                     <CheckBox Content="启用 CORS" IsChecked="{Binding CorsEnabled}" />
                     <TextBox Text="{Binding AllowedOriginsText}" AcceptsReturn="True" MinHeight="72"
                              PlaceholderText="每行一个 allowed origin，例如 http://localhost:3000" />
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="MCP 工具开关" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="MCP 工具开关" Classes="CardTitle" />
                     <ItemsControl ItemsSource="{Binding ToolOverrides}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="settings:McpToolOverrideViewModel">
@@ -368,12 +297,9 @@
                   </StackPanel>
                 </Grid>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="OCR 通用配置" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="OCR 通用配置" Classes="CardTitle" />
                     <TextBlock Text="OCR 预设" FontSize="12" FontWeight="SemiBold"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBlock Text="{Binding OcrConcurrencySummary}" FontSize="12"
@@ -381,23 +307,17 @@
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="搜索配置" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="搜索配置" Classes="CardTitle" />
                     <TextBlock Text="OCR 结果进入搜索单元后，可通过搜索菜单重建本地 FTS 索引。" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="云端版面解析 (MinerU)" FontSize="16" FontWeight="SemiBold"
-                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="云端版面解析 (MinerU)" Classes="CardTitle" />
                     <TextBlock Text="解析模型" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <ComboBox ItemsSource="{Binding MinerUModelVersionOptions}"
@@ -429,13 +349,10 @@
                           VerticalAlignment="Top" />
                 </Grid>
 
-                <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8"
-                        Padding="18">
+                <Border Classes="Card">
                   <StackPanel Spacing="12">
                     <Grid ColumnDefinitions="*,Auto">
-                      <TextBlock Text="来源优先级" FontSize="16" FontWeight="SemiBold"
-                                 Foreground="{DynamicResource PrimaryBrush}" />
+                      <TextBlock Classes="CardTitle" Text="来源优先级" />
                       <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="12"
                                  Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
                     </Grid>

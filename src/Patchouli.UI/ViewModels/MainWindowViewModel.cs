@@ -467,8 +467,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 string epochs = exception.SchemaVersions.Count == 0
                     ? "未知"
                     : string.Join("、", exception.SchemaVersions.Order());
-                ReportError($"无法打开资料库：检测到不受 Patchouli 0.2.4 支持的数据库 schema epoch（{epochs}）。" +
-                            "0.2.4 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                ReportError($"无法打开资料库：检测到不受 Patchouli 0.2.5 支持的数据库 schema epoch（{epochs}）。" +
+                            "0.2.5 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                 return;
             }
 
@@ -1843,7 +1843,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         string icon = section.Equals("mcp", StringComparison.OrdinalIgnoreCase) ? "Server" :
             section.Equals("csl", StringComparison.OrdinalIgnoreCase) ? "Quote" :
             section.Equals("library", StringComparison.OrdinalIgnoreCase) ? "Database" : "ScanText";
-        Settings.ActiveCategory = Settings.Categories.Single(c => c.Icon == icon);
+        Settings.ActiveCategory = Settings.Categories.Single(c => c.IconName == icon);
         await Settings.WaitForActiveSectionLoadAsync();
 
         RaiseShellSelectionChanged();

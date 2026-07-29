@@ -1,4 +1,6 @@
 using FluentAssertions;
+using Patchouli.Core.Bibliography;
+using Patchouli.Core.Ids;
 using Patchouli.UI.ViewModels.Editor;
 
 namespace Patchouli.Tests;
@@ -32,5 +34,43 @@ public sealed class CreatorItemViewModelTests
         creator.Family.Should().BeEmpty();
         creator.Given.Should().BeEmpty();
         creator.Literal.Should().Be("Royal Society");
+    }
+
+    [Fact]
+    public void Details_are_collapsed_by_default_and_toggle_via_command()
+    {
+        CreatorItemViewModel creator = new(_ => { });
+
+        creator.IsExpanded.Should().BeFalse();
+        creator.ToggleDetailsCommand.Execute(null);
+        creator.IsExpanded.Should().BeTrue();
+        creator.ToggleDetailsCommand.Execute(null);
+        creator.IsExpanded.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Suffix_and_particles_round_trip_through_load_and_edit()
+    {
+        CreatorItemViewModel creator = new(_ => { });
+
+        creator.LoadFrom(new ItemCreator(
+            "creator-1",
+            ItemId.New(),
+            ItemCreatorRoles.Author,
+            "Lovelace",
+            "Ada",
+            null,
+            "III",
+            "van",
+            0,
+            DateTimeOffset.UtcNow));
+
+        creator.Suffix.Should().Be("III");
+        creator.Particles.Should().Be("van");
+
+        creator.Suffix = "Jr.";
+        creator.Particles = "de";
+        creator.Suffix.Should().Be("Jr.");
+        creator.Particles.Should().Be("de");
     }
 }

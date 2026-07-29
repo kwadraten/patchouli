@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using Dapper;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
@@ -81,7 +82,11 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public bool ShowLibraryList => !IsReadingMode;
     public bool ShowPdfWorkspace => IsReadingMode;
     public string InspectorTitle => SelectedItem?.Title ?? "";
-    public string InspectorSubtitle => SelectedItem is null ? "" : $"{SelectedItem.ItemType} / {SelectedItem.FileName}";
+
+    public string InspectorSubtitle => SelectedItem is null
+        ? ""
+        : $"{CslItemTypeDisplayNames.For(SelectedItem.ItemType)} / {SelectedItem.FileName}";
+
     public string InspectorStatus => SelectedItem?.OcrStatus ?? "未选择文档";
     public string InspectorPath => SelectedItem?.SourcePath ?? "";
     public AsyncCommand RefreshCommand { get; }
@@ -793,7 +798,7 @@ internal static class MetadataLookupUiBridge
     public static async Task<MetadataLookupOutcome> LookupAsync(
         AppServices services,
         ItemId itemId,
-        Patchouli.Core.Bibliography.ItemIdentifier identifier,
+        ItemIdentifier identifier,
         CancellationToken cancellationToken)
     {
         Result<Patchouli.Core.Bibliography.MetadataLookup.MetadataLookupOutcome> result =

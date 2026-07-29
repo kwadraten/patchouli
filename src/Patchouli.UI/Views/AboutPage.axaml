@@ -9,11 +9,9 @@
         <TextBlock Text="关于 Patchouli.Net" FontSize="24" FontWeight="SemiBold"
                    Foreground="{DynamicResource OnSurfaceBrush}" />
 
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <Border Classes="Card">
           <StackPanel Spacing="10">
-            <TextBlock Text="{Binding VersionInfo}" FontSize="16" FontWeight="SemiBold"
-                       Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBlock Classes="CardTitle" Text="{Binding VersionInfo}" />
             <TextBlock Text="Patchouli.Net 是一款开源文献管理工具。" FontSize="14"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
@@ -26,10 +24,9 @@
           </StackPanel>
         </Border>
 
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="8" Padding="18">
+        <Border Classes="Card">
           <StackPanel Spacing="10">
-            <TextBlock Text="第三方组件鸣谢" FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
+            <TextBlock Classes="CardTitle" Text="第三方组件鸣谢" />
             <TextBlock Text="本软件的开发离不开以下开源项目的支持：" FontSize="14" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                        TextWrapping="Wrap" />
 

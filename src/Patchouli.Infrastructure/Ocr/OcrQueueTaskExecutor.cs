@@ -1,3 +1,4 @@
+using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
 using Patchouli.Search;
@@ -18,16 +19,28 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
         _searchIndex = searchIndex;
     }
 
-    public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken)
+    public async Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+        IProgress<OcrTaskProgressReport>? progress = null)
     {
+        IProgress<OcrTaskStageProgress>? stageProgress = progress is null
+            ? null
+            : new StageProgressForwarder(task.TaskId, progress);
+        bool isMock = task.EngineId == OcrEngineIds.Mock;
+        if (isMock)
+        {
+            // Mock tasks run entirely in-process; emit simulated stage markers so the
+            // queue progress channel is observable without a cloud round-trip.
+            stageProgress?.Report(new OcrTaskStageProgress(OcrTaskStage.Preparing, null, null));
+        }
+
         try
         {
             Result<OcrRun>? run = task.TaskKind switch
             {
                 OcrQueueTaskKind.Document => await _engine.RunPresetOnDocumentAsync(task.DocumentInstanceId,
-                    task.PresetId, cancellationToken),
+                    task.PresetId, cancellationToken, stageProgress),
                 OcrQueueTaskKind.MockPages => await _engine.RunPresetOnPagesAsync(task.DocumentInstanceId,
-                    task.PresetId, task.PageIds, cancellationToken),
+                    task.PresetId, task.PageIds, cancellationToken, stageProgress),
                 OcrQueueTaskKind.ImagePage => await _engine.RunPresetOnImagePageAsync(task.DocumentInstanceId,
                     task.PresetId, task.PageIds.Single(), task.ImagePath!, cancellationToken),
                 OcrQueueTaskKind.RenderedPdfPage => await _engine.RunPresetOnRenderedPdfPageAsync(
@@ -96,12 +109,26 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                 }
             }
 
+            if (isMock)
+            {
+                stageProgress?.Report(new OcrTaskStageProgress(OcrTaskStage.Importing, null, null));
+            }
+
             return new OcrQueueExecutionResult(true, false, RunId: run.Value.OcrRunId, CompletedPageCount: completed,
                 FailedPageCount: failedCount);
         }
         catch (OperationCanceledException)
         {
             return new OcrQueueExecutionResult(false, true);
+        }
+    }
+
+    private sealed class StageProgressForwarder(OcrQueueTaskId taskId, IProgress<OcrTaskProgressReport> inner)
+        : IProgress<OcrTaskStageProgress>
+    {
+        public void Report(OcrTaskStageProgress value)
+        {
+            inner.Report(new OcrTaskProgressReport(taskId, value.Stage, value.Fraction, value.Detail));
         }
     }
 }

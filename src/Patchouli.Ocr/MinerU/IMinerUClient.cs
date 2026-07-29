@@ -16,5 +16,6 @@ public interface IMinerUClient
         PollExtractResultAsync(string batchId, CancellationToken cancellationToken = default);
 
     Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
-        string batchId, string downloadDirectory, CancellationToken cancellationToken = default);
+        string batchId, string downloadDirectory, CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null);
 }

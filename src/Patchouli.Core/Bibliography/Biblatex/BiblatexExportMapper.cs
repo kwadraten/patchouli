@@ -92,6 +92,15 @@ public static class BiblatexExportMapper
         AddPersons(persons, "editor", item.Creators, ItemCreatorRoles.Editor);
         AddPersons(persons, "translator", item.Creators, ItemCreatorRoles.Translator);
         AddPersons(persons, "bookauthor", item.Creators, ItemCreatorRoles.ContainerAuthor);
+        // The remaining roles have no canonical BibLaTeX name field; they are written under
+        // their CSL role key so a Patchouli round trip does not lose them.
+        foreach (string role in ItemCreatorRoles.Supported
+                     .Where(role => role is not (ItemCreatorRoles.Author or ItemCreatorRoles.Editor
+                         or ItemCreatorRoles.Translator or ItemCreatorRoles.ContainerAuthor))
+                     .OrderBy(static role => role, StringComparer.Ordinal))
+        {
+            AddPersons(persons, role, item.Creators, role);
+        }
 
         foreach (ItemDate date in item.Dates)
         {
@@ -100,6 +109,8 @@ public static class BiblatexExportMapper
                 ItemDateRoles.Issued => "date",
                 ItemDateRoles.Accessed => "urldate",
                 ItemDateRoles.OriginalDate => "origdate",
+                ItemDateRoles.EventDate => "eventdate",
+                ItemDateRoles.Submitted => "submitted",
                 _ => null
             };
             if (field is null)

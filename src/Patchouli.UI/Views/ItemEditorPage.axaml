@@ -2,123 +2,223 @@
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:controls="using:Patchouli.UI.Controls"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
+             xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="editor:ItemEditorViewModel">
-  <Grid RowDefinitions="Auto,*">
-    <Grid Margin="32,32,32,16" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-      <StackPanel Spacing="6">
-        <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold"
-                   Foreground="{DynamicResource OnSurfaceBrush}" />
-      </StackPanel>
-      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
-        <Button Content="粘贴 BibLaTeX" Command="{Binding ImportBiblatexFromClipboardCommand}" Height="32" />
-        <Button Content="导入 .bib" Command="{Binding ImportBiblatexFromFileCommand}" Height="32" />
-        <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger" />
-        <Button Content="保存题录" Command="{Binding SaveCommand}" Height="32"
-                Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}" />
-        <Button Content="新建" Command="{Binding NewCommand}" Height="32" />
-      </StackPanel>
-    </Grid>
+  <UserControl.Resources>
+    <DataTemplate x:Key="EditorFieldTemplate" DataType="editor:ItemFieldDescriptor">
+      <StackPanel Spacing="8" Margin="0,0,0,16">
+        <TextBlock Text="{Binding Label}" FontSize="12"
+                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
 
-    <ScrollViewer Grid.Row="1" Margin="32,0,32,32">
-      <StackPanel Spacing="24" MaxWidth="1000" HorizontalAlignment="Left">
-        <!-- Type Selection and Warning -->
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-          <StackPanel Spacing="16">
-            <TextBlock Text="文献类型" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <ComboBox ItemsSource="{Binding AvailableItemTypes}" SelectedItem="{Binding ItemType}"
-                      HorizontalAlignment="Stretch" Height="32" />
+        <TextBox Text="{Binding Value}" IsVisible="{Binding IsString}" />
 
-            <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}"
-                    BorderThickness="1" CornerRadius="4" Padding="12" IsVisible="{Binding IsGeneralTypeWarningVisible}">
-              <StackPanel Spacing="6">
-                <TextBlock Text="当前为通用文献，无法直接生成 CSL 引用，请指定具体类型" FontWeight="Bold"
-                           Foreground="{DynamicResource OnErrorContainerBrush}" />
-                <TextBlock Text="通用的 general 类型通常作为备选方案使用。若要参与引文生成，请选择合适的具体类型如 book, article-journal 等。"
-                           Foreground="{DynamicResource OnErrorContainerBrush}" TextWrapping="Wrap" />
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" IsVisible="{Binding IsIdentifierBacked}">
+          <TextBox Text="{Binding Value}" />
+          <Button Grid.Column="1" Content="获取元数据" Command="{Binding LookupFromUrlCommand}"
+                  IsVisible="{Binding ShowsLookupButton}" />
+        </Grid>
+
+        <TextBox Text="{Binding Value}" IsVisible="{Binding IsExtraCslBacked}" />
+
+        <TextBox Text="{Binding Value}" AcceptsReturn="True" Height="100" TextWrapping="Wrap"
+                 IsVisible="{Binding IsMultilineString}" />
+
+        <TextBox Text="{Binding Value}" PlaceholderText="如 2026-07-09 或 2026"
+                 IsVisible="{Binding IsDate}" />
+
+        <StackPanel Spacing="8" IsVisible="{Binding IsCreatorList}">
+          <ItemsControl ItemsSource="{Binding Creators}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="editor:CreatorItemViewModel">
+                <StackPanel Spacing="6" Margin="0,0,0,8">
+                  <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="8">
+                    <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableRoles}"
+                              SelectedItem="{Binding SelectedRole}" HorizontalAlignment="Stretch">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="editor:CreatorRoleOption">
+                          <TextBlock Text="{Binding Label}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBox Grid.Column="1" Text="{Binding Name}" PlaceholderText="姓名" />
+                    <Button Grid.Column="2" Content="详情" Command="{Binding ToggleDetailsCommand}" />
+                    <Button Grid.Column="3" Content="移除" Command="{Binding RemoveCommand}"
+                            HorizontalContentAlignment="Center" />
+                  </Grid>
+                  <Border Classes="CardTile" IsVisible="{Binding IsExpanded}">
+                    <StackPanel Spacing="10">
+                      <CheckBox Content="整体署名" IsChecked="{Binding IsLiteral}" />
+                      <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="8" RowSpacing="8">
+                        <TextBox Grid.Row="0" Grid.Column="0" Text="{Binding Family}" PlaceholderText="姓"
+                                 IsEnabled="{Binding IsPersonalName}" />
+                        <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Given}" PlaceholderText="名"
+                                 IsEnabled="{Binding IsPersonalName}" />
+                        <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding Suffix}" PlaceholderText="后缀" />
+                        <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Particles}"
+                                 PlaceholderText="名称粒子" />
+                      </Grid>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <Button Content="添加作者/贡献者" Command="{Binding AddCreatorCommand}" HorizontalAlignment="Left" />
+        </StackPanel>
+
+      </StackPanel>
+    </DataTemplate>
+  </UserControl.Resources>
+
+  <Grid ColumnDefinitions="Auto,*">
+    <!-- Sidebar -->
+    <Border Grid.Column="0" Width="260" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
+      <Border Background="{DynamicResource SurfaceContainerLowBrush}">
+        <Grid RowDefinitions="Auto,*" Margin="0,10,0,0">
+          <TextBlock Text="题录编辑" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}"
+                     Margin="16,6,16,16" />
+
+          <ListBox Grid.Row="1" Classes="SidebarListBox" ItemsSource="{Binding NavSections}"
+                   SelectedItem="{Binding ActiveNavSection}">
+            <ListBox.ItemTemplate>
+              <DataTemplate DataType="vm:NavCategoryViewModel">
+                <Border Classes="ItemBorder">
+                  <StackPanel Orientation="Horizontal" Spacing="10">
+                    <lucide:Lucide Classes="ItemIcon" Icon="{Binding IconName}" Width="13" Height="13" />
+                    <TextBlock Classes="ItemText" Text="{Binding Title}" FontSize="13" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+    </Border>
+
+    <!-- Content Area -->
+    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+      <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="32,16">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+          <StackPanel Spacing="4" VerticalAlignment="Center">
+            <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold"
+                       Foreground="{DynamicResource OnSurfaceBrush}" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <Button Content="粘贴 BibLaTeX" Command="{Binding ImportBiblatexFromClipboardCommand}" Height="32" />
+            <Button Content="导入 .bib" Command="{Binding ImportBiblatexFromFileCommand}" Height="32" />
+            <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger" />
+            <Button Content="保存题录" Command="{Binding SaveCommand}" Height="32" Classes="Primary" />
+            <Button Content="新建" Command="{Binding NewCommand}" Height="32" />
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <ScrollViewer Grid.Row="1" Margin="32,0,32,32">
+        <StackPanel Spacing="24" MaxWidth="1000" HorizontalAlignment="Left">
+
+          <!-- 基本信息 -->
+          <StackPanel Spacing="24" IsVisible="{Binding IsBasicSectionActive}">
+            <Border Classes="Card">
+              <StackPanel Spacing="16">
+                <TextBlock Text="文献类型" Classes="CardTitle" />
+                <ComboBox ItemsSource="{Binding AvailableItemTypes}" SelectedItem="{Binding SelectedItemTypeOption}"
+                          HorizontalAlignment="Stretch" Height="32">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate DataType="editor:ItemTypeOption">
+                      <TextBlock Text="{Binding DisplayName}" />
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+
+                <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}"
+                        BorderThickness="1" CornerRadius="4" Padding="12"
+                        IsVisible="{Binding IsGeneralTypeWarningVisible}">
+                  <TextBlock Text="当前为通用文献，无法直接生成 CSL 引用，请指定具体类型" FontWeight="Bold"
+                             Foreground="{DynamicResource OnErrorContainerBrush}" TextWrapping="Wrap" />
+                </Border>
+              </StackPanel>
+            </Border>
+
+            <Border Classes="Card">
+              <StackPanel Spacing="16">
+                <TextBlock Text="核心元数据" Classes="CardTitle" />
+                <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource EditorFieldTemplate}" />
+              </StackPanel>
+            </Border>
+
+            <Border Classes="Card">
+              <StackPanel Spacing="10">
+                <TextBlock Text="CSL 预览" Classes="CardTitle" />
+                <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}"
+                        BorderThickness="1" CornerRadius="4" Padding="10" IsVisible="{Binding HasCslPreviewWarning}">
+                  <TextBlock Text="{Binding CslPreviewText}" Foreground="{DynamicResource OnErrorContainerBrush}"
+                             TextWrapping="Wrap" />
+                </Border>
+                <TextBlock Text="{Binding CslPreviewText}" FontSize="13"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap"
+                           IsVisible="{Binding !HasCslPreviewWarning}" />
               </StackPanel>
             </Border>
           </StackPanel>
-        </Border>
 
-        <!-- Dynamic Fields -->
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-          <StackPanel Spacing="16">
-            <TextBlock Text="核心元数据" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-
-            <ItemsControl ItemsSource="{Binding Fields}">
-              <ItemsControl.DataTemplates>
-                <DataTemplate DataType="editor:ItemFieldDescriptor">
-                  <StackPanel Spacing="8" Margin="0,0,0,16">
-                    <TextBlock Text="{Binding Label}" FontSize="12"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-
-                    <TextBox Text="{Binding Value}" IsVisible="{Binding IsString}" />
-
-                    <TextBox Text="{Binding Value}" AcceptsReturn="True" Height="100" TextWrapping="Wrap"
-                             IsVisible="{Binding IsMultilineString}" />
-
-                    <TextBox Text="{Binding Value}" PlaceholderText="YYYY-MM-DD、YYYY 或 CSL date-parts，如 [[2026,7,9]]"
-                             IsVisible="{Binding IsDate}" />
-
-                    <StackPanel Spacing="8" IsVisible="{Binding IsCreatorList}">
-                      <ItemsControl ItemsSource="{Binding Creators}">
-                        <ItemsControl.ItemTemplate>
-                          <DataTemplate DataType="editor:CreatorItemViewModel">
-                            <StackPanel Spacing="6" Margin="0,0,0,8">
-                              <Grid ColumnDefinitions="110,*,Auto,Auto" ColumnSpacing="8">
-                                <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableRoles}"
-                                          SelectedItem="{Binding Role}" HorizontalAlignment="Stretch" />
-                                <TextBox Grid.Column="1" Text="{Binding Name}" PlaceholderText="姓名" />
-                                <CheckBox Grid.Column="2" Content="整体署名" IsChecked="{Binding IsLiteral}"
-                                          VerticalAlignment="Center" />
-                                <Button Grid.Column="3" Content="移除" Command="{Binding RemoveCommand}" Width="64"
-                                        HorizontalContentAlignment="Center" />
-                              </Grid>
-                              <Expander Header="修正姓和名" IsVisible="{Binding IsPersonalName}">
-                                <Grid ColumnDefinitions="*,*" ColumnSpacing="8" Margin="0,6,0,0">
-                                  <TextBox Grid.Column="0" Text="{Binding Family}" PlaceholderText="姓" />
-                                  <TextBox Grid.Column="1" Text="{Binding Given}" PlaceholderText="名" />
-                                </Grid>
-                              </Expander>
-                            </StackPanel>
-                          </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                      </ItemsControl>
-                      <Button Content="添加作者/贡献者" Command="{Binding AddCreatorCommand}" HorizontalAlignment="Left" />
-                    </StackPanel>
-
-                  </StackPanel>
-                </DataTemplate>
-              </ItemsControl.DataTemplates>
-            </ItemsControl>
-          </StackPanel>
-        </Border>
-
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-          <StackPanel Spacing="10">
-            <TextBlock Text="CSL 预览" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-            <Border Background="{DynamicResource ErrorContainerBrush}" BorderBrush="{DynamicResource ErrorBrush}"
-                    BorderThickness="1" CornerRadius="4" Padding="10" IsVisible="{Binding HasCslPreviewWarning}">
-              <TextBlock Text="{Binding CslPreviewText}" Foreground="{DynamicResource OnErrorContainerBrush}"
-                         TextWrapping="Wrap" />
-            </Border>
-            <TextBlock Text="{Binding CslPreviewText}" FontSize="13"
+          <!-- 扩展信息 -->
+          <StackPanel Spacing="24" IsVisible="{Binding IsExtendedSectionActive}">
+            <TextBlock Text="通用文献没有额外的扩展字段；指定具体文献类型后此处会显示更多字段。"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap"
-                       IsVisible="{Binding !HasCslPreviewWarning}" />
-          </StackPanel>
-        </Border>
+                       IsVisible="{Binding IsExtendedSectionEmpty}" />
+            <Border Classes="Card" IsVisible="{Binding HasMoreFields}">
+              <StackPanel Spacing="16">
+                <TextBlock Text="更多字段" Classes="CardTitle" />
+                <ItemsControl ItemsSource="{Binding MoreFields}" ItemTemplate="{StaticResource EditorFieldTemplate}" />
+              </StackPanel>
+            </Border>
 
-        <!-- Bottom Tools (Identifiers & Linked Files) -->
-        <Grid ColumnDefinitions="*,*" ColumnSpacing="24">
-          <Border Grid.Column="0" Background="{DynamicResource SurfaceContainerLowestBrush}"
-                  BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+            <Border Classes="Card" IsVisible="{Binding IsExtraCslCardVisible}">
+              <StackPanel Spacing="12">
+                <TextBlock Text="更多 CSL 字段" Classes="CardTitle" />
+
+                <ItemsControl ItemsSource="{Binding ExtraCslRows}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="editor:ExtraCslRowViewModel">
+                      <StackPanel Spacing="6" Margin="0,0,0,10">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                          <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          <Button Grid.Column="1" Content="移除" Command="{Binding RemoveCommand}"
+                                  IsVisible="{Binding CanRemove}" />
+                        </Grid>
+                        <TextBox Text="{Binding Value}" IsVisible="{Binding !IsMultiline}" />
+                        <TextBox Text="{Binding Value}" AcceptsReturn="True" Height="80" TextWrapping="Wrap"
+                                 IsVisible="{Binding IsMultiline}" />
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                  <ComboBox Grid.Column="0" ItemsSource="{Binding AvailableExtraCslVariables}"
+                            SelectedItem="{Binding SelectedExtraCslVariable}"
+                            PlaceholderText="选择要添加的字段" HorizontalAlignment="Stretch">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate DataType="editor:ExtraCslVariableOption">
+                        <TextBlock Text="{Binding Label}" />
+                      </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <Button Grid.Column="1" Content="添加" Command="{Binding AddExtraCslRowCommand}"
+                          IsEnabled="{Binding CanAddExtraCslRow}" />
+                </Grid>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+
+          <!-- 唯一标识符 -->
+          <Border Classes="Card" IsVisible="{Binding IsIdentifiersSectionActive}">
             <StackPanel Spacing="12">
-              <TextBlock Text="标识符" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-              <ScrollViewer MaxHeight="150">
+              <TextBlock Text="标识符" Classes="CardTitle" />
+              <ScrollViewer MaxHeight="360">
                 <ItemsControl ItemsSource="{Binding Identifiers}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="editor:IdentifierItemViewModel">
@@ -153,15 +253,13 @@
                   </ItemsControl.ItemsPanel>
                   <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="editor:IdentifierSchemeShortcutViewModel">
-                      <Button Content="{Binding Scheme}" Command="{Binding SelectCommand}" />
+                      <Button Content="{Binding DisplayName}" Command="{Binding SelectCommand}" />
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
                 </ItemsControl>
               </StackPanel>
-              <TextBlock Text="类型统一保存为小写；常用值包括 doi、isbn、issn、url、pmid、pmcid、arxiv。" FontSize="11"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-              <Grid ColumnDefinitions="120,*,*,Auto" ColumnSpacing="8">
-                <TextBox Grid.Column="0" Text="{Binding IdentifierScheme}" PlaceholderText="类型" />
+              <Grid ColumnDefinitions="Auto,*,*,Auto" ColumnSpacing="8">
+                <TextBox Grid.Column="0" Text="{Binding IdentifierScheme}" PlaceholderText="类型" MinWidth="96" />
                 <TextBox Grid.Column="1" Text="{Binding IdentifierValue}" PlaceholderText="值" />
                 <TextBox Grid.Column="2" Text="{Binding IdentifierNote}" PlaceholderText="备注（可选）" />
                 <Button Grid.Column="3" Content="添加" Command="{Binding AddIdentifierCommand}" />
@@ -169,15 +267,15 @@
             </StackPanel>
           </Border>
 
-          <Border Grid.Column="1" Background="{DynamicResource SurfaceContainerLowestBrush}"
-                  BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
+          <!-- 文件关联 -->
+          <Border Classes="Card" IsVisible="{Binding IsFilesSectionActive}">
             <StackPanel Spacing="12">
-              <TextBlock Text="关联文件" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource PrimaryBrush}" />
-              <ScrollViewer MaxHeight="150">
+              <TextBlock Text="关联文件" Classes="CardTitle" />
+              <ScrollViewer MaxHeight="360">
                 <ItemsControl ItemsSource="{Binding LinkedFiles}">
                   <ItemsControl.ItemTemplate>
                     <DataTemplate DataType="editor:LinkedDocumentInstanceItemViewModel">
-                      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,6">
+                      <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,6">
                         <StackPanel Spacing="2">
                           <TextBlock Text="{Binding DisplayName}" FontSize="13"
                                      Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
@@ -189,6 +287,8 @@
                                    IsVisible="{Binding IsPrimary}" />
                         <Button Grid.Column="2" Content="设为主要文件" Command="{Binding SetPrimaryCommand}"
                                 IsVisible="{Binding CanSetPrimary}" />
+                        <Button Grid.Column="3" Content="{Binding RemoveLabel}" Command="{Binding RemoveCommand}"
+                                Classes="Danger" />
                       </Grid>
                     </DataTemplate>
                   </ItemsControl.ItemTemplate>
@@ -202,8 +302,9 @@
               </Grid>
             </StackPanel>
           </Border>
-        </Grid>
-      </StackPanel>
-    </ScrollViewer>
+
+        </StackPanel>
+      </ScrollViewer>
+    </Grid>
   </Grid>
 </UserControl>

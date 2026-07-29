@@ -152,8 +152,9 @@
         </DataGrid.ContextMenu>
         <DataGrid.Columns>
           <!-- Item Type -->
-          <DataGridTextColumn Header="题录类型" Binding="{Binding ItemType}" IsVisible="{Binding ShowItemTypeColumn}"
-                              Width="100" />
+          <DataGridTextColumn Header="题录类型"
+                              Binding="{Binding ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
+                              IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
 
           <!-- Year -->
           <DataGridTextColumn Header="年份" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}" Width="60" />
@@ -226,7 +227,9 @@
                           <!-- Row 0: Item Type -->
                           <TextBlock Grid.Row="0" Grid.Column="0" Text="条目类型" FontSize="11"
                                      Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding ItemType}" FontSize="12"
+                          <TextBlock Grid.Row="0" Grid.Column="1"
+                                     Text="{Binding ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
+                                     FontSize="12"
                                      Foreground="{DynamicResource OnSurfaceBrush}" FontWeight="SemiBold"
                                      VerticalAlignment="Center" />
 

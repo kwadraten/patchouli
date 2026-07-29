@@ -24,7 +24,7 @@ public sealed class CslItemMapperTests
                 CustomFieldsJson: """{"archive":"local-file","original-publisher":"Patchouli Press"}""",
                 Creators:
                 [
-                    new ItemCreatorInput(ItemCreatorRoles.Author, "Lovelace", "Ada"),
+                    new ItemCreatorInput(ItemCreatorRoles.Author, "Lovelace", "Ada", Suffix: "III", Particles: "van"),
                     new ItemCreatorInput(ItemCreatorRoles.Editor, Literal: "Royal Society")
                 ],
                 Dates:
@@ -34,6 +34,10 @@ public sealed class CslItemMapperTests
                 ]));
         await context.Items.AddIdentifierAsync(created.Value.ItemId, BuiltInIdentifierSchemes.DOI, "10.1234/example",
             null);
+        await context.Items.AddIdentifierAsync(created.Value.ItemId, BuiltInIdentifierSchemes.URL,
+            "https://example.org/entry", null);
+        await context.Items.AddIdentifierAsync(created.Value.ItemId, BuiltInIdentifierSchemes.CallNumber,
+            "TP311.5/42", null);
         Result<ItemMetadata> fetched = await context.Items.GetItemAsync(created.Value.ItemId);
 
         Result<CslMappedItem> mapped = await context.Mapper.MapAsync(fetched.Value);
@@ -43,10 +47,17 @@ public sealed class CslItemMapperTests
         mapped.Value.Variables["title"].Should().Be("Mapped Item");
         mapped.Value.Variables["container-title"].Should().Be("Journal of Tests");
         mapped.Value.Variables["DOI"].Should().Be("10.1234/example");
+        mapped.Value.Variables["URL"].Should().Be("https://example.org/entry");
+        mapped.Value.Variables["call-number"].Should().Be("TP311.5/42");
         mapped.Value.Variables["extra_csl"].Should().BeAssignableTo<IReadOnlyDictionary<string, object?>>();
         object?[] authors = mapped.Value.Variables["author"].Should().BeAssignableTo<IEnumerable<object?>>().Subject
             .ToArray();
         authors.Should().HaveCount(1);
+        IReadOnlyDictionary<string, object?> author = authors[0]
+            .Should().BeAssignableTo<IReadOnlyDictionary<string, object?>>().Subject;
+        author["family"].Should().Be("Lovelace");
+        author["suffix"].Should().Be("III");
+        author["particles"].Should().Be("van");
         mapped.Value.Variables["issued"].Should().NotBeNull();
     }
 

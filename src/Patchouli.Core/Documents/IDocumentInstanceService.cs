@@ -25,4 +25,9 @@ public interface IDocumentInstanceService
         ItemId itemId,
         DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
+
+    Task<Result> RemoveDocumentInstanceAsync(
+        ItemId itemId,
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default);
 }

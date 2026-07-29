@@ -274,6 +274,98 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
         }
     }
 
+    public async Task<Result> RemoveDocumentInstanceAsync(
+        ItemId itemId,
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            int itemExists = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from items where item_id = @ItemId;",
+                new { ItemId = itemId.ToString() },
+                transaction);
+            if (itemExists == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound, "Item was not found.");
+            }
+
+            DocumentInstanceRow? existing = await connection.QuerySingleOrDefaultAsync<DocumentInstanceRow>(
+                SelectDocumentInstancesSql +
+                " where document_instance_id = @DocumentInstanceId and item_id = @ItemId;",
+                new
+                {
+                    DocumentInstanceId = documentInstanceId.ToString(),
+                    ItemId = itemId.ToString()
+                },
+                transaction);
+            if (existing is null)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.InvalidState,
+                    "Document instance does not belong to the item.");
+            }
+
+            await connection.ExecuteAsync(
+                """
+                delete from document_instances
+                where document_instance_id = @DocumentInstanceId and item_id = @ItemId;
+                """,
+                new
+                {
+                    DocumentInstanceId = documentInstanceId.ToString(),
+                    ItemId = itemId.ToString()
+                },
+                transaction);
+
+            if (existing.IsPrimary == 1)
+            {
+                string? replacementId = await connection.QueryFirstOrDefaultAsync<string?>(
+                    """
+                    select document_instance_id
+                    from document_instances
+                    where item_id = @ItemId
+                    order by created_at, document_instance_id
+                    limit 1;
+                    """,
+                    new { ItemId = itemId.ToString() },
+                    transaction);
+                if (replacementId is not null)
+                {
+                    await connection.ExecuteAsync(
+                        """
+                        update document_instances
+                        set is_primary = 1, updated_at = @UpdatedAt
+                        where document_instance_id = @DocumentInstanceId;
+                        """,
+                        new
+                        {
+                            UpdatedAt = FormatUtc(_clock.UtcNow.ToUniversalTime()),
+                            DocumentInstanceId = replacementId
+                        },
+                        transaction);
+                }
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.document-instance"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
     private const string SelectDocumentInstancesSql =
         """
         select

@@ -34,6 +34,7 @@ using Patchouli.Ocr.MinerU;
 using Patchouli.UI;
 using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
 using Patchouli.UI.ViewModels.Settings;
@@ -229,7 +230,8 @@ public sealed class UiViewModelTests : IDisposable
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
             "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源");
-        vm.Settings.Categories.Select(category => category.Section is { SupportsEditing: true }).Should()
+        vm.Settings.Categories.Select(category => category.Content is ISettingsSection { SupportsEditing: true })
+            .Should()
             .OnlyContain(value => value);
     }
 
@@ -238,10 +240,10 @@ public sealed class UiViewModelTests : IDisposable
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
-        vm.Settings.Categories.Single(category => category.Title == "同步与快照").Section
+        vm.Settings.Categories.Single(category => category.Title == "同步与快照").Content
             .Should().BeOfType<SyncSettingsViewModel>();
         SyncSettingsViewModel sync = (SyncSettingsViewModel)vm.Settings.Categories
-            .Single(category => category.Title == "同步与快照").Section!;
+            .Single(category => category.Title == "同步与快照").Content!;
 
         sync.DeviceId.Should().NotBeNullOrWhiteSpace();
         sync.DeviceName.Should().NotBeNullOrWhiteSpace();
@@ -458,7 +460,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.2.4 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.2.5 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }
@@ -1206,8 +1208,10 @@ public sealed class UiViewModelTests : IDisposable
         queueXaml.Should().Contain("StartCommand");
         queueXaml.Should().Contain("PauseGlobalCommand");
         queueXaml.Should().Contain("CancelCommand");
-        queueXaml.Should().Contain("TaskRows");
-        queueXaml.Should().Contain("HasTasks");
+        queueXaml.Should().Contain("ClearFinishedCommand");
+        queueXaml.Should().Contain("ActiveTaskRows");
+        queueXaml.Should().Contain("FinishedTaskRows");
+        queueXaml.Should().Contain("StatusSummary");
         queueXaml.Should().NotContain("OCR 队列页面将在后续任务中接入");
     }
 
@@ -1312,7 +1316,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task QueueViewModel_enqueue_mock_adds_task_and_displays_runtime_only_warning()
+    public async Task QueueViewModel_enqueue_mock_adds_active_task_row_and_reports_status()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
@@ -1322,13 +1326,12 @@ public sealed class UiViewModelTests : IDisposable
             await vm.Library.CreateCommand.ExecuteAsync();
             IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
             await queue.PauseAsync(OcrPauseScope.Global);
-            vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
-            vm.OcrQueue.PresetId = OcrPresetId.New().ToString();
-            vm.OcrQueue.PageIds = PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
-            vm.OcrQueue.Output.Should().Contain("Queued mock OCR task");
-            vm.OcrQueue.Tasks.Should().ContainSingle();
-            vm.OcrQueue.Output.ToLowerInvariant().Should().NotContain("secret");
+
+            vm.Status.Should().Contain("已加入模拟 OCR 任务");
+            vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
+            vm.OcrQueue.FinishedTaskRows.Should().BeEmpty();
+            vm.Status.ToLowerInvariant().Should().NotContain("secret");
         }
         finally
         {
@@ -1340,7 +1343,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task QueueViewModel_refresh_shows_multiple_tasks_as_rows()
+    public async Task QueueViewModel_refresh_splits_active_and_finished_rows()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
@@ -1350,17 +1353,21 @@ public sealed class UiViewModelTests : IDisposable
             await vm.Library.CreateCommand.ExecuteAsync();
             IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
             await queue.PauseAsync(OcrPauseScope.Global);
-            vm.OcrQueue.DocumentInstanceId = DocumentInstanceId.New().ToString();
-            vm.OcrQueue.PresetId = OcrPresetId.New().ToString();
-            vm.OcrQueue.PageIds = PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
-            vm.OcrQueue.PageIds = PageId.New().ToString();
             await vm.OcrQueue.EnqueueMockCommand.ExecuteAsync();
 
-            vm.OcrQueue.TaskRows.Should().HaveCount(2);
-            vm.OcrQueue.HasTasks.Should().BeTrue();
-            vm.OcrQueue.NoTasks.Should().BeFalse();
-            vm.OcrQueue.TaskRows.Should().OnlyContain(row => row.State == OcrQueueTaskState.Queued);
+            vm.OcrQueue.ActiveTaskRows.Should().HaveCount(2);
+            vm.OcrQueue.HasActiveTasks.Should().BeTrue();
+            vm.OcrQueue.NoActiveTasks.Should().BeFalse();
+            vm.OcrQueue.ActiveTabHeader.Should().Be("进行中 (2)");
+            vm.OcrQueue.ActiveTaskRows.Should().OnlyContain(row => row.State == OcrQueueTaskState.Queued);
+
+            await vm.OcrQueue.ActiveTaskRows.First().CancelCommand.ExecuteAsync();
+
+            vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
+            vm.OcrQueue.FinishedTaskRows.Should().ContainSingle(row => row.State == OcrQueueTaskState.Cancelled);
+            vm.OcrQueue.FinishedTabHeader.Should().Be("已完成 (1)");
+            vm.Status.Should().Contain("已请求取消任务");
         }
         finally
         {
@@ -1372,7 +1379,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task QueueViewModel_start_stop_pause_and_validation_are_visible()
+    public async Task QueueViewModel_start_pause_resume_stop_update_summary_and_toggles()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
         try
@@ -1381,14 +1388,90 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OcrQueue.StartCommand.ExecuteAsync();
-            vm.OcrQueue.StatusSummary.Should().Contain("running");
+            vm.OcrQueue.StatusSummary.Should().Contain("运行中");
+            vm.OcrQueue.IsQueueRunning.Should().BeTrue();
             await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
-            vm.OcrQueue.StatusSummary.Should().Contain("global:");
-            vm.OcrQueue.TaskId = "not-a-guid";
-            await vm.OcrQueue.CancelCommand.ExecuteAsync();
-            vm.OcrQueue.Output.Should().Contain("validation_failed");
+            vm.OcrQueue.StatusSummary.Should().Contain("已暂停");
+            vm.OcrQueue.IsGloballyPaused.Should().BeTrue();
+            await vm.OcrQueue.ResumeGlobalCommand.ExecuteAsync();
+            vm.OcrQueue.IsGloballyPaused.Should().BeFalse();
             await vm.OcrQueue.StopCommand.ExecuteAsync();
-            vm.OcrQueue.StatusSummary.Should().Contain("stopped");
+            vm.OcrQueue.StatusSummary.Should().Contain("已停止");
+            vm.OcrQueue.IsQueueRunning.Should().BeFalse();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task QueueViewModel_mock_task_execution_records_progress_snapshot_and_finished_time()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+
+            // The mock preset/document ids do not resolve, so the task fails fast —
+            // but the executor still emits its simulated stage reports first.
+            OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+                [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
+            await queue.StartAsync();
+            await queue.WaitForIdleAsync();
+            await vm.OcrQueue.RefreshAsync();
+
+            OcrTaskProgressReport? snapshot = queue.GetTaskProgress(task.TaskId);
+            snapshot.Should().NotBeNull();
+            snapshot!.Stage.Should().Be(OcrTaskStage.Preparing);
+            queue.GetTaskFinishedAt(task.TaskId).Should().NotBeNull();
+            vm.OcrQueue.ActiveTaskRows.Should().BeEmpty();
+            vm.OcrQueue.FinishedTaskRows.Should().ContainSingle();
+
+            await queue.StopAsync();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task QueueViewModel_clear_finished_empties_history()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-queue-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            IOcrQueueScheduler queue = (await (await vm.ServicesAsync()).GetOcrQueueAsync()).Value;
+
+            OcrQueueTask task = (await queue.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+                [PageId.New()], OcrQueuePriority.UserStartedDocument)).Value;
+            await queue.StartAsync();
+            await queue.WaitForIdleAsync();
+            await vm.OcrQueue.RefreshAsync();
+            vm.OcrQueue.HasFinishedTasks.Should().BeTrue();
+
+            await vm.OcrQueue.ClearFinishedCommand.ExecuteAsync();
+
+            vm.OcrQueue.FinishedTaskRows.Should().BeEmpty();
+            vm.OcrQueue.HasFinishedTasks.Should().BeFalse();
+            (await queue.GetTaskAsync(task.TaskId)).IsFailure.Should().BeTrue();
+            queue.GetTaskProgress(task.TaskId).Should().BeNull();
+            queue.GetTaskFinishedAt(task.TaskId).Should().BeNull();
+
+            await queue.StopAsync();
         }
         finally
         {
@@ -1449,9 +1532,9 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OcrQueue.RefreshAsync();
 
             vm.Status.Should().Contain("OCR 已加入后台队列");
-            vm.OcrQueue.StatusSummary.Should().Contain("running");
-            vm.OcrQueue.TaskRows.Should().ContainSingle();
-            OcrQueueTaskViewModel row = vm.OcrQueue.TaskRows.Single();
+            vm.OcrQueue.StatusSummary.Should().Contain("运行中");
+            vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
+            OcrQueueTaskViewModel row = vm.OcrQueue.ActiveTaskRows.Single();
             row.DocumentTitle.Should().Be("Queued OCR Item");
             row.Kind.Should().Be(OcrQueueTaskKind.Document);
             row.PageCount.Should().Be(1);
@@ -2463,7 +2546,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Dirty_settings_block_section_switch_and_tab_close_until_current_section_is_discarded()
+    public async Task Dirty_settings_keep_drafts_when_switching_sections_and_still_block_tab_close()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-settings-lifecycle-{Guid.NewGuid():N}.sqlite");
         try
@@ -2472,24 +2555,30 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             await vm.OpenSettingsAsync("library");
-            SettingsCategoryViewModel libraryCategory = vm.Settings.ActiveCategory;
-            SettingsCategoryViewModel syncCategory =
-                vm.Settings.Categories.Single(category => category.Icon == "Cloud");
-            vm.Settings.LibrarySettings.RememberLastDatabase =
-                !vm.Settings.LibrarySettings.RememberLastDatabase;
+            bool originalRemember = vm.Settings.LibrarySettings.RememberLastDatabase;
+            NavCategoryViewModel libraryCategory = vm.Settings.ActiveCategory;
+            NavCategoryViewModel syncCategory =
+                vm.Settings.Categories.Single(category => category.IconName == "Cloud");
+            vm.Settings.LibrarySettings.RememberLastDatabase = !originalRemember;
 
+            // Switching sections is allowed now; the draft stays in memory.
             vm.Settings.ActiveCategory = syncCategory;
-            await vm.CloseSettingsTabCommand.ExecuteAsync();
-
-            vm.Settings.ActiveCategory.Should().BeSameAs(libraryCategory);
-            vm.ShowSettingsTab.Should().BeTrue();
-            vm.Settings.HasDirtySections.Should().BeTrue();
-
-            await vm.Settings.DiscardCommand.ExecuteAsync();
-            vm.Settings.ActiveCategory = syncCategory;
-
-            vm.Settings.HasDirtySections.Should().BeFalse();
             vm.Settings.ActiveCategory.Should().BeSameAs(syncCategory);
+            vm.Settings.HasDirtySections.Should().BeTrue();
+            vm.Settings.LibrarySettings.RememberLastDatabase.Should().Be(!originalRemember);
+
+            // Closing the settings tab is still blocked while any section is dirty.
+            await vm.CloseSettingsTabCommand.ExecuteAsync();
+            vm.ShowSettingsTab.Should().BeTrue();
+
+            // The header discard reverts every dirty section at once.
+            await vm.Settings.DiscardCommand.ExecuteAsync();
+            vm.Settings.HasDirtySections.Should().BeFalse();
+            vm.Settings.LibrarySettings.RememberLastDatabase.Should().Be(originalRemember);
+
+            await vm.CloseSettingsTabCommand.ExecuteAsync();
+            vm.ShowSettingsTab.Should().BeFalse();
+            libraryCategory.Should().BeSameAs(vm.Settings.Categories.First());
         }
         finally
         {
@@ -2875,7 +2964,8 @@ public sealed class UiViewModelTests : IDisposable
         public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
             string batchId,
             string downloadDirectory,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             Directory.CreateDirectory(downloadDirectory);
             string zipPath = Path.Combine(downloadDirectory, $"{batchId}.zip");
@@ -2959,13 +3049,15 @@ public sealed class UiViewModelTests : IDisposable
         }
 
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId,
-            OcrPresetId presetId, CancellationToken cancellationToken = default)
+            OcrPresetId presetId, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             throw new NotSupportedException();
         }
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-            IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default)
+            IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             throw new NotSupportedException();
         }

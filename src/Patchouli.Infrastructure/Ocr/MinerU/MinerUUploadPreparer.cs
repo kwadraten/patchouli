@@ -76,18 +76,19 @@ public sealed class MinerUUploadPreparer
     internal async Task<Result<MinerUPreparedResult>> PrepareAndUploadAsync(
         OcrUploadSource source,
         string downloadDirectory,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         return source switch
         {
             OcrUploadSource.WholeDocument wholeDocument => ToPrepared(
-                await UploadDocumentAsync(wholeDocument.PdfPath, downloadDirectory, cancellationToken), null),
+                await UploadDocumentAsync(wholeDocument.PdfPath, downloadDirectory, cancellationToken, progress), null),
             OcrUploadSource.PageRanges pageRanges => await PreparePageRangesAsync(
-                pageRanges, downloadDirectory, cancellationToken),
+                pageRanges, downloadDirectory, cancellationToken, progress),
             OcrUploadSource.PageImage pageImage => await PrepareImageAsync(
-                pageImage.ImagePath, pageImage.Context, downloadDirectory, cancellationToken),
+                pageImage.ImagePath, pageImage.Context, downloadDirectory, cancellationToken, progress),
             OcrUploadSource.RegionImage regionImage => await PrepareImageAsync(
-                regionImage.ImagePath, regionImage.Context, downloadDirectory, cancellationToken),
+                regionImage.ImagePath, regionImage.Context, downloadDirectory, cancellationToken, progress),
             _ => Result<MinerUPreparedResult>.Failure("validation_failed", "Unknown OCR upload source.")
         };
     }
@@ -95,18 +96,20 @@ public sealed class MinerUUploadPreparer
     public async Task<Result<MinerUDownloadedResult>> UploadAndExtractAsync(
         string pdfPath,
         string downloadDirectory,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
-        return await UploadDocumentAsync(pdfPath, downloadDirectory, cancellationToken);
+        return await UploadDocumentAsync(pdfPath, downloadDirectory, cancellationToken, progress);
     }
 
     public async Task<Result<string>> UploadAndExtractImageAsync(
         string imagePath,
         string downloadDirectory,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         Result<MinerUPreparedResult> prepared = await PrepareImageAsync(
-            imagePath, new OcrImageContext(0, 0, 0, null), downloadDirectory, cancellationToken);
+            imagePath, new OcrImageContext(0, 0, 0, null), downloadDirectory, cancellationToken, progress);
         return prepared.IsFailure
             ? Result<string>.Failure(prepared.ErrorCode!, prepared.ErrorMessage!)
             : new MinerUResultParser().ParsePlainText(prepared.Value);
@@ -115,7 +118,8 @@ public sealed class MinerUUploadPreparer
     private async Task<Result<MinerUDownloadedResult>> UploadDocumentAsync(
         string pdfPath,
         string downloadDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress)
     {
         FileInfo fileInfo = new(pdfPath);
         if (!fileInfo.Exists)
@@ -134,7 +138,7 @@ public sealed class MinerUUploadPreparer
             }
 
             MinerUUploadRequest uploadRequest = new(pdfPath, fileInfo.Name, fileInfo.Length, dataId);
-            return await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken);
+            return await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken, progress);
         }
 
         IReadOnlyList<MinerUPdfChunk> chunks =
@@ -142,7 +146,7 @@ public sealed class MinerUUploadPreparer
         if (chunks.Count <= 1 && fileInfo.Length <= _limits.MaxBytesPerFile && pageCount <= _limits.MaxPagesPerFile)
         {
             MinerUUploadRequest uploadRequest = new(pdfPath, fileInfo.Name, fileInfo.Length, dataId);
-            return await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken);
+            return await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken, progress);
         }
 
         string chunkDirectory = Path.Combine(downloadDirectory, "mineru-upload-chunks",
@@ -158,13 +162,16 @@ public sealed class MinerUUploadPreparer
         foreach (ChunkUploadFile chunkFile in chunkFiles.Value)
         {
             Result<MinerUDownloadedResult> result = await UploadSingleAsync(chunkFile.Request,
-                Path.Combine(downloadDirectory, "mineru-results"), cancellationToken);
+                Path.Combine(downloadDirectory, "mineru-results"), cancellationToken, progress);
             if (result.IsFailure)
             {
                 return Result<MinerUDownloadedResult>.Failure(result.ErrorCode!, result.ErrorMessage!);
             }
 
             downloads.Add((chunkFile.Chunk.StartPageIndex, result.Value));
+            progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Uploading,
+                (double)downloads.Count / chunkFiles.Value.Count,
+                $"chunk:{downloads.Count}/{chunkFiles.Value.Count}"));
         }
 
         if (downloads.Count == 1 && downloads[0].PageIndexOffset == 0)
@@ -182,7 +189,8 @@ public sealed class MinerUUploadPreparer
     private async Task<Result<MinerUPreparedResult>> PreparePageRangesAsync(
         OcrUploadSource.PageRanges source,
         string downloadDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress)
     {
         if (source.Ranges.Count == 0 ||
             source.Ranges.Any(range => range.StartPageIndex < 0 || range.PageCount <= 0))
@@ -204,6 +212,7 @@ public sealed class MinerUUploadPreparer
         {
             Directory.CreateDirectory(rangesDirectory);
             List<(int PageIndexOffset, MinerUDownloadedResult Download)> downloads = new();
+            int rangeIndex = 0;
             foreach (OcrPageRange range in source.Ranges)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -221,13 +230,16 @@ public sealed class MinerUUploadPreparer
                     MinerUUploadRequest uploadRequest = new(subPdfPath, Path.GetFileName(subPdfPath),
                         subPdfInfo.Length, subDataId);
                     Result<MinerUDownloadedResult> uploaded = await UploadSingleAsync(uploadRequest,
-                        Path.Combine(downloadDirectory, "mineru-results"), cancellationToken);
+                        Path.Combine(downloadDirectory, "mineru-results"), cancellationToken, progress);
                     if (uploaded.IsFailure)
                     {
                         return Result<MinerUPreparedResult>.Failure(uploaded.ErrorCode!, uploaded.ErrorMessage!);
                     }
 
                     downloads.Add((range.StartPageIndex, uploaded.Value));
+                    rangeIndex++;
+                    progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Uploading,
+                        (double)rangeIndex / source.Ranges.Count, $"chunk:{rangeIndex}/{source.Ranges.Count}"));
                     continue;
                 }
 
@@ -238,17 +250,24 @@ public sealed class MinerUUploadPreparer
                     return Result<MinerUPreparedResult>.Failure(chunkFiles.ErrorCode!, chunkFiles.ErrorMessage!);
                 }
 
+                int chunkIndex = 0;
                 foreach (ChunkUploadFile chunkFile in chunkFiles.Value)
                 {
                     Result<MinerUDownloadedResult> uploaded = await UploadSingleAsync(chunkFile.Request,
-                        Path.Combine(downloadDirectory, "mineru-results"), cancellationToken);
+                        Path.Combine(downloadDirectory, "mineru-results"), cancellationToken, progress);
                     if (uploaded.IsFailure)
                     {
                         return Result<MinerUPreparedResult>.Failure(uploaded.ErrorCode!, uploaded.ErrorMessage!);
                     }
 
                     downloads.Add((range.StartPageIndex + chunkFile.Chunk.StartPageIndex, uploaded.Value));
+                    chunkIndex++;
+                    progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Uploading,
+                        (double)chunkIndex / chunkFiles.Value.Count,
+                        $"chunk:{chunkIndex}/{chunkFiles.Value.Count}"));
                 }
+
+                rangeIndex++;
             }
 
             if (downloads.Count == 1 && downloads[0].PageIndexOffset == 0)
@@ -278,7 +297,8 @@ public sealed class MinerUUploadPreparer
         string imagePath,
         OcrImageContext context,
         string downloadDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress)
     {
         FileInfo fileInfo = new(imagePath);
         if (!fileInfo.Exists)
@@ -291,7 +311,8 @@ public sealed class MinerUUploadPreparer
             ? fileInfo.Name
             : Path.GetFileNameWithoutExtension(fileInfo.Name) + ".png";
         MinerUUploadRequest uploadRequest = new(imagePath, fileName, fileInfo.Length, dataId);
-        return ToPrepared(await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken), context);
+        return ToPrepared(await UploadSingleAsync(uploadRequest, downloadDirectory, cancellationToken, progress),
+            context);
     }
 
     private static Result<MinerUPreparedResult> ToPrepared(
@@ -328,8 +349,10 @@ public sealed class MinerUUploadPreparer
     private async Task<Result<MinerUDownloadedResult>> UploadSingleAsync(
         MinerUUploadRequest uploadRequest,
         string downloadDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress)
     {
+        progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Uploading, null, null));
         Result<MinerUUploadBatch> urlResult = await _client.RequestUploadUrlsAsync([uploadRequest], cancellationToken);
         if (urlResult.IsFailure)
         {
@@ -346,7 +369,8 @@ public sealed class MinerUUploadPreparer
             return Result<MinerUDownloadedResult>.Failure(uploadResult.ErrorCode!, uploadResult.ErrorMessage!);
         }
 
-        return await _client.WaitForCompletionAndDownloadAsync(batch.BatchId, downloadDirectory, cancellationToken);
+        return await _client.WaitForCompletionAndDownloadAsync(batch.BatchId, downloadDirectory, cancellationToken,
+            progress);
     }
 
     private async Task<int?> GetPageCountAsync(string pdfPath, CancellationToken cancellationToken)

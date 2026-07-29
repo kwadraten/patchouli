@@ -438,8 +438,8 @@ public sealed class MetadataLookupService : IMetadataLookupService
 
     private static bool IsSupportedItemType(string? value)
     {
-        return value is
-            "book" or "article-journal" or "chapter" or "thesis" or "report" or "webpage"
-            or "manuscript" or "paper-conference" or "patent" or "standard";
+        return value is not null &&
+               !string.Equals(value, "general", StringComparison.Ordinal) &&
+               CslItemTypeDisplayNames.Names.ContainsKey(value);
     }
 }

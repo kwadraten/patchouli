@@ -11,10 +11,11 @@ public interface IOcrRunCoordinator
         CancellationToken cancellationToken = default);
 
     Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, IProgress<OcrTaskStageProgress>? progress = null);
 
     Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
-        IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default);
+        IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null);
 
     Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default);

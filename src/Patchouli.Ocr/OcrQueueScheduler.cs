@@ -55,6 +55,10 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
     private readonly Dictionary<OcrQueueTaskId, OcrQueueTask> _tasks = new();
     private readonly HashSet<string> _pauses = new();
     private readonly Dictionary<OcrQueueTaskId, CancellationTokenSource> _running = new();
+    private readonly Dictionary<OcrQueueTaskId, OcrTaskProgressReport> _progress = new();
+    private readonly Dictionary<OcrQueueTaskId, DateTimeOffset> _finishedAt = new();
+    private readonly object _progressLock = new();
+    private DateTime _lastProgressNotification;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Func<CancellationToken, Task<Result<LibraryId>>> _libraryIdResolver;
     private readonly Action<Exception>? _loopErrorLogger;
@@ -317,7 +321,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         OcrQueueExecutionResult result;
         try
         {
-            result = await _executor.ExecuteAsync(task, cts.Token);
+            result = await _executor.ExecuteAsync(task, cts.Token, new TaskProgressSink(this));
         }
         catch (OperationCanceledException)
         {
@@ -393,7 +397,46 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
             _gate.Release();
         }
 
+        if (updated.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
+            or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked)
+        {
+            lock (_progressLock)
+            {
+                _finishedAt[task.TaskId] = updated.UpdatedAt;
+            }
+        }
+
         OnChanged(updated, OcrQueueChangeKind.Updated);
+    }
+
+    private void OnProgress(OcrTaskProgressReport report)
+    {
+        lock (_progressLock)
+        {
+            _progress[report.TaskId] = report;
+            // Byte-level download reports can arrive at a very high rate; the snapshot above is
+            // always current, but change notifications are throttled to keep UI refreshes cheap.
+            DateTime now = DateTime.UtcNow;
+            if ((now - _lastProgressNotification).TotalMilliseconds < 200)
+            {
+                return;
+            }
+
+            _lastProgressNotification = now;
+        }
+
+        // A null task keeps state-machine side effects (shell status, retry watchers) out of
+        // pure progress notifications; listeners re-query snapshots via GetTaskProgress.
+        OnChanged(null, OcrQueueChangeKind.Progress);
+    }
+
+    private sealed class TaskProgressSink(OcrQueueScheduler scheduler)
+        : IProgress<OcrTaskProgressReport>
+    {
+        public void Report(OcrTaskProgressReport value)
+        {
+            scheduler.OnProgress(value);
+        }
     }
 
     public async Task<Result> PauseAsync(string scope, string? target = null, CancellationToken c = default)
@@ -452,6 +495,14 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
             {
                 updated = task with { State = OcrQueueTaskState.Cancelled, UpdatedAt = _clock.UtcNow };
                 _tasks[id] = updated;
+                if (task.State is not (OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
+                    or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked))
+                {
+                    lock (_progressLock)
+                    {
+                        _finishedAt[id] = updated.UpdatedAt;
+                    }
+                }
             }
         }
         finally
@@ -498,6 +549,60 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
             _pauses.ToArray(), _limits, running.GroupBy(t => t.EngineId).ToDictionary(g => g.Key, g => g.Count()),
             running.Where(t => t.ProviderId is not null).GroupBy(t => t.ProviderId!)
                 .ToDictionary(g => g.Key, g => g.Count()))));
+    }
+
+    public OcrTaskProgressReport? GetTaskProgress(OcrQueueTaskId taskId)
+    {
+        lock (_progressLock)
+        {
+            return _progress.GetValueOrDefault(taskId);
+        }
+    }
+
+    public DateTimeOffset? GetTaskFinishedAt(OcrQueueTaskId taskId)
+    {
+        lock (_progressLock)
+        {
+            return _finishedAt.TryGetValue(taskId, out DateTimeOffset finishedAt) ? finishedAt : null;
+        }
+    }
+
+    public void ClearFinishedTasks()
+    {
+        OcrQueueTaskId[] removed;
+        _gate.Wait();
+        try
+        {
+            removed = _tasks.Values
+                .Where(t => t.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
+                    or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked)
+                .Select(t => t.TaskId)
+                .ToArray();
+            foreach (OcrQueueTaskId id in removed)
+            {
+                _tasks.Remove(id);
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        if (removed.Length == 0)
+        {
+            return;
+        }
+
+        lock (_progressLock)
+        {
+            foreach (OcrQueueTaskId id in removed)
+            {
+                _progress.Remove(id);
+                _finishedAt.Remove(id);
+            }
+        }
+
+        OnChanged(null, OcrQueueChangeKind.Updated);
     }
 
     private bool Paused(OcrQueueTask t)

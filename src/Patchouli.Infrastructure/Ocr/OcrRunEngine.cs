@@ -177,19 +177,21 @@ public sealed class OcrRunEngine : IOcrRunEngine
     public async Task<Result<OcrRun>> RunPresetOnDocumentAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         Result<Page[]> pages = await GetPagesAsync(documentInstanceId, null, cancellationToken);
         return pages.IsFailure
             ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken);
+            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress);
     }
 
     public async Task<Result<OcrRun>> RunPresetOnPagesAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,
         IReadOnlyList<PageId> pageIds,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         if (pageIds.Count == 0)
         {
@@ -199,7 +201,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Result<Page[]> pages = await GetPagesAsync(documentInstanceId, pageIds, cancellationToken);
         return pages.IsFailure
             ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken);
+            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken, progress);
     }
 
     public async Task<Result<OcrRun>> RunPresetOnRegionAsync(
@@ -553,7 +555,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IReadOnlyList<Page> pages,
         NormalizedBBox? region,
         string? imagePath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         Result<OcrPresetVersion> version = await ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
@@ -570,7 +573,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         if (version.Value.EngineId == OcrEngineIds.MinerU)
         {
             return await RunMinerUDocumentAsync(
-                documentInstanceId, presetId, version.Value, pages, region, imagePath, cancellationToken);
+                documentInstanceId, presetId, version.Value, pages, region, imagePath, cancellationToken, progress);
         }
 
         OcrRun run = NewRun(documentInstanceId, presetId, version.Value, OcrRunState.Running);
@@ -703,7 +706,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IReadOnlyList<Page> pages,
         NormalizedBBox? region,
         string? imagePath,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<OcrTaskStageProgress>? progress = null)
     {
         if (_minerUResultImporter is null || _minerUClientFactory is null || _credentialResolver is null)
         {
@@ -805,14 +809,16 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Directory.CreateDirectory(downloadDirectory);
         try
         {
+            progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Preparing, null, null));
             Result<MinerUPreparedResult> prepared = await new MinerUUploadPreparer(client, _minerUUploadLimits)
-                .PrepareAndUploadAsync(uploadSource, downloadDirectory, cancellationToken);
+                .PrepareAndUploadAsync(uploadSource, downloadDirectory, cancellationToken, progress);
             if (prepared.IsFailure)
             {
                 return await FailMinerURunAsync(run, pages, prepared.ErrorCode, prepared.ErrorMessage,
                     cancellationToken);
             }
 
+            progress?.Report(new OcrTaskStageProgress(OcrTaskStage.Importing, null, null));
             Result<MinerUImportResult> imported = await _minerUResultImporter.ImportResultZipAsync(
                 new MinerUImportRequest(
                     prepared.Value.ZipPath,

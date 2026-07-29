@@ -6,7 +6,6 @@ public static class BuiltInIdentifierSchemes
     public const string ISBN = "isbn";
     public const string ISSN = "issn";
     public const string URL = "url";
-    public const string ArchiveId = "archive_id";
     public const string CallNumber = "call_number";
     public const string Jpno = "jpno";
     public const string Ndlbibid = "ndlbibid";

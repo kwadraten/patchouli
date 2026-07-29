@@ -1,0 +1,45 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:lucide="using:Patchouli.Lucide.Avalonia">
+
+  <!-- Shared left-navigation sidebar (Settings / Item Editor / Sync Center) -->
+  <Style Selector="ListBox.SidebarListBox">
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem">
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="Margin" Value="0,1" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem /template/ ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem:pointerover /template/ ContentPresenter">
+    <Setter Property="Background" Value="{DynamicResource SurfaceVariantBrush}" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem:selected /template/ ContentPresenter">
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem Border.ItemBorder">
+    <Setter Property="BorderThickness" Value="3,0,0,0" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Padding" Value="16,8" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem:selected Border.ItemBorder">
+    <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem TextBlock.ItemText">
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem:selected TextBlock.ItemText">
+    <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem lucide|Lucide.ItemIcon">
+    <Setter Property="StrokeBrush" Value="{DynamicResource OnSurfaceVariantBrush}" />
+  </Style>
+  <Style Selector="ListBox.SidebarListBox ListBoxItem:selected lucide|Lucide.ItemIcon">
+    <Setter Property="StrokeBrush" Value="{DynamicResource PrimaryBrush}" />
+  </Style>
+</Styles>

@@ -18,6 +18,8 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
     private SyncAppSettings _draft;
     private LibraryId? _libraryId;
     private int _libraryGeneration = -1;
+    private long _editGeneration;
+    private long _loadGeneration;
     private readonly ObservableCollection<SyncSettingScopeRowViewModel> _settingScopeRows = new();
 
     public SyncSettingsViewModel(MainWindowViewModel main)
@@ -207,6 +209,8 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
 
     public override Task DiscardAsync()
     {
+        _editGeneration++;
+        _loadGeneration++;
         _draft = _persisted;
         _isDirty = false;
         SaveState = SettingsSaveState.Clean;
@@ -230,20 +234,24 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        long loadGeneration = ++_loadGeneration;
+        long editGeneration = _editGeneration;
         int generation = _main.LibraryGeneration;
         Result<LibraryId> library = await EnsureLibraryIdAsync(cancellationToken);
+        if (loadGeneration != _loadGeneration ||
+            editGeneration != _editGeneration ||
+            IsDirty ||
+            generation != _main.LibraryGeneration)
+        {
+            return;
+        }
+
         if (library.IsFailure)
         {
             LastError = library.ErrorMessage;
             SaveState = SettingsSaveState.Failed;
             Status = $"加载失败：{library.ErrorMessage}";
             RaiseState();
-            return;
-        }
-
-        if (generation != _main.LibraryGeneration)
-        {
-            Status = "资料库已切换，已忽略旧同步设置加载结果。";
             return;
         }
 
@@ -267,6 +275,8 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
 
     private void MarkDirty()
     {
+        _editGeneration++;
+        _loadGeneration++;
         _isDirty = true;
         SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
@@ -281,6 +291,7 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
 
     public void NotifyLibraryContextChanged()
     {
+        _loadGeneration++;
         _libraryId = null;
         _libraryGeneration = -1;
         if (IsDirty)

@@ -3,104 +3,113 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:OcrQueueViewModel">
+
+  <UserControl.Styles>
+    <Style Selector="TextBlock.StateBadge">
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="TextBlock.StateBadge.failed">
+      <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
+    </Style>
+  </UserControl.Styles>
+
+  <UserControl.Resources>
+    <DataTemplate x:Key="TaskRowTemplate" x:DataType="vm:OcrQueueTaskViewModel">
+      <Border Classes="CardTile" Margin="0,0,0,8">
+        <StackPanel Spacing="8">
+
+          <!-- 标题 + 状态徽标 + 操作 -->
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <TextBlock Text="{Binding DocumentTitle}" FontSize="14" FontWeight="SemiBold"
+                         Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
+              <Border Background="{DynamicResource SurfaceContainerHighestBrush}" CornerRadius="4" Padding="8,2"
+                      VerticalAlignment="Center">
+                <TextBlock Text="{Binding StateText}" Classes="StateBadge" Classes.failed="{Binding IsFailed}"
+                           FontSize="11" FontWeight="SemiBold" />
+              </Border>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                        IsVisible="{Binding IsActive}">
+              <Button Content="暂停" Command="{Binding PauseCommand}" Height="28" Padding="12,0" FontSize="12" />
+              <Button Content="恢复" Command="{Binding ResumeCommand}" Height="28" Padding="12,0" FontSize="12" />
+              <Button Content="取消" Classes="Danger" Command="{Binding CancelCommand}" Height="28" Padding="12,0"
+                      FontSize="12" />
+            </StackPanel>
+          </Grid>
+
+          <!-- 进度条 + 百分比 -->
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <ProgressBar Value="{Binding ProgressValue}" Minimum="0" Maximum="100" Height="6"
+                         VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="{Binding ProgressPercentText}" FontSize="12" MinWidth="36"
+                       TextAlignment="Right" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          </Grid>
+
+          <!-- 阶段文本 / 错误 / 元信息 -->
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <StackPanel Spacing="2">
+              <TextBlock Text="{Binding StageText}" FontSize="12"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextTrimming="CharacterEllipsis" />
+              <TextBlock Text="{Binding ErrorText}" FontSize="12" Foreground="{DynamicResource ErrorBrush}"
+                         TextWrapping="Wrap" IsVisible="{Binding HasError}" />
+            </StackPanel>
+            <TextBlock Grid.Column="1" Text="{Binding MetaText}" FontSize="11"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Top" />
+          </Grid>
+
+        </StackPanel>
+      </Border>
+    </DataTemplate>
+  </UserControl.Resources>
+
   <Grid>
     <ScrollViewer>
       <StackPanel Margin="32" Spacing="18" MaxWidth="1200">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
           <StackPanel Spacing="6">
-            <TextBlock Text="后台任务看板" FontSize="24" FontWeight="SemiBold" Foreground="{DynamicResource OnSurfaceBrush}" />
+            <TextBlock Text="OCR 队列" FontSize="24" FontWeight="SemiBold"
+                       Foreground="{DynamicResource OnSurfaceBrush}" />
+            <TextBlock Text="{Binding StatusSummary}" FontSize="12"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
             <Button Content="刷新" Command="{Binding RefreshCommand}" Height="32" />
-            <Button Content="启动队列" Command="{Binding StartCommand}" Height="32" />
-            <Button Content="停止队列" Command="{Binding StopCommand}" Height="32" />
-            <Button Content="暂停全部" Command="{Binding PauseGlobalCommand}" Height="32" />
-            <Button Content="恢复全部" Command="{Binding ResumeGlobalCommand}" Height="32" />
+            <Button Content="启动队列" Classes="Primary" Command="{Binding StartCommand}" Height="32"
+                    IsVisible="{Binding IsQueueStopped}" />
+            <Button Content="停止队列" Command="{Binding StopCommand}" Height="32"
+                    IsVisible="{Binding IsQueueRunning}" />
+            <Button Content="暂停全部" Command="{Binding PauseGlobalCommand}" Height="32"
+                    IsVisible="{Binding IsGloballyResumed}" />
+            <Button Content="恢复全部" Command="{Binding ResumeGlobalCommand}" Height="32"
+                    IsVisible="{Binding IsGloballyPaused}" />
+            <Button Content="清空已完成" Command="{Binding ClearFinishedCommand}" Height="32"
+                    IsEnabled="{Binding HasFinishedTasks}" />
           </StackPanel>
         </Grid>
 
-        <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6" Padding="16">
-          <StackPanel Spacing="10">
-            <Grid ColumnDefinitions="300,120,80,100,100,*" ColumnSpacing="10" IsVisible="{Binding HasTasks}">
-              <TextBlock Grid.Column="0" Text="关联文档" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Grid.Column="1" Text="状态/任务类型" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Grid.Column="2" Text="优先级" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Grid.Column="3" Text="尝试次数" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Grid.Column="4" Text="下次执行" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-              <TextBlock Grid.Column="5" Text="操作 / 错误详情" FontSize="11" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-            </Grid>
-            <ItemsControl ItemsSource="{Binding TaskRows}" IsVisible="{Binding HasTasks}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="vm:OcrQueueTaskViewModel">
-                  <Border Background="{DynamicResource SurfaceBrush}"
-                          BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
-                          Padding="10" Margin="0,0,0,8">
-                    <Grid ColumnDefinitions="300,120,80,100,100,*" ColumnSpacing="10" VerticalAlignment="Center">
-
-                      <!-- 文档名与页数 -->
-                      <StackPanel Grid.Column="0" Spacing="2">
-                        <TextBlock Text="{Binding DocumentTitle}" FontSize="13" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="{Binding TaskId, StringFormat='{}任务：{0}'}" FontSize="11"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                   TextTrimming="CharacterEllipsis" />
-                        <TextBlock Text="{Binding PageCount, StringFormat='{}{0} 页'}" FontSize="11"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                        <TextBlock Text="{Binding ProgressText}" FontSize="11"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                   TextTrimming="CharacterEllipsis" />
-                      </StackPanel>
-
-                      <!-- 状态与类型 -->
-                      <StackPanel Grid.Column="1" Spacing="2">
-                        <TextBlock Text="{Binding StateText}" FontSize="13" FontWeight="SemiBold"
-                                   Foreground="{DynamicResource PrimaryBrush}" />
-                        <TextBlock Text="{Binding KindText}" FontSize="11"
-                                   Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                   TextTrimming="CharacterEllipsis" />
-                      </StackPanel>
-
-                      <TextBlock Grid.Column="2" Text="{Binding PriorityText}" FontSize="12"
-                                 Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
-
-                      <TextBlock Grid.Column="3" Text="{Binding AttemptText}" FontSize="12"
-                                 Foreground="{DynamicResource OnSurfaceBrush}" />
-
-                      <TextBlock Grid.Column="4" Text="{Binding ScheduledAfterText}" FontSize="12"
-                                 Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis" />
-
-                      <!-- 操作列与错误信息 -->
-                      <StackPanel Grid.Column="5" Spacing="6">
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                          <Button Content="暂停" Command="{Binding PauseCommand}" Height="28" Padding="12,0"
-                                  FontSize="12" />
-                          <Button Content="恢复" Command="{Binding ResumeCommand}" Height="28" Padding="12,0"
-                                  FontSize="12" />
-                          <Button Content="取消" Command="{Binding CancelCommand}" Height="28" Padding="12,0"
-                                  FontSize="12" Foreground="{DynamicResource ErrorBrush}" />
-                        </StackPanel>
-                        <TextBlock Text="{Binding LastError}" FontSize="12" Foreground="{DynamicResource ErrorBrush}"
-                                   TextWrapping="Wrap" />
-                      </StackPanel>
-
-                    </Grid>
-                  </Border>
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <TextBlock Text="暂无后台任务。" FontSize="13" Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                       IsVisible="{Binding NoTasks}" />
-            <TextBlock Text="{Binding Output}" FontSize="12" Foreground="{DynamicResource ErrorBrush}"
-                       TextWrapping="Wrap" Margin="0,10,0,0" />
-          </StackPanel>
-        </Border>
+        <TabControl Padding="0,12,0,0">
+          <TabItem Header="{Binding ActiveTabHeader}">
+            <StackPanel Spacing="0" Margin="0,16,0,0">
+              <ItemsControl ItemsSource="{Binding ActiveTaskRows}"
+                            ItemTemplate="{StaticResource TaskRowTemplate}"
+                            IsVisible="{Binding HasActiveTasks}" />
+              <TextBlock Text="没有进行中的任务。" FontSize="13"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                         IsVisible="{Binding NoActiveTasks}" />
+            </StackPanel>
+          </TabItem>
+          <TabItem Header="{Binding FinishedTabHeader}">
+            <StackPanel Spacing="0" Margin="0,16,0,0">
+              <ItemsControl ItemsSource="{Binding FinishedTaskRows}"
+                            ItemTemplate="{StaticResource TaskRowTemplate}"
+                            IsVisible="{Binding HasFinishedTasks}" />
+              <TextBlock Text="暂无已完成的任务。" FontSize="13"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                         IsVisible="{Binding NoFinishedTasks}" />
+            </StackPanel>
+          </TabItem>
+        </TabControl>
       </StackPanel>
     </ScrollViewer>
   </Grid>

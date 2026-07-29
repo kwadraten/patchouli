@@ -56,6 +56,16 @@ public static class OcrQueueChangeKind
     public const string Updated = "updated";
     public const string Started = "started";
     public const string Stopped = "stopped";
+    public const string Progress = "progress";
+}
+
+public static class OcrTaskStage
+{
+    public const string Preparing = "preparing";
+    public const string Uploading = "uploading";
+    public const string WaitingCloud = "waiting_cloud";
+    public const string Downloading = "downloading";
+    public const string Importing = "importing";
 }
 
 public sealed record OcrQueueTask(
@@ -142,9 +152,21 @@ public sealed record OcrQueueExecutionResult(
 
 public sealed record OcrQueueChangedEventArgs(OcrQueueTask? Task, string ChangeKind);
 
+public sealed record OcrTaskProgressReport(
+    OcrQueueTaskId TaskId,
+    string Stage,
+    double? Fraction,
+    string? Detail);
+
+public sealed record OcrTaskStageProgress(
+    string Stage,
+    double? Fraction,
+    string? Detail);
+
 public interface IOcrQueueTaskExecutor
 {
-    Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken);
+    Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+        IProgress<OcrTaskProgressReport>? progress = null);
 }
 
 public interface IOcrRetryPolicy
@@ -185,4 +207,7 @@ public interface IOcrQueueScheduler
     Task<Result<IReadOnlyList<OcrQueueTask>>> ListTasksAsync(OcrQueueTaskFilter filter, CancellationToken c = default);
     Task<Result<OcrQueueStatus>> GetQueueStatusAsync(CancellationToken c = default);
     Task RunOneSchedulingTickAsync(CancellationToken c = default);
+    OcrTaskProgressReport? GetTaskProgress(OcrQueueTaskId taskId);
+    DateTimeOffset? GetTaskFinishedAt(OcrQueueTaskId taskId);
+    void ClearFinishedTasks();
 }

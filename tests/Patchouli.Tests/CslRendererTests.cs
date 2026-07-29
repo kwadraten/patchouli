@@ -50,6 +50,27 @@ public sealed class CslRendererTests
         rendered.Value.RenderedHtml.Should().Contain("<i>Undated Book</i>");
     }
 
+    [Theory]
+    [InlineData("legal_case")]
+    [InlineData("motion_picture")]
+    [InlineData("collection")]
+    public async Task Expanded_item_types_render_with_default_style(string itemType)
+    {
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> item = await context.Items.CreateItemAsync(
+            new CreateItemRequest(
+                itemType,
+                $"Expanded {itemType} Title",
+                Dates: [new ItemDateInput(ItemDateRoles.Issued, """[[2024]]""")],
+                Creators: [new ItemCreatorInput(ItemCreatorRoles.Author, "Doe", "Jane")]));
+
+        Result<CslRenderResult> rendered =
+            await context.Renderer.RenderAsync(new CslRenderRequest([item.Value.ItemId], "apa", "en-US"));
+
+        rendered.IsSuccess.Should().BeTrue(rendered.ErrorMessage);
+        rendered.Value.RenderedText.Should().Contain($"Expanded {itemType} Title");
+    }
+
     [Fact]
     public async Task Render_without_explicit_locale_uses_saved_settings_locale()
     {

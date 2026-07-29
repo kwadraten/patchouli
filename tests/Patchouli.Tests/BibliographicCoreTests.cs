@@ -296,7 +296,7 @@ public sealed class BibliographicCoreTests
         Result<ItemIdentifier> blankScheme =
             await context.ItemService.AddIdentifierAsync(item.Value.ItemId, " ", "A", null);
         Result<ItemIdentifier> blankValue =
-            await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "archive_id", " ", null);
+            await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "local_catalog", " ", null);
 
         blankScheme.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
         blankValue.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
@@ -309,9 +309,9 @@ public sealed class BibliographicCoreTests
         Result<ItemMetadata> item = await context.ItemService.CreateItemAsync("book", "Book");
 
         Result<ItemIdentifier> first =
-            await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "archive_id", "A-1", null);
+            await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "local_catalog", "A-1", null);
         Result<ItemIdentifier> second =
-            await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "archive_id", "A-1", null);
+            await context.ItemService.AddIdentifierAsync(item.Value.ItemId, "local_catalog", "A-1", null);
 
         first.IsSuccess.Should().BeTrue();
         second.IsFailure.Should().BeTrue();
@@ -530,6 +530,34 @@ public sealed class BibliographicCoreTests
     }
 
     [Fact]
+    public async Task RemoveDocumentInstance_promotes_the_oldest_remaining_instance()
+    {
+        await using BibliographicTestContext context = await BibliographicTestContext.CreateAsync();
+        Result<ItemMetadata> item = await context.ItemService.CreateItemAsync("book", "Book");
+        Result<DocumentInstance> first =
+            await context.DocumentInstanceService.AttachDocumentInstanceAsync(
+                item.Value.ItemId,
+                null,
+                DocumentInstanceType.PrimaryScan);
+        Result<DocumentInstance> second =
+            await context.DocumentInstanceService.AttachDocumentInstanceAsync(
+                item.Value.ItemId,
+                null,
+                DocumentInstanceType.AlternateScan);
+
+        Result removed = await context.DocumentInstanceService.RemoveDocumentInstanceAsync(
+            item.Value.ItemId,
+            first.Value.DocumentInstanceId);
+        Result<IReadOnlyList<DocumentInstance>> instances =
+            await context.DocumentInstanceService.ListDocumentInstancesForItemAsync(item.Value.ItemId);
+
+        removed.IsSuccess.Should().BeTrue(removed.ErrorMessage);
+        instances.Value.Should().ContainSingle();
+        instances.Value.Single().DocumentInstanceId.Should().Be(second.Value.DocumentInstanceId);
+        instances.Value.Single().IsPrimary.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task AttachDocumentInstance_rejects_missing_item()
     {
         await using BibliographicTestContext context = await BibliographicTestContext.CreateAsync();
@@ -653,7 +681,7 @@ public sealed class BibliographicCoreTests
         Func<Task> action = () => connection.ExecuteAsync(
             """
             insert into item_identifiers (identifier_id, item_id, scheme, value, created_at)
-            values (@IdentifierId, @ItemId, 'archive_id', 'orphan', @CreatedAt);
+            values (@IdentifierId, @ItemId, 'local_catalog', 'orphan', @CreatedAt);
             """,
             new
             {

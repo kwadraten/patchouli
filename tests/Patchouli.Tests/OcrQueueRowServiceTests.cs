@@ -90,7 +90,8 @@ public sealed class OcrQueueRowServiceTests
 
     private sealed class NoopExecutor : IOcrQueueTaskExecutor
     {
-        public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken)
+        public Task<OcrQueueExecutionResult> ExecuteAsync(OcrQueueTask task, CancellationToken cancellationToken,
+            IProgress<OcrTaskProgressReport>? progress = null)
         {
             return Task.FromResult(new OcrQueueExecutionResult(true, false));
         }

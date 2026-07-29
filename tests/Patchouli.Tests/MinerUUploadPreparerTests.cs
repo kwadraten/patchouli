@@ -236,7 +236,8 @@ public sealed class MinerUUploadPreparerTests
         public Task<Result<MinerUDownloadedResult>> WaitForCompletionAndDownloadAsync(
             string batchId,
             string downloadDirectory,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             Directory.CreateDirectory(downloadDirectory);
             string zipPath = Path.Combine(downloadDirectory, $"{Guid.NewGuid():N}.zip");

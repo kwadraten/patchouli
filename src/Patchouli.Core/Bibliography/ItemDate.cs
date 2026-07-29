@@ -7,12 +7,16 @@ public static class ItemDateRoles
     public const string Issued = "issued";
     public const string Accessed = "accessed";
     public const string OriginalDate = "original-date";
+    public const string EventDate = "event-date";
+    public const string Submitted = "submitted";
 
     public static readonly IReadOnlySet<string> Supported = new HashSet<string>(StringComparer.Ordinal)
     {
         Issued,
         Accessed,
-        OriginalDate
+        OriginalDate,
+        EventDate,
+        Submitted
     };
 }
 

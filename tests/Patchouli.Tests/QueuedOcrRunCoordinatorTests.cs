@@ -305,13 +305,14 @@ public sealed class QueuedOcrRunCoordinatorTests
         }
 
         public Task<Result<OcrRun>> RunPresetOnDocumentAsync(DocumentInstanceId d, OcrPresetId p,
-            CancellationToken c = default)
+            CancellationToken c = default, IProgress<OcrTaskStageProgress>? progress = null)
         {
             return RunAsync("document", c);
         }
 
         public Task<Result<OcrRun>> RunPresetOnPagesAsync(DocumentInstanceId d, OcrPresetId p,
-            IReadOnlyList<PageId> pages, CancellationToken c = default)
+            IReadOnlyList<PageId> pages, CancellationToken c = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             return RunAsync("pages", c);
         }

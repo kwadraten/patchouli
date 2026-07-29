@@ -1,9 +1,17 @@
+using System.Collections.ObjectModel;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels;
+
+public enum SyncCenterSection
+{
+    Overview,
+    Publish,
+    Receive
+}
 
 /// <summary>
 /// The user-facing Sync Center state. The coordinator owns all internal paths, staging, device identity, and lineage;
@@ -20,6 +28,7 @@ public sealed class SnapshotViewModel : ViewModelBase
     private string _incomingCopyDestinationPath = "";
     private bool _confirmApply;
     private string _operationMessage = "同步中心尚未检查同步目录。";
+    private NavCategoryViewModel _activeNavSection = null!;
 
     public SnapshotViewModel(MainWindowViewModel main)
     {
@@ -33,7 +42,39 @@ public sealed class SnapshotViewModel : ViewModelBase
         ApplyCommand = new AsyncCommand(ApplyAsync);
         DiscardIncomingCommand = new AsyncCommand(DiscardIncomingAsync);
         KeepIncomingCopyCommand = new AsyncCommand(KeepIncomingCopyAsync);
+        _activeNavSection = NavSections[0];
     }
+
+    /// <summary>Left-navigation sections. The sync center has no save concept: every button is an
+    /// immediate operation and the path inputs stay session-level.</summary>
+    public ObservableCollection<NavCategoryViewModel> NavSections { get; } =
+    [
+        new("状态概览", "Info", SyncCenterSection.Overview),
+        new("发布与导出", "Cloud", SyncCenterSection.Publish),
+        new("接收与检查", "Search", SyncCenterSection.Receive)
+    ];
+
+    public NavCategoryViewModel ActiveNavSection
+    {
+        get => _activeNavSection;
+        set
+        {
+            if (ReferenceEquals(_activeNavSection, value))
+            {
+                return;
+            }
+
+            _activeNavSection = value;
+            Raise();
+            Raise(nameof(IsOverviewSectionActive));
+            Raise(nameof(IsPublishSectionActive));
+            Raise(nameof(IsReceiveSectionActive));
+        }
+    }
+
+    public bool IsOverviewSectionActive => Equals(_activeNavSection.Content, SyncCenterSection.Overview);
+    public bool IsPublishSectionActive => Equals(_activeNavSection.Content, SyncCenterSection.Publish);
+    public bool IsReceiveSectionActive => Equals(_activeNavSection.Content, SyncCenterSection.Receive);
 
     public string ExportDestinationDirectory
     {
@@ -120,19 +161,19 @@ public sealed class SnapshotViewModel : ViewModelBase
     };
 
     public string SyncRootSummary => _status is { IsSyncRootAvailable: true, SyncRootId: not null }
-        ? $"同步目录已就绪（绑定 {_status.SyncRootId}）"
-        : "同步目录不可用或尚未配置";
+        ? $"已就绪（绑定 {_status.SyncRootId}）"
+        : "不可用或尚未配置";
 
     public string LibrarySummary => _status?.LibraryId is { Length: > 0 } libraryId
-        ? $"当前资料库：{libraryId}"
-        : "当前资料库身份未知";
+        ? libraryId
+        : "身份未知";
 
     public string DeviceSummary
     {
         get
         {
             SyncAppSettings sync = _main.AppOptions.Sync;
-            return $"本机设备：{sync.DeviceName}（{sync.DeviceId}）";
+            return $"{sync.DeviceName}（{sync.DeviceId}）";
         }
     }
 
@@ -147,7 +188,7 @@ public sealed class SnapshotViewModel : ViewModelBase
 
             SnapshotSyncLocalState local = _status.LocalState;
             return
-                $"最近发布：{local.LastPublishedSnapshotId ?? "无"}；最近应用：{local.LastAppliedSnapshotId ?? "无"}；最近远端：{local.LastSeenRemoteSnapshotId ?? "无"}";
+                $"最近发布：{ShortId(local.LastPublishedSnapshotId)}；最近应用：{ShortId(local.LastAppliedSnapshotId)}；最近远端：{ShortId(local.LastSeenRemoteSnapshotId)}";
         }
     }
 
@@ -158,12 +199,12 @@ public sealed class SnapshotViewModel : ViewModelBase
     public bool HasLastError => LastErrorText.Length > 0;
 
     public string LocalSnapshotSummary => _status?.LocalState.LineageSnapshotId is { Length: > 0 } snapshotId
-        ? $"本机 lineage：{snapshotId}"
+        ? $"本机分支：{ShortId(snapshotId)}"
         : "本机尚无已发布或已应用的快照";
 
     public string RemoteSnapshotSummary => _status?.RemoteCurrent?.SnapshotId is { Length: > 0 } snapshotId
-        ? $"同步目录 current：{snapshotId}"
-        : "同步目录中尚无 current 快照";
+        ? $"同步目录当前快照：{ShortId(snapshotId)}"
+        : "同步目录中尚无可用快照";
 
     public string OperationMessage
     {
@@ -232,7 +273,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         try
         {
             Result<SnapshotPublishResult> result = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions("发布到同步目录", "正在创建并验证快照分片。", true),
+                new ModalOperationOptions("发布到同步目录", "正在创建并验证快照。", true),
                 async context =>
                     await (await _main.ServicesAsync()).SnapshotSync.PublishAsync(context.CancellationToken));
             OperationMessage = result.IsSuccess
@@ -257,7 +298,7 @@ public sealed class SnapshotViewModel : ViewModelBase
                     new SnapshotExportRequest(ExportDestinationDirectory),
                     context.CancellationToken));
             OperationMessage = result.IsSuccess
-                ? "快照目录包已导出；未改动任何同步目录的 current 指针。"
+                ? "快照目录包已导出，同步目录内容未受影响。"
                 : DescribeFailure(result);
             await RefreshAfterOperationAsync("export_snapshot_package", result.IsSuccess);
         }
@@ -270,7 +311,7 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private async Task CheckCurrentAsync()
     {
-        await InspectAsync(SnapshotIncomingRequest.CurrentSyncRoot, "检查同步目录中的 current 快照", "inspect_sync_current");
+        await InspectAsync(SnapshotIncomingRequest.CurrentSyncRoot, "检查同步目录的更新", "inspect_sync_current");
     }
 
     private async Task OpenPackageAsync()
@@ -286,7 +327,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         try
         {
             Result<SnapshotIncomingPlan> result = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions(title, "正在验证、staging 并检查传入快照。", true),
+                new ModalOperationOptions(title, "正在验证并检查传入内容。", true),
                 async context => await (await _main.ServicesAsync()).SnapshotSync.InspectIncomingAsync(request,
                     context.CancellationToken));
             if (result.IsSuccess)
@@ -295,7 +336,7 @@ public sealed class SnapshotViewModel : ViewModelBase
                 _contentPlan = result.Value.ContentPlan;
                 ConfirmApply = false;
                 OperationMessage = BlockingConflictCount > 0
-                    ? "传入快照已检查；阻塞冲突必须通过统一冲突工作流处理后才能应用。"
+                    ? "存在阻塞冲突，请先解决冲突再应用。"
                     : "传入快照已检查。请确认后再应用。";
             }
             else
@@ -326,7 +367,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         try
         {
             Result<SnapshotApplyResult> result = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions("应用快照内容", "正在重新验证并事务性应用导入计划。", true),
+                new ModalOperationOptions("应用快照内容", "正在验证并应用传入内容。", true),
                 async context => await (await _main.ServicesAsync()).SnapshotSync.ApplyAsync(
                     _contentPlan with { IsExplicitlyConfirmed = ConfirmApply },
                     context.CancellationToken));
@@ -334,7 +375,7 @@ public sealed class SnapshotViewModel : ViewModelBase
             {
                 ClearIncomingPlan();
                 await _main.RefreshSyncedMetadataLookupAsync();
-                OperationMessage = "快照内容已应用；相关本地 FTS 索引已标记为 stale。";
+                OperationMessage = "快照内容已应用，搜索索引将在后台自动更新。";
             }
             else
             {
@@ -362,14 +403,14 @@ public sealed class SnapshotViewModel : ViewModelBase
         try
         {
             Result result = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions("丢弃传入快照", "正在清理已检查的 staging 分支。", true),
+                new ModalOperationOptions("丢弃传入快照", "正在清理已检查的传入内容。", true),
                 async context => await (await _main.ServicesAsync()).SnapshotSync.DiscardIncomingAsync(
                     _contentPlan,
                     context.CancellationToken));
             if (result.IsSuccess)
             {
                 ClearIncomingPlan();
-                OperationMessage = "已丢弃传入快照的 staging 分支；活动资料库未被修改。";
+                OperationMessage = "已丢弃传入内容，当前资料库未被修改。";
             }
             else
             {
@@ -397,7 +438,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         try
         {
             Result<string> result = await _main.ModalOperations.RunAsync(
-                new ModalOperationOptions("保留传入副本", "正在创建独立资料库副本并清理 staging 分支。", true),
+                new ModalOperationOptions("保留传入副本", "正在创建独立资料库副本并清理传入内容。", true),
                 async context =>
                     await (await _main.ServicesAsync()).SnapshotSync.KeepIncomingAsSeparateLibraryCopyAsync(
                         _contentPlan,
@@ -544,6 +585,16 @@ public sealed class SnapshotViewModel : ViewModelBase
         _contentPlan = null;
         _incoming = null;
         ConfirmApply = false;
+    }
+
+    private static string ShortId(string? snapshotId)
+    {
+        if (string.IsNullOrWhiteSpace(snapshotId))
+        {
+            return "无";
+        }
+
+        return snapshotId.Length <= 8 ? snapshotId : snapshotId[..8];
     }
 
     private static string DescribeFailure(IOperationOutcome result)

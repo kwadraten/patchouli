@@ -9,6 +9,7 @@ using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
@@ -119,9 +120,9 @@ public sealed class MetadataLookupSettingsTests
         {
             MainWindowViewModel main = new(settingsPath: path);
             MetadataLookupSettingsViewModel metadata = main.Settings.MetadataLookupSettings;
-            SettingsCategoryViewModel metadataCategory = main.Settings.Categories.Single(category =>
+            NavCategoryViewModel metadataCategory = main.Settings.Categories.Single(category =>
                 ReferenceEquals(category.Content, metadata));
-            SettingsCategoryViewModel syncCategory = main.Settings.Categories.Single(category =>
+            NavCategoryViewModel syncCategory = main.Settings.Categories.Single(category =>
                 ReferenceEquals(category.Content, main.Settings.SyncSettings));
             main.Settings.ActiveCategory = metadataCategory;
             bool original = metadata.Sources[0].Enabled;
@@ -129,10 +130,16 @@ public sealed class MetadataLookupSettingsTests
             metadata.Sources[0].Enabled = !original;
             main.Settings.ActiveCategory = syncCategory;
 
-            main.Settings.ActiveCategory.Should().BeSameAs(metadataCategory);
+            // Switching sections keeps the unsaved draft in memory instead of blocking.
+            main.Settings.ActiveCategory.Should().BeSameAs(syncCategory);
             metadata.Sources[0].Enabled.Should().Be(!original);
             metadata.IsDirty.Should().BeTrue();
-            main.Settings.GlobalStatus.Should().Contain("未保存");
+            main.Settings.HasDirtySections.Should().BeTrue();
+
+            // Switching back still shows the draft.
+            main.Settings.ActiveCategory = metadataCategory;
+            metadata.Sources[0].Enabled.Should().Be(!original);
+            metadata.IsDirty.Should().BeTrue();
         }
         finally
         {
@@ -265,6 +272,46 @@ public sealed class MetadataLookupSettingsTests
         finally
         {
             Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task Sync_settings_load_does_not_overwrite_a_draft_edited_while_loading()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        LibraryIdentityService library = new(database.ConnectionFactory,
+            new FixedClock(DateTimeOffset.Parse("2026-07-13T00:00:00Z")));
+        (await library.CreateLibraryAsync("Draft preservation")).IsSuccess.Should().BeTrue();
+
+        string settingsPath = Path.Combine(Path.GetTempPath(),
+            $"patchouli-sync-load-generation-{Guid.NewGuid():N}.json");
+        try
+        {
+            PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+            {
+                Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = database.Path }
+            };
+            settings.Save(settingsPath).IsSuccess.Should().BeTrue();
+            MainWindowViewModel main = new(settingsPath: settingsPath) { RuntimeDatabasePath = database.Path };
+            SyncSettingsViewModel sync = main.Settings.SyncSettings;
+
+            Task load = sync.LoadAsync();
+            load.IsCompleted.Should().BeFalse("service initialization keeps the settings load in flight");
+            string draftRoot = Path.Combine(Path.GetTempPath(), $"patchouli-draft-{Guid.NewGuid():N}");
+            sync.SyncRoot = draftRoot;
+            await load;
+
+            sync.SyncRoot.Should().Be(draftRoot);
+            sync.IsDirty.Should().BeTrue();
+            sync.SaveState.Should().Be(SettingsSaveState.Dirty);
+        }
+        finally
+        {
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
         }
     }
 
