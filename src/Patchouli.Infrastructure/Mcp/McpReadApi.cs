@@ -550,7 +550,8 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             Result<CompiledMarkdown> compiled = await _markdownCompiler.CompilePageMarkdownAsync(
-                DocumentTreeRevisionId.Parse(revisionId), includeSuppressed, cancellationToken);
+                DocumentTreeRevisionId.Parse(revisionId), includeSuppressed, cancellationToken,
+                includeComplexTableHtml: true);
             if (compiled.IsFailure)
             {
                 return Result<McpPageTextResponse>.Failure(compiled.ErrorCode!, compiled.ErrorMessage!);

@@ -22,7 +22,7 @@ Mutable application state uses platform application-data locations rather than a
 OCR output is staging or candidate output until adopted. Only the committed current DocumentTreeRevision of each physical page feeds default search, evidence resolution, and MCP reads. Failed bbox coordinate conversion blocks that page from OCR/Box Tree/search/MCP exposure.
 
 **OCR interchange schema**:
-MinerU remains the preferred OCR provider, but its JSON is an import format rather than the database schema. Every provider produces a short-lived `OcrDocumentTreeCandidate`; the shared importer validates and stages page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage.
+MinerU remains the preferred OCR provider, but its JSON is an import format rather than the database schema. Every provider produces a short-lived `OcrDocumentTreeCandidate`; the shared importer validates and stages page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. An irregular table retains only its raw HTML source as diagnostic payload alongside the canonical `[Table]` placeholder.
 
 **Search and evidence**:
 SearchUnits are persisted derived text units generated one per non-suppressed leaf DocumentBox in sibling-pointer order. SearchUnit metadata is synced; the local FTS index is a rebuildable local cache. EvidenceRefs identify `(tree_revision_id, box_id)`, resolve pinned by default, and current/compare modes must surface drift instead of silently changing copied evidence.

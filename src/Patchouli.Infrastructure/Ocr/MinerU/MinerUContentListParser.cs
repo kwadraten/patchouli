@@ -24,7 +24,8 @@ internal sealed record MinerUContentBlock(
     [property: JsonPropertyName("table_cells")]
     IReadOnlyList<MinerUTableCell>? TableCells = null,
     [property: JsonPropertyName("cells")] IReadOnlyList<MinerUTableCell>? Cells = null,
-    [property: JsonPropertyName("level")] int? HeadingLevel = null);
+    [property: JsonPropertyName("level")] int? HeadingLevel = null,
+    string? TableHtml = null);
 
 internal sealed record MinerUTableCell(
     [property: JsonPropertyName("row_index")]
@@ -77,10 +78,38 @@ internal sealed class MinerUContentListParser
 
     private static MinerUContentListDocument? ParsePagedContentList(string json)
     {
-        return JsonSerializer.Deserialize<MinerUContentListDocument>(json, new JsonSerializerOptions
+        using JsonDocument document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("pages", out JsonElement pages) ||
+            pages.ValueKind != JsonValueKind.Array)
         {
-            PropertyNameCaseInsensitive = true
-        });
+            return null;
+        }
+
+        return new MinerUContentListDocument(pages.EnumerateArray()
+            .Select((page, index) => new MinerUContentListPage(
+                GetInt(page, "page_num") ?? index + 1,
+                GetDouble(page, "width") ?? 1000,
+                GetDouble(page, "height") ?? 1000,
+                ParseBlocks(page, "blocks", index),
+                ParseBlocks(page, "discarded_blocks", index)))
+            .ToArray());
+    }
+
+    private static IReadOnlyList<MinerUContentBlock>? ParseBlocks(JsonElement page, string propertyName, int pageIndex)
+    {
+        if (!page.TryGetProperty(propertyName, out JsonElement blocks) || blocks.ValueKind != JsonValueKind.Array)
+        {
+            return propertyName == "blocks" ? [] : null;
+        }
+
+        SortedDictionary<int, List<MinerUContentBlock>> parsed = new();
+        foreach (JsonElement block in blocks.EnumerateArray())
+        {
+            AddFlatItem(parsed, block, pageIndex);
+        }
+
+        return parsed.TryGetValue(pageIndex, out List<MinerUContentBlock>? values) ? values : [];
     }
 
     private static MinerUContentListDocument ParseFlatContentList(JsonElement root)
@@ -149,7 +178,8 @@ internal sealed class MinerUContentListParser
             GetDouble(item, "confidence"),
             tableCells,
             null,
-            GetInt(item, "level") ?? GetInt(item, "heading_level")));
+            GetInt(item, "level") ?? GetInt(item, "heading_level"),
+            tableHtml));
     }
 
     private static string? GetText(JsonElement item)

@@ -169,7 +169,7 @@ v2 不再把 Mock、历史本地 CLI OCR、本地占位 OCR 作为用户可见�
 - 任何新增 OCR provider 都必须输出 provider-neutral `OcrDocumentTreeCandidate`，再进入 shared tree importer/adoption service。
 - candidate 表达 page、leaf type/subtype、typed payload、bbox、confidence、source order 与 suppressed；provider order 只初始化 sibling pointers。
 - Provider-specific 完整原始响应不进入 canonical database、snapshot、编辑、搜索或 MCP 数据面。
-- MinerU 规则表格转为单一 GFM leaf；不规则表格保存 `[Table]` + diagnostic；不得保存 table-cell rows。
+- MinerU 规则表格转为单一 GFM leaf；不规则表格保存 `[Table]` + 原始 HTML diagnostic payload；桌面端只显示 `[Table]`，MCP 虚拟 Markdown 注入该 HTML；不得保存 table-cell rows。
 - 不允许 provider 直接写 `document_boxes`；所有 provider 必须走同一个 import/adoption service。
 - OCR provider 配置只负责保存和使用用户提供的 token/secret key、endpoint、model id 和必要参数。
 - Patchouli 不负责账号注册、配额购买、余额检查、成本估算或云端计费策略。

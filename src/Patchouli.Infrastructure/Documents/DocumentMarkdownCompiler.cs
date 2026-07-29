@@ -19,7 +19,8 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
     public async Task<Result<CompiledMarkdown>> CompilePageMarkdownAsync(
         DocumentTreeRevisionId treeRevisionId,
         bool includeSuppressed = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool includeComplexTableHtml = false)
     {
         Result<IReadOnlyList<DocumentBox>> boxesResult = await _trees.ListBoxesAsync(
             treeRevisionId, cancellationToken);
@@ -44,14 +45,15 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
                     AppendSeparator(output, "---");
                 }
 
-                AppendSubtree(output, maps, diagnostics, boxes, roots[index], includeSuppressed);
+                AppendSubtree(output, maps, diagnostics, boxes, roots[index], includeSuppressed,
+                    includeComplexTableHtml);
             }
         }
         else
         {
             foreach (DocumentBox box in roots)
             {
-                AppendSubtree(output, maps, diagnostics, boxes, box, includeSuppressed);
+                AppendSubtree(output, maps, diagnostics, boxes, box, includeSuppressed, includeComplexTableHtml);
             }
         }
 
@@ -78,14 +80,15 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         List<PendingMap> maps,
         List<MarkdownDiagnostic> diagnostics,
         DocumentBox box,
-        bool includeSuppressed)
+        bool includeSuppressed,
+        bool includeComplexTableHtml)
     {
         if (box.Suppressed && !includeSuppressed)
         {
             return;
         }
 
-        string? fragment = CompileBox(box, diagnostics);
+        string? fragment = CompileBox(box, diagnostics, includeComplexTableHtml);
         if (string.IsNullOrWhiteSpace(fragment))
         {
             return;
@@ -107,12 +110,13 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         List<MarkdownDiagnostic> diagnostics,
         IReadOnlyList<DocumentBox> boxes,
         DocumentBox box,
-        bool includeSuppressed)
+        bool includeSuppressed,
+        bool includeComplexTableHtml)
     {
-        AppendBox(output, maps, diagnostics, box, includeSuppressed);
+        AppendBox(output, maps, diagnostics, box, includeSuppressed, includeComplexTableHtml);
         foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
         {
-            AppendSubtree(output, maps, diagnostics, boxes, child, includeSuppressed);
+            AppendSubtree(output, maps, diagnostics, boxes, child, includeSuppressed, includeComplexTableHtml);
         }
     }
 
@@ -126,7 +130,10 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         output.Append(separator);
     }
 
-    private static string? CompileBox(DocumentBox box, List<MarkdownDiagnostic> diagnostics)
+    private static string? CompileBox(
+        DocumentBox box,
+        List<MarkdownDiagnostic> diagnostics,
+        bool includeComplexTableHtml)
     {
         return box.Payload switch
         {
@@ -135,7 +142,10 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
             TextBoxPayload text => text.Markdown,
             EquationBoxPayload equation => $"$$\n{equation.Latex.Trim()}\n$$",
             ListBoxPayload list => list.Markdown,
-            TableBoxPayload table => table.Markdown,
+            TableBoxPayload table => includeComplexTableHtml && table.Markdown.Trim() == "[Table]" &&
+                                     !string.IsNullOrWhiteSpace(table.Html)
+                ? table.Html
+                : table.Markdown,
             CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
             MediaBoxPayload media => CompileMedia(box.BoxType, media),
             null when box.BoxType == DocumentBoxType.LogicalPage => null,

@@ -36,13 +36,16 @@ public sealed class BoxTreeReadSurfaceTests
             .CreatePageAsync(document.DocumentInstanceId, 0, "1", null, null, 0,
                 CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
         DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
+        const string complexTableHtml = "<table><tr><td rowspan=\"2\">Merged</td></tr></table>";
         DocumentTreeRevision staging = (await trees.StagePageAsync(document.DocumentInstanceId, page.PageId,
         [
             new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
                 new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("canonical searchable phrase")),
             new DocumentBoxSeed(null, null, 1, DocumentBoxType.Header, null, null,
                 new NormalizedBBox(.1, .01, .8, .05), new TextBoxPayload("suppressed running head"),
-                Suppressed: true)
+                Suppressed: true),
+            new DocumentBoxSeed(null, null, 2, DocumentBoxType.Table, null, null,
+                new NormalizedBBox(.1, .3, .8, .2), new TableBoxPayload("[Table]", complexTableHtml))
         ])).Value;
         DocumentTreeRevision committed = (await trees.AdoptStagingRevisionAsync(staging.TreeRevisionId)).Value;
 
@@ -63,18 +66,22 @@ public sealed class BoxTreeReadSurfaceTests
         evidenceRecord.EvidenceRefId.Should().StartWith("evref:v2:");
 
         MarkdigMarkdownEngine markdown = new();
+        DocumentMarkdownCompiler compiler = new(trees, markdown);
+        CompiledMarkdown desktopMarkdown = (await compiler.CompilePageMarkdownAsync(committed.TreeRevisionId)).Value;
+        desktopMarkdown.Markdown.Should().Contain("[Table]").And.NotContain(complexTableHtml);
         McpReadApi mcp = new(database.ConnectionFactory, search, evidence, markdown: markdown,
-            markdownCompiler: new DocumentMarkdownCompiler(trees, markdown));
+            markdownCompiler: compiler);
         McpPageTextResponse currentText = (await mcp.GetPageTextAsync(new McpPageTextRequest(page.PageId))).Value;
-        currentText.Text.Should().Contain("canonical searchable phrase").And.NotContain("running head");
+        currentText.Text.Should().Contain("canonical searchable phrase").And.NotContain("running head")
+            .And.Contain(complexTableHtml).And.NotContain("[Table]");
         McpPageTextResponse allText = (await mcp.GetPageTextAsync(
             new McpPageTextRequest(page.PageId, IncludeSuppressed: true))).Value;
         allText.Text.Should().Contain("suppressed running head");
         IReadOnlyList<McpPageBlock> blocks = (await mcp.GetPageBlocksAsync(
             new McpPageBlocksRequest(page.PageId, IncludeBbox: true))).Value.Blocks;
-        blocks.Should().ContainSingle();
-        blocks.Single().BoxId.Should().Be(matched.BoxId);
-        blocks.Single().TreeRevisionId.Should().Be(committed.TreeRevisionId);
-        blocks.Single().BBox.Should().NotBeNull();
+        blocks.Should().HaveCount(2);
+        McpPageBlock matchedBlock = blocks.Single(block => block.BoxId == matched.BoxId);
+        matchedBlock.TreeRevisionId.Should().Be(committed.TreeRevisionId);
+        matchedBlock.BBox.Should().NotBeNull();
     }
 }

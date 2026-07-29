@@ -25,6 +25,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     private int? _headingLevel;
     private string? _codeLanguage;
     private string? _assetId;
+    private readonly string? _tableHtml;
     private string? _continuationHeadText;
     private string? _continuationSourceLabel;
 
@@ -50,6 +51,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         _codeLanguage = box.CodeLanguage;
         Text = PayloadText(box.Payload);
         _assetId = (box.Payload as MediaBoxPayload)?.AssetId;
+        _tableHtml = (box.Payload as TableBoxPayload)?.Html;
         IsSuppressed = box.Suppressed;
         _imageWidth = imageWidth;
         _imageHeight = imageHeight;
@@ -340,7 +342,9 @@ public sealed class PdfBBoxViewModel : ViewModelBase
             DocumentBoxType.Code => new CodeBoxPayload(text ?? string.Empty),
             DocumentBoxType.Equation => new EquationBoxPayload(text ?? string.Empty),
             DocumentBoxType.List => new ListBoxPayload(text ?? string.Empty),
-            DocumentBoxType.Table => new TableBoxPayload(text ?? string.Empty),
+            DocumentBoxType.Table => new TableBoxPayload(
+                text ?? string.Empty,
+                string.Equals(text?.Trim(), "[Table]", StringComparison.Ordinal) ? _tableHtml : null),
             DocumentBoxType.Image or DocumentBoxType.Chart =>
                 new MediaBoxPayload(AssetId, string.IsNullOrWhiteSpace(text) ? null : text),
             _ => new TextBoxPayload(text ?? string.Empty)

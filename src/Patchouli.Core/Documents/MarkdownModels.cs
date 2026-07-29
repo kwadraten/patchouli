@@ -47,5 +47,6 @@ public interface IDocumentMarkdownCompiler
     Task<Result<CompiledMarkdown>> CompilePageMarkdownAsync(
         DocumentTreeRevisionId treeRevisionId,
         bool includeSuppressed = false,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        bool includeComplexTableHtml = false);
 }

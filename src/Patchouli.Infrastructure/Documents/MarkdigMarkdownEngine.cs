@@ -52,8 +52,10 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
                 : Invalid("List boxes require Markdown list payload."),
             DocumentBoxType.Table => payload is TableBoxPayload table
                 ? table.Markdown.Trim() == "[Table]"
-                    ? Result.Success()
-                    : ValidateSingleBlock<Table>(table.Markdown, "a single GFM pipe table")
+                    ? ValidateTablePlaceholder(table)
+                    : string.IsNullOrWhiteSpace(table.Html)
+                        ? ValidateSingleBlock<Table>(table.Markdown, "a single GFM pipe table")
+                        : Invalid("Only [Table] placeholders may retain raw HTML source.")
                 : Invalid("Table boxes require GFM pipe-table payload."),
             DocumentBoxType.Image or DocumentBoxType.Chart => payload is MediaBoxPayload
                 ? Result.Success()
@@ -76,6 +78,20 @@ public sealed class MarkdigMarkdownEngine : IMarkdownEngine
         return document.Count == 1 && document[0] is TBlock
             ? Result.Success()
             : Invalid($"Box payload must be {description}.");
+    }
+
+    private static Result ValidateTablePlaceholder(TableBoxPayload table)
+    {
+        if (string.IsNullOrWhiteSpace(table.Html))
+        {
+            return Result.Success();
+        }
+
+        string html = table.Html.Trim();
+        return html.StartsWith("<table", StringComparison.OrdinalIgnoreCase) &&
+               html.EndsWith("</table>", StringComparison.OrdinalIgnoreCase)
+            ? Result.Success()
+            : Invalid("Table placeholder HTML must contain one table element.");
     }
 
     private Result RejectRawHtml(string markdown)

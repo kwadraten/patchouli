@@ -199,11 +199,9 @@ public sealed class MinerUDocumentTreeTests
     public async Task Irregular_table_becomes_placeholder_with_diagnostic()
     {
         await using Context context = await Context.CreateAsync();
-        string zip = CreateZip("_content_list.json", """
-                                                     [{"type":"table","page_idx":0,"bbox":[0,0,800,500],"cells":[
-                                                       {"row_index":0,"col_index":0,"row_span":2,"text":"Merged"}
-                                                     ]}]
-                                                     """);
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        {"pages":[{"page_num":1,"width":800,"height":1000,"blocks":[{"type":"table","bbox":[0,0,800,500],"content":{"html":"<table><tr><td rowspan=\"2\">Merged</td></tr></table>"}}]}]}
+                                                        """);
         try
         {
             Result<MinerUImportResult> result = await new MinerUResultImporter(
@@ -214,7 +212,8 @@ public sealed class MinerUDocumentTreeTests
             result.Value.Warnings.Should().Contain("table_not_representable_as_gfm");
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
                 DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
-            boxes.Single().Payload.Should().Be(new TableBoxPayload("[Table]"));
+            boxes.Single().Payload.Should().Be(new TableBoxPayload(
+                "[Table]", "<table><tr><td rowspan=\"2\">Merged</td></tr></table>"));
         }
         finally
         {

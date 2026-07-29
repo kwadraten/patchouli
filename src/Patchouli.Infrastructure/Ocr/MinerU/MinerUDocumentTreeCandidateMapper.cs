@@ -411,7 +411,8 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             gfm = "[Table]";
         }
 
-        return (DocumentBoxType.Table, null, null, new TableBoxPayload(gfm), null, false);
+        return (DocumentBoxType.Table, null, null,
+            new TableBoxPayload(gfm, gfm == "[Table]" ? block.TableHtml : null), null, false);
     }
 
     private static string? TryBuildGfmTable(IReadOnlyList<MinerUTableCell> cells)

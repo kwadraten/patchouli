@@ -66,7 +66,7 @@ public sealed record EquationBoxPayload(string Latex) : DocumentBoxPayload;
 
 public sealed record ListBoxPayload(string Markdown) : DocumentBoxPayload;
 
-public sealed record TableBoxPayload(string Markdown) : DocumentBoxPayload;
+public sealed record TableBoxPayload(string Markdown, string? Html = null) : DocumentBoxPayload;
 
 public sealed record CodeBoxPayload(string Code) : DocumentBoxPayload;
 

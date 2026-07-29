@@ -15,7 +15,7 @@ The 0.2.0 model keeps MinerU as the preferred OCR provider while explicitly trea
 - Mock OCR and local placeholder OCR are not production OCR providers and should not appear in final-user UI.
 - MinerU content-list output is mapped to `OcrDocumentTreeCandidate`, then validated and staged through the shared Document Tree importer.
 - Additional providers, including multimodal LLM OCR, must normalize output into the same candidate contract before entering DocumentTreeRevision, DocumentBox, SearchUnit, evidence, or MCP surfaces.
-- Regular tables become one GFM table leaf; irregular tables become `[Table]` plus a diagnostic. Persistent table-cell rows are forbidden.
+- Regular tables become one GFM table leaf; irregular tables become `[Table]` plus their raw HTML source as diagnostic payload. The desktop UI displays only `[Table]`; MCP virtual Markdown emits the retained HTML table. Persistent table-cell rows are forbidden.
 - Auxiliary and discarded blocks are preserved as typed Boxes with `suppressed=true`; phonetic annotations are flattened with a diagnostic.
 - `full.md` is never accepted as a pseudo Box when no verifiable tree artifact exists.
 - Complete provider responses and MinerU intermediate JSON are not retained as canonical database or snapshot data.
