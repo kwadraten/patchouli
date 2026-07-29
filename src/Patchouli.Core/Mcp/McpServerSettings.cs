@@ -8,4 +8,5 @@ public sealed record McpServerSettings(
     bool AuthRequired,
     string? Token,
     IReadOnlyList<McpToolOverride> ToolOverrides,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    long Revision = 0);

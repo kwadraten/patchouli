@@ -46,6 +46,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 {
     private AppServices? _services;
     private McpHttpServer? _mcpServer;
+    private long? _mcpRunningSettingsRevision;
     private ShellSidecarHost? _shellSidecar;
     private readonly bool _autoStartMcpServer;
     private PatchouliAppSettings _settings;
@@ -93,6 +94,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}/mcp";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
     public bool McpServerRunning => _mcpServer?.IsRunning == true;
+    public long? McpRunningSettingsRevision => _mcpRunningSettingsRevision;
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
     public string ShellSandboxStatusText => _shellSidecar?.Status ?? ShellSandboxStatus.Stopped;
@@ -263,7 +265,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<SettingsSaveResult> SaveMetadataLookupSettingsAsync(MetadataLookupAppSettings metadataLookup)
     {
-        if (!_settings.Sync.SyncMetadataLookup)
+        if (!_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
         {
             return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
         }
@@ -281,7 +283,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<SettingsSaveResult> SetMetadataLookupSyncEnabledAsync(bool enabled)
     {
-        if (enabled == _settings.Sync.SyncMetadataLookup)
+        if (enabled == _settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
         {
             return SettingsSaveResult.Success;
         }
@@ -307,7 +309,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             SettingsSaveResult json = UpdateAppOptions(_settings with
             {
-                Sync = _settings.Sync with { SyncMetadataLookup = true }
+                Sync = _settings.Sync.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, true)
             });
             if (!json.IsSuccess)
             {
@@ -349,7 +351,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         SettingsSaveResult savedJson = UpdateAppOptions(_settings with
         {
             MetadataLookup = materialized,
-            Sync = _settings.Sync with { SyncMetadataLookup = false }
+            Sync = _settings.Sync.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, false)
         });
         if (!savedJson.IsSuccess && storedRecord.Value is not null)
         {
@@ -482,6 +484,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             }
 
             await RefreshSyncedMetadataLookupAsync(_services);
+            await Settings.ReloadCleanSectionsAsync();
             PersistRuntimeDatabasePathIfEnabled();
             await LoadPersistedMinerUTokenAsync();
             await RefreshSidebarPathsAsync();
@@ -649,7 +652,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task RefreshSyncedMetadataLookupAsync(AppServices services)
     {
-        if (!_settings.Sync.SyncMetadataLookup)
+        if (!_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
         {
             return;
         }
@@ -1213,6 +1216,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         await StopShellSidecarAsync();
+        _mcpRunningSettingsRevision = null;
+        Raise(nameof(McpRunningSettingsRevision));
         SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
     }
 
@@ -1360,6 +1365,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         {
             await server.StartAsync();
             _mcpServer = server;
+            _mcpRunningSettingsRevision = serverSettings.Revision;
+            Raise(nameof(McpRunningSettingsRevision));
             await SetMcpEndpointAsync(server.Endpoint);
             SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
             if (operationId is not null)
@@ -1841,10 +1848,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             section.Equals("csl", StringComparison.OrdinalIgnoreCase) ? "Quote" :
             section.Equals("library", StringComparison.OrdinalIgnoreCase) ? "Database" : "ScanText";
         Settings.ActiveCategory = Settings.Categories.Single(c => c.Icon == icon);
-        if (string.Equals(section, "mcp", StringComparison.OrdinalIgnoreCase))
-        {
-            await Settings.McpSettings.LoadAsync();
-        }
+        await Settings.WaitForActiveSectionLoadAsync();
 
         RaiseShellSelectionChanged();
     }

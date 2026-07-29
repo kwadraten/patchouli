@@ -123,4 +123,23 @@ public sealed class MigrationRunnerTests
             "authorization_updated_at"
         ]);
     }
+
+    [Fact]
+    public async Task File_search_root_migration_separates_logical_definitions_from_local_bindings()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+
+        await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        string[] definitionColumns = (await connection.QueryAsync<string>(
+            "select name from pragma_table_info('file_search_root_definitions');")).ToArray();
+        string[] bindingColumns = (await connection.QueryAsync<string>(
+            "select name from pragma_table_info('file_search_root_bindings');")).ToArray();
+
+        definitionColumns.Should().Contain(["root_id", "display_name", "purpose", "is_enabled"])
+            .And.NotContain("root_path")
+            .And.NotContain("authorization_payload");
+        bindingColumns.Should().Contain(["root_id", "root_path", "authorization_payload"]);
+    }
 }

@@ -10,7 +10,9 @@ public sealed record SnapshotPublishRequest(
     string DeviceId,
     string? ParentSnapshotId = null,
     string? Notes = null,
-    long TargetShardSizeBytes = 512L * 1024L * 1024L);
+    long TargetShardSizeBytes = 512L * 1024L * 1024L,
+    string? SyncRootId = null,
+    IReadOnlyList<string>? EnabledSettingKeys = null);
 
 public sealed record SnapshotPublishResult(
     string SnapshotId,
@@ -67,7 +69,8 @@ public sealed record SnapshotCurrentPointer(
     string ManifestPath,
     string LibraryId,
     long LogicalGeneration,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string? SyncRootId = null);
 
 public interface ISnapshotPublisher
 {
@@ -134,7 +137,8 @@ public sealed record SnapshotSyncBinding(
     string SyncRoot,
     string StagingRoot,
     string DeviceId,
-    SnapshotSyncLocalState LocalState);
+    SnapshotSyncLocalState LocalState,
+    IReadOnlyList<string>? EnabledSettingKeys = null);
 
 public interface ISnapshotSyncBindingStore
 {

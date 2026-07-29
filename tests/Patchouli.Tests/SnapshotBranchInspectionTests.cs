@@ -5,6 +5,7 @@ using Patchouli.Core.Conflicts;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
@@ -75,7 +76,10 @@ public sealed class SnapshotBranchInspectionTests
         SnapshotBranchInspectionInfo branch = (await c.Open()).Value;
         BranchImportPlan plan = (await c.Service.BuildImportPlanAsync(branch, [], [c.Doc])).Value;
 
-        Result<BranchImportResult> applied = await c.Service.ApplyImportPlanAsync(plan, true);
+        Result<BranchImportResult> applied = await c.Service.ApplyImportPlanAsync(
+            plan,
+            true,
+            [LibrarySettingKeys.MetadataLookup]);
 
         applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
         (await c.Scalar<string>("select value_json from library_setting_records where setting_key = @Key;",
@@ -367,7 +371,11 @@ public sealed class SnapshotBranchInspectionTests
 
             SnapshotPublishResult pub =
                 (await new SnapshotPublisher(clock).PublishSnapshotAsync(
-                    new SnapshotPublishRequest(db.Path, Path.Combine(root, "sync"), "device"))).Value;
+                    new SnapshotPublishRequest(
+                        db.Path,
+                        Path.Combine(root, "sync"),
+                        "device",
+                        EnabledSettingKeys: includeLibrarySetting ? [LibrarySettingKeys.MetadataLookup] : []))).Value;
             await using (SqliteConnection cn = db.ConnectionFactory.CreateConnection())
             {
                 await cn.OpenAsync();

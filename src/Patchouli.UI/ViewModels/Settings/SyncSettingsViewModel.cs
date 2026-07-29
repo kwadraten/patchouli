@@ -1,5 +1,7 @@
+using System.Text.Json;
 using Patchouli.UI.ViewModels;
 using Patchouli.Infrastructure.Snapshots;
+using Patchouli.Core.Settings;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -53,15 +55,33 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
 
     public bool SyncMetadataLookup
     {
-        get => _draft.SyncMetadataLookup;
+        get => _draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
         set
         {
-            if (_draft.SyncMetadataLookup != value)
+            if (_draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup) != value)
             {
-                _draft = _draft with { SyncMetadataLookup = value };
+                _draft = _draft.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, value);
                 MarkDirty();
                 Raise();
+                Raise(nameof(MetadataLookupScopeText));
+                Raise(nameof(MetadataLookupEffectiveSourceText));
+                Raise(nameof(MetadataLookupSchemaText));
             }
+        }
+    }
+
+    public string MetadataLookupScopeText =>
+        SyncMetadataLookup ? "随当前资料库的内容快照同步" : "仅此设备";
+
+    public string MetadataLookupEffectiveSourceText =>
+        SyncMetadataLookup ? "资料库 setting record" : "本机 JSON 设置";
+
+    public string MetadataLookupSchemaText
+    {
+        get
+        {
+            SettingCatalogEntry entry = LibrarySettingCatalog.GetRequired(LibrarySettingKeys.MetadataLookup);
+            return $"{entry.SettingKey} · schema {entry.SchemaVersion} · {entry.MergePolicy}";
         }
     }
 
@@ -90,14 +110,16 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         SyncAppSettings savedDraft = rootChanged
             ? _draft with
             {
-                SyncRootId = Guid.NewGuid().ToString("D"),
+                SyncRootId = await ResolveSyncRootIdAsync(_draft.SyncRoot),
                 SnapshotState = SnapshotSyncLocalState.NotConfigured
             }
             : _draft;
-        SettingsSaveResult result = savedDraft.SyncMetadataLookup == _persisted.SyncMetadataLookup
+        bool syncMetadataLookup = savedDraft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
+        bool persistedSyncMetadataLookup = _persisted.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
+        SettingsSaveResult result = syncMetadataLookup == persistedSyncMetadataLookup
             ? _main.UpdateAppOptions(_main.AppOptions with { Sync = savedDraft })
-            : await _main.SetMetadataLookupSyncEnabledAsync(savedDraft.SyncMetadataLookup);
-        if (result.IsSuccess && savedDraft.SyncMetadataLookup != _persisted.SyncMetadataLookup)
+            : await _main.SetMetadataLookupSyncEnabledAsync(syncMetadataLookup);
+        if (result.IsSuccess && syncMetadataLookup != persistedSyncMetadataLookup)
         {
             result = _main.UpdateAppOptions(_main.AppOptions with { Sync = savedDraft });
         }
@@ -130,6 +152,9 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(DeviceName));
         Raise(nameof(SyncRoot));
         Raise(nameof(SyncMetadataLookup));
+        Raise(nameof(MetadataLookupScopeText));
+        Raise(nameof(MetadataLookupEffectiveSourceText));
+        Raise(nameof(MetadataLookupSchemaText));
         RaiseState();
         return Task.CompletedTask;
     }
@@ -197,5 +222,25 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         Status = LastError;
         RaiseState();
         return false;
+    }
+
+    private static async Task<string> ResolveSyncRootIdAsync(string syncRoot)
+    {
+        try
+        {
+            SnapshotCurrentPointer? current = await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(
+                Path.Combine(Path.GetFullPath(syncRoot), "current.json"),
+                CancellationToken.None);
+            if (current is not null && Guid.TryParse(current.SyncRootId, out Guid parsed))
+            {
+                return parsed.ToString("D");
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _ = exception;
+        }
+
+        return Guid.NewGuid().ToString("D");
     }
 }

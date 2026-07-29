@@ -501,7 +501,8 @@ public sealed class FirstRunViewModel : ViewModelBase
             throw new InvalidOperationException("缺少 library_metadata 资料库身份数据。");
         }
 
-        bool hasSearchRoots = await CountRowsIfTableExistsAsync(conn, "file_search_roots") > 0;
+        bool hasSearchRoots = await CountRowsIfTableExistsAsync(conn, "file_search_root_definitions") > 0 ||
+                              await CountRowsIfTableExistsAsync(conn, "file_search_roots") > 0;
         bool hasOcrPresets = await CountRowsIfTableExistsAsync(conn, "ocr_presets") > 0;
 
         List<string> skipped = new() { $"已检测到资料库「{library.DisplayName}」，跳过资料库身份步骤" };

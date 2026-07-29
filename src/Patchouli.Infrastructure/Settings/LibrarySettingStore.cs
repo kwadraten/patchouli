@@ -24,6 +24,13 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
             return Result<SettingRecord?>.Failure(AppErrorCodes.ValidationFailed, "Setting key is required.");
         }
 
+        if (!LibrarySettingCatalog.TryGet(settingKey.Trim(), out SettingCatalogEntry? entry) ||
+            !entry.IsSnapshotEligible)
+        {
+            return Result<SettingRecord?>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Setting is not eligible for library snapshot storage.");
+        }
+
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
@@ -54,6 +61,9 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
     {
         try
         {
+            string[] allowed = LibrarySettingCatalog.All.Where(entry => entry.IsSnapshotEligible)
+                .Select(entry => entry.SettingKey)
+                .ToArray();
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             Row[] records = (await connection.QueryAsync<Row>(
@@ -62,8 +72,9 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
                        revision as Revision, updated_at as UpdatedAt, updated_by_device_id as UpdatedByDeviceId,
                        merge_policy as MergePolicy
                 from library_setting_records
+                where setting_key in @Allowed
                 order by setting_key;
-                """)).ToArray();
+                """, new { Allowed = allowed })).ToArray();
             return Result<IReadOnlyList<SettingRecord>>.Success(records.Select(row => row.ToRecord()).ToArray());
         }
         catch (OperationCanceledException)
@@ -132,6 +143,13 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
             return Result.Failure(AppErrorCodes.ValidationFailed, "Setting key is required.");
         }
 
+        if (!LibrarySettingCatalog.TryGet(settingKey.Trim(), out SettingCatalogEntry? entry) ||
+            !entry.IsSnapshotEligible)
+        {
+            return Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Setting is not eligible for library snapshot storage.");
+        }
+
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
@@ -159,6 +177,20 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
         {
             return Result.Failure(AppErrorCodes.ValidationFailed,
                 "Library setting record is missing a required value.");
+        }
+
+        if (!LibrarySettingCatalog.TryGet(record.SettingKey.Trim(), out SettingCatalogEntry? entry) ||
+            !entry.IsSnapshotEligible)
+        {
+            return Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Setting is not eligible for library snapshot storage.");
+        }
+
+        if (record.SchemaVersion != entry.SchemaVersion ||
+            !string.Equals(record.MergePolicy, entry.MergePolicy, StringComparison.Ordinal))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Library setting schema or merge policy does not match the catalog.");
         }
 
         return Result.Success();

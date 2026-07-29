@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Patchouli.Core.Import;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Settings;
 using System.Security;
 using Patchouli.UI.Diagnostics;
 
@@ -77,11 +78,41 @@ public sealed record SyncAppSettings(
     string SyncRoot,
     bool SyncMetadataLookup,
     string SyncRootId = "",
-    SnapshotSyncLocalState? SnapshotState = null)
+    SnapshotSyncLocalState? SnapshotState = null,
+    IReadOnlyList<string>? SyncedSettingKeys = null)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
         return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false);
+    }
+
+    public IReadOnlyList<string> EnabledSettingKeys =>
+        LibrarySettingCatalog.NormalizeSnapshotKeys(SyncedSettingKeys ??
+                                                    (SyncMetadataLookup ? [LibrarySettingKeys.MetadataLookup] : []));
+
+    public bool IsSettingEnabled(string settingKey)
+    {
+        return EnabledSettingKeys.Contains(settingKey, StringComparer.Ordinal);
+    }
+
+    public SyncAppSettings WithSettingEnabled(string settingKey, bool enabled)
+    {
+        HashSet<string> keys = EnabledSettingKeys.ToHashSet(StringComparer.Ordinal);
+        if (enabled)
+        {
+            keys.Add(settingKey);
+        }
+        else
+        {
+            keys.Remove(settingKey);
+        }
+
+        IReadOnlyList<string> normalized = LibrarySettingCatalog.NormalizeSnapshotKeys(keys);
+        return this with
+        {
+            SyncMetadataLookup = normalized.Contains(LibrarySettingKeys.MetadataLookup, StringComparer.Ordinal),
+            SyncedSettingKeys = normalized
+        };
     }
 }
 
@@ -292,7 +323,12 @@ public sealed record PatchouliAppSettings(
                     ExpandPath(ReadString(sync, "SyncRoot", defaults.Sync.SyncRoot)),
                     ReadBool(sync, "SyncMetadataLookup", defaults.Sync.SyncMetadataLookup),
                     ReadString(sync, "SyncRootId", defaults.Sync.SyncRootId),
-                    ReadSnapshotSyncState(sync, defaults.Sync.SnapshotState ?? SnapshotSyncLocalState.NotConfigured))
+                    ReadSnapshotSyncState(sync, defaults.Sync.SnapshotState ?? SnapshotSyncLocalState.NotConfigured),
+                    ReadStringList(sync, "SyncedSettingKeys", defaults.Sync.SyncedSettingKeys ??
+                                                              (ReadBool(sync, "SyncMetadataLookup",
+                                                                  defaults.Sync.SyncMetadataLookup)
+                                                                  ? [LibrarySettingKeys.MetadataLookup]
+                                                                  : [])))
             };
         }
         catch (JsonException exception)
@@ -321,9 +357,12 @@ public sealed record PatchouliAppSettings(
     public SettingsSaveResult Save(string? settingsPath = null)
     {
         string? temporaryPath = null;
+        SemaphoreSlim? writeGate = null;
         try
         {
             string path = ResolvePath(settingsPath);
+            writeGate = SettingsFileWriteCoordinator.ForPath(path);
+            writeGate.Wait();
             AppPathGuard.ValidateMutablePath(path);
             string? directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(directory))
@@ -366,8 +405,34 @@ public sealed record PatchouliAppSettings(
                 SchemaVersion = 1,
                 Providers = Credentials.Providers
             });
-            root["Sync"] = JsonSerializer.SerializeToNode(Sync);
-            root["Mcp"] = JsonSerializer.SerializeToNode(Mcp);
+            SyncAppSettings syncToWrite = Sync;
+            try
+            {
+                SnapshotSyncLocalState? existingSnapshotState =
+                    root["Sync"]?["SnapshotState"]?.Deserialize<SnapshotSyncLocalState>();
+                if (existingSnapshotState is not null &&
+                    (Sync.SnapshotState is null || existingSnapshotState.UpdatedAt > Sync.SnapshotState.UpdatedAt))
+                {
+                    syncToWrite = Sync with { SnapshotState = existingSnapshotState };
+                }
+            }
+            catch (JsonException)
+            {
+                // The caller's valid state replaces a malformed persisted state.
+            }
+
+            root["Sync"] = JsonSerializer.SerializeToNode(syncToWrite);
+            long existingMcpRevision = 0;
+            if (root["Mcp"]?["Revision"] is JsonValue revisionNode)
+            {
+                _ = revisionNode.TryGetValue(out existingMcpRevision);
+            }
+
+            if (Mcp.Revision >= existingMcpRevision)
+            {
+                root["Mcp"] = JsonSerializer.SerializeToNode(Mcp);
+            }
+
             root["Ui"] = JsonSerializer.SerializeToNode(new
             {
                 Ui.LibraryGridVisibleColumns,
@@ -376,7 +441,7 @@ public sealed record PatchouliAppSettings(
                 Ui.ShowLibraryLeftSidebar,
                 Ui.ShowLibraryRightSidebar
             });
-            if (Sync.SyncMetadataLookup)
+            if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
                 root.Remove("MetadataLookup");
             }
@@ -417,6 +482,8 @@ public sealed record PatchouliAppSettings(
                     _ = exception;
                 }
             }
+
+            writeGate?.Release();
         }
     }
 
@@ -506,7 +573,12 @@ public sealed record PatchouliAppSettings(
         return new McpServerSettings(ReadInt(section, "Port", fallback.Port), bind,
             ReadBool(section, "CorsEnabled", fallback.CorsEnabled), origins,
             ReadBool(section, "AuthRequired", fallback.AuthRequired), string.IsNullOrWhiteSpace(token) ? null : token,
-            overrides, fallback.UpdatedAt);
+            overrides,
+            DateTimeOffset.TryParse(ReadString(section, "UpdatedAt", fallback.UpdatedAt.ToString("O")),
+                out DateTimeOffset updatedAt)
+                ? updatedAt.ToUniversalTime()
+                : fallback.UpdatedAt,
+            ReadLong(section, "Revision", fallback.Revision));
     }
 
     private static string ReadString(JsonElement? section, string name, string fallback)
@@ -544,6 +616,18 @@ public sealed record PatchouliAppSettings(
         return element.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.Number &&
                value.TryGetInt32(out int result)
             ? result
+            : fallback;
+    }
+
+    private static long ReadLong(JsonElement? section, string name, long fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return element.TryGetProperty(name, out JsonElement value) && value.TryGetInt64(out long parsed)
+            ? parsed
             : fallback;
     }
 

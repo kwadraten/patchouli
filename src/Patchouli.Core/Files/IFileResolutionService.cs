@@ -9,6 +9,11 @@ public interface IFileResolutionService
         SelectedFileSearchRoot selectedRoot,
         CancellationToken cancellationToken = default);
 
+    Task<Result<FileSearchRoot>> BindSearchRootAsync(
+        FileSearchRootId rootId,
+        SelectedFileSearchRoot selectedRoot,
+        CancellationToken cancellationToken = default);
+
     Task<Result<IReadOnlyList<FileSearchRoot>>> ListSearchRootsAsync(
         CancellationToken cancellationToken = default);
 

@@ -33,7 +33,8 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
             settings.Sync.SyncRoot,
             _stagingRoot,
             settings.Sync.DeviceId,
-            state)));
+            state,
+            settings.Sync.EnabledSettingKeys)));
     }
 
     public async Task<Result> SaveLocalStateAsync(

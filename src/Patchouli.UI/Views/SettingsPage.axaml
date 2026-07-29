@@ -45,33 +45,6 @@
     <Style Selector="ListBox.SidebarListBox ListBoxItem:selected lucide|Lucide.ItemIcon">
       <Setter Property="StrokeBrush" Value="{DynamicResource PrimaryBrush}" />
     </Style>
-    <Style Selector="Border.StatePill">
-      <Setter Property="CornerRadius" Value="10" />
-      <Setter Property="Padding" Value="10,2" />
-      <Setter Property="Background" Value="{DynamicResource SurfaceVariantBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill TextBlock">
-      <Setter Property="FontSize" Value="11" />
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill.saved">
-      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill.saved TextBlock">
-      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill.failed">
-      <Setter Property="Background" Value="{DynamicResource ErrorContainerBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill.failed TextBlock">
-      <Setter Property="Foreground" Value="{DynamicResource OnErrorContainerBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill.warning">
-      <Setter Property="Background" Value="{DynamicResource ErrorContainerBrush}" />
-    </Style>
-    <Style Selector="Border.StatePill.warning TextBlock">
-      <Setter Property="Foreground" Value="{DynamicResource OnErrorContainerBrush}" />
-    </Style>
   </UserControl.Styles>
   <Grid ColumnDefinitions="Auto,*">
     <!-- Sidebar -->
@@ -104,24 +77,8 @@
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="4" VerticalAlignment="Center">
             <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
-            <TextBlock Text="{Binding ActiveEffectiveSourceText, StringFormat='生效来源：\{0\}'}" FontSize="11"
-                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-            <TextBlock Text="{Binding ActiveLastError}" FontSize="11" TextWrapping="Wrap"
-                       Foreground="{DynamicResource ErrorBrush}"
-                       IsVisible="{Binding ActiveHasLastError}" />
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Border Classes="StatePill" VerticalAlignment="Center">
-              <TextBlock Text="{Binding ActiveScopeText}" />
-            </Border>
-            <Border Classes="StatePill warning" VerticalAlignment="Center"
-                    IsVisible="{Binding ActiveRequiresReload}">
-              <TextBlock Text="需重启服务生效" />
-            </Border>
-            <Border Classes="StatePill" Classes.saved="{Binding ActiveSaved}"
-                    Classes.failed="{Binding ActiveSaveFailed}" VerticalAlignment="Center">
-              <TextBlock Text="{Binding ActiveSaveStateText}" />
-            </Border>
             <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
                     IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardActiveSection}" />
             <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32" Classes="Primary"
@@ -230,6 +187,12 @@
                     <TextBlock Text="随库同步的非秘密设置" FontSize="16" FontWeight="SemiBold"
                                Foreground="{DynamicResource PrimaryBrush}" />
                     <CheckBox Content="随库同步元数据来源优先级" IsChecked="{Binding SyncMetadataLookup}" />
+                    <TextBlock Text="{Binding MetadataLookupScopeText, StringFormat='同步范围：\{0\}'}"
+                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBlock Text="{Binding MetadataLookupEffectiveSourceText, StringFormat='生效来源：\{0\}'}"
+                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBlock Text="{Binding MetadataLookupSchemaText, StringFormat='设置记录：\{0\}'}"
+                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBlock Text="启用后，元数据来源优先级的基准值存入当前资料库，并随内容快照整体发布和接收；本机设备绑定、MCP 配置和凭据始终仅此设备。"
                                FontSize="12" TextWrapping="Wrap"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />

@@ -4,6 +4,7 @@ using Patchouli.Core.Conflicts;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
@@ -105,6 +106,7 @@ public interface ISnapshotBranchInspectionService
         CancellationToken cancellationToken = default);
 
     Task<Result<BranchImportResult>> ApplyImportPlanAsync(BranchImportPlan plan, bool userConfirmed,
+        IReadOnlyCollection<string>? enabledSettingKeys = null,
         CancellationToken cancellationToken = default);
 
     Task<Result> DiscardBranchAsync(SnapshotBranchInspectionInfo branch, CancellationToken cancellationToken = default);
@@ -554,6 +556,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
     public async Task<Result<BranchImportResult>> ApplyImportPlanAsync(
         BranchImportPlan plan,
         bool userConfirmed,
+        IReadOnlyCollection<string>? enabledSettingKeys = null,
         CancellationToken cancellationToken = default)
     {
         if (!userConfirmed)
@@ -755,21 +758,43 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
-            await connection.ExecuteAsync(
-                """
-                insert into library_setting_records (
-                    setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
-                select setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy
-                from branch.library_setting_records
-                where 1 = 1
-                on conflict(setting_key) do update set
-                    schema_version = excluded.schema_version,
-                    value_json = excluded.value_json,
-                    revision = excluded.revision,
-                    updated_at = excluded.updated_at,
-                    updated_by_device_id = excluded.updated_by_device_id,
-                    merge_policy = excluded.merge_policy;
-                """, transaction: transaction);
+            bool sameLibrary = plan.SourceBranch.LibraryId == plan.TargetLibraryId;
+            if (sameLibrary)
+            {
+                await connection.ExecuteAsync(
+                    """
+                    insert into file_search_root_definitions (
+                        root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
+                    select root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at
+                    from branch.file_search_root_definitions
+                    where 1 = 1
+                    on conflict(root_id) do update set
+                        display_name = excluded.display_name,
+                        purpose = excluded.purpose,
+                        is_enabled = excluded.is_enabled,
+                        updated_at = excluded.updated_at;
+                    """, transaction: transaction);
+
+                string[] enabledSettings = LibrarySettingCatalog.NormalizeSnapshotKeys(enabledSettingKeys).ToArray();
+                if (enabledSettings.Length > 0)
+                {
+                    await connection.ExecuteAsync(
+                        """
+                        insert into library_setting_records (
+                            setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
+                        select setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy
+                        from branch.library_setting_records
+                        where setting_key in @EnabledSettings
+                        on conflict(setting_key) do update set
+                            schema_version = excluded.schema_version,
+                            value_json = excluded.value_json,
+                            revision = excluded.revision,
+                            updated_at = excluded.updated_at,
+                            updated_by_device_id = excluded.updated_by_device_id,
+                            merge_policy = excluded.merge_policy;
+                        """, new { EnabledSettings = enabledSettings }, transaction);
+                }
+            }
 
             int importedPages = documents.Length == 0
                 ? 0

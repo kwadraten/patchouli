@@ -306,7 +306,8 @@ public sealed class PdfPageRenderingTests
                 "022_normalize_identifier_schemes.sql",
                 "023_add_file_search_root_authorization.sql",
                 "025_create_library_setting_records.sql",
-                "026_add_document_box_continuation.sql");
+                "026_add_document_box_continuation.sql",
+                "027_split_file_search_root_bindings.sql");
     }
 
     private sealed class Context : IAsyncDisposable

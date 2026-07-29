@@ -12,6 +12,7 @@ public sealed class SettingsViewModel : ViewModelBase
     private SettingsCategoryViewModel _activeCategory = null!;
     private string _globalStatus = "";
     private bool _isRoutingCommand;
+    private Task _activeSectionLoad = Task.CompletedTask;
 
     public SettingsViewModel(MainWindowViewModel main)
     {
@@ -57,8 +58,12 @@ public sealed class SettingsViewModel : ViewModelBase
         get => _activeCategory;
         set
         {
-            if (_activeCategory is not null && _activeCategory.Section?.IsDirty == true &&
-                !ReferenceEquals(_activeCategory, value))
+            if (ReferenceEquals(_activeCategory, value))
+            {
+                return;
+            }
+
+            if (_activeCategory is not null && _activeCategory.Section?.IsDirty == true)
             {
                 GlobalStatus = "当前设置分组有未保存的更改；请先保存或放弃更改。";
                 Raise(nameof(ActiveCategory));
@@ -69,7 +74,8 @@ public sealed class SettingsViewModel : ViewModelBase
             _activeCategory = value;
             Raise();
             RaiseActiveSectionState();
-            value.Section?.LoadAsync().Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
+            _activeSectionLoad = value.Section?.LoadAsync() ?? Task.CompletedTask;
+            _activeSectionLoad.Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
         }
     }
 
@@ -100,15 +106,25 @@ public sealed class SettingsViewModel : ViewModelBase
                                            ActiveCategory.Section.IsDirty && !_isRoutingCommand;
 
     public bool IsActiveSectionDirty => ActiveCategory.Section?.IsDirty == true;
-    public string ActiveSaveStateText => ActiveCategory.Section?.SaveStateText ?? "无需保存";
-    public string ActiveLastError => ActiveCategory.Section?.LastError ?? "";
-    public string ActiveValidationStateText => ActiveCategory.Section?.ValidationState.ToString() ?? "Unknown";
-    public bool ActiveRequiresReload => ActiveCategory.Section?.RequiresReload == true;
-    public string ActiveScopeText => ActiveCategory.Section?.ScopeText ?? "";
-    public string ActiveEffectiveSourceText => ActiveCategory.Section?.EffectiveSourceText ?? "";
-    public bool ActiveHasLastError => !string.IsNullOrWhiteSpace(ActiveCategory.Section?.LastError);
-    public bool ActiveSaveFailed => ActiveCategory.Section?.SaveState == SettingsSaveState.Failed;
-    public bool ActiveSaved => ActiveCategory.Section?.SaveState == SettingsSaveState.Saved;
+
+    public Task WaitForActiveSectionLoadAsync()
+    {
+        return _activeSectionLoad;
+    }
+
+    public async Task ReloadCleanSectionsAsync()
+    {
+        await _activeSectionLoad;
+        foreach (ISettingsSection section in Categories
+                     .Select(category => category.Section)
+                     .OfType<ISettingsSection>()
+                     .Where(section => !section.IsDirty))
+        {
+            await section.LoadAsync();
+        }
+
+        RaiseActiveSectionState();
+    }
 
     public async Task<bool> SaveAllDirtySectionsAsync()
     {
@@ -183,20 +199,12 @@ public sealed class SettingsViewModel : ViewModelBase
         Raise(nameof(CanSaveActiveSection));
         Raise(nameof(CanDiscardActiveSection));
         Raise(nameof(IsActiveSectionDirty));
-        Raise(nameof(ActiveSaveStateText));
-        Raise(nameof(ActiveLastError));
-        Raise(nameof(ActiveValidationStateText));
-        Raise(nameof(ActiveRequiresReload));
-        Raise(nameof(ActiveScopeText));
-        Raise(nameof(ActiveEffectiveSourceText));
-        Raise(nameof(ActiveHasLastError));
-        Raise(nameof(ActiveSaveFailed));
-        Raise(nameof(ActiveSaved));
         Raise(nameof(HasDirtySections));
     }
 
     private void SectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        Raise(nameof(HasDirtySections));
         if (ReferenceEquals(sender, ActiveCategory.Section))
         {
             RaiseActiveSectionState();

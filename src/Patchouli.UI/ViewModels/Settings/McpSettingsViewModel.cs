@@ -18,6 +18,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private bool _isDirty;
     private long _editRevision;
+    private readonly SemaphoreSlim _commitGate = new(1, 1);
 
     public McpSettingsViewModel(MainWindowViewModel main)
     {
@@ -27,6 +28,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             if (args.PropertyName is nameof(MainWindowViewModel.McpStatusText)
                 or nameof(MainWindowViewModel.McpEndpoint)
                 or nameof(MainWindowViewModel.McpServerRunning)
+                or nameof(MainWindowViewModel.McpRunningSettingsRevision)
                 or nameof(MainWindowViewModel.ShellSandboxStatusText))
             {
                 Raise(args.PropertyName switch
@@ -34,9 +36,11 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
                     nameof(MainWindowViewModel.McpStatusText) => nameof(McpStatusText),
                     nameof(MainWindowViewModel.McpEndpoint) => nameof(McpEndpoint),
                     nameof(MainWindowViewModel.McpServerRunning) => nameof(McpServerRunning),
+                    nameof(MainWindowViewModel.McpRunningSettingsRevision) => nameof(RequiresReload),
                     nameof(MainWindowViewModel.ShellSandboxStatusText) => nameof(ShellSandboxStatusText),
                     _ => args.PropertyName ?? string.Empty
                 });
+                RefreshRequiresReload();
             }
         };
         GenerateTokenCommand = new AsyncCommand(GenerateTokenAsync);
@@ -184,17 +188,34 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     public override bool IsDirty => _isDirty;
     public override bool CanSave => _isDirty;
 
-    public override Task DiscardAsync()
+    public override async Task DiscardAsync()
     {
-        _settings = _persistedSettings;
-        _isDirty = false;
-        ReloadToolOverrides();
-        RaiseAllSettings();
-        Raise(nameof(IsDirty));
-        Raise(nameof(CanSave));
-        SaveState = SettingsSaveState.Clean;
-        SetStatus("已放弃更改");
-        return Task.CompletedTask;
+        await _commitGate.WaitAsync();
+        try
+        {
+            _editRevision++;
+            Result<McpServerSettings> persisted =
+                await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
+            if (persisted.IsSuccess)
+            {
+                _persistedSettings = persisted.Value;
+            }
+
+            _settings = _persistedSettings;
+            _isDirty = false;
+            ReloadToolOverrides();
+            RaiseAllSettings();
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
+            SaveState = SettingsSaveState.Clean;
+            LastError = null;
+            RefreshRequiresReload();
+            SetStatus("已放弃更改");
+        }
+        finally
+        {
+            _commitGate.Release();
+        }
     }
 
     private Task GenerateTokenAsync()
@@ -217,8 +238,12 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private async Task SaveAndRestartAsync()
     {
-        await SaveAsync();
-        if (SaveState != SettingsSaveState.Saved)
+        if (IsDirty)
+        {
+            await SaveAsync();
+        }
+
+        if (IsDirty || SaveState == SettingsSaveState.Failed)
         {
             return;
         }
@@ -246,6 +271,12 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        if (IsDirty)
+        {
+            SetStatus("MCP 设置有未保存的更改，已保留当前草稿。");
+            return;
+        }
+
         Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
         if (result.IsFailure)
         {
@@ -261,6 +292,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         RaiseAllSettings();
         SaveState = SettingsSaveState.Clean;
         LastError = null;
+        RefreshRequiresReload();
         SetStatus("已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -268,37 +300,51 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     public override async Task SaveAsync()
     {
-        SaveState = SettingsSaveState.Saving;
-        Status = "正在保存...";
-        long revision = _editRevision;
-        McpServerSettings draft = _settings;
-        Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(draft);
-        if (result.IsFailure)
+        await _commitGate.WaitAsync();
+        try
         {
-            SaveState = SettingsSaveState.Failed;
-            LastError = result.ErrorMessage;
-            SetStatus(result.ErrorMessage ?? "MCP 设置保存失败。");
-            return;
-        }
+            SaveState = SettingsSaveState.Saving;
+            Status = "正在保存...";
+            long revision = _editRevision;
+            McpServerSettings draft = _settings with
+            {
+                AllowedOrigins = _settings.AllowedOrigins.ToArray(),
+                ToolOverrides = _settings.ToolOverrides.ToArray()
+            };
+            Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(
+                draft,
+                _persistedSettings.Revision);
+            if (result.IsFailure)
+            {
+                SaveState = SettingsSaveState.Failed;
+                LastError = result.ErrorMessage;
+                SetStatus(result.ErrorMessage ?? "MCP 设置保存失败。");
+                return;
+            }
 
-        _persistedSettings = result.Value;
-        if (revision == _editRevision)
-        {
-            _settings = result.Value;
-            _isDirty = false;
-            SaveState = SettingsSaveState.Saved;
-            RequiresReload = McpServerRunning;
-            SetStatus(McpServerRunning ? "已保存（需重启服务生效）" : "已保存");
-        }
-        else
-        {
-            SaveState = SettingsSaveState.Dirty;
-            SetStatus("已保存旧版本，仍有新的未保存更改");
-        }
+            _persistedSettings = result.Value;
+            if (revision == _editRevision)
+            {
+                _settings = result.Value;
+                _isDirty = false;
+                SaveState = SettingsSaveState.Saved;
+                SetStatus("已保存");
+            }
+            else
+            {
+                SaveState = SettingsSaveState.Dirty;
+                SetStatus("已保存旧版本，仍有新的未保存更改");
+            }
 
-        LastError = null;
-        Raise(nameof(IsDirty));
-        Raise(nameof(CanSave));
+            LastError = null;
+            RefreshRequiresReload();
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
+        }
+        finally
+        {
+            _commitGate.Release();
+        }
     }
 
     internal void UpdateToolOverride(string toolName, bool enabled)
@@ -342,6 +388,12 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(CanSave));
         SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
+    }
+
+    private void RefreshRequiresReload()
+    {
+        RequiresReload = _main.McpRunningSettingsRevision is long runningRevision &&
+                         runningRevision != _persistedSettings.Revision;
     }
 
     private void ReloadToolOverrides()

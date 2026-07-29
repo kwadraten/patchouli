@@ -27,4 +27,49 @@ public sealed class LibrarySettingStoreTests
             .Should().Be(new EffectiveSetting("metadata_lookup", "{\"sources\":[\"local\"]}",
                 "device_override", 2));
     }
+
+    [Fact]
+    public async Task Disabled_or_local_only_settings_never_reach_the_library_record_store()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        LibrarySettingStore store = new(database.ConnectionFactory);
+        LibrarySettingRecordService service = new(store,
+            new FixedClock(DateTimeOffset.Parse("2026-07-13T00:00:00Z")));
+
+        Result<SettingRecord> disabled = await service.SaveAsync(
+            LibrarySettingKeys.MetadataLookup,
+            new { sources = Array.Empty<string>() },
+            "device-a",
+            false);
+        Result<SettingRecord> localOnly = await service.SaveAsync(
+            "mcp",
+            new { port = 4536 },
+            "device-a",
+            true);
+
+        disabled.ErrorCode.Should().Be(AppErrorCodes.UnsupportedOperation);
+        localOnly.ErrorCode.Should().Be(AppErrorCodes.UnsupportedOperation);
+        (await store.ListAsync()).Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Catalog_rejects_schema_and_merge_policy_drift()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        LibrarySettingStore store = new(database.ConnectionFactory);
+        SettingRecord invalid = new(
+            LibrarySettingKeys.MetadataLookup,
+            2,
+            "{}",
+            1,
+            DateTimeOffset.Parse("2026-07-13T00:00:00Z"),
+            "device-a",
+            SettingsMergePolicies.MapByKey);
+
+        Result result = await store.SaveAsync(invalid);
+
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
 }

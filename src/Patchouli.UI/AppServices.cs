@@ -82,6 +82,7 @@ public sealed class AppServices
         MetadataLookup =
             new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
+        LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
         INativeFileAccessAdapter? nativeAdapter = OperatingSystem.IsMacOS()
@@ -196,6 +197,7 @@ public sealed class AppServices
     public IMetadataSourceRegistry MetadataSources { get; }
     public IMetadataLookupService MetadataLookup { get; }
     public ILibrarySettingStore LibrarySettings { get; }
+    public LibrarySettingRecordService LibrarySettingRecords { get; }
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
@@ -247,8 +249,11 @@ public sealed class AppServices
     public async Task<Result<MetadataLookupAppSettings?>> GetSyncedMetadataLookupAsync(
         CancellationToken cancellationToken = default)
     {
-        Result<SettingRecord?> record = await LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup,
-            cancellationToken);
+        Result<MetadataLookupAppSettings?> record =
+            await LibrarySettingRecords.GetAsync<MetadataLookupAppSettings>(
+                LibrarySettingKeys.MetadataLookup,
+                true,
+                cancellationToken);
         if (record.IsFailure)
         {
             return Result<MetadataLookupAppSettings?>.Failure(record.ErrorCode!, record.ErrorMessage!);
@@ -259,22 +264,8 @@ public sealed class AppServices
             return Result<MetadataLookupAppSettings?>.Success(null);
         }
 
-        try
-        {
-            MetadataLookupAppSettings? settings =
-                System.Text.Json.JsonSerializer.Deserialize<MetadataLookupAppSettings>(
-                    record.Value.Value);
-            return settings is null
-                ? Result<MetadataLookupAppSettings?>.Failure(AppErrorCodes.ValidationFailed,
-                    "Synced metadata lookup setting is empty.")
-                : Result<MetadataLookupAppSettings?>.Success(
-                    MetadataLookupAppSettings.MergeWithDefaults(settings.Sources));
-        }
-        catch (System.Text.Json.JsonException exception)
-        {
-            return Result<MetadataLookupAppSettings?>.Failure(AppErrorCodes.ValidationFailed,
-                $"Synced metadata lookup setting is invalid: {exception.Message}");
-        }
+        return Result<MetadataLookupAppSettings?>.Success(
+            MetadataLookupAppSettings.MergeWithDefaults(record.Value.Sources));
     }
 
     public async Task<Result> SaveSyncedMetadataLookupAsync(MetadataLookupAppSettings settings, string deviceId,
@@ -285,33 +276,26 @@ public sealed class AppServices
             return Result.Failure(AppErrorCodes.ValidationFailed, "A device identity is required for synced settings.");
         }
 
-        Result<SettingRecord?> current = await LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup,
-            cancellationToken);
-        if (current.IsFailure)
-        {
-            return Result.Failure(current.ErrorCode!, current.ErrorMessage!);
-        }
-
-        SettingRecord next = new(
+        Result<SettingRecord> saved = await LibrarySettingRecords.SaveAsync(
             LibrarySettingKeys.MetadataLookup,
-            1,
-            System.Text.Json.JsonSerializer.Serialize(MetadataLookupAppSettings.MergeWithDefaults(settings.Sources)),
-            (current.Value?.Revision ?? 0) + 1,
-            Clock.UtcNow.ToUniversalTime(),
-            deviceId.Trim(),
-            SettingsMergePolicies.ScalarReplace);
-        Result saved = await LibrarySettings.SaveAsync(next, cancellationToken);
+            MetadataLookupAppSettings.MergeWithDefaults(settings.Sources),
+            deviceId,
+            true,
+            cancellationToken);
         if (saved.IsSuccess)
         {
             UpdateMetadataLookupPreferences(settings);
         }
 
-        return saved;
+        return saved.IsSuccess
+            ? Result.Success()
+            : Result.Failure(saved.ErrorCode ?? AppErrorCodes.DatabaseError,
+                saved.ErrorMessage ?? "Unable to save the synchronized setting.");
     }
 
     private async Task ApplySyncedMetadataLookupAsync(PatchouliAppSettings settings)
     {
-        if (!settings.Sync.SyncMetadataLookup)
+        if (!settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
         {
             return;
         }

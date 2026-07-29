@@ -9,6 +9,7 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Snapshots;
+using Patchouli.UI;
 
 namespace Patchouli.Tests;
 
@@ -119,5 +120,52 @@ public sealed class McpServerSettingsTests
                 Directory.Delete(syncRoot, true);
             }
         }
+    }
+
+    [Fact]
+    public async Task Stale_save_cannot_overwrite_a_newer_persisted_revision()
+    {
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-mcp-cas-{Guid.NewGuid():N}.json");
+        McpServerSettingsService service = new(settingsPath, clock);
+        Result<McpServerSettings> first = await service.SaveSettingsAsync(
+            McpServerSettingsService.DefaultSettings(clock.UtcNow) with { Port = 4540 },
+            0);
+        Result<McpServerSettings> second = await service.SaveSettingsAsync(
+            first.Value with { Port = 4541 },
+            first.Value.Revision);
+
+        Result<McpServerSettings> stale = await service.SaveSettingsAsync(
+            first.Value with { Port = 4999 },
+            first.Value.Revision);
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+
+        first.Value.Revision.Should().Be(1);
+        second.Value.Revision.Should().Be(2);
+        stale.ErrorCode.Should().Be(AppErrorCodes.StaleSettingsRevision);
+        loaded.Value.Port.Should().Be(4541);
+        loaded.Value.Revision.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task General_settings_save_preserves_a_newer_mcp_revision()
+    {
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-settings-race-{Guid.NewGuid():N}.json");
+        PatchouliAppSettings staleGeneralSettings = PatchouliAppSettings.Default();
+        staleGeneralSettings.Save(settingsPath).IsSuccess.Should().BeTrue();
+        McpServerSettingsService service = new(settingsPath, clock);
+        Result<McpServerSettings> saved = await service.SaveSettingsAsync(
+            staleGeneralSettings.Mcp with { Port = 4542 },
+            0);
+
+        (staleGeneralSettings with
+        {
+            Ui = staleGeneralSettings.Ui with { ShowLibraryLeftSidebar = false }
+        }).Save(settingsPath).IsSuccess.Should().BeTrue();
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+
+        loaded.Value.Port.Should().Be(4542);
+        loaded.Value.Revision.Should().Be(saved.Value.Revision);
     }
 }

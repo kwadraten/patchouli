@@ -2015,8 +2015,8 @@ public sealed class UiViewModelTests : IDisposable
             vm.ItemEditor.HasItem.Should().BeTrue();
 
             vm.ItemEditor.Title = "Edited Title";
-            await vm.ItemEditor.AddCreatorCommand.ExecuteAsync();
-            vm.ItemEditor.Creators.Single().Literal = "Chen, Li";
+            CreatorItemViewModel creator = vm.ItemEditor.Creators.Single();
+            creator.Literal = "Chen, Li";
             vm.ItemEditor.IssuedDate = "2026";
             vm.ItemEditor.PublicationTitle = "Journal of Patchouli";
             await vm.ItemEditor.SaveCommand.ExecuteAsync();
@@ -2077,7 +2077,9 @@ public sealed class UiViewModelTests : IDisposable
             saved.Value.Creators.Should().BeEmpty();
 
             await vm.ItemEditor.LoadAsync(created.Value.ItemId.ToString());
-            vm.ItemEditor.Creators.Should().BeEmpty();
+            vm.ItemEditor.Creators.Should().ContainSingle(creator =>
+                string.IsNullOrWhiteSpace(creator.Name) &&
+                string.IsNullOrWhiteSpace(creator.Literal));
         }
         finally
         {
@@ -2461,16 +2463,57 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Settings_page_header_shows_save_state_scope_source_and_reload_status()
+    public async Task Dirty_settings_block_section_switch_and_tab_close_until_current_section_is_discarded()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-settings-lifecycle-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            await vm.OpenSettingsAsync("library");
+            SettingsCategoryViewModel libraryCategory = vm.Settings.ActiveCategory;
+            SettingsCategoryViewModel syncCategory =
+                vm.Settings.Categories.Single(category => category.Icon == "Cloud");
+            vm.Settings.LibrarySettings.RememberLastDatabase =
+                !vm.Settings.LibrarySettings.RememberLastDatabase;
+
+            vm.Settings.ActiveCategory = syncCategory;
+            await vm.CloseSettingsTabCommand.ExecuteAsync();
+
+            vm.Settings.ActiveCategory.Should().BeSameAs(libraryCategory);
+            vm.ShowSettingsTab.Should().BeTrue();
+            vm.Settings.HasDirtySections.Should().BeTrue();
+
+            await vm.Settings.DiscardCommand.ExecuteAsync();
+            vm.Settings.ActiveCategory = syncCategory;
+
+            vm.Settings.HasDirtySections.Should().BeFalse();
+            vm.Settings.ActiveCategory.Should().BeSameAs(syncCategory);
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public void Settings_page_header_omits_duplicate_status_and_sync_scope_is_shown_in_sync_section()
     {
         string xaml =
             File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SettingsPage.axaml"));
 
-        xaml.Should().Contain("Text=\"{Binding ActiveSaveStateText}\"");
-        xaml.Should().Contain("Text=\"{Binding ActiveScopeText}\"");
-        xaml.Should().Contain("ActiveEffectiveSourceText");
-        xaml.Should().Contain("IsVisible=\"{Binding ActiveRequiresReload}\"");
-        xaml.Should().Contain("IsVisible=\"{Binding ActiveHasLastError}\"");
+        xaml.Should().NotContain("Text=\"{Binding ActiveSaveStateText}\"");
+        xaml.Should().NotContain("Text=\"{Binding ActiveScopeText}\"");
+        xaml.Should().NotContain("ActiveEffectiveSourceText");
+        xaml.Should().NotContain("ActiveRequiresReload");
+        xaml.Should().NotContain("ActiveHasLastError");
+        xaml.Should().Contain("MetadataLookupScopeText");
+        xaml.Should().Contain("MetadataLookupEffectiveSourceText");
+        xaml.Should().Contain("MetadataLookupSchemaText");
         xaml.Should().Contain("Command=\"{Binding SaveAndRestartCommand}\"");
         xaml.Should().Contain("Command=\"{Binding RemoveMinerUCredentialCommand}\"");
         xaml.Should().Contain("添加并扫描");

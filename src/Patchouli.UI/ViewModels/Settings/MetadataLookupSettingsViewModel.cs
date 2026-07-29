@@ -39,12 +39,6 @@ public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBa
         Raise(nameof(IsDirty));
     }
 
-    public override string EffectiveSourceText => _main.AppOptions.Sync.SyncMetadataLookup
-        ? "数据库同步基准"
-        : "本机 JSON 设置";
-
-    public override string ScopeText => _main.AppOptions.Sync.SyncMetadataLookup ? "随库同步" : "仅此设备";
-
     public override async Task SaveAsync()
     {
         SaveState = SettingsSaveState.Saving;
@@ -83,9 +77,6 @@ public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBa
         {
             Load(settings, false);
         }
-
-        Raise(nameof(EffectiveSourceText));
-        Raise(nameof(ScopeText));
     }
 
     internal void MarkDirty()

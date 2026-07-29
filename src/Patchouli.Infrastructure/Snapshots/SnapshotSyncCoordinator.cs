@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
@@ -110,6 +112,15 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             return Result<SnapshotPublishResult>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
         }
 
+        Result rootMappings =
+            await ValidateLogicalRootMappingsAsync(binding.RuntimeDatabasePath, binding.RuntimeDatabasePath,
+                cancellationToken);
+        if (rootMappings.IsFailure)
+        {
+            await RecordFailureAsync(binding, rootMappings.ErrorMessage!, cancellationToken);
+            return Result<SnapshotPublishResult>.Failure(rootMappings.ErrorCode!, rootMappings.ErrorMessage!);
+        }
+
         SemaphoreSlim gate = RootLocks.GetOrAdd(Path.GetFullPath(binding.SyncRoot), _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
@@ -120,7 +131,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                     binding.RuntimeDatabasePath,
                     binding.SyncRoot,
                     binding.DeviceId,
-                    binding.LocalState.LineageSnapshotId),
+                    binding.LocalState.LineageSnapshotId,
+                    SyncRootId: binding.SyncRootId,
+                    EnabledSettingKeys: binding.EnabledSettingKeys),
                 cancellationToken);
             if (published.IsFailure)
             {
@@ -325,6 +338,16 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                 return Result<SnapshotIncomingPlan>.Failure(branch.ErrorCode!, branch.ErrorMessage!);
             }
 
+            Result rootMappings =
+                await ValidateLogicalRootMappingsAsync(branch.Value.StagingDatabasePath, binding.RuntimeDatabasePath,
+                    cancellationToken);
+            if (rootMappings.IsFailure)
+            {
+                await _branchInspection.DiscardBranchAsync(branch.Value, CancellationToken.None);
+                await RecordFailureAsync(binding, rootMappings.ErrorMessage!, cancellationToken);
+                return Result<SnapshotIncomingPlan>.Failure(rootMappings.ErrorCode!, rootMappings.ErrorMessage!);
+            }
+
             Result<IReadOnlyList<BranchItemSummary>> items =
                 await _branchInspection.ListBranchItemsAsync(branch.Value, cancellationToken);
             Result<IReadOnlyList<BranchDocumentInstanceSummary>> documents =
@@ -424,10 +447,20 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                     freshness.Conflicts);
             }
 
+            Result rootMappings = await ValidateLogicalRootMappingsAsync(
+                plan.BranchImportPlan.SourceBranch.StagingDatabasePath,
+                binding.RuntimeDatabasePath,
+                cancellationToken);
+            if (rootMappings.IsFailure)
+            {
+                return Result<SnapshotApplyResult>.Failure(rootMappings.ErrorCode!, rootMappings.ErrorMessage!);
+            }
+
             await SaveStateOrThrowAsync(binding, SnapshotSyncOperationState.Applying, null, cancellationToken);
             Result<BranchImportResult> applied = await _branchInspection.ApplyImportPlanAsync(
                 plan.BranchImportPlan,
                 true,
+                binding.EnabledSettingKeys,
                 cancellationToken);
             if (applied.IsFailure)
             {
@@ -600,6 +633,13 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                         "The sync directory does not contain a current snapshot.");
                 }
 
+                if (!string.IsNullOrWhiteSpace(current.SyncRootId) &&
+                    !string.Equals(current.SyncRootId, binding.SyncRootId, StringComparison.Ordinal))
+                {
+                    return Result<string>.Failure(AppErrorCodes.MappingRequired,
+                        $"SyncRoot '{current.SyncRootId}' is not mapped by the active device binding.");
+                }
+
                 if (!TryResolvePathInsideRoot(binding.SyncRoot, current.ManifestPath, out string manifestPath))
                 {
                     return Result<string>.Failure(AppErrorCodes.ValidationFailed,
@@ -652,7 +692,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         if (requireSyncRoot && (string.IsNullOrWhiteSpace(binding.SyncRoot) ||
                                 string.IsNullOrWhiteSpace(binding.SyncRootId)))
         {
-            return Result.Failure(AppErrorCodes.ValidationFailed, "Choose and save a sync directory first.");
+            return Result.Failure(AppErrorCodes.MappingRequired,
+                "A stable SyncRoot logical ID and device-local path mapping are required.");
         }
 
         if (!string.IsNullOrWhiteSpace(binding.SyncRoot) &&
@@ -670,6 +711,54 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         }
 
         return Result.Success();
+    }
+
+    private static async Task<Result> ValidateLogicalRootMappingsAsync(
+        string sourceDatabasePath,
+        string activeRuntimeDatabasePath,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection source =
+            new(SnapshotPublisher.BuildConnectionString(sourceDatabasePath, SqliteOpenMode.ReadOnly));
+        await source.OpenAsync(cancellationToken);
+        if (!await SnapshotPublisher.TableExistsAsync(source, "file_search_root_definitions"))
+        {
+            return Result.Success();
+        }
+
+        string[] required = (await source.QueryAsync<string>(
+            """
+            select root_id
+            from file_search_root_definitions
+            where is_enabled = 1
+            order by root_id;
+            """)).ToArray();
+        if (required.Length == 0)
+        {
+            return Result.Success();
+        }
+
+        await using SqliteConnection active =
+            new(SnapshotPublisher.BuildConnectionString(activeRuntimeDatabasePath, SqliteOpenMode.ReadOnly));
+        await active.OpenAsync(cancellationToken);
+        if (!await SnapshotPublisher.TableExistsAsync(active, "file_search_root_bindings"))
+        {
+            return Result.Failure(AppErrorCodes.MappingRequired,
+                $"FileSearchRoot '{required[0]}' requires a device-local path mapping.");
+        }
+
+        HashSet<string> mapped = (await active.QueryAsync<string>(
+                """
+                select root_id
+                from file_search_root_bindings
+                where length(trim(root_path)) > 0;
+                """))
+            .ToHashSet(StringComparer.Ordinal);
+        string? missing = required.FirstOrDefault(rootId => !mapped.Contains(rootId));
+        return missing is null
+            ? Result.Success()
+            : Result.Failure(AppErrorCodes.MappingRequired,
+                $"FileSearchRoot '{missing}' requires a device-local path mapping.");
     }
 
     private static async Task<Result> EnsurePlanIsCurrentAsync(

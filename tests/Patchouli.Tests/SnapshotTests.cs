@@ -9,6 +9,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Operations;
+using Patchouli.Core.Settings;
 using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
@@ -144,7 +145,8 @@ public sealed class SnapshotTests
                 """);
         }
 
-        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        Result<SnapshotPublishResult> published =
+            await c.PublishAsync(enabledSettingKeys: [LibrarySettingKeys.MetadataLookup]);
         Result<SnapshotImportResult> imported = await c.ImportAsync(published.Value.ManifestPath);
         await using SqliteConnection staging = OpenSqlite(imported.Value.StagingDatabasePath!);
         await staging.OpenAsync();
@@ -152,6 +154,70 @@ public sealed class SnapshotTests
         (await staging.ExecuteScalarAsync<string>(
                 "select value_json from library_setting_records where setting_key = 'metadata_lookup';"))
             .Should().Be("{\"sources\":[]}");
+    }
+
+    [Fact]
+    public async Task Publish_excludes_setting_records_when_the_setting_is_not_enabled()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync(
+                """
+                insert into library_setting_records (
+                    setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
+                values ('metadata_lookup', 1, '{"sources":[]}', 1, '2026-07-13T00:00:00.0000000+00:00',
+                        'device-a', 'scalar_replace');
+                """);
+        }
+
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        Result<SnapshotImportResult> imported = await c.ImportAsync(published.Value.ManifestPath);
+        await using SqliteConnection staging = OpenSqlite(imported.Value.StagingDatabasePath!);
+        await staging.OpenAsync();
+
+        (await staging.ExecuteScalarAsync<int>("select count(1) from library_setting_records;")).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Publish_keeps_logical_file_root_but_removes_device_binding_path_and_authorization()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        string logicalId = Guid.NewGuid().ToString("D");
+        string localPath = Path.Combine(c.SyncRoot, "must-not-leak");
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync(
+                """
+                insert into file_search_root_definitions (
+                    root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
+                values (@RootId, @LibraryId, 'Papers', 'file_resolution', 1, @Now, @Now);
+                insert into file_search_root_bindings (
+                    root_id, root_path, is_available, authorization_kind, authorization_payload,
+                    authorization_payload_version, authorization_updated_at, updated_at)
+                values (@RootId, @RootPath, 1, 'test-token', @Authorization, 1, @Now, @Now);
+                """,
+                new
+                {
+                    RootId = logicalId,
+                    LibraryId = c.LibraryId.ToString(),
+                    RootPath = localPath,
+                    Authorization = new byte[] { 65, 85, 84, 72, 45, 83, 69, 67, 82, 69, 84 },
+                    Now = "2026-07-13T00:00:00.0000000+00:00"
+                });
+        }
+
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        string shardPath = Path.Combine(c.SyncRoot, published.Value.Shards.First().FileName);
+        await using SqliteConnection shard = OpenSqlite(shardPath);
+        await shard.OpenAsync();
+
+        (await shard.ExecuteScalarAsync<string>(
+            "select root_id from file_search_root_definitions where root_id = @RootId;",
+            new { RootId = logicalId })).Should().Be(logicalId);
+        (await shard.ExecuteScalarAsync<int>("select count(1) from file_search_root_bindings;")).Should().Be(0);
+        await shard.CloseAsync();
+        (await File.ReadAllTextAsync(shardPath)).Should().NotContain(localPath).And.NotContain("AUTH-SECRET");
     }
 
     [Fact]
@@ -478,6 +544,95 @@ public sealed class SnapshotTests
         (await SnapshotPublisher.ReadJsonAsync<SnapshotCurrentPointer>(Path.Combine(c.SyncRoot, "current.json"),
                 default))!
             .SnapshotId.Should().Be(published.Value.SnapshotId);
+    }
+
+    [Fact]
+    public async Task Sync_coordinator_returns_mapping_required_for_an_unbound_incoming_logical_root()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        string rootId = Guid.NewGuid().ToString("D");
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync(
+                """
+                insert into file_search_root_definitions (
+                    root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
+                values (@RootId, @LibraryId, 'Papers', 'file_resolution', 1, @Now, @Now);
+                insert into file_search_root_bindings (
+                    root_id, root_path, is_available, authorization_kind, updated_at)
+                values (@RootId, @RootPath, 1, 'none', @Now);
+                """,
+                new
+                {
+                    RootId = rootId,
+                    LibraryId = c.LibraryId.ToString(),
+                    RootPath = c.Database.Path + "-device-a-root",
+                    Now = "2026-07-13T00:00:00.0000000+00:00"
+                });
+        }
+
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        published.IsSuccess.Should().BeTrue(published.ErrorMessage);
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync("delete from file_search_root_bindings where root_id = @RootId;",
+                new { RootId = rootId });
+        }
+
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "sync-root-a",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-b",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        SnapshotSyncCoordinator coordinator = new(
+            c.Publisher,
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+
+        Result<SnapshotIncomingPlan> inspected =
+            await coordinator.InspectIncomingAsync(SnapshotIncomingRequest.CurrentSyncRoot);
+
+        inspected.ErrorCode.Should().Be(AppErrorCodes.MappingRequired);
+        inspected.ErrorMessage.Should().Contain(rootId);
+    }
+
+    [Fact]
+    public async Task Sync_coordinator_returns_mapping_required_for_a_different_sync_root_logical_id()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        Result<SnapshotPublishResult> published = await c.PublishAsync(syncRootId: "logical-sync-a");
+        published.IsSuccess.Should().BeTrue(published.ErrorMessage);
+        MemorySnapshotSyncBindingStore bindings = new(new SnapshotSyncBinding(
+            c.Database.Path,
+            "logical-sync-b",
+            c.SyncRoot,
+            c.StagingRoot,
+            "device-b",
+            SnapshotSyncLocalState.NotConfigured));
+        FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        SnapshotSyncCoordinator coordinator = new(
+            c.Publisher,
+            c.Importer,
+            new SnapshotBranchInspectionService(
+                c.Importer,
+                c.Database.ConnectionFactory,
+                new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
+            bindings,
+            clock);
+
+        Result<SnapshotIncomingPlan> inspected =
+            await coordinator.InspectIncomingAsync(SnapshotIncomingRequest.CurrentSyncRoot);
+
+        inspected.ErrorCode.Should().Be(AppErrorCodes.MappingRequired);
+        inspected.ErrorMessage.Should().Contain("logical-sync-a");
     }
 
     [Fact]
@@ -809,10 +964,14 @@ public sealed class SnapshotTests
         }
 
         public Task<Result<SnapshotPublishResult>> PublishAsync(string? parent = null,
-            long? targetShardSizeBytes = null)
+            long? targetShardSizeBytes = null,
+            IReadOnlyList<string>? enabledSettingKeys = null,
+            string? syncRootId = null)
         {
             return Publisher.PublishSnapshotAsync(new SnapshotPublishRequest(Database.Path, SyncRoot, "device-a",
-                parent, TargetShardSizeBytes: targetShardSizeBytes ?? 512L * 1024L * 1024L));
+                parent, TargetShardSizeBytes: targetShardSizeBytes ?? 512L * 1024L * 1024L,
+                SyncRootId: syncRootId,
+                EnabledSettingKeys: enabledSettingKeys));
         }
 
         public Task<Result<SnapshotImportResult>> ImportAsync(string manifest)

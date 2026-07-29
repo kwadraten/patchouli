@@ -8,8 +8,6 @@ public interface ISettingsSection
     SettingsValidationState ValidationState { get; }
     bool IsSaving { get; }
     bool RequiresReload { get; }
-    string EffectiveSourceText { get; }
-    string ScopeText { get; }
     bool SupportsEditing { get; }
     bool IsDirty { get; }
     bool CanSave { get; }
@@ -101,8 +99,6 @@ public abstract class SettingsSectionViewModelBase : ViewModelBase, ISettingsSec
         }
     }
 
-    public virtual string EffectiveSourceText => "本机 JSON 设置";
-    public virtual string ScopeText => "仅此设备";
     public abstract bool SupportsEditing { get; }
     public abstract bool IsDirty { get; }
     public abstract bool CanSave { get; }

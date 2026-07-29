@@ -4,6 +4,7 @@ using Patchouli.Core.Mcp;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
 using Patchouli.Mcp;
 
@@ -15,7 +16,6 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     private readonly string _path;
     private readonly IClock _clock;
     private readonly IBlockingOperationService? _blockingOperations;
-    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public McpServerSettingsService(string path, IClock clock, IBlockingOperationService? blockingOperations = null)
     {
@@ -41,22 +41,43 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
     public async Task<Result<McpServerSettings>> SaveSettingsAsync(McpServerSettings settings,
         CancellationToken cancellationToken = default)
     {
-        Result validation = await ValidateSettingsAsync(settings, cancellationToken);
-        if (validation.IsFailure)
-        {
-            return Result<McpServerSettings>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
-        }
+        return await SaveSettingsAsync(settings, settings.Revision, cancellationToken);
+    }
 
-        await _gate.WaitAsync(cancellationToken);
+    public async Task<Result<McpServerSettings>> SaveSettingsAsync(
+        McpServerSettings settings,
+        long expectedRevision,
+        CancellationToken cancellationToken = default)
+    {
+        McpServerSettings draft = Freeze(settings);
+        SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(_path);
+        await gate.WaitAsync(cancellationToken);
         try
         {
-            McpServerSettings saved = settings with { UpdatedAt = _clock.UtcNow.ToUniversalTime() };
+            Result validation = await ValidateSettingsAsync(draft, cancellationToken);
+            if (validation.IsFailure)
+            {
+                return Result<McpServerSettings>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
+            }
+
+            McpServerSettings current = await ReadAsync(cancellationToken);
+            if (current.Revision != expectedRevision)
+            {
+                return Result<McpServerSettings>.Failure(AppErrorCodes.StaleSettingsRevision,
+                    $"MCP settings revision {expectedRevision} is stale; current revision is {current.Revision}.");
+            }
+
+            McpServerSettings saved = draft with
+            {
+                UpdatedAt = _clock.UtcNow.ToUniversalTime(),
+                Revision = current.Revision + 1
+            };
             await WriteAsync(saved, cancellationToken);
             return Result<McpServerSettings>.Success(saved);
         }
         finally
         {
-            _gate.Release();
+            gate.Release();
         }
     }
 
@@ -138,9 +159,17 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                         value.TryGetProperty("DisabledReason", out JsonElement reason) ? reason.GetString() : null))
                     .ToArray()
                 : [];
+        long revision = mcp.TryGetProperty("Revision", out JsonElement revisionValue)
+            ? revisionValue.GetInt64()
+            : 0;
+        DateTimeOffset updatedAt =
+            mcp.TryGetProperty("UpdatedAt", out JsonElement updatedAtValue) &&
+            DateTimeOffset.TryParse(updatedAtValue.GetString(), out DateTimeOffset parsedUpdatedAt)
+                ? parsedUpdatedAt.ToUniversalTime()
+                : _clock.UtcNow.ToUniversalTime();
         return new McpServerSettings(port, bindAddress, cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
-            string.IsNullOrWhiteSpace(token) ? null : token, tools, _clock.UtcNow);
+            string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision);
     }
 
     private async Task WriteAsync(McpServerSettings settings, CancellationToken cancellationToken)
@@ -171,12 +200,44 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             ["AllowedOrigins"] = JsonSerializer.SerializeToNode(settings.AllowedOrigins),
             ["AuthRequired"] = settings.AuthRequired,
             ["Token"] = settings.Token ?? "",
-            ["ToolOverrides"] = JsonSerializer.SerializeToNode(settings.ToolOverrides)
+            ["ToolOverrides"] = JsonSerializer.SerializeToNode(settings.ToolOverrides),
+            ["UpdatedAt"] = settings.UpdatedAt.ToUniversalTime().ToString("O"),
+            ["Revision"] = settings.Revision
         };
         string temporary = _path + $".{Guid.NewGuid():N}.tmp";
-        await File.WriteAllTextAsync(temporary, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
-            cancellationToken);
-        File.Move(temporary, _path, true);
+        try
+        {
+            await File.WriteAllTextAsync(temporary,
+                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }),
+                cancellationToken);
+            File.Move(temporary, _path, true);
+        }
+        finally
+        {
+            if (File.Exists(temporary))
+            {
+                try
+                {
+                    File.Delete(temporary);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    _ = exception;
+                }
+            }
+        }
+    }
+
+    private static McpServerSettings Freeze(McpServerSettings settings)
+    {
+        return settings with
+        {
+            BindAddress = settings.BindAddress.Trim(),
+            AllowedOrigins = settings.AllowedOrigins.ToArray(),
+            ToolOverrides = settings.ToolOverrides
+                .Select(item => item with { })
+                .ToArray()
+        };
     }
 
     private async Task RecordUnsafeBindFailureAsync(string message, CancellationToken cancellationToken)

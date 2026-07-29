@@ -5,6 +5,7 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
@@ -255,6 +256,22 @@ public sealed class FileResolutionServiceTests
 
         first.IsSuccess.Should().BeTrue();
         second.ErrorCode.Should().Be(AppErrorCodes.InvalidState);
+    }
+
+    [Fact]
+    public async Task Logical_root_can_be_bound_to_a_device_local_path_without_changing_its_id()
+    {
+        await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
+        FileSearchRootId logicalId = FileSearchRootId.New();
+        string localPath = context.Temp.CreateDirectory("mapped-root");
+
+        Result<FileSearchRoot> bound = await context.FileResolutionService.BindSearchRootAsync(
+            logicalId,
+            SelectedRoot(localPath));
+
+        bound.IsSuccess.Should().BeTrue(bound.ErrorMessage);
+        bound.Value.RootId.Should().Be(logicalId);
+        bound.Value.RootPath.Should().Be(Path.GetFullPath(localPath));
     }
 
     [Fact]

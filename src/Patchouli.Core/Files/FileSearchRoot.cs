@@ -2,6 +2,30 @@ using Patchouli.Core.Ids;
 
 namespace Patchouli.Core.Files;
 
+/// <summary>
+/// Snapshot-eligible identity for a user-approved search root. Device paths and authorization data belong to
+/// <see cref="FileSearchRootDeviceBinding"/> and must never be published.
+/// </summary>
+public sealed record FileSearchRootDefinition(
+    FileSearchRootId RootId,
+    LibraryId LibraryId,
+    string DisplayName,
+    string Purpose,
+    bool IsEnabled,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+/// <summary>Device-local resolution of a logical FileSearchRoot.</summary>
+public sealed record FileSearchRootDeviceBinding(
+    FileSearchRootId RootId,
+    string RootPath,
+    bool IsAvailable,
+    string? AuthorizationKind,
+    byte[]? AuthorizationPayload,
+    int? AuthorizationPayloadVersion,
+    DateTimeOffset? AuthorizationUpdatedAt,
+    DateTimeOffset UpdatedAt);
+
 public sealed record FileSearchRoot(
     FileSearchRootId RootId,
     LibraryId LibraryId,
