@@ -170,7 +170,11 @@ public sealed class MetadataLookupSettingsTests
             };
             initial.Save(settingsPath).IsSuccess.Should().BeTrue();
             MainWindowViewModel main = new(settingsPath: settingsPath);
+            AppServices services = await main.ServicesAsync();
+            (await services.Library.CreateLibraryAsync("Synced metadata")).IsSuccess.Should().BeTrue();
             SyncSettingsViewModel sync = main.Settings.SyncSettings;
+            await sync.LoadAsync();
+            sync.SyncRoot = Path.Combine(root, "sync");
             sync.SyncMetadataLookup = true;
 
             await sync.SaveAsync();

@@ -2511,9 +2511,13 @@ public sealed class UiViewModelTests : IDisposable
         xaml.Should().NotContain("ActiveEffectiveSourceText");
         xaml.Should().NotContain("ActiveRequiresReload");
         xaml.Should().NotContain("ActiveHasLastError");
-        xaml.Should().Contain("MetadataLookupScopeText");
-        xaml.Should().Contain("MetadataLookupEffectiveSourceText");
-        xaml.Should().Contain("MetadataLookupSchemaText");
+        xaml.Should().Contain("SettingScopeRows");
+        xaml.Should().Contain("AllowedSyncText");
+        xaml.Should().Contain("OwnerText");
+        xaml.Should().Contain("SchemaText");
+        xaml.Should().Contain("MCP 配置");
+        xaml.Should().Contain("凭据");
+        xaml.Should().Contain("运行状态");
         xaml.Should().Contain("Command=\"{Binding SaveAndRestartCommand}\"");
         xaml.Should().Contain("Command=\"{Binding RemoveMinerUCredentialCommand}\"");
         xaml.Should().Contain("添加并扫描");

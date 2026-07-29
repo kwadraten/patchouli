@@ -1,7 +1,10 @@
 using FluentAssertions;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Credentials;
+using Patchouli.Infrastructure.Mcp;
+using Patchouli.UI;
 
 namespace Patchouli.Tests;
 
@@ -44,6 +47,30 @@ public sealed class CredentialStoreTests
         await context.Store.SaveAsync("mineru", "MinerU", "secret");
         typeof(ProviderCredentialMetadata).GetProperties().Select(value => value.Name)
             .Should().NotContain("SecretValue");
+    }
+
+    [Fact]
+    public async Task Credential_and_mcp_saves_share_the_same_settings_file_writer()
+    {
+        await using Context context = new();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        McpServerSettingsService mcp = new(context.Path, clock);
+
+        Task<Result<McpServerSettings>> mcpSave = mcp.SaveSettingsAsync(
+            McpServerSettingsService.DefaultSettings(clock.UtcNow) with { Port = 4542 });
+        Task<Result<ProviderCredentialMetadata>> credentialSave =
+            context.Store.SaveAsync("mineru", "MinerU", "token");
+
+        await Task.WhenAll(mcpSave, credentialSave);
+        Result<McpServerSettings> mcpResult = await mcpSave;
+        Result<ProviderCredentialMetadata> credentialResult = await credentialSave;
+        PatchouliAppSettings settings = PatchouliAppSettings.Load(context.Path);
+
+        mcpResult.IsSuccess.Should().BeTrue();
+        credentialResult.IsSuccess.Should().BeTrue();
+        settings.Mcp.Port.Should().Be(4542);
+        settings.Credentials.Providers.Should().ContainSingle(provider =>
+            provider.ProviderId == "mineru" && provider.SecretValue == "token");
     }
 
     private sealed class Context : IAsyncDisposable

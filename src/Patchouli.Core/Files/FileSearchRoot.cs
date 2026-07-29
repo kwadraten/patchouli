@@ -1,6 +1,67 @@
 using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
 
 namespace Patchouli.Core.Files;
+
+public static class LogicalRootKinds
+{
+    public const string SyncRoot = "sync_root";
+    public const string FileSearchRoot = "file_search_root";
+
+    public static bool IsKnown(string value)
+    {
+        return value is SyncRoot or FileSearchRoot;
+    }
+}
+
+public static class LogicalRootRecoveryActions
+{
+    public const string ChooseLocalSyncRoot = "choose_local_sync_root";
+    public const string BindLocalFileSearchRoot = "bind_local_file_search_root";
+}
+
+public sealed record DeviceRootBinding(
+    LibraryId LibraryId,
+    string RootKind,
+    string LogicalRootId,
+    string DeviceId,
+    string LocalPath,
+    string ProviderIdentity,
+    bool IsAvailable,
+    string? AuthorizationKind,
+    byte[]? AuthorizationPayload,
+    int? AuthorizationPayloadVersion,
+    DateTimeOffset? AuthorizationUpdatedAt,
+    DateTimeOffset UpdatedAt);
+
+public interface IDeviceRootBindingStore
+{
+    Task<Result<string>> GetDeviceIdAsync(CancellationToken cancellationToken = default);
+
+    Task<Result<DeviceRootBinding?>> GetBindingAsync(
+        LibraryId libraryId,
+        string rootKind,
+        string logicalRootId,
+        string deviceId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<DeviceRootBinding>>> ListBindingsAsync(
+        LibraryId? libraryId = null,
+        string? rootKind = null,
+        string? deviceId = null,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<DeviceRootBinding>> SaveBindingAsync(
+        DeviceRootBinding binding,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> DeleteBindingAsync(
+        LibraryId libraryId,
+        string rootKind,
+        string logicalRootId,
+        string deviceId,
+        CancellationToken cancellationToken = default);
+}
 
 /// <summary>
 /// Snapshot-eligible identity for a user-approved search root. Device paths and authorization data belong to
@@ -17,8 +78,12 @@ public sealed record FileSearchRootDefinition(
 
 /// <summary>Device-local resolution of a logical FileSearchRoot.</summary>
 public sealed record FileSearchRootDeviceBinding(
+    LibraryId LibraryId,
+    string RootKind,
     FileSearchRootId RootId,
+    string DeviceId,
     string RootPath,
+    string ProviderIdentity,
     bool IsAvailable,
     string? AuthorizationKind,
     byte[]? AuthorizationPayload,

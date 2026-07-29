@@ -1,3 +1,6 @@
+using System.Text.Json;
+using Patchouli.Core.Results;
+
 namespace Patchouli.Core.Settings;
 
 /// <summary>
@@ -94,16 +97,124 @@ public static class LibrarySettingCatalog
             .OrderBy(key => key, StringComparer.Ordinal)
             .ToArray();
     }
+
+    public static Result ValidateRecord(SettingRecord record)
+    {
+        if (string.IsNullOrWhiteSpace(record.SettingKey) || string.IsNullOrWhiteSpace(record.Value) ||
+            record.SchemaVersion < 1 || record.Revision < 1 || string.IsNullOrWhiteSpace(record.UpdatedByDeviceId) ||
+            string.IsNullOrWhiteSpace(record.MergePolicy))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Library setting record is missing a required value.");
+        }
+
+        if (!TryGet(record.SettingKey.Trim(), out SettingCatalogEntry? entry) || !entry.IsSnapshotEligible)
+        {
+            return Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Setting is not eligible for library snapshot storage.");
+        }
+
+        if (record.SchemaVersion != entry.SchemaVersion ||
+            !string.Equals(record.MergePolicy, entry.MergePolicy, StringComparison.Ordinal))
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Library setting schema or merge policy does not match the catalog.");
+        }
+
+        return ValidateJsonValue(entry, record.Value);
+    }
+
+    public static Result ValidateJsonValue(SettingCatalogEntry entry, string valueJson)
+    {
+        return entry.SettingKey switch
+        {
+            LibrarySettingKeys.MetadataLookup => ValidateMetadataLookupJson(valueJson),
+            _ => Result.Failure(AppErrorCodes.UnsupportedOperation,
+                $"Setting '{entry.SettingKey}' does not define a JSON validator.")
+        };
+    }
+
+    public static Result ValidateClrValue(SettingCatalogEntry entry, Type type)
+    {
+        if (entry.SettingKey == LibrarySettingKeys.MetadataLookup && type.Name == "MetadataLookupAppSettings")
+        {
+            return Result.Success();
+        }
+
+        return Result.Failure(AppErrorCodes.UnsupportedOperation,
+            $"Setting '{entry.SettingKey}' does not define a serializer for CLR value '{type.Name}'.");
+    }
+
+    private static Result ValidateMetadataLookupJson(string valueJson)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(valueJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "metadata_lookup setting value must be a JSON object.");
+            }
+
+            if (!TryGetProperty(document.RootElement, "Sources", out JsonElement sources) &&
+                !TryGetProperty(document.RootElement, "sources", out sources))
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "metadata_lookup setting value must include a sources array.");
+            }
+
+            if (sources.ValueKind != JsonValueKind.Array)
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "metadata_lookup sources must be a JSON array.");
+            }
+
+            foreach (JsonElement source in sources.EnumerateArray())
+            {
+                if (source.ValueKind != JsonValueKind.Object)
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "metadata_lookup sources must contain objects.");
+                }
+
+                bool hasId = (TryGetProperty(source, "SourceId", out JsonElement sourceId) ||
+                              TryGetProperty(source, "sourceId", out sourceId) ||
+                              TryGetProperty(source, "source_id", out sourceId)) &&
+                             sourceId.ValueKind == JsonValueKind.String &&
+                             !string.IsNullOrWhiteSpace(sourceId.GetString());
+                bool hasEnabled = (TryGetProperty(source, "Enabled", out JsonElement enabled) ||
+                                   TryGetProperty(source, "enabled", out enabled)) &&
+                                  enabled.ValueKind is JsonValueKind.True or JsonValueKind.False;
+                if (!hasId || !hasEnabled)
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "metadata_lookup source entries require SourceId and Enabled values.");
+                }
+            }
+
+            return Result.Success();
+        }
+        catch (JsonException exception)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                $"metadata_lookup setting value is invalid JSON: {exception.Message}");
+        }
+    }
+
+    private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
+    {
+        return element.TryGetProperty(name, out value);
+    }
 }
 
 public interface ILibrarySettingStore
 {
-    Task<Results.Result<SettingRecord?>> GetAsync(string settingKey,
+    Task<Result<SettingRecord?>> GetAsync(string settingKey,
         CancellationToken cancellationToken = default);
 
-    Task<Results.Result<IReadOnlyList<SettingRecord>>> ListAsync(CancellationToken cancellationToken = default);
+    Task<Result<IReadOnlyList<SettingRecord>>> ListAsync(CancellationToken cancellationToken = default);
 
-    Task<Results.Result> SaveAsync(SettingRecord record, CancellationToken cancellationToken = default);
+    Task<Result> SaveAsync(SettingRecord record, CancellationToken cancellationToken = default);
 
-    Task<Results.Result> DeleteAsync(string settingKey, CancellationToken cancellationToken = default);
+    Task<Result> DeleteAsync(string settingKey, CancellationToken cancellationToken = default);
 }

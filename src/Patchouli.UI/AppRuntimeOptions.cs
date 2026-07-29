@@ -1,7 +1,10 @@
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
+using Patchouli.Core.Files;
 using Patchouli.Core.Import;
+using Patchouli.Core.Ids;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Settings;
@@ -72,6 +75,78 @@ public sealed record CredentialsAppSettings(IReadOnlyList<ProviderCredentialAppS
     }
 }
 
+public sealed record DeviceRootBindingAppSettings(
+    string LibraryId,
+    string RootKind,
+    string LogicalRootId,
+    string DeviceId,
+    string LocalPath,
+    string ProviderIdentity,
+    bool IsAvailable,
+    string? AuthorizationKind = null,
+    byte[]? AuthorizationPayload = null,
+    int? AuthorizationPayloadVersion = null,
+    string? AuthorizationUpdatedAt = null,
+    string? UpdatedAt = null,
+    SnapshotSyncLocalState? SnapshotState = null,
+    IReadOnlyList<string>? SyncedSettingKeys = null)
+{
+    public bool Matches(string libraryId, string rootKind, string logicalRootId, string deviceId)
+    {
+        return string.Equals(LibraryId, libraryId, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(RootKind, rootKind, StringComparison.Ordinal) &&
+               string.Equals(LogicalRootId, logicalRootId, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(DeviceId, deviceId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public bool Matches(string? libraryId = null, string? rootKind = null, string? deviceId = null)
+    {
+        return (string.IsNullOrWhiteSpace(libraryId) ||
+                string.Equals(LibraryId, libraryId, StringComparison.OrdinalIgnoreCase)) &&
+               (string.IsNullOrWhiteSpace(rootKind) || string.Equals(RootKind, rootKind, StringComparison.Ordinal)) &&
+               (string.IsNullOrWhiteSpace(deviceId) ||
+                string.Equals(DeviceId, deviceId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    public DeviceRootBinding ToDeviceRootBinding()
+    {
+        return new DeviceRootBinding(
+            Patchouli.Core.Ids.LibraryId.Parse(LibraryId),
+            RootKind,
+            LogicalRootId,
+            DeviceId,
+            LocalPath,
+            ProviderIdentity,
+            IsAvailable,
+            AuthorizationKind,
+            AuthorizationPayload,
+            AuthorizationPayloadVersion,
+            DateTimeOffset.TryParse(AuthorizationUpdatedAt, out DateTimeOffset authorizationUpdatedAt)
+                ? authorizationUpdatedAt.ToUniversalTime()
+                : null,
+            DateTimeOffset.TryParse(UpdatedAt, out DateTimeOffset updatedAt)
+                ? updatedAt.ToUniversalTime()
+                : DateTimeOffset.UnixEpoch);
+    }
+
+    public static DeviceRootBindingAppSettings FromDeviceRootBinding(DeviceRootBinding binding)
+    {
+        return new DeviceRootBindingAppSettings(
+            binding.LibraryId.ToString(),
+            binding.RootKind,
+            binding.LogicalRootId,
+            binding.DeviceId,
+            binding.LocalPath,
+            binding.ProviderIdentity,
+            binding.IsAvailable,
+            binding.AuthorizationKind,
+            binding.AuthorizationPayload,
+            binding.AuthorizationPayloadVersion,
+            binding.AuthorizationUpdatedAt?.ToUniversalTime().ToString("O"),
+            binding.UpdatedAt.ToUniversalTime().ToString("O"));
+    }
+}
+
 public sealed record SyncAppSettings(
     string DeviceId,
     string DeviceName,
@@ -79,20 +154,37 @@ public sealed record SyncAppSettings(
     bool SyncMetadataLookup,
     string SyncRootId = "",
     SnapshotSyncLocalState? SnapshotState = null,
-    IReadOnlyList<string>? SyncedSettingKeys = null)
+    IReadOnlyList<string>? SyncedSettingKeys = null,
+    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
         return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false);
     }
 
+    [JsonIgnore]
     public IReadOnlyList<string> EnabledSettingKeys =>
         LibrarySettingCatalog.NormalizeSnapshotKeys(SyncedSettingKeys ??
                                                     (SyncMetadataLookup ? [LibrarySettingKeys.MetadataLookup] : []));
 
+    [JsonIgnore]
+    public IReadOnlyList<DeviceRootBindingAppSettings> Bindings =>
+        NormalizeBindings(DeviceBindings ?? []);
+
     public bool IsSettingEnabled(string settingKey)
     {
         return EnabledSettingKeys.Contains(settingKey, StringComparer.Ordinal);
+    }
+
+    public bool IsSettingEnabled(string settingKey, LibraryId libraryId)
+    {
+        return EnabledSettingKeysForLibrary(libraryId).Contains(settingKey, StringComparer.Ordinal);
+    }
+
+    public IReadOnlyList<string> EnabledSettingKeysForLibrary(LibraryId libraryId)
+    {
+        DeviceRootBindingAppSettings? binding = CurrentSyncRootBinding(libraryId);
+        return LibrarySettingCatalog.NormalizeSnapshotKeys(binding?.SyncedSettingKeys ?? []);
     }
 
     public SyncAppSettings WithSettingEnabled(string settingKey, bool enabled)
@@ -113,6 +205,136 @@ public sealed record SyncAppSettings(
             SyncMetadataLookup = normalized.Contains(LibrarySettingKeys.MetadataLookup, StringComparer.Ordinal),
             SyncedSettingKeys = normalized
         };
+    }
+
+    public SyncAppSettings WithSettingEnabled(LibraryId libraryId, string settingKey, bool enabled)
+    {
+        DeviceRootBindingAppSettings binding = EnsureCurrentSyncRootBinding(libraryId);
+        HashSet<string> keys =
+            LibrarySettingCatalog.NormalizeSnapshotKeys(binding.SyncedSettingKeys ?? EnabledSettingKeys)
+                .ToHashSet(StringComparer.Ordinal);
+        if (enabled)
+        {
+            keys.Add(settingKey);
+        }
+        else
+        {
+            keys.Remove(settingKey);
+        }
+
+        IReadOnlyList<string> normalized = LibrarySettingCatalog.NormalizeSnapshotKeys(keys);
+        return WithDeviceBinding(binding with
+            {
+                SyncedSettingKeys = normalized,
+                SnapshotState = binding.SnapshotState ?? SnapshotSyncLocalState.NotConfigured,
+                UpdatedAt = DateTimeOffset.UtcNow.ToString("O")
+            }) with
+            {
+                SyncMetadataLookup = normalized.Contains(LibrarySettingKeys.MetadataLookup, StringComparer.Ordinal),
+                SyncedSettingKeys = normalized
+            };
+    }
+
+    public DeviceRootBindingAppSettings? CurrentSyncRootBinding(LibraryId libraryId)
+    {
+        string deviceId = DeviceId.Trim();
+        return Bindings.FirstOrDefault(binding =>
+            binding.Matches(libraryId.ToString(), LogicalRootKinds.SyncRoot, deviceId));
+    }
+
+    public DeviceRootBindingAppSettings EnsureCurrentSyncRootBinding(LibraryId libraryId)
+    {
+        DeviceRootBindingAppSettings? existing = CurrentSyncRootBinding(libraryId);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        string logicalRootId = string.IsNullOrWhiteSpace(SyncRootId) ? Guid.NewGuid().ToString("D") : SyncRootId;
+        return new DeviceRootBindingAppSettings(
+            libraryId.ToString(),
+            LogicalRootKinds.SyncRoot,
+            logicalRootId,
+            DeviceId,
+            SyncRoot,
+            "settings_json",
+            !string.IsNullOrWhiteSpace(SyncRoot) && Directory.Exists(SyncRoot),
+            FileSearchRootAuthorizationKinds.None,
+            null,
+            null,
+            null,
+            DateTimeOffset.UtcNow.ToString("O"),
+            SnapshotState ?? SnapshotSyncLocalState.NotConfigured,
+            EnabledSettingKeys);
+    }
+
+    public SyncAppSettings WithDeviceBinding(DeviceRootBindingAppSettings binding)
+    {
+        List<DeviceRootBindingAppSettings> bindings = Bindings
+            .Where(candidate => !candidate.Matches(binding.LibraryId, binding.RootKind, binding.LogicalRootId,
+                binding.DeviceId))
+            .ToList();
+        bindings.Add(binding);
+        return this with { DeviceBindings = NormalizeBindings(bindings) };
+    }
+
+    public SyncAppSettings WithoutDeviceBinding(
+        LibraryId libraryId,
+        string rootKind,
+        string logicalRootId,
+        string deviceId)
+    {
+        return this with
+        {
+            DeviceBindings = Bindings
+                .Where(binding => !binding.Matches(libraryId.ToString(), rootKind, logicalRootId, deviceId))
+                .ToArray()
+        };
+    }
+
+    private static IReadOnlyList<DeviceRootBindingAppSettings> NormalizeBindings(
+        IEnumerable<DeviceRootBindingAppSettings> bindings)
+    {
+        Dictionary<(string LibraryId, string RootKind, string LogicalRootId, string DeviceId),
+            DeviceRootBindingAppSettings> normalized = new();
+        foreach (DeviceRootBindingAppSettings binding in bindings)
+        {
+            string libraryId = binding.LibraryId.Trim();
+            string rootKind = binding.RootKind.Trim();
+            string logicalRootId = binding.LogicalRootId.Trim();
+            string deviceId = binding.DeviceId.Trim();
+            if (string.IsNullOrWhiteSpace(libraryId) ||
+                string.IsNullOrWhiteSpace(rootKind) ||
+                string.IsNullOrWhiteSpace(logicalRootId) ||
+                string.IsNullOrWhiteSpace(deviceId) ||
+                string.IsNullOrWhiteSpace(binding.LocalPath) ||
+                !LogicalRootKinds.IsKnown(rootKind))
+            {
+                continue;
+            }
+
+            normalized[(libraryId, rootKind, logicalRootId, deviceId)] = binding with
+            {
+                LibraryId = libraryId,
+                RootKind = rootKind,
+                LogicalRootId = logicalRootId,
+                DeviceId = deviceId,
+                LocalPath = Path.GetFullPath(binding.LocalPath),
+                ProviderIdentity = string.IsNullOrWhiteSpace(binding.ProviderIdentity)
+                    ? "settings_json"
+                    : binding.ProviderIdentity.Trim(),
+                SyncedSettingKeys = rootKind == LogicalRootKinds.SyncRoot
+                    ? LibrarySettingCatalog.NormalizeSnapshotKeys(binding.SyncedSettingKeys)
+                    : null
+            };
+        }
+
+        return normalized.Values
+            .OrderBy(binding => binding.LibraryId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(binding => binding.RootKind, StringComparer.Ordinal)
+            .ThenBy(binding => binding.LogicalRootId, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(binding => binding.DeviceId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 }
 
@@ -328,7 +550,8 @@ public sealed record PatchouliAppSettings(
                                                               (ReadBool(sync, "SyncMetadataLookup",
                                                                   defaults.Sync.SyncMetadataLookup)
                                                                   ? [LibrarySettingKeys.MetadataLookup]
-                                                                  : [])))
+                                                                  : [])),
+                    ReadDeviceBindings(sync, defaults.Sync.DeviceBindings ?? []))
             };
         }
         catch (JsonException exception)
@@ -408,17 +631,45 @@ public sealed record PatchouliAppSettings(
             SyncAppSettings syncToWrite = Sync;
             try
             {
+                JsonNode? persistedSync = root["Sync"];
                 SnapshotSyncLocalState? existingSnapshotState =
-                    root["Sync"]?["SnapshotState"]?.Deserialize<SnapshotSyncLocalState>();
+                    persistedSync?["SnapshotState"]?.Deserialize<SnapshotSyncLocalState>();
                 if (existingSnapshotState is not null &&
-                    (Sync.SnapshotState is null || existingSnapshotState.UpdatedAt > Sync.SnapshotState.UpdatedAt))
+                    (syncToWrite.SnapshotState is null ||
+                     existingSnapshotState.UpdatedAt > syncToWrite.SnapshotState.UpdatedAt))
                 {
-                    syncToWrite = Sync with { SnapshotState = existingSnapshotState };
+                    syncToWrite = syncToWrite with { SnapshotState = existingSnapshotState };
+                }
+
+                DeviceRootBindingAppSettings[] existingBindings = persistedSync?["DeviceBindings"] is JsonArray array
+                    ? ReadDeviceBindings(array).ToArray()
+                    : [];
+                if (existingBindings.Length > 0)
+                {
+                    foreach (DeviceRootBindingAppSettings existing in existingBindings)
+                    {
+                        DeviceRootBindingAppSettings? incoming = syncToWrite.Bindings.FirstOrDefault(binding =>
+                            binding.Matches(existing.LibraryId, existing.RootKind, existing.LogicalRootId,
+                                existing.DeviceId));
+                        if (incoming is null)
+                        {
+                            syncToWrite = syncToWrite.WithDeviceBinding(existing);
+                            continue;
+                        }
+
+                        if (existing.SnapshotState is not null &&
+                            (incoming.SnapshotState is null ||
+                             existing.SnapshotState.UpdatedAt > incoming.SnapshotState.UpdatedAt))
+                        {
+                            syncToWrite =
+                                syncToWrite.WithDeviceBinding(incoming with { SnapshotState = existing.SnapshotState });
+                        }
+                    }
                 }
             }
             catch (JsonException)
             {
-                // The caller's valid state replaces a malformed persisted state.
+                // The caller's valid sync bindings replace a malformed persisted state.
             }
 
             root["Sync"] = JsonSerializer.SerializeToNode(syncToWrite);
@@ -547,6 +798,98 @@ public sealed record PatchouliAppSettings(
         }
     }
 
+    private static IReadOnlyList<DeviceRootBindingAppSettings> ReadDeviceBindings(
+        JsonElement? section,
+        IReadOnlyList<DeviceRootBindingAppSettings> fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty("DeviceBindings", out JsonElement bindings) ||
+            bindings.ValueKind != JsonValueKind.Array)
+        {
+            return fallback;
+        }
+
+        return ReadDeviceBindings(bindings);
+    }
+
+    private static IReadOnlyList<DeviceRootBindingAppSettings> ReadDeviceBindings(JsonArray bindings)
+    {
+        List<DeviceRootBindingAppSettings> values = new();
+        foreach (JsonNode? node in bindings)
+        {
+            if (node is null)
+            {
+                continue;
+            }
+
+            try
+            {
+                DeviceRootBindingAppSettings? binding = node.Deserialize<DeviceRootBindingAppSettings>();
+                if (binding is not null)
+                {
+                    values.Add(binding);
+                }
+            }
+            catch (JsonException)
+            {
+                // Ignore one malformed binding row; the rest of the settings file can still be recovered.
+            }
+        }
+
+        return values;
+    }
+
+    private static IReadOnlyList<DeviceRootBindingAppSettings> ReadDeviceBindings(JsonElement bindings)
+    {
+        List<DeviceRootBindingAppSettings> values = new();
+        foreach (JsonElement binding in bindings.EnumerateArray())
+        {
+            if (binding.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string rootKind = ReadString(binding, "RootKind", "").Trim();
+            string localPath = ReadString(binding, "LocalPath", "").Trim();
+            if (string.IsNullOrWhiteSpace(rootKind) || string.IsNullOrWhiteSpace(localPath))
+            {
+                continue;
+            }
+
+            SnapshotSyncLocalState? state = null;
+            try
+            {
+                if (binding.TryGetProperty("SnapshotState", out JsonElement snapshotState) &&
+                    snapshotState.ValueKind is not JsonValueKind.Null and not JsonValueKind.Undefined)
+                {
+                    state = snapshotState.Deserialize<SnapshotSyncLocalState>();
+                }
+            }
+            catch (JsonException)
+            {
+                state = null;
+            }
+
+            values.Add(new DeviceRootBindingAppSettings(
+                ReadString(binding, "LibraryId", ""),
+                rootKind,
+                ReadString(binding, "LogicalRootId", ""),
+                ReadString(binding, "DeviceId", ""),
+                ExpandPath(localPath),
+                ReadString(binding, "ProviderIdentity", "settings_json"),
+                ReadBool(binding, "IsAvailable", Directory.Exists(ExpandPath(localPath))),
+                ReadString(binding, "AuthorizationKind", FileSearchRootAuthorizationKinds.None),
+                ReadBytes(binding, "AuthorizationPayload"),
+                ReadNullableInt(binding, "AuthorizationPayloadVersion"),
+                ReadString(binding, "AuthorizationUpdatedAt", ""),
+                ReadString(binding, "UpdatedAt", ""),
+                state,
+                ReadStringList(binding, "SyncedSettingKeys", [])));
+        }
+
+        return values;
+    }
+
     private static McpServerSettings ReadMcpSettings(JsonElement? section, McpServerSettings fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element)
@@ -629,6 +972,58 @@ public sealed record PatchouliAppSettings(
         return element.TryGetProperty(name, out JsonElement value) && value.TryGetInt64(out long parsed)
             ? parsed
             : fallback;
+    }
+
+    private static int? ReadNullableInt(JsonElement? section, string name)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return null;
+        }
+
+        return element.TryGetProperty(name, out JsonElement value) &&
+               value.ValueKind == JsonValueKind.Number &&
+               value.TryGetInt32(out int parsed)
+            ? parsed
+            : null;
+    }
+
+    private static byte[]? ReadBytes(JsonElement? section, string name)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element ||
+            !element.TryGetProperty(name, out JsonElement value) ||
+            value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            try
+            {
+                return value.GetBytesFromBase64();
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        List<byte> bytes = new();
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            if (item.TryGetByte(out byte parsed))
+            {
+                bytes.Add(parsed);
+            }
+        }
+
+        return bytes.ToArray();
     }
 
     private static Dictionary<string, bool> ReadStringBoolDict(JsonElement? section, string name,

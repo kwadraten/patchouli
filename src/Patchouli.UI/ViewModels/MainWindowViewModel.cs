@@ -16,6 +16,7 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
@@ -265,12 +266,23 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<SettingsSaveResult> SaveMetadataLookupSettingsAsync(MetadataLookupAppSettings metadataLookup)
     {
-        if (!_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
+        if (!HasAnyMetadataLookupSyncEnabled())
         {
             return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
         }
 
         AppServices services = await ServicesAsync();
+        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        if (library.IsFailure)
+        {
+            return new SettingsSaveResult(false, library.ErrorCode, library.ErrorMessage, "library_identity", true);
+        }
+
+        if (!_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId))
+        {
+            return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
+        }
+
         Result saved = await services.SaveSyncedMetadataLookupAsync(metadataLookup, _settings.Sync.DeviceId);
         if (saved.IsFailure)
         {
@@ -281,14 +293,32 @@ public sealed class MainWindowViewModel : ViewModelBase
         return json;
     }
 
-    public async Task<SettingsSaveResult> SetMetadataLookupSyncEnabledAsync(bool enabled)
+    private bool HasAnyMetadataLookupSyncEnabled()
     {
-        if (enabled == _settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
+        return _settings.Sync.SyncMetadataLookup ||
+               _settings.Sync.Bindings.Any(binding =>
+                   string.Equals(binding.RootKind, LogicalRootKinds.SyncRoot, StringComparison.Ordinal) &&
+                   LibrarySettingCatalog.NormalizeSnapshotKeys(binding.SyncedSettingKeys)
+                       .Contains(LibrarySettingKeys.MetadataLookup, StringComparer.Ordinal));
+    }
+
+    public async Task<SettingsSaveResult> SetMetadataLookupSyncEnabledAsync(
+        bool enabled,
+        SyncAppSettings? syncOverride = null)
+    {
+        AppServices services = await ServicesAsync();
+        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        if (library.IsFailure)
+        {
+            return new SettingsSaveResult(false, library.ErrorCode, library.ErrorMessage, "library_identity", true);
+        }
+
+        if (enabled == _settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId) &&
+            syncOverride is null)
         {
             return SettingsSaveResult.Success;
         }
 
-        AppServices services = await ServicesAsync();
         if (enabled)
         {
             Result<SettingRecord?> previous =
@@ -309,7 +339,8 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             SettingsSaveResult json = UpdateAppOptions(_settings with
             {
-                Sync = _settings.Sync.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, true)
+                Sync = syncOverride ?? _settings.Sync.WithSettingEnabled(library.Value.LibraryId,
+                    LibrarySettingKeys.MetadataLookup, true)
             });
             if (!json.IsSuccess)
             {
@@ -351,7 +382,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         SettingsSaveResult savedJson = UpdateAppOptions(_settings with
         {
             MetadataLookup = materialized,
-            Sync = _settings.Sync.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, false)
+            Sync = syncOverride ?? _settings.Sync.WithSettingEnabled(library.Value.LibraryId,
+                LibrarySettingKeys.MetadataLookup, false)
         });
         if (!savedJson.IsSuccess && storedRecord.Value is not null)
         {
@@ -652,7 +684,9 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task RefreshSyncedMetadataLookupAsync(AppServices services)
     {
-        if (!_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
+        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        if (library.IsFailure ||
+            !_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId))
         {
             return;
         }

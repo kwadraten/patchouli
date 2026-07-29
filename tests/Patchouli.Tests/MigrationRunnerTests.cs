@@ -140,6 +140,14 @@ public sealed class MigrationRunnerTests
         definitionColumns.Should().Contain(["root_id", "display_name", "purpose", "is_enabled"])
             .And.NotContain("root_path")
             .And.NotContain("authorization_payload");
-        bindingColumns.Should().Contain(["root_id", "root_path", "authorization_payload"]);
+        bindingColumns.Should().Contain([
+            "library_id",
+            "root_kind",
+            "root_id",
+            "device_id",
+            "provider_identity",
+            "root_path",
+            "authorization_payload"
+        ]);
     }
 }

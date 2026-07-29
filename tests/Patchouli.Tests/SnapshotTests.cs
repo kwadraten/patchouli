@@ -180,6 +180,59 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public async Task ValidateSnapshot_rejects_setting_records_that_drift_from_the_catalog()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        await using (SqliteConnection connection = c.OpenRuntime())
+        {
+            await connection.ExecuteAsync(
+                """
+                insert into library_setting_records (
+                    setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
+                values ('metadata_lookup', 1, '{"sources":[]}', 1, '2026-07-13T00:00:00.0000000+00:00',
+                        'device-a', 'scalar_replace');
+                """);
+        }
+
+        Result<SnapshotPublishResult> published =
+            await c.PublishAsync(enabledSettingKeys: [LibrarySettingKeys.MetadataLookup]);
+        SnapshotManifest manifest =
+            (await SnapshotPublisher.ReadJsonAsync<SnapshotManifest>(published.Value.ManifestPath, default))!;
+        SnapshotShard originalShard = manifest.Shards.Single();
+        string shardPath = Path.Combine(c.SyncRoot, originalShard.FileName);
+        await using (SqliteConnection shard = OpenShard(c.SyncRoot, originalShard))
+        {
+            await shard.ExecuteAsync(
+                """
+                update library_setting_records
+                set schema_version = 2
+                where setting_key = 'metadata_lookup';
+                """);
+        }
+
+        SnapshotShard updatedShard = originalShard with
+        {
+            SizeBytes = new FileInfo(shardPath).Length,
+            Blake3 = await SnapshotPublisher.Blake3FileAsync(shardPath)
+        };
+        SnapshotManifest updatedManifest = manifest with
+        {
+            Shards = manifest.Shards
+                .Select(shard => shard.ShardId == originalShard.ShardId ? updatedShard : shard)
+                .ToArray()
+        };
+        await SnapshotPublisher.WriteJsonAtomicAsync(published.Value.ManifestPath, updatedManifest, default);
+
+        SnapshotValidationResult validation =
+            (await c.Importer.ValidateSnapshotAsync(published.Value.ManifestPath)).Value;
+
+        validation.IsValid.Should().BeFalse();
+        validation.Errors.Should().Contain(error =>
+            error.Contains("setting record invalid", StringComparison.OrdinalIgnoreCase) &&
+            error.Contains(LibrarySettingKeys.MetadataLookup, StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Publish_keeps_logical_file_root_but_removes_device_binding_path_and_authorization()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
@@ -193,9 +246,11 @@ public sealed class SnapshotTests
                     root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
                 values (@RootId, @LibraryId, 'Papers', 'file_resolution', 1, @Now, @Now);
                 insert into file_search_root_bindings (
-                    root_id, root_path, is_available, authorization_kind, authorization_payload,
+                    library_id, root_kind, root_id, device_id, provider_identity,
+                    root_path, is_available, authorization_kind, authorization_payload,
                     authorization_payload_version, authorization_updated_at, updated_at)
-                values (@RootId, @RootPath, 1, 'test-token', @Authorization, 1, @Now, @Now);
+                values (@LibraryId, 'file_search_root', @RootId, 'device-a', 'test',
+                        @RootPath, 1, 'test-token', @Authorization, 1, @Now, @Now);
                 """,
                 new
                 {
@@ -559,8 +614,10 @@ public sealed class SnapshotTests
                     root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
                 values (@RootId, @LibraryId, 'Papers', 'file_resolution', 1, @Now, @Now);
                 insert into file_search_root_bindings (
-                    root_id, root_path, is_available, authorization_kind, updated_at)
-                values (@RootId, @RootPath, 1, 'none', @Now);
+                    library_id, root_kind, root_id, device_id, provider_identity,
+                    root_path, is_available, authorization_kind, updated_at)
+                values (@LibraryId, 'file_search_root', @RootId, 'device-a', 'test',
+                        @RootPath, 1, 'none', @Now);
                 """,
                 new
                 {
@@ -602,6 +659,14 @@ public sealed class SnapshotTests
 
         inspected.ErrorCode.Should().Be(AppErrorCodes.MappingRequired);
         inspected.ErrorMessage.Should().Contain(rootId);
+        inspected.Details.Should().BeOfType<MappingRequiredDetails>()
+            .Which.Should().Be(new MappingRequiredDetails(
+                LogicalRootKinds.FileSearchRoot,
+                rootId,
+                c.LibraryId.ToString(),
+                "device-b",
+                LogicalRootRecoveryActions.BindLocalFileSearchRoot));
+        Directory.EnumerateFiles(c.StagingRoot, "*.sqlite", SearchOption.AllDirectories).Should().NotBeEmpty();
     }
 
     [Fact]
@@ -633,6 +698,13 @@ public sealed class SnapshotTests
 
         inspected.ErrorCode.Should().Be(AppErrorCodes.MappingRequired);
         inspected.ErrorMessage.Should().Contain("logical-sync-a");
+        inspected.Details.Should().BeOfType<MappingRequiredDetails>()
+            .Which.Should().Be(new MappingRequiredDetails(
+                LogicalRootKinds.SyncRoot,
+                "logical-sync-a",
+                c.LibraryId.ToString(),
+                "device-b",
+                LogicalRootRecoveryActions.ChooseLocalSyncRoot));
     }
 
     [Fact]

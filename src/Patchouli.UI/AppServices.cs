@@ -90,8 +90,9 @@ public sealed class AppServices
             : null;
         FileSearchRootAccess = new FileSearchRootAccess(nativeAdapter,
             settings.FileScanning.ExclusionPatterns);
+        AppSettingsDeviceRootBindingStore rootBindings = new(settingsPath);
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
-            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess);
+            blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings);
         BiblatexHelper = new BiblatexHelperClient();
         BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents);
         ConflictActions = new ConflictActionExecutorRegistry(

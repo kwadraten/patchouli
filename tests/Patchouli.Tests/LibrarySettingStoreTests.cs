@@ -54,6 +54,25 @@ public sealed class LibrarySettingStoreTests
     }
 
     [Fact]
+    public async Task Enabled_setting_requires_a_catalogued_serializer_and_json_validator()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        LibrarySettingStore store = new(database.ConnectionFactory);
+        LibrarySettingRecordService service = new(store,
+            new FixedClock(DateTimeOffset.Parse("2026-07-13T00:00:00Z")));
+
+        Result<SettingRecord> invalid = await service.SaveAsync(
+            LibrarySettingKeys.MetadataLookup,
+            new { sources = Array.Empty<object>() },
+            "device-a",
+            true);
+
+        invalid.ErrorCode.Should().Be(AppErrorCodes.UnsupportedOperation);
+        (await store.ListAsync()).Value.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Catalog_rejects_schema_and_merge_policy_drift()
     {
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();

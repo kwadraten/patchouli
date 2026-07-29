@@ -3,13 +3,13 @@ using System.Text.Json.Nodes;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.Core.Settings;
 
 namespace Patchouli.Infrastructure.Credentials;
 
 public sealed class CredentialStore : ICredentialStore
 {
     private readonly string _path;
-    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public CredentialStore(string path)
     {
@@ -25,7 +25,8 @@ public sealed class CredentialStore : ICredentialStore
                 "Provider and secret are required.");
         }
 
-        await _gate.WaitAsync(cancellationToken);
+        SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(_path);
+        await gate.WaitAsync(cancellationToken);
         try
         {
             JsonObject root = await ReadRootAsync(cancellationToken);
@@ -64,7 +65,7 @@ public sealed class CredentialStore : ICredentialStore
         }
         finally
         {
-            _gate.Release();
+            gate.Release();
         }
     }
 
@@ -86,7 +87,8 @@ public sealed class CredentialStore : ICredentialStore
 
     public async Task<Result> RemoveAsync(string providerId, CancellationToken cancellationToken = default)
     {
-        await _gate.WaitAsync(cancellationToken);
+        SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(_path);
+        await gate.WaitAsync(cancellationToken);
         try
         {
             JsonObject root = await ReadRootAsync(cancellationToken);
@@ -108,7 +110,7 @@ public sealed class CredentialStore : ICredentialStore
         }
         finally
         {
-            _gate.Release();
+            gate.Release();
         }
     }
 

@@ -21,6 +21,7 @@ public sealed class FileResolutionService : IFileResolutionService
     private readonly IFileFingerprintService _fingerprintService;
     private readonly IBlockingOperationService? _blockingOperations;
     private readonly IFileSearchRootAccess _rootAccess;
+    private readonly IDeviceRootBindingStore? _rootBindings;
 
     public FileResolutionService(
         SqliteConnectionFactory connectionFactory,
@@ -28,7 +29,8 @@ public sealed class FileResolutionService : IFileResolutionService
         IClock clock,
         IFileFingerprintService? fingerprintService = null,
         IBlockingOperationService? blockingOperations = null,
-        IFileSearchRootAccess? rootAccess = null)
+        IFileSearchRootAccess? rootAccess = null,
+        IDeviceRootBindingStore? rootBindings = null)
     {
         _connectionFactory = connectionFactory;
         _libraryIdentityService = libraryIdentityService;
@@ -36,6 +38,7 @@ public sealed class FileResolutionService : IFileResolutionService
         _fingerprintService = fingerprintService ?? new FileFingerprintService();
         _blockingOperations = blockingOperations;
         _rootAccess = rootAccess ?? new FileSearchRootAccess();
+        _rootBindings = rootBindings;
     }
 
     public async Task<Result<FileSearchRoot>> AddSearchRootAsync(
@@ -58,6 +61,12 @@ public sealed class FileResolutionService : IFileResolutionService
         if (libraryResult.IsFailure)
         {
             return Result<FileSearchRoot>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
+        }
+
+        Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+        if (deviceId.IsFailure)
+        {
+            return Result<FileSearchRoot>.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
         }
 
         BlockingOperationId? scanOperationId = null;
@@ -88,17 +97,22 @@ public sealed class FileResolutionService : IFileResolutionService
                 await connection.OpenAsync(cancellationToken);
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
-                int duplicate = await connection.ExecuteScalarAsync<int>(
-                    """
-                    select count(1)
-                    from file_search_root_definitions definition
-                    join file_search_root_bindings binding on binding.root_id = definition.root_id
-                    where definition.library_id = @LibraryId and binding.root_path = @RootPath;
-                    """,
-                    new { LibraryId = root.LibraryId.ToString(), root.RootPath },
-                    transaction);
+                Result<bool> duplicate = await HasDuplicateSearchRootBindingAsync(
+                    connection,
+                    transaction,
+                    root.LibraryId,
+                    deviceId.Value,
+                    root.RootPath,
+                    null,
+                    cancellationToken);
 
-                if (duplicate > 0)
+                if (duplicate.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<FileSearchRoot>.Failure(duplicate.ErrorCode!, duplicate.ErrorMessage!);
+                }
+
+                if (duplicate.Value)
                 {
                     await transaction.RollbackAsync(cancellationToken);
                     await TryFailRootScanAsync(
@@ -118,31 +132,72 @@ public sealed class FileResolutionService : IFileResolutionService
                     insert into file_search_root_definitions (
                         root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
                     values (@RootId, @LibraryId, @DisplayName, 'file_resolution', 1, @CreatedAt, @UpdatedAt);
-
-                    insert into file_search_root_bindings (
-                        root_id, root_path, is_available, authorization_kind, authorization_payload,
-                        authorization_payload_version, authorization_updated_at, updated_at)
-                    values (@RootId, @RootPath, @IsAvailable, @AuthorizationKind, @AuthorizationPayload,
-                        @AuthorizationPayloadVersion, @AuthorizationUpdatedAt, @UpdatedAt);
                     """,
                     new
                     {
                         RootId = root.RootId.ToString(),
                         LibraryId = root.LibraryId.ToString(),
                         DisplayName = LogicalRootDisplayName(root.RootId),
-                        root.RootPath,
-                        IsAvailable = root.IsAvailable ? 1 : 0,
                         CreatedAt = FormatUtc(root.CreatedAt),
-                        UpdatedAt = FormatUtc(root.UpdatedAt),
+                        UpdatedAt = FormatUtc(root.UpdatedAt)
+                    },
+                    transaction);
+                if (_rootBindings is null)
+                {
+                    await connection.ExecuteAsync(
+                        """
+                        insert into file_search_root_bindings (
+                            library_id, root_kind, root_id, device_id, provider_identity,
+                            root_path, is_available, authorization_kind, authorization_payload,
+                            authorization_payload_version, authorization_updated_at, updated_at)
+                        values (@LibraryId, 'file_search_root', @RootId, @DeviceId, @ProviderIdentity,
+                            @RootPath, @IsAvailable, @AuthorizationKind, @AuthorizationPayload,
+                            @AuthorizationPayloadVersion, @AuthorizationUpdatedAt, @UpdatedAt);
+                        """,
+                        new
+                        {
+                            RootId = root.RootId.ToString(),
+                            LibraryId = root.LibraryId.ToString(),
+                            DeviceId = deviceId.Value,
+                            selectedRoot.ProviderIdentity,
+                            root.RootPath,
+                            IsAvailable = root.IsAvailable ? 1 : 0,
+                            CreatedAt = FormatUtc(root.CreatedAt),
+                            UpdatedAt = FormatUtc(root.UpdatedAt),
+                            root.AuthorizationKind,
+                            root.AuthorizationPayload,
+                            root.AuthorizationPayloadVersion,
+                            AuthorizationUpdatedAt = root.AuthorizationUpdatedAt is null
+                                ? null
+                                : FormatUtc(root.AuthorizationUpdatedAt.Value)
+                        },
+                        transaction);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+            }
+
+            if (_rootBindings is not null)
+            {
+                Result<DeviceRootBinding> savedBinding = await _rootBindings.SaveBindingAsync(
+                    new DeviceRootBinding(
+                        root.LibraryId,
+                        LogicalRootKinds.FileSearchRoot,
+                        root.RootId.ToString(),
+                        deviceId.Value,
+                        root.RootPath,
+                        selectedRoot.ProviderIdentity,
+                        root.IsAvailable,
                         root.AuthorizationKind,
                         root.AuthorizationPayload,
                         root.AuthorizationPayloadVersion,
-                        AuthorizationUpdatedAt = root.AuthorizationUpdatedAt is null
-                            ? null
-                            : FormatUtc(root.AuthorizationUpdatedAt.Value)
-                    },
-                    transaction);
-                await transaction.CommitAsync(cancellationToken);
+                        root.AuthorizationUpdatedAt,
+                        root.UpdatedAt),
+                    cancellationToken);
+                if (savedBinding.IsFailure)
+                {
+                    return Result<FileSearchRoot>.Failure(savedBinding.ErrorCode!, savedBinding.ErrorMessage!);
+                }
             }
 
             Result<ResolvedFileSearchRoot> reopened = await _rootAccess.ReopenAsync(root, cancellationToken);
@@ -162,15 +217,15 @@ public sealed class FileResolutionService : IFileResolutionService
             {
                 root = root with { IsAvailable = scanComplete, UpdatedAt = _clock.UtcNow.ToUniversalTime() };
                 using IDisposable availabilityGate = await _connectionFactory.EnterExclusiveAsync(cancellationToken);
-                await using SqliteConnection connection = _connectionFactory.CreateConnection();
-                await connection.OpenAsync(cancellationToken);
-                await connection.ExecuteAsync(
-                    """
-                    update file_search_root_bindings
-                    set is_available = @IsAvailable, updated_at = @UpdatedAt
-                    where root_id = @RootId;
-                    """,
-                    new { IsAvailable = scanComplete, UpdatedAt = root.UpdatedAt, RootId = root.RootId.ToString() });
+                Result availability = await SaveSearchRootBindingAsync(
+                    root,
+                    selectedRoot.ProviderIdentity,
+                    deviceId.Value,
+                    cancellationToken);
+                if (availability.IsFailure)
+                {
+                    return Result<FileSearchRoot>.Failure(availability.ErrorCode!, availability.ErrorMessage!);
+                }
             }
 
             if (scanSummary.ScanStatus == FileSearchRootScanStatuses.Cancelled)
@@ -244,6 +299,12 @@ public sealed class FileResolutionService : IFileResolutionService
             return Result<FileSearchRoot>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
         }
 
+        Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+        if (deviceId.IsFailure)
+        {
+            return Result<FileSearchRoot>.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
+        }
+
         try
         {
             string rootPath = Path.GetFullPath(selectedRoot.DisplayPath);
@@ -252,47 +313,39 @@ public sealed class FileResolutionService : IFileResolutionService
             using IDisposable gate = await _connectionFactory.EnterExclusiveAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            int duplicate = await connection.ExecuteScalarAsync<int>(
+            int definitionExists = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
-                from file_search_root_bindings
-                where root_path = @RootPath and root_id <> @RootId;
+                from file_search_root_definitions
+                where library_id = @LibraryId and root_id = @RootId and is_enabled = 1;
                 """,
-                new { RootPath = rootPath, RootId = rootId.ToString() });
-            if (duplicate > 0)
+                new { LibraryId = libraryResult.Value.LibraryId.ToString(), RootId = rootId.ToString() });
+            if (definitionExists == 0)
+            {
+                return Result<FileSearchRoot>.Failure(AppErrorCodes.NotFound,
+                    "The logical file search root does not belong to the current library.");
+            }
+
+            Result<bool> duplicate = await HasDuplicateSearchRootBindingAsync(
+                connection,
+                null,
+                libraryResult.Value.LibraryId,
+                deviceId.Value,
+                rootPath,
+                rootId,
+                cancellationToken);
+            if (duplicate.IsFailure)
+            {
+                return Result<FileSearchRoot>.Failure(duplicate.ErrorCode!, duplicate.ErrorMessage!);
+            }
+
+            if (duplicate.Value)
             {
                 return Result<FileSearchRoot>.Failure(AppErrorCodes.InvalidState,
                     "This local path is already bound to another logical search root.");
             }
 
-            await connection.ExecuteAsync(
-                """
-                insert into file_search_root_bindings (
-                    root_id, root_path, is_available, authorization_kind, authorization_payload,
-                    authorization_payload_version, authorization_updated_at, updated_at)
-                values (@RootId, @RootPath, @IsAvailable, @AuthorizationKind, @AuthorizationPayload,
-                    @AuthorizationPayloadVersion, @AuthorizationUpdatedAt, @UpdatedAt)
-                on conflict(root_id) do update set
-                    root_path = excluded.root_path,
-                    is_available = excluded.is_available,
-                    authorization_kind = excluded.authorization_kind,
-                    authorization_payload = excluded.authorization_payload,
-                    authorization_payload_version = excluded.authorization_payload_version,
-                    authorization_updated_at = excluded.authorization_updated_at,
-                    updated_at = excluded.updated_at;
-                """,
-                new
-                {
-                    RootId = rootId.ToString(),
-                    RootPath = rootPath,
-                    IsAvailable = isAvailable ? 1 : 0,
-                    selectedRoot.AuthorizationKind,
-                    selectedRoot.AuthorizationPayload,
-                    selectedRoot.AuthorizationPayloadVersion,
-                    AuthorizationUpdatedAt = FormatUtc(selectedRoot.SelectedAt.ToUniversalTime()),
-                    UpdatedAt = FormatUtc(now)
-                });
-            return Result<FileSearchRoot>.Success(new FileSearchRoot(
+            FileSearchRoot root = new(
                 rootId,
                 libraryResult.Value.LibraryId,
                 rootPath,
@@ -302,7 +355,12 @@ public sealed class FileResolutionService : IFileResolutionService
                 selectedRoot.AuthorizationKind,
                 selectedRoot.AuthorizationPayload,
                 selectedRoot.AuthorizationPayloadVersion,
-                selectedRoot.SelectedAt.ToUniversalTime()));
+                selectedRoot.SelectedAt.ToUniversalTime());
+            Result saved = await SaveSearchRootBindingAsync(root, selectedRoot.ProviderIdentity, deviceId.Value,
+                cancellationToken);
+            return saved.IsSuccess
+                ? Result<FileSearchRoot>.Success(root)
+                : Result<FileSearchRoot>.Failure(saved.ErrorCode!, saved.ErrorMessage!);
         }
         catch (OperationCanceledException)
         {
@@ -352,35 +410,32 @@ public sealed class FileResolutionService : IFileResolutionService
             return Result<IReadOnlyList<FileSearchRoot>>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
         }
 
+        Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+        if (deviceId.IsFailure)
+        {
+            return Result<IReadOnlyList<FileSearchRoot>>.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
+        }
+
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            IEnumerable<SearchRootRow> rows = await connection.QueryAsync<SearchRootRow>(
-                """
-                select definition.root_id as RootId, definition.library_id as LibraryId,
-                       binding.root_path as RootPath, binding.is_available as IsAvailable,
-                       definition.created_at as CreatedAt, binding.updated_at as UpdatedAt,
-                       binding.authorization_kind as AuthorizationKind,
-                       binding.authorization_payload as AuthorizationPayload,
-                       binding.authorization_payload_version as AuthorizationPayloadVersion,
-                       binding.authorization_updated_at as AuthorizationUpdatedAt
-                from file_search_root_definitions definition
-                left join file_search_root_bindings binding on binding.root_id = definition.root_id
-                where definition.library_id = @LibraryId and definition.is_enabled = 1
-                order by binding.root_path, definition.root_id;
-                """,
-                new { LibraryId = libraryResult.Value.LibraryId.ToString() });
-
-            SearchRootRow[] materialized = rows.ToArray();
+            SearchRootRow[] materialized = await LoadSearchRootRowsAsync(
+                connection,
+                libraryResult.Value.LibraryId,
+                deviceId.Value,
+                cancellationToken);
             SearchRootRow? missing = materialized.FirstOrDefault(row => string.IsNullOrWhiteSpace(row.RootPath));
             return missing is null
                 ? Result<IReadOnlyList<FileSearchRoot>>.Success(
                     materialized.Select(row => row.ToSearchRoot()).ToArray())
-                : Result<IReadOnlyList<FileSearchRoot>>.Failure(
-                    AppErrorCodes.MappingRequired,
-                    $"FileSearchRoot '{missing.RootId}' requires a device-local path mapping.");
+                : MappingRequired<IReadOnlyList<FileSearchRoot>>(
+                    libraryResult.Value.LibraryId,
+                    deviceId.Value,
+                    LogicalRootKinds.FileSearchRoot,
+                    missing.RootId,
+                    LogicalRootRecoveryActions.BindLocalFileSearchRoot);
         }
         catch (OperationCanceledException)
         {
@@ -404,15 +459,30 @@ public sealed class FileResolutionService : IFileResolutionService
 
             using IDisposable gate = await _connectionFactory.EnterExclusiveAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            if (_rootBindings is null)
+            {
+                await connection.ExecuteAsync(
+                    "delete from file_search_root_bindings where root_id = @RootId;",
+                    new { RootId = rootId.ToString() },
+                    transaction);
+            }
+
             int affected = await connection.ExecuteAsync(
                 "delete from file_search_root_definitions where root_id = @RootId;",
                 new { RootId = rootId.ToString() },
                 transaction);
-            await connection.ExecuteAsync(
-                "delete from file_search_root_bindings where root_id = @RootId;",
-                new { RootId = rootId.ToString() },
-                transaction);
             await transaction.CommitAsync(cancellationToken);
+            if (_rootBindings is not null)
+            {
+                Result<LibraryMetadata> library =
+                    await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+                Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+                if (library.IsSuccess && deviceId.IsSuccess)
+                {
+                    await _rootBindings.DeleteBindingAsync(library.Value.LibraryId, LogicalRootKinds.FileSearchRoot,
+                        rootId.ToString(), deviceId.Value, cancellationToken);
+                }
+            }
 
             return affected == 0
                 ? Result.Failure(AppErrorCodes.NotFound, "Search root was not found.")
@@ -434,6 +504,49 @@ public sealed class FileResolutionService : IFileResolutionService
         bool isAvailable,
         CancellationToken cancellationToken = default)
     {
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (libraryResult.IsFailure)
+        {
+            return Result.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
+        }
+
+        Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+        if (deviceId.IsFailure)
+        {
+            return Result.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
+        }
+
+        if (_rootBindings is not null)
+        {
+            Result<DeviceRootBinding?> existing = await _rootBindings.GetBindingAsync(
+                libraryResult.Value.LibraryId,
+                LogicalRootKinds.FileSearchRoot,
+                rootId.ToString(),
+                deviceId.Value,
+                cancellationToken);
+            if (existing.IsFailure)
+            {
+                return Result.Failure(existing.ErrorCode!, existing.ErrorMessage!);
+            }
+
+            if (existing.Value is null)
+            {
+                return MappingRequired(
+                    libraryResult.Value.LibraryId,
+                    deviceId.Value,
+                    LogicalRootKinds.FileSearchRoot,
+                    rootId.ToString(),
+                    LogicalRootRecoveryActions.BindLocalFileSearchRoot);
+            }
+
+            Result<DeviceRootBinding> saved = await _rootBindings.SaveBindingAsync(
+                existing.Value with { IsAvailable = isAvailable, UpdatedAt = _clock.UtcNow.ToUniversalTime() },
+                cancellationToken);
+            return saved.IsSuccess
+                ? Result.Success()
+                : Result.Failure(saved.ErrorCode!, saved.ErrorMessage!);
+        }
+
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
@@ -443,11 +556,16 @@ public sealed class FileResolutionService : IFileResolutionService
                 """
                 update file_search_root_bindings
                 set is_available = @IsAvailable, updated_at = @UpdatedAt
-                where root_id = @RootId;
+                where library_id = @LibraryId
+                  and root_kind = 'file_search_root'
+                  and root_id = @RootId
+                  and device_id = @DeviceId;
                 """,
                 new
                 {
+                    LibraryId = libraryResult.Value.LibraryId.ToString(),
                     RootId = rootId.ToString(),
+                    DeviceId = deviceId.Value,
                     IsAvailable = isAvailable ? 1 : 0,
                     UpdatedAt = FormatUtc(_clock.UtcNow)
                 });
@@ -605,27 +723,27 @@ public sealed class FileResolutionService : IFileResolutionService
                     "Known location exists, but size or quick_hash changed.");
             }
 
-            SearchRootRow[] roots = (await connection.QueryAsync<SearchRootRow>(
-                """
-                select definition.root_id as RootId, definition.library_id as LibraryId,
-                       binding.root_path as RootPath, binding.is_available as IsAvailable,
-                       definition.created_at as CreatedAt, binding.updated_at as UpdatedAt,
-                       binding.authorization_kind as AuthorizationKind,
-                       binding.authorization_payload as AuthorizationPayload,
-                       binding.authorization_payload_version as AuthorizationPayloadVersion,
-                       binding.authorization_updated_at as AuthorizationUpdatedAt
-                from file_search_root_definitions definition
-                left join file_search_root_bindings binding on binding.root_id = definition.root_id
-                where definition.library_id = @LibraryId and definition.is_enabled = 1;
-                """,
-                new { asset.LibraryId })).ToArray();
+            Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+            if (deviceId.IsFailure)
+            {
+                return Result<FileResolutionResult>.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
+            }
+
+            SearchRootRow[] roots = await LoadSearchRootRowsAsync(
+                connection,
+                LibraryId.Parse(asset.LibraryId),
+                deviceId.Value,
+                cancellationToken);
 
             SearchRootRow? missingRootMapping = roots.FirstOrDefault(root => string.IsNullOrWhiteSpace(root.RootPath));
             if (missingRootMapping is not null)
             {
-                return Result<FileResolutionResult>.Failure(
-                    AppErrorCodes.MappingRequired,
-                    $"FileSearchRoot '{missingRootMapping.RootId}' requires a device-local path mapping.");
+                return MappingRequired<FileResolutionResult>(
+                    libraryResult.Value.LibraryId,
+                    deviceId.Value,
+                    LogicalRootKinds.FileSearchRoot,
+                    missingRootMapping.RootId,
+                    LogicalRootRecoveryActions.BindLocalFileSearchRoot);
             }
 
             FileSearchRoot[] resolvedRoots = roots.Select(row => row.ToSearchRoot()).ToArray();
@@ -945,6 +1063,237 @@ public sealed class FileResolutionService : IFileResolutionService
         }
     }
 
+    private async Task<Result<string>> GetDeviceIdAsync(CancellationToken cancellationToken)
+    {
+        if (_rootBindings is null)
+        {
+            return Result<string>.Success("legacy-device");
+        }
+
+        return await _rootBindings.GetDeviceIdAsync(cancellationToken);
+    }
+
+    private async Task<Result<bool>> HasDuplicateSearchRootBindingAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        LibraryId libraryId,
+        string deviceId,
+        string rootPath,
+        FileSearchRootId? exceptRootId,
+        CancellationToken cancellationToken)
+    {
+        if (_rootBindings is not null)
+        {
+            Result<IReadOnlyList<DeviceRootBinding>> bindings = await _rootBindings.ListBindingsAsync(
+                libraryId,
+                LogicalRootKinds.FileSearchRoot,
+                deviceId,
+                cancellationToken);
+            if (bindings.IsFailure)
+            {
+                return Result<bool>.Failure(bindings.ErrorCode!, bindings.ErrorMessage!);
+            }
+
+            string normalizedRootPath = Path.GetFullPath(rootPath);
+            return Result<bool>.Success(bindings.Value.Any(binding =>
+                !string.Equals(binding.LogicalRootId, exceptRootId?.ToString(), StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(Path.GetFullPath(binding.LocalPath), normalizedRootPath,
+                    StringComparison.OrdinalIgnoreCase)));
+        }
+
+        int duplicate = await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1)
+            from file_search_root_bindings
+            where library_id = @LibraryId
+              and root_kind = 'file_search_root'
+              and device_id = @DeviceId
+              and root_path = @RootPath
+              and (@ExceptRootId is null or root_id <> @ExceptRootId);
+            """,
+            new
+            {
+                LibraryId = libraryId.ToString(),
+                DeviceId = deviceId,
+                RootPath = Path.GetFullPath(rootPath),
+                ExceptRootId = exceptRootId?.ToString()
+            },
+            transaction);
+        return Result<bool>.Success(duplicate > 0);
+    }
+
+    private async Task<SearchRootRow[]> LoadSearchRootRowsAsync(
+        SqliteConnection connection,
+        LibraryId libraryId,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        if (_rootBindings is null)
+        {
+            return (await connection.QueryAsync<SearchRootRow>(
+                """
+                select definition.root_id as RootId, definition.library_id as LibraryId,
+                       binding.root_path as RootPath, binding.is_available as IsAvailable,
+                       definition.created_at as CreatedAt, coalesce(binding.updated_at, definition.updated_at) as UpdatedAt,
+                       binding.authorization_kind as AuthorizationKind,
+                       binding.authorization_payload as AuthorizationPayload,
+                       binding.authorization_payload_version as AuthorizationPayloadVersion,
+                       binding.authorization_updated_at as AuthorizationUpdatedAt
+                from file_search_root_definitions definition
+                left join file_search_root_bindings binding
+                  on binding.library_id = definition.library_id
+                 and binding.root_kind = 'file_search_root'
+                 and binding.root_id = definition.root_id
+                 and binding.device_id = @DeviceId
+                where definition.library_id = @LibraryId and definition.is_enabled = 1
+                order by binding.root_path, definition.root_id;
+                """,
+                new { LibraryId = libraryId.ToString(), DeviceId = deviceId })).ToArray();
+        }
+
+        SearchRootDefinitionRow[] definitions = (await connection.QueryAsync<SearchRootDefinitionRow>(
+            """
+            select root_id as RootId, library_id as LibraryId, created_at as CreatedAt, updated_at as UpdatedAt
+            from file_search_root_definitions
+            where library_id = @LibraryId and is_enabled = 1
+            order by root_id;
+            """,
+            new { LibraryId = libraryId.ToString() })).ToArray();
+        Result<IReadOnlyList<DeviceRootBinding>> bindings = await _rootBindings.ListBindingsAsync(
+            libraryId,
+            LogicalRootKinds.FileSearchRoot,
+            deviceId,
+            cancellationToken);
+        if (bindings.IsFailure)
+        {
+            return definitions.Select(definition => new SearchRootRow
+            {
+                RootId = definition.RootId,
+                LibraryId = definition.LibraryId,
+                RootPath = "",
+                IsAvailable = 0,
+                CreatedAt = definition.CreatedAt,
+                UpdatedAt = definition.UpdatedAt
+            }).ToArray();
+        }
+
+        Dictionary<string, DeviceRootBinding> byRootId = bindings.Value
+            .ToDictionary(binding => binding.LogicalRootId, StringComparer.OrdinalIgnoreCase);
+        return definitions.Select(definition =>
+        {
+            byRootId.TryGetValue(definition.RootId, out DeviceRootBinding? binding);
+            return new SearchRootRow
+            {
+                RootId = definition.RootId,
+                LibraryId = definition.LibraryId,
+                RootPath = binding?.LocalPath ?? "",
+                IsAvailable = binding?.IsAvailable == true ? 1 : 0,
+                CreatedAt = definition.CreatedAt,
+                UpdatedAt = binding?.UpdatedAt.ToUniversalTime().ToString("O") ?? definition.UpdatedAt,
+                AuthorizationKind = binding?.AuthorizationKind,
+                AuthorizationPayload = binding?.AuthorizationPayload,
+                AuthorizationPayloadVersion = binding?.AuthorizationPayloadVersion,
+                AuthorizationUpdatedAt = binding?.AuthorizationUpdatedAt?.ToUniversalTime().ToString("O")
+            };
+        }).ToArray();
+    }
+
+    private async Task<Result> SaveSearchRootBindingAsync(
+        FileSearchRoot root,
+        string providerIdentity,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        if (_rootBindings is not null)
+        {
+            Result<DeviceRootBinding> saved = await _rootBindings.SaveBindingAsync(
+                new DeviceRootBinding(
+                    root.LibraryId,
+                    LogicalRootKinds.FileSearchRoot,
+                    root.RootId.ToString(),
+                    deviceId,
+                    root.RootPath,
+                    providerIdentity,
+                    root.IsAvailable,
+                    root.AuthorizationKind,
+                    root.AuthorizationPayload,
+                    root.AuthorizationPayloadVersion,
+                    root.AuthorizationUpdatedAt,
+                    root.UpdatedAt),
+                cancellationToken);
+            return saved.IsSuccess
+                ? Result.Success()
+                : Result.Failure(saved.ErrorCode!, saved.ErrorMessage!);
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync(
+            """
+            insert into file_search_root_bindings (
+                library_id, root_kind, root_id, device_id, provider_identity,
+                root_path, is_available, authorization_kind, authorization_payload,
+                authorization_payload_version, authorization_updated_at, updated_at)
+            values (@LibraryId, 'file_search_root', @RootId, @DeviceId, @ProviderIdentity,
+                @RootPath, @IsAvailable, @AuthorizationKind, @AuthorizationPayload,
+                @AuthorizationPayloadVersion, @AuthorizationUpdatedAt, @UpdatedAt)
+            on conflict(library_id, root_kind, root_id, device_id) do update set
+                provider_identity = excluded.provider_identity,
+                root_path = excluded.root_path,
+                is_available = excluded.is_available,
+                authorization_kind = excluded.authorization_kind,
+                authorization_payload = excluded.authorization_payload,
+                authorization_payload_version = excluded.authorization_payload_version,
+                authorization_updated_at = excluded.authorization_updated_at,
+                updated_at = excluded.updated_at;
+            """,
+            new
+            {
+                LibraryId = root.LibraryId.ToString(),
+                RootId = root.RootId.ToString(),
+                DeviceId = deviceId,
+                ProviderIdentity = providerIdentity,
+                root.RootPath,
+                IsAvailable = root.IsAvailable ? 1 : 0,
+                root.AuthorizationKind,
+                root.AuthorizationPayload,
+                root.AuthorizationPayloadVersion,
+                AuthorizationUpdatedAt = root.AuthorizationUpdatedAt is null
+                    ? null
+                    : FormatUtc(root.AuthorizationUpdatedAt.Value),
+                UpdatedAt = FormatUtc(root.UpdatedAt)
+            });
+        return Result.Success();
+    }
+
+    private static Result MappingRequired(
+        LibraryId libraryId,
+        string deviceId,
+        string rootKind,
+        string logicalRootId,
+        string recoveryAction)
+    {
+        return Result.Failure(
+            AppErrorCodes.MappingRequired,
+            $"{rootKind} '{logicalRootId}' requires a device-local mapping for library '{libraryId}' on device '{deviceId}'.",
+            details: new MappingRequiredDetails(rootKind, logicalRootId, libraryId.ToString(), deviceId,
+                recoveryAction));
+    }
+
+    private static Result<T> MappingRequired<T>(
+        LibraryId libraryId,
+        string deviceId,
+        string rootKind,
+        string logicalRootId,
+        string recoveryAction)
+    {
+        return Result<T>.Failure(
+            AppErrorCodes.MappingRequired,
+            $"{rootKind} '{logicalRootId}' requires a device-local mapping for library '{libraryId}' on device '{deviceId}'.",
+            details: new MappingRequiredDetails(rootKind, logicalRootId, libraryId.ToString(), deviceId,
+                recoveryAction));
+    }
+
     private async Task<List<FileResolutionCandidate>> ScanSearchRootsAsync(
         FileAssetRow asset,
         IEnumerable<FileSearchRoot> roots,
@@ -1236,6 +1585,14 @@ public sealed class FileResolutionService : IFileResolutionService
                 AuthorizationPayloadVersion,
                 AuthorizationUpdatedAt is null ? null : DateTimeOffset.Parse(AuthorizationUpdatedAt));
         }
+    }
+
+    private sealed class SearchRootDefinitionRow
+    {
+        public string RootId { get; set; } = string.Empty;
+        public string LibraryId { get; set; } = string.Empty;
+        public string CreatedAt { get; set; } = string.Empty;
+        public string UpdatedAt { get; set; } = string.Empty;
     }
 
     private sealed class KnownLocationRow

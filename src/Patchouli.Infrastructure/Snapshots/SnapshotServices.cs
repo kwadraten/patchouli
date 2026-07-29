@@ -484,6 +484,24 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         await connection.ExecuteAsync(
             "delete from library_setting_records where setting_key not in @Allowed;",
             new { Allowed = allowed });
+
+        SettingRecordRow[] records = (await connection.QueryAsync<SettingRecordRow>(
+            """
+            select setting_key as SettingKey, schema_version as SchemaVersion, value_json as Value,
+                   revision as Revision, updated_at as UpdatedAt, updated_by_device_id as UpdatedByDeviceId,
+                   merge_policy as MergePolicy
+            from library_setting_records
+            order by setting_key;
+            """)).ToArray();
+        foreach (SettingRecordRow row in records)
+        {
+            Result validation = LibrarySettingCatalog.ValidateRecord(row.ToRecord());
+            if (validation.IsFailure)
+            {
+                throw new InvalidDataException(
+                    $"Library setting '{row.SettingKey}' cannot be published: {validation.ErrorMessage}");
+            }
+        }
     }
 
     private static async Task<bool> HasAnyRowsAsync(string shardPath, IReadOnlyList<string> tables)
@@ -560,6 +578,23 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
     }
 
     private readonly record struct RowIdRange(long MinRowId, long MaxRowId);
+
+    private sealed class SettingRecordRow
+    {
+        public string SettingKey { get; set; } = "";
+        public int SchemaVersion { get; set; }
+        public string Value { get; set; } = "";
+        public long Revision { get; set; }
+        public string UpdatedAt { get; set; } = "";
+        public string UpdatedByDeviceId { get; set; } = "";
+        public string MergePolicy { get; set; } = "";
+
+        public SettingRecord ToRecord()
+        {
+            return new SettingRecord(SettingKey, SchemaVersion, Value, Revision, DateTimeOffset.Parse(UpdatedAt),
+                UpdatedByDeviceId, MergePolicy);
+        }
+    }
 
     public static async Task<string> ReadLibraryIdAsync(string databasePath)
     {
@@ -725,6 +760,10 @@ public sealed class SnapshotImporter : ISnapshotImporter
                     try
                     {
                         await SnapshotPublisher.ValidateDatabaseSchemaAsync(path, false);
+                        IReadOnlyList<string> settingErrors =
+                            await ValidateSnapshotSettingRecordsAsync(path, cancellationToken);
+                        errors.AddRange(settingErrors.Select(error =>
+                            $"Shard setting record invalid: {shard.FileName}: {error}"));
                     }
                     catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                                           "infrastructure.snapshot-services"))
@@ -741,6 +780,56 @@ public sealed class SnapshotImporter : ISnapshotImporter
         {
             return Result<SnapshotValidationResult>.Success(new SnapshotValidationResult(false, null,
                 new[] { $"Manifest validation failed: {ex.Message}" }));
+        }
+    }
+
+    private static async Task<IReadOnlyList<string>> ValidateSnapshotSettingRecordsAsync(
+        string shardPath,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection =
+            new(SnapshotPublisher.BuildConnectionString(shardPath, SqliteOpenMode.ReadOnly));
+        await connection.OpenAsync(cancellationToken);
+        if (!await SnapshotPublisher.TableExistsAsync(connection, "library_setting_records"))
+        {
+            return [];
+        }
+
+        SettingRecordRow[] records = (await connection.QueryAsync<SettingRecordRow>(
+            """
+            select setting_key as SettingKey, schema_version as SchemaVersion, value_json as Value,
+                   revision as Revision, updated_at as UpdatedAt, updated_by_device_id as UpdatedByDeviceId,
+                   merge_policy as MergePolicy
+            from library_setting_records
+            order by setting_key;
+            """)).ToArray();
+        List<string> errors = new();
+        foreach (SettingRecordRow row in records)
+        {
+            Result validation = LibrarySettingCatalog.ValidateRecord(row.ToRecord());
+            if (validation.IsFailure)
+            {
+                errors.Add($"{row.SettingKey}: {validation.ErrorMessage}");
+            }
+        }
+
+        return errors;
+    }
+
+    private sealed class SettingRecordRow
+    {
+        public string SettingKey { get; set; } = "";
+        public int SchemaVersion { get; set; }
+        public string Value { get; set; } = "";
+        public long Revision { get; set; }
+        public string UpdatedAt { get; set; } = "";
+        public string UpdatedByDeviceId { get; set; } = "";
+        public string MergePolicy { get; set; } = "";
+
+        public SettingRecord ToRecord()
+        {
+            return new SettingRecord(SettingKey, SchemaVersion, Value, Revision, DateTimeOffset.Parse(UpdatedAt),
+                UpdatedByDeviceId, MergePolicy);
         }
     }
 

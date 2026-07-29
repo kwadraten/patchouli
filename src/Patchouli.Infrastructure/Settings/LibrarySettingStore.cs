@@ -171,29 +171,7 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
 
     private static Result Validate(SettingRecord record)
     {
-        if (string.IsNullOrWhiteSpace(record.SettingKey) || string.IsNullOrWhiteSpace(record.Value) ||
-            record.SchemaVersion < 1 || record.Revision < 1 || string.IsNullOrWhiteSpace(record.UpdatedByDeviceId) ||
-            string.IsNullOrWhiteSpace(record.MergePolicy))
-        {
-            return Result.Failure(AppErrorCodes.ValidationFailed,
-                "Library setting record is missing a required value.");
-        }
-
-        if (!LibrarySettingCatalog.TryGet(record.SettingKey.Trim(), out SettingCatalogEntry? entry) ||
-            !entry.IsSnapshotEligible)
-        {
-            return Result.Failure(AppErrorCodes.UnsupportedOperation,
-                "Setting is not eligible for library snapshot storage.");
-        }
-
-        if (record.SchemaVersion != entry.SchemaVersion ||
-            !string.Equals(record.MergePolicy, entry.MergePolicy, StringComparison.Ordinal))
-        {
-            return Result.Failure(AppErrorCodes.ValidationFailed,
-                "Library setting schema or merge policy does not match the catalog.");
-        }
-
-        return Result.Success();
+        return LibrarySettingCatalog.ValidateRecord(record);
     }
 
     private sealed class Row

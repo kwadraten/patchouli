@@ -18,6 +18,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private bool _isDirty;
     private long _editRevision;
+    private long _loadGeneration;
+    private CancellationTokenSource? _activeSaveCancellation;
     private readonly SemaphoreSlim _commitGate = new(1, 1);
 
     public McpSettingsViewModel(MainWindowViewModel main)
@@ -190,10 +192,12 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     public override async Task DiscardAsync()
     {
+        _activeSaveCancellation?.Cancel();
+        _editRevision++;
+        _loadGeneration++;
         await _commitGate.WaitAsync();
         try
         {
-            _editRevision++;
             Result<McpServerSettings> persisted =
                 await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
             if (persisted.IsSuccess)
@@ -277,11 +281,19 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        long loadGeneration = ++_loadGeneration;
+        long editRevision = _editRevision;
         Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
         if (result.IsFailure)
         {
             LastError = result.ErrorMessage;
             SetStatus(result.ErrorMessage ?? "无法读取 MCP 设置。");
+            return;
+        }
+
+        if (loadGeneration != _loadGeneration || editRevision != _editRevision || IsDirty)
+        {
+            SetStatus("MCP 设置已在加载期间变更，已保留当前草稿。");
             return;
         }
 
@@ -301,6 +313,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     public override async Task SaveAsync()
     {
         await _commitGate.WaitAsync();
+        CancellationTokenSource saveCancellation = new();
+        _activeSaveCancellation = saveCancellation;
         try
         {
             SaveState = SettingsSaveState.Saving;
@@ -313,7 +327,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             };
             Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(
                 draft,
-                _persistedSettings.Revision);
+                _persistedSettings.Revision,
+                saveCancellation.Token);
             if (result.IsFailure)
             {
                 SaveState = SettingsSaveState.Failed;
@@ -341,8 +356,21 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             Raise(nameof(IsDirty));
             Raise(nameof(CanSave));
         }
+        catch (OperationCanceledException) when (saveCancellation.IsCancellationRequested)
+        {
+            SaveState = SettingsSaveState.Dirty;
+            SetStatus("保存已取消，当前草稿仍未保存");
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
+        }
         finally
         {
+            if (ReferenceEquals(_activeSaveCancellation, saveCancellation))
+            {
+                _activeSaveCancellation = null;
+            }
+
+            saveCancellation.Dispose();
             _commitGate.Release();
         }
     }
@@ -383,6 +411,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     private void MarkDirty()
     {
         _editRevision++;
+        _loadGeneration++;
         _isDirty = true;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));

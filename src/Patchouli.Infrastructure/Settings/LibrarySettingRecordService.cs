@@ -31,6 +31,12 @@ public sealed class LibrarySettingRecordService
             return Result<T?>.Failure(catalog.ErrorCode!, catalog.ErrorMessage!);
         }
 
+        Result typeValidation = LibrarySettingCatalog.ValidateClrValue(catalog.Value, typeof(T));
+        if (typeValidation.IsFailure)
+        {
+            return Result<T?>.Failure(typeValidation.ErrorCode!, typeValidation.ErrorMessage!);
+        }
+
         Result<SettingRecord?> record = await _store.GetAsync(settingKey, cancellationToken);
         if (record.IsFailure)
         {
@@ -66,6 +72,12 @@ public sealed class LibrarySettingRecordService
             return Result<SettingRecord>.Failure(catalog.ErrorCode!, catalog.ErrorMessage!);
         }
 
+        Result typeValidation = LibrarySettingCatalog.ValidateClrValue(catalog.Value, typeof(T));
+        if (typeValidation.IsFailure)
+        {
+            return Result<SettingRecord>.Failure(typeValidation.ErrorCode!, typeValidation.ErrorMessage!);
+        }
+
         if (string.IsNullOrWhiteSpace(deviceId))
         {
             return Result<SettingRecord>.Failure(AppErrorCodes.ValidationFailed,
@@ -79,10 +91,17 @@ public sealed class LibrarySettingRecordService
         }
 
         SettingCatalogEntry entry = catalog.Value;
+        string valueJson = JsonSerializer.Serialize(value);
+        Result jsonValidation = LibrarySettingCatalog.ValidateJsonValue(entry, valueJson);
+        if (jsonValidation.IsFailure)
+        {
+            return Result<SettingRecord>.Failure(jsonValidation.ErrorCode!, jsonValidation.ErrorMessage!);
+        }
+
         SettingRecord next = new(
             entry.SettingKey,
             entry.SchemaVersion,
-            JsonSerializer.Serialize(value),
+            valueJson,
             (current.Value?.Revision ?? 0) + 1,
             _clock.UtcNow.ToUniversalTime(),
             deviceId.Trim(),

@@ -617,6 +617,18 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 new { Path = plan.SourceBranch.StagingDatabasePath });
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
+            Result settingRecordsValid = await ValidateEnabledSettingRecordsAsync(
+                connection,
+                transaction,
+                enabledSettingKeys ?? [],
+                cancellationToken);
+            if (settingRecordsValid.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<BranchImportResult>.Failure(settingRecordsValid.ErrorCode!,
+                    settingRecordsValid.ErrorMessage!);
+            }
+
             string[] items = plan.ItemsToImport.Select(itemId => itemId.ToString()).ToArray();
             string[] documents = plan.DocumentInstancesToImport.Select(documentId => documentId.ToString()).ToArray();
 
@@ -895,6 +907,52 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         return await trees.ValidateStoredTreesAsync(cancellationToken);
     }
 
+    private static async Task<Result> ValidateEnabledSettingRecordsAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        IReadOnlyCollection<string> enabledSettingKeys,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        int exists = await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1)
+            from branch.sqlite_master
+            where type = 'table' and name = 'library_setting_records';
+            """, transaction: transaction);
+        if (exists == 0)
+        {
+            return Result.Success();
+        }
+
+        string[] enabled = LibrarySettingCatalog.NormalizeSnapshotKeys(enabledSettingKeys).ToArray();
+        if (enabled.Length == 0)
+        {
+            return Result.Success();
+        }
+
+        SettingRecordRow[] records = (await connection.QueryAsync<SettingRecordRow>(
+            """
+            select setting_key as SettingKey, schema_version as SchemaVersion, value_json as Value,
+                   revision as Revision, updated_at as UpdatedAt, updated_by_device_id as UpdatedByDeviceId,
+                   merge_policy as MergePolicy
+            from branch.library_setting_records
+            where setting_key in @Enabled
+            order by setting_key;
+            """, new { Enabled = enabled }, transaction)).ToArray();
+        foreach (SettingRecordRow row in records)
+        {
+            Result validation = LibrarySettingCatalog.ValidateRecord(row.ToRecord());
+            if (validation.IsFailure)
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    $"Library setting '{row.SettingKey}' cannot be applied: {validation.ErrorMessage}");
+            }
+        }
+
+        return Result.Success();
+    }
+
     private static string CreateConflictId(SnapshotBranchInspectionInfo branch, string conflictCode, string objectId)
     {
         return $"{branch.BranchId}:{conflictCode}:{objectId}";
@@ -1052,6 +1110,23 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         public string Id { get; set; } = "";
         public string Title { get; set; } = "";
         public string ItemType { get; set; } = "";
+    }
+
+    private sealed class SettingRecordRow
+    {
+        public string SettingKey { get; set; } = "";
+        public int SchemaVersion { get; set; }
+        public string Value { get; set; } = "";
+        public long Revision { get; set; }
+        public string UpdatedAt { get; set; } = "";
+        public string UpdatedByDeviceId { get; set; } = "";
+        public string MergePolicy { get; set; } = "";
+
+        public SettingRecord ToRecord()
+        {
+            return new SettingRecord(SettingKey, SchemaVersion, Value, Revision, DateTimeOffset.Parse(UpdatedAt),
+                UpdatedByDeviceId, MergePolicy);
+        }
     }
 
     private sealed record DocumentContent(

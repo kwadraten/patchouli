@@ -187,13 +187,36 @@
                     <TextBlock Text="随库同步的非秘密设置" FontSize="16" FontWeight="SemiBold"
                                Foreground="{DynamicResource PrimaryBrush}" />
                     <CheckBox Content="随库同步元数据来源优先级" IsChecked="{Binding SyncMetadataLookup}" />
-                    <TextBlock Text="{Binding MetadataLookupScopeText, StringFormat='同步范围：\{0\}'}"
-                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Text="{Binding MetadataLookupEffectiveSourceText, StringFormat='生效来源：\{0\}'}"
-                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Text="{Binding MetadataLookupSchemaText, StringFormat='设置记录：\{0\}'}"
-                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Text="启用后，元数据来源优先级的基准值存入当前资料库，并随内容快照整体发布和接收；本机设备绑定、MCP 配置和凭据始终仅此设备。"
+                    <ItemsControl ItemsSource="{Binding SettingScopeRows}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="settings:SyncSettingScopeRowViewModel">
+                          <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1"
+                                  Padding="0,8">
+                            <Grid ColumnDefinitions="1.4*,0.8*,0.8*,1.2*" ColumnSpacing="12">
+                              <StackPanel Spacing="2">
+                                <TextBlock Text="{Binding DisplayName}" FontSize="12" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding SettingKey}" FontSize="11"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </StackPanel>
+                              <StackPanel Grid.Column="1" Spacing="2">
+                                <TextBlock Text="{Binding AllowedSyncText}" FontSize="12" />
+                                <TextBlock Text="{Binding EnabledText}" FontSize="11"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </StackPanel>
+                              <StackPanel Grid.Column="2" Spacing="2">
+                                <TextBlock Text="{Binding OwnerText}" FontSize="12" />
+                                <TextBlock Text="{Binding SchemaText}" FontSize="11"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </StackPanel>
+                              <TextBlock Grid.Column="3" Text="{Binding SourceText}" FontSize="12"
+                                         TextWrapping="Wrap"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Text="启用后，元数据来源优先级的基准值存入当前资料库，并随内容快照整体发布和接收；本机设备绑定、MCP 配置、凭据和运行状态始终不进入快照。"
                                FontSize="12" TextWrapping="Wrap"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <StackPanel Orientation="Horizontal" Spacing="8">

@@ -1,4 +1,5 @@
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
@@ -138,7 +139,8 @@ public sealed record SnapshotSyncBinding(
     string StagingRoot,
     string DeviceId,
     SnapshotSyncLocalState LocalState,
-    IReadOnlyList<string>? EnabledSettingKeys = null);
+    IReadOnlyList<string>? EnabledSettingKeys = null,
+    IReadOnlyList<DeviceRootBinding>? DeviceRootBindings = null);
 
 public interface ISnapshotSyncBindingStore
 {

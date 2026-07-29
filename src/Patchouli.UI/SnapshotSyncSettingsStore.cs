@@ -1,3 +1,5 @@
+using Patchouli.Core.Files;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
 
@@ -22,19 +24,26 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
         _stagingRoot = stagingRoot;
     }
 
-    public Task<Result<SnapshotSyncBinding>> GetBindingAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<SnapshotSyncBinding>> GetBindingAsync(CancellationToken cancellationToken = default)
     {
-        _ = cancellationToken;
         PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
-        SnapshotSyncLocalState state = settings.Sync.SnapshotState ?? SnapshotSyncLocalState.NotConfigured;
-        return Task.FromResult(Result<SnapshotSyncBinding>.Success(new SnapshotSyncBinding(
+        Result<LibraryId> libraryId = await ReadCurrentLibraryIdAsync(cancellationToken);
+        if (libraryId.IsFailure)
+        {
+            return Result<SnapshotSyncBinding>.Failure(libraryId.ErrorCode!, libraryId.ErrorMessage!);
+        }
+
+        DeviceRootBindingAppSettings? syncRoot = settings.Sync.CurrentSyncRootBinding(libraryId.Value);
+        SnapshotSyncLocalState state = syncRoot?.SnapshotState ?? SnapshotSyncLocalState.NotConfigured;
+        return Result<SnapshotSyncBinding>.Success(new SnapshotSyncBinding(
             _runtimeDatabasePath,
-            settings.Sync.SyncRootId,
-            settings.Sync.SyncRoot,
+            syncRoot?.LogicalRootId ?? "",
+            syncRoot?.LocalPath ?? "",
             _stagingRoot,
             settings.Sync.DeviceId,
             state,
-            settings.Sync.EnabledSettingKeys)));
+            settings.Sync.EnabledSettingKeysForLibrary(libraryId.Value),
+            settings.Sync.Bindings.Select(binding => binding.ToDeviceRootBinding()).ToArray()));
     }
 
     public async Task<Result> SaveLocalStateAsync(
@@ -45,9 +54,24 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
         try
         {
             PatchouliAppSettings settings = PatchouliAppSettings.Load(_settingsPath);
+            Result<LibraryId> libraryId = await ReadCurrentLibraryIdAsync(cancellationToken);
+            if (libraryId.IsFailure)
+            {
+                return Result.Failure(libraryId.ErrorCode!, libraryId.ErrorMessage!);
+            }
+
+            DeviceRootBindingAppSettings? syncRoot = settings.Sync.CurrentSyncRootBinding(libraryId.Value);
+            if (syncRoot is null)
+            {
+                return Result.Failure(AppErrorCodes.MappingRequired,
+                    $"sync_root for library '{libraryId.Value}' is not mapped by this device.",
+                    details: new MappingRequiredDetails(LogicalRootKinds.SyncRoot, "", libraryId.Value.ToString(),
+                        settings.Sync.DeviceId, LogicalRootRecoveryActions.ChooseLocalSyncRoot));
+            }
+
             SettingsSaveResult saved = (settings with
             {
-                Sync = settings.Sync with { SnapshotState = state }
+                Sync = settings.Sync.WithDeviceBinding(syncRoot with { SnapshotState = state })
             }).Save(_settingsPath);
             return saved.IsSuccess
                 ? Result.Success()
@@ -57,6 +81,20 @@ public sealed class SnapshotSyncSettingsStore : ISnapshotSyncBindingStore
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private async Task<Result<LibraryId>> ReadCurrentLibraryIdAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            string libraryId = await SnapshotPublisher.ReadLibraryIdAsync(_runtimeDatabasePath);
+            return Result<LibraryId>.Success(LibraryId.Parse(libraryId));
+        }
+        catch (Exception exception) when (exception is IOException or InvalidOperationException or FormatException)
+        {
+            return Result<LibraryId>.Failure(AppErrorCodes.DatabaseError,
+                $"Unable to read the current library identity for sync binding lookup: {exception.Message}");
         }
     }
 }

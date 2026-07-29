@@ -264,6 +264,25 @@ public sealed class FileResolutionServiceTests
         await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
         FileSearchRootId logicalId = FileSearchRootId.New();
         string localPath = context.Temp.CreateDirectory("mapped-root");
+        await using (SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            string libraryId =
+                await connection.ExecuteScalarAsync<string>("select library_id from library_metadata limit 1;") ??
+                throw new InvalidOperationException("Missing test library.");
+            await connection.ExecuteAsync(
+                """
+                insert into file_search_root_definitions (
+                    root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
+                values (@RootId, @LibraryId, 'Mapped root', 'file_resolution', 1, @Now, @Now);
+                """,
+                new
+                {
+                    RootId = logicalId.ToString(),
+                    LibraryId = libraryId,
+                    Now = "2026-06-19T03:00:00.0000000+00:00"
+                });
+        }
 
         Result<FileSearchRoot> bound = await context.FileResolutionService.BindSearchRootAsync(
             logicalId,
@@ -272,6 +291,19 @@ public sealed class FileResolutionServiceTests
         bound.IsSuccess.Should().BeTrue(bound.ErrorMessage);
         bound.Value.RootId.Should().Be(logicalId);
         bound.Value.RootPath.Should().Be(Path.GetFullPath(localPath));
+    }
+
+    [Fact]
+    public async Task BindSearchRoot_rejects_orphan_logical_ids()
+    {
+        await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
+        string localPath = context.Temp.CreateDirectory("orphan-root");
+
+        Result<FileSearchRoot> bound = await context.FileResolutionService.BindSearchRootAsync(
+            FileSearchRootId.New(),
+            SelectedRoot(localPath));
+
+        bound.ErrorCode.Should().Be(AppErrorCodes.NotFound);
     }
 
     [Fact]
