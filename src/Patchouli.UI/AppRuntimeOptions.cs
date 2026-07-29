@@ -623,11 +623,15 @@ public sealed record PatchouliAppSettings(
                 MinerU.EnableTable,
                 MinerU.EnableFormula
             });
-            root["Credentials"] = JsonSerializer.SerializeToNode(new
+            if (root["Credentials"] is null)
             {
-                SchemaVersion = 1,
-                Providers = Credentials.Providers
-            });
+                root["Credentials"] = JsonSerializer.SerializeToNode(new
+                {
+                    SchemaVersion = 1,
+                    Providers = Credentials.Providers
+                });
+            }
+
             SyncAppSettings syncToWrite = Sync;
             try
             {

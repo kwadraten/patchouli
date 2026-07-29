@@ -6,6 +6,7 @@ using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
@@ -14,6 +15,7 @@ using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Operations;
+using Patchouli.UI;
 
 namespace Patchouli.Tests;
 
@@ -307,6 +309,75 @@ public sealed class FileResolutionServiceTests
     }
 
     [Fact]
+    public async Task Legacy_sqlite_search_root_binding_is_adopted_into_appsettings_and_removed_from_sqlite()
+    {
+        string settingsPath = Path.Combine(Path.GetTempPath(),
+            $"patchouli-file-root-bindings-{Guid.NewGuid():N}.json");
+        try
+        {
+            PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+            {
+                Sync = new SyncAppSettings("device-current", "Device", "sync", false)
+            };
+            settings.Save(settingsPath).IsSuccess.Should().BeTrue();
+            await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync(
+                rootBindings: new AppSettingsDeviceRootBindingStore(settingsPath));
+            FileSearchRootId logicalId = FileSearchRootId.New();
+            string localPath = context.Temp.CreateDirectory("legacy-root");
+            await using (SqliteConnection connection = context.Database.ConnectionFactory.CreateConnection())
+            {
+                await connection.OpenAsync();
+                await connection.ExecuteAsync(
+                    """
+                    insert into file_search_root_definitions (
+                        root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at)
+                    values (@RootId, @LibraryId, 'Legacy root', 'file_resolution', 1, @Now, @Now);
+                    insert into file_search_root_bindings (
+                        library_id, root_kind, root_id, device_id, provider_identity,
+                        root_path, is_available, authorization_kind, authorization_payload,
+                        authorization_payload_version, authorization_updated_at, updated_at)
+                    values (@LibraryId, 'file_search_root', @RootId, 'legacy-device', 'sqlite_migration',
+                        @RootPath, 1, 'test-token', @Authorization, 7, @Now, @Now);
+                    """,
+                    new
+                    {
+                        RootId = logicalId.ToString(),
+                        LibraryId = context.LibraryId.ToString(),
+                        RootPath = localPath,
+                        Authorization = new byte[] { 1, 2, 3 },
+                        Now = "2026-06-19T03:00:00.0000000+00:00"
+                    });
+            }
+
+            Result<IReadOnlyList<FileSearchRoot>> roots = await context.FileResolutionService.ListSearchRootsAsync();
+            PatchouliAppSettings migrated = PatchouliAppSettings.Load(settingsPath);
+            await using SqliteConnection verification = context.Database.ConnectionFactory.CreateConnection();
+            await verification.OpenAsync();
+            string libraryId = context.LibraryId.ToString();
+            string normalizedLocalPath = Path.GetFullPath(localPath);
+            string logicalRootId = logicalId.ToString();
+
+            roots.IsSuccess.Should().BeTrue(roots.ErrorMessage);
+            roots.Value.Should().ContainSingle(root => root.RootId == logicalId &&
+                                                       root.RootPath == normalizedLocalPath);
+            migrated.Sync.Bindings.Should().ContainSingle(binding =>
+                binding.Matches(libraryId, LogicalRootKinds.FileSearchRoot, logicalRootId, "device-current") &&
+                binding.LocalPath == normalizedLocalPath &&
+                binding.AuthorizationPayloadVersion == 7);
+            (await verification.ExecuteScalarAsync<int>(
+                "select count(1) from file_search_root_bindings where root_id = @RootId;",
+                new { RootId = logicalRootId })).Should().Be(0);
+        }
+        finally
+        {
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
+            }
+        }
+    }
+
+    [Fact]
     public async Task DeleteSearchRoot_removes_registered_root()
     {
         await using FileResolutionTestContext context = await FileResolutionTestContext.CreateAsync();
@@ -464,7 +535,8 @@ public sealed class FileResolutionServiceTests
             FileAssetService fileAssetService,
             DocumentInstanceService documentInstanceService,
             FileResolutionService fileResolutionService,
-            IBlockingOperationService blockingOperations)
+            IBlockingOperationService blockingOperations,
+            LibraryId libraryId)
         {
             Database = database;
             Temp = temp;
@@ -473,17 +545,21 @@ public sealed class FileResolutionServiceTests
             DocumentInstanceService = documentInstanceService;
             FileResolutionService = fileResolutionService;
             BlockingOperations = blockingOperations;
+            LibraryId = libraryId;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public TemporaryDirectory Temp { get; }
+        public LibraryId LibraryId { get; }
         public ItemService ItemService { get; }
         public FileAssetService FileAssetService { get; }
         public DocumentInstanceService DocumentInstanceService { get; }
         public FileResolutionService FileResolutionService { get; }
         public IBlockingOperationService BlockingOperations { get; }
 
-        public static async Task<FileResolutionTestContext> CreateAsync(IFileSearchRootAccess? rootAccess = null)
+        public static async Task<FileResolutionTestContext> CreateAsync(
+            IFileSearchRootAccess? rootAccess = null,
+            IDeviceRootBindingStore? rootBindings = null)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             TemporaryDirectory temp = TemporaryDirectory.Create();
@@ -492,7 +568,7 @@ public sealed class FileResolutionServiceTests
             await runner.RunAsync();
 
             LibraryIdentityService libraryService = new(database.ConnectionFactory, clock);
-            await libraryService.CreateLibraryAsync("File resolution library");
+            Result<LibraryMetadata> library = await libraryService.CreateLibraryAsync("File resolution library");
             FileFingerprintService fingerprintService = new();
             BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
             ItemService itemService = new(database.ConnectionFactory, libraryService, clock);
@@ -505,7 +581,8 @@ public sealed class FileResolutionServiceTests
                 clock,
                 fingerprintService,
                 blockingOperations,
-                rootAccess);
+                rootAccess,
+                rootBindings);
 
             return new FileResolutionTestContext(
                 database,
@@ -514,7 +591,8 @@ public sealed class FileResolutionServiceTests
                 fileAssetService,
                 documentInstanceService,
                 fileResolutionService,
-                blockingOperations);
+                blockingOperations,
+                library.Value.LibraryId);
         }
 
         public async ValueTask DisposeAsync()

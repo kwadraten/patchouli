@@ -126,6 +126,17 @@ public sealed class SettingsViewModel : ViewModelBase
         RaiseActiveSectionState();
     }
 
+    public void NotifyRuntimeDatabasePathChanged()
+    {
+        LibrarySettings.NotifyRuntimeDatabasePathChanged();
+        SyncSettings.NotifyLibraryContextChanged();
+    }
+
+    public void NotifyLibraryContextChanged()
+    {
+        SyncSettings.NotifyLibraryContextChanged();
+    }
+
     public async Task<bool> SaveAllDirtySectionsAsync()
     {
         foreach (SettingsCategoryViewModel category in Categories)

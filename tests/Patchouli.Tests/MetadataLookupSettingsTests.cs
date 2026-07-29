@@ -1,4 +1,12 @@
+using System.Reflection;
+using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
+using Patchouli.Core.Files;
+using Patchouli.Core.Ids;
+using Patchouli.Core.Settings;
+using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Migrations;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
@@ -194,6 +202,132 @@ public sealed class MetadataLookupSettingsTests
 
             (await (await main.ServicesAsync()).LibrarySettings.GetAsync("metadata_lookup")).Value.Should().BeNull();
             PatchouliAppSettings.Load(settingsPath).MetadataLookup.Sources[0].Enabled.Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task Sync_settings_reload_after_database_switch_uses_the_new_library_id()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-sync-library-switch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string settingsPath = Path.Combine(root, "appsettings.json");
+        string firstDatabase = Path.Combine(root, "first.sqlite");
+        string secondDatabase = Path.Combine(root, "second.sqlite");
+        try
+        {
+            PatchouliAppSettings initial = PatchouliAppSettings.Default() with
+            {
+                Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = firstDatabase }
+            };
+            initial.Save(settingsPath).IsSuccess.Should().BeTrue();
+            MainWindowViewModel main = new(settingsPath: settingsPath) { RuntimeDatabasePath = firstDatabase };
+
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            string firstLibraryId = (await (await main.ServicesAsync()).Library.GetCurrentLibraryAsync())
+                .Value.LibraryId.ToString();
+            SyncSettingsViewModel sync = main.Settings.SyncSettings;
+            await sync.LoadAsync();
+            string firstSyncRoot = Path.Combine(root, "sync-one");
+            sync.SyncRoot = firstSyncRoot;
+            sync.SyncMetadataLookup = true;
+            await sync.SaveAsync();
+
+            main.RuntimeDatabasePath = secondDatabase;
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            string secondLibraryId = (await (await main.ServicesAsync()).Library.GetCurrentLibraryAsync())
+                .Value.LibraryId.ToString();
+            await sync.LoadAsync();
+
+            sync.SyncRoot.Should().Be("");
+            sync.SyncMetadataLookup.Should().BeFalse();
+
+            string secondSyncRoot = Path.Combine(root, "sync-two");
+            sync.SyncRoot = secondSyncRoot;
+            await sync.SaveAsync();
+            PatchouliAppSettings saved = PatchouliAppSettings.Load(settingsPath);
+
+            saved.Sync.Bindings.Should().Contain(binding =>
+                binding.LibraryId == firstLibraryId &&
+                binding.LocalPath == Path.GetFullPath(firstSyncRoot) &&
+                binding.SyncedSettingKeys!.Contains(LibrarySettingKeys.MetadataLookup));
+            saved.Sync.Bindings.Should().Contain(binding =>
+                binding.LibraryId == secondLibraryId &&
+                binding.LocalPath == Path.GetFullPath(secondSyncRoot) &&
+                binding.SyncedSettingKeys!.Count == 0);
+            firstLibraryId.Should().NotBe(secondLibraryId);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task App_services_apply_synced_metadata_only_when_the_current_library_enables_it()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        LibraryIdentityService library = new(database.ConnectionFactory,
+            new FixedClock(DateTimeOffset.Parse("2026-07-13T00:00:00Z")));
+        await library.CreateLibraryAsync("Current library");
+        await using (SqliteConnection connection = database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                insert into library_setting_records (
+                    setting_key, schema_version, value_json, revision, updated_at, updated_by_device_id, merge_policy)
+                values ('metadata_lookup', 1,
+                        '{"Sources":[{"SourceId":"calis","Enabled":false}]}',
+                        1, '2026-07-13T00:00:00.0000000+00:00', 'device-a', 'scalar_replace');
+                """);
+        }
+
+        string root = Path.Combine(Path.GetTempPath(), $"patchouli-appservices-metadata-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string settingsPath = Path.Combine(root, "appsettings.json");
+        try
+        {
+            string syncRoot = Path.Combine(root, "sync");
+            PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+            {
+                Runtime = PatchouliAppSettings.Default().Runtime with { RuntimeDatabasePath = database.Path },
+                Sync = new SyncAppSettings(
+                    "device-a",
+                    "Device",
+                    syncRoot,
+                    true,
+                    "legacy-sync-root",
+                    SyncedSettingKeys: [LibrarySettingKeys.MetadataLookup],
+                    DeviceBindings:
+                    [
+                        new DeviceRootBindingAppSettings(
+                            LibraryId.New().ToString(),
+                            LogicalRootKinds.SyncRoot,
+                            "other-sync-root",
+                            "device-a",
+                            syncRoot,
+                            "test",
+                            true,
+                            SyncedSettingKeys: [LibrarySettingKeys.MetadataLookup])
+                    ])
+            };
+            settings.Save(settingsPath).IsSuccess.Should().BeTrue();
+
+            AppServices services = await AppServices.CreateAsync(database.Path, settings, settingsPath);
+            FieldInfo field = typeof(AppServices).GetField("_metadataLookupPreferences",
+                BindingFlags.Instance | BindingFlags.NonPublic)!;
+            IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> preferences =
+                (IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>)field.GetValue(
+                    services)!;
+
+            preferences.First(preference => preference.SourceId == "calis").Enabled.Should().BeTrue();
         }
         finally
         {

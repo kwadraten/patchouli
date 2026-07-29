@@ -73,6 +73,37 @@ public sealed class CredentialStoreTests
             provider.ProviderId == "mineru" && provider.SecretValue == "token");
     }
 
+    [Fact]
+    public async Task Ordinary_settings_save_preserves_credentials_owned_by_the_credential_store()
+    {
+        await using Context context = new();
+        PatchouliAppSettings staleSettings = PatchouliAppSettings.Load(context.Path);
+
+        (await context.Store.SaveAsync("mineru", "MinerU", "new-token")).IsSuccess.Should().BeTrue();
+        (staleSettings with
+        {
+            Ui = staleSettings.Ui with { ShowLibraryLeftSidebar = false }
+        }).Save(context.Path).IsSuccess.Should().BeTrue();
+
+        (await context.Store.GetActiveSecretForProviderAsync("mineru")).Value.Should().Be("new-token");
+    }
+
+    [Fact]
+    public async Task Ordinary_settings_save_does_not_resurrect_removed_credentials()
+    {
+        await using Context context = new();
+        (await context.Store.SaveAsync("mineru", "MinerU", "token")).IsSuccess.Should().BeTrue();
+        PatchouliAppSettings staleSettings = PatchouliAppSettings.Load(context.Path);
+
+        (await context.Store.RemoveAsync("mineru")).IsSuccess.Should().BeTrue();
+        (staleSettings with
+        {
+            Ui = staleSettings.Ui with { ShowLibraryRightSidebar = false }
+        }).Save(context.Path).IsSuccess.Should().BeTrue();
+
+        (await context.Store.GetActiveSecretForProviderAsync("mineru")).ErrorCode.Should().Be(AppErrorCodes.NotFound);
+    }
+
     private sealed class Context : IAsyncDisposable
     {
         public Context(string? content = null)

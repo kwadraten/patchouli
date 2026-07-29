@@ -17,6 +17,7 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
     private SyncAppSettings _persisted;
     private SyncAppSettings _draft;
     private LibraryId? _libraryId;
+    private int _libraryGeneration = -1;
     private readonly ObservableCollection<SyncSettingScopeRowViewModel> _settingScopeRows = new();
 
     public SyncSettingsViewModel(MainWindowViewModel main)
@@ -112,12 +113,22 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
 
     public override async Task SaveAsync()
     {
+        int generation = _main.LibraryGeneration;
         Result<LibraryId> library = await EnsureLibraryIdAsync();
         if (library.IsFailure)
         {
             LastError = library.ErrorMessage;
             SaveState = SettingsSaveState.Failed;
             Status = $"保存失败：{library.ErrorMessage}";
+            RaiseState();
+            return;
+        }
+
+        if (generation != _main.LibraryGeneration)
+        {
+            LastError = "资料库已切换，请重新加载同步设置后再保存。";
+            SaveState = SettingsSaveState.Failed;
+            Status = $"保存失败：{LastError}";
             RaiseState();
             return;
         }
@@ -219,6 +230,7 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        int generation = _main.LibraryGeneration;
         Result<LibraryId> library = await EnsureLibraryIdAsync(cancellationToken);
         if (library.IsFailure)
         {
@@ -226,6 +238,12 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
             SaveState = SettingsSaveState.Failed;
             Status = $"加载失败：{library.ErrorMessage}";
             RaiseState();
+            return;
+        }
+
+        if (generation != _main.LibraryGeneration)
+        {
+            Status = "资料库已切换，已忽略旧同步设置加载结果。";
             return;
         }
 
@@ -261,9 +279,30 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(CanSave));
     }
 
+    public void NotifyLibraryContextChanged()
+    {
+        _libraryId = null;
+        _libraryGeneration = -1;
+        if (IsDirty)
+        {
+            return;
+        }
+
+        _persisted = _main.AppOptions.Sync;
+        _draft = _persisted;
+        SaveState = SettingsSaveState.Clean;
+        Status = "同步设置将在新资料库加载后刷新";
+        RefreshScopeRows();
+        Raise(nameof(DeviceName));
+        Raise(nameof(SyncRoot));
+        Raise(nameof(SyncMetadataLookup));
+        RaiseState();
+    }
+
     private async Task<Result<LibraryId>> EnsureLibraryIdAsync(CancellationToken cancellationToken = default)
     {
-        if (_libraryId is not null)
+        int generation = _main.LibraryGeneration;
+        if (_libraryId is not null && _libraryGeneration == generation)
         {
             return Result<LibraryId>.Success(_libraryId.Value);
         }
@@ -275,7 +314,14 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
             return Result<LibraryId>.Failure(library.ErrorCode!, library.ErrorMessage!);
         }
 
+        if (generation != _main.LibraryGeneration)
+        {
+            return Result<LibraryId>.Failure(AppErrorCodes.InvalidState,
+                "The active library changed while loading settings.");
+        }
+
         _libraryId = library.Value.LibraryId;
+        _libraryGeneration = generation;
         return Result<LibraryId>.Success(_libraryId.Value);
     }
 

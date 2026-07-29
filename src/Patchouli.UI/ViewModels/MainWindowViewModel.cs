@@ -53,6 +53,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
     private string _runtimeDatabasePath;
+    private int _libraryGeneration;
 
     private readonly Dictionary<string, FileSystemWatcher> _fileSearchRootWatchers =
         new(StringComparer.OrdinalIgnoreCase);
@@ -82,7 +83,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             _runtimeDatabasePath = value;
             Raise();
             Raise(nameof(VersionInfo));
-            Settings?.LibrarySettings.NotifyRuntimeDatabasePathChanged();
+            Settings?.NotifyRuntimeDatabasePathChanged();
         }
     }
 
@@ -108,6 +109,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
     public bool HasOpenRuntimeDatabase => _services is not null;
+    public int LibraryGeneration => Volatile.Read(ref _libraryGeneration);
     public IClipboardService Clipboard { get; }
     public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
@@ -283,14 +285,13 @@ public sealed class MainWindowViewModel : ViewModelBase
             return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
         }
 
-        Result saved = await services.SaveSyncedMetadataLookupAsync(metadataLookup, _settings.Sync.DeviceId);
-        if (saved.IsFailure)
-        {
-            return new SettingsSaveResult(false, saved.ErrorCode, saved.ErrorMessage, "library_setting_record", true);
-        }
-
-        SettingsSaveResult json = UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
-        return json;
+        MetadataLookupAppSettings normalized = MetadataLookupAppSettings.MergeWithDefaults(metadataLookup.Sources);
+        return await services.LibrarySettingCoordinator.SaveEnabledAsync(
+            LibrarySettingKeys.MetadataLookup,
+            normalized,
+            _settings.Sync.DeviceId,
+            _ => Task.FromResult(UpdateAppOptions(_settings with { MetadataLookup = normalized })),
+            services.UpdateMetadataLookupPreferences);
     }
 
     private bool HasAnyMetadataLookupSyncEnabled()
@@ -313,84 +314,40 @@ public sealed class MainWindowViewModel : ViewModelBase
             return new SettingsSaveResult(false, library.ErrorCode, library.ErrorMessage, "library_identity", true);
         }
 
-        if (enabled == _settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId) &&
-            syncOverride is null)
+        bool currentlyEnabled =
+            _settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId);
+        if (enabled == currentlyEnabled && syncOverride is null)
         {
             return SettingsSaveResult.Success;
         }
 
+        SyncAppSettings nextSync = syncOverride ?? _settings.Sync.WithSettingEnabled(
+            library.Value.LibraryId,
+            LibrarySettingKeys.MetadataLookup,
+            enabled);
         if (enabled)
         {
-            Result<SettingRecord?> previous =
-                await services.LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup);
-            if (previous.IsFailure)
+            MetadataLookupAppSettings normalized =
+                MetadataLookupAppSettings.MergeWithDefaults(_settings.MetadataLookup.Sources);
+            return await services.LibrarySettingCoordinator.SaveEnabledAsync(
+                LibrarySettingKeys.MetadataLookup,
+                normalized,
+                _settings.Sync.DeviceId,
+                _ => Task.FromResult(UpdateAppOptions(_settings with { Sync = nextSync })),
+                services.UpdateMetadataLookupPreferences);
+        }
+
+        return await services.LibrarySettingCoordinator.DisableAndMaterializeAsync<MetadataLookupAppSettings>(
+            LibrarySettingKeys.MetadataLookup,
+            currentlyEnabled,
+            _settings.MetadataLookup,
+            (materialized, _) => Task.FromResult(UpdateAppOptions(_settings with
             {
-                return new SettingsSaveResult(false, previous.ErrorCode, previous.ErrorMessage,
-                    "library_setting_record", true);
-            }
-
-            Result saved =
-                await services.SaveSyncedMetadataLookupAsync(_settings.MetadataLookup, _settings.Sync.DeviceId);
-            if (saved.IsFailure)
-            {
-                return new SettingsSaveResult(false, saved.ErrorCode, saved.ErrorMessage, "library_setting_record",
-                    true);
-            }
-
-            SettingsSaveResult json = UpdateAppOptions(_settings with
-            {
-                Sync = syncOverride ?? _settings.Sync.WithSettingEnabled(library.Value.LibraryId,
-                    LibrarySettingKeys.MetadataLookup, true)
-            });
-            if (!json.IsSuccess)
-            {
-                if (previous.Value is null)
-                {
-                    await services.LibrarySettings.DeleteAsync(LibrarySettingKeys.MetadataLookup);
-                }
-                else
-                {
-                    await services.LibrarySettings.SaveAsync(previous.Value);
-                }
-            }
-
-            return json;
-        }
-
-        Result<MetadataLookupAppSettings?> record = await services.GetSyncedMetadataLookupAsync();
-        if (record.IsFailure)
-        {
-            return new SettingsSaveResult(false, record.ErrorCode, record.ErrorMessage, "library_setting_record", true);
-        }
-
-        Result<SettingRecord?> storedRecord =
-            await services.LibrarySettings.GetAsync(LibrarySettingKeys.MetadataLookup);
-        if (storedRecord.IsFailure)
-        {
-            return new SettingsSaveResult(false, storedRecord.ErrorCode, storedRecord.ErrorMessage,
-                "library_setting_record", true);
-        }
-
-        MetadataLookupAppSettings materialized = record.Value ?? _settings.MetadataLookup;
-        Result removed = await services.LibrarySettings.DeleteAsync(LibrarySettingKeys.MetadataLookup);
-        if (removed.IsFailure)
-        {
-            return new SettingsSaveResult(false, removed.ErrorCode, removed.ErrorMessage, "library_setting_record",
-                true);
-        }
-
-        SettingsSaveResult savedJson = UpdateAppOptions(_settings with
-        {
-            MetadataLookup = materialized,
-            Sync = syncOverride ?? _settings.Sync.WithSettingEnabled(library.Value.LibraryId,
-                LibrarySettingKeys.MetadataLookup, false)
-        });
-        if (!savedJson.IsSuccess && storedRecord.Value is not null)
-        {
-            await services.LibrarySettings.SaveAsync(storedRecord.Value);
-        }
-
-        return savedJson;
+                MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
+                Sync = nextSync
+            })),
+            materialized => services.UpdateMetadataLookupPreferences(
+                MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources)));
     }
 
     private void PersistRuntimeDatabasePathIfEnabled()
@@ -1298,6 +1255,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         await StopMcpServerAsync(detail);
+        _services = null;
+        _shellSidecar = null;
+        Interlocked.Increment(ref _libraryGeneration);
+        Settings.NotifyLibraryContextChanged();
+        Raise(nameof(HasOpenRuntimeDatabase));
     }
 
     public void ForceKillShellSandbox()

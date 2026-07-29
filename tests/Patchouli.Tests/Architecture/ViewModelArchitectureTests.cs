@@ -65,4 +65,20 @@ public class ViewModelArchitectureTests
 
         violations.Should().BeEmpty();
     }
+
+    [Fact]
+    public void Business_view_models_must_use_the_library_setting_coordinator()
+    {
+        string viewModelRoot = TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels");
+        string[] violations = Directory.EnumerateFiles(viewModelRoot, "*.cs", SearchOption.AllDirectories)
+            .SelectMany(path => File.ReadLines(path).Select((line, index) => (path, line, number: index + 1)))
+            .Where(entry =>
+                entry.line.Contains("LibrarySettings.GetAsync", StringComparison.Ordinal) ||
+                entry.line.Contains("LibrarySettings.SaveAsync", StringComparison.Ordinal) ||
+                entry.line.Contains("LibrarySettings.DeleteAsync", StringComparison.Ordinal))
+            .Select(entry => $"{Path.GetRelativePath(viewModelRoot, entry.path)}:{entry.number}: {entry.line.Trim()}")
+            .ToArray();
+
+        violations.Should().BeEmpty();
+    }
 }

@@ -83,6 +83,7 @@ public sealed class AppServices
             new MetadataLookupService(Items, MetadataSources, ItemTypeInference, () => _metadataLookupPreferences);
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
+        LibrarySettingCoordinator = new LibrarySettingCoordinator(LibrarySettings, LibrarySettingRecords);
         Files = new FileAssetService(ConnectionFactory, Library, Clock);
         Documents = new DocumentInstanceService(ConnectionFactory, Clock);
         INativeFileAccessAdapter? nativeAdapter = OperatingSystem.IsMacOS()
@@ -199,6 +200,7 @@ public sealed class AppServices
     public IMetadataLookupService MetadataLookup { get; }
     public ILibrarySettingStore LibrarySettings { get; }
     public LibrarySettingRecordService LibrarySettingRecords { get; }
+    public LibrarySettingCoordinator LibrarySettingCoordinator { get; }
     public IFileAssetService Files { get; }
     public IDocumentInstanceService Documents { get; }
     public IFileResolutionService FileResolution { get; }
@@ -251,7 +253,7 @@ public sealed class AppServices
         CancellationToken cancellationToken = default)
     {
         Result<MetadataLookupAppSettings?> record =
-            await LibrarySettingRecords.GetAsync<MetadataLookupAppSettings>(
+            await LibrarySettingCoordinator.ReadAsync<MetadataLookupAppSettings>(
                 LibrarySettingKeys.MetadataLookup,
                 true,
                 cancellationToken);
@@ -277,34 +279,37 @@ public sealed class AppServices
             return Result.Failure(AppErrorCodes.ValidationFailed, "A device identity is required for synced settings.");
         }
 
-        Result<SettingRecord> saved = await LibrarySettingRecords.SaveAsync(
+        MetadataLookupAppSettings normalized = MetadataLookupAppSettings.MergeWithDefaults(settings.Sources);
+        SettingsSaveResult saved = await LibrarySettingCoordinator.SaveEnabledAsync(
             LibrarySettingKeys.MetadataLookup,
-            MetadataLookupAppSettings.MergeWithDefaults(settings.Sources),
+            normalized,
             deviceId,
-            true,
+            _ => Task.FromResult(SettingsSaveResult.Success),
+            UpdateMetadataLookupPreferences,
             cancellationToken);
-        if (saved.IsSuccess)
-        {
-            UpdateMetadataLookupPreferences(settings);
-        }
 
         return saved.IsSuccess
             ? Result.Success()
-            : Result.Failure(saved.ErrorCode ?? AppErrorCodes.DatabaseError,
-                saved.ErrorMessage ?? "Unable to save the synchronized setting.");
+            : Result.Failure(saved.ErrorCode ?? AppErrorCodes.DatabaseError, saved.ErrorMessage ??
+                                                                             "Unable to save the synchronized setting.");
     }
 
     private async Task ApplySyncedMetadataLookupAsync(PatchouliAppSettings settings)
     {
-        if (!settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
+        Result<LibraryMetadata> library = await Library.GetCurrentLibraryAsync();
+        if (library.IsFailure ||
+            !settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId))
         {
             return;
         }
 
-        Result<MetadataLookupAppSettings?> synced = await GetSyncedMetadataLookupAsync();
+        Result<MetadataLookupAppSettings?> synced =
+            await LibrarySettingCoordinator.ReadAsync<MetadataLookupAppSettings>(
+                LibrarySettingKeys.MetadataLookup,
+                true);
         if (synced.IsSuccess && synced.Value is not null)
         {
-            UpdateMetadataLookupPreferences(synced.Value);
+            UpdateMetadataLookupPreferences(MetadataLookupAppSettings.MergeWithDefaults(synced.Value.Sources));
         }
     }
 
@@ -367,6 +372,23 @@ public sealed class AppServices
 
         AppServices services = new(path, settings, settingsPath);
         await services.MigrationRunner.RunAsync();
+        if (services.FileResolution is FileResolutionService fileResolution)
+        {
+            Result adopted = await fileResolution.AdoptLegacyDeviceRootBindingsAsync();
+            if (adopted.IsFailure)
+            {
+                try
+                {
+                    await logger.LogAsync("migration",
+                        adopted.ErrorMessage ?? "Legacy root binding migration failed.");
+                }
+                catch (Exception exception)
+                {
+                    UnexpectedExceptions.Sink.Report(exception, "operation-log", "legacy-root-binding-migration");
+                }
+            }
+        }
+
         Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
         if (ocrReconcile.IsFailure)
         {

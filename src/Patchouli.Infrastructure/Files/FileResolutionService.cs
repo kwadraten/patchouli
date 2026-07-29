@@ -96,6 +96,14 @@ public sealed class FileResolutionService : IFileResolutionService
                 await using SqliteConnection connection = _connectionFactory.CreateConnection();
                 await connection.OpenAsync(cancellationToken);
                 await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+                Result adopted =
+                    await AdoptLegacySearchRootBindingsAsync(connection, transaction, root.LibraryId, deviceId.Value,
+                        cancellationToken);
+                if (adopted.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<FileSearchRoot>.Failure(adopted.ErrorCode!, adopted.ErrorMessage!);
+                }
 
                 Result<bool> duplicate = await HasDuplicateSearchRootBindingAsync(
                     connection,
@@ -313,6 +321,14 @@ public sealed class FileResolutionService : IFileResolutionService
             using IDisposable gate = await _connectionFactory.EnterExclusiveAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
+            Result adopted =
+                await AdoptLegacySearchRootBindingsAsync(connection, null, libraryResult.Value.LibraryId,
+                    deviceId.Value, cancellationToken);
+            if (adopted.IsFailure)
+            {
+                return Result<FileSearchRoot>.Failure(adopted.ErrorCode!, adopted.ErrorMessage!);
+            }
+
             int definitionExists = await connection.ExecuteScalarAsync<int>(
                 """
                 select count(1)
@@ -420,6 +436,13 @@ public sealed class FileResolutionService : IFileResolutionService
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
+            Result adopted =
+                await AdoptLegacySearchRootBindingsAsync(connection, null, libraryResult.Value.LibraryId,
+                    deviceId.Value, cancellationToken);
+            if (adopted.IsFailure)
+            {
+                return Result<IReadOnlyList<FileSearchRoot>>.Failure(adopted.ErrorCode!, adopted.ErrorMessage!);
+            }
 
             SearchRootRow[] materialized = await LoadSearchRootRowsAsync(
                 connection,
@@ -518,6 +541,12 @@ public sealed class FileResolutionService : IFileResolutionService
 
         if (_rootBindings is not null)
         {
+            Result adopted = await AdoptLegacyDeviceRootBindingsAsync(cancellationToken);
+            if (adopted.IsFailure)
+            {
+                return adopted;
+            }
+
             Result<DeviceRootBinding?> existing = await _rootBindings.GetBindingAsync(
                 libraryResult.Value.LibraryId,
                 LogicalRootKinds.FileSearchRoot,
@@ -727,6 +756,14 @@ public sealed class FileResolutionService : IFileResolutionService
             if (deviceId.IsFailure)
             {
                 return Result<FileResolutionResult>.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
+            }
+
+            Result adopted =
+                await AdoptLegacySearchRootBindingsAsync(connection, null, LibraryId.Parse(asset.LibraryId),
+                    deviceId.Value, cancellationToken);
+            if (adopted.IsFailure)
+            {
+                return Result<FileResolutionResult>.Failure(adopted.ErrorCode!, adopted.ErrorMessage!);
             }
 
             SearchRootRow[] roots = await LoadSearchRootRowsAsync(
@@ -1063,6 +1100,46 @@ public sealed class FileResolutionService : IFileResolutionService
         }
     }
 
+    public async Task<Result> AdoptLegacyDeviceRootBindingsAsync(CancellationToken cancellationToken = default)
+    {
+        if (_rootBindings is null)
+        {
+            return Result.Success();
+        }
+
+        Result<LibraryMetadata> library = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (library.IsFailure)
+        {
+            return library.ErrorCode == AppErrorCodes.NotFound
+                ? Result.Success()
+                : Result.Failure(library.ErrorCode!, library.ErrorMessage!);
+        }
+
+        Result<string> deviceId = await GetDeviceIdAsync(cancellationToken);
+        if (deviceId.IsFailure)
+        {
+            return Result.Failure(deviceId.ErrorCode!, deviceId.ErrorMessage!);
+        }
+
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            return await AdoptLegacySearchRootBindingsAsync(connection, null, library.Value.LibraryId,
+                deviceId.Value, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-resolution", "adopt-legacy-root-bindings"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError,
+                $"Legacy root binding migration failed: {exception.Message}");
+        }
+    }
+
     private async Task<Result<string>> GetDeviceIdAsync(CancellationToken cancellationToken)
     {
         if (_rootBindings is null)
@@ -1071,6 +1148,101 @@ public sealed class FileResolutionService : IFileResolutionService
         }
 
         return await _rootBindings.GetDeviceIdAsync(cancellationToken);
+    }
+
+    private async Task<Result> AdoptLegacySearchRootBindingsAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        LibraryId libraryId,
+        string deviceId,
+        CancellationToken cancellationToken)
+    {
+        if (_rootBindings is null)
+        {
+            return Result.Success();
+        }
+
+        LegacySearchRootBindingRow[] legacyRows = (await connection.QueryAsync<LegacySearchRootBindingRow>(
+            """
+            select binding.library_id as LibraryId, binding.root_id as RootId,
+                   binding.root_path as RootPath, binding.provider_identity as ProviderIdentity,
+                   binding.is_available as IsAvailable,
+                   binding.authorization_kind as AuthorizationKind,
+                   binding.authorization_payload as AuthorizationPayload,
+                   binding.authorization_payload_version as AuthorizationPayloadVersion,
+                   binding.authorization_updated_at as AuthorizationUpdatedAt,
+                   binding.updated_at as UpdatedAt
+            from file_search_root_bindings binding
+            join file_search_root_definitions definition
+              on definition.library_id = binding.library_id
+             and definition.root_id = binding.root_id
+            where binding.library_id = @LibraryId
+              and binding.root_kind = 'file_search_root';
+            """,
+            new { LibraryId = libraryId.ToString() },
+            transaction)).ToArray();
+        if (legacyRows.Length == 0)
+        {
+            return Result.Success();
+        }
+
+        foreach (LegacySearchRootBindingRow row in legacyRows)
+        {
+            Result<DeviceRootBinding?> existing = await _rootBindings.GetBindingAsync(
+                libraryId,
+                LogicalRootKinds.FileSearchRoot,
+                row.RootId,
+                deviceId,
+                cancellationToken);
+            if (existing.IsFailure)
+            {
+                return Result.Failure(existing.ErrorCode!, existing.ErrorMessage!);
+            }
+
+            if (existing.Value is not null)
+            {
+                continue;
+            }
+
+            DateTimeOffset updatedAt = DateTimeOffset.TryParse(row.UpdatedAt, out DateTimeOffset parsedUpdatedAt)
+                ? parsedUpdatedAt.ToUniversalTime()
+                : _clock.UtcNow.ToUniversalTime();
+            DateTimeOffset? authorizationUpdatedAt =
+                DateTimeOffset.TryParse(row.AuthorizationUpdatedAt, out DateTimeOffset parsedAuthorizationUpdatedAt)
+                    ? parsedAuthorizationUpdatedAt.ToUniversalTime()
+                    : null;
+            Result<DeviceRootBinding> saved = await _rootBindings.SaveBindingAsync(
+                new DeviceRootBinding(
+                    libraryId,
+                    LogicalRootKinds.FileSearchRoot,
+                    row.RootId,
+                    deviceId,
+                    Path.GetFullPath(row.RootPath),
+                    string.IsNullOrWhiteSpace(row.ProviderIdentity)
+                        ? "sqlite_migration"
+                        : row.ProviderIdentity.Trim(),
+                    row.IsAvailable == 1,
+                    row.AuthorizationKind,
+                    row.AuthorizationPayload,
+                    row.AuthorizationPayloadVersion,
+                    authorizationUpdatedAt,
+                    updatedAt),
+                cancellationToken);
+            if (saved.IsFailure)
+            {
+                return Result.Failure(saved.ErrorCode!, saved.ErrorMessage!);
+            }
+        }
+
+        await connection.ExecuteAsync(
+            """
+            delete from file_search_root_bindings
+            where library_id = @LibraryId
+              and root_kind = 'file_search_root';
+            """,
+            new { LibraryId = libraryId.ToString() },
+            transaction);
+        return Result.Success();
     }
 
     private async Task<Result<bool>> HasDuplicateSearchRootBindingAsync(
@@ -1592,6 +1764,20 @@ public sealed class FileResolutionService : IFileResolutionService
         public string RootId { get; set; } = string.Empty;
         public string LibraryId { get; set; } = string.Empty;
         public string CreatedAt { get; set; } = string.Empty;
+        public string UpdatedAt { get; set; } = string.Empty;
+    }
+
+    private sealed class LegacySearchRootBindingRow
+    {
+        public string LibraryId { get; set; } = string.Empty;
+        public string RootId { get; set; } = string.Empty;
+        public string RootPath { get; set; } = string.Empty;
+        public string ProviderIdentity { get; set; } = string.Empty;
+        public int IsAvailable { get; set; }
+        public string? AuthorizationKind { get; set; }
+        public byte[]? AuthorizationPayload { get; set; }
+        public int? AuthorizationPayloadVersion { get; set; }
+        public string? AuthorizationUpdatedAt { get; set; }
         public string UpdatedAt { get; set; } = string.Empty;
     }
 
