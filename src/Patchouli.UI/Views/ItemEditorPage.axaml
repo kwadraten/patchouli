@@ -142,6 +142,22 @@
                 </ItemsControl>
               </ScrollViewer>
               <Separator Background="{DynamicResource OutlineVariantBrush}" Margin="0,4" />
+              <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasIdentifierSchemeShortcuts}">
+                <TextBlock Text="当前类型推荐：" FontSize="11" VerticalAlignment="Center"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <ItemsControl ItemsSource="{Binding IdentifierSchemeShortcuts}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <StackPanel Orientation="Horizontal" Spacing="6" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="editor:IdentifierSchemeShortcutViewModel">
+                      <Button Content="{Binding Scheme}" Command="{Binding SelectCommand}" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
               <TextBlock Text="类型统一保存为小写；常用值包括 doi、isbn、issn、url、pmid、pmcid、arxiv。" FontSize="11"
                          Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
               <Grid ColumnDefinitions="120,*,*,Auto" ColumnSpacing="8">

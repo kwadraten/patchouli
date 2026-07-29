@@ -20,15 +20,16 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.ISBN, BuiltInIdentifierSchemes.ISSN],
                     ["container-title-short", "call-number", "archive"],
                     renderableInCsl: false),
-                Create("book", "Book", "Monographs and books.", ["title", "author"], ["publisher", "issued", "ISBN"],
-                    ["collection-title", "extra_csl"]),
+                Create("book", "Book", "Monographs and books.", ["title", "author"], ["publisher", "issued"],
+                    ["collection-title", "extra_csl"], identifierSchemes: [BuiltInIdentifierSchemes.ISBN]),
                 Create(
                     "article-journal",
                     "Journal Article",
                     "Articles published in journals.",
                     ["title", "author", "container-title"],
-                    ["issued", "volume", "issue", "pages", "DOI"],
+                    ["issued", "volume", "issue", "pages"],
                     ["extra_csl"],
+                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.ISSN],
                     fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
                     {
                         ["container-title"] = "期刊名"
@@ -38,26 +39,31 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     "Book Chapter",
                     "Chapters within edited volumes.",
                     ["title", "author", "container-title"],
-                    ["publisher", "issued", "pages", "ISBN"],
+                    ["publisher", "issued", "pages"],
                     ["extra_csl"],
+                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.ISBN],
                     fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
                     {
                         ["container-title"] = "文献出处"
                     }),
                 Create("thesis", "Thesis", "Dissertations and theses.", ["title", "author"], ["publisher", "issued"],
-                    ["genre", "DOI", "extra_csl"]),
+                    ["genre", "extra_csl"], identifierSchemes: [BuiltInIdentifierSchemes.URL]),
                 Create("report", "Report", "Institutional or technical reports.", ["title", "author"],
-                    ["publisher", "issued", "number"], ["DOI", "extra_csl"]),
+                    ["publisher", "issued", "number"], ["extra_csl"],
+                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.URL]),
                 Create("webpage", "Web Page", "Online web pages.", ["title"], ["author", "issued", "accessed"],
-                    ["URL", "extra_csl"]),
+                    ["extra_csl"], identifierSchemes: [BuiltInIdentifierSchemes.URL]),
                 Create("manuscript", "Manuscript", "Archival manuscripts and unpublished material.", ["title"],
-                    ["author", "issued"], ["archive_location", "extra_csl"]),
+                    ["author", "issued"], ["extra_csl"],
+                    identifierSchemes: [BuiltInIdentifierSchemes.ArchiveId, BuiltInIdentifierSchemes.CallNumber]),
                 Create("paper-conference", "Conference Paper", "Conference proceedings papers.",
-                    ["title", "author", "container-title"], ["issued", "publisher", "pages", "DOI"], ["extra_csl"]),
+                    ["title", "author", "container-title"], ["issued", "publisher", "pages"], ["extra_csl"],
+                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.ISBN]),
                 Create("patent", "Patent", "Patent records.", ["title"], ["author", "issued", "number"],
-                    ["jurisdiction", "extra_csl"]),
+                    ["extra_csl"], identifierSchemes: [BuiltInIdentifierSchemes.URL]),
                 Create("standard", "Standard", "Standards and specifications.", ["title"],
-                    ["publisher", "issued", "number"], ["version", "extra_csl"])
+                    ["publisher", "issued", "number"], ["version", "extra_csl"],
+                    identifierSchemes: [BuiltInIdentifierSchemes.URL])
             }
             .ToDictionary(profile => profile.ItemType, StringComparer.Ordinal);
 

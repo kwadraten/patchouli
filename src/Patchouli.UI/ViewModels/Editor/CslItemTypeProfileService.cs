@@ -22,10 +22,12 @@ public static class CslItemTypeProfileService
         ["pages"] = new ItemFieldDefinition("Pages", "页码", "String"),
         ["language"] = new ItemFieldDefinition("Language", "语言", "String"),
         ["abstract"] = new ItemFieldDefinition("AbstractText", "摘要", "MultilineString"),
-        ["ISBN"] = new ItemFieldDefinition("IdentifierInput", "ISBN", "String"),
-        ["DOI"] = new ItemFieldDefinition("IdentifierInput", "DOI", "String"),
-        ["URL"] = new ItemFieldDefinition("IdentifierInput", "URL", "String"),
-        ["extra_csl"] = new ItemFieldDefinition("ExtraCsl", "更多 CSL 字段", "MultilineString")
+        ["collection-title"] = new ItemFieldDefinition("CollectionTitle", "丛书/文集", "String"),
+        ["genre"] = new ItemFieldDefinition("Genre", "体裁/类型", "String"),
+        ["number"] = new ItemFieldDefinition("Number", "编号", "String"),
+        ["version"] = new ItemFieldDefinition("Version", "版本", "String"),
+        ["accessed"] = new ItemFieldDefinition("AccessedDate", "访问日期", "Date"),
+        ["extra_csl"] = new ItemFieldDefinition("ExtraCsl", "更多 CSL 字段 (JSON)", "MultilineString")
     };
 
     private static readonly ItemFieldDefinition[] AlwaysVisible =
@@ -42,7 +44,7 @@ public static class CslItemTypeProfileService
         new("Language", "语言", "String"),
         new("AbstractText", "摘要", "MultilineString"),
         new("TagsText", "标签 (逗号分隔)", "String"),
-        new("ExtraCsl", "更多 CSL 字段", "MultilineString")
+        new("ExtraCsl", "更多 CSL 字段 (JSON)", "MultilineString")
     ];
 
     public static IReadOnlyList<ItemFieldDefinition> GetProfile(CslItemTypeProfile? profile)

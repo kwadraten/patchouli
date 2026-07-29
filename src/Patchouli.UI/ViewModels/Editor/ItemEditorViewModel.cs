@@ -337,10 +337,23 @@ public sealed class IdentifierItemViewModel : ViewModelBase
     }
 }
 
+public sealed class IdentifierSchemeShortcutViewModel
+{
+    public IdentifierSchemeShortcutViewModel(string scheme, Action<string> select)
+    {
+        Scheme = scheme;
+        SelectCommand = new RelayCommand(_ => select(scheme));
+    }
+
+    public string Scheme { get; }
+    public RelayCommand SelectCommand { get; }
+}
+
 public sealed class ItemEditorViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private ItemId? _itemId;
+    private ItemMetadata? _loadedItem;
     private readonly List<ItemIdentifierInput> _pendingIdentifiers = new();
     private readonly Dictionary<string, string> _fieldValueCache = new(StringComparer.Ordinal);
     private readonly List<CreatorItemViewModel> _creatorCache = new();
@@ -452,6 +465,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         CacheCurrentFields();
 
         Fields.Clear();
+        UpdateIdentifierSchemeShortcuts(itemTypeProfile);
         IReadOnlyList<ItemFieldDefinition> profile = CslItemTypeProfileService.GetProfile(itemTypeProfile);
 
         foreach (ItemFieldDefinition def in profile)
@@ -496,6 +510,31 @@ public sealed class ItemEditorViewModel : ViewModelBase
         BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
     }
 
+    private void UpdateIdentifierSchemeShortcuts(CslItemTypeProfile? profile)
+    {
+        IdentifierSchemeShortcuts.Clear();
+        foreach (string scheme in profile?.IdentifierSchemes
+                                      .Where(static scheme => !string.IsNullOrWhiteSpace(scheme))
+                                      .Select(static scheme => scheme.Trim().ToLowerInvariant())
+                                      .Distinct(StringComparer.Ordinal)
+                                  ?? [])
+        {
+            IdentifierSchemeShortcuts.Add(new IdentifierSchemeShortcutViewModel(scheme, SelectIdentifierScheme));
+        }
+
+        if (IdentifierSchemeShortcuts.Count > 0)
+        {
+            IdentifierScheme = IdentifierSchemeShortcuts[0].Scheme;
+        }
+
+        Raise(nameof(HasIdentifierSchemeShortcuts));
+    }
+
+    private void SelectIdentifierScheme(string scheme)
+    {
+        IdentifierScheme = scheme;
+    }
+
     private void CacheCurrentFields()
     {
         foreach (ItemFieldDescriptor field in Fields)
@@ -534,7 +573,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
     }
 
     public ObservableCollection<IdentifierItemViewModel> Identifiers { get; } = new();
+    public ObservableCollection<IdentifierSchemeShortcutViewModel> IdentifierSchemeShortcuts { get; } = new();
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
+    public bool HasIdentifierSchemeShortcuts => IdentifierSchemeShortcuts.Count > 0;
 
     public AsyncCommand NewCommand { get; }
     public AsyncCommand SaveCommand { get; }
@@ -602,6 +643,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public Task NewAsync()
     {
         _itemId = null;
+        _loadedItem = null;
         _fieldValueCache.Clear();
         _creatorCache.Clear();
         ItemType = "general";
@@ -654,6 +696,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
 
         _itemId = parsed;
+        _loadedItem = item.Value;
         _itemType = item.Value.ItemType;
         Raise(nameof(ItemType));
         Raise(nameof(IsGeneralTypeWarningVisible));
@@ -662,16 +705,28 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _creatorCache.Clear();
         _fieldValueCache["Title"] = item.Value.Title;
         _fieldValueCache["Subtitle"] = item.Value.Subtitle ?? "";
+        _fieldValueCache["TitleShort"] = item.Value.TitleShort ?? "";
         _fieldValueCache["IssuedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Issued, item.Value.Date);
+        _fieldValueCache["AccessedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Accessed, null);
         _fieldValueCache["PublicationTitle"] = item.Value.PublicationTitle ?? "";
+        _fieldValueCache["ContainerTitleShort"] = item.Value.ContainerTitleShort ?? "";
+        _fieldValueCache["CollectionTitle"] = item.Value.CollectionTitle ?? "";
         _fieldValueCache["Publisher"] = item.Value.Publisher ?? "";
         _fieldValueCache["Place"] = item.Value.Place ?? "";
+        _fieldValueCache["Edition"] = item.Value.Edition ?? "";
+        _fieldValueCache["Genre"] = item.Value.Genre ?? "";
+        _fieldValueCache["Number"] = item.Value.Number ?? "";
+        _fieldValueCache["ChapterNumber"] = item.Value.ChapterNumber ?? "";
         _fieldValueCache["Volume"] = item.Value.Volume ?? "";
+        _fieldValueCache["Version"] = item.Value.Version ?? "";
         _fieldValueCache["Issue"] = item.Value.Issue ?? "";
         _fieldValueCache["Pages"] = item.Value.Pages ?? "";
         _fieldValueCache["Language"] = item.Value.Language ?? "";
+        _fieldValueCache["Status"] = item.Value.Status ?? "";
+        _fieldValueCache["Note"] = item.Value.Note ?? "";
         _fieldValueCache["AbstractText"] = item.Value.Abstract ?? "";
         _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
+        _fieldValueCache["ExtraCsl"] = FormatCustomFields(item.Value.CustomFieldsJson);
         foreach (ItemCreator creator in item.Value.Creators)
         {
             CreatorItemViewModel editableCreator = CreateCreatorItem();
@@ -679,35 +734,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
             _creatorCache.Add(editableCreator);
         }
 
-        Fields.Clear();
         Result<CslItemTypeProfile> profileResult = await services.ItemTypeProfiles.GetProfileAsync(_itemType);
-        IReadOnlyList<ItemFieldDefinition> profile =
-            CslItemTypeProfileService.GetProfile(profileResult.IsSuccess ? profileResult.Value : null);
-
-        foreach (ItemFieldDefinition def in profile)
-        {
-            ItemFieldDescriptor field = new(def.Key, def.Label, def.Type);
-
-            if (def.Type == "CreatorList")
-            {
-                field.AddCreatorCommand = new AsyncCommand(() =>
-                {
-                    field.Creators.Add(CreateCreatorItem());
-                    return Task.CompletedTask;
-                });
-
-                foreach (CreatorItemViewModel creator in _creatorCache)
-                {
-                    field.Creators.Add(creator);
-                }
-            }
-            else
-            {
-                field.Value = _fieldValueCache.GetValueOrDefault(def.Key, "");
-            }
-
-            Fields.Add(field);
-        }
+        Fields.Clear();
+        BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
 
         Status = $"正在编辑：{item.Value.Title}";
         _pendingIdentifiers.Clear();
@@ -757,22 +786,38 @@ public sealed class ItemEditorViewModel : ViewModelBase
             .ToList() ?? new List<ItemCreatorInput>();
 
         IReadOnlyList<ItemDateInput> dates = BuildDates();
+        if (!TryBuildCustomFieldsJson(out string customFieldsJson))
+        {
+            return;
+        }
 
         if (_itemId is null)
         {
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(new CreateItemRequest(
                 ItemType,
                 title,
-                NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
+                GetOptionalFieldValue("Subtitle"),
+                GetOptionalFieldValue("TitleShort"),
                 PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
+                ContainerTitleShort: GetOptionalFieldValue("ContainerTitleShort"),
+                CollectionTitle: GetOptionalFieldValue("CollectionTitle"),
                 Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
                 Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
+                Edition: GetOptionalFieldValue("Edition"),
+                Genre: GetOptionalFieldValue("Genre"),
+                Number: GetOptionalFieldValue("Number"),
+                ChapterNumber: GetOptionalFieldValue("ChapterNumber"),
                 Volume: NullIfWhiteSpace(GetSavedFieldValue("Volume")),
+                Version: GetOptionalFieldValue("Version"),
                 Issue: NullIfWhiteSpace(GetSavedFieldValue("Issue")),
                 Pages: NullIfWhiteSpace(GetSavedFieldValue("Pages")),
                 Language: NullIfWhiteSpace(GetSavedFieldValue("Language")),
+                Status: GetOptionalFieldValue("Status"),
+                Note: GetOptionalFieldValue("Note"),
                 AbstractText: NullIfWhiteSpace(GetSavedFieldValue("AbstractText")),
                 TagsJson: SerializeTags(),
+                CollectionsJson: "[]",
+                CustomFieldsJson: customFieldsJson,
                 Creators: creators,
                 Dates: dates,
                 Identifiers: _pendingIdentifiers.ToArray()));
@@ -786,27 +831,58 @@ public sealed class ItemEditorViewModel : ViewModelBase
             }
 
             _itemId = created.Value.ItemId;
+            _loadedItem = created.Value;
             _pendingIdentifiers.Clear();
         }
         else
         {
+            ItemMetadata loadedItem;
+            if (_loadedItem is null)
+            {
+                Result<ItemMetadata> existing = await services.Items.GetItemAsync(_itemId.Value);
+                if (existing.IsFailure)
+                {
+                    Status = existing.ErrorMessage ?? "无法加载待保存的题录。";
+                    return;
+                }
+
+                loadedItem = existing.Value;
+            }
+            else
+            {
+                loadedItem = _loadedItem;
+            }
+
             Result<ItemMetadata> updated = await services.Items.UpdateItemAsync(
                 _itemId.Value,
                 new UpdateItemRequest(
                     ItemType,
                     title,
-                    NullIfWhiteSpace(GetSavedFieldValue("Subtitle")),
+                    GetOptionalFieldValue("Subtitle", loadedItem.Subtitle),
+                    GetOptionalFieldValue("TitleShort", loadedItem.TitleShort),
                     PublicationTitle: NullIfWhiteSpace(GetSavedFieldValue("PublicationTitle")),
+                    ContainerTitleShort: GetOptionalFieldValue("ContainerTitleShort", loadedItem.ContainerTitleShort),
+                    CollectionTitle: GetOptionalFieldValue("CollectionTitle", loadedItem.CollectionTitle),
                     Publisher: NullIfWhiteSpace(GetSavedFieldValue("Publisher")),
                     Place: NullIfWhiteSpace(GetSavedFieldValue("Place")),
+                    Edition: GetOptionalFieldValue("Edition", loadedItem.Edition),
+                    Genre: GetOptionalFieldValue("Genre", loadedItem.Genre),
+                    Number: GetOptionalFieldValue("Number", loadedItem.Number),
+                    ChapterNumber: GetOptionalFieldValue("ChapterNumber", loadedItem.ChapterNumber),
                     Volume: NullIfWhiteSpace(GetSavedFieldValue("Volume")),
+                    Version: GetOptionalFieldValue("Version", loadedItem.Version),
                     Issue: NullIfWhiteSpace(GetSavedFieldValue("Issue")),
                     Pages: NullIfWhiteSpace(GetSavedFieldValue("Pages")),
                     Language: NullIfWhiteSpace(GetSavedFieldValue("Language")),
+                    Status: GetOptionalFieldValue("Status", loadedItem.Status),
+                    Note: GetOptionalFieldValue("Note", loadedItem.Note),
                     AbstractText: NullIfWhiteSpace(GetSavedFieldValue("AbstractText")),
                     TagsJson: SerializeTags(),
+                    CollectionsJson: loadedItem.CollectionsJson,
+                    CustomFieldsJson: customFieldsJson,
                     Creators: creators,
-                    Dates: dates));
+                    Dates: dates,
+                    ExpectedUpdatedAt: loadedItem.UpdatedAt));
 
             if (updated.IsFailure)
             {
@@ -815,6 +891,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 _main.Report(Status);
                 return;
             }
+
+            _loadedItem = updated.Value;
         }
 
         Status = ItemType == "general"
@@ -1127,10 +1205,31 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private IReadOnlyList<ItemDateInput> BuildDates()
     {
-        return new[]
+        List<ItemDateInput> dates = _loadedItem?.Dates
+            .Select(static date => new ItemDateInput(
+                date.Role,
+                date.DatePartsJson,
+                date.Circa,
+                date.Season,
+                date.Literal))
+            .ToList() ?? [];
+        ReplaceDate(dates, ItemDateRoles.Issued, GetSavedFieldValue("IssuedDate"));
+        if (Fields.Any(field => field.Key == "AccessedDate"))
         {
-            BuildDate(ItemDateRoles.Issued, GetSavedFieldValue("IssuedDate"))
-        }.Where(date => date is not null).Cast<ItemDateInput>().ToArray();
+            ReplaceDate(dates, ItemDateRoles.Accessed, GetSavedFieldValue("AccessedDate"));
+        }
+
+        return dates;
+    }
+
+    private static void ReplaceDate(List<ItemDateInput> dates, string role, string value)
+    {
+        dates.RemoveAll(date => date.Role == role);
+        ItemDateInput? replacement = BuildDate(role, value);
+        if (replacement is not null)
+        {
+            dates.Add(replacement);
+        }
     }
 
     private static ItemDateInput? BuildDate(string role, string value)
@@ -1149,6 +1248,43 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private string SerializeTags()
     {
         return JsonSerializer.Serialize(SplitNames(GetSavedFieldValue("TagsText")).ToArray());
+    }
+
+    private string? GetOptionalFieldValue(string key, string? existingValue = null)
+    {
+        return Fields.Any(field => field.Key == key)
+            ? NullIfWhiteSpace(GetSavedFieldValue(key))
+            : existingValue;
+    }
+
+    private bool TryBuildCustomFieldsJson(out string customFieldsJson)
+    {
+        string raw = GetSavedFieldValue("ExtraCsl");
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            customFieldsJson = "{}";
+            return true;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(raw);
+            if (document.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                Status = "更多 CSL 字段必须是 JSON 对象。";
+                customFieldsJson = "{}";
+                return false;
+            }
+
+            customFieldsJson = document.RootElement.GetRawText();
+            return true;
+        }
+        catch (JsonException)
+        {
+            Status = "更多 CSL 字段不是有效的 JSON。";
+            customFieldsJson = "{}";
+            return false;
+        }
     }
 
     private static IEnumerable<string> SplitNames(string value)
@@ -1180,6 +1316,21 @@ public sealed class ItemEditorViewModel : ViewModelBase
         catch
         {
             return "";
+        }
+    }
+
+    private static string FormatCustomFields(string customFieldsJson)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(customFieldsJson);
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? JsonSerializer.Serialize(document.RootElement, new JsonSerializerOptions { WriteIndented = true })
+                : "{}";
+        }
+        catch (JsonException)
+        {
+            return "{}";
         }
     }
 
@@ -1282,6 +1433,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
                      nameof(CslPreviewText),
                      nameof(HasCslPreviewWarning),
                      nameof(IdentifierScheme),
+                     nameof(HasIdentifierSchemeShortcuts),
                      nameof(IdentifierValue),
                      nameof(IdentifierNote)
                  })
