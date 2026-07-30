@@ -1162,27 +1162,53 @@ public sealed class FileResolutionService : IFileResolutionService
             return Result.Success();
         }
 
-        LegacySearchRootBindingRow[] legacyRows = (await connection.QueryAsync<LegacySearchRootBindingRow>(
-            """
-            select binding.library_id as LibraryId, binding.root_id as RootId,
-                   binding.root_path as RootPath, binding.provider_identity as ProviderIdentity,
-                   binding.is_available as IsAvailable,
-                   binding.authorization_kind as AuthorizationKind,
-                   binding.authorization_payload as AuthorizationPayload,
-                   binding.authorization_payload_version as AuthorizationPayloadVersion,
-                   binding.authorization_updated_at as AuthorizationUpdatedAt,
-                   binding.updated_at as UpdatedAt
-            from file_search_root_bindings binding
-            join file_search_root_definitions definition
-              on definition.library_id = binding.library_id
-             and definition.root_id = binding.root_id
-            where binding.library_id = @LibraryId
-              and binding.root_kind = 'file_search_root';
-            """,
-            new { LibraryId = libraryId.ToString() },
-            transaction)).ToArray();
+        bool hasLibraryId = await ColumnExistsAsync(
+            connection, transaction, "file_search_root_bindings", "library_id", cancellationToken);
+
+        LegacySearchRootBindingRow[] legacyRows = hasLibraryId
+            ? (await connection.QueryAsync<LegacySearchRootBindingRow>(
+                """
+                select binding.library_id as LibraryId, binding.root_id as RootId,
+                       binding.root_path as RootPath, binding.provider_identity as ProviderIdentity,
+                       binding.is_available as IsAvailable,
+                       binding.authorization_kind as AuthorizationKind,
+                       binding.authorization_payload as AuthorizationPayload,
+                       binding.authorization_payload_version as AuthorizationPayloadVersion,
+                       binding.authorization_updated_at as AuthorizationUpdatedAt,
+                       binding.updated_at as UpdatedAt
+                from file_search_root_bindings binding
+                join file_search_root_definitions definition
+                  on definition.library_id = binding.library_id
+                 and definition.root_id = binding.root_id
+                where binding.library_id = @LibraryId
+                  and binding.root_kind = 'file_search_root';
+                """,
+                new { LibraryId = libraryId.ToString() },
+                transaction)).ToArray()
+            : (await connection.QueryAsync<LegacySearchRootBindingRow>(
+                """
+                select definition.library_id as LibraryId, binding.root_id as RootId,
+                       binding.root_path as RootPath, 'sqlite_migration' as ProviderIdentity,
+                       binding.is_available as IsAvailable,
+                       binding.authorization_kind as AuthorizationKind,
+                       binding.authorization_payload as AuthorizationPayload,
+                       binding.authorization_payload_version as AuthorizationPayloadVersion,
+                       binding.authorization_updated_at as AuthorizationUpdatedAt,
+                       binding.updated_at as UpdatedAt
+                from file_search_root_bindings binding
+                join file_search_root_definitions definition
+                  on definition.root_id = binding.root_id
+                where definition.library_id = @LibraryId;
+                """,
+                new { LibraryId = libraryId.ToString() },
+                transaction)).ToArray();
         if (legacyRows.Length == 0)
         {
+            if (!hasLibraryId)
+            {
+                await RebuildFileSearchRootBindingsSchemaAsync(connection, transaction, cancellationToken);
+            }
+
             return Result.Success();
         }
 
@@ -1234,15 +1260,82 @@ public sealed class FileResolutionService : IFileResolutionService
             }
         }
 
+        if (hasLibraryId)
+        {
+            await connection.ExecuteAsync(
+                """
+                delete from file_search_root_bindings
+                where library_id = @LibraryId
+                  and root_kind = 'file_search_root';
+                """,
+                new { LibraryId = libraryId.ToString() },
+                transaction);
+        }
+        else
+        {
+            await connection.ExecuteAsync(
+                """
+                delete from file_search_root_bindings
+                where root_id in (
+                    select root_id from file_search_root_definitions where library_id = @LibraryId
+                );
+                """,
+                new { LibraryId = libraryId.ToString() },
+                transaction);
+            await RebuildFileSearchRootBindingsSchemaAsync(connection, transaction, cancellationToken);
+        }
+
+        return Result.Success();
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        string tableName,
+        string columnName,
+        CancellationToken cancellationToken)
+    {
+        int count = await connection.ExecuteScalarAsync<int>(
+            $"select count(1) from pragma_table_info('{tableName}') where name = @ColumnName;",
+            new { ColumnName = columnName },
+            transaction);
+        return count > 0;
+    }
+
+    private static async Task RebuildFileSearchRootBindingsSchemaAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        CancellationToken cancellationToken)
+    {
+        await connection.ExecuteAsync(
+            "alter table file_search_root_bindings add column library_id text;",
+            transaction: transaction);
+        await connection.ExecuteAsync(
+            "alter table file_search_root_bindings add column root_kind text not null default 'file_search_root';",
+            transaction: transaction);
+        await connection.ExecuteAsync(
+            "alter table file_search_root_bindings add column device_id text not null default 'legacy-device';",
+            transaction: transaction);
+        await connection.ExecuteAsync(
+            "alter table file_search_root_bindings add column provider_identity text not null default 'sqlite_migration';",
+            transaction: transaction);
         await connection.ExecuteAsync(
             """
-            delete from file_search_root_bindings
-            where library_id = @LibraryId
-              and root_kind = 'file_search_root';
+            update file_search_root_bindings
+            set library_id = (
+                select library_id from file_search_root_definitions
+                where root_id = file_search_root_bindings.root_id
+            )
+            where library_id is null;
             """,
-            new { LibraryId = libraryId.ToString() },
-            transaction);
-        return Result.Success();
+            transaction: transaction);
+        await connection.ExecuteAsync(
+            "delete from file_search_root_bindings where library_id is null;",
+            transaction: transaction);
+        await connection.ExecuteAsync(
+            "create index if not exists idx_file_search_root_bindings_lookup"
+            + " on file_search_root_bindings(library_id, root_kind, device_id, root_path);",
+            transaction: transaction);
     }
 
     private async Task<Result<bool>> HasDuplicateSearchRootBindingAsync(
