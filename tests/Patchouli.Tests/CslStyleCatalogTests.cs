@@ -36,7 +36,6 @@ public sealed class CslStyleCatalogTests
         catalog.CurrentSource.SourceId.Should().Be(CslCatalogSourceIds.ZoteroChineseGitHub);
         catalog.Sources.Select(source => source.SourceId).Should().Contain([
             CslCatalogSourceIds.ZoteroChineseGitHub,
-            CslCatalogSourceIds.ZoteroChineseGitee,
             CslCatalogSourceIds.ZoteroOfficial
         ]);
         refreshed.IsSuccess.Should().BeTrue();
@@ -49,36 +48,6 @@ public sealed class CslStyleCatalogTests
         search.Value.Single().SourceUrl.Should()
             .Be(
                 "https://raw.githubusercontent.com/zotero-chinese/styles/main/src/%E4%B8%AD%E5%9B%BD%E7%A4%BE%E4%BC%9A%E7%A7%91%E5%AD%A6/%E4%B8%AD%E5%9B%BD%E7%A4%BE%E4%BC%9A%E7%A7%91%E5%AD%A6.csl");
-    }
-
-    [Fact]
-    public async Task Can_switch_to_gitee_chinese_repository_source()
-    {
-        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
-        using HttpClient httpClient = new(new FakeHandler(new Dictionary<string, string>
-        {
-            ["https://gitee.com/api/v5/repos/zotero-chinese-x/styles/git/trees/main?recursive=1"] =
-                """
-                {
-                  "tree": [
-                    { "path": "src/马克思主义研究/马克思主义研究.csl", "type": "blob" }
-                  ]
-                }
-                """
-        }));
-        CslStyleCatalog catalog = new(db.ConnectionFactory, httpClient);
-
-        Result selected = catalog.SetSource(CslCatalogSourceIds.ZoteroChineseGitee);
-        Result<IReadOnlyList<CslCatalogStyle>> refreshed = await catalog.RefreshAsync();
-
-        selected.IsSuccess.Should().BeTrue();
-        catalog.CurrentSource.DisplayName.Should().Contain("Gitee");
-        refreshed.IsSuccess.Should().BeTrue();
-        refreshed.Value.Should().ContainSingle();
-        refreshed.Value.Single().SourceKind.Should().Be(CslCatalogSourceIds.ZoteroChineseGitee);
-        refreshed.Value.Single().SourceUrl.Should()
-            .Be(
-                "https://gitee.com/zotero-chinese-x/styles/raw/main/src/%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E7%A0%94%E7%A9%B6/%E9%A9%AC%E5%85%8B%E6%80%9D%E4%B8%BB%E4%B9%89%E7%A0%94%E7%A9%B6.csl");
     }
 
     [Fact]

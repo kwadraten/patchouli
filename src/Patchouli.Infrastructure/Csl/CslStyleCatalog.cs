@@ -14,10 +14,6 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
 
     private const string GitHubChineseRawRoot = "https://raw.githubusercontent.com/zotero-chinese/styles/main/";
 
-    private const string GiteeChineseTreeUrl =
-        "https://gitee.com/api/v5/repos/zotero-chinese-x/styles/git/trees/main?recursive=1";
-
-    private const string GiteeChineseRawRoot = "https://gitee.com/zotero-chinese-x/styles/raw/main/";
     private const string ZoteroOfficialStylesJsonUrl = "https://www.zotero.org/styles-files/styles.json";
     private const string ZoteroOfficialStyleRoot = "https://www.zotero.org/styles/";
 
@@ -28,19 +24,11 @@ public sealed class CslStyleCatalog : ICslStyleCatalog
         new(
             new CslCatalogSource(
                 CslCatalogSourceIds.ZoteroChineseGitHub,
-                "中文 CSL（GitHub）",
+                "中文 CSL 样式",
                 "从 zotero-chinese/styles 的 GitHub 仓库直接获取。"),
             CatalogSourceKind.RepositoryTree,
             new Uri(GitHubChineseTreeUrl),
             GitHubChineseRawRoot),
-        new(
-            new CslCatalogSource(
-                CslCatalogSourceIds.ZoteroChineseGitee,
-                "中文 CSL（Gitee）",
-                "从 zotero-chinese-x/styles 的 Gitee 镜像直接获取。"),
-            CatalogSourceKind.RepositoryTree,
-            new Uri(GiteeChineseTreeUrl),
-            GiteeChineseRawRoot),
         new(
             new CslCatalogSource(
                 CslCatalogSourceIds.ZoteroOfficial,
