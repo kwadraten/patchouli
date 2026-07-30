@@ -437,18 +437,35 @@ public sealed class DocumentTreeServiceTests
     }
 
     [Fact]
-    public void Markdig_engine_rejects_raw_html_but_allows_multiple_text_paragraphs_and_accepts_a_gfm_table()
+    public void Markdig_engine_rejects_dangerous_html_but_allows_bibliographic_brackets_and_gfm_tables()
     {
         MarkdigMarkdownEngine engine = new();
 
         engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload("<script>alert(1)</script>"))
             .IsFailure.Should().BeTrue();
+        engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload("<iframe src=\"x\"></iframe>"))
+            .IsFailure.Should().BeTrue();
+        engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload(
+                "6878-2 ff.1rv 1572, <Carta de confirmação de D. Sebastião a favor dos jesuítas da Índia>"))
+            .IsSuccess.Should().BeTrue();
+        engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload("DocBook markers use <tag> sequences."))
+            .IsSuccess.Should().BeTrue();
         engine.ValidateLeaf(DocumentBoxType.Text, new TextBoxPayload("one\n\n- two"))
+            .IsSuccess.Should().BeTrue();
+        engine.ValidateLeaf(DocumentBoxType.List, new ListBoxPayload("- first item\n- second item"))
             .IsSuccess.Should().BeTrue();
         engine.ValidateLeaf(
                 DocumentBoxType.Table,
                 new TableBoxPayload("| A | B |\n|---|---|\n| 1 | 2 |"))
             .IsSuccess.Should().BeTrue();
+        engine.ValidateLeaf(
+                DocumentBoxType.Table,
+                new TableBoxPayload("[Table]", "<table><tr><td>cell</td></tr></table>"))
+            .IsSuccess.Should().BeTrue();
+        engine.ValidateLeaf(
+                DocumentBoxType.Table,
+                new TableBoxPayload("[Table]", "<table><tr><td><script>x</script></td></tr></table>"))
+            .IsFailure.Should().BeTrue();
     }
 
     [Fact]
