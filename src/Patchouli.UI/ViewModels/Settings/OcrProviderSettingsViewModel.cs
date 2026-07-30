@@ -12,6 +12,8 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     private string _persistedToken = "";
     private string _modelVersion;
     private string _persistedModelVersion;
+    private int _pollingTimeoutSeconds;
+    private int _persistedPollingTimeoutSeconds;
     private bool _isDirty;
 
     public OcrProviderSettingsViewModel(MainWindowViewModel main)
@@ -22,6 +24,8 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
         _persistedToken = _token;
         _modelVersion = NormalizeModelVersion(main.AppOptions.MinerU.ModelVersion);
         _persistedModelVersion = _modelVersion;
+        _pollingTimeoutSeconds = main.AppOptions.MinerU.PollingTimeoutSeconds;
+        _persistedPollingTimeoutSeconds = _pollingTimeoutSeconds;
     }
 
     public string MinerUTokenInput
@@ -67,6 +71,24 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
         }
     }
 
+    public int MinerUPollingTimeoutSeconds
+    {
+        get => _pollingTimeoutSeconds;
+        set
+        {
+            int clamped = Math.Max(30, Math.Min(value, 3600));
+            if (_pollingTimeoutSeconds == clamped)
+            {
+                return;
+            }
+
+            _pollingTimeoutSeconds = clamped;
+            UpdateDirtyState();
+            Raise();
+            MarkDirty("有未保存的更改");
+        }
+    }
+
     public string OcrConcurrencySummary { get; } = "OCR 队列第一版使用本机单任务 tick 执行。";
 
     public string PreferredOcrProviderName => "MinerU";
@@ -81,9 +103,11 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     {
         _token = _persistedToken;
         _modelVersion = _persistedModelVersion;
+        _pollingTimeoutSeconds = _persistedPollingTimeoutSeconds;
         _isDirty = false;
         Raise(nameof(MinerUTokenInput));
         Raise(nameof(MinerUModelVersion));
+        Raise(nameof(MinerUPollingTimeoutSeconds));
         Raise(nameof(MinerUCredentialStatus));
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -98,10 +122,13 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
         _persistedToken = token;
         _modelVersion = NormalizeModelVersion(_main.AppOptions.MinerU.ModelVersion);
         _persistedModelVersion = _modelVersion;
+        _pollingTimeoutSeconds = _main.AppOptions.MinerU.PollingTimeoutSeconds;
+        _persistedPollingTimeoutSeconds = _pollingTimeoutSeconds;
         _isDirty = false;
         LastError = null;
         Raise(nameof(MinerUTokenInput));
         Raise(nameof(MinerUModelVersion));
+        Raise(nameof(MinerUPollingTimeoutSeconds));
         Raise(nameof(MinerUCredentialStatus));
         Raise(nameof(HasPersistedCredential));
         Raise(nameof(IsDirty));
@@ -114,11 +141,12 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     {
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
-        bool saved = await _main.SaveMinerUSettingsAsync(_token, _modelVersion);
+        bool saved = await _main.SaveMinerUSettingsAsync(_token, _modelVersion, _pollingTimeoutSeconds);
         if (saved)
         {
             _persistedToken = _token;
             _persistedModelVersion = _modelVersion;
+            _persistedPollingTimeoutSeconds = _pollingTimeoutSeconds;
             _isDirty = false;
             LastError = null;
             SaveState = SettingsSaveState.Saved;
@@ -153,7 +181,8 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
 
     private void UpdateDirtyState()
     {
-        _isDirty = _token != _persistedToken || _modelVersion != _persistedModelVersion;
+        _isDirty = _token != _persistedToken || _modelVersion != _persistedModelVersion
+                                             || _pollingTimeoutSeconds != _persistedPollingTimeoutSeconds;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }

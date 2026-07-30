@@ -149,6 +149,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public bool HasMetadataBatchStatus => !string.IsNullOrWhiteSpace(MetadataBatchStatus);
     public int SelectedItemCount => SelectedItems.Count;
     public bool HasBatchSelection => SelectedItems.Count > 0;
+    public bool IsSingleSelectionOrNone => SelectedItems.Count <= 1;
 
     public void SetSelectedItems(IEnumerable<LibraryItemViewModel> items)
     {
@@ -162,6 +163,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(SelectedItems));
         Raise(nameof(SelectedItemCount));
         Raise(nameof(HasBatchSelection));
+        Raise(nameof(IsSingleSelectionOrNone));
     }
 
     public bool ShowItemTypeColumn

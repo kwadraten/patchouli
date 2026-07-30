@@ -893,7 +893,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                     if (locality.Readiness == FileLocalityReadiness.CloudUnready)
                     {
                         progress?.Invoke(processedRoots, roots.Value.Count,
-                            $"正在下载云端文件：{candidate.FileName}", normalizedPath);
+                            $"正在下载云端文件：{candidate.FileName}", $"下载 → {normalizedPath}");
                         await LogOperationAsync("file-scan",
                             $"Hydrating cloud file (trigger={trigger}): {normalizedPath}");
                         Result materialized =
@@ -915,7 +915,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                     string tier = locality.Readiness == FileLocalityReadiness.LocalReady ? "local" : "cloud";
                     progress?.Invoke(processedRoots, roots.Value.Count,
                         $"正在导入 ({importIndex}/{importQueue.Count}, {tier})：{candidate.FileName}",
-                        normalizedPath);
+                        $"导入 ({importIndex}/{importQueue.Count}) → {normalizedPath}");
                     await LogOperationAsync("file-scan",
                         $"Importing (trigger={trigger}, {importIndex}/{importQueue.Count}, tier={tier}): {normalizedPath}");
 
@@ -927,7 +927,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                         imported++;
                         knownPaths.Add(normalizedPath);
                         progress?.Invoke(processedRoots, roots.Value.Count, $"已导入：{candidate.FileName}",
-                            normalizedPath);
+                            $"导入完成 → {normalizedPath}");
                     }
                     else
                     {
@@ -1662,10 +1662,11 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<bool> SaveMinerUTokenSettingsAsync(string token)
     {
-        return await SaveMinerUSettingsAsync(token, _settings.MinerU.ModelVersion);
+        return await SaveMinerUSettingsAsync(token, _settings.MinerU.ModelVersion,
+            _settings.MinerU.PollingTimeoutSeconds);
     }
 
-    public async Task<bool> SaveMinerUSettingsAsync(string token, string modelVersion)
+    public async Task<bool> SaveMinerUSettingsAsync(string token, string modelVersion, int pollingTimeoutSeconds)
     {
         if (modelVersion is not ("vlm" or "pipeline"))
         {
@@ -1682,7 +1683,11 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         SettingsSaveResult settingsSaved = UpdateAppOptions(_settings with
         {
-            MinerU = _settings.MinerU with { ModelVersion = modelVersion }
+            MinerU = _settings.MinerU with
+            {
+                ModelVersion = modelVersion,
+                PollingTimeoutSeconds = pollingTimeoutSeconds
+            }
         });
         if (!settingsSaved.IsSuccess)
         {
@@ -2033,6 +2038,12 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task EditSelectedItemAsync()
     {
+        if (Shell.SelectedItems.Count > 1)
+        {
+            Report("编辑元数据仅支持单选，请只选中一个题录。");
+            return;
+        }
+
         LibraryItemViewModel? item = Shell.SelectedItem;
         if (item is null)
         {
@@ -2061,14 +2072,26 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task RunSelectedItemOcrAsync()
     {
-        await ActivateTabAsync(WorkspaceTabKind.Library, "Library", LibraryTabTitle, "Database", false, () => Shell);
-        if (Shell.SelectedItem is null)
+        IReadOnlyList<LibraryItemViewModel> items = Shell.SelectedItems.Count > 0
+            ? Shell.SelectedItems.ToArray()
+            : Shell.SelectedItem is not null
+                ? [Shell.SelectedItem]
+                : Array.Empty<LibraryItemViewModel>();
+        if (items.Count == 0)
         {
-            Report("请先选择一个题录。");
+            Report("请先选择题录。");
             return;
         }
 
-        await Shell.SelectedItem.RunOcrCommand.ExecuteAsync();
+        await ActivateTabAsync(WorkspaceTabKind.Library, "Library", LibraryTabTitle, "Database", false, () => Shell);
+        foreach (LibraryItemViewModel item in items)
+        {
+            await item.RunOcrCommand.ExecuteAsync();
+        }
+
+        Report(items.Count > 1
+            ? $"已将 {items.Count} 个题录加入 OCR 队列。"
+            : "已将题录加入 OCR 队列。");
     }
 
     private Task ActivateExistingTabAsync(WorkspaceTabKind kind)
@@ -2355,15 +2378,15 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task CopyCslBibliographyAsync()
     {
-        LibraryItemViewModel? item = Shell.SelectedItem;
-        if (item is null)
+        IReadOnlyList<ItemId> itemIds = GetSelectedItemIds();
+        if (itemIds.Count == 0)
         {
-            Report("请先选择一个题录。");
+            Report("请先选择题录。");
             return;
         }
 
         Result<CslRenderResult> rendered =
-            await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([ItemId.Parse(item.ItemId)]));
+            await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest(itemIds));
         if (rendered.IsFailure)
         {
             Report($"CSL 题录生成失败：{rendered.ErrorCode} {rendered.ErrorMessage}");
@@ -2374,20 +2397,21 @@ public sealed class MainWindowViewModel : ViewModelBase
         string warning = rendered.Value.Warnings.Count > 0
             ? $"，warnings: {string.Join("; ", rendered.Value.Warnings)}"
             : "";
-        Report($"已复制 CSL 题录：{rendered.Value.StyleDisplayName}{warning}");
+        string itemDesc = itemIds.Count > 1 ? $"{itemIds.Count} 条题录" : "题录";
+        Report($"已复制 {itemDesc} CSL：{rendered.Value.StyleDisplayName}{warning}");
     }
 
     private async Task ExportSelectedItemBibliographyAsync()
     {
-        LibraryItemViewModel? item = Shell.SelectedItem;
-        if (item is null)
+        IReadOnlyList<ItemId> itemIds = GetSelectedItemIds();
+        if (itemIds.Count == 0)
         {
-            Report("请先选择一个题录。");
+            Report("请先选择题录。");
             return;
         }
 
         Result<CslRenderResult> rendered =
-            await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest([ItemId.Parse(item.ItemId)]));
+            await (await ServicesAsync()).CslRenderer.RenderAsync(new CslRenderRequest(itemIds));
         if (rendered.IsFailure)
         {
             Report($"题录导出失败：{rendered.ErrorCode} {rendered.ErrorMessage}");
@@ -2395,7 +2419,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         await Clipboard.SetTextAsync(rendered.Value.RenderedHtml);
-        Report($"已导出题录 HTML 到剪贴板：{rendered.Value.StyleDisplayName}");
+        string itemDesc = itemIds.Count > 1 ? $"{itemIds.Count} 条题录" : "题录";
+        Report($"已导出 {itemDesc} HTML 到剪贴板：{rendered.Value.StyleDisplayName}");
     }
 
     private Task ActivateTabAsync(WorkspaceTabKind kind, string tabId, string title, string iconName, bool isClosable,

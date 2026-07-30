@@ -2657,7 +2657,7 @@ public sealed class UiViewModelTests : IDisposable
                 { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            (await vm.SaveMinerUSettingsAsync("token-to-remove", "vlm")).Should().BeTrue();
+            (await vm.SaveMinerUSettingsAsync("token-to-remove", "vlm", 300)).Should().BeTrue();
             vm.Settings.OcrProviderSettings.HasPersistedCredential.Should().BeTrue();
 
             (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
@@ -2695,7 +2695,7 @@ public sealed class UiViewModelTests : IDisposable
                 { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            (await vm.SaveMinerUSettingsAsync("token-to-keep", "vlm")).Should().BeTrue();
+            (await vm.SaveMinerUSettingsAsync("token-to-keep", "vlm", 300)).Should().BeTrue();
 
             (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
 

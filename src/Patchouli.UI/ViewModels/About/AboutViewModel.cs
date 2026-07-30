@@ -68,15 +68,15 @@ public class AboutViewModel : ViewModelBase
         ThirdPartyLibraries = new ObservableCollection<ThirdPartyLibrary>
         {
             new("Avalonia", "MIT", "https://github.com/AvaloniaUI/Avalonia", openUrlCommand),
-            new("Dapper", "Apache 2.0", "https://github.com/DapperLib/Dapper", openUrlCommand),
+            new("Dapper", "Apache-2.0", "https://github.com/DapperLib/Dapper", openUrlCommand),
             new("Microsoft.Data.Sqlite", "MIT", "https://github.com/dotnet/efcore", openUrlCommand),
-            new("Blake3", "CC0 / Apache 2.0", "https://github.com/BLAKE3-team/BLAKE3", openUrlCommand),
+            new("Blake3", "CC0 / Apache-2.0", "https://github.com/BLAKE3-team/BLAKE3", openUrlCommand),
             new("PDFiumCore / PDFium", "Apache-2.0 / BSD-3-Clause",
                 "https://github.com/Dtronix/PDFiumCore", openUrlCommand),
-            new("Fsharp.Citeproc", "MIT", "https://www.nuget.org/packages/Fsharp.Citeproc", openUrlCommand),
+            new("Fsharp.Citeproc", "MIT", "https://github.com/kwadraten/Fsharp.Citeproc", openUrlCommand),
             new("Markdig", "BSD-2-Clause", "https://github.com/xoofx/markdig", openUrlCommand),
-            new("Bashkit 0.14.4", "MIT", "https://github.com/everruns/bashkit", openUrlCommand),
-            new("typst/biblatex 0.12.0", "MIT OR Apache-2.0", "https://github.com/typst/biblatex",
+            new("Bashkit", "MIT", "https://github.com/everruns/bashkit", openUrlCommand),
+            new("typst/biblatex", "MIT / Apache-2.0", "https://github.com/typst/biblatex",
                 openUrlCommand)
         };
     }

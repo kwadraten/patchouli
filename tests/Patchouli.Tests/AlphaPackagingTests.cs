@@ -192,9 +192,9 @@ public sealed class AlphaPackagingTests
         AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
 
         about.ThirdPartyLibraries.Should()
-            .Contain(library => library.Name == "Bashkit 0.14.4" && library.License == "MIT")
-            .And.Contain(library => library.Name == "typst/biblatex 0.12.0" &&
-                                    library.License == "MIT OR Apache-2.0");
+            .Contain(library => library.Name == "Bashkit" && library.License == "MIT")
+            .And.Contain(library => library.Name == "typst/biblatex" &&
+                                    library.License == "MIT / Apache-2.0");
     }
 
     [Fact]

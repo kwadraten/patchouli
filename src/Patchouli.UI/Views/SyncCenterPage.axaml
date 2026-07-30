@@ -37,7 +37,7 @@
       </Border>
 
       <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="32" Spacing="18" MaxWidth="1000" HorizontalAlignment="Left">
+        <StackPanel Margin="32" Spacing="20" MaxWidth="720">
 
           <!-- 状态概览 -->
           <Border Classes="Card" IsVisible="{Binding IsOverviewSectionActive}">

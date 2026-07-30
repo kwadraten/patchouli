@@ -93,7 +93,8 @@
           </MenuItem>
           <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
-            <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}" />
+            <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
+                      IsEnabled="{Binding Shell.IsSingleSelectionOrNone}" />
             <MenuItem Header="获取所选题录元数据" Command="{Binding Shell.LookupMetadataBatchCommand}"
                       IsEnabled="{Binding Shell.HasBatchSelection}" />
             <MenuItem Header="取消批量获取元数据" Command="{Binding Shell.CancelMetadataBatchCommand}"

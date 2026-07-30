@@ -115,8 +115,8 @@
         </Grid>
       </Border>
 
-      <ScrollViewer Grid.Row="1" Margin="32,0,32,32">
-        <StackPanel Spacing="24" MaxWidth="1000" HorizontalAlignment="Left">
+      <ScrollViewer Grid.Row="1">
+        <StackPanel Margin="32" Spacing="20" MaxWidth="720">
 
           <!-- 基本信息 -->
           <StackPanel Spacing="24" IsVisible="{Binding IsBasicSectionActive}">

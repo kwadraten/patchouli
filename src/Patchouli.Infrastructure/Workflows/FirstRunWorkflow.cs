@@ -131,7 +131,7 @@ public sealed class FirstRunWorkflow
                 if (locality.Readiness == FileLocalityReadiness.CloudUnready)
                 {
                     progress?.Invoke(index, orderedCandidates.Count, $"正在下载云端文件：{candidate.FileName}",
-                        candidate.Path);
+                        $"下载 → {candidate.Path}");
                     Result materialized =
                         await _pdfDiscoveryService.EnsureAvailableAsync(candidate.Path, cancellationToken);
                     locality = _pdfDiscoveryService.Assess(candidate.Path);
@@ -146,7 +146,7 @@ public sealed class FirstRunWorkflow
 
                 string tier = locality.Readiness == FileLocalityReadiness.LocalReady ? "local" : "cloud";
                 progress?.Invoke(index, orderedCandidates.Count, $"正在导入 ({tier})：{candidate.FileName}",
-                    candidate.Path);
+                    $"导入 → {candidate.Path}");
                 await TryUpdateInitialRootScanAsync(
                     operationId,
                     index,
