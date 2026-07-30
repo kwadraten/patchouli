@@ -10,12 +10,17 @@ namespace Patchouli.Infrastructure.Shell;
 
 public sealed class ShellSidecarHost : IAsyncDisposable
 {
+    private static readonly TimeSpan MinCommandTimeout = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan MaxCommandTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan CommandTimeoutWatchdogGrace = TimeSpan.FromSeconds(1);
+
     private readonly ShellDomainService _domain;
     private readonly ShellResourceLimits _limits;
     private readonly string _sidecarPath;
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly object _statusGate = new();
     private readonly ConcurrentDictionary<ulong, TaskCompletionSource<ShellRpcEnvelope>> _pending = new();
+    private readonly ConcurrentDictionary<ulong, ReverseRequestCancellation> _reverseRequests = new();
     private readonly ChildProcessLifetime _childLifetime = new();
     private readonly object _processGate = new();
     private long _nextRequestId = -1;
@@ -35,6 +40,12 @@ public sealed class ShellSidecarHost : IAsyncDisposable
     {
         _domain = domain;
         _limits = limits ?? ShellResourceLimits.Default;
+        if (_limits.CommandTimeout < MinCommandTimeout || _limits.CommandTimeout > MaxCommandTimeout)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limits), _limits.CommandTimeout,
+                "Shell command timeout must be between 1 and 60 seconds.");
+        }
+
         _sidecarPath = sidecarPath ?? ResolveDefaultSidecarPath();
         EnsureExitHooks();
     }
@@ -178,6 +189,8 @@ public sealed class ShellSidecarHost : IAsyncDisposable
         int generation = Volatile.Read(ref _libraryGeneration);
         long deadline = DateTimeOffset.UtcNow.Add(_limits.CommandTimeout).ToUnixTimeMilliseconds();
         Result<JsonElement> response;
+        using CancellationTokenSource watchdog = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        watchdog.CancelAfter(_limits.CommandTimeout + CommandTimeoutWatchdogGrace);
         try
         {
             response = await CallAsync("shell.execute", new
@@ -185,21 +198,18 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                 session_id = sessionId,
                 command,
                 deadline_unix_ms = deadline
-            }, cancellationToken);
+            }, watchdog.Token);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException)
         {
-            using CancellationTokenSource cancelCts = new(TimeSpan.FromSeconds(2));
-            try
+            await CancelAndCloseSessionAsync(sessionId);
+            if (cancellationToken.IsCancellationRequested)
             {
-                await CancelSessionAsync(sessionId, cancelCts.Token);
-                await CloseSessionAsync(sessionId, cancelCts.Token);
-            }
-            catch (OperationCanceledException) when (cancelCts.IsCancellationRequested)
-            {
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
-            throw;
+            return Result<ShellExecuteResult>.Failure(AppErrorCodes.InvalidState,
+                $"Shell command exceeded the host timeout of {_limits.CommandTimeout.TotalSeconds:0.###} seconds.");
         }
 
         if (Volatile.Read(ref _libraryGeneration) != generation)
@@ -232,6 +242,23 @@ public sealed class ShellSidecarHost : IAsyncDisposable
             "library changed; shell session terminated\n[exit 125]\n",
             125,
             true));
+    }
+
+    private async Task CancelAndCloseSessionAsync(string sessionId)
+    {
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(2));
+        try
+        {
+            await CancelSessionAsync(sessionId, cancellation.Token);
+            await CloseSessionAsync(sessionId, cancellation.Token);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex,
+                                       "infrastructure.shell-sidecar-session-cleanup"))
+        {
+        }
     }
 
     public async Task CloseSessionAsync(string sessionId, CancellationToken cancellationToken = default)
@@ -268,6 +295,7 @@ public sealed class ShellSidecarHost : IAsyncDisposable
     {
         Interlocked.Exchange(ref _acceptingCommands, 0);
         FailAllPending("sidecar force-killed");
+        CancelAllReverseRequests();
 
         Process? process;
         int? pid;
@@ -553,6 +581,10 @@ public sealed class ShellSidecarHost : IAsyncDisposable
             Payload = JsonSerializer.SerializeToElement(new
             {
                 protocol_version = ShellRpcProtocol.Version,
+                capabilities = new
+                {
+                    execution_scoped_reverse_cancellation = true
+                },
                 limits = new
                 {
                     command_timeout_ms = (int)_limits.CommandTimeout.TotalMilliseconds,
@@ -583,6 +615,7 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                     throw new InvalidOperationException(envelope.Error.Message);
                 }
 
+                ValidateInitializeResponse(envelope.Payload);
                 sawInitializeResponse = true;
                 initializeTcs.TrySetResult(envelope);
                 continue;
@@ -606,6 +639,58 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                 tcs.TrySetResult(envelope);
             }
         }
+    }
+
+    private void ValidateInitializeResponse(JsonElement? payload)
+    {
+        if (payload is not { ValueKind: JsonValueKind.Object } response ||
+            !response.TryGetProperty("protocol_version", out JsonElement protocolVersion) ||
+            protocolVersion.ValueKind != JsonValueKind.String ||
+            !string.Equals(protocolVersion.GetString(), ShellRpcProtocol.Version, StringComparison.Ordinal) ||
+            !response.TryGetProperty("status", out JsonElement status) ||
+            status.ValueKind != JsonValueKind.String ||
+            !string.Equals(status.GetString(), "ready", StringComparison.Ordinal) ||
+            !response.TryGetProperty("capabilities", out JsonElement capabilities) ||
+            capabilities.ValueKind != JsonValueKind.Object ||
+            !capabilities.TryGetProperty("execution_scoped_reverse_cancellation",
+                out JsonElement scopedCancellation) ||
+            scopedCancellation.ValueKind != JsonValueKind.True ||
+            !response.TryGetProperty("limits", out JsonElement limits) ||
+            limits.ValueKind != JsonValueKind.Object)
+        {
+            FailInitializeProtocol("initialize response metadata is invalid");
+            return;
+        }
+
+        Dictionary<string, int> expectedLimits = new(StringComparer.Ordinal)
+        {
+            ["command_timeout_ms"] = checked((int)_limits.CommandTimeout.TotalMilliseconds),
+            ["max_terminal_output_bytes"] = _limits.MaxTerminalOutputBytes,
+            ["max_commands"] = _limits.MaxCommands,
+            ["max_loop_iterations"] = _limits.MaxLoopIterations,
+            ["max_function_depth"] = _limits.MaxFunctionDepth,
+            ["max_string_bytes"] = _limits.MaxStringBytes
+        };
+
+        foreach ((string name, int expected) in expectedLimits)
+        {
+            if (!limits.TryGetProperty(name, out JsonElement actualElement) ||
+                !actualElement.TryGetInt32(out int actual) || actual != expected)
+            {
+                string actualText = actualElement.ValueKind == JsonValueKind.Undefined
+                    ? "missing"
+                    : actualElement.GetRawText();
+                FailInitializeProtocol(
+                    $"initialize response limit '{name}' was {actualText}; expected {expected}");
+                return;
+            }
+        }
+    }
+
+    private void FailInitializeProtocol(string detail)
+    {
+        Status = ShellSandboxStatus.ProtocolIncompatible;
+        throw new InvalidOperationException($"Shell sidecar protocol validation failed: {detail}.");
     }
 
     private async Task StopCoreAsync(CancellationToken cancellationToken)
@@ -654,6 +739,7 @@ public sealed class ShellSidecarHost : IAsyncDisposable
     private async Task KillProcessAsync()
     {
         FailAllPending("sidecar stopped");
+        CancelAllReverseRequests();
         if (_readerCts is not null)
         {
             await _readerCts.CancelAsync();
@@ -829,6 +915,11 @@ public sealed class ShellSidecarHost : IAsyncDisposable
 
             if (string.Equals(messageType, "notification", StringComparison.OrdinalIgnoreCase))
             {
+                if (string.Equals(envelope.Method, "reverse.cancel", StringComparison.Ordinal))
+                {
+                    CancelReverseRequests(envelope);
+                }
+
                 continue;
             }
 
@@ -842,9 +933,38 @@ public sealed class ShellSidecarHost : IAsyncDisposable
     private async Task HandleReverseRequestAsync(ShellRpcEnvelope envelope, CancellationToken cancellationToken)
     {
         string method = envelope.Method ?? "";
+        if (envelope.RequestId is not ulong requestId || envelope.ExecutionId is not ulong executionId)
+        {
+            await WriteEnvelopeAsync(new ShellRpcEnvelope
+            {
+                ProtocolVersion = ShellRpcProtocol.Version,
+                MessageType = "response",
+                RequestId = envelope.RequestId,
+                Error = new ShellRpcErrorDto("invalid_request",
+                    "reverse request requires request_id and execution_id")
+            }, CancellationToken.None);
+            return;
+        }
+
+        CancellationTokenSource requestCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        ReverseRequestCancellation registration = new(executionId, requestCancellation);
+        if (!_reverseRequests.TryAdd(requestId, registration))
+        {
+            requestCancellation.Dispose();
+            await WriteEnvelopeAsync(new ShellRpcEnvelope
+            {
+                ProtocolVersion = ShellRpcProtocol.Version,
+                MessageType = "response",
+                RequestId = requestId,
+                Error = new ShellRpcErrorDto("invalid_request", "duplicate reverse request id")
+            }, CancellationToken.None);
+            return;
+        }
+
         try
         {
-            Result<JsonElement> result = await _domain.HandleAsync(method, envelope.Payload, cancellationToken);
+            Result<JsonElement> result = await _domain.HandleAsync(method, envelope.Payload, requestCancellation.Token);
             if (result.IsSuccess)
             {
                 await WriteEnvelopeAsync(new ShellRpcEnvelope
@@ -853,7 +973,7 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                     MessageType = "response",
                     RequestId = envelope.RequestId,
                     Payload = result.Value
-                }, cancellationToken);
+                }, requestCancellation.Token);
             }
             else
             {
@@ -863,7 +983,7 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                     MessageType = "response",
                     RequestId = envelope.RequestId,
                     Error = new ShellRpcErrorDto(result.ErrorCode ?? "error", result.ErrorMessage ?? "error")
-                }, cancellationToken);
+                }, requestCancellation.Token);
             }
         }
         catch (OperationCanceledException)
@@ -886,6 +1006,48 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                 RequestId = envelope.RequestId,
                 Error = new ShellRpcErrorDto("internal_error", "domain handler failed")
             }, CancellationToken.None);
+        }
+        finally
+        {
+            if (_reverseRequests.TryRemove(requestId, out ReverseRequestCancellation? removed))
+            {
+                removed.Dispose();
+            }
+        }
+    }
+
+    private void CancelReverseRequests(ShellRpcEnvelope envelope)
+    {
+        if (envelope.ExecutionId is not ulong executionId ||
+            envelope.Payload is not { ValueKind: JsonValueKind.Object } payload ||
+            !payload.TryGetProperty("request_ids", out JsonElement requestIds) ||
+            requestIds.ValueKind != JsonValueKind.Array)
+        {
+            return;
+        }
+
+        foreach (JsonElement requestIdElement in requestIds.EnumerateArray())
+        {
+            if (!requestIdElement.TryGetUInt64(out ulong requestId))
+            {
+                continue;
+            }
+
+            if (_reverseRequests.TryGetValue(requestId, out ReverseRequestCancellation? request))
+            {
+                if (request.ExecutionId == executionId)
+                {
+                    request.Cancel();
+                }
+            }
+        }
+    }
+
+    private void CancelAllReverseRequests()
+    {
+        foreach (ReverseRequestCancellation request in _reverseRequests.Values)
+        {
+            request.Cancel();
         }
     }
 
@@ -978,6 +1140,39 @@ public sealed class ShellSidecarHost : IAsyncDisposable
                     RequestId = pair.Key,
                     Error = new ShellRpcErrorDto("faulted", message)
                 });
+            }
+        }
+    }
+
+    private sealed class ReverseRequestCancellation(ulong executionId, CancellationTokenSource cancellation)
+    {
+        private readonly object _gate = new();
+        private bool _disposed;
+
+        public ulong ExecutionId { get; } = executionId;
+
+        public void Cancel()
+        {
+            lock (_gate)
+            {
+                if (!_disposed)
+                {
+                    cancellation.Cancel();
+                }
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+                cancellation.Dispose();
             }
         }
     }

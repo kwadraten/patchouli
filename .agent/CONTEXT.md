@@ -28,6 +28,7 @@ MinerU remains the preferred OCR provider, but its JSON is an import format rath
 SearchUnits are persisted derived text units generated one per non-suppressed leaf DocumentBox in sibling-pointer order. SearchUnit metadata is synced; the local FTS index is a rebuildable local cache. EvidenceRefs identify `(tree_revision_id, box_id)`, resolve pinned by default, and current/compare modes must surface drift instead of silently changing copied evidence.
 
 **MCP Read API**:
+The virtual Library filesystem is resolved on demand through bounded domain RPCs; the sidecar does not mirror the full Library into memory. Directory paging, traversal and batch limits, command/output limits, command-scoped VFS memoization, and a bounded rebuildable compiled-page cache constrain reads.
 MCP is read-only and text-only. Progressive exploration uses a single `patchouli_shell` tool backed by a Bashkit sidecar and a virtual filesystem (`/AGENTS.md`, `/library.yml`, `/items/`, `/texts/`, `/csl-styles/`). .NET remains the sole domain authority. MCP never writes metadata, edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. MCP 无法读取提供程序密钥.
 
 **Snapshot branches**:

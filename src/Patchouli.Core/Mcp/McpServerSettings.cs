@@ -9,4 +9,7 @@ public sealed record McpServerSettings(
     string? Token,
     IReadOnlyList<McpToolOverride> ToolOverrides,
     DateTimeOffset UpdatedAt,
-    long Revision = 0);
+    long Revision = 0)
+{
+    public int ShellCommandTimeoutSeconds { get; init; } = 15;
+}

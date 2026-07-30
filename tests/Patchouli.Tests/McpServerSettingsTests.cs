@@ -32,7 +32,10 @@ public sealed class McpServerSettingsTests
             true,
             "redacted-token",
             [new McpToolOverride("search_library", false, "disabled for tests")],
-            clock.UtcNow));
+            clock.UtcNow)
+        {
+            ShellCommandTimeoutSeconds = 42
+        });
         Result<McpServerSettings> loaded = await service.GetSettingsAsync();
 
         saved.IsSuccess.Should().BeTrue();
@@ -40,6 +43,41 @@ public sealed class McpServerSettingsTests
         loaded.Value.Port.Should().Be(4540);
         File.ReadAllText(settingsPath).Should().Contain("redacted-token");
         loaded.Value.ToolOverrides.Should().ContainSingle();
+        loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
+    }
+
+    [Fact]
+    public async Task Load_defaults_missing_shell_command_timeout_for_existing_settings()
+    {
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-mcp-legacy-{Guid.NewGuid():N}.json");
+        await File.WriteAllTextAsync(settingsPath, """{"Mcp":{"Port":4540}}""");
+        McpServerSettingsService service = new(settingsPath, clock);
+
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+
+        loaded.IsSuccess.Should().BeTrue();
+        loaded.Value.ShellCommandTimeoutSeconds.Should().Be(15);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(61)]
+    public async Task Validate_rejects_shell_command_timeout_outside_supported_range(int timeoutSeconds)
+    {
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        McpServerSettingsService service =
+            new(Path.Combine(Path.GetTempPath(), $"patchouli-mcp-{Guid.NewGuid():N}.json"), clock);
+        McpServerSettings settings = McpServerSettingsService.DefaultSettings(clock.UtcNow) with
+        {
+            ShellCommandTimeoutSeconds = timeoutSeconds
+        };
+
+        Result result = await service.ValidateSettingsAsync(settings);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+        result.ErrorMessage.Should().Be("Shell command timeout must be between 1 and 60 seconds.");
     }
 
     [Fact]

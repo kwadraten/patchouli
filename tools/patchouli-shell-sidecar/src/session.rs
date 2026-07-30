@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::pin::pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -13,10 +13,11 @@ use tokio::sync::{Mutex as AsyncMutex, Notify};
 use crate::builtins::{self, DomainBuiltins};
 use crate::limits::{
     append_exit_trailer, append_stream_chunk, execution_limits, truncate_complete_lines,
-    MAX_BRACE_EXPANSION_RESULTS, MAX_GLOB_EXPANSION_RESULTS, MAX_TERMINAL_OUTPUT_BYTES,
+    COMMAND_TIMEOUT, MAX_BRACE_EXPANSION_RESULTS, MAX_COMMAND_TIMEOUT, MAX_GLOB_EXPANSION_RESULTS,
+    MAX_TERMINAL_OUTPUT_BYTES, MIN_COMMAND_TIMEOUT,
 };
-use crate::rpc::SharedRpc;
-use crate::vfs::build_readonly_fs;
+use crate::rpc::{with_execution_id, SharedRpc};
+use crate::vfs::{build_readonly_fs, VfsCache};
 
 const FORBIDDEN_COMMANDS: &[&str] = &[
     "rm",
@@ -66,6 +67,9 @@ const FORBIDDEN_COMMANDS: &[&str] = &[
     "fc",
 ];
 
+pub const MAX_ACTIVE_SESSIONS: usize = 128;
+pub const MAX_QUEUED_COMMANDS_PER_SESSION: usize = 32;
+
 /// Control plane that cancel/timeout can touch without the bash exec lock.
 struct SessionControl {
     /// Points at the active Bash cancellation token; rebound on session reset.
@@ -73,14 +77,18 @@ struct SessionControl {
     cancel_notify: Notify,
     queue: AsyncMutex<VecDeque<QueuedCommand>>,
     running: AtomicBool,
+    active_execution_id: AtomicU64,
 }
 
 struct SessionState {
     control: Arc<SessionControl>,
     bash: AsyncMutex<Bash>,
+    cache: VfsCache,
+    command_timeout: Duration,
 }
 
 struct QueuedCommand {
+    execution_id: u64,
     command: String,
     deadline: Instant,
     response: tokio::sync::oneshot::Sender<Value>,
@@ -89,6 +97,8 @@ struct QueuedCommand {
 pub struct SessionManager {
     rpc: SharedRpc,
     sessions: AsyncMutex<HashMap<String, Arc<SessionState>>>,
+    command_timeout_ms: AtomicU64,
+    next_execution_id: AtomicU64,
 }
 
 impl SessionManager {
@@ -96,17 +106,35 @@ impl SessionManager {
         Self {
             rpc,
             sessions: AsyncMutex::new(HashMap::new()),
+            command_timeout_ms: AtomicU64::new(COMMAND_TIMEOUT.as_millis() as u64),
+            next_execution_id: AtomicU64::new(1),
         }
     }
 
-    async fn get_or_create(&self, session_id: &str) -> Arc<SessionState> {
+    pub fn set_command_timeout_ms(&self, requested_ms: Option<u64>) -> Duration {
+        let requested =
+            Duration::from_millis(requested_ms.unwrap_or(COMMAND_TIMEOUT.as_millis() as u64));
+        let effective = requested.clamp(MIN_COMMAND_TIMEOUT, MAX_COMMAND_TIMEOUT);
+        self.command_timeout_ms
+            .store(effective.as_millis() as u64, Ordering::SeqCst);
+        effective
+    }
+
+    pub fn command_timeout(&self) -> Duration {
+        Duration::from_millis(self.command_timeout_ms.load(Ordering::SeqCst))
+    }
+
+    async fn get_or_create(&self, session_id: &str) -> Result<Arc<SessionState>, &'static str> {
         let mut map = self.sessions.lock().await;
         if let Some(s) = map.get(session_id) {
-            return s.clone();
+            return Ok(s.clone());
         }
-        let state = Arc::new(build_session(self.rpc.clone()));
+        if map.len() >= MAX_ACTIVE_SESSIONS {
+            return Err("maximum active shell sessions reached");
+        }
+        let state = Arc::new(build_session(self.rpc.clone(), self.command_timeout()));
         map.insert(session_id.to_string(), state.clone());
-        state
+        Ok(state)
     }
 
     pub async fn execute(
@@ -119,16 +147,28 @@ impl SessionManager {
             return terminal_result("missing session_id", 2, false);
         }
 
-        let deadline = deadline_from_unix_ms(deadline_unix_ms);
-        let state = self.get_or_create(session_id).await;
+        let deadline = deadline_from_unix_ms(deadline_unix_ms, self.command_timeout());
+        let state = match self.get_or_create(session_id).await {
+            Ok(state) => state,
+            Err(message) => return terminal_result(message, 2, false),
+        };
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let execution_id = self.next_execution_id.fetch_add(1, Ordering::Relaxed);
 
         {
             let mut queue = state.control.queue.lock().await;
             if Instant::now() >= deadline {
                 return terminal_result("command timed out; shell session reset", 124, true);
             }
+            if queue.len() >= MAX_QUEUED_COMMANDS_PER_SESSION {
+                return terminal_result(
+                    "maximum queued commands for shell session reached",
+                    2,
+                    false,
+                );
+            }
             queue.push_back(QueuedCommand {
+                execution_id,
                 command: command.to_string(),
                 deadline,
                 response: tx,
@@ -151,6 +191,9 @@ impl SessionManager {
         if let Some(state) = map.get(session_id) {
             // Never wait on the bash lock here — only signal + drain queue.
             signal_cancel(&state.control);
+            self.rpc
+                .cancel_execution(state.control.active_execution_id.load(Ordering::SeqCst))
+                .await;
             drain_queue(
                 &state.control,
                 "command cancelled; shell session reset",
@@ -158,17 +201,20 @@ impl SessionManager {
             )
             .await;
             if let Ok(mut bash) = state.bash.try_lock() {
-                *bash = build_bash(self.rpc.clone());
+                state.cache.clear();
+                *bash = build_bash(self.rpc.clone(), state.cache.clone(), state.command_timeout);
                 rebind_cancel_flag(&state.control, bash.cancellation_token());
             }
         }
-        self.rpc.cancel_all_pending();
     }
 
     pub async fn close(&self, session_id: &str) {
         let mut map = self.sessions.lock().await;
         if let Some(state) = map.remove(session_id) {
             signal_cancel(&state.control);
+            self.rpc
+                .cancel_execution(state.control.active_execution_id.load(Ordering::SeqCst))
+                .await;
             drain_queue(&state.control, "shell session reset before execution", 125).await;
         }
     }
@@ -198,8 +244,9 @@ fn rebind_cancel_flag(control: &SessionControl, token: Arc<AtomicBool>) {
     *control.cancel_flag.write() = token;
 }
 
-fn build_session(rpc: SharedRpc) -> SessionState {
-    let bash = build_bash(rpc);
+fn build_session(rpc: SharedRpc, command_timeout: Duration) -> SessionState {
+    let cache = VfsCache::default();
+    let bash = build_bash(rpc, cache.clone(), command_timeout);
     let cancel_flag = bash.cancellation_token();
     cancel_flag.store(false, Ordering::SeqCst);
     SessionState {
@@ -208,8 +255,11 @@ fn build_session(rpc: SharedRpc) -> SessionState {
             cancel_notify: Notify::new(),
             queue: AsyncMutex::new(VecDeque::new()),
             running: AtomicBool::new(false),
+            active_execution_id: AtomicU64::new(0),
         }),
         bash: AsyncMutex::new(bash),
+        cache,
+        command_timeout,
     }
 }
 
@@ -235,6 +285,11 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
             }
         };
 
+        state
+            .control
+            .active_execution_id
+            .store(next.execution_id, Ordering::SeqCst);
+
         if Instant::now() >= next.deadline
             || state.control.cancel_flag.read().load(Ordering::SeqCst)
         {
@@ -244,16 +299,14 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
                 ("command timed out; shell session reset", 124)
             };
             let _ = next.response.send(terminal_result(msg, code, true));
-            reset_session(&state, &rpc).await;
+            reset_session(&state, &rpc, next.execution_id).await;
             continue;
         }
 
+        state.cache.clear();
+
         let remaining = next.deadline.saturating_duration_since(Instant::now());
-        let cancel_flag = {
-            let flag = state.control.cancel_flag.read().clone();
-            flag.store(false, Ordering::SeqCst);
-            flag
-        };
+        let cancel_flag = state.control.cancel_flag.read().clone();
         let cancel_notify = &state.control.cancel_notify;
         let bash_slot = &state.bash;
         let command = next.command.clone();
@@ -265,8 +318,9 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
             let merged_cb = merged.clone();
             let limit_hit_cb = output_limit_hit.clone();
             let cancel_output = cancel_flag.clone();
-            let result = bash
-                .exec_streaming(
+            let result = with_execution_id(
+                next.execution_id,
+                bash.exec_streaming(
                     &command,
                     Box::new(move |stdout_chunk, stderr_chunk| {
                         let mut guard = merged_cb.lock();
@@ -276,8 +330,9 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
                             cancel_output.store(true, Ordering::SeqCst);
                         }
                     }),
-                )
-                .await;
+                ),
+            )
+            .await;
             let ordered = merged.lock().clone();
             let limit_hit = output_limit_hit.load(Ordering::SeqCst);
             (result, ordered, limit_hit)
@@ -299,7 +354,8 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
         let (result, ordered, output_limit_hit) = match outcome {
             Some(pair) => pair,
             None => {
-                // Let bashkit observe cancel_flag and drop the bash lock.
+                rpc.cancel_execution(next.execution_id).await;
+                // Let bashkit observe cancellation and drop the bash lock.
                 let _ = exec.await;
                 let (msg, code) = if Instant::now() >= next.deadline {
                     ("command timed out; shell session reset", 124)
@@ -307,16 +363,20 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
                     ("command cancelled; shell session reset", 130)
                 };
                 let _ = next.response.send(terminal_result(msg, code, true));
-                reset_session(&state, &rpc).await;
+                reset_session(&state, &rpc, next.execution_id).await;
                 continue;
             }
         };
 
-        let payload = if output_limit_hit {
-            format_output_limit_result(ordered)
+        let (payload, reset_required) = if output_limit_hit {
+            (format_output_limit_result(ordered), true)
         } else {
             match result {
-                Ok(exec_result) => format_exec_result(exec_result, ordered),
+                Ok(exec_result) => {
+                    let payload = format_exec_result(exec_result, ordered);
+                    let reset = payload.get("session_reset").and_then(Value::as_bool) == Some(true);
+                    (payload, reset)
+                }
                 Err(err) => {
                     let msg = format!("{err}");
                     let lower = msg.to_lowercase();
@@ -330,31 +390,38 @@ async fn run_session_queue(state: Arc<SessionState>, rpc: SharedRpc) {
                     } else {
                         1
                     };
-                    if code == 124 || code == 130 {
-                        reset_session(&state, &rpc).await;
-                    }
-                    terminal_result(
-                        &sanitize_error_message(&msg),
-                        code,
+                    (
+                        terminal_result(
+                            &sanitize_error_message(&msg),
+                            code,
+                            code == 124 || code == 130,
+                        ),
                         code == 124 || code == 130,
                     )
                 }
             }
         };
+        if reset_required {
+            reset_session(&state, &rpc, next.execution_id).await;
+        }
+        state.cache.clear();
+        state.control.active_execution_id.store(0, Ordering::SeqCst);
         let _ = next.response.send(payload);
     }
 }
 
-async fn reset_session(state: &Arc<SessionState>, rpc: &SharedRpc) {
+async fn reset_session(state: &Arc<SessionState>, rpc: &SharedRpc, execution_id: u64) {
+    rpc.cancel_execution(execution_id).await;
     drain_queue(&state.control, "shell session reset before execution", 125).await;
     let mut bash = state.bash.lock().await;
-    *bash = build_bash(rpc.clone());
+    state.cache.clear();
+    *bash = build_bash(rpc.clone(), state.cache.clone(), state.command_timeout);
     rebind_cancel_flag(&state.control, bash.cancellation_token());
-    rpc.cancel_all_pending();
+    state.control.active_execution_id.store(0, Ordering::SeqCst);
 }
 
-fn build_bash(rpc: SharedRpc) -> Bash {
-    let fs = build_readonly_fs(rpc.clone());
+fn build_bash(rpc: SharedRpc, cache: VfsCache, command_timeout: Duration) -> Bash {
+    let fs = build_readonly_fs(rpc.clone(), cache);
     let domain = DomainBuiltins::new(rpc);
     let forbidden: Arc<Mutex<Vec<&'static str>>> =
         Arc::new(Mutex::new(FORBIDDEN_COMMANDS.to_vec()));
@@ -365,7 +432,7 @@ fn build_bash(rpc: SharedRpc) -> Bash {
         .cwd("/")
         .username("agent")
         .hostname("patchouli")
-        .limits(execution_limits())
+        .limits(execution_limits(command_timeout))
         .readonly_filesystem(true)
         .before_exec({
             let brace_expansion_present = brace_expansion_present.clone();
@@ -494,9 +561,9 @@ fn sanitize_error_message(message: &str) -> String {
     out
 }
 
-fn deadline_from_unix_ms(deadline_unix_ms: Option<i64>) -> Instant {
+fn deadline_from_unix_ms(deadline_unix_ms: Option<i64>, command_timeout: Duration) -> Instant {
     let now = Instant::now();
-    let default = now + Duration::from_secs(15);
+    let default = now + command_timeout;
     let Some(ms) = deadline_unix_ms else {
         return default;
     };
@@ -506,7 +573,7 @@ fn deadline_from_unix_ms(deadline_unix_ms: Option<i64>) -> Instant {
     let target = UNIX_EPOCH + Duration::from_millis(ms as u64);
     let now_sys = SystemTime::now();
     match target.duration_since(now_sys) {
-        Ok(d) => now + d.min(Duration::from_secs(15)),
+        Ok(d) => now + d.min(command_timeout),
         Err(_) => now,
     }
 }
@@ -530,6 +597,51 @@ mod tests {
         assert!(a["text"].as_str().unwrap().contains("alpha"));
         assert_eq!(b["exit_code"], 0);
         assert!(b["text"].as_str().unwrap().contains("unset"));
+    }
+
+    #[tokio::test]
+    async fn active_session_limit_returns_explicit_error() {
+        let sessions = SessionManager::new(test_rpc());
+        for index in 0..MAX_ACTIVE_SESSIONS {
+            sessions
+                .get_or_create(&format!("session-{index}"))
+                .await
+                .expect("session within limit");
+        }
+
+        let result = sessions.execute("one-too-many", "pwd", None).await;
+
+        assert_eq!(result["exit_code"], 2);
+        assert!(result["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("maximum active shell sessions reached"));
+    }
+
+    #[tokio::test]
+    async fn per_session_queue_limit_returns_explicit_error() {
+        let sessions = SessionManager::new(test_rpc());
+        let state = sessions.get_or_create("full-queue").await.unwrap();
+        state.control.running.store(true, Ordering::SeqCst);
+        let mut queue = state.control.queue.lock().await;
+        for execution_id in 1..=MAX_QUEUED_COMMANDS_PER_SESSION as u64 {
+            let (response, _) = tokio::sync::oneshot::channel();
+            queue.push_back(QueuedCommand {
+                execution_id,
+                command: "pwd".to_string(),
+                deadline: Instant::now() + Duration::from_secs(5),
+                response,
+            });
+        }
+        drop(queue);
+
+        let result = sessions.execute("full-queue", "pwd", None).await;
+
+        assert_eq!(result["exit_code"], 2);
+        assert!(result["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("maximum queued commands for shell session reached"));
     }
 
     #[tokio::test]
@@ -599,6 +711,14 @@ mod tests {
             text.contains("[output truncated]") || result["exit_code"] == 124,
             "expected truncation, got {result}"
         );
+        let next = sessions
+            .execute("trunc", "echo ${AFTER_TRUNCATION:-reset}", None)
+            .await;
+        assert_eq!(next["exit_code"], 0, "{next}");
+        assert!(
+            next["text"].as_str().unwrap_or("").contains("reset"),
+            "{next}"
+        );
     }
 
     #[tokio::test]
@@ -653,6 +773,32 @@ mod tests {
         assert!(script_may_expand_braces("echo {1..3}"));
         assert!(script_may_expand_braces("echo {a,b}"));
         assert!(!script_may_expand_braces("echo ${VALUE:-fallback}"));
+    }
+
+    #[test]
+    fn runtime_timeout_is_clamped_to_compiled_bounds() {
+        let sessions = SessionManager::new(test_rpc());
+        assert_eq!(
+            sessions.set_command_timeout_ms(Some(1)),
+            MIN_COMMAND_TIMEOUT
+        );
+        assert_eq!(
+            sessions.set_command_timeout_ms(Some(120_000)),
+            MAX_COMMAND_TIMEOUT
+        );
+        assert_eq!(
+            sessions.set_command_timeout_ms(Some(7_500)),
+            Duration::from_millis(7_500)
+        );
+    }
+
+    #[test]
+    fn command_deadline_uses_runtime_timeout_as_upper_bound() {
+        let started = Instant::now();
+        let deadline = deadline_from_unix_ms(None, Duration::from_secs(2));
+        let elapsed = deadline.saturating_duration_since(started);
+        assert!(elapsed >= Duration::from_millis(1_900));
+        assert!(elapsed <= Duration::from_millis(2_100));
     }
 
     #[tokio::test]

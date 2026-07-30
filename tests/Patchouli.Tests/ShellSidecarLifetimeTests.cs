@@ -1,5 +1,7 @@
 using FluentAssertions;
 using System.Diagnostics;
+using System.Reflection;
+using System.Text.Json;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Evidence;
@@ -13,6 +15,75 @@ namespace Patchouli.Tests;
 
 public sealed class ShellSidecarLifetimeTests
 {
+    [Theory]
+    [InlineData(999)]
+    [InlineData(60_001)]
+    public async Task Host_rejects_command_timeout_outside_sidecar_range(int timeoutMilliseconds)
+    {
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        SystemClock clock = new();
+        LibraryIdentityService library = new(db.ConnectionFactory, clock);
+        (await library.CreateLibraryAsync("Shell timeout validation")).IsSuccess.Should().BeTrue();
+        SearchProfileService profiles = new(db.ConnectionFactory, library, clock);
+        SqliteSearchService search = new(db.ConnectionFactory, profiles);
+        EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);
+        McpReadApi api = new(db.ConnectionFactory, search, evidence);
+        ShellDomainService domain = new(db.ConnectionFactory, api, search, evidence, library: library);
+        ShellResourceLimits limits = new() { CommandTimeout = TimeSpan.FromMilliseconds(timeoutMilliseconds) };
+
+        Action create = () => _ = new ShellSidecarHost(domain, limits: limits);
+
+        create.Should().Throw<ArgumentOutOfRangeException>()
+            .WithMessage("*between 1 and 60 seconds*");
+    }
+
+    [Fact]
+    public async Task Host_rejects_initialize_response_with_different_effective_timeout()
+    {
+        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
+        await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        SystemClock clock = new();
+        LibraryIdentityService library = new(db.ConnectionFactory, clock);
+        (await library.CreateLibraryAsync("Shell initialize validation")).IsSuccess.Should().BeTrue();
+        SearchProfileService profiles = new(db.ConnectionFactory, library, clock);
+        SqliteSearchService search = new(db.ConnectionFactory, profiles);
+        EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);
+        McpReadApi api = new(db.ConnectionFactory, search, evidence);
+        ShellDomainService domain = new(db.ConnectionFactory, api, search, evidence, library: library);
+        await using ShellSidecarHost host = new(domain);
+        JsonElement response = JsonSerializer.SerializeToElement(new
+        {
+            protocol_version = ShellRpcProtocol.Version,
+            status = "ready",
+            capabilities = new
+            {
+                execution_scoped_reverse_cancellation = true
+            },
+            limits = new
+            {
+                command_timeout_ms = 14_999,
+                max_terminal_output_bytes = 1024 * 1024,
+                max_commands = 2000,
+                max_loop_iterations = 5000,
+                max_function_depth = 16,
+                max_string_bytes = 2 * 1024 * 1024
+            }
+        }, ShellRpcFraming.JsonOptions);
+        MethodInfo validate = typeof(ShellSidecarHost).GetMethod("ValidateInitializeResponse",
+                                  BindingFlags.Instance | BindingFlags.NonPublic) ??
+                              throw new InvalidOperationException("Initialize response validator was not found.");
+
+        // The assertion executes before the async-disposed host leaves this scope.
+        // ReSharper disable once AccessToDisposedClosure
+        Action invoke = () => validate.Invoke(host, [response]);
+
+        invoke.Should().Throw<TargetInvocationException>()
+            .WithInnerException<InvalidOperationException>()
+            .WithMessage("*command_timeout_ms*14999*expected 15000*");
+        host.Status.Should().Be(ShellSandboxStatus.ProtocolIncompatible);
+    }
+
     [Fact]
     public void Child_process_lifetime_can_be_created_on_current_os()
     {

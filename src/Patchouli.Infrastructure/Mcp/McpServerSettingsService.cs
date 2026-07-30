@@ -94,6 +94,12 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             return Result.Failure(AppErrorCodes.ValidationFailed, "MCP bind address is required.");
         }
 
+        if (settings.ShellCommandTimeoutSeconds is < 1 or > 60)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                "Shell command timeout must be between 1 and 60 seconds.");
+        }
+
         if (settings.BindAddress.Trim() == "0.0.0.0" && string.IsNullOrWhiteSpace(settings.Token))
         {
             const string message = "Binding MCP to 0.0.0.0 requires a bearer token.";
@@ -162,6 +168,10 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         long revision = mcp.TryGetProperty("Revision", out JsonElement revisionValue)
             ? revisionValue.GetInt64()
             : 0;
+        int shellCommandTimeoutSeconds =
+            mcp.TryGetProperty("ShellCommandTimeoutSeconds", out JsonElement timeoutValue)
+                ? timeoutValue.GetInt32()
+                : 15;
         DateTimeOffset updatedAt =
             mcp.TryGetProperty("UpdatedAt", out JsonElement updatedAtValue) &&
             DateTimeOffset.TryParse(updatedAtValue.GetString(), out DateTimeOffset parsedUpdatedAt)
@@ -169,7 +179,10 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
                 : _clock.UtcNow.ToUniversalTime();
         return new McpServerSettings(port, bindAddress, cors, origins,
             auth || !string.IsNullOrWhiteSpace(token),
-            string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision);
+            string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision)
+        {
+            ShellCommandTimeoutSeconds = shellCommandTimeoutSeconds
+        };
     }
 
     private async Task WriteAsync(McpServerSettings settings, CancellationToken cancellationToken)
@@ -201,6 +214,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             ["AuthRequired"] = settings.AuthRequired,
             ["Token"] = settings.Token ?? "",
             ["ToolOverrides"] = JsonSerializer.SerializeToNode(settings.ToolOverrides),
+            ["ShellCommandTimeoutSeconds"] = settings.ShellCommandTimeoutSeconds,
             ["UpdatedAt"] = settings.UpdatedAt.ToUniversalTime().ToString("O"),
             ["Revision"] = settings.Revision
         };

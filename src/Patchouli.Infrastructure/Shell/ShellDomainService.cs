@@ -1,3 +1,4 @@
+using System.Data;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -69,11 +70,26 @@ public sealed class ShellDomainService
                     OptionalInt(body, "limit") ?? 100,
                     OptionalString(body, "after"),
                     cancellationToken),
-                "vfs.stat" => await VfsStatAsync(RequireString(body, "path"), cancellationToken),
+                "vfs.walk" => await VfsWalkAsync(
+                    RequireString(body, "path"),
+                    RequireBoundedInt(body, "max_depth", 20, 0, 20),
+                    RequireBoundedInt(body, "limit", 1000, 1, 10000),
+                    OptionalWalkKind(body),
+                    cancellationToken),
+                "vfs.stat" => await VfsStatAsync(RequireString(body, "path"),
+                    OptionalBool(body, "include_size") ?? true, cancellationToken),
+                "vfs.stat_many" => await VfsStatManyAsync(body, cancellationToken),
                 "vfs.read" => await VfsReadAsync(RequireString(body, "path"), cancellationToken),
+                "vfs.read_lines" => await VfsReadLinesAsync(
+                    RequireString(body, "path"),
+                    RequireReadLinesMode(body),
+                    RequireBoundedInt(body, "count", 10, 0, 1000),
+                    cancellationToken),
+                "vfs.read_batch" => await VfsReadBatchAsync(body, cancellationToken),
                 "search.exact" => await SearchAsync(body, false, cancellationToken),
                 "search.enhanced" => await SearchAsync(body, true, cancellationToken),
-                "evidence.resolve" => await EvidenceResolveAsync(RequireString(body, "uri"), cancellationToken),
+                "evidence.resolve" => await ResolveEvidenceUriAsync(RequireString(body, "uri"), cancellationToken),
+                "evidence.resolve_many" => await ResolveEvidenceUrisAsync(body, cancellationToken),
                 "cite.format" => await CiteFormatAsync(body, cancellationToken),
                 _ => Result<JsonElement>.Failure(AppErrorCodes.UnsupportedOperation, $"Unknown method: {method}")
             };
@@ -115,7 +131,8 @@ public sealed class ShellDomainService
         });
     }
 
-    private async Task<Result<JsonElement>> VfsStatAsync(string rawPath, CancellationToken cancellationToken)
+    private async Task<Result<JsonElement>> VfsStatAsync(string rawPath, bool includeSize,
+        CancellationToken cancellationToken)
     {
         Result<VfsTarget> target = await ResolveTargetAsync(rawPath, cancellationToken);
         if (target.IsFailure)
@@ -124,7 +141,7 @@ public sealed class ShellDomainService
         }
 
         long size = 0;
-        if (target.Value.Kind == "file")
+        if (includeSize && target.Value.Kind == "file")
         {
             Result<string> content = await ReadTargetContentAsync(target.Value, cancellationToken);
             if (content.IsFailure)
@@ -144,8 +161,30 @@ public sealed class ShellDomainService
             name = target.Value.Name,
             title = target.Value.Title,
             status = target.Value.Status,
-            size
+            size = includeSize ? size : (long?)null
         });
+    }
+
+    private async Task<Result<JsonElement>> VfsStatManyAsync(JsonElement body, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> paths = RequirePaths(body);
+        bool includeSize = OptionalBool(body, "include_size") ?? true;
+        List<object> results = new(paths.Count);
+        foreach (string path in paths)
+        {
+            Result<JsonElement> stat = await VfsStatAsync(path, includeSize, cancellationToken);
+            results.Add(stat.IsSuccess
+                ? new { path, ok = true, value = (object?)stat.Value, error = (object?)null }
+                : new
+                {
+                    path,
+                    ok = false,
+                    value = (object?)null,
+                    error = (object?)new { code = stat.ErrorCode, message = stat.ErrorMessage }
+                });
+        }
+
+        return Ok(new { results });
     }
 
     private async Task<Result<JsonElement>> VfsReadAsync(string rawPath, CancellationToken cancellationToken)
@@ -175,6 +214,91 @@ public sealed class ShellDomainService
         });
     }
 
+    private async Task<Result<JsonElement>> VfsReadBatchAsync(JsonElement body, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> paths = RequirePaths(body);
+        List<object> results = new(paths.Count);
+        foreach (string path in paths)
+        {
+            Result<JsonElement> read = await VfsReadAsync(path, cancellationToken);
+            results.Add(read.IsSuccess
+                ? new { path, ok = true, value = (object?)read.Value, error = (object?)null }
+                : new
+                {
+                    path,
+                    ok = false,
+                    value = (object?)null,
+                    error = (object?)new { code = read.ErrorCode, message = read.ErrorMessage }
+                });
+        }
+
+        return Ok(new { results });
+    }
+
+    private async Task<Result<JsonElement>> VfsReadLinesAsync(string rawPath, string mode, int count,
+        CancellationToken cancellationToken)
+    {
+        Result<JsonElement> read = await VfsReadAsync(rawPath, cancellationToken);
+        if (read.IsFailure)
+        {
+            return Result<JsonElement>.Failure(read.ErrorCode!, read.ErrorMessage!);
+        }
+
+        string content = read.Value.GetProperty("content").GetString() ?? "";
+        (string sliced, bool truncated) = mode == "head"
+            ? TakeHeadLines(content, count)
+            : TakeTailLines(content, count);
+        return Ok(new
+        {
+            path = read.Value.GetProperty("path").GetString(),
+            uri = read.Value.GetProperty("uri").GetString(),
+            content = sliced,
+            truncated
+        });
+    }
+
+    private static (string Content, bool Truncated) TakeHeadLines(string content, int count)
+    {
+        if (count == 0)
+        {
+            return ("", content.Length > 0);
+        }
+
+        int lines = 0;
+        for (int index = 0; index < content.Length; index++)
+        {
+            if (content[index] != '\n' || ++lines != count)
+            {
+                continue;
+            }
+
+            int end = index + 1;
+            return end < content.Length ? (content[..end], true) : (content, false);
+        }
+
+        return (content, false);
+    }
+
+    private static (string Content, bool Truncated) TakeTailLines(string content, int count)
+    {
+        if (count == 0)
+        {
+            return ("", content.Length > 0);
+        }
+
+        int lines = 0;
+        int start = content.EndsWith('\n') ? content.Length - 2 : content.Length - 1;
+        for (int index = start; index >= 0; index--)
+        {
+            if (content[index] == '\n' && ++lines == count)
+            {
+                return (content[(index + 1)..], true);
+            }
+        }
+
+        return (content, false);
+    }
+
     private async Task<Result<JsonElement>> VfsListAsync(string rawPath, int limit, string? after,
         CancellationToken cancellationToken)
     {
@@ -190,27 +314,17 @@ public sealed class ShellDomainService
             return Result<JsonElement>.Failure(AppErrorCodes.ValidationFailed, "Path is not a directory.");
         }
 
-        List<VfsEntry> entries = await ListDirectoryAsync(target.Value, cancellationToken);
-        entries = entries
-            .OrderBy(entry => entry.Name, StringComparer.Ordinal)
-            .ToList();
-
         string? afterName = after is null ? null : ExtractAfterName(after, target.Value);
-        if (afterName is not null)
-        {
-            int index = entries.FindIndex(entry => string.Equals(entry.Name, afterName, StringComparison.Ordinal));
-            if (index >= 0)
-            {
-                entries = entries.Skip(index + 1).ToList();
-            }
-        }
+        List<VfsEntry> entries = await ListDirectoryAsync(target.Value, limit + 1, afterName, cancellationToken);
 
         bool truncated = entries.Count > limit;
         List<VfsEntry> page = entries.Take(limit).ToList();
         string? continuation = null;
+        string? nextAfter = null;
         if (truncated && page.Count > 0)
         {
             string lastUri = page[^1].Uri;
+            nextAfter = lastUri;
             continuation = $"ls --after {lastUri} {target.Value.Path}";
         }
 
@@ -228,7 +342,161 @@ public sealed class ShellDomainService
                 status = entry.Status,
                 size = entry.Size
             }).ToArray(),
+            next_after = JsonSerializer.SerializeToElement(nextAfter, ShellRpcFraming.JsonOptions),
             continuation_command = continuation
+        });
+    }
+
+    private async Task<Result<JsonElement>> VfsWalkAsync(string rawPath, int maxDepth, int limit, string? kind,
+        CancellationToken cancellationToken)
+    {
+        Result<VfsTarget> target = await ResolveTargetAsync(rawPath, cancellationToken);
+        if (target.IsFailure)
+        {
+            return Result<JsonElement>.Failure(target.ErrorCode!, target.ErrorMessage!);
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        IEnumerable<VfsWalkRow> queried = await connection.QueryAsync<VfsWalkRow>(new CommandDefinition(
+            """
+            select Path, Uri, Kind, Type, Name, Title, Status, Depth
+            from (
+                select @Path as Path, @Uri as Uri, @TargetKind as Kind, @TargetType as Type,
+                       @Name as Name, @Title as Title, @Status as Status, 0 as Depth
+
+                union all
+
+                select '/' || entry.name, entry.uri, entry.kind, entry.type, entry.name, entry.title,
+                       'available', 1
+                from (
+                    select 'AGENTS.md' as name, 'patchouli://AGENTS.md' as uri, 'file' as kind,
+                           'file' as type, 'AGENTS.md' as title
+                    union all
+                    select 'library.yml', 'patchouli://library.yml', 'file', 'file', 'library.yml'
+                    union all
+                    select 'items', 'patchouli://items/', 'directory', 'directory', 'items'
+                    union all
+                    select 'texts', 'patchouli://texts/', 'directory', 'directory', 'texts'
+                    union all
+                    select 'csl-styles', 'patchouli://csl-styles/', 'directory', 'directory', 'csl-styles'
+                ) entry
+                where @Path = '/'
+
+                union all
+
+                select '/items/' || i.item_id || '.bib', 'patchouli://items/' || i.item_id || '.bib',
+                       'file', 'item', i.item_id || '.bib', i.title, 'available',
+                       case when @Path = '/' then 2 else 1 end
+                from items i
+                where @Path in ('/', '/items') and i.deleted_at is null
+
+                union all
+
+                select '/texts/' || di.document_instance_id, 'patchouli://texts/' || di.document_instance_id || '/',
+                       'directory', 'document', di.document_instance_id, coalesce(i.title, di.document_instance_id),
+                       case fa.status
+                           when 'available' then 'available'
+                           when 'missing' then 'missing'
+                           when 'offline_root' then 'offline_root'
+                           when 'changed' then 'changed'
+                           when 'conflict' then 'conflict'
+                           else 'unknown'
+                       end,
+                       case when @Path = '/' then 2 else 1 end
+                from document_instances di
+                left join items i on i.item_id = di.item_id
+                left join file_assets fa on fa.file_asset_id = di.file_asset_id
+                where @Path in ('/', '/texts') and di.status <> 'deprecated'
+                  and exists (
+                    select 1
+                    from document_tree_revisions r
+                    where r.document_instance_id = di.document_instance_id
+                      and r.status = 'committed' and r.is_current = 1
+                      and exists (
+                        select 1
+                        from document_boxes b
+                        where b.tree_revision_id = r.tree_revision_id
+                          and b.suppressed = 0 and b.payload_json is not null
+                      )
+                  )
+
+                union all
+
+                select '/texts/' || di.document_instance_id || '/page-' || p.page_index || '.md',
+                       'patchouli://texts/' || di.document_instance_id || '/page-' || p.page_index || '.md',
+                       'file', 'page', 'page-' || p.page_index || '.md', 'page-' || p.page_index || '.md',
+                       'available',
+                       case when @Path = '/' then 3 when @Path = '/texts' then 2 else 1 end
+                from pages p
+                join document_instances di on di.document_instance_id = p.document_instance_id
+                where (@Path in ('/', '/texts') or @Path = @DocumentPath)
+                  and (@DocumentId is null or di.document_instance_id = @DocumentId)
+                  and di.status <> 'deprecated'
+                  and exists (
+                    select 1
+                    from document_tree_revisions r
+                    where r.document_instance_id = di.document_instance_id and r.page_id = p.page_id
+                      and r.status = 'committed' and r.is_current = 1
+                      and exists (
+                        select 1
+                        from document_boxes b
+                        where b.tree_revision_id = r.tree_revision_id
+                          and b.suppressed = 0 and b.payload_json is not null
+                      )
+                  )
+
+                union all
+
+                select '/csl-styles/' || cs.style_id || '.csl',
+                       'patchouli://csl-styles/' || cs.style_id || '.csl',
+                       'file', 'csl-style', cs.style_id || '.csl', cs.display_name,
+                       case when cs.enabled = 1 then 'available' else 'disabled' end,
+                       case when @Path = '/' then 2 else 1 end
+                from csl_styles cs
+                where @IncludeCsl = 1 and @Path in ('/', '/csl-styles') and cs.deleted = 0
+            ) entries
+            where Depth <= @MaxDepth and (@Kind is null or Kind = @Kind)
+            order by Path collate binary
+            limit @Take;
+            """,
+            new
+            {
+                target.Value.Path,
+                target.Value.Uri,
+                TargetKind = target.Value.Kind,
+                TargetType = target.Value.EntryType,
+                target.Value.Name,
+                target.Value.Title,
+                target.Value.Status,
+                DocumentPath = target.Value.DocumentInstanceId is null
+                    ? null
+                    : $"/texts/{target.Value.DocumentInstanceId}",
+                DocumentId = target.Value.DocumentInstanceId?.ToString(),
+                IncludeCsl = _cslStyleStore is null ? 0 : 1,
+                MaxDepth = maxDepth,
+                Kind = kind,
+                Take = limit + 1
+            },
+            cancellationToken: cancellationToken));
+
+        List<VfsWalkRow> rows = queried.ToList();
+        bool truncated = rows.Count > limit;
+        return Ok(new
+        {
+            path = target.Value.Path,
+            entries = rows.Take(limit).Select(entry => new
+            {
+                path = entry.Path,
+                uri = entry.Uri,
+                kind = entry.Kind,
+                type = entry.Type,
+                name = entry.Name,
+                title = entry.Title,
+                status = entry.Status,
+                depth = entry.Depth
+            }).ToArray(),
+            truncated
         });
     }
 
@@ -276,7 +544,8 @@ public sealed class ShellDomainService
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
-            IEnumerable<ExactUnitRow> rows = await connection.QueryAsync<ExactUnitRow>(
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
                 """
                 select su.unit_id as UnitId,
                        su.resolved_text as Text,
@@ -296,76 +565,88 @@ public sealed class ShellDomainService
                   and (@DocumentInstanceId is null or su.document_instance_id = @DocumentInstanceId)
                   and di.status <> 'deprecated'
                 order by di.document_instance_id, p.page_index, su.ordinal, su.unit_id;
-                """,
-                new
-                {
-                    Status = SearchUnitStatus.Current,
-                    DocumentInstanceId = documentScope?.ToString()
-                });
+                """;
+            command.Parameters.AddWithValue("@Status", SearchUnitStatus.Current);
+            command.Parameters.AddWithValue("@DocumentInstanceId", (object?)documentScope?.ToString() ?? DBNull.Value);
 
-            List<object> matches = [];
-            Dictionary<string, string?> evidenceByUnit = new(StringComparer.Ordinal);
+            List<ExactMatchRow> foundMatches = [];
             bool truncated = false;
-
-            foreach (ExactUnitRow row in rows)
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess,
+                             cancellationToken))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                string text = row.Text ?? "";
-                MatchCollection found;
-                try
+                while (await reader.ReadAsync(cancellationToken))
                 {
-                    found = regex.Matches(text);
-                }
-                catch (RegexMatchTimeoutException)
-                {
-                    return Result<JsonElement>.Failure(AppErrorCodes.ValidationFailed,
-                        "regex search timed out; simplify the pattern.");
-                }
-
-                if (found.Count == 0)
-                {
-                    continue;
-                }
-
-                if (!evidenceByUnit.TryGetValue(row.UnitId, out string? evidenceRef))
-                {
-                    Result<EvidenceRefRecord> created =
-                        await _evidenceService.CreateFromSearchUnitAsync(SearchUnitId.Parse(row.UnitId),
-                            cancellationToken);
-                    evidenceRef = created.IsSuccess ? created.Value.EvidenceRefId : null;
-                    evidenceByUnit[row.UnitId] = evidenceRef;
-                }
-
-                string uri = TextPageUri(
-                    DocumentInstanceId.Parse(row.DocumentInstanceId),
-                    row.PageIndex,
-                    evidenceRef);
-
-                foreach (Match match in found)
-                {
-                    if (matches.Count >= limit)
+                    string unitId = reader.GetString(0);
+                    string text = reader.IsDBNull(1) ? "" : reader.GetString(1);
+                    int pageIndex = reader.GetInt32(4);
+                    string documentInstanceId = reader.GetString(6);
+                    string? itemTitle = reader.IsDBNull(8) ? null : reader.GetString(8);
+                    try
                     {
-                        truncated = true;
-                        break;
+                        for (Match match = regex.Match(text); match.Success; match = match.NextMatch())
+                        {
+                            if (foundMatches.Count >= limit)
+                            {
+                                truncated = true;
+                                break;
+                            }
+
+                            (int line, int column, string preview) = BuildMatchPreview(text, match, before, after);
+                            foundMatches.Add(new ExactMatchRow(unitId, documentInstanceId, pageIndex, itemTitle, line,
+                                column, preview));
+                        }
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        return Result<JsonElement>.Failure(AppErrorCodes.ValidationFailed,
+                            "regex search timed out; simplify the pattern.");
                     }
 
-                    (int line, int column, string preview) = BuildMatchPreview(text, match, before, after);
-                    matches.Add(new
+                    if (truncated)
                     {
-                        type = "match",
-                        uri,
-                        title = row.ItemTitle ?? "",
-                        status = "available",
-                        line,
-                        column,
-                        preview
-                    });
+                        break;
+                    }
                 }
+            }
 
-                if (truncated)
+            Dictionary<string, string?> evidenceByUnit = new(StringComparer.Ordinal);
+            List<SearchUnitId> unitIds = [];
+            foreach (ExactMatchRow match in foundMatches)
+            {
+                if (evidenceByUnit.TryAdd(match.UnitId, null))
                 {
-                    break;
+                    unitIds.Add(SearchUnitId.Parse(match.UnitId));
                 }
+            }
+
+            if (unitIds.Count > 0)
+            {
+                Result<IReadOnlyList<EvidenceReferenceCreateResult>> created =
+                    await _evidenceService.CreateFromSearchUnitsAsync(unitIds, cancellationToken);
+                if (created.IsSuccess)
+                {
+                    foreach (EvidenceReferenceCreateResult result in created.Value.Where(static item =>
+                                 item.Result.IsSuccess))
+                    {
+                        evidenceByUnit[result.SearchUnitId.ToString()] = result.Result.Value.EvidenceRefId;
+                    }
+                }
+            }
+
+            List<object> matches = [];
+            foreach (ExactMatchRow match in foundMatches)
+            {
+                string? evidenceRef = evidenceByUnit[match.UnitId];
+                matches.Add(new
+                {
+                    type = "match",
+                    uri = TextPageUri(DocumentInstanceId.Parse(match.DocumentInstanceId), match.PageIndex, evidenceRef),
+                    title = match.ItemTitle ?? "",
+                    status = "available",
+                    match.Line,
+                    match.Column,
+                    match.Preview
+                });
             }
 
             return Ok(new { matches, truncated });
@@ -507,20 +788,29 @@ public sealed class ShellDomainService
         return preview.Length <= 480 ? preview : preview[..480];
     }
 
-    private sealed class ExactUnitRow
+    private async Task<Result<JsonElement>> ResolveEvidenceUrisAsync(JsonElement body,
+        CancellationToken cancellationToken)
     {
-        public string UnitId { get; init; } = "";
-        public string Text { get; init; } = "";
-        public int Ordinal { get; init; }
-        public string PageId { get; init; } = "";
-        public int PageIndex { get; init; }
-        public string? PageLabel { get; init; }
-        public string DocumentInstanceId { get; init; } = "";
-        public string ItemId { get; init; } = "";
-        public string? ItemTitle { get; init; }
+        IReadOnlyList<string> uris = RequireUris(body);
+        List<object> results = new(uris.Count);
+        foreach (string uri in uris)
+        {
+            Result<JsonElement> resolved = await ResolveEvidenceUriAsync(uri, cancellationToken);
+            results.Add(resolved.IsSuccess
+                ? new { uri, ok = true, value = (object?)resolved.Value, error = (object?)null }
+                : new
+                {
+                    uri,
+                    ok = false,
+                    value = (object?)null,
+                    error = (object?)new { code = resolved.ErrorCode, message = resolved.ErrorMessage }
+                });
+        }
+
+        return Ok(new { results });
     }
 
-    private async Task<Result<JsonElement>> EvidenceResolveAsync(string uri, CancellationToken cancellationToken)
+    private async Task<Result<JsonElement>> ResolveEvidenceUriAsync(string uri, CancellationToken cancellationToken)
     {
         if (!TryParseUriOrPath(uri, out ParsedLocation location, out string? parseError))
         {
@@ -869,11 +1159,12 @@ public sealed class ShellDomainService
             style.Value.DisplayName, style.Value.Enabled ? "available" : "disabled", null, null, null, null, styleId));
     }
 
-    private async Task<List<VfsEntry>> ListDirectoryAsync(VfsTarget target, CancellationToken cancellationToken)
+    private async Task<List<VfsEntry>> ListDirectoryAsync(VfsTarget target, int take, string? afterName,
+        CancellationToken cancellationToken)
     {
         if (target.Path == "/")
         {
-            return
+            return FilterInMemoryEntries(
             [
                 new VfsEntry("AGENTS.md", "file", "file", "patchouli://AGENTS.md", "AGENTS.md", "available", 0),
                 new VfsEntry("library.yml", "file", "file", "patchouli://library.yml", "library.yml", "available", 0),
@@ -881,7 +1172,7 @@ public sealed class ShellDomainService
                 new VfsEntry("texts", "directory", "directory", "patchouli://texts/", "texts", "available", 0),
                 new VfsEntry("csl-styles", "directory", "directory", "patchouli://csl-styles/", "csl-styles",
                     "available", 0)
-            ];
+            ], take, afterName);
         }
 
         if (target.Path == "/items")
@@ -893,8 +1184,10 @@ public sealed class ShellDomainService
                 select item_id, title
                 from items
                 where deleted_at is null
-                order by item_id;
-                """);
+                  and (@AfterId is null or item_id > @AfterId)
+                order by item_id
+                limit @Take;
+                """, new { AfterId = ItemIdFromName(afterName), Take = take });
             return rows.Select(row =>
             {
                 ItemId id = ItemId.Parse(row.ItemId);
@@ -918,14 +1211,20 @@ public sealed class ShellDomainService
                     where di.status <> 'deprecated'
                       and exists (
                         select 1
-                        from document_boxes b
-                        join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
-                        where b.document_instance_id = di.document_instance_id
+                        from document_tree_revisions r
+                        where r.document_instance_id = di.document_instance_id
                           and r.status = 'committed' and r.is_current = 1
-                          and b.suppressed = 0 and b.payload_json is not null
+                          and exists (
+                            select 1
+                            from document_boxes b
+                            where b.tree_revision_id = r.tree_revision_id
+                              and b.suppressed = 0 and b.payload_json is not null
+                          )
                       )
-                    order by di.document_instance_id;
-                    """);
+                      and (@AfterId is null or di.document_instance_id > @AfterId)
+                    order by di.document_instance_id
+                    limit @Take;
+                    """, new { AfterId = DocumentIdFromName(afterName), Take = take });
             return rows.Select(row =>
             {
                 DocumentInstanceId id = DocumentInstanceId.Parse(row.DocumentInstanceId);
@@ -947,8 +1246,9 @@ public sealed class ShellDomainService
                 return [];
             }
 
-            return styles.Value.Select(style => new VfsEntry($"{style.StyleId}.csl", "file", "csl-style",
-                CslStyleUri(style.StyleId), style.DisplayName, style.Enabled ? "available" : "disabled", 0)).ToList();
+            return FilterInMemoryEntries(styles.Value.Select(style => new VfsEntry($"{style.StyleId}.csl", "file",
+                "csl-style", CslStyleUri(style.StyleId), style.DisplayName,
+                style.Enabled ? "available" : "disabled", 0)), take, afterName);
         }
 
         if (target.DocumentInstanceId is not null && target.Kind == "directory")
@@ -958,11 +1258,24 @@ public sealed class ShellDomainService
             IEnumerable<int> pages = await connection.QueryAsync<int>(
                 """
                 select page_index
-                from pages
-                where document_instance_id = @Id
-                order by page_index;
+                from pages p
+                where p.document_instance_id = @Id
+                  and (@AfterName is null or printf('page-%d.md', page_index) > @AfterName collate binary)
+                  and exists (
+                    select 1
+                    from document_tree_revisions r
+                    where r.page_id = p.page_id and r.status = 'committed' and r.is_current = 1
+                      and exists (
+                        select 1
+                        from document_boxes b
+                        where b.tree_revision_id = r.tree_revision_id
+                          and b.suppressed = 0 and b.payload_json is not null
+                      )
+                  )
+                order by printf('page-%d.md', page_index) collate binary
+                limit @Take;
                 """,
-                new { Id = target.DocumentInstanceId.Value.ToString() });
+                new { Id = target.DocumentInstanceId.Value.ToString(), AfterName = afterName, Take = take });
             return pages.Select(index =>
             {
                 string name = $"page-{index.ToString(CultureInfo.InvariantCulture)}.md";
@@ -1120,11 +1433,15 @@ public sealed class ShellDomainService
             where di.item_id = @ItemId and di.status <> 'deprecated'
               and exists (
                 select 1
-                from document_boxes b
-                join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
-                where b.document_instance_id = di.document_instance_id
+                from document_tree_revisions r
+                where r.document_instance_id = di.document_instance_id
                   and r.status = 'committed' and r.is_current = 1
-                  and b.suppressed = 0 and b.payload_json is not null
+                  and exists (
+                    select 1
+                    from document_boxes b
+                    where b.tree_revision_id = r.tree_revision_id
+                      and b.suppressed = 0 and b.payload_json is not null
+                  )
               )
             order by di.created_at, di.document_instance_id
             limit 1;
@@ -1207,6 +1524,24 @@ public sealed class ShellDomainService
         string trimmed = after.Replace('\\', '/').Trim('/');
         int slash = trimmed.LastIndexOf('/');
         return slash >= 0 ? trimmed[(slash + 1)..] : trimmed;
+    }
+
+    private static List<VfsEntry> FilterInMemoryEntries(IEnumerable<VfsEntry> entries, int take, string? afterName)
+    {
+        return entries.OrderBy(entry => entry.Name, StringComparer.Ordinal)
+            .Where(entry => afterName is null || string.CompareOrdinal(entry.Name, afterName) > 0)
+            .Take(take)
+            .ToList();
+    }
+
+    private static string? ItemIdFromName(string? name)
+    {
+        return name?.EndsWith(".bib", StringComparison.OrdinalIgnoreCase) == true ? name[..^4] : name;
+    }
+
+    private static string? DocumentIdFromName(string? name)
+    {
+        return Guid.TryParse(name, out Guid id) ? id.ToString() : name;
     }
 
     private static bool TryParseUriOrPath(string raw, out ParsedLocation location)
@@ -1538,6 +1873,110 @@ public sealed class ShellDomainService
         };
     }
 
+    private static int RequireBoundedInt(JsonElement body, string name, int defaultValue, int minimum, int maximum)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty(name, out JsonElement value))
+        {
+            return defaultValue;
+        }
+
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int number) ||
+            number < minimum || number > maximum)
+        {
+            throw new InvalidOperationException($"Field '{name}' must be an integer from {minimum} to {maximum}.");
+        }
+
+        return number;
+    }
+
+    private static string? OptionalWalkKind(JsonElement body)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("type", out JsonElement value))
+        {
+            return null;
+        }
+
+        string? kind = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        if (kind is not ("file" or "directory"))
+        {
+            throw new InvalidOperationException("Field 'type' must be 'file' or 'directory'.");
+        }
+
+        return kind;
+    }
+
+    private static string RequireReadLinesMode(JsonElement body)
+    {
+        string mode = RequireString(body, "mode");
+        if (mode is not ("head" or "tail"))
+        {
+            throw new InvalidOperationException("Field 'mode' must be 'head' or 'tail'.");
+        }
+
+        return mode;
+    }
+
+    private static bool? OptionalBool(JsonElement body, string name)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty(name, out JsonElement value))
+        {
+            return null;
+        }
+
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => throw new InvalidOperationException($"Field '{name}' must be a boolean.")
+        };
+    }
+
+    private static IReadOnlyList<string> RequirePaths(JsonElement body)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("paths", out JsonElement value) ||
+            value.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Missing required field 'paths'.");
+        }
+
+        JsonElement[] elements = value.EnumerateArray().ToArray();
+        if (elements.Length > 64)
+        {
+            throw new InvalidOperationException("Field 'paths' accepts at most 64 paths.");
+        }
+
+        if (elements.Any(element => element.ValueKind != JsonValueKind.String ||
+                                    string.IsNullOrWhiteSpace(element.GetString())))
+        {
+            throw new InvalidOperationException("Field 'paths' must contain only non-empty strings.");
+        }
+
+        return elements.Select(element => element.GetString()!).ToArray();
+    }
+
+    private static IReadOnlyList<string> RequireUris(JsonElement body)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty("uris", out JsonElement value) ||
+            value.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Missing required field 'uris'.");
+        }
+
+        JsonElement[] elements = value.EnumerateArray().ToArray();
+        if (elements.Length > 64)
+        {
+            throw new InvalidOperationException("Field 'uris' accepts at most 64 URIs.");
+        }
+
+        if (elements.Any(element => element.ValueKind != JsonValueKind.String ||
+                                    string.IsNullOrWhiteSpace(element.GetString())))
+        {
+            throw new InvalidOperationException("Field 'uris' must contain only non-empty strings.");
+        }
+
+        return elements.Select(element => element.GetString()!).ToArray();
+    }
+
     private static Result<JsonElement> Ok(object payload)
     {
         string json = JsonSerializer.Serialize(payload, ShellRpcFraming.JsonOptions);
@@ -1589,4 +2028,25 @@ public sealed class ShellDomainService
         string Title,
         string Status,
         long Size);
+
+    private sealed class VfsWalkRow
+    {
+        public string Path { get; init; } = "";
+        public string Uri { get; init; } = "";
+        public string Kind { get; init; } = "";
+        public string Type { get; init; } = "";
+        public string Name { get; init; } = "";
+        public string Title { get; init; } = "";
+        public string Status { get; init; } = "";
+        public int Depth { get; init; }
+    }
+
+    private sealed record ExactMatchRow(
+        string UnitId,
+        string DocumentInstanceId,
+        int PageIndex,
+        string? ItemTitle,
+        int Line,
+        int Column,
+        string Preview);
 }

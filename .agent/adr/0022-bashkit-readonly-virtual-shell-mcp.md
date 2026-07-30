@@ -1,6 +1,6 @@
 # Bashkit Read-Only Virtual Shell MCP
 
-Status: accepted
+Status: accepted; amended 2026-07-30 to record the implemented bounded shell surface
 
 Patchouli exposes the current Library to MCP agents through one tool, `patchouli_shell`, backed by a locked Rust Bashkit sidecar. The shell presents a read-only virtual filesystem and domain commands (`search`, `evidence`, `cite`) while .NET remains the sole domain authority.
 
@@ -9,10 +9,16 @@ Patchouli exposes the current Library to MCP agents through one tool, `patchouli
 - MCP registers only `patchouli_shell` with a single `command` argument. Legacy discrete tools may remain temporarily for migration, but the progressive-exploration surface is the shell.
 - One Bashkit sidecar process is owned by the Patchouli application run while MCP is enabled, not by a single MCP connection and not by Library open alone.
 - Communication uses length-prefixed (4-byte big-endian) UTF-8 JSON frames over stdin/stdout. Protocol version is exact-match `"1"` with no negotiation or partial enablement.
+- The persisted MCP setting `Mcp.ShellCommandTimeoutSeconds` selects the command timeout, defaults to 15 seconds, and is validated to the inclusive range 1..60. The host sends it during `initialize`; the sidecar applies its compiled 1..60-second bounds and returns the effective timeout and compiled execution limits. The host requires the returned protocol metadata and limits to exactly match before declaring the sandbox ready. The compiled 60-second sidecar cap remains authoritative even if a caller bypasses settings validation.
 - Each MCP connection/session owns an independent Bashkit session (cwd, variables, functions). Same-session calls are FIFO; different sessions may run concurrently.
 - .NET handles Library lifecycle, SQLite, VFS resolution, BibLaTeX projection, Markdown rendering, exact/enhanced search, EvidenceRef, and CSL formatting.
-- Rust handles Bashkit parse/execute, session state, pipelines, pure in-memory text tools, and formatting of domain RPC results.
+- Rust handles Bashkit parse/execute, session state, pipelines, command-scoped VFS request memoization, text processing, and formatting of domain RPC results.
 - VFS root is fixed: `/AGENTS.md`, `/library.yml`, `/items/`, `/texts/`, `/csl-styles/`. No host paths, `file:` URIs, network, external processes, or writes.
+- The VFS is resolved on demand through reverse domain RPCs; the sidecar does not preload or maintain a full in-memory Library filesystem. VFS memoized responses are cleared before and after each command and when a session is reset.
+- Reverse domain RPCs are `vfs.resolve`, `vfs.list`, `vfs.walk`, `vfs.stat`, `vfs.stat_many`, `vfs.read`, `vfs.read_lines`, `vfs.read_batch`, `search.exact`, `search.enhanced`, `evidence.resolve`, `evidence.resolve_many`, and `cite.format`. Batch stat/read/evidence operations preserve request order and return independent success or error results, with at most 64 paths or URIs per call.
+- Directory listing is ordinal and paged. `vfs.list` returns at most 1,000 entries plus `next_after` and a shell `continuation_command` when more entries exist; Bashkit directory reads follow continuations while rejecting repeated cursors and listings over 10,000 entries.
+- `find` and `tree` are custom, bounded `vfs.walk` clients rather than recursive shell traversal. `head` and `tail` use `vfs.read_lines` for file operands, and `wc` batches file reads through `vfs.read_batch`; stdin remains in-process. These commands intentionally implement only the options shown by shell `help`.
+- Compiled page Markdown is cached in .NET by immutable DocumentTreeRevision and compilation options. The successful-result LRU is bounded to 32 MiB, coalesces concurrent compilation, does not cache failures or entries larger than the limit, and remains a rebuildable projection rather than a filesystem snapshot.
 - Evidence uses opaque `evref` query parameters on text-page URIs. Pinned reads never silently fall back to current.
 - Sidecar crash, protocol corruption, or uncaught failures leave the sandbox `faulted` with no automatic restart. Users may force-restart the shell sandbox.
 - Sidecar lifetime is bound to the host process: Windows Job Object `KILL_ON_JOB_CLOSE`, cross-platform parent-PID watchdog in the sidecar (`PATCHOULI_PARENT_PID`), stdin EOF exit, and host `ProcessExit`/dispose force-kill. Orphan sidecars after host exit are a defect.
@@ -26,7 +32,8 @@ Patchouli exposes the current Library to MCP agents through one tool, `patchouli
 
 - Extends ADR `0010`: MCP remains read-only and text-only; no OCR, index rebuild, secrets, images, or local paths.
 - Logs may record method names, request IDs, anonymous session IDs, and internal error chains. They must not record shell commands, arguments, URIs, search terms, stdout, body text, EvidenceRefs, or bibliography text.
-- Resource limits are fixed internal constants in v1 (15s command deadline, 1 MiB terminal output, command/loop/depth caps).
+- Resource limits are enforced at protocol, host, Bashkit, builtin, and domain boundaries. In addition to the negotiated 1..60-second command timeout, compiled limits include 8 MiB RPC frames, 1 MiB returned terminal output, 2,000 commands, 5,000 loop iterations, depth 16 for functions/subshells/substitutions, 2 MiB strings/input, 10,000 glob or directory-walk results, and 2,000 brace-expansion results. `vfs.walk` is limited to depth 20 and 10,000 entries; batch methods accept 64 operands; `head`/`tail` accept at most 1,000 lines.
+- Sidecar-detected timeout or cancellation resets the affected session state; a host watchdog timeout cancels and closes the session. Resource truncation or traversal truncation is surfaced rather than presented as complete output.
 - Future write capability requires a separate ADR and task; this decision is not a write-compatibility promise.
 
 **Consequences**

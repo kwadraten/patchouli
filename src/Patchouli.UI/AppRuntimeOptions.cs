@@ -45,16 +45,18 @@ public sealed record MinerUAppSettings(
     string ModelVersion,
     bool IsOcr,
     bool EnableTable,
-    bool EnableFormula)
+    bool EnableFormula,
+    int PollingTimeoutSeconds)
 {
     public static MinerUAppSettings Default()
     {
-        return new MinerUAppSettings("https://mineru.net", "vlm", true, true, true);
+        return new MinerUAppSettings("https://mineru.net", "vlm", true, true, true, 300);
     }
 
     public MinerUConfiguration ToConfiguration(string token)
     {
-        return new MinerUConfiguration(token, BaseUrl, ModelVersion, IsOcr, EnableTable, EnableFormula);
+        return new MinerUConfiguration(token, BaseUrl, ModelVersion, IsOcr, EnableTable, EnableFormula,
+            PollingTimeoutSeconds);
     }
 }
 
@@ -526,7 +528,8 @@ public sealed record PatchouliAppSettings(
                     ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
                     ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
                     ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
-                    ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula)),
+                    ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
+                    ReadInt(minerU, "PollingTimeoutSeconds", defaults.MinerU.PollingTimeoutSeconds)),
                 ReadMcpSettings(mcp, defaults.Mcp),
                 new UiPreferences(
                     ReadStringBoolDict(ui, "LibraryGridVisibleColumns", defaults.Ui.LibraryGridVisibleColumns),
@@ -621,7 +624,8 @@ public sealed record PatchouliAppSettings(
                 MinerU.ModelVersion,
                 MinerU.IsOcr,
                 MinerU.EnableTable,
-                MinerU.EnableFormula
+                MinerU.EnableFormula,
+                MinerU.PollingTimeoutSeconds
             });
             if (root["Credentials"] is null)
             {
@@ -925,7 +929,11 @@ public sealed record PatchouliAppSettings(
                 out DateTimeOffset updatedAt)
                 ? updatedAt.ToUniversalTime()
                 : fallback.UpdatedAt,
-            ReadLong(section, "Revision", fallback.Revision));
+            ReadLong(section, "Revision", fallback.Revision))
+        {
+            ShellCommandTimeoutSeconds = ReadInt(section, "ShellCommandTimeoutSeconds",
+                fallback.ShellCommandTimeoutSeconds)
+        };
     }
 
     private static string ReadString(JsonElement? section, string name, string fallback)

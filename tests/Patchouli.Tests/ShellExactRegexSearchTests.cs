@@ -6,6 +6,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
@@ -77,6 +78,43 @@ public sealed class ShellExactRegexSearchTests
     }
 
     [Fact]
+    public async Task Exact_search_batches_distinct_matching_units_once()
+    {
+        await using Fixture fx = await Fixture.CreateAsync("foo bar foo baz");
+
+        Result<JsonElement> result = await fx.Domain.HandleAsync(
+            "search.exact",
+            JsonSerializer.SerializeToElement(new
+            {
+                query = "foo",
+                scope = $"/texts/{fx.DocumentInstanceId}",
+                limit = 100
+            }));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        fx.Evidence.BatchCallCount.Should().Be(1);
+        fx.Evidence.LastBatch.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Exact_search_stops_at_limit_and_reports_more_matches()
+    {
+        await using Fixture fx = await Fixture.CreateAsync("foo foo foo");
+        Result<JsonElement> result = await fx.Domain.HandleAsync(
+            "search.exact",
+            JsonSerializer.SerializeToElement(new
+            {
+                query = "foo",
+                scope = $"/texts/{fx.DocumentInstanceId}",
+                limit = 2
+            }));
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.GetProperty("matches").GetArrayLength().Should().Be(2);
+        result.Value.GetProperty("truncated").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Evidence_requires_one_evref_on_a_matching_text_page()
     {
         await using Fixture fx = await Fixture.CreateAsync("precise evidence text");
@@ -130,6 +168,33 @@ public sealed class ShellExactRegexSearchTests
         mismatch.ErrorCode.Should().Be(AppErrorCodes.EvidenceResourceMismatch);
     }
 
+    [Fact]
+    public async Task Evidence_batch_preserves_uri_order_values_and_independent_errors()
+    {
+        await using Fixture fx = await Fixture.CreateAsync("batch evidence text");
+        string validUri = await SearchUriAsync(fx, "batch");
+        string invalidUri = $"patchouli://texts/{fx.DocumentInstanceId}/page-0.md?evref=invalid";
+        string[] uris = [validUri, invalidUri, validUri];
+
+        Result<JsonElement> batch = await fx.Domain.HandleAsync(
+            "evidence.resolve_many",
+            JsonSerializer.SerializeToElement(new { uris }));
+
+        batch.IsSuccess.Should().BeTrue(batch.ErrorMessage);
+        JsonElement[] results = batch.Value.GetProperty("results").EnumerateArray().ToArray();
+        results.Select(result => result.GetProperty("uri").GetString()).Should().Equal(uris);
+        results.Select(result => result.GetProperty("ok").GetBoolean()).Should().Equal(true, false, true);
+        results[0].GetProperty("value").GetProperty("text").GetString().Should().Be("batch evidence text");
+        results[1].GetProperty("error").GetProperty("code").GetString().Should().Be(AppErrorCodes.InvalidEvref);
+        results[2].GetProperty("value").GetProperty("text").GetString().Should().Be("batch evidence text");
+
+        Result<JsonElement> tooMany = await fx.Domain.HandleAsync(
+            "evidence.resolve_many",
+            JsonSerializer.SerializeToElement(new { uris = Enumerable.Repeat(validUri, 65).ToArray() }));
+        tooMany.IsFailure.Should().BeTrue();
+        tooMany.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
     private static async Task<string> SearchUriAsync(Fixture fixture, string query)
     {
         Result<JsonElement> search = await fixture.Domain.HandleAsync(
@@ -149,16 +214,19 @@ public sealed class ShellExactRegexSearchTests
         private Fixture(
             TemporarySqliteDatabase database,
             ShellDomainService domain,
-            DocumentInstanceId documentInstanceId)
+            DocumentInstanceId documentInstanceId,
+            TrackingEvidenceReferenceService evidence)
         {
             Database = database;
             Domain = domain;
             DocumentInstanceId = documentInstanceId;
+            Evidence = evidence;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public ShellDomainService Domain { get; }
         public DocumentInstanceId DocumentInstanceId { get; }
+        public TrackingEvidenceReferenceService Evidence { get; }
 
         public static Task<Fixture> CreateAsync(string? text = null)
         {
@@ -193,16 +261,68 @@ public sealed class ShellExactRegexSearchTests
 
             SearchProfileService profiles = new(database.ConnectionFactory, library, clock);
             SqliteSearchService search = new(database.ConnectionFactory, profiles);
-            EvidenceReferenceService evidence = new(database.ConnectionFactory, clock);
+            TrackingEvidenceReferenceService evidence = new(new EvidenceReferenceService(database.ConnectionFactory,
+                clock));
             McpReadApi api = new(database.ConnectionFactory, search, evidence);
             ShellDomainService domain = new(database.ConnectionFactory, api, search, evidence, library: library,
                 items: items);
-            return new Fixture(database, domain, doc.Value.DocumentInstanceId);
+            return new Fixture(database, domain, doc.Value.DocumentInstanceId, evidence);
         }
 
         public ValueTask DisposeAsync()
         {
             return Database.DisposeAsync();
+        }
+    }
+
+    private sealed class TrackingEvidenceReferenceService(IEvidenceReferenceService inner)
+        : IEvidenceReferenceService
+    {
+        public int BatchCallCount { get; private set; }
+        public IReadOnlyList<SearchUnitId> LastBatch { get; private set; } = [];
+
+        public Task<Result<EvidenceRefRecord>> CreateFromSearchUnitAsync(SearchUnitId unitId,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.CreateFromSearchUnitAsync(unitId, cancellationToken);
+        }
+
+        public Task<Result<IReadOnlyList<EvidenceReferenceCreateResult>>> CreateFromSearchUnitsAsync(
+            IReadOnlyList<SearchUnitId> unitIds, CancellationToken cancellationToken = default)
+        {
+            BatchCallCount++;
+            LastBatch = unitIds.ToArray();
+            return inner.CreateFromSearchUnitsAsync(unitIds, cancellationToken);
+        }
+
+        public Task<Result<EvidenceResolutionResult>> ResolveAsync(string evidenceRefId,
+            string mode = EvidenceResolutionMode.Pinned, CancellationToken cancellationToken = default)
+        {
+            return inner.ResolveAsync(evidenceRefId, mode, cancellationToken);
+        }
+
+        public Task<Result<EvidenceMarkdown>> CreateMarkdownAsync(string evidenceRefId,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.CreateMarkdownAsync(evidenceRefId, cancellationToken);
+        }
+
+        public Task<Result> MarkSupersededAsync(string evidenceRefId, string successorEvidenceRefId, string reason,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.MarkSupersededAsync(evidenceRefId, successorEvidenceRefId, reason, cancellationToken);
+        }
+
+        public Task<Result> TombstoneAsync(string evidenceRefId, string reason,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.TombstoneAsync(evidenceRefId, reason, cancellationToken);
+        }
+
+        public Task<Result> PurgeAsync(string evidenceRefId, string reason,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.PurgeAsync(evidenceRefId, reason, cancellationToken);
         }
     }
 }

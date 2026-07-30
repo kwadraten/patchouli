@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
@@ -14,6 +15,7 @@ namespace Patchouli.Infrastructure.Evidence;
 
 public sealed class EvidenceReferenceService : IEvidenceReferenceService
 {
+    private const int CreateChunkSize = 500;
     private const int MaxChainDepth = 20;
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
@@ -30,82 +32,135 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
     public async Task<Result<EvidenceRefRecord>> CreateFromSearchUnitAsync(SearchUnitId unitId,
         CancellationToken cancellationToken = default)
     {
+        Result<IReadOnlyList<EvidenceReferenceCreateResult>> batch =
+            await CreateFromSearchUnitsAsync([unitId], cancellationToken);
+        if (batch.IsFailure)
+        {
+            return Result<EvidenceRefRecord>.Failure(batch.ErrorCode!, batch.ErrorMessage!);
+        }
+
+        return batch.Value[0].Result;
+    }
+
+    public async Task<Result<IReadOnlyList<EvidenceReferenceCreateResult>>> CreateFromSearchUnitsAsync(
+        IReadOnlyList<SearchUnitId> unitIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(unitIds);
+        if (unitIds.Count == 0)
+        {
+            return Result<IReadOnlyList<EvidenceReferenceCreateResult>>.Success(
+                Array.Empty<EvidenceReferenceCreateResult>());
+        }
+
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
-            CreateRow? row = await connection.QuerySingleOrDefaultAsync<CreateRow>(
-                """
-                select lm.library_id as LibraryId, su.document_instance_id as DocumentInstanceId, su.page_id as PageId,
-                       su.unit_id as UnitId, su.tree_revision_id as TreeRevisionId, su.box_id as BoxId,
-                       su.resolved_text as ResolvedText,
-                       i.title as SourceTitle, p.page_label as PageLabel, p.page_index as PageIndex
-                from search_units su
-                join pages p on p.page_id = su.page_id
-                join document_instances di on di.document_instance_id = su.document_instance_id
-                join items i on i.item_id = di.item_id
-                join library_metadata lm on lm.library_id = i.library_id
-                where su.unit_id = @UnitId;
-                """,
-                new { UnitId = unitId.ToString() });
-            if (row is null)
+            await using DbTransaction transaction = connection.BeginTransaction(false);
+            string[] uniqueUnitIds = unitIds.Select(static id => id.ToString()).Distinct().ToArray();
+            Dictionary<string, CreateRow> rowsByUnitId = new(StringComparer.OrdinalIgnoreCase);
+            foreach (string[] chunk in uniqueUnitIds.Chunk(CreateChunkSize))
             {
-                return Result<EvidenceRefRecord>.Failure(AppErrorCodes.NotFound, "Search unit was not found.");
+                CommandDefinition command = new(
+                    """
+                    select lm.library_id as LibraryId, su.document_instance_id as DocumentInstanceId,
+                           su.page_id as PageId, su.unit_id as UnitId, su.tree_revision_id as TreeRevisionId,
+                           su.box_id as BoxId, su.resolved_text as ResolvedText,
+                           i.title as SourceTitle, p.page_label as PageLabel, p.page_index as PageIndex
+                    from json_each(@UnitIds) requested
+                    join search_units su on su.unit_id = requested.value
+                    join pages p on p.page_id = su.page_id
+                    join document_instances di on di.document_instance_id = su.document_instance_id
+                    join items i on i.item_id = di.item_id
+                    join library_metadata lm on lm.library_id = i.library_id;
+                    """,
+                    new { UnitIds = JsonSerializer.Serialize(chunk) }, transaction,
+                    cancellationToken: cancellationToken);
+                foreach (CreateRow row in await connection.QueryAsync<CreateRow>(command))
+                {
+                    rowsByUnitId[row.UnitId] = row;
+                }
             }
 
-            EvidenceReference reference = new(
-                LibraryId.Parse(row.LibraryId),
-                DocumentInstanceId.Parse(row.DocumentInstanceId),
-                PageId.Parse(row.PageId),
-                DocumentTreeRevisionId.Parse(row.TreeRevisionId),
-                DocumentBoxId.Parse(row.BoxId));
-            Result<string> encoded = EvidenceReferenceCodec.Encode(reference);
-            if (encoded.IsFailure)
+            Dictionary<string, Result<string>> refsByUnitId = new(StringComparer.OrdinalIgnoreCase);
+            foreach ((string unitId, CreateRow row) in rowsByUnitId)
             {
-                return Result<EvidenceRefRecord>.Failure(encoded.ErrorCode!, encoded.ErrorMessage!);
+                refsByUnitId[unitId] = EvidenceReferenceCodec.Encode(new EvidenceReference(
+                    LibraryId.Parse(row.LibraryId),
+                    DocumentInstanceId.Parse(row.DocumentInstanceId),
+                    PageId.Parse(row.PageId),
+                    DocumentTreeRevisionId.Parse(row.TreeRevisionId),
+                    DocumentBoxId.Parse(row.BoxId)));
             }
 
-            RecordRow? existing = await GetRecordAsync(connection, encoded.Value);
-            if (existing is not null)
+            string[] evidenceRefIds = refsByUnitId.Values.Where(static result => result.IsSuccess)
+                .Select(static result => result.Value).Distinct().ToArray();
+            Dictionary<string, RecordRow> recordsByRefId = new(StringComparer.Ordinal);
+            foreach (string[] chunk in evidenceRefIds.Chunk(CreateChunkSize))
             {
-                return Result<EvidenceRefRecord>.Success(existing.ToRecord());
+                await LoadRecordsAsync(connection, transaction, chunk, recordsByRefId, cancellationToken);
             }
 
             string now = _clock.UtcNow.ToUniversalTime().ToString("O");
-            string recordId = Guid.NewGuid().ToString("D");
-            await connection.ExecuteAsync(
-                """
-                insert into evidence_ref_records (
-                    evidence_record_id, evidence_ref_id, library_id, document_instance_id, page_id, unit_id,
-                    tree_revision_id, box_id, snapshot_id, pinned_text,
-                    source_title, page_label, page_index, status, created_at
-                )
-                values (
-                    @RecordId, @EvidenceRefId, @LibraryId, @DocumentInstanceId, @PageId, @UnitId,
-                    @TreeRevisionId, @BoxId, null, @PinnedText,
-                    @SourceTitle, @PageLabel, @PageIndex, @Status, @CreatedAt
-                );
-                """,
-                new
+            CreateInsertRow[] missingRecords = rowsByUnitId.Values
+                .Select(row => new { Row = row, Encoded = refsByUnitId[row.UnitId] })
+                .Where(item => item.Encoded.IsSuccess && !recordsByRefId.ContainsKey(item.Encoded.Value))
+                .GroupBy(item => item.Encoded.Value, StringComparer.Ordinal)
+                .Select(group =>
                 {
-                    RecordId = recordId,
-                    EvidenceRefId = encoded.Value,
-                    row.LibraryId,
-                    row.DocumentInstanceId,
-                    row.PageId,
-                    row.UnitId,
-                    row.TreeRevisionId,
-                    row.BoxId,
-                    PinnedText = row.ResolvedText,
-                    row.SourceTitle,
-                    row.PageLabel,
-                    row.PageIndex,
-                    Status = EvidenceRecordStatus.Active,
-                    CreatedAt = now
-                });
+                    CreateRow row = group.First().Row;
+                    return new CreateInsertRow(Guid.NewGuid().ToString("D"), group.Key, row.LibraryId,
+                        row.DocumentInstanceId, row.PageId, row.UnitId, row.TreeRevisionId, row.BoxId,
+                        row.ResolvedText, row.SourceTitle, row.PageLabel, row.PageIndex,
+                        EvidenceRecordStatus.Active, now);
+                }).ToArray();
+            foreach (CreateInsertRow[] chunk in missingRecords.Chunk(CreateChunkSize))
+            {
+                CommandDefinition insert = new(
+                    """
+                    insert into evidence_ref_records (
+                        evidence_record_id, evidence_ref_id, library_id, document_instance_id, page_id, unit_id,
+                        tree_revision_id, box_id, snapshot_id, pinned_text, source_title, page_label, page_index,
+                        status, created_at)
+                    select json_extract(value, '$.RecordId'), json_extract(value, '$.EvidenceRefId'),
+                           json_extract(value, '$.LibraryId'), json_extract(value, '$.DocumentInstanceId'),
+                           json_extract(value, '$.PageId'), json_extract(value, '$.UnitId'),
+                           json_extract(value, '$.TreeRevisionId'), json_extract(value, '$.BoxId'), null,
+                           json_extract(value, '$.PinnedText'), json_extract(value, '$.SourceTitle'),
+                           json_extract(value, '$.PageLabel'), json_extract(value, '$.PageIndex'),
+                           json_extract(value, '$.Status'), json_extract(value, '$.CreatedAt')
+                    from json_each(@Records)
+                    where true
+                    on conflict(evidence_ref_id) do nothing;
+                    """,
+                    new { Records = JsonSerializer.Serialize(chunk) }, transaction,
+                    cancellationToken: cancellationToken);
+                await connection.ExecuteAsync(insert);
+            }
 
-            RecordRow? inserted = await GetRecordAsync(connection, encoded.Value);
-            return Result<EvidenceRefRecord>.Success(inserted!.ToRecord());
+            recordsByRefId.Clear();
+            foreach (string[] chunk in evidenceRefIds.Chunk(CreateChunkSize))
+            {
+                await LoadRecordsAsync(connection, transaction, chunk, recordsByRefId, cancellationToken);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            EvidenceReferenceCreateResult[] results = unitIds.Select(unitId =>
+            {
+                string unitIdText = unitId.ToString();
+                if (!rowsByUnitId.ContainsKey(unitIdText))
+                {
+                    return new EvidenceReferenceCreateResult(unitId,
+                        Result<EvidenceRefRecord>.Failure(AppErrorCodes.NotFound, "Search unit was not found."));
+                }
+
+                Result<string> encoded = refsByUnitId[unitIdText];
+                Result<EvidenceRefRecord> result = encoded.IsFailure
+                    ? Result<EvidenceRefRecord>.Failure(encoded.ErrorCode!, encoded.ErrorMessage!)
+                    : Result<EvidenceRefRecord>.Success(recordsByRefId[encoded.Value].ToRecord());
+                return new EvidenceReferenceCreateResult(unitId, result);
+            }).ToArray();
+            return Result<IReadOnlyList<EvidenceReferenceCreateResult>>.Success(results);
         }
         catch (OperationCanceledException)
         {
@@ -113,8 +168,31 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference"))
         {
-            return Result<EvidenceRefRecord>.Failure(AppErrorCodes.DatabaseError,
+            return Result<IReadOnlyList<EvidenceReferenceCreateResult>>.Failure(AppErrorCodes.DatabaseError,
                 $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    private static async Task LoadRecordsAsync(SqliteConnection connection, DbTransaction transaction,
+        IReadOnlyList<string> evidenceRefIds, IDictionary<string, RecordRow> recordsByRefId,
+        CancellationToken cancellationToken)
+    {
+        CommandDefinition command = new(
+            """
+            select r.evidence_record_id as EvidenceRecordId, r.evidence_ref_id as EvidenceRefId,
+                   r.library_id as LibraryId, r.document_instance_id as DocumentInstanceId,
+                   r.page_id as PageId, r.unit_id as UnitId, r.tree_revision_id as TreeRevisionId,
+                   r.box_id as BoxId, r.snapshot_id as SnapshotId, r.pinned_text as PinnedText,
+                   r.source_title as SourceTitle, r.page_label as PageLabel, r.page_index as PageIndex,
+                   r.status as Status, r.created_at as CreatedAt
+            from json_each(@EvidenceRefIds) requested
+            join evidence_ref_records r on r.evidence_ref_id = requested.value;
+            """,
+            new { EvidenceRefIds = JsonSerializer.Serialize(evidenceRefIds) }, transaction,
+            cancellationToken: cancellationToken);
+        foreach (RecordRow row in await connection.QueryAsync<RecordRow>(command))
+        {
+            recordsByRefId[row.EvidenceRefId] = row;
         }
     }
 
@@ -644,6 +722,22 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         public string? PageLabel { get; set; }
         public int PageIndex { get; set; }
     }
+
+    private sealed record CreateInsertRow(
+        string RecordId,
+        string EvidenceRefId,
+        string LibraryId,
+        string DocumentInstanceId,
+        string PageId,
+        string UnitId,
+        string TreeRevisionId,
+        string BoxId,
+        string PinnedText,
+        string SourceTitle,
+        string? PageLabel,
+        int PageIndex,
+        string Status,
+        string CreatedAt);
 
     private sealed class UnitRow
     {

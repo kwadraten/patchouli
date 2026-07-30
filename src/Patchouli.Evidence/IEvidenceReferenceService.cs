@@ -3,11 +3,18 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Evidence;
 
+public sealed record EvidenceReferenceCreateResult(
+    SearchUnitId SearchUnitId,
+    Result<EvidenceRefRecord> Result);
+
 /// <summary>Creates and resolves stable text-only evidence references over persisted search units.</summary>
 public interface IEvidenceReferenceService
 {
     Task<Result<EvidenceRefRecord>> CreateFromSearchUnitAsync(SearchUnitId unitId,
         CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<EvidenceReferenceCreateResult>>> CreateFromSearchUnitsAsync(
+        IReadOnlyList<SearchUnitId> unitIds, CancellationToken cancellationToken = default);
 
     Task<Result<EvidenceResolutionResult>> ResolveAsync(string evidenceRefId,
         string mode = EvidenceResolutionMode.Pinned, CancellationToken cancellationToken = default);

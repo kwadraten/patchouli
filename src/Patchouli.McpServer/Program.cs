@@ -78,7 +78,10 @@ try
     McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
     ShellDomainService shellDomain = new(db, api, search, evidence, cslStore, cslRenderer, biblatexHelper, items,
         library);
-    await using ShellSidecarHost shell = new(shellDomain);
+    await using ShellSidecarHost shell = new(shellDomain, limits: new ShellResourceLimits
+    {
+        CommandTimeout = TimeSpan.FromSeconds(effectiveSettings.ShellCommandTimeoutSeconds)
+    });
 
     static void ReportUnexpected(Exception exception, string operation)
     {

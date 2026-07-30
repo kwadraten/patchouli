@@ -5,6 +5,8 @@ use serde_json::json;
 
 use super::{parse_bool_flag, positional_args, tsv_escape, DomainBuiltins};
 
+const MAX_TARGETS: usize = 256;
+
 pub struct StatBuiltin {
     pub domain: Arc<DomainBuiltins>,
 }
@@ -20,6 +22,12 @@ impl Builtin for StatBuiltin {
         if targets.is_empty() {
             return Ok(ExecResult::err("stat: missing operand\n", 2));
         }
+        if targets.len() > MAX_TARGETS {
+            return Ok(ExecResult::err(
+                format!("stat: at most {MAX_TARGETS} operands are supported\n"),
+                2,
+            ));
+        }
 
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -32,7 +40,7 @@ impl Builtin for StatBuiltin {
             match self
                 .domain
                 .rpc
-                .call("vfs.stat", json!({ "path": target }))
+                .call("vfs.stat", json!({ "path": target, "include_size": false }))
                 .await
             {
                 Ok(value) => {

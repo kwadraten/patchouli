@@ -15,6 +15,7 @@ public sealed class ShellRpcFramingTests
             ProtocolVersion = ShellRpcProtocol.Version,
             MessageType = "request",
             RequestId = 1,
+            ExecutionId = 42,
             Method = "vfs.resolve",
             Payload = JsonSerializer.SerializeToElement(new { path = "/" }, ShellRpcFraming.JsonOptions)
         };
@@ -27,6 +28,7 @@ public sealed class ShellRpcFramingTests
         read!.ProtocolVersion.Should().Be(ShellRpcProtocol.Version);
         read.MessageType.Should().Be("request");
         read.RequestId.Should().Be(1);
+        read.ExecutionId.Should().Be(42);
         read.Method.Should().Be("vfs.resolve");
         read.Payload.Should().NotBeNull();
         read.Payload!.Value.GetProperty("path").GetString().Should().Be("/");

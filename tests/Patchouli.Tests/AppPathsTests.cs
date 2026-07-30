@@ -69,7 +69,7 @@ public sealed class AppPathsTests
         Directory.CreateDirectory(Path.GetDirectoryName(locations.BundledDefaultsPath)!);
         Directory.CreateDirectory(Path.GetDirectoryName(locations.UserSettingsPath)!);
         File.WriteAllText(locations.BundledDefaultsPath,
-            """{"Mcp":{"Port":5000},"MinerU":{"BaseUrl":"https://bundle.test"}}""");
+            """{"Mcp":{"Port":5000,"ShellCommandTimeoutSeconds":30},"MinerU":{"BaseUrl":"https://bundle.test"}}""");
         File.WriteAllText(locations.UserSettingsPath, """{"Mcp":{"Port":6000}}""");
         string bundledBefore = File.ReadAllText(locations.BundledDefaultsPath);
 
@@ -77,6 +77,7 @@ public sealed class AppPathsTests
         {
             PatchouliAppSettings settings = PatchouliAppSettings.Load(appPaths);
             settings.Mcp.Port.Should().Be(6000);
+            settings.Mcp.ShellCommandTimeoutSeconds.Should().Be(30);
             settings.MinerU.BaseUrl.Should().Be("https://bundle.test");
 
             settings.Save(locations.UserSettingsPath);

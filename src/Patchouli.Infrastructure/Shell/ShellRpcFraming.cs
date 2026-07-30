@@ -20,6 +20,8 @@ public sealed class ShellRpcEnvelope
 
     [JsonPropertyName("request_id")] public ulong? RequestId { get; set; }
 
+    [JsonPropertyName("execution_id")] public ulong? ExecutionId { get; set; }
+
     [JsonPropertyName("method")] public string? Method { get; set; }
 
     [JsonPropertyName("payload")] public JsonElement? Payload { get; set; }

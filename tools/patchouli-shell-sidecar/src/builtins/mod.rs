@@ -1,9 +1,13 @@
 mod cite;
 mod evidence;
+mod find;
+mod headtail;
 mod help;
 mod ls;
 mod search;
 mod stat_cmd;
+mod tree;
+mod wc;
 
 use std::sync::Arc;
 
@@ -34,6 +38,28 @@ pub fn register_all(domain: DomainBuiltins) -> Vec<(String, Box<dyn Builtin>)> {
             Box::new(stat_cmd::StatBuiltin { domain: d.clone() }),
         ),
         (
+            "find".to_string(),
+            Box::new(find::FindBuiltin { domain: d.clone() }),
+        ),
+        (
+            "tree".to_string(),
+            Box::new(tree::TreeBuiltin { domain: d.clone() }),
+        ),
+        (
+            "head".to_string(),
+            Box::new(headtail::HeadTailBuiltin {
+                domain: d.clone(),
+                mode: "head",
+            }),
+        ),
+        (
+            "tail".to_string(),
+            Box::new(headtail::HeadTailBuiltin {
+                domain: d.clone(),
+                mode: "tail",
+            }),
+        ),
+        (
             "grep".to_string(),
             Box::new(search::GrepBuiltin { domain: d.clone() }),
         ),
@@ -52,6 +78,10 @@ pub fn register_all(domain: DomainBuiltins) -> Vec<(String, Box<dyn Builtin>)> {
         (
             "cite".to_string(),
             Box::new(cite::CiteBuiltin { domain: d.clone() }),
+        ),
+        (
+            "wc".to_string(),
+            Box::new(wc::WcBuiltin { domain: d.clone() }),
         ),
         ("help".to_string(), Box::new(help::HelpBuiltin)),
     ]

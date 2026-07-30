@@ -22,6 +22,51 @@ namespace Patchouli.Tests;
 public sealed class EvidenceRefV2Tests
 {
     [Fact]
+    public async Task Concurrent_creation_returns_the_same_record()
+    {
+        await using Context context = await Context.CreateAsync();
+        await context.CommitTextAsync("concurrent batch evidence");
+        SearchUnitId unitId = await context.RebuildAndFindUnitAsync("concurrent batch");
+
+        Result<EvidenceRefRecord>[] results = await Task.WhenAll(
+            context.Evidence.CreateFromSearchUnitAsync(unitId),
+            context.Evidence.CreateFromSearchUnitAsync(unitId));
+
+        results.Should().OnlyContain(result => result.IsSuccess);
+        results.Select(result => result.Value.EvidenceRecordId).Distinct().Should().ContainSingle();
+        (await context.CountEvidenceRecordsAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Batch_creation_preserves_order_duplicates_existing_records_and_missing_units()
+    {
+        await using Context context = await Context.CreateAsync();
+        await context.CommitTextAsync("first batch evidence");
+        SearchUnitId firstUnitId = await context.RebuildAndFindUnitAsync("first batch");
+        EvidenceRefRecord existing = (await context.Evidence.CreateFromSearchUnitAsync(firstUnitId)).Value;
+        await context.EditCurrentBoxAsync("second batch evidence");
+        SearchUnitId secondUnitId = await context.RebuildAndFindUnitAsync("second batch");
+        SearchUnitId missingUnitId = SearchUnitId.New();
+
+        Result<IReadOnlyList<EvidenceReferenceCreateResult>> result =
+            await context.Evidence.CreateFromSearchUnitsAsync(
+                [secondUnitId, missingUnitId, firstUnitId, secondUnitId]);
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Select(item => item.SearchUnitId).Should()
+            .Equal(secondUnitId, missingUnitId, firstUnitId, secondUnitId);
+        result.Value[0].Result.Value.PinnedText.Should().Be("second batch evidence");
+        result.Value[1].Result.IsFailure.Should().BeTrue();
+        result.Value[1].Result.ErrorCode.Should().Be(AppErrorCodes.NotFound);
+        result.Value[1].Result.ErrorMessage.Should().Be("Search unit was not found.");
+        result.Value[2].Result.Value.EvidenceRecordId.Should().Be(existing.EvidenceRecordId);
+        result.Value[2].Result.Value.EvidenceRefId.Should().Be(existing.EvidenceRefId);
+        result.Value[2].Result.Value.PinnedText.Should().Be(existing.PinnedText);
+        result.Value[3].Result.Value.Should().Be(result.Value[0].Result.Value);
+        (await context.CountEvidenceRecordsAsync()).Should().Be(2);
+    }
+
+    [Fact]
     public async Task V2_reference_pins_original_box_text_and_follows_its_successor_when_current()
     {
         await using Context context = await Context.CreateAsync();
@@ -237,6 +282,13 @@ public sealed class EvidenceRefV2Tests
             await connection.OpenAsync();
             return await connection.ExecuteScalarAsync<string?>(
                 "select status from search_units where unit_id = @UnitId;", new { UnitId = unitId.ToString() });
+        }
+
+        public async Task<int> CountEvidenceRecordsAsync()
+        {
+            await using SqliteConnection connection = _database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            return await connection.ExecuteScalarAsync<int>("select count(1) from evidence_ref_records;");
         }
 
         public ValueTask DisposeAsync()

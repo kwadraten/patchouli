@@ -163,7 +163,10 @@ public sealed class AppServices
             ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown);
         ShellDomain = new ShellDomainService(
             ConnectionFactory, Mcp, Search, Evidence, CslStore, CslRenderer, BiblatexHelper, Items, Library);
-        ShellSidecar = new ShellSidecarHost(ShellDomain);
+        ShellSidecar = new ShellSidecarHost(ShellDomain, limits: new ShellResourceLimits
+        {
+            CommandTimeout = TimeSpan.FromSeconds(settings.Mcp.ShellCommandTimeoutSeconds)
+        });
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -348,7 +351,8 @@ public sealed class AppServices
             ModelVersion = configuration.ModelVersion ?? Settings.MinerU.ModelVersion,
             IsOcr = configuration.IsOcr,
             EnableTable = configuration.EnableTable,
-            EnableFormula = configuration.EnableFormula
+            EnableFormula = configuration.EnableFormula,
+            PollingTimeoutSeconds = configuration.PollingTimeoutSeconds
         });
     }
 

@@ -28,6 +28,7 @@ public sealed class McpReadApi : IMcpReadApi
     private readonly ICslRenderer? _cslRenderer;
     private readonly IMarkdownEngine _markdown;
     private readonly IDocumentMarkdownCompiler _markdownCompiler;
+    private readonly CompiledMarkdownCache _compiledMarkdownCache = new();
 
     public McpReadApi(SqliteConnectionFactory connectionFactory, ISearchService searchService,
         IEvidenceReferenceService evidenceService, IPageCoordinateService? coordinates = null,
@@ -549,9 +550,12 @@ public sealed class McpReadApi : IMcpReadApi
                     "Current committed document tree revision was not found.");
             }
 
-            Result<CompiledMarkdown> compiled = await _markdownCompiler.CompilePageMarkdownAsync(
-                DocumentTreeRevisionId.Parse(revisionId), includeSuppressed, cancellationToken,
-                true);
+            DocumentTreeRevisionId treeRevisionId = DocumentTreeRevisionId.Parse(revisionId);
+            Result<CompiledMarkdown> compiled = await _compiledMarkdownCache.GetOrCreateAsync(
+                treeRevisionId, includeSuppressed, true,
+                sharedCancellationToken => _markdownCompiler.CompilePageMarkdownAsync(
+                    treeRevisionId, includeSuppressed, sharedCancellationToken, true),
+                cancellationToken);
             if (compiled.IsFailure)
             {
                 return Result<McpPageTextResponse>.Failure(compiled.ErrorCode!, compiled.ErrorMessage!);

@@ -113,6 +113,177 @@ public sealed class ShellDomainVfsTests
         content.Should().Contain($"file = {{patchouli://texts/{fx.DocumentInstanceId}/}}");
     }
 
+    [Fact]
+    public async Task Stat_can_skip_size_and_batch_methods_preserve_path_order_and_errors()
+    {
+        await using Fixture fx = await Fixture.CreateAsync(true, configureBiblatexHelper: false);
+        string itemPath = $"/items/{fx.ItemId}.bib";
+
+        Result<JsonElement> withoutSize = await fx.Domain.HandleAsync("vfs.stat",
+            JsonSerializer.SerializeToElement(new { path = itemPath, include_size = false }));
+        withoutSize.IsSuccess.Should().BeTrue(withoutSize.ErrorMessage);
+        withoutSize.Value.TryGetProperty("size", out _).Should().BeFalse();
+
+        Result<JsonElement> withDefaultSize = await fx.Domain.HandleAsync("vfs.stat",
+            JsonSerializer.SerializeToElement(new { path = "/AGENTS.md" }));
+        withDefaultSize.IsSuccess.Should().BeTrue(withDefaultSize.ErrorMessage);
+        withDefaultSize.Value.GetProperty("size").GetInt64().Should().BePositive();
+
+        string[] paths = ["/AGENTS.md", "/missing", "/library.yml"];
+        Result<JsonElement> stats = await fx.Domain.HandleAsync("vfs.stat_many",
+            JsonSerializer.SerializeToElement(new { paths, include_size = false }));
+        stats.IsSuccess.Should().BeTrue(stats.ErrorMessage);
+        JsonElement[] statResults = stats.Value.GetProperty("results").EnumerateArray().ToArray();
+        statResults.Select(result => result.GetProperty("path").GetString()).Should().Equal(paths);
+        statResults.Select(result => result.GetProperty("ok").GetBoolean()).Should().Equal(true, false, true);
+        statResults[0].GetProperty("value").TryGetProperty("size", out _).Should().BeFalse();
+
+        Result<JsonElement> reads = await fx.Domain.HandleAsync("vfs.read_batch",
+            JsonSerializer.SerializeToElement(new { paths }));
+        reads.IsSuccess.Should().BeTrue(reads.ErrorMessage);
+        JsonElement[] readResults = reads.Value.GetProperty("results").EnumerateArray().ToArray();
+        readResults.Select(result => result.GetProperty("path").GetString()).Should().Equal(paths);
+        readResults.Select(result => result.GetProperty("ok").GetBoolean()).Should().Equal(true, false, true);
+        readResults[0].GetProperty("value").GetProperty("content").GetString().Should()
+            .Contain("Patchouli Virtual Library Shell");
+
+        Result<JsonElement> tooMany = await fx.Domain.HandleAsync("vfs.read_batch",
+            JsonSerializer.SerializeToElement(new { paths = Enumerable.Repeat("/AGENTS.md", 65).ToArray() }));
+        tooMany.IsFailure.Should().BeTrue();
+        tooMany.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
+    [Fact]
+    public async Task Read_lines_returns_bounded_head_and_tail_with_truncation_status()
+    {
+        await using Fixture fx = await Fixture.CreateAsync(true);
+
+        Result<JsonElement> head = await fx.Domain.HandleAsync("vfs.read_lines",
+            JsonSerializer.SerializeToElement(new { path = "/AGENTS.md", mode = "head", count = 2 }));
+        head.IsSuccess.Should().BeTrue(head.ErrorMessage);
+        head.Value.GetProperty("content").GetString().Should().Be("# Patchouli Virtual Library Shell\n\n");
+        head.Value.GetProperty("truncated").GetBoolean().Should().BeTrue();
+
+        Result<JsonElement> tail = await fx.Domain.HandleAsync("vfs.read_lines",
+            JsonSerializer.SerializeToElement(new { path = "/AGENTS.md", mode = "tail", count = 1 }));
+        tail.IsSuccess.Should().BeTrue(tail.ErrorMessage);
+        tail.Value.GetProperty("content").GetString().Should().NotBeEmpty().And.NotContain("# Patchouli");
+        tail.Value.GetProperty("truncated").GetBoolean().Should().BeTrue();
+
+        Result<JsonElement> invalidMode = await fx.Domain.HandleAsync("vfs.read_lines",
+            JsonSerializer.SerializeToElement(new { path = "/AGENTS.md", mode = "middle", count = 10 }));
+        invalidMode.IsFailure.Should().BeTrue();
+        invalidMode.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+
+        Result<JsonElement> excessiveCount = await fx.Domain.HandleAsync("vfs.read_lines",
+            JsonSerializer.SerializeToElement(new { path = "/AGENTS.md", mode = "head", count = 1001 }));
+        excessiveCount.IsFailure.Should().BeTrue();
+        excessiveCount.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
+    [Fact]
+    public async Task Document_page_listing_uses_ordinal_filename_cursor_semantics()
+    {
+        await using Fixture fx = await Fixture.CreateAsync(true, 12);
+        string path = $"/texts/{fx.DocumentInstanceId}";
+
+        Result<JsonElement> first = await fx.Domain.HandleAsync("vfs.list",
+            JsonSerializer.SerializeToElement(new { path, limit = 3 }));
+        first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+        first.Value.GetProperty("entries").EnumerateArray()
+            .Select(entry => entry.GetProperty("name").GetString())
+            .Should().Equal("page-0.md", "page-1.md", "page-10.md");
+        string nextAfter = first.Value.GetProperty("next_after").GetString()!;
+        nextAfter.Should().Be($"patchouli://texts/{fx.DocumentInstanceId}/page-10.md");
+        first.Value.GetProperty("continuation_command").GetString().Should().NotBeNull();
+
+        Result<JsonElement> second = await fx.Domain.HandleAsync("vfs.list",
+            JsonSerializer.SerializeToElement(new
+            {
+                path,
+                limit = 20,
+                after = nextAfter
+            }));
+        second.IsSuccess.Should().BeTrue(second.ErrorMessage);
+        second.Value.GetProperty("entries").EnumerateArray()
+            .Select(entry => entry.GetProperty("name").GetString())
+            .Should().Equal("page-11.md", "page-2.md", "page-3.md", "page-4.md", "page-5.md", "page-6.md",
+                "page-7.md", "page-8.md", "page-9.md");
+        second.Value.GetProperty("next_after").ValueKind.Should().Be(JsonValueKind.Null);
+        second.Value.TryGetProperty("continuation_command", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Walk_returns_bounded_ordered_entries_without_reading_file_content()
+    {
+        await using Fixture fx = await Fixture.CreateAsync(true, 12, false);
+
+        Result<JsonElement> files = await fx.Domain.HandleAsync("vfs.walk",
+            JsonSerializer.SerializeToElement(new
+            {
+                path = "/texts",
+                max_depth = 2,
+                limit = 3,
+                type = "file"
+            }));
+        files.IsSuccess.Should().BeTrue(files.ErrorMessage);
+        files.Value.GetProperty("entries").EnumerateArray()
+            .Select(entry => entry.GetProperty("name").GetString())
+            .Should().Equal("page-0.md", "page-1.md", "page-10.md");
+        files.Value.GetProperty("entries").EnumerateArray()
+            .Select(entry => entry.GetProperty("depth").GetInt32())
+            .Should().OnlyContain(depth => depth == 2);
+        files.Value.GetProperty("truncated").GetBoolean().Should().BeTrue();
+
+        Result<JsonElement> shallowFiles = await fx.Domain.HandleAsync("vfs.walk",
+            JsonSerializer.SerializeToElement(new
+            {
+                path = "/texts",
+                max_depth = 1,
+                limit = 100,
+                type = "file"
+            }));
+        shallowFiles.IsSuccess.Should().BeTrue(shallowFiles.ErrorMessage);
+        shallowFiles.Value.GetProperty("entries").GetArrayLength().Should().Be(0);
+        shallowFiles.Value.GetProperty("truncated").GetBoolean().Should().BeFalse();
+
+        Result<JsonElement> document = await fx.Domain.HandleAsync("vfs.walk",
+            JsonSerializer.SerializeToElement(new
+            {
+                path = $"/texts/{fx.DocumentInstanceId}",
+                max_depth = 0,
+                limit = 1
+            }));
+        document.IsSuccess.Should().BeTrue(document.ErrorMessage);
+        JsonElement onlyEntry = document.Value.GetProperty("entries")[0];
+        onlyEntry.GetProperty("path").GetString().Should().Be($"/texts/{fx.DocumentInstanceId}");
+        onlyEntry.GetProperty("kind").GetString().Should().Be("directory");
+        onlyEntry.GetProperty("depth").GetInt32().Should().Be(0);
+        document.Value.GetProperty("truncated").GetBoolean().Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("max_depth", -1, null)]
+    [InlineData("max_depth", 21, null)]
+    [InlineData("limit", 0, null)]
+    [InlineData("limit", 10001, null)]
+    [InlineData("type", 0, "link")]
+    public async Task Walk_rejects_out_of_range_bounds_and_unsupported_types(string field, int value, string? type)
+    {
+        await using Fixture fx = await Fixture.CreateAsync(true);
+        object request = field == "max_depth"
+            ? new { path = "/texts", max_depth = value, limit = 10, type }
+            : field == "limit"
+                ? new { path = "/texts", max_depth = 2, limit = value, type }
+                : new { path = "/texts", max_depth = 2, limit = 10, type };
+
+        Result<JsonElement> result = await fx.Domain.HandleAsync("vfs.walk",
+            JsonSerializer.SerializeToElement(request));
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private Fixture(
@@ -132,7 +303,8 @@ public sealed class ShellDomainVfsTests
         public ItemId ItemId { get; }
         public DocumentInstanceId DocumentInstanceId { get; }
 
-        public static async Task<Fixture> CreateAsync(bool withOcrText)
+        public static async Task<Fixture> CreateAsync(bool withOcrText, int pageCount = 1,
+            bool configureBiblatexHelper = true)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-28T00:00:00Z"));
@@ -147,14 +319,23 @@ public sealed class ShellDomainVfsTests
                 await documents.AttachDocumentInstanceAsync(item.Value.ItemId, null, DocumentInstanceType.PrimaryScan);
             doc.IsSuccess.Should().BeTrue();
             PageService pages = new(database.ConnectionFactory, clock);
-            Result<Page> page = await pages.CreatePageAsync(
-                doc.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test",
-                null);
-            page.IsSuccess.Should().BeTrue();
+            List<Page> createdPages = [];
+            for (int pageIndex = 0; pageIndex < pageCount; pageIndex++)
+            {
+                Result<Page> page = await pages.CreatePageAsync(
+                    doc.Value.DocumentInstanceId, pageIndex, (pageIndex + 1).ToString(), null, null, 0,
+                    CoordinateBasis.NormalizedPage, null, null, "test", null);
+                page.IsSuccess.Should().BeTrue();
+                createdPages.Add(page.Value);
+            }
+
             if (withOcrText)
             {
-                await BoxTreeTestData.CommitTextAsync(database.ConnectionFactory, clock, doc.Value.DocumentInstanceId,
-                    page.Value.PageId, "ocr text present");
+                foreach (Page createdPage in createdPages)
+                {
+                    await BoxTreeTestData.CommitTextAsync(database.ConnectionFactory, clock,
+                        doc.Value.DocumentInstanceId, createdPage.PageId, "ocr text present");
+                }
             }
 
             SearchProfileService profiles = new(database.ConnectionFactory, library, clock);
@@ -162,7 +343,7 @@ public sealed class ShellDomainVfsTests
             EvidenceReferenceService evidence = new(database.ConnectionFactory, clock);
             McpReadApi api = new(database.ConnectionFactory, search, evidence);
             ShellDomainService domain = new(database.ConnectionFactory, api, search, evidence, library: library,
-                items: items, biblatexHelper: new PassthroughBiblatexHelper());
+                items: items, biblatexHelper: configureBiblatexHelper ? new PassthroughBiblatexHelper() : null);
             return new Fixture(database, domain, item.Value.ItemId, doc.Value.DocumentInstanceId);
         }
 

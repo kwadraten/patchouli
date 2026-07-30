@@ -18,6 +18,8 @@ pub struct Envelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
@@ -37,6 +39,7 @@ impl Envelope {
             protocol_version: PROTOCOL_VERSION.to_string(),
             message_type: MessageType::Request,
             request_id: Some(request_id),
+            execution_id: None,
             method: Some(method.into()),
             payload: Some(payload),
             error: None,
@@ -48,6 +51,7 @@ impl Envelope {
             protocol_version: PROTOCOL_VERSION.to_string(),
             message_type: MessageType::Response,
             request_id,
+            execution_id: None,
             method: None,
             payload: Some(payload),
             error: None,
@@ -63,6 +67,7 @@ impl Envelope {
             protocol_version: PROTOCOL_VERSION.to_string(),
             message_type: MessageType::Response,
             request_id,
+            execution_id: None,
             method: None,
             payload: None,
             error: Some(RpcError {
@@ -77,6 +82,7 @@ impl Envelope {
             protocol_version: PROTOCOL_VERSION.to_string(),
             message_type: MessageType::Notification,
             request_id: None,
+            execution_id: None,
             method: Some(method.into()),
             payload: Some(payload),
             error: None,

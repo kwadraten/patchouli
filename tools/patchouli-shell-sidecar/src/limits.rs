@@ -4,6 +4,8 @@ use bashkit::ExecutionLimits;
 
 pub const MAX_RPC_FRAME_BYTES: usize = 8 * 1024 * 1024;
 pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+pub const MIN_COMMAND_TIMEOUT: Duration = Duration::from_secs(1);
+pub const MAX_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub const MAX_TERMINAL_OUTPUT_BYTES: usize = 1024 * 1024;
 pub const MAX_COMMANDS: usize = 2_000;
 pub const MAX_LOOP_ITERATIONS: usize = 5_000;
@@ -12,9 +14,9 @@ pub const MAX_STRING_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_GLOB_EXPANSION_RESULTS: usize = 10_000;
 pub const MAX_BRACE_EXPANSION_RESULTS: usize = 2_000;
 
-pub fn execution_limits() -> ExecutionLimits {
+pub fn execution_limits(command_timeout: Duration) -> ExecutionLimits {
     ExecutionLimits::new()
-        .timeout(COMMAND_TIMEOUT)
+        .timeout(command_timeout.min(MAX_COMMAND_TIMEOUT))
         .max_commands(MAX_COMMANDS)
         .max_loop_iterations(MAX_LOOP_ITERATIONS)
         .max_total_loop_iterations(MAX_LOOP_ITERATIONS)

@@ -112,13 +112,46 @@ async fn handle_request(
 
     match method.as_str() {
         "initialize" => {
+            let supports_scoped_cancellation = payload
+                .get("capabilities")
+                .and_then(|capabilities| capabilities.get("execution_scoped_reverse_cancellation"))
+                .and_then(|value| value.as_bool())
+                == Some(true);
+            if !supports_scoped_cancellation {
+                let _ = host
+                    .respond_error(
+                        request_id,
+                        "protocol_incompatible",
+                        "host must support execution-scoped reverse cancellation",
+                    )
+                    .await;
+                return;
+            }
+            let requested_timeout_ms = payload
+                .get("limits")
+                .and_then(|limits| limits.get("command_timeout_ms"))
+                .and_then(|value| value.as_u64());
+            let command_timeout = sessions.set_command_timeout_ms(requested_timeout_ms);
             initialized.store(true, Ordering::SeqCst);
             let _ = host
                 .respond_ok(
                     request_id,
                     serde_json::json!({
                         "protocol_version": PROTOCOL_VERSION,
-                        "status": "ready"
+                        "status": "ready",
+                        "capabilities": {
+                            "execution_scoped_reverse_cancellation": true
+                        },
+                        "limits": {
+                            "command_timeout_ms": command_timeout.as_millis(),
+                            "max_terminal_output_bytes": limits::MAX_TERMINAL_OUTPUT_BYTES,
+                            "max_commands": limits::MAX_COMMANDS,
+                            "max_loop_iterations": limits::MAX_LOOP_ITERATIONS,
+                            "max_function_depth": limits::MAX_FUNCTION_DEPTH,
+                            "max_string_bytes": limits::MAX_STRING_BYTES,
+                            "max_active_sessions": patchouli_shell_sidecar::session::MAX_ACTIVE_SESSIONS,
+                            "max_queued_commands_per_session": patchouli_shell_sidecar::session::MAX_QUEUED_COMMANDS_PER_SESSION
+                        }
                     }),
                 )
                 .await;
