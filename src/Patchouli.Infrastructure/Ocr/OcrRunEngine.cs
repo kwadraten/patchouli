@@ -1062,7 +1062,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
             parameters.ModelVersion,
             parameters.IsOcr,
             parameters.EnableTable,
-            parameters.EnableFormula);
+            parameters.EnableFormula,
+            parameters.PollingTimeoutSeconds);
         return _minerUClientFactory!(configuration);
     }
 
@@ -1704,5 +1705,6 @@ public sealed class OcrRunEngine : IOcrRunEngine
         string? ModelVersion = null,
         bool IsOcr = true,
         bool EnableTable = true,
-        bool EnableFormula = true);
+        bool EnableFormula = true,
+        int PollingTimeoutSeconds = 300);
 }

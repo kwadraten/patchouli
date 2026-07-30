@@ -42,7 +42,8 @@ public sealed record MinerUConfiguration(
     string? ModelVersion,
     bool IsOcr,
     bool EnableTable,
-    bool EnableFormula);
+    bool EnableFormula,
+    int PollingTimeoutSeconds);
 
 public sealed record McpVerificationResult(
     bool IsSearchable,

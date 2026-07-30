@@ -1,11 +1,19 @@
+using System.Text.RegularExpressions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
+using Patchouli.Infrastructure.Documents;
 using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Ocr.MinerU;
 
 internal sealed class MinerUDocumentTreeCandidateMapper
 {
+    private static readonly MarkdigMarkdownEngine Markdown = new();
+
+    private static readonly Regex GfmListItemStart = new(
+        @"^\s*(?:[-*+]|\d+[.)])\s+\S",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     public OcrDocumentTreeCandidate MapDocument(
         MinerUContentListDocument document,
         IReadOnlyList<Page> pages)
@@ -291,8 +299,13 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             originalType = DocumentBoxType.Text;
         }
 
-        (string boxType, string? subType, string? baseType, DocumentBoxPayload payload, int? headingLevel,
+        (string boxType, string? subType, string? baseType, DocumentBoxPayload? payload, int? headingLevel,
             bool auxiliary) = MapType(block, originalType, diagnostics, page.PageId, sourceOrder);
+        if (payload is null)
+        {
+            return null;
+        }
+
         return new OcrBoxCandidate(
             boxType,
             subType,
@@ -305,7 +318,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             discarded || auxiliary);
     }
 
-    private static (string BoxType, string? SubType, string? BaseType, DocumentBoxPayload Payload,
+    private static (string BoxType, string? SubType, string? BaseType, DocumentBoxPayload? Payload,
         int? HeadingLevel, bool Auxiliary) MapType(
             MinerUContentBlock block,
             string originalType,
@@ -332,13 +345,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
                 new EquationBoxPayload((block.LaTex ?? block.Text ?? string.Empty).Trim()),
                 null,
                 false),
-            "list" => (
-                DocumentBoxType.List,
-                null,
-                null,
-                new ListBoxPayload(text),
-                null,
-                false),
+            "list" => MapList(text, diagnostics, pageId, sourceOrder),
             "table" => MapTable(block, diagnostics, pageId, sourceOrder),
             "image" or "figure" => (
                 DocumentBoxType.Image,
@@ -391,6 +398,52 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         };
     }
 
+    private static (string, string?, string?, DocumentBoxPayload?, int?, bool) MapList(
+        string text,
+        List<OcrDiagnostic> diagnostics,
+        Core.Ids.PageId pageId,
+        int sourceOrder)
+    {
+        string markdown = ToGfmListMarkdown(text);
+        if (string.IsNullOrWhiteSpace(markdown))
+        {
+            diagnostics.Add(new OcrDiagnostic(
+                "empty_list_skipped",
+                "MinerU list block had no list item text and was skipped.",
+                pageId,
+                sourceOrder));
+            return (DocumentBoxType.List, null, null, null, null, false);
+        }
+
+        return (DocumentBoxType.List, null, null, new ListBoxPayload(markdown), null, false);
+    }
+
+    private static string ToGfmListMarkdown(string text)
+    {
+        string trimmed = (text ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        string[] lines = trimmed.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n');
+        string? firstContent = lines.FirstOrDefault(line => !string.IsNullOrWhiteSpace(line));
+        if (firstContent is not null && GfmListItemStart.IsMatch(firstContent))
+        {
+            return trimmed;
+        }
+
+        List<string> gfmLines = ["- " + lines[0].TrimEnd()];
+        for (int index = 1; index < lines.Length; index++)
+        {
+            gfmLines.Add("  " + lines[index].TrimEnd());
+        }
+
+        return string.Join("\n", gfmLines);
+    }
+
     private static (string, string?, string?, DocumentBoxPayload, int?, bool) MapTable(
         MinerUContentBlock block,
         List<OcrDiagnostic> diagnostics,
@@ -401,13 +454,26 @@ internal sealed class MinerUDocumentTreeCandidateMapper
             ? block.TableCells
             : block.Cells ?? [];
         string? gfm = TryBuildGfmTable(cells);
-        if (gfm is null)
+        if (gfm is not null && !Markdown.CanAcceptAsGfmPipeTable(gfm))
+        {
+            diagnostics.Add(new OcrDiagnostic(
+                "table_gfm_too_complex",
+                "MinerU table GFM exceeded Markdig limits and was stored as a [Table] HTML placeholder.",
+                pageId,
+                sourceOrder));
+            gfm = null;
+        }
+        else if (gfm is null)
         {
             diagnostics.Add(new OcrDiagnostic(
                 "table_not_representable_as_gfm",
                 "MinerU table could not be losslessly normalized to a regular GFM pipe table.",
                 pageId,
                 sourceOrder));
+        }
+
+        if (gfm is null)
+        {
             gfm = "[Table]";
         }
 
@@ -493,7 +559,7 @@ internal sealed class MinerUDocumentTreeCandidateMapper
         return new NormalizedBBox(x, y, width, height);
     }
 
-    private static (string, string?, string?, DocumentBoxPayload, int?, bool) Text(
+    private static (string, string?, string?, DocumentBoxPayload?, int?, bool) Text(
         string type,
         string text,
         bool auxiliary = false)

@@ -219,7 +219,8 @@ internal sealed class MinerUContentListParser
         return GetString(content, "html")
                ?? GetInlineText(content, "title_content")
                ?? GetInlineText(content, "paragraph_content")
-               ?? GetTypedInlineText(item, content);
+               ?? GetTypedInlineText(item, content)
+               ?? GetListMarkdown(content);
     }
 
     private static string? GetTypedInlineText(JsonElement item, JsonElement content)
@@ -228,6 +229,85 @@ internal sealed class MinerUContentListParser
         return string.IsNullOrWhiteSpace(type)
             ? null
             : GetInlineText(content, $"{type.Trim().ToLowerInvariant()}_content");
+    }
+
+    private static string? GetListMarkdown(JsonElement content)
+    {
+        if (!content.TryGetProperty("list_items", out JsonElement items) || items.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        string? listType = GetString(content, "list_type")?.Trim().ToLowerInvariant();
+        bool ordered = listType is "ordered" or "ordered_list" or "ol" or "number" or "numbered";
+        List<string> lines = [];
+        int index = 1;
+        foreach (JsonElement item in items.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            string text = GetListItemText(item);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                continue;
+            }
+
+            string[] textLines = text.Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Replace('\r', '\n')
+                .Split('\n');
+            string marker = ordered ? $"{index}. " : "- ";
+            lines.Add(marker + textLines[0].TrimEnd());
+            for (int lineIndex = 1; lineIndex < textLines.Length; lineIndex++)
+            {
+                lines.Add("  " + textLines[lineIndex].TrimEnd());
+            }
+
+            index++;
+        }
+
+        return lines.Count == 0 ? null : string.Join("\n", lines);
+    }
+
+    private static string GetListItemText(JsonElement item)
+    {
+        string? inline = GetInlineText(item, "item_content");
+        if (!string.IsNullOrWhiteSpace(inline))
+        {
+            return inline;
+        }
+
+        if (item.TryGetProperty("item_content", out JsonElement parts) && parts.ValueKind == JsonValueKind.Array)
+        {
+            List<string> chunks = [];
+            foreach (JsonElement part in parts.EnumerateArray())
+            {
+                if (part.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                string? partText = GetString(part, "content")
+                                   ?? GetInlineText(part, "paragraph_content")
+                                   ?? GetInlineText(part, "text_content")
+                                   ?? GetString(part, "text");
+                if (!string.IsNullOrWhiteSpace(partText))
+                {
+                    chunks.Add(partText.Trim());
+                }
+            }
+
+            if (chunks.Count > 0)
+            {
+                return string.Join("", chunks);
+            }
+        }
+
+        return GetString(item, "text")
+               ?? GetString(item, "content")
+               ?? string.Empty;
     }
 
     private static string? GetString(JsonElement item, string propertyName)

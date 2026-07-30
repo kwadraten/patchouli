@@ -453,6 +453,42 @@ public sealed class MinerUDocumentTreeTests
         }
     }
 
+    [Fact]
+    public async Task Importer_maps_v2_list_items_to_gfm_list_payload()
+    {
+        await using Context context = await Context.CreateAsync();
+        string zip = CreateZip("_content_list_v2.json", """
+                                                        [[
+                                                          {"type":"list","content":{"list_type":"reference_list","list_items":[{"item_type":"text","item_content":[{"type":"text","content":"ff. 202v-203r 1615.2.2\n→[東京大学史料編纂所 1996]"}]}]},"bbox":[100,100,800,200]},
+                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Title uses <Carta de confirmação> brackets."}]},"bbox":[100,220,800,280]}
+                                                        ]]
+                                                        """);
+        try
+        {
+            Result<MinerUImportResult> result = await new MinerUResultImporter(
+                    context.Database.ConnectionFactory, context.Clock,
+                    new OcrDocumentTreeImporter(context.Trees))
+                .ImportResultZipAsync(new MinerUImportRequest(
+                    zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
+                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+            boxes.Should().HaveCount(2);
+            boxes[0].BoxType.Should().Be(DocumentBoxType.List);
+            boxes[0].Payload.Should().Be(new ListBoxPayload(
+                "- ff. 202v-203r 1615.2.2\n  →[東京大学史料編纂所 1996]"));
+            boxes[1].Payload.Should().Be(new TextBoxPayload(
+                "Title uses <Carta de confirmação> brackets."));
+            MarkdigMarkdownEngine markdown = new();
+            boxes.Should().OnlyContain(box => markdown.ValidateLeaf(box.BoxType, box.Payload!).IsSuccess);
+        }
+        finally
+        {
+            File.Delete(zip);
+        }
+    }
+
     private static string CreateZip(string entryName, string content)
     {
         string path = Path.Combine(Path.GetTempPath(), $"mineru-box-{Guid.NewGuid():N}.zip");
