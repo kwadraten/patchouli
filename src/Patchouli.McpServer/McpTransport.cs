@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
@@ -107,6 +108,7 @@ public static class McpOutputSanitizer
 
 public sealed class McpProtocolHandler
 {
+    private readonly IMcpReadApi _api;
     private readonly McpServerSettings _settings;
     private readonly ShellSidecarHost? _shell;
     private readonly Action<Exception, string>? _unexpectedException;
@@ -114,7 +116,7 @@ public sealed class McpProtocolHandler
     public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db, McpServerSettings? settings = null,
         Action<Exception, string>? unexpectedException = null, ShellSidecarHost? shell = null)
     {
-        _ = api;
+        _api = api;
         _ = db;
         _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
         {
@@ -213,7 +215,7 @@ public sealed class McpProtocolHandler
             serverInfo = new { name = Core.BuildInfo.AppName, version = Core.BuildInfo.Version },
             capabilities = new { tools = new { listChanged = true } },
             instructions =
-                "Patchouli exposes a read-only virtual library shell. Use patchouli_shell and start with: pwd; ls; cat /AGENTS.md"
+                "Patchouli exposes a virtual library shell and structured Library tools. Use only the tool surface enabled for this server."
         };
     }
 
@@ -240,6 +242,46 @@ public sealed class McpProtocolHandler
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["command"] = ToolSchemaProperty.String("Shell command to execute in the virtual library shell.")
+                }),
+            new ToolDefinition(
+                "patchouli.find",
+                "Search Library text and return text-only, citable results.",
+                ["query"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["query"] = ToolSchemaProperty.String("Search query."),
+                    ["limit"] = ToolSchemaProperty.Integer("Maximum result pages, from 1 through 50.")
+                }),
+            new ToolDefinition(
+                "patchouli.fetch",
+                "Fetch an existing text-only Item resource by its patchouli://items/<item-id> URI.",
+                ["uri"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["uri"] = ToolSchemaProperty.String("Item resource URI."),
+                    ["max_bytes"] = ToolSchemaProperty.Integer("Maximum allowed response bytes.")
+                }),
+            new ToolDefinition(
+                "patchouli.put",
+                "Replace an existing Item or CSL resource using a required base revision when writable protocol support is enabled.",
+                ["uri", "content", "base"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["uri"] = ToolSchemaProperty.String("Existing resource URI."),
+                    ["content"] = ToolSchemaProperty.String("Complete replacement content."),
+                    ["base"] = ToolSchemaProperty.String("Required current resource revision.")
+                },
+                false),
+            new ToolDefinition(
+                "patchouli.cite",
+                "Render a bibliography for existing Item resource URIs using a CSL style.",
+                ["items"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["items"] = ToolSchemaProperty.Array("Item resource URIs.",
+                        ToolSchemaProperty.String("Item resource URI.")),
+                    ["style"] = ToolSchemaProperty.String("Optional CSL style identifier."),
+                    ["locale"] = ToolSchemaProperty.String("Optional locale.")
                 })
         ];
     }
@@ -261,13 +303,30 @@ public sealed class McpProtocolHandler
         }
 
         JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
+        if (string.Equals(name, "patchouli.find", StringComparison.Ordinal))
+        {
+            return await FindAsync(a, ct);
+        }
+
+        if (string.Equals(name, "patchouli.fetch", StringComparison.Ordinal))
+        {
+            return await FetchAsync(a, ct);
+        }
+
+        if (string.Equals(name, "patchouli.cite", StringComparison.Ordinal))
+        {
+            return await CiteAsync(a, ct);
+        }
+
+        if (string.Equals(name, "patchouli.put", StringComparison.Ordinal))
+        {
+            return ToolError(McpErrorCodes.ToolUnavailable,
+                "Writable protocol support is not available until atomic revision-gated replacement is implemented.");
+        }
+
         if (!string.Equals(name, "patchouli_shell", StringComparison.Ordinal))
         {
-            return new
-            {
-                isError = true,
-                content = new[] { new { type = "text", text = "unknown_tool: Unknown tool." } }
-            };
+            return ToolError("unknown_tool", "Unknown tool.");
         }
 
         if (a.ValueKind != JsonValueKind.Object || !a.TryGetProperty("command", out JsonElement commandElement) ||
@@ -310,6 +369,158 @@ public sealed class McpProtocolHandler
         };
     }
 
+    private async Task<object> FindAsync(JsonElement arguments, CancellationToken ct)
+    {
+        string query = RequiredString(arguments, "query");
+        int limit = OptionalInteger(arguments, "limit", 20, 1, 50);
+        Result<McpSearchLibraryResponse> searched = await _api.SearchLibraryAsync(
+            new McpSearchLibraryRequest(query, limit, IncludeEvidenceRefs: true), ct);
+        if (searched.IsFailure)
+        {
+            return ToolError(searched.ErrorCode!, searched.ErrorMessage!);
+        }
+
+        return ToolData(new
+        {
+            results = searched.Value.Results.Select(page => new
+            {
+                uri = $"patchouli://documents/{page.DocumentInstanceId}",
+                kind = "document",
+                label = page.ItemTitle,
+                citable = true,
+                matches = page.MatchedUnits.Select(unit => new
+                {
+                    evidence = unit.EvidenceRef,
+                    preview = unit.Text,
+                    ordinal = unit.Ordinal
+                })
+            }),
+            continuation = searched.Value.NextCursor,
+            warnings = searched.Value.Warning
+        });
+    }
+
+    private async Task<object> FetchAsync(JsonElement arguments, CancellationToken ct)
+    {
+        string uri = RequiredString(arguments, "uri");
+        int maxBytes = OptionalInteger(arguments, "max_bytes", 65536, 1, 1048576);
+        const string prefix = "patchouli://items/";
+        if (!uri.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return ToolError("invalid_argument",
+                "Only patchouli://items/<item-id> resources are available in this adapter.");
+        }
+
+        string rawItemId = uri[prefix.Length..].TrimEnd('/');
+        if (!Guid.TryParse(rawItemId, out Guid value))
+        {
+            return ToolError("invalid_argument", "Item resource URI is invalid.");
+        }
+
+        Result<McpItemMetadataResponse> item = await _api.GetItemMetadataAsync(new ItemId(value), ct);
+        if (item.IsFailure)
+        {
+            return ToolError(item.ErrorCode!, item.ErrorMessage!);
+        }
+
+        byte[] encoded = JsonSerializer.SerializeToUtf8Bytes(item.Value);
+        if (encoded.Length > maxBytes)
+        {
+            return ToolError("invalid_argument", "Requested resource exceeds max_bytes.");
+        }
+
+        return ToolData(new
+            { uri, kind = "item", writable = false, citable = item.Value.ItemType != "general", content = item.Value });
+    }
+
+    private async Task<object> CiteAsync(JsonElement arguments, CancellationToken ct)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty("items", out JsonElement items) ||
+            items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
+        {
+            throw new InvalidOperationException("items is required.");
+        }
+
+        List<ItemId> itemIds = new();
+        foreach (JsonElement item in items.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String || !TryParseItemUri(item.GetString(), out ItemId itemId))
+            {
+                return ToolError("invalid_argument", "items must contain patchouli://items/<item-id> URIs.");
+            }
+
+            itemIds.Add(itemId);
+        }
+
+        string? style = OptionalString(arguments, "style");
+        string? locale = OptionalString(arguments, "locale");
+        Result<McpRenderBibliographyResponse> rendered = await _api.RenderItemsBibliographyAsync(
+            new McpRenderBibliographyRequest(itemIds, style, locale), ct);
+        return rendered.IsFailure
+            ? ToolError(rendered.ErrorCode!, rendered.ErrorMessage!)
+            : ToolData(new
+            {
+                style = rendered.Value.StyleId, bibliography = rendered.Value.RenderedText,
+                html = rendered.Value.RenderedHtml, warnings = rendered.Value.Warnings
+            });
+    }
+
+    private static object ToolData(object data)
+    {
+        return new
+        {
+            content = new[] { new { type = "text", text = JsonSerializer.Serialize(new { data }) } }, isError = false
+        };
+    }
+
+    private static object ToolError(string code, string message)
+    {
+        return new { isError = true, content = new[] { new { type = "text", text = $"{code}: {message}" } } };
+    }
+
+    private static string RequiredString(JsonElement arguments, string name)
+    {
+        string? value = OptionalString(arguments, name);
+        return !string.IsNullOrWhiteSpace(value) ? value : throw new InvalidOperationException($"{name} is required.");
+    }
+
+    private static string? OptionalString(JsonElement arguments, string name)
+    {
+        return arguments.ValueKind == JsonValueKind.Object && arguments.TryGetProperty(name, out JsonElement value) &&
+               value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+    }
+
+    private static int OptionalInteger(JsonElement arguments, string name, int fallback, int minimum, int maximum)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty(name, out JsonElement value))
+        {
+            return fallback;
+        }
+
+        if (!value.TryGetInt32(out int parsed) || parsed < minimum || parsed > maximum)
+        {
+            throw new InvalidOperationException($"{name} must be between {minimum} and {maximum}.");
+        }
+
+        return parsed;
+    }
+
+    private static bool TryParseItemUri(string? value, out ItemId itemId)
+    {
+        const string prefix = "patchouli://items/";
+        if (value is not null && value.StartsWith(prefix, StringComparison.Ordinal) &&
+            Guid.TryParse(value[prefix.Length..].TrimEnd('/'), out Guid parsed))
+        {
+            itemId = new ItemId(parsed);
+            return true;
+        }
+
+        itemId = default;
+        return false;
+    }
+
     private bool IsToolEnabled(string toolName)
     {
         return !_settings.ToolOverrides.Any(value =>
@@ -327,7 +538,8 @@ public sealed class McpProtocolHandler
         string Name,
         string Description,
         string[] Required,
-        IReadOnlyDictionary<string, ToolSchemaProperty> Properties)
+        IReadOnlyDictionary<string, ToolSchemaProperty> Properties,
+        bool ReadOnly = true)
     {
         public object ToWire()
         {
@@ -345,7 +557,7 @@ public sealed class McpProtocolHandler
                 },
                 annotations = new
                 {
-                    readOnlyHint = true,
+                    readOnlyHint = ReadOnly,
                     destructiveHint = false,
                     idempotentHint = true,
                     openWorldHint = false

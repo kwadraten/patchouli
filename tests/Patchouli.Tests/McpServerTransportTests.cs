@@ -292,8 +292,10 @@ public sealed class McpServerTransportTests
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}");
         init.Should().Contain("Patchouli").And.Contain("2025-03-26").And.Contain("listChanged");
         string list = await h.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
-        list.Should().Contain("patchouli_shell").And.Contain("readOnlyHint").And.Contain("command");
-        init.Should().Contain("patchouli_shell").And.Contain("instructions");
+        list.Should().Contain("patchouli_shell").And.Contain("patchouli.find").And.Contain("patchouli.fetch")
+            .And.Contain("patchouli.put").And.Contain("patchouli.cite");
+        init.Should().Contain("Patchouli exposes a virtual library shell and structured Library tools")
+            .And.Contain("instructions");
         string unknownMethod = await h.HandleAsync("{\"id\":3,\"method\":\"unknown/method\"}");
         unknownMethod.Should().Contain("\"code\":-32601");
         string unknown =
@@ -328,12 +330,34 @@ public sealed class McpServerTransportTests
         string list = await h.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
         using JsonDocument json = JsonDocument.Parse(list);
         JsonElement[] tools = json.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
-        tools.Should().ContainSingle();
+        tools.Should().HaveCount(5);
         JsonElement shell = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli_shell");
         shell.GetProperty("inputSchema").GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
         shell.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("command", out _).Should().BeTrue();
         shell.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
             .Should().Equal("command");
+
+        JsonElement find = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.find");
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("query", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
+            .Should().Equal("query");
+
+        JsonElement fetch = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.fetch");
+        fetch.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean().Should().BeTrue();
+        fetch.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("uri", out _).Should().BeTrue();
+        fetch.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
+            .Should().Equal("uri");
+
+        JsonElement put = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.put");
+        put.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean().Should().BeFalse();
+        put.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("base", out _).Should().BeTrue();
+        put.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
+            .Should().Equal("uri", "content", "base");
+
+        JsonElement cite = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.cite");
+        cite.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("items", out _).Should().BeTrue();
+        cite.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
+            .Should().Equal("items");
     }
 
     [Fact]
