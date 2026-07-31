@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "tasks": [
+    {
+      "id": "uuid-chain",
+      "phase": "II",
+      "title": "UUID Chain Needle",
+      "prompt": "What is the value associated with {{uuid_chain_start}}? Return only a JSON object with the final answer and the UUIDs you found in traversal order.",
+      "conditions": {
+        "a": {
+          "required_tools": ["patchouli_shell"],
+          "system": "Explore the Patchouli virtual library using only the shell. You may call the shell repeatedly without an artificial call limit. For each UUID, use rg --meta to locate an evidence URI, then use evidence '<URI>' to read the complete pinned text and discover the next UUID.",
+          "allow_multiple_tool_rounds": true,
+          "max_tool_calls": 64
+        },
+        "b": {
+          "required_tools": ["patchouli.find", "patchouli.fetch", "patchouli.cite", "patchouli.put"],
+          "system": "Explore the Patchouli Library using only the structured tools. You may call the tools repeatedly without an artificial call limit. Do not claim a write succeeded.",
+          "allow_multiple_tool_rounds": true,
+          "max_tool_calls": 64
+        }
+      },
+      "expected_output": {
+        "required": ["final_answer", "found"],
+        "properties": {
+          "final_answer": {"type": "string", "equals": "{{uuid_chain_final}}"},
+          "found": {"type": "array", "min_items": 2, "unique_items": true, "chain_match": "{{uuid_chain}}"}
+        }
+      }
+    }
+  ]
+}

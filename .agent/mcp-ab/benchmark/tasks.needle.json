@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "tasks": [
+    {
+      "id": "needle-northwind-protocol",
+      "phase": "II",
+      "title": "Needle: Reconcile Three Independent Constraints",
+      "prompt": "Search the Library exhaustively. Identify the single Item whose one document satisfies all three independently indexed constraints: pinned custody, manifest checksum, and sealed handoff. Near matches satisfy one or two constraints only. Return only JSON with item_title, target_document_uri, evidence_refs, and conclusion. conclusion must be exactly: Northwind Transfer Protocol is the only record satisfying pinned custody, manifest checksum, and sealed handoff.",
+      "conditions": {
+        "a": {
+          "required_tools": ["patchouli_shell"],
+          "allow_multiple_tool_rounds": true,
+          "max_tool_calls": null,
+          "system": "You have the complete virtual Library shell. Explore it freely and use any supplied tool operation as many times as needed. Verify all three constraints belong to the same document before answering."
+        },
+        "b": {
+          "required_tools": ["patchouli.find", "patchouli.fetch", "patchouli.cite", "patchouli.put"],
+          "allow_multiple_tool_rounds": true,
+          "max_tool_calls": null,
+          "system": "You have the complete structured Library tool surface. Explore it freely and use any supplied tool as many times as needed. Verify all three constraints belong to the same document before answering. Do not mutate Library resources."
+        }
+      },
+      "expected_output": {
+        "required": ["item_title", "target_document_uri", "evidence_refs", "conclusion"],
+        "properties": {
+          "item_title": {"type": "string", "equals": "Northwind Transfer Protocol"},
+          "target_document_uri": {"type": "string", "equals": "{{needle_document_uri}}"},
+          "evidence_refs": {"type": "array", "min_items": 3, "all_pattern": "^evref:v2:", "unique_items": true},
+          "conclusion": {"type": "string", "equals": "Northwind Transfer Protocol is the only record satisfying pinned custody, manifest checksum, and sealed handoff."}
+        }
+      }
+    }
+  ]
+}
