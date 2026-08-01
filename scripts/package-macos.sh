@@ -8,7 +8,7 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.2.5}"
+version="${VERSION:-0.3.0}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/artifacts/publish/$runtime"
 app_dir="$root/artifacts/macos/Patchouli.Net.app"
@@ -64,16 +64,23 @@ fi
 cp "$helper_bin" "$macos_dir/biblatex-helper"
 chmod +x "$macos_dir/biblatex-helper"
 
-shell_bin="$root/tools/patchouli-shell-sidecar/target/release/patchouli-shell-sidecar"
-if [[ ! -x "$shell_bin" ]]; then
-  cargo build --release --manifest-path "$root/tools/patchouli-shell-sidecar/Cargo.toml"
-fi
-if [[ ! -x "$shell_bin" ]]; then
-  echo "patchouli-shell-sidecar was not found at $shell_bin" >&2
+cli_dir="$root/artifacts/cli-publish"
+rm -rf "$cli_dir"
+dotnet publish "$root/src/Patchouli.Cli/Patchouli.Cli.csproj" \
+  -c "$configuration" \
+  -r "$runtime" \
+  --self-contained true \
+  -p:Version="$version" \
+  -p:DebugType=None \
+  -p:DebugSymbols=false \
+  -o "$cli_dir"
+cli_bin="$cli_dir/patchouli-cli"
+if [[ ! -x "$cli_bin" ]]; then
+  echo "patchouli-cli was not found at $cli_bin" >&2
   exit 1
 fi
-cp "$shell_bin" "$macos_dir/patchouli-shell-sidecar"
-chmod +x "$macos_dir/patchouli-shell-sidecar"
+cp "$cli_bin" "$macos_dir/patchouli-cli"
+chmod +x "$macos_dir/patchouli-cli"
 
 if [[ ! -f "$macos_dir/appsettings.json" ]]; then
   echo "Published appsettings.json was not found in Contents/MacOS." >&2

@@ -1,7 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$Version = "0.2.6"
+    [string]$Version = "0.3.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +48,21 @@ if ($legacyPresent) {
     throw "Published migrations still contain legacy layout schema files: $($legacyPresent -join ', ')"
 }
 
+$cliDir = Join-Path $publishDir "cli"
+dotnet publish (Join-Path $root "src\Patchouli.Cli\Patchouli.Cli.csproj") `
+    -c $Configuration `
+    -r $Runtime `
+    --self-contained true `
+    -p:Version=$Version `
+    -p:DebugType=None `
+    -p:DebugSymbols=false `
+    -o $cliDir
+if ($LASTEXITCODE -ne 0) { throw "dotnet publish (CLI) failed with exit code $LASTEXITCODE." }
+$cliExe = Join-Path $cliDir "patchouli-cli.exe"
+if (-not (Test-Path -LiteralPath $cliExe)) {
+    throw "CLI was not published to '$cliExe'."
+}
+
 $helperName = "biblatex-helper.exe"
 $helperSource = Join-Path $root "tools\biblatex-helper\target\release\$helperName"
 if (-not (Test-Path -LiteralPath $helperSource)) {
@@ -59,18 +74,6 @@ if (-not (Test-Path -LiteralPath $helperSource)) {
     throw "biblatex-helper was not found at '$helperSource'."
 }
 Copy-Item -LiteralPath $helperSource -Destination (Join-Path $publishDir $helperName) -Force
-
-$shellName = "patchouli-shell-sidecar.exe"
-$shellSource = Join-Path $root "tools\patchouli-shell-sidecar\target\release\$shellName"
-if (-not (Test-Path -LiteralPath $shellSource)) {
-    Write-Host "Building patchouli-shell-sidecar..."
-    cargo build --release --manifest-path (Join-Path $root "tools\patchouli-shell-sidecar\Cargo.toml")
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE." }
-}
-if (-not (Test-Path -LiteralPath $shellSource)) {
-    throw "patchouli-shell-sidecar was not found at '$shellSource'."
-}
-Copy-Item -LiteralPath $shellSource -Destination (Join-Path $publishDir $shellName) -Force
 
 $iss = Join-Path $root "packaging\windows\Patchouli.Net.iss"
 & $iscc "/DSourceDir=$publishDir" "/DOutputDir=$installerDir" "/DAppVersion=$Version" $iss

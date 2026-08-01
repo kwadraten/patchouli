@@ -5,7 +5,7 @@
   #define OutputDir "..\..\artifacts\installer"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.2.5"
+  #define AppVersion "0.3.0"
 #endif
 
 #define AppName "Patchouli.Net"
@@ -41,6 +41,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
+Name: "addtopath"; Description: "Add patchouli-cli to the user PATH"; GroupDescription: "Command line tool:"; Flags: unchecked
 
 ; Wipe the migrations folder on upgrade so removed SQL files cannot survive side-by-side installs.
 [InstallDelete]
@@ -55,3 +56,56 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "启动 {#AppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+const
+  CliRelativeDir = 'cli';
+
+procedure SetPathEntry(AddPath: Boolean);
+var
+  PathValue, Entry, NewPath, Part, Remainder: string;
+  Position, Separator: Integer;
+begin
+  Entry := ExpandConstant('{app}\' + CliRelativeDir);
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', PathValue) then
+    PathValue := '';
+  NewPath := '';
+  Remainder := PathValue;
+  while Remainder <> '' do
+  begin
+    Separator := Pos(';', Remainder);
+    if Separator = 0 then
+    begin
+      Part := Remainder;
+      Remainder := '';
+    end
+    else
+    begin
+      Part := Copy(Remainder, 1, Separator - 1);
+      Remainder := Copy(Remainder, Separator + 1, Length(Remainder) - Separator);
+    end;
+    if (CompareText(Part, Entry) <> 0) and (Trim(Part) <> '') then
+      NewPath := NewPath + Part + ';';
+  end;
+  if AddPath then
+    NewPath := NewPath + Entry + ';';
+  if NewPath <> '' then
+    NewPath := Copy(NewPath, 1, Length(NewPath) - 1);
+  if NewPath <> PathValue then
+  begin
+    if RegWriteExpandStringValue(HKCU, 'Environment', 'Path', NewPath) then
+      SendMessage(HWND_BROADCAST, WM_WININICHANGE, 0, 0);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssPostInstall) and WizardIsTaskSelected('addtopath') then
+    SetPathEntry(True);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    SetPathEntry(False);
+end;
