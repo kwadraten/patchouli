@@ -1,6 +1,6 @@
 # Keep MCP Text-Only (and Originally Read-Only)
 
-Status: accepted; **amended by ADR `0023`** (limited writable MCP, 2026-07-31)
+Status: accepted; **amended by ADR `0023`** (limited writable MCP, 2026-07-31); structured production transport selected by ADR `0024`
 
 The first MCP surface was limited to **read-only, text-only** search and evidence retrieval so agents could cite safely without operating the library or inspecting private machine state.
 

@@ -1,6 +1,6 @@
 # Allow Limited Writable MCP
 
-Status: accepted (2026-07-31); amends ADR `0010`
+Status: accepted (2026-07-31); amends ADR `0010`; production transport selected by ADR `0024`
 
 ## Context
 
@@ -23,13 +23,13 @@ Without a deliberate write path, users either leave the agent loop (manual UI on
    - `patchouli://items/{item-id}.bib` — whole-item BibLaTeX (or agreed bibliographic) projection replace
    - `patchouli://styles/{style-id}.csl` — whole CSL style document replace
 
-4. **Write mechanics** (regardless of Bashkit vs CLI/MCP-isomorphic transport chosen in v3):
+4. **Write mechanics** for the structured production transport selected by ADR `0024` (and any future shared CLI service):
    - Client supplies the complete replacement body and an expected **base revision**
    - Server validates the entire body before any mutation
    - Commit is atomic; validation failure leaves the library unchanged
    - Base mismatch returns a stable revision-conflict error; no last-writer-wins silent merge
    - Writes never create, delete, or rename resources in this ADR’s scope
-   - Items of type `general` are not writable citation targets and must not be treated as successfully citable CSL items; product rules may also refuse `put` on `general` until the type is refined (align with PRD v3)
+     - Items of type `general` must not be silently treated as a typed CSL item. On the MCP agent surface, an `@misc` round trip preserves `general`; when the minimum renderable fields are present, an explicit MCP `@misc` citation fallback may render it with a `general_as_misc` warning. A supported non-`misc` BibLaTeX entry is an explicit type refinement and may persist the mapped Patchouli type. Unknown or insufficiently populated entries return `NOT_CITABLE`, and the agent projection path must not weaken the UI general-type restrictions (align with PRD v3)
 
 5. **Forbidden writes** (non-exhaustive; still require a future ADR if ever needed):
    - Document Box Tree / bbox / page Markdown as MCP mutations
@@ -49,7 +49,7 @@ Without a deliberate write path, users either leave the agent loop (manual UI on
 | `0010`: MCP never writes metadata | **Amended:** metadata write is allowed only as whole-resource replace of listed item/style URIs under revision gating |
 | `0010`: text-only, no paths/secrets/images/OCR/index | **Unchanged** |
 | `0010` phrase “第一版 MCP 是只读且纯文本的” | Historical for v1/v2 first ship; **v3+ production intent is text-only with limited writes** per this ADR |
-| `0022`: Bashkit read-only VFS | Still describes the **current implemented** shell surface until v3 route selection lands; any write enablement on shell or successor surface must implement this ADR’s resource and safety rules, not open-ended VFS writes |
+| `0022`: Bashkit read-only VFS | Superseded by ADR `0024`; the shell implementation was removed from `main` (2026-08-01). Any write enablement on the structured surface must implement this ADR’s resource and safety rules, not open-ended VFS writes |
 
 ## Consequences
 

@@ -43,19 +43,17 @@ dotnet build Patchouli.sln --no-restore
 dotnet run --project src/Patchouli.UI/Patchouli.UI.csproj
 ```
 
-CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含两个需要随桌面应用发布的 Rust 工具：
+CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含一个需要随桌面应用发布的 Rust 工具：
 
 - `tools/biblatex-helper`：基于锁定的 `typst/biblatex 0.12.0` 解析 BibLaTeX；
-- `tools/patchouli-shell-sidecar`：基于锁定的 `Bashkit 0.14.4` 提供 MCP 只读虚拟 Shell。
 
-可分别构建：
+可构建：
 
 ```pwsh
 cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
-cargo build --release --manifest-path tools/patchouli-shell-sidecar/Cargo.toml
 ```
 
-Windows/macOS 打包脚本会构建并把这两个可执行文件复制到应用目录；更详细的协议与工具说明见 `tools/README.md`。
+Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`put`、`cite` 工具，不依赖 Shell sidecar。
 
 ### 运行单元测试
 

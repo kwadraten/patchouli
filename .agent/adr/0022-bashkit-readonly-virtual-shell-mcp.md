@@ -1,8 +1,13 @@
 # Bashkit Read-Only Virtual Shell MCP
 
-Status: accepted; amended 2026-07-30 to record the implemented bounded shell surface; amended 2026-07-31 for relationship to ADR `0023` (limited writable MCP)
+Status: superseded for production by ADR `0024` (2026-07-31); shell implementation removed from `main` (2026-08-01)
 
-Patchouli exposes the current Library to MCP agents through one tool, `patchouli_shell`, backed by a locked Rust Bashkit sidecar. The shell presents a virtual filesystem and domain commands (`search`, `evidence`, `cite`) while .NET remains the sole domain authority. The **currently shipped** shell VFS is read-only; product-level limited writes (item `.bib` / style `.csl` whole-resource replace) are defined in ADR `0023` and must not become open-ended VFS writes.
+This ADR records the former production surface: Patchouli exposed the Library
+through one tool, `patchouli_shell`, backed by a locked Rust Bashkit sidecar.
+ADR `0024` adopts the structured resource protocol for production. The shell
+implementation was removed entirely from the `main` branch; it survives only on
+`feature/mcp-ab-benchmark` as historical evidence. The details and constraints
+below remain historical implementation evidence.
 
 **Decision**
 

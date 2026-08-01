@@ -2,6 +2,10 @@
 
 Standard-library Python harness for comparing shell MCP-A with structured MCP-B through an OpenAI chat-completions-compatible model API, including DeepSeek. It contains neither credentials nor a library fixture. The checked-in manifest uses placeholders, so execution requires a provisioned, isolated Library snapshot and a local variables file.
 
+## Decision
+
+The benchmark selected structured MCP-B as the production route. ADR 0024 records the decision; this harness and its MCP-A manifests remain regression evidence for the route comparison and are not production MCP operating instructions.
+
 ## Safety and Preconditions
 
 - The harness loads `.env` from this directory. Process environment values take precedence. `.env` is ignored by Git.
@@ -15,7 +19,7 @@ Standard-library Python harness for comparing shell MCP-A with structured MCP-B 
 
 1. Copy `.env.example` to `.env` in this directory and set the API key, endpoint URLs, model name, and optional MCP bearer tokens.
 2. Copy `variables.example.json` to a local untracked file, for example `variables.local.json`, and replace every `PROVISION_ME` value with values valid for the isolated benchmark Library. Do not use provider credentials as variable values.
-3. Start MCP-A and MCP-B against independent copies of the same database snapshot. A exposes `patchouli_shell`; B exposes the applicable `patchouli.find`, `patchouli.fetch`, and `patchouli.cite` tools. `patchouli.put` remains intentionally unavailable until the atomic revision-gated write path is implemented.
+3. Start MCP-A and MCP-B against independent copies of the same database snapshot. A exposes `patchouli_shell` and runs only from the historical `feature/mcp-ab-benchmark` branch (the shell implementation is not present on `main`); B exposes `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite`. `patchouli.put` is now implemented as an atomic revision-gated write.
 4. Run 100 repetitions per task and condition with a fixed randomized schedule:
 
 ```powershell
