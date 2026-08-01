@@ -1100,10 +1100,50 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentTreeRevisionId revisionId)
     {
         IEnumerable<DocumentBoxRow> rows = await connection.QueryAsync<DocumentBoxRow>(
-            SelectBoxesSql + " where tree_revision_id = @RevisionId order by box_id;",
+            SelectBoxesSql + " where tree_revision_id = @RevisionId;",
             new { RevisionId = revisionId.ToString() },
             transaction);
-        return rows.Select(row => row.ToBox()).ToArray();
+        return InDocumentOrder(rows.Select(row => row.ToBox()).ToArray());
+    }
+
+    private static DocumentBox[] InDocumentOrder(IReadOnlyList<DocumentBox> boxes)
+    {
+        if (boxes.Count <= 1)
+        {
+            return boxes.ToArray();
+        }
+
+        List<DocumentBox> ordered = new(boxes.Count);
+        HashSet<DocumentBoxId> visited = [];
+        foreach (DocumentBox root in DocumentBoxProjection.Siblings(boxes, null))
+        {
+            AppendSubtree(boxes, root, ordered, visited);
+        }
+
+        if (ordered.Count < boxes.Count)
+        {
+            ordered.AddRange(boxes.Where(box => !visited.Contains(box.BoxId)));
+        }
+
+        return ordered.ToArray();
+    }
+
+    private static void AppendSubtree(
+        IReadOnlyList<DocumentBox> boxes,
+        DocumentBox box,
+        List<DocumentBox> ordered,
+        HashSet<DocumentBoxId> visited)
+    {
+        if (!visited.Add(box.BoxId))
+        {
+            return;
+        }
+
+        ordered.Add(box);
+        foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
+        {
+            AppendSubtree(boxes, child, ordered, visited);
+        }
     }
 
     private static Task InsertRevisionAsync(
