@@ -94,7 +94,7 @@ begin
   if NewPath <> PathValue then
   begin
     if RegWriteExpandStringValue(HKCU, 'Environment', 'Path', NewPath) then
-      SendMessage(HWND_BROADCAST, WM_WININICHANGE, 0, 0);
+      SendMessage(HWND_BROADCAST, $001A, 0, 0);
   end;
 end;
 
