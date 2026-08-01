@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>patchouli-cli</AssemblyName>
+  </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Patchouli.Core/Patchouli.Core.csproj" />
-    <ProjectReference Include="../Patchouli.Infrastructure/Patchouli.Infrastructure.csproj" />
-    <ProjectReference Include="../Patchouli.Search/Patchouli.Search.csproj" />
-    <ProjectReference Include="../Patchouli.Evidence/Patchouli.Evidence.csproj" />
-    <ProjectReference Include="../Patchouli.Mcp/Patchouli.Mcp.csproj" />
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Patchouli.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>
