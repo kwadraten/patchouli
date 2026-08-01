@@ -11,6 +11,7 @@
     <ProjectReference Include="..\..\src\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.UI\Patchouli.UI.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.McpServer\Patchouli.McpServer.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Cli\Patchouli.Cli.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FluentAssertions" />

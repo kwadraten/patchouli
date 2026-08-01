@@ -98,6 +98,11 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
         await LoadCatalogSourcesAsync();
     }
 
+    public Task RefreshInstalledStylesAsync()
+    {
+        return LoadInstalledStylesAsync();
+    }
+
     private async Task LoadInstalledStylesAsync()
     {
         StatusText = "正在加载已安装样式...";

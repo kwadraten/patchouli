@@ -1,5 +1,6 @@
 using Patchouli.UI.ViewModels;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Cli;
 using System;
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
@@ -21,6 +22,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     private long _loadGeneration;
     private CancellationTokenSource? _activeSaveCancellation;
     private readonly SemaphoreSlim _commitGate = new(1, 1);
+    private CliInstallation _cliInstallation = new(null, null, false);
 
     public McpSettingsViewModel(MainWindowViewModel main)
     {
@@ -30,8 +32,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             if (args.PropertyName is nameof(MainWindowViewModel.McpStatusText)
                 or nameof(MainWindowViewModel.McpEndpoint)
                 or nameof(MainWindowViewModel.McpServerRunning)
-                or nameof(MainWindowViewModel.McpRunningSettingsRevision)
-                or nameof(MainWindowViewModel.ShellSandboxStatusText))
+                or nameof(MainWindowViewModel.McpRunningSettingsRevision))
             {
                 Raise(args.PropertyName switch
                 {
@@ -39,7 +40,6 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
                     nameof(MainWindowViewModel.McpEndpoint) => nameof(McpEndpoint),
                     nameof(MainWindowViewModel.McpServerRunning) => nameof(McpServerRunning),
                     nameof(MainWindowViewModel.McpRunningSettingsRevision) => nameof(RequiresReload),
-                    nameof(MainWindowViewModel.ShellSandboxStatusText) => nameof(ShellSandboxStatusText),
                     _ => args.PropertyName ?? string.Empty
                 });
                 RefreshRequiresReload();
@@ -49,7 +49,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         StartMcpCommand = new AsyncCommand(StartMcpAsync);
         StopMcpCommand = new AsyncCommand(StopMcpAsync);
         SaveAndRestartCommand = new AsyncCommand(SaveAndRestartAsync);
-        ForceRestartShellSandboxCommand = new AsyncCommand(ForceRestartShellSandboxAsync);
+        AddCliToPathCommand = new AsyncCommand(AddCliToPathAsync);
+        RemoveCliFromPathCommand = new AsyncCommand(RemoveCliFromPathAsync);
     }
 
     public int Port
@@ -179,13 +180,33 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     public string McpEndpoint => _main.McpEndpoint;
     public string McpStatusText => _main.McpStatusText;
     public bool McpServerRunning => _main.McpServerRunning;
-    public string ShellSandboxStatusText => _main.ShellSandboxStatusText;
+
+    public string CliStatusText
+    {
+        get
+        {
+            if (_cliInstallation.Path is null)
+            {
+                return "patchouli-cli 未检测到（未随应用安装）";
+            }
+
+            string version = string.IsNullOrWhiteSpace(_cliInstallation.Version)
+                ? string.Empty
+                : $" v{_cliInstallation.Version}";
+            return _cliInstallation.InPath
+                ? $"patchouli-cli{version} 已就绪，并已加入 PATH"
+                : $"patchouli-cli{version} 已就绪，尚未加入 PATH";
+        }
+    }
+
+    public bool IsCliInPath => _cliInstallation.InPath;
 
     public AsyncCommand GenerateTokenCommand { get; }
     public AsyncCommand StartMcpCommand { get; }
     public AsyncCommand StopMcpCommand { get; }
     public AsyncCommand SaveAndRestartCommand { get; }
-    public AsyncCommand ForceRestartShellSandboxCommand { get; }
+    public AsyncCommand AddCliToPathCommand { get; }
+    public AsyncCommand RemoveCliFromPathCommand { get; }
     public override bool SupportsEditing => true;
     public override bool IsDirty => _isDirty;
     public override bool CanSave => _isDirty;
@@ -240,6 +261,43 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         return _main.StopMcpServerAsync("用户手动停止");
     }
 
+    private async Task AddCliToPathAsync()
+    {
+        AppServices services = await _main.ServicesAsync();
+        Result result = services.CliPath.AddToPath();
+        RefreshCliStatus(services);
+        if (result.IsFailure)
+        {
+            LastError = result.ErrorMessage;
+            SetStatus(result.ErrorMessage ?? "无法加入 PATH。");
+            return;
+        }
+
+        SetStatus("patchouli-cli 已加入 PATH（可能需要重启终端生效）。");
+    }
+
+    private async Task RemoveCliFromPathAsync()
+    {
+        AppServices services = await _main.ServicesAsync();
+        Result result = services.CliPath.RemoveFromPath();
+        RefreshCliStatus(services);
+        if (result.IsFailure)
+        {
+            LastError = result.ErrorMessage;
+            SetStatus(result.ErrorMessage ?? "无法从 PATH 移除。");
+            return;
+        }
+
+        SetStatus("patchouli-cli 已从 PATH 移除。");
+    }
+
+    private void RefreshCliStatus(AppServices services)
+    {
+        _cliInstallation = services.CliPath.GetInstallation();
+        Raise(nameof(CliStatusText));
+        Raise(nameof(IsCliInPath));
+    }
+
     private async Task SaveAndRestartAsync()
     {
         if (IsDirty)
@@ -255,22 +313,6 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         await _main.StopMcpServerAsync("应用新设置");
         await _main.StartMcpServerAsync();
         RequiresReload = false;
-    }
-
-    private async Task ForceRestartShellSandboxAsync()
-    {
-        try
-        {
-            SetStatus("正在强制重启 Shell 沙箱…");
-            await _main.ForceRestartShellSandboxAsync();
-            Raise(nameof(ShellSandboxStatusText));
-            Raise(nameof(McpStatusText));
-            SetStatus($"Shell 沙箱状态：{ShellSandboxStatusText}");
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"强制重启 Shell 沙箱失败：{ex.Message}");
-        }
     }
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
@@ -305,6 +347,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         SaveState = SettingsSaveState.Clean;
         LastError = null;
         RefreshRequiresReload();
+        RefreshCliStatus(await _main.ServicesAsync());
         SetStatus("已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -451,7 +494,10 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private static readonly string[] KnownTools =
     [
-        "patchouli_shell"
+        "patchouli.find",
+        "patchouli.fetch",
+        "patchouli.put",
+        "patchouli.cite"
     ];
 }
 

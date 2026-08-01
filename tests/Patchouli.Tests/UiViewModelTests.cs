@@ -27,7 +27,6 @@ using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Search;
-using Patchouli.Infrastructure.Shell;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
@@ -460,7 +459,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.2.5 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.3.0 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }
@@ -1082,6 +1081,8 @@ public sealed class UiViewModelTests : IDisposable
             AppServices services = await vm.ServicesAsync();
             await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
             await services.Files.RegisterFileAsync(pdf);
+            List<string?> shellPropertyChanges = [];
+            vm.Shell.PropertyChanged += (_, args) => shellPropertyChanges.Add(args.PropertyName);
 
             await vm.RefreshSidebarPathsAsync();
 
@@ -1091,6 +1092,8 @@ public sealed class UiViewModelTests : IDisposable
             vm.FileSearchRoots.Single().AvailabilityText.Should().Be("可用");
             vm.HasFileSearchRoots.Should().BeTrue();
             vm.NoFileSearchRoots.Should().BeFalse();
+            shellPropertyChanges.Should().Contain(nameof(LibraryShellViewModel.HasFileSearchRoots))
+                .And.Contain(nameof(LibraryShellViewModel.NoFileSearchRoots));
         }
         finally
         {
@@ -1261,9 +1264,12 @@ public sealed class UiViewModelTests : IDisposable
         settingsXaml.Should().Contain("搜索配置");
         settingsXaml.Should().Contain("MCP");
         settingsXaml.Should().Contain("Streamable HTTP");
-        settingsXaml.Should().Contain("强制重启 Shell 沙箱");
-        settingsXaml.Should().Contain("ForceRestartShellSandboxCommand");
-        settingsXaml.Should().Contain("ShellSandboxStatusText");
+        settingsXaml.Should().Contain("命令行工具 (patchouli-cli)");
+        settingsXaml.Should().Contain("AddCliToPathCommand");
+        settingsXaml.Should().Contain("RemoveCliFromPathCommand");
+        settingsXaml.Should().NotContain("Shell 沙箱");
+        settingsXaml.Should().NotContain("ForceRestartShellSandboxCommand");
+        settingsXaml.Should().NotContain("ShellSandboxStatusText");
         settingsXaml.Should().NotContain("SSE（默认）");
         settingsXaml.Should().NotContain("普通 JSON-RPC");
     }
@@ -1298,12 +1304,32 @@ public sealed class UiViewModelTests : IDisposable
 
             vm.McpEndpoint.Should().Be($"http://localhost:{port}/mcp");
             vm.McpStatusText.Should().Be("MCP: 运行中");
-            vm.McpStatusDetail.Should().StartWith("连接数: 0 / 0").And.Contain("shell:");
-            vm.ShellSandboxStatusText.Should().BeOneOf(ShellSandboxStatus.Ready, ShellSandboxStatus.Faulted,
-                ShellSandboxStatus.Starting);
+            vm.McpStatusDetail.Should().Be("连接数: 0 / 0");
             using HttpClient http = new();
             string health = await http.GetStringAsync($"http://localhost:{port}/health");
             health.Should().Contain("ok");
+        }
+        finally
+        {
+            await vm.StopMcpServerAsync();
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task MainWindowViewModel_can_prepare_services_without_starting_mcp()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-deferred-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel vm = WithRuntimeDatabasePath(
+            CreateMainWindow(new FakeClipboard(), autoStartMcpServer: true), path);
+        try
+        {
+            await vm.ServicesAsync(startMcpServer: false);
+
+            vm.McpServerRunning.Should().BeFalse();
         }
         finally
         {
@@ -2635,6 +2661,31 @@ public sealed class UiViewModelTests : IDisposable
             mcp.IsDirty.Should().BeFalse();
             mcp.RequiresReload.Should().BeFalse();
             mcp.LastError.Should().BeNull();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Mcp_settings_exposes_cli_installation_status_and_path_commands()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-cli-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            McpSettingsViewModel mcp = vm.Settings.McpSettings;
+            await mcp.LoadAsync();
+
+            mcp.CliStatusText.Should().Contain("patchouli-cli");
+            mcp.AddCliToPathCommand.Should().NotBeNull();
+            mcp.RemoveCliFromPathCommand.Should().NotBeNull();
         }
         finally
         {

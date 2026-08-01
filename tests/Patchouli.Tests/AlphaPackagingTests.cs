@@ -12,7 +12,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.Net");
-        BuildInfo.Version.Should().Be("0.2.5");
+        BuildInfo.Version.Should().Be("0.3.0");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -80,7 +80,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.2.5").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.0").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -93,7 +93,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.2.5");
+        BuildInfo.Version.Should().Be("0.3.0");
     }
 
     [Fact]
@@ -163,16 +163,15 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
-    public void Readme_documents_both_current_rust_release_helpers()
+    public void Readme_documents_the_current_rust_release_helper()
     {
         string readme = File.ReadAllText(TestPaths.FromRepositoryRoot("README.md"));
 
         readme.Should().Contain("tools/biblatex-helper")
             .And.Contain("typst/biblatex 0.12.0")
-            .And.Contain("tools/patchouli-shell-sidecar")
-            .And.Contain("Bashkit 0.14.4")
             .And.Contain("cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml")
-            .And.Contain("cargo build --release --manifest-path tools/patchouli-shell-sidecar/Cargo.toml");
+            .And.NotContain("tools/patchouli-shell-sidecar")
+            .And.NotContain("Bashkit 0.14.4");
     }
 
     [Fact]
@@ -186,15 +185,14 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
-    public void About_lists_locked_rust_text_dependencies()
+    public void About_lists_current_rust_text_dependencies()
     {
         using TemporaryAppSettingsFile settings = new();
         AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
 
-        about.ThirdPartyLibraries.Should()
-            .Contain(library => library.Name == "Bashkit" && library.License == "MIT")
-            .And.Contain(library => library.Name == "typst/biblatex" &&
-                                    library.License == "MIT / Apache-2.0");
+        about.ThirdPartyLibraries.Select(library => library.Name).Should().NotContain("Bashkit");
+        about.ThirdPartyLibraries.Should().Contain(library => library.Name == "typst/biblatex" &&
+                                                              library.License == "MIT / Apache-2.0");
     }
 
     [Fact]

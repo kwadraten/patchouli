@@ -55,4 +55,15 @@ public interface IBiblatexImportService
     Task<Result<string>> ExportItemsAsync(
         IReadOnlyList<ItemId> itemIds,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Exports a single item as BibLaTeX for the agent (CLI/MCP) surface. Unlike
+    /// <see cref="ExportItemsAsync"/>, general items are projected to <c>@misc</c>
+    /// so the agent can fetch and round-trip them without promoting or demoting
+    /// the underlying Patchouli item type. This path is intentionally separate
+    /// from the UI export layer which continues to forbid general export.
+    /// </summary>
+    Task<Result<string>> ExportItemForAgentAsync(
+        ItemId itemId,
+        CancellationToken cancellationToken = default);
 }

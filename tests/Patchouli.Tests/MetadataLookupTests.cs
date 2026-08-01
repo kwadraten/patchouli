@@ -495,6 +495,12 @@ public sealed class MetadataLookupTests
             return Task.FromResult(Result<ItemMetadata>.Success(Item));
         }
 
+        public Task<Result<ItemMetadata>> ReplaceItemAsync(ItemId itemId, UpdateItemRequest request,
+            IReadOnlyList<ItemIdentifierInput> identifiers, CancellationToken cancellationToken = default)
+        {
+            return UpdateItemAsync(itemId, request, cancellationToken);
+        }
+
         public Task<Result<ItemIdentifier>> AddIdentifierAsync(ItemId itemId, string scheme, string value, string? note,
             CancellationToken cancellationToken = default)
         {

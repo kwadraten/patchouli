@@ -11,7 +11,6 @@ using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
-using Patchouli.Infrastructure.Shell;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
@@ -126,15 +125,15 @@ public sealed class McpServerTransportTests
     public async Task Disabled_tool_is_hidden_and_direct_call_returns_stable_error()
     {
         McpServerSettings settings = new(4536, "127.0.0.1", false, [], false, null,
-            [new McpToolOverride("patchouli_shell", false, "Disabled for test")], DateTimeOffset.UtcNow);
+            [new McpToolOverride("patchouli.find", false, "Disabled for test")], DateTimeOffset.UtcNow);
         McpProtocolHandler h = new(new FakeApi(),
             new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")), settings);
         string list = await h.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
-        list.Should().NotContain("patchouli_shell");
+        list.Should().NotContain("patchouli.find");
         string call =
             await h.HandleAsync(
-                "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{\"command\":\"pwd\"}}}");
-        call.Should().Contain("tool_unavailable").And.Contain("disabled");
+                "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.find\",\"arguments\":{\"query\":\"test\"}}}");
+        call.Should().Contain("8: disabled").And.Contain("disabled");
     }
 
     [Fact]
@@ -250,10 +249,11 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
-    public void Mcp_interface_has_exactly_ten_read_tools()
+    public void Mcp_interface_has_expected_read_tools()
     {
-        typeof(Mcp.IMcpReadApi).GetMethods().Select(x => x.Name).Should().HaveCount(10).And.OnlyContain(x =>
-            x.StartsWith("Get") || x.StartsWith("Render") || x == "SearchLibraryAsync" || x == "ListCslStylesAsync");
+        typeof(Mcp.IMcpReadApi).GetMethods().Select(x => x.Name).Should().HaveCount(17).And.OnlyContain(x =>
+            x.StartsWith("Get") || x.StartsWith("Render") || x.StartsWith("Browse")
+            || x == "SearchLibraryAsync" || x == "ListCslStylesAsync");
     }
 
     [Fact]
@@ -292,20 +292,20 @@ public sealed class McpServerTransportTests
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}");
         init.Should().Contain("Patchouli").And.Contain("2025-03-26").And.Contain("listChanged");
         string list = await h.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
-        list.Should().Contain("patchouli_shell").And.Contain("patchouli.find").And.Contain("patchouli.fetch")
-            .And.Contain("patchouli.put").And.Contain("patchouli.cite");
-        init.Should().Contain("Patchouli exposes a virtual library shell and structured Library tools")
+        list.Should().Contain("patchouli.find").And.Contain("patchouli.fetch").And.Contain("patchouli.put")
+            .And.Contain("patchouli.cite").And.NotContain("patchouli_shell");
+        init.Should().Contain("Patchouli exposes structured Library tools")
             .And.Contain("instructions");
         string unknownMethod = await h.HandleAsync("{\"id\":3,\"method\":\"unknown/method\"}");
         unknownMethod.Should().Contain("\"code\":-32601");
         string unknown =
             await h.HandleAsync(
                 "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"write_secret\",\"arguments\":{}}}");
-        unknown.Should().Contain("unknown_tool");
+        unknown.Should().Contain("Unknown tool");
         string invalid =
             await h.HandleAsync(
-                "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{}}}");
-        invalid.Should().Contain("error");
+                "{\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.find\",\"arguments\":{}}}");
+        invalid.Should().Contain("\"isError\":true").And.Contain("8:");
         string parseError = await h.HandleAsync("{");
         parseError.Should().Contain("\"code\":-32700");
     }
@@ -317,7 +317,7 @@ public sealed class McpServerTransportTests
             new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")));
         string invalid =
             await h.HandleAsync(
-                "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{}}}");
+                "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.find\",\"arguments\":{}}}");
         using JsonDocument json = JsonDocument.Parse(invalid);
         json.RootElement.GetProperty("id").GetInt32().Should().Be(42);
     }
@@ -330,23 +330,30 @@ public sealed class McpServerTransportTests
         string list = await h.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
         using JsonDocument json = JsonDocument.Parse(list);
         JsonElement[] tools = json.RootElement.GetProperty("result").GetProperty("tools").EnumerateArray().ToArray();
-        tools.Should().HaveCount(5);
-        JsonElement shell = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli_shell");
-        shell.GetProperty("inputSchema").GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
-        shell.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("command", out _).Should().BeTrue();
-        shell.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
-            .Should().Equal("command");
+        tools.Should().HaveCount(4);
 
         JsonElement find = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.find");
         find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("query", out _).Should().BeTrue();
-        find.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
-            .Should().Equal("query");
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("in", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("where", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("literal", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("regex", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("limit", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("cursor", out _).Should().BeTrue();
+        find.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Should().BeEmpty();
 
         JsonElement fetch = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.fetch");
         fetch.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean().Should().BeTrue();
-        fetch.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("uri", out _).Should().BeTrue();
+        JsonElement fetchUris = fetch.GetProperty("inputSchema").GetProperty("properties").GetProperty("uris");
+        fetchUris.GetProperty("type").GetString().Should().Be("array");
+        fetch.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("range", out _).Should().BeTrue();
+        fetch.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("revision", out _).Should().BeTrue();
+        fetch.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("limit_bytes", out _).Should()
+            .BeTrue();
+        fetch.GetProperty("inputSchema").GetProperty("properties").GetProperty("limit_bytes")
+            .GetProperty("description").GetString().Should().Contain("partial").And.Contain("RESPONSE_TRUNCATED");
         fetch.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
-            .Should().Equal("uri");
+            .Should().Equal("uris");
 
         JsonElement put = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.put");
         put.GetProperty("annotations").GetProperty("readOnlyHint").GetBoolean().Should().BeFalse();
@@ -355,109 +362,71 @@ public sealed class McpServerTransportTests
             .Should().Equal("uri", "content", "base");
 
         JsonElement cite = tools.Single(tool => tool.GetProperty("name").GetString() == "patchouli.cite");
-        cite.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("items", out _).Should().BeTrue();
+        cite.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("refs", out _).Should().BeTrue();
+        cite.GetProperty("inputSchema").GetProperty("properties").GetProperty("refs")
+            .GetProperty("description").GetString().Should().Contain("document").And.Contain("page");
+        cite.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("bibliography", out _).Should()
+            .BeTrue();
+        cite.GetProperty("inputSchema").GetProperty("properties").TryGetProperty("html", out _).Should().BeTrue();
         cite.GetProperty("inputSchema").GetProperty("required").EnumerateArray().Select(x => x.GetString())
-            .Should().Equal("items");
+            .Should().Equal("refs");
+        cite.GetProperty("inputSchema").GetProperty("properties").GetProperty("style")
+            .GetProperty("description").GetString().Should().Contain("default style");
     }
 
     [Fact]
-    public async Task Tools_call_patchouli_shell_without_host_returns_stable_error()
+    public async Task Protocol_argument_shape_errors_use_shared_invalid_argument_code()
     {
-        TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
-        try
-        {
-            McpProtocolHandler h = new(new FakeApi(), db.ConnectionFactory);
-            string response = await h.HandleAsync(
-                "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{\"command\":\"pwd\"}}}");
-            response.Should().Contain("invalid_state").And.Contain("Shell sandbox");
-        }
-        finally
-        {
-            await db.DisposeAsync();
-        }
+        McpProtocolHandler h = new(new FakeApi(),
+            new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")));
+
+        string wrongInteger = await h.HandleAsync(
+            "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.find\",\"arguments\":{\"limit\":\"many\"}}}");
+        wrongInteger.Should().Contain("\"isError\":true").And.Contain("2:").And.Contain("limit");
+
+        string wrongBoolean = await h.HandleAsync(
+            "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.find\",\"arguments\":{\"regex\":\"yes\"}}}");
+        wrongBoolean.Should().Contain("\"isError\":true").And.Contain("2:").And.Contain("regex");
+
+        string scalarUris = await h.HandleAsync(
+            "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.fetch\",\"arguments\":{\"uris\":\"patchouli://items/x.bib\"}}}");
+        scalarUris.Should().Contain("\"isError\":true").And.Contain("2:").And.Contain("uris");
     }
 
     [Fact]
-    public async Task Tools_call_patchouli_shell_echo_when_sidecar_available()
+    public async Task Protocol_fetch_preserves_partial_data_when_response_is_truncated()
     {
-        string sidecar = ShellSidecarHost.ResolveDefaultSidecarPath();
-        if (!File.Exists(sidecar))
+        DocumentInstanceId documentId = DocumentInstanceId.New();
+        PageId pageId = PageId.New();
+        FakeApi api = new()
         {
-            return;
-        }
+            PageTextResponse = new Mcp.McpPageTextResponse(pageId, documentId, "1", 0,
+                string.Join('\n', Enumerable.Repeat("A long scholarly line that must be bounded.", 40)),
+                Mcp.McpReadMode.Current, null, [], "tree-revision")
+        };
+        McpProtocolHandler handler = new(api,
+            new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")));
+        string uri = Mcp.McpResourceUris.PageUri(documentId, pageId);
+        string request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{" +
+                         "\"name\":\"patchouli.fetch\",\"arguments\":{" +
+                         $"\"uris\":[\"{uri}\"],\"limit_bytes\":128}}}}}}";
 
-        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
-        await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        SystemClock clock = new();
-        LibraryIdentityService library = new(db.ConnectionFactory, clock);
-        (await library.CreateLibraryAsync("Shell MCP")).IsSuccess.Should().BeTrue();
-        SearchProfileService profiles = new(db.ConnectionFactory, library, clock);
-        SqliteSearchService search = new(db.ConnectionFactory, profiles);
-        EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);
-        McpReadApi api = new(db.ConnectionFactory, search, evidence);
-        ShellDomainService domain = new(db.ConnectionFactory, api, search, evidence, library: library);
-        await using ShellSidecarHost shell = new(domain, sidecar);
-        await shell.StartAsync();
-        shell.Status.Should().Be(ShellSandboxStatus.Ready);
-        McpProtocolHandler h = new(api, db.ConnectionFactory, shell: shell);
-        string response = await h.HandleAsync(
-            "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{\"command\":\"echo hello\"}}}",
-            "test-session");
-        response.Should().Contain("hello");
+        string response = await handler.HandleAsync(request);
 
-        // Regression: reverse VFS RPC must not deadlock the sidecar stdin reader.
-        string agents = await h.HandleAsync(
-            "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{\"command\":\"cat /AGENTS.md\"}}}",
-            "test-session");
-        agents.Should().Contain("Patchouli Virtual Library Shell");
-        agents.Should().NotContain("[exit 124]");
-        agents.Should().NotContain("timed out");
-    }
-
-    [Fact]
-    public async Task Client_cancellation_resets_the_shell_session()
-    {
-        string sidecar = ShellSidecarHost.ResolveDefaultSidecarPath();
-        if (!File.Exists(sidecar))
-        {
-            return;
-        }
-
-        await using TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
-        await new MigrationRunner(db.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
-        SystemClock clock = new();
-        LibraryIdentityService library = new(db.ConnectionFactory, clock);
-        (await library.CreateLibraryAsync("Shell MCP cancellation")).IsSuccess.Should().BeTrue();
-        SearchProfileService profiles = new(db.ConnectionFactory, library, clock);
-        SqliteSearchService search = new(db.ConnectionFactory, profiles);
-        EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);
-        McpReadApi api = new(db.ConnectionFactory, search, evidence);
-        ShellDomainService domain = new(db.ConnectionFactory, api, search, evidence, library: library);
-        await using ShellSidecarHost shell = new(domain, sidecar);
-        await shell.StartAsync();
-        McpProtocolHandler handler = new(api, db.ConnectionFactory, shell: shell);
-
-        using CancellationTokenSource cancellation = new();
-        Task<string> request = handler.HandleAsync(
-            "{\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{\"command\":\"X=stale; while true; do :; done\"}}}",
-            "cancelled-session",
-            cancellation.Token);
-        cancellation.Cancel();
-        Func<Task> cancelled = async () => await request;
-        await cancelled.Should().ThrowAsync<OperationCanceledException>();
-
-        string next = await handler.HandleAsync(
-            "{\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli_shell\",\"arguments\":{\"command\":\"echo ${X:-reset}\"}}}",
-            "cancelled-session");
-        next.Should().Contain("reset").And.NotContain("stale");
-        shell.Status.Should().Be(ShellSandboxStatus.Ready);
+        using JsonDocument envelope = JsonDocument.Parse(response);
+        envelope.RootElement.GetProperty("result").GetProperty("isError").GetBoolean().Should().BeTrue();
+        string text = envelope.RootElement.GetProperty("result").GetProperty("content")[0]
+            .GetProperty("text").GetString()!;
+        text.Should().Contain("\"name\":\"RESPONSE_TRUNCATED\"")
+            .And.Contain("\"Complete\":false")
+            .And.Contain("\"Truncated\":true");
     }
 
     [Fact]
     public void Agent_prd_documents_http_read_only_mcp_boundaries()
     {
         string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md"));
-        r.Should().Contain("第一版 MCP 是只读且纯文本的").And.Contain("MCP 从不触发 OCR 或索引重建").And.Contain("提供程序密钥").And
+        r.Should().Contain("v1/v2 首发 MCP 是只读且纯文本的").And.Contain("MCP 从不触发 OCR 或索引重建").And.Contain("提供程序密钥").And
             .Contain("缓存图像");
     }
 
@@ -466,7 +435,7 @@ public sealed class McpServerTransportTests
     {
         string source = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.McpServer", "Program.cs"));
         source.Should().Contain("CslStyleStore").And.Contain("CslRenderer").And.Contain("CslItemMapper")
-            .And.Contain("ShellSidecarHost");
+            .And.NotContain("ShellSidecarHost");
     }
 
     private static int GetFreeTcpPort()
@@ -529,6 +498,7 @@ public sealed class McpServerTransportTests
         public ItemId? Item;
         public DocumentInstanceId? Document;
         public Mcp.McpPageTextRequest? Text;
+        public Mcp.McpPageTextResponse? PageTextResponse;
         public Mcp.McpPageBlocksRequest? Blocks;
         public Mcp.McpSearchContextRequest? Context;
         public bool ListStylesCalled;
@@ -563,7 +533,9 @@ public sealed class McpServerTransportTests
             CancellationToken c = default)
         {
             Text = r;
-            return Task.FromResult(Result<Mcp.McpPageTextResponse>.Failure("fake", "x"));
+            return Task.FromResult(PageTextResponse is null
+                ? Result<Mcp.McpPageTextResponse>.Failure("fake", "x")
+                : Result<Mcp.McpPageTextResponse>.Success(PageTextResponse));
         }
 
         public Task<Result<Mcp.McpPageBlocksResponse>> GetPageBlocksAsync(Mcp.McpPageBlocksRequest r,
@@ -607,6 +579,48 @@ public sealed class McpServerTransportTests
         {
             RenderMany = r;
             return Task.FromResult(Result<Mcp.McpRenderBibliographyResponse>.Failure("fake", "x"));
+        }
+
+        public Task<Result<Mcp.McpBrowseItemPage>> BrowseItemsAsync(string? cursor, int limit,
+            string? itemType = null, string? status = null, CancellationToken c = default)
+        {
+            return Task.FromResult(Result<Mcp.McpBrowseItemPage>.Failure("fake", "x"));
+        }
+
+        public Task<Result<Mcp.McpBrowseDocumentPage>> BrowseDocumentsAsync(string? cursor, int limit,
+            CancellationToken c = default)
+        {
+            return Task.FromResult(Result<Mcp.McpBrowseDocumentPage>.Failure("fake", "x"));
+        }
+
+        public Task<Result<Mcp.McpBrowseStylePage>> BrowseStylesAsync(string? cursor, int limit,
+            CancellationToken c = default)
+        {
+            return Task.FromResult(Result<Mcp.McpBrowseStylePage>.Failure("fake", "x"));
+        }
+
+        public Task<Result<Mcp.McpBrowseEvidencePage>> BrowseEvidenceAsync(string? cursor, int limit,
+            CancellationToken c = default)
+        {
+            return Task.FromResult(Result<Mcp.McpBrowseEvidencePage>.Failure("fake", "x"));
+        }
+
+        public Task<Result<Mcp.McpDocumentOutlineResponse>> GetDocumentOutlineAsync(
+            DocumentInstanceId documentId, CancellationToken c = default)
+        {
+            return Task.FromResult(Result<Mcp.McpDocumentOutlineResponse>.Failure("fake", "x"));
+        }
+
+        public Task<Result<Mcp.McpBrowseEvidenceRow>> GetEvidenceRecordAsync(string evidenceRefId,
+            CancellationToken c = default)
+        {
+            return Task.FromResult(Result<Mcp.McpBrowseEvidenceRow>.Failure("fake", "x"));
+        }
+
+        public Task<Result<ItemId>> GetItemIdForDocumentAsync(DocumentInstanceId documentInstanceId,
+            CancellationToken c = default)
+        {
+            return Task.FromResult(Result<ItemId>.Failure("fake", "x"));
         }
     }
 }

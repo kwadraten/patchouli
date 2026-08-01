@@ -5,6 +5,7 @@ public static class AppErrorCodes
     public const string LibraryMismatch = "library_mismatch";
     public const string NotFound = "not_found";
     public const string InvalidState = "invalid_state";
+    public const string InvalidArgument = "invalid_argument";
     public const string ValidationFailed = "validation_failed";
     public const string InvalidEvidenceReference = "invalid_evidence_reference";
     public const string InvalidEvref = "invalid_evref";
@@ -24,4 +25,5 @@ public static class AppErrorCodes
     public const string BiblatexMissingTitle = "biblatex_missing_title";
     public const string BiblatexEncodingError = "biblatex_encoding_error";
     public const string BiblatexGeneralExportForbidden = "biblatex_general_export_forbidden";
+    public const string NotCitable = "not_citable";
 }

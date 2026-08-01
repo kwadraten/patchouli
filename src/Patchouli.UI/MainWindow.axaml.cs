@@ -25,9 +25,9 @@ public sealed partial class MainWindow : Window
         InitializeComponent();
     }
 
-    public async Task ShowFirstRunIfNeededAsync()
+    public async Task ShowFirstRunIfNeededAsync(bool startMcpServer = true)
     {
-        AppServices services = await _viewModel.ServicesAsync();
+        AppServices services = await _viewModel.ServicesAsync(startMcpServer);
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsFailure)
         {
@@ -36,6 +36,11 @@ public sealed partial class MainWindow : Window
         }
 
         await _viewModel.Shell.RefreshAsync();
+    }
+
+    public void StartMcpServerInBackground()
+    {
+        _viewModel.StartMcpServerInBackground();
     }
 
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -94,14 +99,6 @@ public sealed partial class MainWindow : Window
         catch (Exception exception)
         {
             UnexpectedExceptions.Sink.Report(exception, "window-shutdown", "stop-mcp-server");
-            try
-            {
-                _viewModel.ForceKillShellSandbox();
-            }
-            catch (Exception killException)
-            {
-                UnexpectedExceptions.Sink.Report(killException, "window-shutdown", "force-kill-shell");
-            }
         }
         finally
         {

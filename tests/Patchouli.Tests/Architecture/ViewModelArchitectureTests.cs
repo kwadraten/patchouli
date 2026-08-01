@@ -54,12 +54,14 @@ public class ViewModelArchitectureTests
         string[] violations = Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
             .SelectMany(path => File.ReadLines(path).Select((line, index) => (path, line, number: index + 1)))
             .Where(entry => broadCatch.IsMatch(entry.line) &&
-                            !entry.line.Contains("UnexpectedExceptionReporter.ReportCatch", StringComparison.Ordinal) &&
-                            !entry.line.Contains("// Reported below", StringComparison.Ordinal) &&
-                            !entry.line.Contains("exception is IOException or UnauthorizedAccessException",
-                                StringComparison.Ordinal) &&
-                            !entry.line.Contains("exception is JsonException or InvalidOperationException",
-                                StringComparison.Ordinal))
+                            !(entry.line.Contains("UnexpectedExceptionReporter.ReportCatch", StringComparison.Ordinal) ||
+                              entry.line.Contains("// Reported below", StringComparison.Ordinal) ||
+                              entry.line.Contains("exception is IOException or UnauthorizedAccessException",
+                                  StringComparison.Ordinal) ||
+                              entry.line.Contains("exception is JsonException or InvalidOperationException",
+                                  StringComparison.Ordinal) ||
+                              entry.line.Contains("exception is XmlException or InvalidOperationException",
+                                  StringComparison.Ordinal)))
             .Select(entry => $"{Path.GetRelativePath(root, entry.path)}:{entry.number}: {entry.line.Trim()}")
             .ToArray();
 

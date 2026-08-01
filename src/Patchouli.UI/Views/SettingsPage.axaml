@@ -231,13 +231,9 @@
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Text="{Binding ShellSandboxStatusText, StringFormat='Shell sandbox status：\{0\}'}"
-                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <Button Content="强制重启 Shell 沙箱" Command="{Binding ForceRestartShellSandboxCommand}"
-                            HorizontalAlignment="Left" />
-                    <TextBlock Text="Sidecar 崩溃或协议故障后不会自动恢复，可在此手动强制重启只读 Shell 沙箱。"
-                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                               TextWrapping="Wrap" />
+                    <TextBlock Text="结构化资源协议：find / fetch / put / cite；put 仅允许带 base revision 替换已有题录 .bib 或 CSL .csl。"
+                               FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <Border Background="{DynamicResource ErrorContainerBrush}"
                             BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
                             Padding="12" IsVisible="{Binding RequiresReload}">
@@ -315,6 +311,18 @@
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
+                    <TextBlock Text="命令行工具 (patchouli-cli)" Classes="CardTitle" />
+                    <TextBlock Text="{Binding CliStatusText}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Button Content="加入 PATH" Command="{Binding AddCliToPathCommand}" />
+                      <Button Content="从 PATH 移除" Command="{Binding RemoveCliFromPathCommand}" />
+                    </StackPanel>
                   </StackPanel>
                 </Border>
               </StackPanel>

@@ -7,7 +7,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Patchouli.Core.Mcp;
-using Patchouli.Infrastructure.Shell;
 using Patchouli.Mcp;
 using System.Text;
 using System.Text.Json;
@@ -19,7 +18,6 @@ public sealed class McpHttpServer : IAsyncDisposable
 {
     private readonly McpProtocolHandler _handler;
     private readonly McpServerSettings _settings;
-    private readonly ShellSidecarHost? _shell;
     private readonly Action<Exception, string>? _unexpectedException;
     private readonly ConcurrentDictionary<string, byte> _sessions = new(StringComparer.Ordinal);
     private long _activeConnectionCount;
@@ -27,18 +25,17 @@ public sealed class McpHttpServer : IAsyncDisposable
     private WebApplication? _app;
 
     public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort,
-        Action<Exception, string>? unexpectedException = null, ShellSidecarHost? shell = null)
+        Action<Exception, string>? unexpectedException = null)
         : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow),
-            unexpectedException, shell)
+            unexpectedException)
     {
     }
 
     public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings,
-        Action<Exception, string>? unexpectedException = null, ShellSidecarHost? shell = null)
+        Action<Exception, string>? unexpectedException = null)
     {
         _handler = handler;
         _settings = settings;
-        _shell = shell;
         _unexpectedException = unexpectedException;
         Endpoint = $"http://{DisplayHost(settings.BindAddress)}:{settings.Port}/mcp";
     }
@@ -151,10 +148,10 @@ public sealed class McpHttpServer : IAsyncDisposable
         app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
         app.MapPost("/mcp",
             (HttpContext context, CancellationToken ct) =>
-                HandleMcpRequestAsync(context, _handler, _settings, _shell, _sessions, ct));
+                HandleMcpRequestAsync(context, _handler, _settings, _sessions, ct));
         app.MapDelete("/mcp",
             (HttpContext context, CancellationToken ct) =>
-                HandleMcpDeleteAsync(context, _settings, _shell, _sessions, ct));
+                HandleMcpDeleteAsync(context, _settings, _sessions, ct));
         app.MapMethods("/mcp", ["OPTIONS"], (HttpContext context) => HandleMcpOptions(context, _settings));
         return app;
     }
@@ -212,7 +209,6 @@ public sealed class McpHttpServer : IAsyncDisposable
         HttpContext context,
         McpProtocolHandler handler,
         McpServerSettings settings,
-        ShellSidecarHost? shell,
         ConcurrentDictionary<string, byte> sessions,
         CancellationToken cancellationToken)
     {
@@ -262,7 +258,6 @@ public sealed class McpHttpServer : IAsyncDisposable
     private static async Task<IResult> HandleMcpDeleteAsync(
         HttpContext context,
         McpServerSettings settings,
-        ShellSidecarHost? shell,
         ConcurrentDictionary<string, byte> sessions,
         CancellationToken cancellationToken)
     {
@@ -280,11 +275,6 @@ public sealed class McpHttpServer : IAsyncDisposable
         }
 
         sessions.TryRemove(sessionId, out _);
-        if (shell is not null)
-        {
-            await shell.CloseSessionAsync(sessionId, cancellationToken);
-        }
-
         return Results.NoContent();
     }
 

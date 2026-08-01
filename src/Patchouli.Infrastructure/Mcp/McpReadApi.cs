@@ -12,6 +12,7 @@ using Patchouli.Infrastructure.Documents;
 using Patchouli.Mcp;
 using Patchouli.Search;
 using Patchouli.Ocr;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Time;
@@ -129,8 +130,9 @@ public sealed class McpReadApi : IMcpReadApi
                        container_title_short as ContainerTitleShort, collection_title as CollectionTitle, publisher as Publisher,
                        place as Place, edition as Edition, genre as Genre, number as Number, chapter_number as ChapterNumber,
                        volume as Volume, version as Version, issue as Issue, pages as Pages, language as Language, status as Status,
-                       note as Note, abstract as Abstract, tags_json as TagsJson,
-                       collections_json as CollectionsJson, custom_fields_json as CustomFieldsJson
+                        note as Note, abstract as Abstract, tags_json as TagsJson,
+                        collections_json as CollectionsJson, custom_fields_json as CustomFieldsJson,
+                        updated_at as UpdatedAt
                 from items where item_id = @ItemId and deleted_at is null;
                 """,
                 new { ItemId = itemId.ToString() });
@@ -254,8 +256,10 @@ public sealed class McpReadApi : IMcpReadApi
                 ? resolved.Value.PinnedText ?? ""
                 : $"[Pinned]\n{resolved.Value.PinnedText}\n\n[Current]\n{resolved.Value.CurrentText}";
             PageMeta? meta = await PageMetaAsync(request.PageId);
-            return Result<McpPageTextResponse>.Success(new McpPageTextResponse(request.PageId, meta?.PageLabel,
-                meta?.PageIndex ?? 0, text, request.ReadMode, request.EvidenceRef, Warnings(resolved.Value.Warning)));
+            return Result<McpPageTextResponse>.Success(new McpPageTextResponse(request.PageId,
+                meta is null ? default : DocumentInstanceId.Parse(meta.DocumentInstanceId),
+                meta?.PageLabel, meta?.PageIndex ?? 0, text, request.ReadMode, request.EvidenceRef,
+                Warnings(resolved.Value.Warning)));
         }
 
         Result<McpPageTextResponse> page =
@@ -487,6 +491,7 @@ public sealed class McpReadApi : IMcpReadApi
             style.Value.DefaultLocale,
             style.Value.Enabled,
             style.Value.SourceUrl,
+            style.Value.ContentHash,
             content.Value));
     }
 
@@ -507,7 +512,8 @@ public sealed class McpReadApi : IMcpReadApi
         }
 
         Result<CslRenderResult> rendered =
-            await _cslRenderer.RenderAsync(new CslRenderRequest(request.ItemIds, request.StyleId, request.Locale),
+            await _cslRenderer.RenderAsync(new CslRenderRequest(request.ItemIds, request.StyleId, request.Locale,
+                AllowGeneralAsMisc: request.AllowGeneralAsMisc),
                 cancellationToken);
         if (rendered.IsFailure)
         {
@@ -523,6 +529,309 @@ public sealed class McpReadApi : IMcpReadApi
             rendered.Value.RenderedHtml,
             rendered.Value.Warnings,
             rendered.Value.Errors));
+    }
+
+    public async Task<Result<McpBrowseItemPage>> BrowseItemsAsync(string? cursor, int limit,
+        string? itemType = null, string? status = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            int skip = DecodeCursor(cursor, "items");
+            if (skip < 0)
+            {
+                return Result<McpBrowseItemPage>.Failure(AppErrorCodes.ValidationFailed, "Invalid cursor.");
+            }
+
+            string filter = string.Empty;
+            if (!string.IsNullOrWhiteSpace(itemType))
+            {
+                filter += " and item_type = @ItemType";
+            }
+
+            if (!string.IsNullOrWhiteSpace(status))
+            {
+                filter += " and status = @Status";
+            }
+
+            string sql = $"""
+                           select item_id, title, item_type, status, citation_key, updated_at
+                          from items
+                          where deleted_at is null{filter}
+                          order by updated_at desc, item_id
+                          limit @Take offset @Skip;
+                          """;
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            int take = Math.Clamp(limit, 1, 100) + 1;
+            IReadOnlyList<ItemRow> rows = (await connection.QueryAsync<ItemRow>(sql, new
+            {
+                Take = take,
+                Skip = skip,
+                ItemType = itemType,
+                Status = status
+            })).ToArray();
+            return Result<McpBrowseItemPage>.Success(new McpBrowseItemPage(
+                rows.Take(Math.Max(0, take - 1)).Select(row => new McpBrowseItemRow(
+                    ItemId.Parse(row.ItemId), row.Title, row.ItemType, row.Status, row.CitationKey,
+                    DateTimeOffset.Parse(row.UpdatedAt))).ToArray(),
+                rows.Count > take - 1 ? EncodeCursor("items", skip + take - 1) : null));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpBrowseItemPage>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpBrowseDocumentPage>> BrowseDocumentsAsync(string? cursor, int limit,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            int skip = DecodeCursor(cursor, "documents");
+            if (skip < 0)
+            {
+                return Result<McpBrowseDocumentPage>.Failure(AppErrorCodes.ValidationFailed, "Invalid cursor.");
+            }
+
+            string sql = """
+                         select di.document_instance_id, di.item_id, di.title, di.created_at,
+                                (select r.tree_revision_id from document_tree_revisions r
+                                 where r.document_instance_id = di.document_instance_id
+                                   and r.status = 'committed' and r.is_current = 1
+                                 order by r.committed_at desc, r.tree_revision_id desc
+                                 limit 1) as revision_id
+                         from document_instances di
+                         order by di.created_at desc, di.document_instance_id
+                         limit @Take offset @Skip;
+                         """;
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            int take = Math.Clamp(limit, 1, 100) + 1;
+            IReadOnlyList<DocumentRow> rows = (await connection.QueryAsync<DocumentRow>(sql, new
+            {
+                Take = take,
+                Skip = skip
+            })).ToArray();
+            return Result<McpBrowseDocumentPage>.Success(new McpBrowseDocumentPage(
+                rows.Take(Math.Max(0, take - 1)).Select(row => new McpBrowseDocumentRow(
+                    DocumentInstanceId.Parse(row.DocumentInstanceId), row.Title, row.RevisionId,
+                    DateTimeOffset.Parse(row.CreatedAt), ParseOptionalItemId(row.ItemId))).ToArray(),
+                rows.Count > take - 1 ? EncodeCursor("documents", skip + take - 1) : null));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpBrowseDocumentPage>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpBrowseStylePage>> BrowseStylesAsync(string? cursor, int limit,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (_cslStyleStore is null)
+            {
+                return Result<McpBrowseStylePage>.Failure(AppErrorCodes.UnsupportedOperation,
+                    "CSL style store is not configured.");
+            }
+
+            int skip = DecodeCursor(cursor, "styles");
+            if (skip < 0)
+            {
+                return Result<McpBrowseStylePage>.Failure(AppErrorCodes.ValidationFailed, "Invalid cursor.");
+            }
+
+            Result<IReadOnlyList<CslStyle>> styles = await _cslStyleStore.ListInstalledStylesAsync(cancellationToken);
+            if (styles.IsFailure)
+            {
+                return Result<McpBrowseStylePage>.Failure(styles.ErrorCode!, styles.ErrorMessage!);
+            }
+
+            int take = Math.Clamp(limit, 1, 100);
+            CslStyle[] page = styles.Value.Skip(skip).Take(take + 1).ToArray();
+            return Result<McpBrowseStylePage>.Success(new McpBrowseStylePage(
+                page.Take(take).Select(style => new McpBrowseStyleRow(
+                    style.StyleId, style.DisplayName, style.ContentHash, style.DefaultLocale, style.Enabled)).ToArray(),
+                page.Length > take ? EncodeCursor("styles", skip + take) : null));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpBrowseStylePage>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpBrowseEvidencePage>> BrowseEvidenceAsync(string? cursor, int limit,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            int skip = DecodeCursor(cursor, "evidence");
+            if (skip < 0)
+            {
+                return Result<McpBrowseEvidencePage>.Failure(AppErrorCodes.ValidationFailed, "Invalid cursor.");
+            }
+
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            int take = Math.Clamp(limit, 1, 100) + 1;
+            IReadOnlyList<EvidenceRow> rows = (await connection.QueryAsync<EvidenceRow>(
+                """
+                select e.evidence_ref_id, e.source_title, e.page_label, e.page_index, e.status,
+                       e.pinned_text, e.document_instance_id, e.page_id, e.created_at,
+                       di.item_id
+                from evidence_ref_records e
+                left join document_instances di on di.document_instance_id = e.document_instance_id
+                 order by e.created_at desc, e.evidence_ref_id
+                limit @Take offset @Skip;
+                """,
+                new { Take = take, Skip = skip })).ToArray();
+            return Result<McpBrowseEvidencePage>.Success(new McpBrowseEvidencePage(
+                rows.Take(Math.Max(0, take - 1)).Select(row => new McpBrowseEvidenceRow(
+                    row.EvidenceRefId, row.SourceTitle, row.PageLabel, row.PageIndex, row.Status, row.PinnedText,
+                    DocumentInstanceId.Parse(row.DocumentInstanceId), PageId.Parse(row.PageId),
+                    DateTimeOffset.Parse(row.CreatedAt), ParseOptionalItemId(row.ItemId))).ToArray(),
+                rows.Count > take - 1 ? EncodeCursor("evidence", skip + take - 1) : null));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpBrowseEvidencePage>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpDocumentOutlineResponse>> GetDocumentOutlineAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            DocumentOwnerRow? owner = await connection.QuerySingleOrDefaultAsync<DocumentOwnerRow>(
+                "select title, item_id as ItemId from document_instances where document_instance_id = @Id;",
+                new { Id = documentInstanceId.ToString() });
+            if (owner is null || owner.Title is null)
+            {
+                return Result<McpDocumentOutlineResponse>.Failure(AppErrorCodes.NotFound,
+                    "Document was not found.");
+            }
+
+            string? revision = await connection.ExecuteScalarAsync<string?>(
+                """
+                select tree_revision_id from document_tree_revisions
+                where document_instance_id = @Id and status = 'committed' and is_current = 1
+                order by committed_at desc, tree_revision_id desc
+                limit 1;
+                """,
+                new { Id = documentInstanceId.ToString() });
+            IReadOnlyList<PageRow> pages = (await connection.QueryAsync<PageRow>(
+                """
+                select page_id, page_label, page_index from pages
+                where document_instance_id = @Id
+                order by page_index;
+                """,
+                new { Id = documentInstanceId.ToString() })).ToArray();
+            return Result<McpDocumentOutlineResponse>.Success(new McpDocumentOutlineResponse(
+                documentInstanceId, owner.Title, revision,
+                pages.Select(page => new McpDocumentPageRef(PageId.Parse(page.PageId), page.PageLabel, page.PageIndex,
+                    McpResourceUris.PageUri(documentInstanceId, PageId.Parse(page.PageId)))).ToArray(),
+                ParseOptionalItemId(owner.ItemId)));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpDocumentOutlineResponse>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpBrowseEvidenceRow>> GetEvidenceRecordAsync(string evidenceRefId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            EvidenceRow? row = await connection.QuerySingleOrDefaultAsync<EvidenceRow>(
+                """
+                select e.evidence_ref_id, e.source_title, e.page_label, e.page_index, e.status,
+                       e.pinned_text, e.document_instance_id, e.page_id, e.created_at,
+                       di.item_id
+                from evidence_ref_records e
+                left join document_instances di on di.document_instance_id = e.document_instance_id
+                where e.evidence_ref_id = @Ref;
+                """,
+                new { Ref = evidenceRefId });
+            if (row is null)
+            {
+                return Result<McpBrowseEvidenceRow>.Failure(AppErrorCodes.NotFound,
+                    "Evidence record was not found.");
+            }
+
+            return Result<McpBrowseEvidenceRow>.Success(new McpBrowseEvidenceRow(
+                row.EvidenceRefId, row.SourceTitle, row.PageLabel, row.PageIndex, row.Status, row.PinnedText,
+                DocumentInstanceId.Parse(row.DocumentInstanceId), PageId.Parse(row.PageId),
+                DateTimeOffset.Parse(row.CreatedAt), ParseOptionalItemId(row.ItemId)));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpBrowseEvidenceRow>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<ItemId>> GetItemIdForDocumentAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            string? itemIdText = await connection.ExecuteScalarAsync<string?>(
+                "select item_id from document_instances where document_instance_id = @Id;",
+                new { Id = documentInstanceId.ToString() });
+            if (string.IsNullOrWhiteSpace(itemIdText))
+            {
+                return Result<ItemId>.Failure(AppErrorCodes.NotFound,
+                    "Document instance was not found.");
+            }
+
+            return Result<ItemId>.Success(ItemId.Parse(itemIdText));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<ItemId>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
     }
 
     private async Task<Result<McpPageTextResponse>> CurrentPageTextAsync(PageId pageId, bool includeSuppressed,
@@ -564,8 +873,9 @@ public sealed class McpReadApi : IMcpReadApi
             string[] warnings = _coordinates is null
                 ? Array.Empty<string>()
                 : (await _coordinates.DetectBBoxWarningsAsync(pageId, cancellationToken: cancellationToken)).ToArray();
-            return Result<McpPageTextResponse>.Success(new McpPageTextResponse(pageId, meta.PageLabel, meta.PageIndex,
-                compiled.Value.Markdown, McpReadMode.Current, null, warnings));
+            return Result<McpPageTextResponse>.Success(new McpPageTextResponse(pageId,
+                DocumentInstanceId.Parse(meta.DocumentInstanceId), meta.PageLabel, meta.PageIndex,
+                compiled.Value.Markdown, McpReadMode.Current, null, warnings, revisionId));
         }
         catch (OperationCanceledException)
         {
@@ -748,6 +1058,7 @@ public sealed class McpReadApi : IMcpReadApi
         public string TagsJson { get; set; } = "";
         public string CollectionsJson { get; set; } = "";
         public string CustomFieldsJson { get; set; } = "";
+        public string UpdatedAt { get; set; } = "";
 
         public McpItemMetadataResponse ToResponse(
             IReadOnlyList<McpItemCreator> creators,
@@ -758,7 +1069,7 @@ public sealed class McpReadApi : IMcpReadApi
                 TitleShort, CreatorsJson,
                 Date, PublicationTitle, ContainerTitleShort, CollectionTitle, Publisher, Place, Edition, Genre, Number,
                 ChapterNumber, Volume, Version, Issue, Pages, Language, Status, Note, Abstract, TagsJson,
-                CollectionsJson, CustomFieldsJson, creators, dates, identifiers);
+                CollectionsJson, CustomFieldsJson, DateTimeOffset.Parse(UpdatedAt), creators, dates, identifiers);
         }
     }
 
@@ -834,6 +1145,11 @@ public sealed class McpReadApi : IMcpReadApi
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    private static ItemId? ParseOptionalItemId(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : ItemId.Parse(value);
+    }
+
     private static NormalizedBBox? ParseNormalizedBBox(string? json)
     {
         if (string.IsNullOrWhiteSpace(json))
@@ -849,5 +1165,70 @@ public sealed class McpReadApi : IMcpReadApi
         {
             return null;
         }
+    }
+
+    private static int DecodeCursor(string? cursor, string source)
+    {
+        if (string.IsNullOrWhiteSpace(cursor))
+        {
+            return 0;
+        }
+
+        try
+        {
+            string decoded = Encoding.UTF8.GetString(Convert.FromBase64String(cursor));
+            string[] parts = decoded.Split(':', 2);
+            if (parts.Length == 2 && string.Equals(parts[0], source, StringComparison.Ordinal) &&
+                int.TryParse(parts[1], out int offset) && offset >= 0)
+            {
+                return offset;
+            }
+        }
+        catch (FormatException)
+        {
+        }
+
+        return -1;
+    }
+
+    private static string EncodeCursor(string source, int offset)
+    {
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes($"{source}:{offset}"));
+    }
+
+    private sealed class DocumentRow
+    {
+        public string DocumentInstanceId { get; set; } = "";
+        public string? ItemId { get; set; }
+        public string? Title { get; set; }
+        public string? RevisionId { get; set; }
+        public string CreatedAt { get; set; } = "";
+    }
+
+    private sealed class DocumentOwnerRow
+    {
+        public string? Title { get; set; }
+        public string? ItemId { get; set; }
+    }
+
+    private sealed class EvidenceRow
+    {
+        public string EvidenceRefId { get; set; } = "";
+        public string? SourceTitle { get; set; }
+        public string? PageLabel { get; set; }
+        public int PageIndex { get; set; }
+        public string Status { get; set; } = "";
+        public string? PinnedText { get; set; }
+        public string DocumentInstanceId { get; set; } = "";
+        public string PageId { get; set; } = "";
+        public string CreatedAt { get; set; } = "";
+        public string? ItemId { get; set; }
+    }
+
+    private sealed class PageRow
+    {
+        public string PageId { get; set; } = "";
+        public string? PageLabel { get; set; }
+        public int PageIndex { get; set; }
     }
 }

@@ -2380,6 +2380,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
         CslPreviewText = rendered.Value.RenderedText;
     }
 
+    public Task RefreshStylePreviewAsync()
+    {
+        return RefreshCslPreviewAsync();
+    }
+
     private void RaiseAll()
     {
         foreach (string property in new[]

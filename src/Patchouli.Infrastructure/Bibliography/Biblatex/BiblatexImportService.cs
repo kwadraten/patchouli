@@ -5,6 +5,7 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.Infrastructure.Mcp;
 
 namespace Patchouli.Infrastructure.Bibliography.Biblatex;
 
@@ -314,6 +315,41 @@ public sealed class BiblatexImportService : IBiblatexImportService
         }
 
         return await _helper.WriteAsync(mapped.Value, cancellationToken);
+    }
+
+    public async Task<Result<string>> ExportItemForAgentAsync(
+        ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<ItemMetadata> item = await _items.GetItemAsync(itemId, cancellationToken);
+        if (item.IsFailure)
+        {
+            return Result<string>.Failure(item.ErrorCode!, item.ErrorMessage!);
+        }
+
+        Result<BiblatexWriteEntryDto> mapped = MapItemForAgent(item.Value);
+        if (mapped.IsFailure)
+        {
+            return Result<string>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
+        }
+
+        return await _helper.WriteAsync([mapped.Value], cancellationToken);
+    }
+
+    /// <summary>
+    /// Maps an item to a BibLaTeX write entry for the agent surface. General items use the
+    /// MCP-only mapper; all other types reuse the standard export mapper.
+    /// </summary>
+    private static Result<BiblatexWriteEntryDto> MapItemForAgent(ItemMetadata item)
+    {
+        if (!string.Equals(item.ItemType, "general", StringComparison.Ordinal))
+        {
+            return BiblatexExportMapper.MapItem(item);
+        }
+
+        // General items are UI-unexportable but agent-visible through an isolated @misc
+        // projection. Do not route them through the UI export mapper, even temporarily.
+        return McpBiblatexAgentMapper.MapGeneralItem(item);
     }
 
     private async Task<Result<IReadOnlyList<BiblatexMatchCandidateSeed>>> LoadSeedsAsync(

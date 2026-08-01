@@ -12,4 +12,5 @@ public sealed record CslRenderRequest(
     IReadOnlyList<ItemId> ItemIds,
     string? StyleId = null,
     string? Locale = null,
-    string OutputFormat = CslRenderFormats.Text);
+    string OutputFormat = CslRenderFormats.Text,
+    bool AllowGeneralAsMisc = false);

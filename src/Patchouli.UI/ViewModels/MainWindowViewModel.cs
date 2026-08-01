@@ -28,7 +28,6 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
-using Patchouli.Infrastructure.Shell;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Search;
@@ -46,9 +45,10 @@ using Services;
 public sealed class MainWindowViewModel : ViewModelBase
 {
     private AppServices? _services;
+    private IMcpWriteApi? _observedMcpWrites;
     private McpHttpServer? _mcpServer;
+    private Task? _backgroundMcpStartTask;
     private long? _mcpRunningSettingsRevision;
-    private ShellSidecarHost? _shellSidecar;
     private readonly bool _autoStartMcpServer;
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
@@ -99,7 +99,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     public long? McpRunningSettingsRevision => _mcpRunningSettingsRevision;
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
-    public string ShellSandboxStatusText => _shellSidecar?.Status ?? ShellSandboxStatus.Stopped;
 
     public string VersionInfo =>
         $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
@@ -458,21 +457,23 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             await BeginLibrarySwitchAsync("正在切换运行数据库。");
             ResetFileSearchRootWatchers();
+            AppServices services;
             try
             {
-                _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+                services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+                SetServices(services);
             }
             catch (UnsupportedLibrarySchemaException exception)
             {
                 string epochs = exception.SchemaVersions.Count == 0
                     ? "未知"
                     : string.Join("、", exception.SchemaVersions.Order());
-                ReportError($"无法打开资料库：检测到不受 Patchouli 0.2.5 支持的数据库 schema epoch（{epochs}）。" +
-                            "0.2.5 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.0 支持的数据库 schema epoch（{epochs}）。" +
+                            "0.3.0 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                 return;
             }
 
-            await RefreshSyncedMetadataLookupAsync(_services);
+            await RefreshSyncedMetadataLookupAsync(services);
             await Settings.ReloadCleanSectionsAsync();
             PersistRuntimeDatabasePathIfEnabled();
             await LoadPersistedMinerUTokenAsync();
@@ -483,7 +484,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             Raise(nameof(StatusBarVersion));
             if (_autoStartMcpServer)
             {
-                await StartMcpServerAsync(_services);
+                await StartMcpServerAsync(services);
             }
         });
         FirstRun = CreateFirstRunViewModel();
@@ -615,23 +616,109 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    public async Task<AppServices> ServicesAsync()
+    public async Task<AppServices> ServicesAsync(bool startMcpServer = true)
     {
         if (_services is not null)
         {
             return _services;
         }
 
-        _services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
-        await RefreshSyncedMetadataLookupAsync(_services);
+        AppServices services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+        SetServices(services);
+        await RefreshSyncedMetadataLookupAsync(services);
         await LoadPersistedMinerUTokenAsync();
         await RefreshSidebarPathsAsync();
-        if (_autoStartMcpServer)
+        if (startMcpServer && _autoStartMcpServer)
         {
-            await StartMcpServerAsync(_services);
+            await StartMcpServerAsync(services);
         }
 
-        return _services;
+        return services;
+    }
+
+    private void SetServices(AppServices services)
+    {
+        if (ReferenceEquals(_services, services))
+        {
+            return;
+        }
+
+        DetachMcpWriteNotifications();
+        _services = services;
+        _observedMcpWrites = services.McpWrites;
+        _observedMcpWrites.ResourceChanged += OnMcpResourceChanged;
+    }
+
+    private void DetachMcpWriteNotifications()
+    {
+        if (_observedMcpWrites is not null)
+        {
+            _observedMcpWrites.ResourceChanged -= OnMcpResourceChanged;
+            _observedMcpWrites = null;
+        }
+    }
+
+    private void OnMcpResourceChanged(object? sender, McpResourceChangedEventArgs change)
+    {
+        if (_observedMcpWrites is null || !ReferenceEquals(sender, _observedMcpWrites))
+        {
+            return;
+        }
+
+        DispatcherTasks.RunAsync(() => RefreshAfterMcpWriteAsync(change))
+            .Observe("mcp-ui-refresh", $"refresh-{change.Kind}");
+    }
+
+    private async Task RefreshAfterMcpWriteAsync(McpResourceChangedEventArgs change)
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        if (string.Equals(change.Kind, "item", StringComparison.Ordinal) && change.ItemId is { } itemId)
+        {
+            await Shell.RefreshItemsAsync();
+            await RefreshOpenItemEditorsAsync([itemId]);
+            return;
+        }
+
+        if (string.Equals(change.Kind, "style", StringComparison.Ordinal))
+        {
+            foreach (CslStyleManagerViewModel manager in OpenTabs.Select(tab => tab.Content)
+                         .OfType<CslStyleManagerViewModel>())
+            {
+                await manager.RefreshInstalledStylesAsync();
+            }
+
+            foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
+                         .OfType<ItemEditorViewModel>())
+            {
+                await editor.RefreshStylePreviewAsync();
+            }
+        }
+    }
+
+    public void StartMcpServerInBackground()
+    {
+        if (!_autoStartMcpServer)
+        {
+            return;
+        }
+
+        if (_backgroundMcpStartTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        _backgroundMcpStartTask = StartMcpServerInBackgroundAsync();
+        _backgroundMcpStartTask.Observe("application-initialization", "start-mcp-server");
+    }
+
+    private async Task StartMcpServerInBackgroundAsync()
+    {
+        AppServices services = await ServicesAsync(startMcpServer: false);
+        await Task.Run(() => StartMcpServerAsync(services));
     }
 
     public async Task RefreshSyncedMetadataLookupAsync()
@@ -708,6 +795,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(HasFileSearchRoots));
         Raise(nameof(NoFileSearchRoots));
         Raise(nameof(DefaultSyncRootPath));
+        Shell.RaisePageStateChanged();
     }
 
     public async Task<Result<FileSearchRootRescanSummary>> RescanFileSearchRootsAsync(
@@ -1199,6 +1287,25 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task StopMcpServerAsync(string detail = "MCP HTTP 服务已停止。")
     {
+        Task? backgroundStart = _backgroundMcpStartTask;
+        _backgroundMcpStartTask = null;
+        if (backgroundStart is not null)
+        {
+            try
+            {
+                await backgroundStart;
+            }
+            catch (Exception exception)
+            {
+                UnexpectedExceptions.Sink.Report(exception, "mcp-server", "await-background-start");
+            }
+        }
+
+        await StopMcpServerCoreAsync(detail);
+    }
+
+    private async Task StopMcpServerCoreAsync(string detail)
+    {
         if (_mcpServer is not null)
         {
             _mcpServer.ConnectionCountsChanged -= OnMcpConnectionCountsChanged;
@@ -1206,73 +1313,23 @@ public sealed class MainWindowViewModel : ViewModelBase
             _mcpServer = null;
         }
 
-        await StopShellSidecarAsync();
         _mcpRunningSettingsRevision = null;
         Raise(nameof(McpRunningSettingsRevision));
         SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
     }
 
-    public async Task ForceRestartShellSandboxAsync()
-    {
-        if (_shellSidecar is null)
-        {
-            AppServices services = await ServicesAsync();
-            _shellSidecar = services.ShellSidecar;
-            _shellSidecar.StatusChanged -= OnShellStatusChanged;
-            _shellSidecar.StatusChanged += OnShellStatusChanged;
-        }
-
-        await _shellSidecar.ForceRestartAsync();
-        Raise(nameof(ShellSandboxStatusText));
-        if (_mcpServer?.IsRunning == true)
-        {
-            SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
-        }
-        else
-        {
-            Report($"Shell 沙箱已重启：{ShellSandboxStatusText}");
-        }
-    }
-
     /// <summary>
-    /// Stops MCP, rejects shell calls, tears down sessions/sidecar before a library/DB switch.
+    /// Stops MCP before a library/DB switch.
     /// Caller starts MCP again after the new library is ready when appropriate.
     /// </summary>
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
-        if (_shellSidecar is not null)
-        {
-            // Reject new execute calls immediately while teardown runs.
-            try
-            {
-                await _shellSidecar.StopForLibrarySwitchAsync();
-            }
-            catch (Exception ex)
-            {
-                UnexpectedExceptions.Sink.Report(ex, "mcp-server", "library-switch-stop-shell");
-                _shellSidecar.ForceKill();
-            }
-        }
-
         await StopMcpServerAsync(detail);
+        DetachMcpWriteNotifications();
         _services = null;
-        _shellSidecar = null;
         Interlocked.Increment(ref _libraryGeneration);
         Settings.NotifyLibraryContextChanged();
         Raise(nameof(HasOpenRuntimeDatabase));
-    }
-
-    public void ForceKillShellSandbox()
-    {
-        _shellSidecar?.ForceKill();
-        try
-        {
-            _services?.ShellSidecar.ForceKill();
-        }
-        catch
-        {
-            // Services may not be initialized.
-        }
     }
 
     private async Task StartMcpServerAsync(AppServices services)
@@ -1296,7 +1353,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             operationId = started.Value.OperationId;
         }
 
-        await StopMcpServerAsync("MCP HTTP 服务正在启动。");
+        await StopMcpServerCoreAsync("MCP HTTP 服务正在启动。");
         Result<McpServerSettings> settingsResult = await services.McpSettings.GetSettingsAsync();
         if (settingsResult.IsFailure)
         {
@@ -1334,28 +1391,9 @@ public sealed class MainWindowViewModel : ViewModelBase
             UnexpectedExceptions.Sink.Report(exception, "mcp-server", operation);
         }
 
-        try
-        {
-            await StartShellSidecarAsync(services);
-        }
-        catch (Exception ex)
-        {
-            UnexpectedExceptions.Sink.Report(ex, "mcp-server", "start-shell-sidecar");
-            string shellMessage = McpOutputSanitizer.Sanitize(ex.Message);
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, shellMessage,
-                    "Shell sidecar 启动失败。", ["检查 patchouli-shell-sidecar 是否已打包"], CancellationToken.None);
-            }
-
-            SetMcpStatus("MCP: 错误", shellMessage, Brushes.IndianRed);
-            await LogOperationAsync("mcp_shell_start_failed", shellMessage);
-            return;
-        }
-
-        McpProtocolHandler handler = new(services.Mcp, services.ConnectionFactory, serverSettings, ReportMcpException,
-            services.ShellSidecar);
-        McpHttpServer server = new(handler, serverSettings, ReportMcpException, services.ShellSidecar);
+        McpProtocolHandler handler = new(services.Mcp, services.McpWrites, services.BiblatexImport,
+            services.ConnectionFactory, serverSettings, ReportMcpException);
+        McpHttpServer server = new(handler, serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
         {
@@ -1386,7 +1424,6 @@ public sealed class MainWindowViewModel : ViewModelBase
                 UnexpectedExceptions.Sink.Report(disposeException, "mcp-server", "dispose-after-start-failure");
             }
 
-            await StopShellSidecarAsync();
             string message = McpOutputSanitizer.Sanitize(ex.Message);
             if (operationId is not null)
             {
@@ -1396,57 +1433,6 @@ public sealed class MainWindowViewModel : ViewModelBase
 
             SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
             await LogOperationAsync("mcp_http_start_failed", message);
-        }
-    }
-
-    private async Task StartShellSidecarAsync(AppServices services)
-    {
-        _shellSidecar = services.ShellSidecar;
-        _shellSidecar.StatusChanged -= OnShellStatusChanged;
-        _shellSidecar.StatusChanged += OnShellStatusChanged;
-        await _shellSidecar.StartAsync();
-        Raise(nameof(ShellSandboxStatusText));
-    }
-
-    private async Task StopShellSidecarAsync()
-    {
-        if (_shellSidecar is null)
-        {
-            return;
-        }
-
-        _shellSidecar.StatusChanged -= OnShellStatusChanged;
-        try
-        {
-            await _shellSidecar.StopAsync();
-        }
-        catch (Exception ex)
-        {
-            UnexpectedExceptions.Sink.Report(ex, "mcp-server", "stop-shell-sidecar");
-        }
-
-        _shellSidecar = null;
-        Raise(nameof(ShellSandboxStatusText));
-    }
-
-    private void OnShellStatusChanged(object? sender, EventArgs e)
-    {
-        void Update()
-        {
-            Raise(nameof(ShellSandboxStatusText));
-            if (_mcpServer?.IsRunning == true)
-            {
-                SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
-            }
-        }
-
-        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
-        {
-            Update();
-        }
-        else
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
         }
     }
 
@@ -1500,8 +1486,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         long active = _mcpServer?.ActiveConnectionCount ?? 0;
         long total = _mcpServer?.TotalConnectionCount ?? 0;
-        string shell = ShellSandboxStatusText;
-        return $"连接数: {active} / {total} | shell: {shell}";
+        return $"连接数: {active} / {total}";
     }
 
     private void OnMcpConnectionCountsChanged(object? sender, EventArgs e)

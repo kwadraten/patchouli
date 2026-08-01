@@ -1,11 +1,11 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Mcp;
-using Patchouli.Infrastructure.Shell;
 using Patchouli.Mcp;
 
 namespace Patchouli.McpServer;
@@ -108,22 +108,28 @@ public static class McpOutputSanitizer
 
 public sealed class McpProtocolHandler
 {
-    private readonly IMcpReadApi _api;
+    private readonly McpCommandService _commands;
     private readonly McpServerSettings _settings;
-    private readonly ShellSidecarHost? _shell;
     private readonly Action<Exception, string>? _unexpectedException;
 
-    public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db, McpServerSettings? settings = null,
-        Action<Exception, string>? unexpectedException = null, ShellSidecarHost? shell = null)
+    public McpProtocolHandler(IMcpReadApi api, IMcpWriteApi writes, IBiblatexImportService biblatex,
+        SqliteConnectionFactory db, McpServerSettings? settings = null,
+        Action<Exception, string>? unexpectedException = null)
     {
-        _api = api;
+        _commands = new McpCommandService(api, writes, biblatex);
         _ = db;
         _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
         {
             AuthRequired = false
         };
-        _shell = shell;
         _unexpectedException = unexpectedException;
+    }
+
+    public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db,
+        McpServerSettings? settings = null, Action<Exception, string>? unexpectedException = null)
+        : this(api, new UnavailableWriteApi(), new UnavailableBiblatexImportService(), db, settings,
+            unexpectedException)
+    {
     }
 
     public async Task<string> HandleAsync(string line, CancellationToken ct = default)
@@ -162,7 +168,7 @@ public sealed class McpProtocolHandler
                 "initialize" => Initialize(pars),
                 "tools/list" => new
                     { tools = Tools().Where(tool => IsToolEnabled(tool.Name)).Select(tool => tool.ToWire()).ToArray() },
-                "tools/call" => await CallAsync(pars, sessionId, ct),
+                "tools/call" => await CallAsync(pars, ct),
                 "shutdown" => new { },
                 _ => throw new MethodNotFoundException($"Method not found: {method}")
             };
@@ -176,6 +182,10 @@ public sealed class McpProtocolHandler
         catch (MethodNotFoundException ex)
         {
             return Error(id, -32601, ex.Message);
+        }
+        catch (McpArgumentException ex)
+        {
+            return ToolCallError(id, (int)McpErrorCode.InvalidArgument, ex.Message);
         }
         catch (InvalidOperationException ex)
         {
@@ -215,7 +225,7 @@ public sealed class McpProtocolHandler
             serverInfo = new { name = Core.BuildInfo.AppName, version = Core.BuildInfo.Version },
             capabilities = new { tools = new { listChanged = true } },
             instructions =
-                "Patchouli exposes a virtual library shell and structured Library tools. Use only the tool surface enabled for this server."
+                "Patchouli exposes structured Library tools. Use only the tool surface enabled for this server."
         };
     }
 
@@ -231,35 +241,58 @@ public sealed class McpProtocolHandler
                JsonSerializer.Serialize(McpOutputSanitizer.Sanitize(message)) + "}}";
     }
 
+    private static string ToolCallError(string id, int code, string message)
+    {
+        object result = new
+        {
+            isError = true,
+            content = new[]
+            {
+                new
+                {
+                    type = "text",
+                    text = $"{code}: {McpOutputSanitizer.Sanitize(message)}"
+                }
+            }
+        };
+        return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + JsonSerializer.Serialize(result) + "}";
+    }
+
     private static ToolDefinition[] Tools()
     {
         return
         [
             new ToolDefinition(
-                "patchouli_shell",
-                "Read-only virtual library shell. Start with: pwd; ls; cat /AGENTS.md",
-                ["command"],
-                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
-                {
-                    ["command"] = ToolSchemaProperty.String("Shell command to execute in the virtual library shell.")
-                }),
-            new ToolDefinition(
                 "patchouli.find",
-                "Search Library text and return text-only, citable results.",
-                ["query"],
+                "Search or browse the Library resource tree and return text-only results.",
+                [],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
-                    ["query"] = ToolSchemaProperty.String("Search query."),
-                    ["limit"] = ToolSchemaProperty.Integer("Maximum result pages, from 1 through 50.")
+                    ["query"] = ToolSchemaProperty.String("Search query. Omit to browse the scope."),
+                    ["in"] = ToolSchemaProperty.String("Resource scope URI to search or browse."),
+                    ["where"] = ToolSchemaProperty.Array(
+                        "Filter clauses as KEY=VALUE; supported keys: item_type, status.",
+                        ToolSchemaProperty.String("KEY=VALUE filter clause.")),
+                    ["literal"] = ToolSchemaProperty.Boolean("Require an exact literal substring match."),
+                    ["regex"] = ToolSchemaProperty.Boolean("Treat the query as a regular expression."),
+                    ["limit"] = ToolSchemaProperty.Integer("Maximum result pages, from 1 through 50."),
+                    ["cursor"] = ToolSchemaProperty.String("Pagination cursor from a previous find response.")
                 }),
             new ToolDefinition(
                 "patchouli.fetch",
-                "Fetch an existing text-only Item resource by its patchouli://items/<item-id> URI.",
-                ["uri"],
+                "Fetch one or more existing text-only resources by their patchouli:// URIs.",
+                ["uris"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
-                    ["uri"] = ToolSchemaProperty.String("Item resource URI."),
-                    ["max_bytes"] = ToolSchemaProperty.Integer("Maximum allowed response bytes.")
+                    ["uris"] = ToolSchemaProperty.Array(
+                        "Resource URIs: items/<id>.bib, documents/<id>/, documents/<id>/pages/<page>.md, " +
+                        "styles/<id>.csl or evidence/<ref>.",
+                        ToolSchemaProperty.String("Resource URI.")),
+                    ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
+                    ["revision"] = ToolSchemaProperty.String(
+                        "Optional required revision; a mismatch fails with NOT_FOUND."),
+                    ["limit_bytes"] = ToolSchemaProperty.Integer(
+                        "Maximum response bytes per URI; oversized responses return explicit partial content and RESPONSE_TRUNCATED.")
                 }),
             new ToolDefinition(
                 "patchouli.put",
@@ -274,35 +307,48 @@ public sealed class McpProtocolHandler
                 false),
             new ToolDefinition(
                 "patchouli.cite",
-                "Render a bibliography for existing Item resource URIs using a CSL style.",
-                ["items"],
+                 "Render a bibliography for existing item, document, page, or evidence resource URIs using a CSL style.",
+                ["refs"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
-                    ["items"] = ToolSchemaProperty.Array("Item resource URIs.",
-                        ToolSchemaProperty.String("Item resource URI.")),
-                    ["style"] = ToolSchemaProperty.String("Optional CSL style identifier."),
-                    ["locale"] = ToolSchemaProperty.String("Optional locale.")
+                     ["refs"] = ToolSchemaProperty.Array("Item, document, page, or evidence resource URIs.",
+                         ToolSchemaProperty.String("Citation-capable resource URI.")),
+                    ["style"] = ToolSchemaProperty.String(
+                        "Optional CSL style URI; omit to use the configured default style."),
+                    ["locale"] = ToolSchemaProperty.String("Optional locale."),
+                    ["bibliography"] = ToolSchemaProperty.Boolean(
+                        "Return only the bibliography without inline citations."),
+                    ["html"] = ToolSchemaProperty.Boolean("Include the HTML rendering.")
                 })
         ];
     }
 
-    private async Task<object> CallAsync(JsonElement parameters, string? sessionId, CancellationToken ct)
+    private async Task<object> CallAsync(JsonElement parameters, CancellationToken ct)
     {
-        string name = parameters.GetProperty("name").GetString() ??
-                      throw new InvalidOperationException("Tool name is required.");
+        if (parameters.ValueKind != JsonValueKind.Object)
+        {
+            throw new McpArgumentException("tools/call params are required.");
+        }
+
+        if (!parameters.TryGetProperty("name", out JsonElement nameElement) ||
+            nameElement.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(nameElement.GetString()))
+        {
+            throw new McpArgumentException("Tool name is required.");
+        }
+
+        string name = nameElement.GetString()!;
         if (!IsToolEnabled(name))
         {
             string? disabledReason = ToolDisabledReason(name);
-            Result<object> disabled = Result<object>.Failure(McpErrorCodes.ToolUnavailable,
+            return ToolError((int)McpErrorCode.Unavailable,
                 $"disabled: {disabledReason ?? "This MCP tool is disabled."}");
-            return new
-            {
-                isError = true,
-                content = new[] { new { type = "text", text = $"{disabled.ErrorCode}: {disabled.ErrorMessage}" } }
-            };
         }
 
         JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
+        if (a.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Object))
+        {
+            throw new McpArgumentException("arguments must be an object.");
+        }
         if (string.Equals(name, "patchouli.find", StringComparison.Ordinal))
         {
             return await FindAsync(a, ct);
@@ -320,160 +366,188 @@ public sealed class McpProtocolHandler
 
         if (string.Equals(name, "patchouli.put", StringComparison.Ordinal))
         {
-            return ToolError(McpErrorCodes.ToolUnavailable,
-                "Writable protocol support is not available until atomic revision-gated replacement is implemented.");
+            return await PutAsync(a, ct);
         }
 
-        if (!string.Equals(name, "patchouli_shell", StringComparison.Ordinal))
-        {
-            return ToolError("unknown_tool", "Unknown tool.");
-        }
-
-        if (a.ValueKind != JsonValueKind.Object || !a.TryGetProperty("command", out JsonElement commandElement) ||
-            commandElement.ValueKind != JsonValueKind.String)
-        {
-            throw new InvalidOperationException("command is required.");
-        }
-
-        if (_shell is null)
-        {
-            return new
-            {
-                isError = true,
-                content = new[]
-                {
-                    new { type = "text", text = $"{AppErrorCodes.InvalidState}: Shell sandbox is unavailable." }
-                }
-            };
-        }
-
-        string command = commandElement.GetString() ?? "";
-        string effectiveSessionId = string.IsNullOrWhiteSpace(sessionId) ? Guid.NewGuid().ToString("N") : sessionId!;
-        Result<ShellExecuteResult> executed = await _shell.ExecuteAsync(effectiveSessionId, command, ct);
-        if (executed.IsFailure)
-        {
-            return new
-            {
-                isError = true,
-                content = new[]
-                {
-                    new { type = "text", text = $"{executed.ErrorCode}: {executed.ErrorMessage}" }
-                }
-            };
-        }
-
-        return new
-        {
-            content = new[] { new { type = "text", text = executed.Value.Text } },
-            isError = executed.Value.ExitCode != 0
-        };
+        return ToolError((int)McpErrorCode.InvalidArgument, "Unknown tool.");
     }
 
     private async Task<object> FindAsync(JsonElement arguments, CancellationToken ct)
     {
-        string query = RequiredString(arguments, "query");
-        int limit = OptionalInteger(arguments, "limit", 20, 1, 50);
-        Result<McpSearchLibraryResponse> searched = await _api.SearchLibraryAsync(
-            new McpSearchLibraryRequest(query, limit, IncludeEvidenceRefs: true), ct);
-        if (searched.IsFailure)
+        string? query = OptionalString(arguments, "query");
+        string? inScope = OptionalString(arguments, "in");
+        List<McpWhereClause>? where = ParseWhere(arguments, "where");
+        bool literal = OptionalBoolean(arguments, "literal");
+        bool regex = OptionalBoolean(arguments, "regex");
+        int limit = OptionalInteger(arguments, "limit", 20, 1, McpCommandService.MaxLimit);
+        string? cursor = OptionalString(arguments, "cursor");
+
+        McpCommandResult<McpFindResponse> result = await _commands.FindAsync(
+            new McpFindRequest(query, inScope, where, literal, regex, limit, cursor), ct);
+        return ToToolResponse(result);
+    }
+
+    private static List<McpWhereClause>? ParseWhere(JsonElement arguments, string name)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty(name, out JsonElement value))
         {
-            return ToolError(searched.ErrorCode!, searched.ErrorMessage!);
+            return null;
         }
 
-        return ToolData(new
+        if (value.ValueKind == JsonValueKind.Array)
         {
-            results = searched.Value.Results.Select(page => new
+            List<McpWhereClause> clauses = [];
+            foreach (JsonElement item in value.EnumerateArray())
             {
-                uri = $"patchouli://documents/{page.DocumentInstanceId}",
-                kind = "document",
-                label = page.ItemTitle,
-                citable = true,
-                matches = page.MatchedUnits.Select(unit => new
+                string? clause = item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+                if (string.IsNullOrWhiteSpace(clause))
                 {
-                    evidence = unit.EvidenceRef,
-                    preview = unit.Text,
-                    ordinal = unit.Ordinal
-                })
-            }),
-            continuation = searched.Value.NextCursor,
-            warnings = searched.Value.Warning
-        });
+                    throw new McpArgumentException($"{name} must contain KEY=VALUE clauses.");
+                }
+
+                McpWhereClause? parsed = SplitWhere(clause, name);
+                if (parsed is not null)
+                {
+                    clauses.Add(parsed);
+                }
+            }
+
+            return clauses;
+        }
+
+        throw new McpArgumentException($"{name} must be an array of KEY=VALUE strings.");
+    }
+
+    private static McpWhereClause? SplitWhere(string clause, string name)
+    {
+        int separator = clause.IndexOf('=');
+        if (separator <= 0)
+        {
+            throw new McpArgumentException($"{name} must use the KEY=VALUE form.");
+        }
+
+        return new McpWhereClause(clause[..separator], clause[(separator + 1)..]);
     }
 
     private async Task<object> FetchAsync(JsonElement arguments, CancellationToken ct)
     {
+        List<string> uris = ParseUriList(arguments);
+        string? range = OptionalString(arguments, "range");
+        string? revision = OptionalString(arguments, "revision");
+        int limitBytes = OptionalInteger(arguments, "limit_bytes", McpCommandService.DefaultLimitBytes, 1, int.MaxValue);
+
+        List<object> envelopes = [];
+        bool hasError = false;
+        foreach (string uri in uris)
+        {
+            McpCommandResult<McpFetchResponse> result = await _commands.FetchAsync(
+                new McpFetchRequest(uri, range, revision, limitBytes), ct);
+            if (result.Envelope is not null)
+            {
+                envelopes.Add(result.Envelope);
+            }
+            else
+            {
+                envelopes.Add(new { uri, error = result.Error });
+            }
+
+            hasError |= !result.IsSuccess;
+        }
+
+        return envelopes.Count == 1
+            ? ToolData(envelopes[0], hasError)
+            : ToolData(envelopes, hasError);
+    }
+
+    private static List<string> ParseUriList(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty("uris", out JsonElement urisArray))
+        {
+            throw new McpArgumentException("uris is required.");
+        }
+
+        if (urisArray.ValueKind != JsonValueKind.Array)
+        {
+            throw new McpArgumentException("uris must be an array of patchouli:// URI strings.");
+        }
+
+        List<string> uris = [];
+        foreach (JsonElement item in urisArray.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
+            {
+                throw new McpArgumentException("uris must contain patchouli:// URI strings.");
+            }
+
+            uris.Add(item.GetString()!);
+        }
+
+        if (uris.Count == 0)
+        {
+            throw new McpArgumentException("uris is required.");
+        }
+
+        return uris;
+    }
+
+    private async Task<object> PutAsync(JsonElement arguments, CancellationToken ct)
+    {
         string uri = RequiredString(arguments, "uri");
-        int maxBytes = OptionalInteger(arguments, "max_bytes", 65536, 1, 1048576);
-        const string prefix = "patchouli://items/";
-        if (!uri.StartsWith(prefix, StringComparison.Ordinal))
-        {
-            return ToolError("invalid_argument",
-                "Only patchouli://items/<item-id> resources are available in this adapter.");
-        }
-
-        string rawItemId = uri[prefix.Length..].TrimEnd('/');
-        if (!Guid.TryParse(rawItemId, out Guid value))
-        {
-            return ToolError("invalid_argument", "Item resource URI is invalid.");
-        }
-
-        Result<McpItemMetadataResponse> item = await _api.GetItemMetadataAsync(new ItemId(value), ct);
-        if (item.IsFailure)
-        {
-            return ToolError(item.ErrorCode!, item.ErrorMessage!);
-        }
-
-        byte[] encoded = JsonSerializer.SerializeToUtf8Bytes(item.Value);
-        if (encoded.Length > maxBytes)
-        {
-            return ToolError("invalid_argument", "Requested resource exceeds max_bytes.");
-        }
-
-        return ToolData(new
-            { uri, kind = "item", writable = false, citable = item.Value.ItemType != "general", content = item.Value });
+        string content = RequiredString(arguments, "content");
+        string baseRevision = RequiredString(arguments, "base");
+        McpCommandResult<McpPutResponse> result = await _commands.PutAsync(
+            new McpPutRequest(uri, content, baseRevision), ct);
+        return ToToolResponse(result);
     }
 
     private async Task<object> CiteAsync(JsonElement arguments, CancellationToken ct)
     {
-        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty("items", out JsonElement items) ||
-            items.ValueKind != JsonValueKind.Array || items.GetArrayLength() == 0)
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty("refs", out JsonElement refs) ||
+            refs.ValueKind != JsonValueKind.Array || refs.GetArrayLength() == 0)
         {
-            throw new InvalidOperationException("items is required.");
+            throw new McpArgumentException("refs is required.");
         }
 
-        List<ItemId> itemIds = new();
-        foreach (JsonElement item in items.EnumerateArray())
+        List<string> refValues = new();
+        foreach (JsonElement item in refs.EnumerateArray())
         {
-            if (item.ValueKind != JsonValueKind.String || !TryParseItemUri(item.GetString(), out ItemId itemId))
+            if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
             {
-                return ToolError("invalid_argument", "items must contain patchouli://items/<item-id> URIs.");
+                throw new McpArgumentException(
+                    "refs must contain patchouli://items, documents, pages, or evidence URIs.");
             }
 
-            itemIds.Add(itemId);
+            refValues.Add(item.GetString()!);
         }
 
         string? style = OptionalString(arguments, "style");
         string? locale = OptionalString(arguments, "locale");
-        Result<McpRenderBibliographyResponse> rendered = await _api.RenderItemsBibliographyAsync(
-            new McpRenderBibliographyRequest(itemIds, style, locale), ct);
-        return rendered.IsFailure
-            ? ToolError(rendered.ErrorCode!, rendered.ErrorMessage!)
-            : ToolData(new
-            {
-                style = rendered.Value.StyleId, bibliography = rendered.Value.RenderedText,
-                html = rendered.Value.RenderedHtml, warnings = rendered.Value.Warnings
-            });
+        bool bibliography = OptionalBoolean(arguments, "bibliography");
+        bool html = OptionalBoolean(arguments, "html");
+        McpCommandResult<McpCiteResponse> result = await _commands.CiteAsync(
+            new McpCiteRequest(refValues, style, locale, bibliography, html), ct);
+        return ToToolResponse(result);
     }
 
-    private static object ToolData(object data)
+    private static object ToToolResponse<T>(McpCommandResult<T> result)
+    {
+        if (result.Envelope is not null)
+        {
+            return ToolData(result.Envelope, !result.IsSuccess);
+        }
+
+        return ToolError(result.Error!.Code, result.Error.Message);
+    }
+
+    private static object ToolData(object envelope, bool isError = false)
     {
         return new
         {
-            content = new[] { new { type = "text", text = JsonSerializer.Serialize(new { data }) } }, isError = false
+            content = new[] { new { type = "text", text = JsonSerializer.Serialize(envelope) } }, isError
         };
     }
 
-    private static object ToolError(string code, string message)
+    private static object ToolError(int code, string message)
     {
         return new { isError = true, content = new[] { new { type = "text", text = $"{code}: {message}" } } };
     }
@@ -481,15 +555,27 @@ public sealed class McpProtocolHandler
     private static string RequiredString(JsonElement arguments, string name)
     {
         string? value = OptionalString(arguments, name);
-        return !string.IsNullOrWhiteSpace(value) ? value : throw new InvalidOperationException($"{name} is required.");
+        return !string.IsNullOrWhiteSpace(value) ? value : throw new McpArgumentException($"{name} is required.");
     }
 
     private static string? OptionalString(JsonElement arguments, string name)
     {
-        return arguments.ValueKind == JsonValueKind.Object && arguments.TryGetProperty(name, out JsonElement value) &&
-               value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty(name, out JsonElement value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            throw new McpArgumentException($"{name} must be a string.");
+        }
+
+        return value.GetString();
     }
 
     private static int OptionalInteger(JsonElement arguments, string name, int fallback, int minimum, int maximum)
@@ -499,26 +585,38 @@ public sealed class McpProtocolHandler
             return fallback;
         }
 
-        if (!value.TryGetInt32(out int parsed) || parsed < minimum || parsed > maximum)
+        if (value.ValueKind == JsonValueKind.Null)
         {
-            throw new InvalidOperationException($"{name} must be between {minimum} and {maximum}.");
+            return fallback;
+        }
+
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt32(out int parsed) ||
+            parsed < minimum || parsed > maximum)
+        {
+            throw new McpArgumentException($"{name} must be between {minimum} and {maximum}.");
         }
 
         return parsed;
     }
 
-    private static bool TryParseItemUri(string? value, out ItemId itemId)
+    private static bool OptionalBoolean(JsonElement arguments, string name)
     {
-        const string prefix = "patchouli://items/";
-        if (value is not null && value.StartsWith(prefix, StringComparison.Ordinal) &&
-            Guid.TryParse(value[prefix.Length..].TrimEnd('/'), out Guid parsed))
+        if (arguments.ValueKind != JsonValueKind.Object || !arguments.TryGetProperty(name, out JsonElement value))
         {
-            itemId = new ItemId(parsed);
-            return true;
+            return false;
         }
 
-        itemId = default;
-        return false;
+        if (value.ValueKind == JsonValueKind.Null)
+        {
+            return false;
+        }
+
+        if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            throw new McpArgumentException($"{name} must be a boolean.");
+        }
+
+        return value.ValueKind == JsonValueKind.True;
     }
 
     private bool IsToolEnabled(string toolName)
@@ -567,6 +665,85 @@ public sealed class McpProtocolHandler
     }
 
     private sealed class MethodNotFoundException(string message) : Exception(message);
+
+    private sealed class McpArgumentException(string message) : Exception(message);
+
+    private sealed class UnavailableWriteApi : IMcpWriteApi
+    {
+        public event EventHandler<McpResourceChangedEventArgs>? ResourceChanged
+        {
+            add { }
+            remove { }
+        }
+
+        public Task<Result<McpPutResponse>> PutAsync(McpPutRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<McpPutResponse>.Failure(
+                McpErrorCodes.ToolUnavailable, "Writable protocol support is unavailable."));
+        }
+    }
+
+    private sealed class UnavailableBiblatexImportService : IBiblatexImportService
+    {
+        public Task<Result<IReadOnlyList<BiblatexEntryDto>>> ParseTextAsync(string text,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<BiblatexEntryDto>>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<IReadOnlyList<BiblatexEntryDto>>> ParseFileAsync(string path,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<BiblatexEntryDto>>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<BiblatexSingleImportPreview>> PreviewSingleAsync(BiblatexEntryDto entry,
+            ItemId? targetItemId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<BiblatexSingleImportPreview>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<BiblatexImportApplyResult>> ApplySingleAsync(BiblatexMappedItem source,
+            ItemId? targetItemId, IReadOnlyDictionary<string, string>? fieldChoices, string? bibFileDirectory,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<BiblatexImportApplyResult>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<BiblatexBatchImportPreview>> PreviewBatchAsync(
+            IReadOnlyList<BiblatexEntryDto> entries, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<BiblatexBatchImportPreview>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<BiblatexImportApplyResult>> ApplyBatchAsync(BiblatexBatchImportPlan plan,
+            IReadOnlyDictionary<string, string>? linkChoices, string? bibFileDirectory,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<BiblatexImportApplyResult>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<string>> ExportItemsAsync(IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<string>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+
+        public Task<Result<string>> ExportItemForAgentAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<string>.Failure(
+                AppErrorCodes.UnsupportedOperation, "BibLaTeX import service is unavailable."));
+        }
+    }
 
     private sealed record ToolSchemaProperty(string Type, string Description, ToolSchemaProperty? Items = null)
     {

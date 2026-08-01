@@ -1,5 +1,6 @@
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
+using Patchouli.Core.Cli;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Conflicts;
@@ -19,6 +20,7 @@ using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography.MetadataLookup;
+using Patchouli.Infrastructure.Cli;
 using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Coordinates;
@@ -30,7 +32,6 @@ using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
-using Patchouli.Infrastructure.Shell;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
@@ -161,12 +162,8 @@ public sealed class AppServices
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
             ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown);
-        ShellDomain = new ShellDomainService(
-            ConnectionFactory, Mcp, Search, Evidence, CslStore, CslRenderer, BiblatexHelper, Items, Library);
-        ShellSidecar = new ShellSidecarHost(ShellDomain, limits: new ShellResourceLimits
-        {
-            CommandTimeout = TimeSpan.FromSeconds(settings.Mcp.ShellCommandTimeoutSeconds)
-        });
+        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore);
+        CliPath = new CliPathService();
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -232,9 +229,9 @@ public sealed class AppServices
     public IQueryRewriter QueryRewriter { get; }
     public IEvidenceReferenceService Evidence { get; }
     public IMcpReadApi Mcp { get; }
+    public IMcpWriteApi McpWrites { get; }
     public IMcpServerSettingsService McpSettings { get; }
-    public ShellDomainService ShellDomain { get; }
-    public ShellSidecarHost ShellSidecar { get; }
+    public ICliPathService CliPath { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
     public ISnapshotBranchInspectionService BranchInspection { get; }

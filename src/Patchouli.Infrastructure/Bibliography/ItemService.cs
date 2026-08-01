@@ -141,6 +141,24 @@ public sealed class ItemService : IItemService
         UpdateItemRequest request,
         CancellationToken cancellationToken = default)
     {
+        return await UpdateItemCoreAsync(itemId, request, null, cancellationToken);
+    }
+
+    public async Task<Result<ItemMetadata>> ReplaceItemAsync(
+        ItemId itemId,
+        UpdateItemRequest request,
+        IReadOnlyList<ItemIdentifierInput> identifiers,
+        CancellationToken cancellationToken = default)
+    {
+        return await UpdateItemCoreAsync(itemId, request, identifiers, cancellationToken);
+    }
+
+    private async Task<Result<ItemMetadata>> UpdateItemCoreAsync(
+        ItemId itemId,
+        UpdateItemRequest request,
+        IReadOnlyList<ItemIdentifierInput>? replacementIdentifiers,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(request.Title))
         {
             return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed, "Item title is required.");
@@ -256,6 +274,21 @@ public sealed class ItemService : IItemService
 
             await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, updated.UpdatedAt);
             await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, updated.UpdatedAt);
+            if (replacementIdentifiers is not null)
+            {
+                await connection.ExecuteAsync(
+                    "delete from item_identifiers where item_id = @ItemId;",
+                    new { ItemId = itemId.ToString() }, transaction);
+                DateTimeOffset now = updated.UpdatedAt;
+                foreach (ItemIdentifierInput identifier in replacementIdentifiers
+                             .Select(NormalizeIdentifier)
+                             .Where(static value => value is not null)
+                             .Cast<ItemIdentifierInput>()
+                             .DistinctBy(static value => (value.Scheme, value.Value)))
+                {
+                    await InsertIdentifierAsync(connection, transaction, itemId, identifier, now);
+                }
+            }
             await transaction.CommitAsync(cancellationToken);
             return await GetItemAsync(itemId, cancellationToken);
         }

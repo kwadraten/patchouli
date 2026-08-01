@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Xml.Linq;
+using System.Xml;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Csl;
@@ -138,6 +139,171 @@ public sealed class CslStyleStore : ICslStyleStore
         }
 
         return Result<string>.Success(await File.ReadAllTextAsync(path, cancellationToken));
+    }
+
+    public async Task<Result<CslStyle>> ReplaceStyleAsync(string styleId, string contentXml,
+        string expectedRevision, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(contentXml))
+        {
+            return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed, "CSL style content is required.");
+        }
+
+        Result<string> resolvedPath = ResolveStylePath(styleId);
+        if (resolvedPath.IsFailure)
+        {
+            return Result<CslStyle>.Failure(resolvedPath.ErrorCode!, resolvedPath.ErrorMessage!);
+        }
+
+        XDocument document;
+        try
+        {
+            document = XDocument.Parse(contentXml, LoadOptions.PreserveWhitespace);
+        }
+        catch (Exception exception) when (exception is XmlException or InvalidOperationException)
+        {
+            return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed, "CSL style XML is invalid.");
+        }
+
+        string? declaredId = GetDeclaredStyleId(document);
+        if (declaredId is null)
+        {
+            return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed,
+                "CSL style XML requires a style root and a non-empty info.id.");
+        }
+
+        Result<CslStyle> current = await GetStyleAsync(styleId, cancellationToken);
+        if (current.IsFailure)
+        {
+            return current;
+        }
+
+        Result<string> currentContent = await GetStyleContentAsync(styleId, cancellationToken);
+        if (currentContent.IsFailure)
+        {
+            return Result<CslStyle>.Failure(currentContent.ErrorCode!, currentContent.ErrorMessage!);
+        }
+
+        string? currentDeclaredId;
+        try
+        {
+            currentDeclaredId = GetDeclaredStyleId(XDocument.Parse(currentContent.Value, LoadOptions.PreserveWhitespace));
+        }
+        catch (Exception exception) when (exception is XmlException or InvalidOperationException)
+        {
+            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError,
+                "Existing CSL style content is invalid.");
+        }
+
+        if (!string.Equals(declaredId, currentDeclaredId, StringComparison.Ordinal))
+        {
+            return Result<CslStyle>.Failure(AppErrorCodes.ValidationFailed,
+                "CSL style info.id cannot change through MCP.");
+        }
+
+        string expectedHash = expectedRevision.StartsWith("style:", StringComparison.Ordinal)
+            ? expectedRevision["style:".Length..]
+            : string.Empty;
+        if (!string.Equals(expectedHash, current.Value.ContentHash, StringComparison.OrdinalIgnoreCase))
+        {
+            return Result<CslStyle>.Failure(AppErrorCodes.Conflict, "CSL style revision is stale.");
+        }
+
+        string path = resolvedPath.Value;
+        string temporaryPath = path + ".mcp-put-" + Guid.NewGuid().ToString("N") + ".tmp";
+        string backupPath = path + ".mcp-put-" + Guid.NewGuid().ToString("N") + ".bak";
+        bool replacedFile = false;
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, contentXml, Encoding.UTF8, cancellationToken);
+            File.Copy(path, backupPath, overwrite: true);
+            File.Move(temporaryPath, path, overwrite: true);
+            replacedFile = true;
+
+            CslStyle metadata = ParseMetadata(current.Value.StyleId, current.Value.DisplayName,
+                current.Value.SourceUrl, current.Value.SourceKind, contentXml);
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            int changed = await connection.ExecuteAsync(
+                """
+                update csl_styles
+                set display_name = @DisplayName,
+                    default_locale = @DefaultLocale,
+                    content_hash = @ContentHash,
+                    updated_at = @UpdatedAt
+                where style_id = @StyleId and deleted = 0 and content_hash = @ExpectedHash;
+                """,
+                new
+                {
+                    metadata.StyleId,
+                    metadata.DisplayName,
+                    metadata.DefaultLocale,
+                    metadata.ContentHash,
+                    UpdatedAt = metadata.UpdatedAt.ToUniversalTime().ToString("O"),
+                    ExpectedHash = current.Value.ContentHash
+                });
+            if (changed != 1)
+            {
+                RestoreFile(path, backupPath);
+                return Result<CslStyle>.Failure(AppErrorCodes.Conflict, "CSL style revision is stale.");
+            }
+
+            File.Delete(backupPath);
+            return Result<CslStyle>.Success(metadata);
+        }
+        catch (OperationCanceledException)
+        {
+            if (replacedFile)
+            {
+                RestoreFile(path, backupPath);
+            }
+
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+            "infrastructure.csl-style-store", "replace-style"))
+        {
+            if (replacedFile && File.Exists(backupPath))
+            {
+                RestoreFile(path, backupPath);
+            }
+
+            return Result<CslStyle>.Failure(AppErrorCodes.DatabaseError,
+                $"CSL style replacement failed: {exception.Message}");
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath))
+            {
+                File.Delete(temporaryPath);
+            }
+
+            if (File.Exists(backupPath))
+            {
+                File.Delete(backupPath);
+            }
+        }
+    }
+
+    private static void RestoreFile(string path, string backupPath)
+    {
+        if (File.Exists(backupPath))
+        {
+            File.Move(backupPath, path, overwrite: true);
+        }
+    }
+
+    private static string? GetDeclaredStyleId(XDocument document)
+    {
+        XElement? root = document.Root;
+        if (root is null || !string.Equals(root.Name.LocalName, "style", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        XNamespace ns = root.Name.Namespace;
+        string? declaredId = root.Element(ns + "info")?.Element(ns + "id")?.Value?.Trim();
+        return string.IsNullOrWhiteSpace(declaredId) ? null : declaredId;
     }
 
     public async Task<Result<CslStyle>> InstallStyleAsync(CslCatalogStyle catalogStyle, string contentXml,

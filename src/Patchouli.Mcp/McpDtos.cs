@@ -91,6 +91,7 @@ public sealed record McpItemMetadataResponse(
     string TagsJson,
     string CollectionsJson,
     string CustomFieldsJson,
+    DateTimeOffset UpdatedAt,
     IReadOnlyList<McpItemCreator> Creators,
     IReadOnlyList<McpItemDate> Dates,
     IReadOnlyList<McpItemIdentifier> Identifiers);
@@ -111,12 +112,14 @@ public sealed record McpPageTextRequest(
 
 public sealed record McpPageTextResponse(
     PageId PageId,
+    DocumentInstanceId DocumentInstanceId,
     string? PageLabel,
     int PageIndex,
     string Text,
     string ReadMode,
     string? EvidenceRef,
-    IReadOnlyList<string> Warnings);
+    IReadOnlyList<string> Warnings,
+    string? Revision = null);
 
 public sealed record McpPageBlocksRequest(
     PageId PageId,
@@ -175,12 +178,14 @@ public sealed record McpCslStyleResponse(
     string? Locale,
     bool Enabled,
     string? SourceUrl,
+    string ContentHash,
     string ContentXml);
 
 public sealed record McpRenderBibliographyRequest(
     IReadOnlyList<ItemId> ItemIds,
     string? StyleId = null,
-    string? Locale = null);
+    string? Locale = null,
+    bool AllowGeneralAsMisc = true);
 
 public sealed record McpRenderBibliographyResponse(
     string StyleId,

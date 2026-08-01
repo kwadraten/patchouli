@@ -14,13 +14,16 @@ public sealed partial class App : Application
 
     public override async void OnFrameworkInitializationCompleted()
     {
+        MainWindow? mainWindow = null;
+        bool initialized = false;
         try
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
-                MainWindow mainWindow = new();
+                mainWindow = new MainWindow();
                 desktop.MainWindow = mainWindow;
-                await mainWindow.ShowFirstRunIfNeededAsync();
+                await mainWindow.ShowFirstRunIfNeededAsync(startMcpServer: false);
+                initialized = true;
             }
         }
         catch (Exception exception)
@@ -34,6 +37,10 @@ public sealed partial class App : Application
         finally
         {
             base.OnFrameworkInitializationCompleted();
+            if (initialized)
+            {
+                mainWindow?.StartMcpServerInBackground();
+            }
         }
     }
 }

@@ -75,7 +75,6 @@ public class AboutViewModel : ViewModelBase
                 "https://github.com/Dtronix/PDFiumCore", openUrlCommand),
             new("Fsharp.Citeproc", "MIT", "https://github.com/kwadraten/Fsharp.Citeproc", openUrlCommand),
             new("Markdig", "BSD-2-Clause", "https://github.com/xoofx/markdig", openUrlCommand),
-            new("Bashkit", "MIT", "https://github.com/everruns/bashkit", openUrlCommand),
             new("typst/biblatex", "MIT / Apache-2.0", "https://github.com/typst/biblatex",
                 openUrlCommand)
         };

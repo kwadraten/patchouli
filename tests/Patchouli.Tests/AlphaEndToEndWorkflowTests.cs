@@ -47,6 +47,6 @@ public sealed class AlphaEndToEndWorkflowTests
     public void EndToEnd_McpServerTransport_SearchAndPageText()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "McpServerTransportTests.cs"))
-            .Should().Contain("tools/call").And.Contain("patchouli_shell");
+            .Should().Contain("tools/call").And.Contain("patchouli.find");
     }
 }

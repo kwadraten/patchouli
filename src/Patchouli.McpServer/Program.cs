@@ -14,13 +14,13 @@ using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Evidence;
+using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
-using Patchouli.Infrastructure.Shell;
 using Patchouli.McpServer;
 
 if (args.Contains("--help"))
@@ -98,14 +98,11 @@ try
     ItemService items = new(db, library, clock);
     CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations);
     CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
-    BiblatexHelperClient biblatexHelper = new();
     McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
-    ShellDomainService shellDomain = new(db, api, search, evidence, cslStore, cslRenderer, biblatexHelper, items,
-        library);
-    await using ShellSidecarHost shell = new(shellDomain, limits: new ShellResourceLimits
-    {
-        CommandTimeout = TimeSpan.FromSeconds(effectiveSettings.ShellCommandTimeoutSeconds)
-    });
+    McpWriteApi writes = new(items, new BiblatexHelperClient(), cslStore);
+    BiblatexImportService biblatexImport = new(
+        new BiblatexHelperClient(), items, new FileAssetService(db, library, clock),
+        new DocumentInstanceService(db, clock));
 
     static void ReportUnexpected(Exception exception, string operation)
     {
@@ -113,25 +110,11 @@ try
             McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
     }
 
-    try
-    {
-        Console.Error.WriteLine("[mcp-server] starting shell sidecar");
-        await shell.StartAsync();
-        Console.Error.WriteLine("[mcp-server] shell sidecar ready");
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine(McpOutputSanitizer.Sanitize($"Shell sidecar failed to start: {ex.Message}"));
-        Environment.ExitCode = 1;
-        return;
-    }
-
-    McpProtocolHandler handler = new(api, db, effectiveSettings, ReportUnexpected, shell);
-    await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected, shell);
+    McpProtocolHandler handler = new(api, writes, biblatexImport, db, effectiveSettings, ReportUnexpected);
+    await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected);
     Console.Error.WriteLine($"[mcp-server] listening on loopback port {effectiveSettings.Port}");
     await server.RunAsync();
     Console.Error.WriteLine("[mcp-server] server stopped");
-    await shell.StopAsync();
 }
 catch (Exception ex)
 {

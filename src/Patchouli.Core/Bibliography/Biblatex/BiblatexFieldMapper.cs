@@ -12,19 +12,65 @@ public static class BiblatexFieldMapper
 {
     public static Result<BiblatexMappedItem> MapVisibleEntry(BiblatexEntryDto entry)
     {
+        if (!entry.VerifyOk)
+        {
+            return VerificationFailure(entry);
+        }
+
+        return MapEntry(entry, null);
+    }
+
+    /// <summary>
+    /// Maps an existing general item on the MCP agent surface. An @misc entry is the
+    /// round-trip projection and remains general; a supported non-misc entry is an explicit
+    /// type refinement. This keeps the projection rule separate from the UI import/export
+    /// contract.
+    /// </summary>
+    public static Result<BiblatexMappedItem> MapGeneralAgentEntry(BiblatexEntryDto entry)
+    {
+        if (!string.Equals(entry.EntryType, "misc", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!entry.VerifyOk)
+            {
+                return VerificationFailure(entry);
+            }
+
+            Result<BiblatexMappedItem> refined = MapEntry(entry, null);
+            if (refined.IsFailure)
+            {
+                return refined;
+            }
+
+            if (string.Equals(refined.Value.ItemType, "general", StringComparison.OrdinalIgnoreCase))
+            {
+                return Result<BiblatexMappedItem>.Failure(
+                    AppErrorCodes.ValidationFailed,
+                    $"BibLaTeX entry type '@{entry.EntryType}' is not a supported Patchouli type refinement.");
+            }
+
+            return refined;
+        }
+
+        bool onlyMissingAuthor = entry.Verify.Missing.Count > 0 &&
+                                 entry.Verify.Superfluous.Count == 0 &&
+                                 entry.Verify.Malformed.Count == 0 &&
+                                 entry.Verify.Missing.All(field =>
+                                     string.Equals(field, "author", StringComparison.OrdinalIgnoreCase));
+        if (!entry.VerifyOk && !onlyMissingAuthor)
+        {
+            return VerificationFailure(entry);
+        }
+
+        return MapEntry(entry, "general");
+    }
+
+    private static Result<BiblatexMappedItem> MapEntry(BiblatexEntryDto entry, string? forcedItemType)
+    {
         if (entry.IsXdata)
         {
             return Result<BiblatexMappedItem>.Failure(
                 AppErrorCodes.ValidationFailed,
                 "@xdata entries are data containers and cannot be imported as items.");
-        }
-
-        if (!entry.VerifyOk)
-        {
-            string detail = FormatFirstVerifyDiagnostic(entry);
-            return Result<BiblatexMappedItem>.Failure(
-                AppErrorCodes.BiblatexVerifyFailed,
-                $"BibLaTeX entry '{entry.Key}' failed verify(): {detail}");
         }
 
         string? title = NullIfEmpty(Field(entry, "title"));
@@ -35,7 +81,16 @@ public static class BiblatexFieldMapper
                 $"BibLaTeX entry '{entry.Key}' is missing title. Correct the source entry before importing.");
         }
 
-        string itemType = BiblatexEntryTypeMap.ResolvePatchouliItemType(entry.EntryType, out string? originalType);
+        string? originalType = null;
+        string itemType;
+        if (forcedItemType is not null)
+        {
+            itemType = forcedItemType;
+        }
+        else
+        {
+            itemType = BiblatexEntryTypeMap.ResolvePatchouliItemType(entry.EntryType, out originalType);
+        }
         IReadOnlyList<ItemCreatorInput> creators = MapCreators(entry);
         IReadOnlyList<ItemDateInput> dates = MapDates(entry);
         IReadOnlyList<ItemIdentifierInput> identifiers = MapIdentifiers(entry);
@@ -80,7 +135,15 @@ public static class BiblatexFieldMapper
             tags,
             NullIfEmpty(entry.File),
             entry.Key,
-            entry.EntryType));
+                entry.EntryType));
+    }
+
+    private static Result<BiblatexMappedItem> VerificationFailure(BiblatexEntryDto entry)
+    {
+        string detail = FormatFirstVerifyDiagnostic(entry);
+        return Result<BiblatexMappedItem>.Failure(
+            AppErrorCodes.BiblatexVerifyFailed,
+            $"BibLaTeX entry '{entry.Key}' failed verify(): {detail}");
     }
 
     public static string FormatFirstVerifyDiagnostic(BiblatexEntryDto entry)

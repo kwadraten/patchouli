@@ -49,6 +49,12 @@ public interface IItemService
         UpdateItemRequest request,
         CancellationToken cancellationToken = default);
 
+    Task<Result<ItemMetadata>> ReplaceItemAsync(
+        ItemId itemId,
+        UpdateItemRequest request,
+        IReadOnlyList<ItemIdentifierInput> identifiers,
+        CancellationToken cancellationToken = default);
+
     Task<Result> DeleteItemAsync(
         ItemId itemId,
         CancellationToken cancellationToken = default);
