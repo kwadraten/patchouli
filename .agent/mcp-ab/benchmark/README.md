@@ -19,7 +19,7 @@ The benchmark selected structured MCP-B as the production route. ADR 0024 record
 
 1. Copy `.env.example` to `.env` in this directory and set the API key, endpoint URLs, model name, and optional MCP bearer tokens.
 2. Copy `variables.example.json` to a local untracked file, for example `variables.local.json`, and replace every `PROVISION_ME` value with values valid for the isolated benchmark Library. Do not use provider credentials as variable values.
-3. Start MCP-A and MCP-B against independent copies of the same database snapshot. A exposes `patchouli_shell` and runs only from the historical `feature/mcp-ab-benchmark` branch (the shell implementation is not present on `main`); B exposes `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite`. `patchouli.put` is now implemented as an atomic revision-gated write.
+3. Start MCP-A and MCP-B against independent copies of the same database snapshot. A exposes `patchouli_shell` and runs only from the historical `feature/mcp-ab-benchmark` branch (the shell implementation is not present on `main`); B exposes `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite`. The recorded B implementation used an atomic revision-gated write; this is historical benchmark behavior, not the v3 production contract. ADR `0023` now specifies atomic complete-resource replacement without a `base` parameter.
 4. Run 100 repetitions per task and condition with a fixed randomized schedule:
 
 ```powershell

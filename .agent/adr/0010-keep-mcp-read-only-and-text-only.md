@@ -6,7 +6,7 @@ The first MCP surface was limited to **read-only, text-only** search and evidenc
 
 **Amendment (`0023`)**
 
-Absolute “never writes metadata” is relaxed for **narrow, revision-gated whole-resource replaces** of item `.bib` and style `.csl` projections, so agents can interact with the library to assist humans (fix styles, correct bibliography). All other write classes remain forbidden until a further ADR.
+Absolute “never writes metadata” is relaxed for **narrow, atomic whole-resource replaces** of item `.bib` and style `.csl` projections, so agents can interact with the library to assist humans (fix styles, correct bibliography). These replacements have no base-revision precondition; all other write classes remain forbidden until a further ADR.
 
 **Still in force from this ADR**
 
