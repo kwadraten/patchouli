@@ -156,6 +156,15 @@ public sealed record McpSearchContextResponse(
     IReadOnlyList<McpContextUnit> Units,
     string? Warning);
 
+/// <summary>
+/// The persistent identity and monotonic protocol revision of the host's current Library.
+/// library_revision is always formatted lib:&lt;positive decimal integer&gt; and strictly
+/// increases after every successful protocol-visible write, surviving host handoffs.
+/// </summary>
+public sealed record McpLibraryStateResponse(
+    string LibraryId,
+    string LibraryRevision);
+
 public sealed record McpContextUnit(
     SearchUnitId UnitId,
     string? EvidenceRef,

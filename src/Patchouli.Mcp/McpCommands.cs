@@ -6,143 +6,137 @@ public sealed record McpFindRequest(
     string? Query,
     string? In,
     IReadOnlyList<McpWhereClause>? Where,
-    bool Literal,
-    bool Regex,
+    bool Literal = false,
     int Limit = 20,
-    string? Cursor = null);
+    string? Cursor = null,
+    bool Long = false);
 
 public sealed record McpWhereClause(string Key, string Value);
 
-public sealed record McpFindMatch(string? Evidence, string Preview, int Ordinal);
+public sealed record McpFindMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision,
+    [property: JsonPropertyName("domain_total")]
+    int DomainTotal,
+    [property: JsonPropertyName("filtered_total")]
+    int FilteredTotal,
+    [property: JsonPropertyName("shown_total")]
+    int ShownTotal);
 
-public sealed record McpFindResultRow(
-    string Uri,
-    string Kind,
-    string Label,
-    string? Revision,
-    string? Preview,
-    bool Writable,
-    bool Citable,
-    IReadOnlyList<McpFindMatch>? Matches,
-    string? ItemUri = null,
-    string? ParentUri = null,
-    string? CitationTarget = null);
+public sealed record McpFindEntry(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("type")] string Type);
 
-public sealed record McpFindResponse(
-    IReadOnlyList<McpFindResultRow> Results,
+public sealed record McpFindLongEntry(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("item_uri")]
+    string? ItemUri,
+    [property: JsonPropertyName("document_instance_id")]
+    string? DocumentInstanceId,
+    [property: JsonPropertyName("page_index")]
+    int? PageIndex,
+    [property: JsonPropertyName("evidence_ref")]
+    string? EvidenceRef,
+    [property: JsonPropertyName("item_status")]
+    string? ItemStatus,
+    [property: JsonPropertyName("document_status")]
+    string? DocumentStatus,
+    [property: JsonPropertyName("source_status")]
+    string? SourceStatus,
+    [property: JsonPropertyName("style_enabled")]
+    bool? StyleEnabled,
+    [property: JsonPropertyName("citable")]
+    bool Citable);
+
+public sealed record McpFetchRequest(IReadOnlyList<string> Uris, string? Range, int? LimitBytes);
+
+public sealed record McpFetchMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision);
+
+public sealed record McpFetchResult(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("resource_type")]
+    string? ResourceType,
+    [property: JsonPropertyName("item_uri")]
+    string? ItemUri,
+    [property: JsonPropertyName("content")]
+    string? Content,
+    [property: JsonPropertyName("complete")]
+    bool Complete,
+    [property: JsonPropertyName("truncated")]
+    bool Truncated,
+    [property: JsonPropertyName("returned_bytes")]
+    int ReturnedBytes,
+    [property: JsonPropertyName("limit_bytes")]
+    int LimitBytes,
+    [property: JsonPropertyName("continuation")]
     string? Continuation,
-    IReadOnlyList<string> Warnings);
-
-public sealed record McpFetchRequest(string Uri, string? Range, string? Revision, int? LimitBytes);
-
-public sealed record McpFetchResponse(
-    string Uri,
-    string Kind,
-    string? Revision,
-    bool Writable,
-    bool Citable,
-    object Content,
-    bool Complete = true,
-    bool Truncated = false,
-    int? ReturnedBytes = null,
-    int? LimitBytes = null,
-    string? NextRange = null,
-    string? ItemUri = null,
-    string? ParentUri = null,
-    string? CitationTarget = null);
+    [property: JsonPropertyName("next_range")]
+    string? NextRange,
+    [property: JsonPropertyName("error")] McpToolError? Error);
 
 public sealed record McpCiteRequest(
     IReadOnlyList<string> Refs,
     string? Style,
     string? Locale,
-    bool BibliographyOnly,
+    bool Bibliography,
     bool Html);
 
-public sealed record McpCiteResponse(
-    string? Style,
-    string? Locale,
-    string? Bibliography,
-    string? Html,
-    IReadOnlyList<string> Warnings,
-    IReadOnlyList<McpCiteReferenceResult>? References = null,
-    string? EffectiveStyle = null);
+public sealed record McpCiteMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision,
+    [property: JsonPropertyName("effective_style_uri")]
+    string? EffectiveStyleUri,
+    [property: JsonPropertyName("effective_locale")]
+    string? EffectiveLocale,
+    [property: JsonPropertyName("render_format")]
+    string RenderFormat,
+    [property: JsonPropertyName("bibliography")]
+    string? Bibliography);
 
-public sealed record McpCiteReferenceResult(
-    string Ref,
-    string Status,
-    string? ItemUri = null,
-    string? CitationTarget = null,
-    McpToolError? Error = null);
+public sealed record McpCitationResult(
+    [property: JsonPropertyName("ref")] string Ref,
+    [property: JsonPropertyName("item_uri")]
+    string? ItemUri,
+    [property: JsonPropertyName("citation")]
+    string? Citation,
+    [property: JsonPropertyName("error")] McpToolError? Error);
 
-public sealed record McpFetchTextContent(string Text);
+public sealed record McpPutMeta(
+    [property: JsonPropertyName("library_revision")]
+    string LibraryRevision);
 
-public sealed record McpFetchOutlineContent(
-    string? Title,
-    string? Revision,
-    IReadOnlyList<McpDocumentPageRef> Pages,
-    string? ItemUri = null);
+public sealed record McpPutResult(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("resource_type")]
+    string ResourceType,
+    [property: JsonPropertyName("committed")]
+    bool Committed,
+    [property: JsonPropertyName("content_bytes")]
+    int ContentBytes);
 
-public sealed record McpFetchPageContent(
-    string Text,
-    string? PageLabel,
-    int PageIndex,
-    string Uri,
-    string? ItemUri = null,
-    string? ParentUri = null);
-
-public sealed record McpFetchPagesContent(IReadOnlyList<McpFetchPageContent> Pages);
-
-public sealed record McpFetchEvidenceContent(
-    string Status,
-    string? SourceTitle,
-    string? PageLabel,
-    int PageIndex,
-    string? DocumentUri,
-    string? PageUri,
-    string? PinnedText,
-    string? ItemUri = null);
-
-public sealed record McpToolError(
-    [property: JsonPropertyName("code")] int Code,
-    [property: JsonPropertyName("message")] string Message)
+/// <summary>Stable find warning codes carried in message.warnings.</summary>
+public static class McpWarningCodes
 {
-    [JsonPropertyName("name")]
-    public string Name => Code switch
-    {
-        (int)McpErrorCode.InvalidArgument => "INVALID_ARGUMENT",
-        (int)McpErrorCode.NotFound => "NOT_FOUND",
-        (int)McpErrorCode.PermissionDenied => "PERMISSION_DENIED",
-        (int)McpErrorCode.RevisionConflict => "REVISION_CONFLICT",
-        (int)McpErrorCode.InvalidContent => "INVALID_CONTENT",
-        (int)McpErrorCode.ResponseTruncated => "RESPONSE_TRUNCATED",
-        (int)McpErrorCode.Unavailable => "UNAVAILABLE",
-        (int)McpErrorCode.NotCitable => "NOT_CITABLE",
-        _ => "UNKNOWN"
-    };
+    public const string ResultSetMayHaveChanged = "RESULT_SET_MAY_HAVE_CHANGED";
+    public const string WhitespaceQueryTreatedAsBrowse = "WHITESPACE_QUERY_TREATED_AS_BROWSE";
+    public const string CursorContextRestored = "CURSOR_CONTEXT_RESTORED";
+    public const string RootDiscoveryPaginated = "ROOT_DISCOVERY_PAGINATED";
+    public const string FileUriSingletonScope = "FILE_URI_SINGLETON_SCOPE";
+    public const string WhereValueContainsEquals = "WHERE_VALUE_CONTAINS_EQUALS";
+    public const string DuplicateWhereKeyLastWins = "DUPLICATE_WHERE_KEY_LAST_WINS";
+    public const string LibraryChangedSinceLastResponse = "LIBRARY_CHANGED_SINCE_LAST_RESPONSE";
 }
 
-public sealed record McpCommandResult<T>(McpEnvelope<T>? Envelope, McpToolError? Error)
+/// <summary>Stable system document-status values used by detailed projections and filters.</summary>
+public static class McpDocumentStatusValue
 {
-    public bool IsSuccess => Error is null;
-
-    public static McpCommandResult<T> Ok(McpEnvelope<T> envelope)
-    {
-        return new McpCommandResult<T>(envelope, null);
-    }
-
-    public static McpCommandResult<T> Fail(int code, string message)
-    {
-        return new McpCommandResult<T>(null, new McpToolError(code, message));
-    }
-
-    public static McpCommandResult<T> Fail(McpErrorCode code, string message)
-    {
-        return Fail((int)code, message);
-    }
-
-    public static McpCommandResult<T> Partial(McpEnvelope<T> envelope, McpErrorCode code, string message)
-    {
-        McpToolError error = new((int)code, message);
-        return new McpCommandResult<T>(envelope with { Error = error }, error);
-    }
+    public const string Indexed = "indexed";
+    public const string Layout = "layout";
+    public const string Ocr = "ocr";
+    public const string Unavailable = "unavailable";
 }

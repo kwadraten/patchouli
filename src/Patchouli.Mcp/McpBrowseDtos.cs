@@ -12,7 +12,9 @@ public sealed record McpBrowseItemRow(
 
 public sealed record McpBrowseItemPage(
     IReadOnlyList<McpBrowseItemRow> Rows,
-    string? NextCursor);
+    bool HasMore,
+    int DomainTotal = 0,
+    int FilteredTotal = 0);
 
 public sealed record McpBrowseDocumentRow(
     DocumentInstanceId DocumentInstanceId,
@@ -23,7 +25,9 @@ public sealed record McpBrowseDocumentRow(
 
 public sealed record McpBrowseDocumentPage(
     IReadOnlyList<McpBrowseDocumentRow> Rows,
-    string? NextCursor);
+    bool HasMore,
+    int DomainTotal = 0,
+    int FilteredTotal = 0);
 
 public sealed record McpBrowseStyleRow(
     string StyleId,
@@ -34,7 +38,9 @@ public sealed record McpBrowseStyleRow(
 
 public sealed record McpBrowseStylePage(
     IReadOnlyList<McpBrowseStyleRow> Rows,
-    string? NextCursor);
+    bool HasMore,
+    int DomainTotal = 0,
+    int FilteredTotal = 0);
 
 public sealed record McpBrowseEvidenceRow(
     string EvidenceRefId,
@@ -47,10 +53,6 @@ public sealed record McpBrowseEvidenceRow(
     PageId PageId,
     DateTimeOffset CreatedAt,
     ItemId? ItemId = null);
-
-public sealed record McpBrowseEvidencePage(
-    IReadOnlyList<McpBrowseEvidenceRow> Rows,
-    string? NextCursor);
 
 public sealed record McpDocumentPageRef(PageId PageId, string? PageLabel, int PageIndex, string Uri);
 

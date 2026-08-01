@@ -3,7 +3,7 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
 
-/// <summary>Read-only, text-only service surface for future MCP protocol adapters.</summary>
+/// <summary>Read-only, text-only service surface for the structured v3 MCP protocol adapters.</summary>
 public interface IMcpReadApi
 {
     Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
@@ -33,17 +33,17 @@ public interface IMcpReadApi
     Task<Result<McpRenderBibliographyResponse>> RenderItemsBibliographyAsync(McpRenderBibliographyRequest request,
         CancellationToken cancellationToken = default);
 
-    Task<Result<McpBrowseItemPage>> BrowseItemsAsync(string? cursor, int limit, string? itemType = null,
-        string? status = null, CancellationToken cancellationToken = default);
+    Task<Result<McpBrowseItemPage>> BrowseItemsAsync(int skip, int limit,
+        IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 
-    Task<Result<McpBrowseDocumentPage>> BrowseDocumentsAsync(string? cursor, int limit,
-        CancellationToken cancellationToken = default);
+    Task<Result<McpBrowseItemPage>> SearchItemsAsync(string query, bool literal, int skip, int limit,
+        IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 
-    Task<Result<McpBrowseStylePage>> BrowseStylesAsync(string? cursor, int limit,
-        CancellationToken cancellationToken = default);
+    Task<Result<McpBrowseDocumentPage>> BrowseDocumentsAsync(int skip, int limit,
+        IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 
-    Task<Result<McpBrowseEvidencePage>> BrowseEvidenceAsync(string? cursor, int limit,
-        CancellationToken cancellationToken = default);
+    Task<Result<McpBrowseStylePage>> BrowseStylesAsync(int skip, int limit,
+        IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 
     Task<Result<McpDocumentOutlineResponse>> GetDocumentOutlineAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
@@ -52,10 +52,15 @@ public interface IMcpReadApi
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Resolves the item that owns a document instance. Used by the cite command to
-    /// support evidence references: an evidence ref points at a page in a document
-    /// instance, and the document instance belongs to an item.
+    /// Resolves the item that owns a document instance. Used by the cite command to support
+    /// document, page, and evidence references.
     /// </summary>
     Task<Result<ItemId>> GetItemIdForDocumentAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the persistent identity and current protocol revision of the host's Library.
+    /// </summary>
+    Task<Result<McpLibraryStateResponse>> GetCurrentLibraryStateAsync(
         CancellationToken cancellationToken = default);
 }

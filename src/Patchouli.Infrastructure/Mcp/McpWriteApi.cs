@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
@@ -36,16 +37,7 @@ public sealed class McpWriteApi : IMcpWriteApi
 
         if (parsedUri.Value.Kind == McpUriKind.Style)
         {
-            Result<CslStyle> replacedStyle = await _styles.ReplaceStyleAsync(
-                parsedUri.Value.StyleId!, request.Content, request.BaseRevision, cancellationToken);
-            if (replacedStyle.IsFailure)
-            {
-                return Result<McpPutResponse>.Failure(replacedStyle.ErrorCode!, replacedStyle.ErrorMessage!);
-            }
-
-            string revision = $"style:{replacedStyle.Value.ContentHash}";
-            NotifyResourceChanged(request.Uri, "style", revision);
-            return Result<McpPutResponse>.Success(new McpPutResponse(request.Uri, "style", revision, true));
+            return await ReplaceStyleAsync(request, parsedUri.Value.StyleId!, cancellationToken);
         }
 
         if (parsedUri.Value.Kind != McpUriKind.Item)
@@ -54,17 +46,40 @@ public sealed class McpWriteApi : IMcpWriteApi
                 "Only existing item bibliography resources can be replaced.");
         }
 
-        ItemId itemId = parsedUri.Value.ItemId!.Value;
+        return await ReplaceItemAsync(request, parsedUri.Value.ItemId!.Value, cancellationToken);
+    }
 
-        const string revisionPrefix = "item:";
-        if (!request.BaseRevision.StartsWith(revisionPrefix, StringComparison.Ordinal) ||
-            !DateTimeOffset.TryParseExact(request.BaseRevision[revisionPrefix.Length..], "O",
-                null, System.Globalization.DateTimeStyles.RoundtripKind, out DateTimeOffset expectedUpdatedAt))
+    private async Task<Result<McpPutResponse>> ReplaceStyleAsync(
+        McpPutRequest request,
+        string styleId,
+        CancellationToken cancellationToken)
+    {
+        // put has no base-revision precondition; the expected revision is read from the
+        // current style so the style store can still perform its atomic compare-and-swap.
+        Result<CslStyle> current = await _styles.GetStyleAsync(styleId, cancellationToken);
+        if (current.IsFailure)
         {
-            return Result<McpPutResponse>.Failure(AppErrorCodes.InvalidArgument,
-                "Item base revision must use the item:<UTC timestamp> format.");
+            return Result<McpPutResponse>.Failure(current.ErrorCode!, current.ErrorMessage!);
         }
 
+        Result<CslStyle> replacedStyle = await _styles.ReplaceStyleAsync(
+            styleId, request.Content, $"style:{current.Value.ContentHash}", cancellationToken);
+        if (replacedStyle.IsFailure)
+        {
+            return Result<McpPutResponse>.Failure(replacedStyle.ErrorCode!, replacedStyle.ErrorMessage!);
+        }
+
+        string revision = $"style:{replacedStyle.Value.ContentHash}";
+        NotifyResourceChanged(request.Uri, "style", revision);
+        return Result<McpPutResponse>.Success(new McpPutResponse(
+            request.Uri, "csl_style", true, ContentBytes(request.Content)));
+    }
+
+    private async Task<Result<McpPutResponse>> ReplaceItemAsync(
+        McpPutRequest request,
+        ItemId itemId,
+        CancellationToken cancellationToken)
+    {
         Result<ItemMetadata> existing = await _items.GetItemAsync(itemId, cancellationToken);
         if (existing.IsFailure)
         {
@@ -134,8 +149,7 @@ public sealed class McpWriteApi : IMcpWriteApi
             CollectionsJson: existing.Value.CollectionsJson,
             CustomFieldsJson: existing.Value.CustomFieldsJson,
             Creators: mapped.Value.Creators,
-            Dates: mapped.Value.Dates,
-            ExpectedUpdatedAt: expectedUpdatedAt);
+            Dates: mapped.Value.Dates);
 
         Result<ItemMetadata> replaced = await _items.ReplaceItemAsync(
             itemId, update, mapped.Value.Identifiers, cancellationToken);
@@ -146,7 +160,8 @@ public sealed class McpWriteApi : IMcpWriteApi
 
         string itemRevision = Revision(replaced.Value);
         NotifyResourceChanged(request.Uri, "item", itemRevision, itemId);
-        return Result<McpPutResponse>.Success(new McpPutResponse(request.Uri, "item", itemRevision, true));
+        return Result<McpPutResponse>.Success(new McpPutResponse(
+            request.Uri, "item_bib", true, ContentBytes(request.Content)));
     }
 
     private void NotifyResourceChanged(string uri, string kind, string revision, ItemId? itemId = null)
@@ -156,11 +171,16 @@ public sealed class McpWriteApi : IMcpWriteApi
 
     public static string Revision(ItemMetadata item)
     {
-        return McpRevisions.Item(item.UpdatedAt);
+        return $"item:{item.UpdatedAt.ToUniversalTime():O}";
     }
 
     public static string Revision(DateTimeOffset updatedAt)
     {
-        return McpRevisions.Item(updatedAt);
+        return $"item:{updatedAt.ToUniversalTime():O}";
+    }
+
+    private static int ContentBytes(string content)
+    {
+        return Encoding.UTF8.GetByteCount(content);
     }
 }

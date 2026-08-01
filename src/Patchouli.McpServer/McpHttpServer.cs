@@ -16,27 +16,37 @@ namespace Patchouli.McpServer;
 
 public sealed class McpHttpServer : IAsyncDisposable
 {
+    /// <summary>Default max_mcp_request_bytes (1 MiB) enforced before any tool invocation.</summary>
+    public const long DefaultMaxRequestBytes = 1024 * 1024;
+
+    /// <summary>Hard upper limit for max_mcp_request_bytes (4 MiB).</summary>
+    public const long HardMaxRequestBytes = 4 * 1024 * 1024;
+
     private readonly McpProtocolHandler _handler;
     private readonly McpServerSettings _settings;
     private readonly Action<Exception, string>? _unexpectedException;
+    private readonly long _maxRequestBytes;
     private readonly ConcurrentDictionary<string, byte> _sessions = new(StringComparer.Ordinal);
     private long _activeConnectionCount;
     private long _totalConnectionCount;
     private WebApplication? _app;
 
     public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort,
-        Action<Exception, string>? unexpectedException = null)
+        Action<Exception, string>? unexpectedException = null,
+        long maxRequestBytes = DefaultMaxRequestBytes)
         : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow),
-            unexpectedException)
+            unexpectedException, maxRequestBytes)
     {
     }
 
     public McpHttpServer(McpProtocolHandler handler, McpServerSettings settings,
-        Action<Exception, string>? unexpectedException = null)
+        Action<Exception, string>? unexpectedException = null,
+        long maxRequestBytes = DefaultMaxRequestBytes)
     {
         _handler = handler;
         _settings = settings;
         _unexpectedException = unexpectedException;
+        _maxRequestBytes = Math.Clamp(maxRequestBytes, 1, HardMaxRequestBytes);
         Endpoint = $"http://{DisplayHost(settings.BindAddress)}:{settings.Port}/mcp";
     }
 
@@ -148,7 +158,7 @@ public sealed class McpHttpServer : IAsyncDisposable
         app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
         app.MapPost("/mcp",
             (HttpContext context, CancellationToken ct) =>
-                HandleMcpRequestAsync(context, _handler, _settings, _sessions, ct));
+                HandleMcpRequestAsync(context, _handler, _settings, _sessions, _maxRequestBytes, ct));
         app.MapDelete("/mcp",
             (HttpContext context, CancellationToken ct) =>
                 HandleMcpDeleteAsync(context, _settings, _sessions, ct));
@@ -210,6 +220,7 @@ public sealed class McpHttpServer : IAsyncDisposable
         McpProtocolHandler handler,
         McpServerSettings settings,
         ConcurrentDictionary<string, byte> sessions,
+        long maxRequestBytes,
         CancellationToken cancellationToken)
     {
         if (RequiresAuthentication(settings) && !IsAuthorized(context, settings.Token))
@@ -225,8 +236,17 @@ public sealed class McpHttpServer : IAsyncDisposable
                 statusCode: StatusCodes.Status415UnsupportedMediaType);
         }
 
-        using StreamReader reader = new(context.Request.Body);
-        string request = await reader.ReadToEndAsync(cancellationToken);
+        if (context.Request.ContentLength is long contentLength && contentLength > maxRequestBytes)
+        {
+            return PayloadTooLarge(maxRequestBytes);
+        }
+
+        string? request = await ReadBodyAsync(context.Request.Body, maxRequestBytes, cancellationToken);
+        if (request is null)
+        {
+            return PayloadTooLarge(maxRequestBytes);
+        }
+
         if (string.IsNullOrWhiteSpace(request))
         {
             return Results.BadRequest(new { error = "Request body is required." });
@@ -333,6 +353,43 @@ public sealed class McpHttpServer : IAsyncDisposable
         }
 
         return Results.NoContent();
+    }
+
+    private static IResult PayloadTooLarge(long maxRequestBytes)
+    {
+        return Results.Json(new { error = "request exceeds max_mcp_request_bytes." },
+            statusCode: StatusCodes.Status413PayloadTooLarge);
+    }
+
+    /// <summary>
+    /// Reads the request body up to <paramref name="maxRequestBytes"/> bytes. Returns null
+    /// (and leaves the library untouched) when the body exceeds the configured limit, so an
+    /// over-limit request is rejected with HTTP 413 before any tool is invoked.
+    /// </summary>
+    private static async Task<string?> ReadBodyAsync(Stream body, long maxRequestBytes,
+        CancellationToken cancellationToken)
+    {
+        using MemoryStream buffer = new();
+        byte[] chunk = new byte[81920];
+        int total = 0;
+        while (true)
+        {
+            int read = await body.ReadAsync(chunk, cancellationToken);
+            if (read == 0)
+            {
+                break;
+            }
+
+            total += read;
+            if (total > maxRequestBytes)
+            {
+                return null;
+            }
+
+            buffer.Write(chunk, 0, read);
+        }
+
+        return Encoding.UTF8.GetString(buffer.ToArray());
     }
 
     private static string? GetSessionId(HttpContext context)

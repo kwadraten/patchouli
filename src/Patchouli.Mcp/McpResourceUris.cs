@@ -7,9 +7,8 @@ public enum McpUriKind
 {
     Root,
     ItemsScope,
-    DocumentsScope,
+    TextsScope,
     StylesScope,
-    EvidenceScope,
     Item,
     Document,
     Page,
@@ -21,11 +20,15 @@ public sealed record McpUriParseResult(
     McpUriKind Kind,
     ItemId? ItemId = null,
     DocumentInstanceId? DocumentId = null,
-    PageId? PageId = null,
+    int? PageIndex = null,
     string? StyleId = null,
     string? EvidenceRefId = null);
 
-/// <summary>Parses and builds the patchouli:// resource tree shared by MCP and the CLI.</summary>
+/// <summary>
+/// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
+/// items/, texts/, and csl-styles/. Evidence is only consumed through a text page
+/// URI's ?evref= query. Legacy documents/, styles/, and evidence/ roots are rejected.
+/// </summary>
 public static class McpResourceUris
 {
     private const string Prefix = "patchouli://";
@@ -37,22 +40,28 @@ public static class McpResourceUris
 
     public static string DocumentUri(DocumentInstanceId documentId)
     {
-        return $"{Prefix}documents/{documentId}/";
+        return $"{Prefix}texts/{documentId}/";
     }
 
-    public static string PageUri(DocumentInstanceId documentId, PageId pageId)
+    /// <summary>
+    /// Builds the canonical page URI using the one-based physical PDF page index.
+    /// </summary>
+    public static string PageUri(DocumentInstanceId documentId, int pageIndex)
     {
-        return $"{Prefix}documents/{documentId}/pages/{pageId}.md";
+        return $"{Prefix}texts/{documentId}/page-{pageIndex}.md";
+    }
+
+    /// <summary>
+    /// Builds the canonical evidence-consumption page URI for a matched EvidenceRef.
+    /// </summary>
+    public static string EvidencePageUri(DocumentInstanceId documentId, int pageIndex, string evidenceRefId)
+    {
+        return $"{Prefix}texts/{documentId}/page-{pageIndex}.md?evref={evidenceRefId}";
     }
 
     public static string StyleUri(string styleId)
     {
-        return $"{Prefix}styles/{styleId}.csl";
-    }
-
-    public static string EvidenceUri(string evidenceRefId)
-    {
-        return $"{Prefix}evidence/{evidenceRefId}";
+        return $"{Prefix}csl-styles/{styleId}.csl";
     }
 
     public static Result<McpUriParseResult> Parse(string uri)
@@ -68,21 +77,29 @@ public static class McpResourceUris
         }
 
         string rest = uri[Prefix.Length..];
-        if (rest.Length == 0)
+        string? query = null;
+        int queryIndex = rest.IndexOf('?');
+        if (queryIndex >= 0)
         {
-            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Root));
+            query = rest[(queryIndex + 1)..];
+            rest = rest[..queryIndex];
         }
 
-        // Split without removing empty entries so trailing/duplicate slashes are detectable.
-        // Scope and document URIs have one required trailing slash; all other resource URIs
-        // have no trailing slash.
+        if (rest.Length == 0)
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Root))
+                : Invalid(uri, "The root scope does not accept query parameters.");
+        }
+
         string[] segments = rest.Split('/');
         return segments[0] switch
         {
             "items" => ParseItemUri(uri, segments),
-            "documents" => ParseDocumentUri(uri, segments),
-            "styles" => ParseStyleUri(uri, segments),
-            "evidence" => ParseEvidenceUri(uri, segments),
+            "texts" => ParseTextsUri(uri, segments, query),
+            "csl-styles" => ParseCslStylesUri(uri, segments, query),
+            "documents" or "styles" or "evidence" => Invalid(uri,
+                $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
         };
     }
@@ -115,54 +132,72 @@ public static class McpResourceUris
             new McpUriParseResult(McpUriKind.Item, new ItemId(itemId)));
     }
 
-    private static Result<McpUriParseResult> ParseDocumentUri(string uri, string[] segments)
+    private static Result<McpUriParseResult> ParseTextsUri(string uri, string[] segments, string? query)
     {
-        // patchouli://documents/ or patchouli://documents/{id}/ or
-        // patchouli://documents/{id}/pages/{page}.md
-        if (segments.Length == 2 && segments[0] == "documents" && segments[1].Length == 0)
+        // patchouli://texts/ or patchouli://texts/{id}/ or
+        // patchouli://texts/{id}/page-{page-index}.md[?evref={evidence-ref}]
+        if (segments.Length == 2 && segments[0] == "texts" && segments[1].Length == 0)
         {
-            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.DocumentsScope));
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.TextsScope))
+                : Invalid(uri, "The texts scope does not accept query parameters.");
         }
 
-        // Document URI: exactly documents/{id}/ (trailing slash -> final empty segment).
+        // Document URI: exactly texts/{id}/ (trailing slash -> final empty segment).
         if (segments.Length == 3 && segments[2].Length == 0 && TryParseGuid(segments[1], out Guid documentId))
         {
-            return Result<McpUriParseResult>.Success(
-                new McpUriParseResult(McpUriKind.Document, DocumentId: new DocumentInstanceId(documentId)));
+            return query is null
+                ? Result<McpUriParseResult>.Success(
+                    new McpUriParseResult(McpUriKind.Document, DocumentId: new DocumentInstanceId(documentId)))
+                : Invalid(uri, "Document URIs do not accept query parameters.");
         }
 
-        // Page URI: documents/{id}/pages/{page}.md (no trailing slash).
-        if (segments.Length == 4 && segments[2] == "pages" && segments[3].Length > 0 &&
-            segments[3].EndsWith(".md", StringComparison.Ordinal) &&
-            TryParseGuid(segments[1], out Guid documentIdForPage) &&
-            TryParseGuid(segments[3][..^3], out Guid pageId))
+        // Page URI: texts/{id}/page-{index}.md with an optional ?evref= query.
+        if (segments.Length == 3 && TryParseGuid(segments[1], out Guid documentIdForPage) &&
+            TryParsePageIndex(segments[2], out int pageIndex))
         {
-            return Result<McpUriParseResult>.Success(new McpUriParseResult(
-                McpUriKind.Page,
-                DocumentId: new DocumentInstanceId(documentIdForPage),
-                PageId: new PageId(pageId)));
+            if (query is null)
+            {
+                return Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.Page,
+                    DocumentId: new DocumentInstanceId(documentIdForPage),
+                    PageIndex: pageIndex));
+            }
+
+            if (TryParseEvidenceQuery(query, out string? evidenceRefId))
+            {
+                return Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.EvidenceRef,
+                    DocumentId: new DocumentInstanceId(documentIdForPage),
+                    PageIndex: pageIndex,
+                    EvidenceRefId: evidenceRefId));
+            }
+
+            return Invalid(uri, "Page URI queries must use the form ?evref={evidence-ref}.");
         }
 
-        return Invalid(uri, "Document URIs must be patchouli://documents/{document-id}/ or " +
-                            "patchouli://documents/{document-id}/pages/{page}.md.");
+        return Invalid(uri, "Text URIs must be patchouli://texts/{document-id}/ or " +
+                            "patchouli://texts/{document-id}/page-{page-index}.md.");
     }
 
-    private static Result<McpUriParseResult> ParseStyleUri(string uri, string[] segments)
+    private static Result<McpUriParseResult> ParseCslStylesUri(string uri, string[] segments, string? query)
     {
-        // patchouli://styles/ or patchouli://styles/{id}.csl
-        if (segments.Length == 2 && segments[0] == "styles" && segments[1].Length == 0)
+        // patchouli://csl-styles/ or patchouli://csl-styles/{id}.csl
+        if (segments.Length == 2 && segments[0] == "csl-styles" && segments[1].Length == 0)
         {
-            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.StylesScope));
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.StylesScope))
+                : Invalid(uri, "The csl-styles scope does not accept query parameters.");
         }
 
         if (segments.Length != 2 || segments[1].Length == 0)
         {
-            return Invalid(uri, "Style URIs must be patchouli://styles/{style-id}.csl.");
+            return Invalid(uri, "Style URIs must be patchouli://csl-styles/{style-id}.csl.");
         }
 
         if (!segments[1].EndsWith(".csl", StringComparison.Ordinal))
         {
-            return Invalid(uri, "Style URIs must end with the .csl suffix: patchouli://styles/{style-id}.csl.");
+            return Invalid(uri, "Style URIs must end with the .csl suffix: patchouli://csl-styles/{style-id}.csl.");
         }
 
         string styleId = segments[1][..^4];
@@ -171,26 +206,46 @@ public static class McpResourceUris
             return Invalid(uri, "Style URIs require a style id.");
         }
 
+        if (query is not null)
+        {
+            return Invalid(uri, "Style URIs do not accept query parameters.");
+        }
+
         return Result<McpUriParseResult>.Success(
             new McpUriParseResult(McpUriKind.Style, StyleId: styleId));
     }
 
-    private static Result<McpUriParseResult> ParseEvidenceUri(string uri, string[] segments)
+    private static bool TryParsePageIndex(string segment, out int pageIndex)
     {
-        // Evidence is browsable as a scope even though individual evidence refs are the
-        // externally stable resource records.
-        if (segments.Length == 2 && segments[0] == "evidence" && segments[1].Length == 0)
+        pageIndex = 0;
+        const string prefixText = "page-";
+        if (!segment.StartsWith(prefixText, StringComparison.Ordinal) ||
+            !segment.EndsWith(".md", StringComparison.Ordinal))
         {
-            return Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.EvidenceScope));
+            return false;
         }
 
-        if (segments.Length != 2 || segments[1].Length == 0)
+        string indexText = segment[prefixText.Length..^3];
+        return indexText.Length > 0 && int.TryParse(indexText, out pageIndex) && pageIndex >= 1;
+    }
+
+    private static bool TryParseEvidenceQuery(string query, out string? evidenceRefId)
+    {
+        evidenceRefId = null;
+        const string key = "evref=";
+        if (!query.StartsWith(key, StringComparison.Ordinal))
         {
-            return Invalid(uri, "Evidence URIs must be patchouli://evidence/{evidence-id}.");
+            return false;
         }
 
-        return Result<McpUriParseResult>.Success(
-            new McpUriParseResult(McpUriKind.EvidenceRef, EvidenceRefId: segments[1]));
+        string value = query[key.Length..];
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        evidenceRefId = value;
+        return true;
     }
 
     private static bool TryParseGuid(string value, out Guid guid)

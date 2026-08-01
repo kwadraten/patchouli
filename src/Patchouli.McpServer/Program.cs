@@ -21,6 +21,7 @@ using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
+using Patchouli.Mcp;
 using Patchouli.McpServer;
 
 if (args.Contains("--help"))
@@ -180,8 +181,8 @@ static async Task SeedFixtureAsync(string databasePath)
 
         resources.Add(new
         {
-            item = $"patchouli://items/{item.Value.ItemId}",
-            document = $"patchouli://documents/{document.Value.DocumentInstanceId}",
+            item = McpResourceUris.ItemUri(item.Value.ItemId),
+            document = McpResourceUris.DocumentUri(document.Value.DocumentInstanceId),
             evidence_query = title.Split(' ', StringSplitOptions.RemoveEmptyEntries)[0]
         });
     }
@@ -324,8 +325,8 @@ static async Task<SeedResource> CreateSeedResourceAsync(
         throw new InvalidOperationException(units.ErrorMessage);
     }
 
-    return new SeedResource(title, $"patchouli://items/{item.Value.ItemId}",
-        $"patchouli://documents/{document.Value.DocumentInstanceId}");
+    return new SeedResource(title, McpResourceUris.ItemUri(item.Value.ItemId),
+        McpResourceUris.DocumentUri(document.Value.DocumentInstanceId));
 }
 
 internal sealed record SeedResource(string Title, string ItemUri, string DocumentUri);

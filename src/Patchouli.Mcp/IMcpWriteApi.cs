@@ -1,11 +1,11 @@
-using Patchouli.Core.Results;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
 
-public sealed record McpPutRequest(string Uri, string Content, string BaseRevision);
+public sealed record McpPutRequest(string Uri, string Content);
 
-public sealed record McpPutResponse(string Uri, string Kind, string Revision, bool Writable);
+public sealed record McpPutResponse(string Uri, string ResourceType, bool Committed, int ContentBytes);
 
 public sealed class McpResourceChangedEventArgs : EventArgs
 {
@@ -23,6 +23,10 @@ public sealed class McpResourceChangedEventArgs : EventArgs
     public ItemId? ItemId { get; }
 }
 
+/// <summary>
+/// The single host write service. put replaces exactly one whole writable resource after
+/// full-content validation and an atomic commit; it has no base-revision precondition.
+/// </summary>
 public interface IMcpWriteApi
 {
     event EventHandler<McpResourceChangedEventArgs>? ResourceChanged;

@@ -1,8 +1,6 @@
-using System.Diagnostics;
-using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using System.Text.RegularExpressions;
 using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
@@ -28,7 +26,6 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
-using Patchouli.McpServer;
 using Xunit;
 
 namespace Patchouli.Tests;
@@ -70,339 +67,386 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Find_browses_items_then_documents_then_styles_then_evidence()
+    public async Task Find_root_returns_only_the_three_vfs_directories_without_message()
     {
-        McpCommandResult<McpFindResponse> result = await _library.Commands.FindAsync(
-            new McpFindRequest(null, null, null, false, false));
+        McpCommandResult<McpFindMeta, object> result =
+            await _library.Commands.FindAsync(new McpFindRequest(null, null, null));
 
         result.IsSuccess.Should().BeTrue();
-        McpFindResponse data = result.Envelope!.Data;
-        data.Warnings.Should().BeEmpty();
-        data.Results.Select(row => row.Kind).Should().Equal(
-            "item", "item", "item", "document", "document", "style");
-        data.Results.Should().Contain(row => row.Uri == McpResourceUris.ItemUri(_library.BookA));
-        data.Results.Should().Contain(row => row.Uri == McpResourceUris.ItemUri(_library.BookB));
-        data.Results.Should().Contain(row => row.Uri == McpResourceUris.ItemUri(_library.GeneralItem));
-        data.Results.Should().Contain(row => row.Uri == McpResourceUris.DocumentUri(_library.DocumentA));
-        data.Results.Should().Contain(row => row.Uri == McpResourceUris.DocumentUri(_library.DocumentB));
-        data.Results.Should().Contain(row => row.Uri == McpResourceUris.StyleUri("apa"));
-        McpFindResultRow item = data.Results.Should().ContainSingle(row => row.Kind == "item" &&
-                                                                           row.Uri == McpResourceUris.ItemUri(
-                                                                               _library.BookA)).Subject;
-        item.Label.Should().Be("Distributed Systems Notes");
-        item.Revision.Should().StartWith("item:");
-        item.Writable.Should().BeTrue();
+        McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
+        envelope.Continuation.Should().BeNull();
+        envelope.Message.Should().BeNull("a clean success omits message");
+        envelope.Meta.ShownTotal.Should().Be(3);
+        envelope.Meta.DomainTotal.Should().Be(3);
+        envelope.Meta.FilteredTotal.Should().Be(3);
+        envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
+        envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().Equal(
+            "patchouli://items/",
+            "patchouli://texts/",
+            "patchouli://csl-styles/");
+        envelope.Entries.Select(Entry).Should().OnlyContain(entry => entry.Type == "directory");
+    }
+
+    [Fact]
+    public async Task Find_root_rejects_query_where_and_legacy_scopes()
+    {
+        McpCommandResult<McpFindMeta, object> query = await _library.Commands.FindAsync(
+            new McpFindRequest("something", null, null));
+        query.IsSuccess.Should().BeFalse();
+        query.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+
+        McpCommandResult<McpFindMeta, object> where = await _library.Commands.FindAsync(
+            new McpFindRequest(null, null, [new McpWhereClause("item_type", "book")]));
+        where.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+
+        McpCommandResult<McpFindMeta, object> legacyDocuments = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://documents/", null));
+        legacyDocuments.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+
+        McpCommandResult<McpFindMeta, object> legacyStyles = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://styles/", null));
+        legacyStyles.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+
+        McpCommandResult<McpFindMeta, object> legacyEvidence = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://evidence/", null));
+        legacyEvidence.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task Find_browses_items_texts_and_styles_scopes()
+    {
+        McpCommandResult<McpFindMeta, object> items = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null));
+        items.IsSuccess.Should().BeTrue();
+        items.Envelope!.Meta.ShownTotal.Should().Be(3);
+        items.Envelope.Entries.Select(Entry).Should().OnlyContain(entry => entry.Type == "file");
+        items.Envelope.Entries.Select(Entry).Should()
+            .Contain(entry => entry.Uri == McpResourceUris.ItemUri(_library.BookA));
+
+        McpCommandResult<McpFindMeta, object> texts = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://texts/", null));
+        texts.IsSuccess.Should().BeTrue();
+        texts.Envelope!.Meta.ShownTotal.Should().Be(2);
+        texts.Envelope.Entries.Select(Entry).Should().OnlyContain(entry => entry.Type == "directory");
+        texts.Envelope.Entries.Select(Entry).Should()
+            .Contain(entry => entry.Uri == McpResourceUris.DocumentUri(_library.DocumentA));
+
+        McpCommandResult<McpFindMeta, object> styles = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://csl-styles/", null));
+        styles.IsSuccess.Should().BeTrue();
+        styles.Envelope!.Meta.ShownTotal.Should().Be(1);
+        styles.Envelope.Entries.Select(Entry).Should().Contain(entry => entry.Uri == McpResourceUris.StyleUri("apa"));
+    }
+
+    [Fact]
+    public async Task Find_default_entries_are_strictly_uri_title_type()
+    {
+        McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null));
+        JsonNode root = JsonSerializer.SerializeToNode(result.Envelope!)!;
+        JsonNode first = root["entries"]![0]!;
+        first.AsObject().Select(pair => pair.Key).Should().Equal("uri", "title", "type");
+        first["uri"]!.GetValue<string>().Should().NotBeNullOrWhiteSpace();
+        first["title"]!.GetValue<string>().Should().NotBeNullOrWhiteSpace();
+        first["type"]!.GetValue<string>().Should().Be("file");
+        root.AsObject().Select(pair => pair.Key).Should().Equal("meta", "continuation", "entries");
+    }
+
+    [Fact]
+    public async Task Find_long_projection_exposes_status_relationships_and_citable()
+    {
+        McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null, Long: true));
+        result.IsSuccess.Should().BeTrue();
+
+        McpFindLongEntry item = LongEntry(result.Envelope!.Entries.Single(entry =>
+            ((McpFindLongEntry)entry).Uri == McpResourceUris.ItemUri(_library.BookA)));
+        item.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        item.ItemStatus.Should().NotBeNull();
         item.Citable.Should().BeTrue();
-        McpFindResultRow general = data.Results.Single(row => row.Uri == McpResourceUris.ItemUri(_library.GeneralItem));
-        general.Writable.Should().BeTrue();
-        general.Citable.Should().BeTrue();
-        data.Results.Where(row => row.Kind == "document").Should().OnlyContain(row => row.Citable && !row.Writable);
-        data.Results.Single(row => row.Kind == "style").Writable.Should().BeTrue();
+        item.DocumentInstanceId.Should().BeNull();
+        item.StyleEnabled.Should().BeNull();
+
+        JsonNode root = JsonSerializer.SerializeToNode(result.Envelope!)!;
+        root["entries"]![0]!.AsObject().Select(pair => pair.Key).Should().Equal(
+            "uri", "title", "type", "item_uri", "document_instance_id", "page_index", "evidence_ref",
+            "item_status", "document_status", "source_status", "style_enabled", "citable");
     }
 
     [Fact]
-    public async Task Find_searches_documents_and_returns_evidence_matches()
+    public async Task Find_search_texts_returns_evidence_ref_page_uris()
     {
-        McpCommandResult<McpFindResponse> search = await _library.Commands.FindAsync(
-            new McpFindRequest("quorum", null, null, false, false));
-        McpFindResultRow row = search.Envelope!.Data.Results.First();
-        row.Kind.Should().Be("document");
-        row.Label.Should().Be("Distributed Systems Notes");
-        row.Matches.Should().NotBeEmpty();
-        McpFindMatch match = row.Matches!.First();
-        match.Evidence.Should().NotBeNullOrWhiteSpace();
-        match.Evidence.Should().StartWith("evref:v2:");
-        match.Preview.Should().Contain("quorum", "preview should include the matched unit text");
-        match.Ordinal.Should().BeGreaterThanOrEqualTo(0);
+        McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
+            new McpFindRequest("quorum", "patchouli://texts/", null));
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        result.Envelope!.Entries.Should().NotBeEmpty();
+        McpFindEntry first = Entry(result.Envelope.Entries.First());
+        first.Uri.Should().Match($"patchouli://texts/{_library.DocumentA}/page-*");
+        first.Uri.Should().Contain("?evref=");
+        first.Type.Should().Be("file");
     }
 
     [Fact]
-    public async Task Find_literal_and_regex_filter_matches()
+    public async Task Find_literal_requires_query_and_matches_without_rewriting()
     {
-        McpCommandResult<McpFindResponse> literal = await _library.Commands.FindAsync(
-            new McpFindRequest("Quorum", null, null, true, false));
+        McpCommandResult<McpFindMeta, object> literal = await _library.Commands.FindAsync(
+            new McpFindRequest("Quorum", "patchouli://texts/", null, true));
         literal.IsSuccess.Should().BeTrue();
-        literal.Envelope!.Data.Results.Should().NotBeEmpty();
+        literal.Envelope!.Entries.Should().NotBeEmpty();
 
-        McpCommandResult<McpFindResponse> regex = await _library.Commands.FindAsync(
-            new McpFindRequest("quorum|consensus", null, null, false, true));
-        regex.IsSuccess.Should().BeTrue();
-        regex.Envelope!.Data.Results.Should().NotBeEmpty();
-        regex.Envelope!.Data.Results.SelectMany(row => row.Matches ?? [])
-            .Should().Contain(match => Regex.IsMatch(match.Preview, "quorum|consensus"));
-
-        McpCommandResult<McpFindResponse> stripped = await _library.Commands.FindAsync(
-            new McpFindRequest("\\bquorum\\b", null, null, false, true));
-        stripped.IsSuccess.Should().BeTrue();
-        stripped.Envelope!.Data.Results.Should().NotBeEmpty();
+        McpCommandResult<McpFindMeta, object> noMatch = await _library.Commands.FindAsync(
+            new McpFindRequest("zzzz-no-match", "patchouli://texts/", null, true));
+        noMatch.IsSuccess.Should().BeTrue();
+        noMatch.Envelope!.Entries.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Find_rejects_literal_plus_regex_and_invalid_regex()
+    public async Task Find_whitespace_query_browses_with_warning()
     {
-        McpCommandResult<McpFindResponse> both = await _library.Commands.FindAsync(
-            new McpFindRequest("quorum", null, null, true, true));
-        both.IsSuccess.Should().BeFalse();
-        both.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-
-        McpCommandResult<McpFindResponse> invalidRegex = await _library.Commands.FindAsync(
-            new McpFindRequest("(", null, null, false, true));
-        invalidRegex.IsSuccess.Should().BeFalse();
-        invalidRegex.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task Find_browses_a_single_scope_with_in()
-    {
-        McpCommandResult<McpFindResponse> result = await _library.Commands.FindAsync(
-            new McpFindRequest(null, "patchouli://styles/", null, false, false));
-
+        McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
+            new McpFindRequest("   ", "patchouli://items/", null));
         result.IsSuccess.Should().BeTrue();
-        result.Envelope!.Data.Results.Should().OnlyContain(row => row.Kind == "style");
-        result.Envelope.Data.Results.Should().ContainSingle();
+        result.Envelope!.Message.Should().NotBeNull();
+        result.Envelope.Message!.Warnings.Should().Contain(McpWarningCodes.WhitespaceQueryTreatedAsBrowse);
+        result.Envelope.Message.Error.Should().BeNull();
+        result.Envelope.Entries.Should().NotBeEmpty();
     }
 
     [Fact]
-    public async Task Find_where_item_type_filters_items()
+    public async Task Find_where_filters_and_duplicate_key_last_wins()
     {
-        McpCommandResult<McpFindResponse> books = await _library.Commands.FindAsync(
-            new McpFindRequest(null, null, [new McpWhereClause("item_type", "book")], false, false));
-        books.IsSuccess.Should().BeTrue($"error: {books.Error?.Code} {books.Error?.Message}");
-        books.Envelope!.Data.Results.Where(row => row.Kind == "item").Should().HaveCount(2);
+        McpCommandResult<McpFindMeta, object> books = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", [new McpWhereClause("item_type", "book")]));
+        books.IsSuccess.Should().BeTrue();
+        books.Envelope!.Meta.FilteredTotal.Should().Be(2);
+        books.Envelope.Entries.Select(Entry).Should()
+            .OnlyContain(entry => entry.Uri != McpResourceUris.ItemUri(_library.GeneralItem));
 
-        McpCommandResult<McpFindResponse> general = await _library.Commands.FindAsync(
-            new McpFindRequest(null, null, [new McpWhereClause("item_type", "general")], false, false));
-        general.IsSuccess.Should().BeTrue($"error: {general.Error?.Code} {general.Error?.Message}");
-        general.Envelope!.Data.Results.Where(row => row.Kind == "item")
-            .Should().ContainSingle(row => row.Uri == McpResourceUris.ItemUri(_library.GeneralItem));
+        McpCommandResult<McpFindMeta, object> duplicated = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/",
+                [new McpWhereClause("item_type", "book"), new McpWhereClause("item_type", "general")]));
+        duplicated.IsSuccess.Should().BeTrue();
+        duplicated.Envelope!.Message.Should().NotBeNull();
+        duplicated.Envelope.Message!.Warnings.Should().Contain(McpWarningCodes.DuplicateWhereKeyLastWins);
+        duplicated.Envelope.Entries.Select(Entry).Should()
+            .OnlyContain(entry => entry.Uri == McpResourceUris.ItemUri(_library.GeneralItem));
+
+        McpCommandResult<McpFindMeta, object> unsupported = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", [new McpWhereClause("status", "active")]));
+        unsupported.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task Find_where_accepts_multiple_clauses()
+    public async Task Find_cursor_paginates_and_warns_result_set_may_have_changed()
     {
-        McpCommandResult<McpFindResponse> result = await _library.Commands.FindAsync(
-            new McpFindRequest(null, null,
-                [new McpWhereClause("item_type", "book"), new McpWhereClause("status", "active")],
-                false, false));
-
-        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Message}");
-        result.Envelope!.Data.Results.Where(row => row.Kind == "item").Should().HaveCount(2);
-    }
-
-    [Fact]
-    public async Task Find_cursor_paginates_browse_results()
-    {
-        McpCommandResult<McpFindResponse> first = await _library.Commands.FindAsync(
-            new McpFindRequest(null, "patchouli://items/", null, false, false, 2));
+        McpCommandResult<McpFindMeta, object> first = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null, false, 2));
         first.IsSuccess.Should().BeTrue();
-        first.Envelope!.Data.Results.Should().HaveCount(2);
-        first.Envelope.Data.Continuation.Should().NotBeNullOrWhiteSpace();
+        first.Envelope!.Entries.Should().HaveCount(2);
+        first.Envelope.Continuation.Should().NotBeNull();
+        first.Envelope.Message!.Warnings.Should().Contain(McpWarningCodes.ResultSetMayHaveChanged);
 
-        McpCommandResult<McpFindResponse> second = await _library.Commands.FindAsync(
-            new McpFindRequest(null, "patchouli://items/", null, false, false, 2,
-                first.Envelope.Data.Continuation));
+        McpCommandResult<McpFindMeta, object> second = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null, false, 2, first.Envelope.Continuation));
         second.IsSuccess.Should().BeTrue();
-        second.Envelope!.Data.Results.Should().HaveCount(1);
-        second.Envelope.Data.Results[0].Uri.Should().NotBe(first.Envelope.Data.Results[0].Uri);
+        second.Envelope!.Entries.Should().HaveCount(1);
+        second.Envelope.Message!.Warnings.Should().Contain(McpWarningCodes.ResultSetMayHaveChanged);
+
+        McpCommandResult<McpFindMeta, object> invalid = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null, false, 2, "not-a-cursor"));
+        invalid.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task Fetch_item_returns_biblatex_projection_with_revision()
+    public async Task Find_cursor_conflicting_context_is_restored_with_warning()
     {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.BookA), null, null, null));
+        McpCommandResult<McpFindMeta, object> first = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null, false, 2));
+        first.Envelope!.Continuation.Should().NotBeNull();
+        string[] firstPageUris = first.Envelope.Entries.Select(Entry).Select(entry => entry.Uri).ToArray();
 
-        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Message}");
-        McpFetchResponse response = result.Envelope!.Data;
-        response.Kind.Should().Be("item");
-        response.Revision.Should().StartWith("item:");
-        response.Writable.Should().BeTrue();
-        response.Citable.Should().BeTrue();
-        McpFetchTextContent content = response.Content.Should().BeOfType<McpFetchTextContent>().Subject;
-        content.Text.Should().Contain("@book{");
-        content.Text.Should().Contain("Distributed Systems Notes");
+        McpCommandResult<McpFindMeta, object> second = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", [new McpWhereClause("item_type", "book")], false, 2,
+                first.Envelope.Continuation));
+        second.IsSuccess.Should().BeTrue();
+        second.Envelope!.Message!.Warnings.Should().Contain(McpWarningCodes.CursorContextRestored);
+        second.Envelope.Entries.Select(Entry).Should().NotContain(entry => firstPageUris.Contains(entry.Uri));
+    }
+
+    [Fact]
+    public async Task Find_file_uri_scope_returns_singleton_with_warning()
+    {
+        McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
+            new McpFindRequest(null, McpResourceUris.ItemUri(_library.BookA), null));
+        result.IsSuccess.Should().BeTrue();
+        result.Envelope!.Message!.Warnings.Should().Contain(McpWarningCodes.FileUriSingletonScope);
+        McpFindEntry entry = Entry(result.Envelope.Entries.Should().ContainSingle().Subject);
+        entry.Uri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        entry.Title.Should().Be("Distributed Systems Notes");
+    }
+
+    [Fact]
+    public async Task Fetch_item_returns_biblatex_complete_projection()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+        result.IsSuccess.Should().BeTrue();
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ResourceType.Should().Be("item_bib");
+        entry.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        entry.Complete.Should().BeTrue();
+        entry.Truncated.Should().BeFalse();
+        entry.Error.Should().BeNull();
+        entry.ReturnedBytes.Should().Be(Encoding.UTF8.GetByteCount(entry.Content!));
+        entry.Content.Should().Contain("@book{");
+        entry.Content.Should().Contain("Distributed Systems Notes");
+        result.Envelope!.Continuation.Should().BeNull();
+        result.Envelope.Message.Should().BeNull();
     }
 
     [Fact]
     public async Task Fetch_document_returns_outline_with_page_links()
     {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.DocumentUri(_library.DocumentA), null, null, null));
-
-        result.IsSuccess.Should().BeTrue();
-        McpFetchResponse response = result.Envelope!.Data;
-        response.Kind.Should().Be("document");
-        response.Revision.Should().NotBeNullOrWhiteSpace();
-        response.Citable.Should().BeTrue();
-        response.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
-        McpFetchOutlineContent content = response.Content.Should().BeOfType<McpFetchOutlineContent>().Subject;
-        content.Title.Should().Be("Distributed Systems Notes");
-        content.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
-        content.Pages.Should().HaveCount(2);
-        content.Pages.Should()
-            .OnlyContain(page => page.Uri.StartsWith("patchouli://documents/", StringComparison.Ordinal));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.DocumentUri(_library.DocumentA)], null, null));
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.ResourceType.Should().Be("text_document");
+        entry.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        entry.Content.Should().Contain("Distributed Systems Notes");
+        entry.Content.Should().Contain($"/page-1.md");
+        entry.Content.Should().Contain($"/page-2.md");
     }
 
     [Fact]
-    public async Task Fetch_page_returns_canonical_markdown()
+    public async Task Fetch_page_uses_one_based_page_index()
     {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.PageUri(_library.DocumentA, _library.PageA1), null, null, null));
+        McpCommandResult<McpFetchMeta, McpFetchResult> first = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.PageUri(_library.DocumentA, 1)], null, null));
+        first.Envelope!.Entries.Single().Content.Should().Contain("Consensus requires a quorum.");
 
-        result.IsSuccess.Should().BeTrue();
-        McpFetchResponse response = result.Envelope!.Data;
-        response.Kind.Should().Be("page");
-        response.Writable.Should().BeFalse();
-        response.Citable.Should().BeTrue();
-        response.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
-        McpFetchPageContent content = response.Content.Should().BeOfType<McpFetchPageContent>().Subject;
-        content.Text.Should().Contain("Consensus requires a quorum.");
-        content.PageIndex.Should().Be(0);
-        content.Uri.Should().Be(McpResourceUris.PageUri(_library.DocumentA, _library.PageA1));
+        McpCommandResult<McpFetchMeta, McpFetchResult> second = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.PageUri(_library.DocumentA, 2)], null, null));
+        second.Envelope!.Entries.Single().Content.Should().Contain("A quorum of replicas must agree");
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> missing = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.PageUri(_library.DocumentA, 99)], null, null));
+        missing.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.NotFound);
     }
 
     [Fact]
-    public async Task Fetch_document_page_range_returns_selected_pages()
+    public async Task Fetch_document_pages_range_returns_selected_pages()
     {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.DocumentUri(_library.DocumentA), "pages:2-2", null, null));
-
-        result.IsSuccess.Should().BeTrue();
-        McpFetchPagesContent content = result.Envelope!.Data.Content.Should().BeOfType<McpFetchPagesContent>().Subject;
-        content.Pages.Should().ContainSingle();
-        content.Pages[0].PageIndex.Should().Be(1);
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.DocumentUri(_library.DocumentA)], "pages:2-2", null));
+        McpFetchResult entry = result.Envelope!.Entries.Single();
+        entry.Content.Should().Contain($"/page-2.md");
+        entry.Content.Should().NotContain($"/page-1.md");
     }
 
     [Fact]
     public async Task Fetch_style_returns_csl_xml()
     {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.StyleUri("apa"), null, null, null));
-
-        result.IsSuccess.Should().BeTrue();
-        McpFetchResponse response = result.Envelope!.Data;
-        response.Kind.Should().Be("style");
-        response.Revision.Should().StartWith("style:");
-        response.Writable.Should().BeTrue();
-        response.Citable.Should().BeFalse();
-        McpFetchTextContent content = response.Content.Should().BeOfType<McpFetchTextContent>().Subject;
-        content.Text.Should().Contain("<style");
-        content.Text.Should().Contain("<id>apa</id>");
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.StyleUri("apa")], null, null));
+        McpFetchResult entry = result.Envelope!.Entries.Single();
+        entry.ResourceType.Should().Be("csl_style");
+        entry.Complete.Should().BeTrue();
+        entry.Content.Should().Contain("<style");
     }
 
     [Fact]
-    public async Task Fetch_evidence_returns_record_and_source_links()
+    public async Task Fetch_evidence_validates_page_ownership_and_library()
     {
-        McpCommandResult<McpFindResponse> search = await _library.Commands.FindAsync(
-            new McpFindRequest("quorum", null, null, false, false));
-        string evidenceRef = search.Envelope!.Data.Results.First().Matches!.First().Evidence!;
+        McpCommandResult<McpFindMeta, object> search = await _library.Commands.FindAsync(
+            new McpFindRequest("quorum", "patchouli://texts/", null));
+        string evidenceUri = Entry(search.Envelope!.Entries.First()).Uri;
 
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.EvidenceUri(evidenceRef), null, null, null));
+        McpCommandResult<McpFetchMeta, McpFetchResult> ok = await _library.Commands.FetchAsync(
+            new McpFetchRequest([evidenceUri], null, null));
+        ok.Envelope!.Entries.Single().ResourceType.Should().Be("evidence");
+        ok.Envelope.Entries.Single().Content.Should().Contain("quorum");
 
-        result.IsSuccess.Should().BeTrue();
-        McpFetchResponse response = result.Envelope!.Data;
-        response.Kind.Should().Be("evidence");
-        response.Citable.Should().BeTrue();
-        response.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
-        McpFetchEvidenceContent content = response.Content.Should().BeOfType<McpFetchEvidenceContent>().Subject;
-        content.DocumentUri.Should().Be(McpResourceUris.DocumentUri(_library.DocumentA));
-        content.PageUri.Should().StartWith(McpResourceUris.DocumentUri(_library.DocumentA));
-        content.PinnedText.Should().Contain("quorum");
+        string evidenceRef = evidenceUri.Split("?evref=", 2)[1];
+        McpCommandResult<McpFetchMeta, McpFetchResult> wrongPage = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.EvidencePageUri(_library.DocumentA, 99, evidenceRef)], null, null));
+        wrongPage.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.NotFound);
     }
 
     [Fact]
-    public async Task Fetch_missing_resource_returns_not_found()
+    public async Task Fetch_missing_resource_and_legacy_uri_return_failed_entries()
     {
-        McpCommandResult<McpFetchResponse> missingItem = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(new ItemId(Guid.NewGuid())), null, null, null));
-        missingItem.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
+        McpCommandResult<McpFetchMeta, McpFetchResult> missing = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(new ItemId(Guid.NewGuid()))], null, null));
+        missing.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.NotFound);
+        missing.IsSuccess.Should().BeFalse();
 
-        McpCommandResult<McpFetchResponse> missingPage = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.PageUri(_library.DocumentA, new PageId(Guid.NewGuid())), null, null,
-                null));
-        missingPage.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
+        McpCommandResult<McpFetchMeta, McpFetchResult> legacy = await _library.Commands.FetchAsync(
+            new McpFetchRequest(["patchouli://documents/"], null, null));
+        legacy.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task Fetch_rejects_scopes_and_superfluous_options()
+    public async Task Fetch_multi_uri_keeps_independent_results()
     {
-        McpCommandResult<McpFetchResponse> scope = await _library.Commands.FetchAsync(
-            new McpFetchRequest("patchouli://", null, null, null));
-        scope.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-
-        McpCommandResult<McpFetchResponse> pageRevision = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.PageUri(_library.DocumentA, _library.PageA1), null, "item:stale",
-                null));
-        pageRevision.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest(
+            [
+                McpResourceUris.ItemUri(_library.BookA),
+                McpResourceUris.ItemUri(new ItemId(Guid.NewGuid()))
+            ], null, null));
+        result.Envelope!.Entries.Should().HaveCount(2);
+        result.Envelope.Entries[0].Complete.Should().BeTrue();
+        result.Envelope.Entries[1].Error!.Code.Should().Be((int)McpErrorCode.NotFound);
+        result.IsSuccess.Should().BeTrue("a single failed URI must not fail the request");
+        result.Envelope.Message.Should().BeNull();
     }
 
     [Fact]
-    public async Task Fetch_rejects_invalid_ranges_and_mismatched_page_document()
+    public async Task Fetch_oversized_response_is_truncated_not_complete()
     {
-        McpCommandResult<McpFetchResponse> wrongKind = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.BookA), "pages:1-2", null, null));
-        wrongKind.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-
-        McpCommandResult<McpFetchResponse> malformed = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.PageUri(_library.DocumentA, _library.PageA1), "lines:bad", null,
-                null));
-        malformed.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-
-        DocumentInstanceId otherDocument = new(Guid.NewGuid());
-        McpCommandResult<McpFetchResponse> wrongDocument = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.PageUri(otherDocument, _library.PageA1), null, null, null));
-        wrongDocument.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
-    }
-
-    [Theory]
-    [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001")]
-    [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.bib/")]
-    [InlineData("patchouli://items//00000000-0000-0000-0000-000000000001.bib")]
-    [InlineData("patchouli://documents/00000000-0000-0000-0000-000000000001")]
-    [InlineData("patchouli://documents/00000000-0000-0000-0000-000000000001//")]
-    [InlineData("patchouli://documents/00000000-0000-0000-0000-000000000001/pages/00000000-0000-0000-0000-000000000002")]
-    [InlineData("patchouli://styles/apa")]
-    [InlineData("patchouli://styles/apa.csl/")]
-    public void Resource_uris_require_canonical_shapes(string uri)
-    {
-        McpResourceUris.Parse(uri).IsFailure.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task Fetch_revision_mismatch_returns_not_found()
-    {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.BookA), null, "item:1999-01-01T00:00:00.0000000+00:00",
-                null));
-        result.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
-    }
-
-    [Fact]
-    public async Task Fetch_oversized_response_returns_partial_content_and_error()
-    {
-        McpCommandResult<McpFetchResponse> result = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.BookA), null, null, 10));
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, 64));
+        McpFetchResult entry = result.Envelope!.Entries.Single();
+        entry.Complete.Should().BeFalse();
+        entry.Truncated.Should().BeTrue();
+        entry.Error!.Code.Should().Be((int)McpErrorCode.ResponseTruncated);
+        (entry.Continuation ?? entry.NextRange).Should().NotBeNull();
+        entry.ReturnedBytes.Should().BeLessThanOrEqualTo(64);
         result.IsSuccess.Should().BeFalse();
-        result.Error!.Code.Should().Be((int)McpErrorCode.ResponseTruncated);
-        result.Envelope.Should().NotBeNull();
-        result.Envelope!.Data.Complete.Should().BeFalse();
-        result.Envelope.Data.Truncated.Should().BeTrue();
-        result.Envelope.Data.NextRange.Should().NotBeNullOrWhiteSpace();
-        result.Envelope.Error!.Code.Should().Be((int)McpErrorCode.ResponseTruncated);
+        result.Envelope.Message!.Error!.Code.Should().Be((int)McpErrorCode.ResponseTruncated);
     }
 
     [Fact]
-    public async Task Put_replaces_an_item_bib_and_is_revision_gated()
+    public async Task Fetch_rejects_wrong_range_kinds()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> pagesOnItem = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], "pages:1-1", null));
+        pagesOnItem.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> linesOnDocument = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.DocumentUri(_library.DocumentA)], "lines:1-2", null));
+        linesOnDocument.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+    }
+
+    [Fact]
+    public async Task Fetch_never_exposes_revision_or_resource_revision_fields()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+        JsonNode root = JsonSerializer.SerializeToNode(result.Envelope!)!;
+        root.AsObject().Select(pair => pair.Key).Should().NotContain(new[] { "revision", "data", "warnings", "error" });
+        root["entries"]![0]!.AsObject().Select(pair => pair.Key).Should().NotContain("revision");
+        root["entries"]![0]!.AsObject().Select(pair => pair.Key).Should().NotContain("resource_revision");
+    }
+
+    [Fact]
+    public async Task Put_replaces_an_item_bib_without_base_revision()
     {
         McpResourceChangedEventArgs? changed = null;
         _library.Writes.ResourceChanged += (_, args) => changed = args;
-        McpCommandResult<McpFetchResponse> fetched = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.BookA), null, null, null));
-        string currentRevision = fetched.Envelope!.Revision!;
-        string key = Regex.Match(
-            ((McpFetchTextContent)fetched.Envelope.Data.Content).Text,
-            @"@book\{([^,]+),").Groups[1].Value;
+        McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+        string key = RegexKey(fetched.Envelope!.Entries.Single().Content!);
 
         string updated =
             "@book{" + key + ",\n" +
@@ -412,109 +456,78 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             "  year = {2024}\n" +
             "}\n";
 
-        McpCommandResult<McpPutResponse> first = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), updated, currentRevision));
-        first.IsSuccess.Should().BeTrue();
-        first.Envelope!.Revision.Should().NotBe(currentRevision);
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(
+            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), updated));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+        McpPutResult putEntry = put.Envelope!.Entries.Should().ContainSingle().Subject;
+        putEntry.Uri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        putEntry.ResourceType.Should().Be("item_bib");
+        putEntry.Committed.Should().BeTrue();
+        putEntry.ContentBytes.Should().Be(Encoding.UTF8.GetByteCount(updated));
+        put.Envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         changed.Should().NotBeNull();
-        changed!.Kind.Should().Be("item");
-        changed.ItemId.Should().Be(_library.BookA);
-        changed.Revision.Should().Be(first.Envelope.Revision);
+        changed!.ItemId.Should().Be(_library.BookA);
 
-        McpCommandResult<McpPutResponse> stale = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), updated, currentRevision));
-        stale.IsSuccess.Should().BeFalse();
-        stale.Error!.Code.Should().Be((int)McpErrorCode.RevisionConflict);
-
-        McpCommandResult<McpFetchResponse> refreshed = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.BookA), null, null, null));
-        ((McpFetchTextContent)refreshed.Envelope!.Data.Content).Text.Should().Contain("Second Edition");
+        McpCommandResult<McpFetchMeta, McpFetchResult> refreshed = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+        refreshed.Envelope!.Entries.Single().Content.Should().Contain("Second Edition");
     }
 
     [Fact]
-    public async Task Put_invalid_biblatex_fails_with_invalid_content()
+    public async Task Put_invalid_content_fails_with_empty_entries()
     {
-        McpCommandResult<McpPutResponse> result = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), "not a bib entry",
-                "item:2024-01-01T00:00:00.0000000+00:00"));
+        McpCommandResult<McpPutMeta, McpPutResult> result = await _library.Commands.PutAsync(
+            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), "not a bib entry"));
         result.IsSuccess.Should().BeFalse();
         result.Error!.Code.Should().Be((int)McpErrorCode.InvalidContent);
+        result.Envelope!.Entries.Should().BeEmpty();
+        result.Envelope.Message!.Error!.Code.Should().Be((int)McpErrorCode.InvalidContent);
     }
 
     [Fact]
-    public async Task Put_invalid_base_revision_fails_with_invalid_argument()
+    public async Task Put_read_only_documents_pages_and_evidence_are_permission_denied()
     {
-        McpCommandResult<McpPutResponse> result = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.ItemUri(_library.BookA), "not a bib entry", "not-a-revision"));
-        result.IsSuccess.Should().BeFalse();
-        result.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
-    }
-
-    [Fact]
-    public async Task Put_read_only_uris_return_permission_denied()
-    {
-        McpCommandResult<McpPutResponse> document = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.DocumentUri(_library.DocumentA), "x",
-                "item:2024-01-01T00:00:00.0000000+00:00"));
+        McpCommandResult<McpPutMeta, McpPutResult> document = await _library.Commands.PutAsync(
+            new McpPutRequest(McpResourceUris.DocumentUri(_library.DocumentA), "x"));
         document.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
 
-        McpCommandResult<McpPutResponse> page = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.PageUri(_library.DocumentA, _library.PageA1), "x",
-                "item:2024-01-01T00:00:00.0000000+00:00"));
+        McpCommandResult<McpPutMeta, McpPutResult> page = await _library.Commands.PutAsync(
+            new McpPutRequest(McpResourceUris.PageUri(_library.DocumentA, 1), "x"));
         page.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
 
-        McpCommandResult<McpPutResponse> evidence = await _library.Commands.PutAsync(
-            new McpPutRequest("patchouli://evidence/evref:v2:any", "x", "item:2024-01-01T00:00:00.0000000+00:00"));
+        McpCommandResult<McpPutMeta, McpPutResult> evidence = await _library.Commands.PutAsync(
+            new McpPutRequest("patchouli://texts/" + _library.DocumentA + "/page-1.md?evref=evref:v2:any", "x"));
         evidence.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
     }
 
     [Fact]
     public async Task Put_general_item_round_trips_as_misc_and_allows_explicit_type_refinement()
     {
-        McpCommandResult<McpFetchResponse> fetched = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.GeneralItem), null, null, null));
-        fetched.IsSuccess.Should().BeTrue();
-        string currentRevision = fetched.Envelope!.Revision!;
-        string key = Regex.Match(
-            ((McpFetchTextContent)fetched.Envelope.Data.Content).Text,
-            @"@misc\{([^,]+),").Groups[1].Value;
+        McpCommandResult<McpFetchMeta, McpFetchResult> fetched = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.GeneralItem)], null, null));
+        string key = RegexKey(fetched.Envelope!.Entries.Single().Content!);
 
-        McpCommandResult<McpPutResponse> result = await _library.Commands.PutAsync(
+        McpCommandResult<McpPutMeta, McpPutResult> roundTrip = await _library.Commands.PutAsync(
             new McpPutRequest(McpResourceUris.ItemUri(_library.GeneralItem),
-                $"@misc{{{key},\n  title = {{General Note, Updated}}\n}}",
-                currentRevision));
-        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Message}");
-
-        McpCommandResult<McpFetchResponse> refreshed = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.GeneralItem), null, null, null));
-        ((McpFetchTextContent)refreshed.Envelope!.Data.Content).Text.Should().Contain("@misc{")
-            .And.Contain("General Note, Updated");
+                $"@misc{{{key},\n  title = {{General Note, Updated}}\n}}"));
+        roundTrip.IsSuccess.Should().BeTrue($"error: {roundTrip.Error?.Code} {roundTrip.Error?.Detail}");
         (await _library.Api.GetItemMetadataAsync(_library.GeneralItem)).Value.ItemType.Should().Be("general");
 
-        McpCommandResult<McpPutResponse> refinement = await _library.Commands.PutAsync(
+        McpCommandResult<McpPutMeta, McpPutResult> refinement = await _library.Commands.PutAsync(
             new McpPutRequest(McpResourceUris.ItemUri(_library.GeneralItem),
                 $"@book{{{key},\n" +
                 "  author = {Doe, Jane},\n" +
                 "  title = {General Note, Classified},\n" +
                 "  publisher = {Example Press},\n" +
                 "  year = {2024}\n" +
-                "}", refreshed.Envelope.Revision!));
-        refinement.IsSuccess.Should().BeTrue();
-
-        McpCommandResult<McpFetchResponse> classified = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.ItemUri(_library.GeneralItem), null, null, null));
-        ((McpFetchTextContent)classified.Envelope!.Data.Content).Text.Should().Contain("@book{")
-            .And.Contain("General Note, Classified");
+                "}"));
+        refinement.IsSuccess.Should().BeTrue($"error: {refinement.Error?.Code} {refinement.Error?.Detail}");
         (await _library.Api.GetItemMetadataAsync(_library.GeneralItem)).Value.ItemType.Should().Be("book");
     }
 
     [Fact]
-    public async Task Put_style_replaces_csl_and_is_revision_gated()
+    public async Task Put_replaces_a_csl_style()
     {
-        McpCommandResult<McpFetchResponse> fetched = await _library.Commands.FetchAsync(
-            new McpFetchRequest(McpResourceUris.StyleUri("apa"), null, null, null));
-        string currentRevision = fetched.Envelope!.Revision!;
-
         string updated =
             """
             <style xmlns="http://purl.org/net/xbiblio/csl" class="in-text" version="1.0">
@@ -523,161 +536,94 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             </style>
             """;
 
-        McpCommandResult<McpPutResponse> first = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.StyleUri("apa"), updated, currentRevision));
-        first.IsSuccess.Should().BeTrue();
-        first.Envelope!.Revision.Should().NotBe(currentRevision);
-
-        McpCommandResult<McpPutResponse> stale = await _library.Commands.PutAsync(
-            new McpPutRequest(McpResourceUris.StyleUri("apa"), updated, currentRevision));
-        stale.Error!.Code.Should().Be((int)McpErrorCode.RevisionConflict);
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(
+            new McpPutRequest(McpResourceUris.StyleUri("apa"), updated));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+        put.Envelope!.Entries.Single().ResourceType.Should().Be("csl_style");
+        put.Envelope.Entries.Single().Committed.Should().BeTrue();
     }
 
     [Fact]
-    public async Task Cite_renders_bibliography_and_supports_general_document_page_and_evidence_refs()
+    public async Task Cite_renders_per_reference_results_and_supports_document_page_and_evidence_refs()
     {
-        McpCommandResult<McpCiteResponse> ok = await _library.Commands.CiteAsync(
-            new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], McpResourceUris.StyleUri("apa"), null,
-                false, false));
-        ok.IsSuccess.Should().BeTrue();
-        ok.Envelope!.Data.Bibliography.Should().NotBeNullOrWhiteSpace();
-        ok.Envelope.Data.Bibliography!.Should().Contain("Distributed Systems Notes");
-        ok.Envelope.Data.Html.Should().BeNull();
+        McpCommandResult<McpCiteMeta, McpCitationResult> item = await _library.Commands.CiteAsync(
+            new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], McpResourceUris.StyleUri("apa"), null, true,
+                false));
+        item.IsSuccess.Should().BeTrue();
+        McpCitationResult itemResult = item.Envelope!.Entries.Single();
+        itemResult.ItemUri.Should().Be(McpResourceUris.ItemUri(_library.BookA));
+        itemResult.Citation.Should().NotBeNullOrWhiteSpace();
+        itemResult.Error.Should().BeNull();
+        item.Envelope.Meta.EffectiveStyleUri.Should().Be(McpResourceUris.StyleUri("apa"));
+        item.Envelope.Meta.Bibliography.Should().NotBeNullOrWhiteSpace();
+        item.Envelope.Meta.RenderFormat.Should().Be("text");
 
-        McpCommandResult<McpCiteResponse> general = await _library.Commands.CiteAsync(
-            new McpCiteRequest([McpResourceUris.ItemUri(_library.GeneralItem)], McpResourceUris.StyleUri("apa"), null,
-                false, false));
-        general.IsSuccess.Should().BeTrue($"error: {general.Error?.Code} {general.Error?.Message}");
-        general.Envelope!.Data.Warnings.Should().Contain(warning => warning.Contains("general_as_misc"));
-
-        McpCommandResult<McpCiteResponse> document = await _library.Commands.CiteAsync(
+        McpCommandResult<McpCiteMeta, McpCitationResult> document = await _library.Commands.CiteAsync(
             new McpCiteRequest([McpResourceUris.DocumentUri(_library.DocumentA)], McpResourceUris.StyleUri("apa"),
                 null, false, false));
-        document.IsSuccess.Should().BeTrue($"error: {document.Error?.Code} {document.Error?.Message}");
-        document.Envelope!.Data.Bibliography.Should().Contain("Distributed Systems Notes");
+        document.IsSuccess.Should().BeTrue();
 
-        McpCommandResult<McpCiteResponse> page = await _library.Commands.CiteAsync(
-            new McpCiteRequest([McpResourceUris.PageUri(_library.DocumentA, _library.PageA1)],
+        McpCommandResult<McpCiteMeta, McpCitationResult> page = await _library.Commands.CiteAsync(
+            new McpCiteRequest([McpResourceUris.PageUri(_library.DocumentA, 1)], McpResourceUris.StyleUri("apa"),
+                null, false, false));
+        page.IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Cite_general_item_uses_misc_fallback_with_warning()
+    {
+        McpCommandResult<McpCiteMeta, McpCitationResult> result = await _library.Commands.CiteAsync(
+            new McpCiteRequest([McpResourceUris.ItemUri(_library.GeneralItem)], McpResourceUris.StyleUri("apa"),
+                null, false, false));
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        result.Envelope!.Message.Should().NotBeNull();
+        result.Envelope.Message!.Warnings.Should().Contain(warning => warning.Contains("general_as_misc"));
+    }
+
+    [Fact]
+    public async Task Cite_missing_ref_and_invalid_style_fail()
+    {
+        McpCommandResult<McpCiteMeta, McpCitationResult> missing = await _library.Commands.CiteAsync(
+            new McpCiteRequest([McpResourceUris.ItemUri(new ItemId(Guid.NewGuid()))],
                 McpResourceUris.StyleUri("apa"), null, false, false));
-        page.IsSuccess.Should().BeTrue($"error: {page.Error?.Code} {page.Error?.Message}");
+        missing.IsSuccess.Should().BeFalse();
+        missing.Envelope!.Entries.Single().Error!.Code.Should().Be((int)McpErrorCode.NotFound);
 
-        McpCommandResult<McpFindResponse> search = await _library.Commands.FindAsync(
-            new McpFindRequest("quorum", null, null, false, false));
-        string evidenceRef = search.Envelope!.Data.Results.First().Matches!.First().Evidence!;
-        McpCommandResult<McpCiteResponse> evidence = await _library.Commands.CiteAsync(
-            new McpCiteRequest([McpResourceUris.EvidenceUri(evidenceRef)], McpResourceUris.StyleUri("apa"), null,
-                false, false));
-        evidence.IsSuccess.Should().BeTrue();
-        evidence.Envelope!.Data.Bibliography.Should().Contain("Distributed Systems Notes");
-
-        McpCommandResult<McpCiteResponse> missingStyle = await _library.Commands.CiteAsync(
-            new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], McpResourceUris.StyleUri("missing"), null,
-                false, false));
-        missingStyle.Error!.Code.Should().Be((int)McpErrorCode.NotFound);
-
-        McpCommandResult<McpCiteResponse> defaultStyle = await _library.Commands.CiteAsync(
-            new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], null, null, false, false));
-        defaultStyle.IsSuccess.Should().BeTrue();
-
-        McpCommandResult<McpCiteResponse> invalidStyle = await _library.Commands.CiteAsync(
+        McpCommandResult<McpCiteMeta, McpCitationResult> invalidStyle = await _library.Commands.CiteAsync(
             new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], "apa", null, false, false));
         invalidStyle.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
     }
 
     [Fact]
-    public async Task Cite_bibliography_only_suppresses_html_even_when_requested()
+    public async Task Clean_successes_omit_message_across_all_tools()
     {
-        McpCommandResult<McpCiteResponse> result = await _library.Commands.CiteAsync(
+        McpCommandResult<McpFindMeta, object> find = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", null));
+        find.Envelope!.Message.Should().BeNull();
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> fetch = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.ItemUri(_library.BookA)], null, null));
+        fetch.Envelope!.Message.Should().BeNull();
+
+        McpCommandResult<McpCiteMeta, McpCitationResult> cite = await _library.Commands.CiteAsync(
             new McpCiteRequest([McpResourceUris.ItemUri(_library.BookA)], McpResourceUris.StyleUri("apa"), null,
-                true, true));
-        result.IsSuccess.Should().BeTrue();
-        result.Envelope!.Data.Bibliography.Should().NotBeNullOrWhiteSpace();
-        result.Envelope.Data.Html.Should().BeNull();
+                false, false));
+        cite.Envelope!.Message.Should().BeNull();
     }
 
-    [Fact]
-    public void Error_mappings_cover_every_app_error_code()
+    private static McpFindEntry Entry(object entry)
     {
-        string[] codes = typeof(AppErrorCodes)
-            .GetFields(BindingFlags.Public | BindingFlags.Static)
-            .Where(field => field.FieldType == typeof(string))
-            .Select(field => (string)field.GetValue(null)!)
-            .ToArray();
-
-        codes.Should().NotBeEmpty();
-
-        foreach (string code in codes)
-        {
-            McpErrorCode read = McpErrorMappings.ToReadError(code);
-            McpErrorCode expectedRead = code switch
-            {
-                AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
-                AppErrorCodes.NotFound => McpErrorCode.NotFound,
-                AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
-                AppErrorCodes.Conflict => McpErrorCode.RevisionConflict,
-                AppErrorCodes.BiblatexGeneralExportForbidden => McpErrorCode.PermissionDenied,
-                AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
-                _ => McpErrorCode.Unavailable
-            };
-            read.Should().Be(expectedRead, $"read mapping for {code}");
-
-            McpErrorCode write = McpErrorMappings.ToWriteError(code);
-            McpErrorCode expectedWrite = code switch
-            {
-                AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
-                AppErrorCodes.NotFound => McpErrorCode.NotFound,
-                AppErrorCodes.Conflict => McpErrorCode.RevisionConflict,
-                AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
-                AppErrorCodes.ValidationFailed => McpErrorCode.InvalidContent,
-                AppErrorCodes.UnsupportedOperation => McpErrorCode.PermissionDenied,
-                AppErrorCodes.BiblatexParseFailed or AppErrorCodes.BiblatexWriteFailed
-                    or AppErrorCodes.BiblatexHelperFailed or AppErrorCodes.BiblatexVerifyFailed
-                    or AppErrorCodes.BiblatexMissingTitle or AppErrorCodes.BiblatexEncodingError =>
-                    McpErrorCode.InvalidContent,
-                _ => McpErrorCode.Unavailable
-            };
-            write.Should().Be(expectedWrite, $"write mapping for {code}");
-        }
+        return (McpFindEntry)entry;
     }
 
-    [Fact]
-    public async Task Cli_json_output_matches_mcp_envelope_for_find()
+    private static McpFindLongEntry LongEntry(object entry)
     {
-        string cliDll = Path.Combine(AppContext.BaseDirectory, "Patchouli.Cli.dll");
-        File.Exists(cliDll).Should().BeTrue("Patchouli.Cli must be referenced by the test project");
+        return (McpFindLongEntry)entry;
+    }
 
-        ProcessStartInfo startInfo = new()
-        {
-            FileName = "dotnet",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
-        startInfo.ArgumentList.Add(cliDll);
-        startInfo.ArgumentList.Add("--json");
-        startInfo.ArgumentList.Add("--db");
-        startInfo.ArgumentList.Add(_databasePath);
-        startInfo.ArgumentList.Add("find");
-
-        using Process process = Process.Start(startInfo)!;
-        string stdout = await process.StandardOutput.ReadToEndAsync();
-        string stderr = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        process.ExitCode.Should().Be(0, $"CLI exited {process.ExitCode}; stderr: {stderr}");
-
-        McpProtocolHandler handler = new(_library.Api, _library.Writes, _library.Biblatex, _library.ConnectionFactory);
-        string rpc =
-            """
-            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"patchouli.find","arguments":{}}}
-            """;
-        string callResponse = await handler.HandleAsync(rpc);
-        JsonNode? callJson = JsonNode.Parse(callResponse);
-        string envelopeText = callJson!["result"]!["content"]![0]!["text"]!.GetValue<string>();
-        JsonNode? mcpEnvelope = JsonNode.Parse(envelopeText);
-        JsonNode? cliEnvelope = JsonNode.Parse(stdout);
-
-        cliEnvelope!["data"]!.ToJsonString().Should().Be(mcpEnvelope!["data"]!.ToJsonString(),
-            "the CLI and MCP must share the same find response schema");
+    private static string RegexKey(string content)
+    {
+        return System.Text.RegularExpressions.Regex.Match(content, @"@\w+\{([^,]+),").Groups[1].Value;
     }
 
     private sealed record TestLibrary(

@@ -196,6 +196,18 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void About_lists_corvus_toon_system_text_json()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
+
+        about.ThirdPartyLibraries.Should().Contain(library =>
+            library.Name == "Corvus.Toon.SystemTextJson" &&
+            library.License == "Apache-2.0" &&
+            library.Url == "https://github.com/corvus-dotnet/Corvus.JsonSchema");
+    }
+
+    [Fact]
     public void Macos_plist_describes_supported_user_selected_locations()
     {
         string plist = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "macos", "Info.plist.template"));

@@ -4,21 +4,25 @@ namespace Patchouli.Mcp;
 
 /// <summary>
 /// Numeric error codes shared by the MCP tools and the patchouli-cli executable.
-/// Values follow the PRD error table: 0 OK, 2 INVALID_ARGUMENT, 3 NOT_FOUND,
-/// 4 PERMISSION_DENIED, 5 REVISION_CONFLICT, 6 INVALID_CONTENT,
-/// 7 RESPONSE_TRUNCATED, 8 UNAVAILABLE, 9 NOT_CITABLE.
+/// Values follow the PRD v3 error table: 0 OK, 1 INTERNAL, 2 INVALID_ARGUMENT,
+/// 3 NOT_FOUND, 4 PERMISSION_DENIED, 5 RESERVED (put has no base revision and no
+/// revision conflict), 6 INVALID_CONTENT, 7 RESPONSE_TRUNCATED, 8 UNAVAILABLE,
+/// 9 NOT_CITABLE, 10 DEADLINE_EXCEEDED, 11 CANCELLED.
 /// </summary>
 public enum McpErrorCode
 {
     Ok = 0,
+    Internal = 1,
     InvalidArgument = 2,
     NotFound = 3,
     PermissionDenied = 4,
-    RevisionConflict = 5,
+    Reserved = 5,
     InvalidContent = 6,
     ResponseTruncated = 7,
     Unavailable = 8,
-    NotCitable = 9
+    NotCitable = 9,
+    DeadlineExceeded = 10,
+    Cancelled = 11
 }
 
 /// <summary>Single source of truth mapping domain error codes to the shared numeric codes.</summary>
@@ -32,12 +36,19 @@ public static class McpErrorMappings
             AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotFound => McpErrorCode.NotFound,
             AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
-            AppErrorCodes.Conflict => McpErrorCode.RevisionConflict,
+            AppErrorCodes.InvalidEvidenceReference or AppErrorCodes.InvalidEvref or
+                AppErrorCodes.UnsupportedEvrefTarget => McpErrorCode.InvalidArgument,
+            AppErrorCodes.EvidenceResourceMismatch or AppErrorCodes.EvidenceLibraryMismatch or
+                AppErrorCodes.LibraryMismatch => McpErrorCode.NotFound,
+            AppErrorCodes.EvidenceUnavailable => McpErrorCode.NotFound,
+            AppErrorCodes.Conflict => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
             "general_type_not_renderable" => McpErrorCode.NotCitable,
             AppErrorCodes.BiblatexGeneralExportForbidden => McpErrorCode.PermissionDenied,
             AppErrorCodes.UnsupportedOperation => McpErrorCode.Unavailable,
-            _ => McpErrorCode.Unavailable
+            AppErrorCodes.DatabaseError or AppErrorCodes.InvalidState or AppErrorCodes.MappingRequired
+                or AppErrorCodes.StaleSettingsRevision => McpErrorCode.Internal,
+            _ => McpErrorCode.Internal
         };
     }
 
@@ -48,15 +59,18 @@ public static class McpErrorMappings
         {
             AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotFound => McpErrorCode.NotFound,
-            AppErrorCodes.Conflict => McpErrorCode.RevisionConflict,
+            AppErrorCodes.Conflict => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
             AppErrorCodes.ValidationFailed => McpErrorCode.InvalidContent,
-            AppErrorCodes.UnsupportedOperation => McpErrorCode.PermissionDenied,
+            AppErrorCodes.UnsupportedOperation or AppErrorCodes.BiblatexGeneralExportForbidden =>
+                McpErrorCode.PermissionDenied,
             AppErrorCodes.BiblatexParseFailed or AppErrorCodes.BiblatexWriteFailed or
                 AppErrorCodes.BiblatexHelperFailed or AppErrorCodes.BiblatexVerifyFailed or
                 AppErrorCodes.BiblatexMissingTitle or AppErrorCodes.BiblatexEncodingError =>
                 McpErrorCode.InvalidContent,
-            _ => McpErrorCode.Unavailable
+            AppErrorCodes.DatabaseError or AppErrorCodes.InvalidState or AppErrorCodes.MappingRequired
+                or AppErrorCodes.StaleSettingsRevision => McpErrorCode.Internal,
+            _ => McpErrorCode.Internal
         };
     }
 }
