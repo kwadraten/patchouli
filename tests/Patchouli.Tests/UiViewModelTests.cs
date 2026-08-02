@@ -40,12 +40,48 @@ using Patchouli.UI.ViewModels.Settings;
 
 namespace Patchouli.Tests;
 
+[Collection("Avalonia")]
 public sealed class UiViewModelTests : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
 
+    [Fact]
+    public void Library_status_cell_uses_the_shared_fsm_label_and_detail_tooltip()
+    {
+        string libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views",
+            "LibraryPage.axaml"));
+
+        libraryXaml.Should().Contain("DataGridTemplateColumn Header=\"OCR/索引状态\"");
+        libraryXaml.Should().Contain("Text=\"{Binding OcrIndexStateLabel}\"");
+        libraryXaml.Should().Contain("ToolTip.Tip=\"{Binding OcrIndexStateDetail}\"");
+    }
+
+    [Fact]
+    public void Queue_running_state_updates_the_library_row_through_the_shared_fsm()
+    {
+        MainWindowViewModel vm = CreateMainWindow();
+        DocumentInstanceId documentId = DocumentInstanceId.New();
+        LibraryItemViewModel item = new(
+            ItemId.New().ToString(), "OCR item", "book", "", "", "", documentId.ToString(), null, "", "",
+            0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask);
+        vm.Shell.Items.Add(item);
+        OcrQueueTask task = new(
+            OcrQueueTaskId.New(), LibraryId.New(), documentId, OcrPresetId.New(), [], OcrQueueTaskKind.Document,
+            OcrEngineIds.MinerU, OcrAdapterKind.CloudApi, ProviderIds.MinerU, OcrQueuePriority.UserStartedDocument,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, OcrQueueTaskState.Running, 0, 0, null, null, null, null,
+            null, null);
+
+        vm.Shell.ApplyOcrQueueRunningState(task);
+
+        item.OcrIndexState.Should().Be("ocr_running");
+        item.OcrIndexStateLabel.Should().Be("OCR 进行中");
+        item.OcrStatus.Should().Be(item.OcrIndexStateDetail);
+    }
+
     public void Dispose()
     {
+        // Runtime connections are pooled. Release the per-test database file before its cleanup.
+        SqliteConnection.ClearAllPools();
         _settings.Dispose();
     }
 
@@ -173,6 +209,7 @@ public sealed class UiViewModelTests : IDisposable
             SqliteConnection.ClearAllPools();
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -208,6 +245,8 @@ public sealed class UiViewModelTests : IDisposable
 
             vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
             vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
+            await services.PageRenders.ReleaseDocumentSessionAsync(
+                DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!));
         }
         finally
         {
@@ -218,6 +257,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -288,6 +328,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -361,6 +402,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -404,6 +446,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -426,6 +469,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -468,6 +512,7 @@ public sealed class UiViewModelTests : IDisposable
             SqliteConnection.ClearAllPools();
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -490,6 +535,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -512,6 +558,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -590,6 +637,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1099,6 +1147,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -1134,6 +1183,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -1184,6 +1234,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -1314,6 +1365,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.StopMcpServerAsync();
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1327,7 +1379,7 @@ public sealed class UiViewModelTests : IDisposable
             CreateMainWindow(new FakeClipboard(), autoStartMcpServer: true), path);
         try
         {
-            await vm.ServicesAsync(startMcpServer: false);
+            await vm.ServicesAsync(false);
 
             vm.McpServerRunning.Should().BeFalse();
         }
@@ -1336,6 +1388,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.StopMcpServerAsync();
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1363,6 +1416,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1399,6 +1453,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1429,6 +1484,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1466,6 +1522,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1503,6 +1560,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1576,6 +1634,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1589,7 +1648,7 @@ public sealed class UiViewModelTests : IDisposable
             .FullName;
         string path = Path.Combine(root, "failure.sqlite");
         string pdf = Path.Combine(root, "failure.pdf");
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
             await session.Dispatch(async () =>
@@ -1603,7 +1662,6 @@ public sealed class UiViewModelTests : IDisposable
                     await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Failed queue item", null, 1));
                 await vm.Shell.RefreshItemsAsync();
                 LibraryItemViewModel item = vm.Shell.Items.Single();
-                item.OcrStatus = "OCR 已加入后台队列";
                 LibraryMetadata library = (await services.Library.GetCurrentLibraryAsync()).Value;
                 OcrQueueTask task = new(
                     OcrQueueTaskId.New(), library.LibraryId, DocumentInstanceId.Parse(item.DocumentInstanceId!),
@@ -1618,15 +1676,91 @@ public sealed class UiViewModelTests : IDisposable
 
                 vm.StatusIsError.Should().BeTrue();
                 vm.Status.Should().Contain("MinerU rejected model_version");
-                item.OcrStatus.Should().Be("OCR 失败：MinerU rejected model_version");
+                await vm.Shell.ApplyDocumentChangeSetAsync([task.DocumentInstanceId]);
+                item.OcrIndexState.Should().Be("no_ocr");
+                item.OcrStatus.Should().Be(item.OcrIndexStateDetail);
                 return true;
             }, CancellationToken.None);
         }
         finally
         {
+            session.Dispose();
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
+            }
+        }
+    }
+
+    [Fact]
+    public void OcrQueueViewModel_has_no_fixed_period_polling_loop()
+    {
+        Type queueType = typeof(OcrQueueViewModel);
+        queueType.GetField("_autoRefresh", BindingFlags.Instance | BindingFlags.NonPublic).Should().BeNull(
+            "OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
+        queueType.GetMethod("RunAutoRefreshLoopAsync", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Should().BeNull("OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
+        queueType.GetMethod("EnsureAutoRefreshLoop", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Should().BeNull("OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
+        queueType.GetField("_refreshScheduled", BindingFlags.Instance | BindingFlags.NonPublic).Should().NotBeNull(
+            "the event-driven coalesced refresh gate must remain so bursts of queue events collapse into one refresh");
+    }
+
+    [Fact]
+    public async Task Queue_terminal_success_refreshes_only_the_affected_row_in_place()
+    {
+        string path = _settings.CreateDatabasePath("ui-queue-success");
+        string pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-success-{Guid.NewGuid():N}.pdf");
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        try
+        {
+            await session.Dispatch(async () =>
+            {
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
+                AppServices services = await vm.ServicesAsync();
+                PdfImportResult import =
+                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Affected Item", null, 1));
+                import.Success.Should().BeTrue(import.ErrorMessage);
+                await vm.Shell.RefreshItemsAsync();
+                LibraryItemViewModel item = vm.Shell.Items.Single();
+                LibraryItemViewModel originalInstance = item;
+
+                // Simulate the DB-side effects a terminal OCR run publishes (new title, search
+                // units) without going through the UI; the shell must reconcile them incrementally.
+                using (SqliteConnection connection = services.ConnectionFactory.CreateConnection())
+                {
+                    connection.Open();
+                    connection.Execute(
+                        "update items set title = @Title where item_id = @ItemId;",
+                        new { Title = "OCR Updated Affected Item", ItemId = item.ItemId });
+                }
+
+                OcrQueueTask task = new(
+                    OcrQueueTaskId.New(), (await services.Library.GetCurrentLibraryAsync()).Value.LibraryId,
+                    DocumentInstanceId.Parse(item.DocumentInstanceId!), OcrPresetId.New(), [PageId.New()],
+                    OcrQueueTaskKind.Document, OcrEngineIds.MinerU, OcrAdapterKind.CloudApi, ProviderIds.MinerU,
+                    OcrQueuePriority.UserStartedDocument, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                    OcrQueueTaskState.Succeeded, 1, 1, null, null, null, null, null, null, OcrRunId.New());
+
+                typeof(OcrQueueViewModel).GetMethod("OnQueueChanged", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(vm.OcrQueue, [null, new OcrQueueChangedEventArgs(task, OcrQueueChangeKind.Updated)]);
+
+                item.Title.Should().Be("OCR Updated Affected Item",
+                    "terminal OCR must apply the affected library row from the database");
+                vm.Shell.Items.Should().ContainSingle();
+                vm.Shell.Items.Single().Should().BeSameAs(originalInstance,
+                    "terminal OCR must update the affected row in place, never clear and rebuild the whole Library");
+            }, CancellationToken.None);
+        }
+        finally
+        {
+            if (File.Exists(pdf))
+            {
+                File.Delete(pdf);
             }
         }
     }
@@ -1653,6 +1787,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1688,6 +1823,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1720,8 +1856,8 @@ public sealed class UiViewModelTests : IDisposable
             await vm.Shell.RunOcrForItemAsync(item);
 
             vm.Shell.SelectedItem.Should().Be(item);
-            vm.Shell.SelectedItem!.OcrStatus.Should().Contain("token");
-            vm.Shell.SelectedItem.OcrStatus.Should().Contain("设置");
+            vm.Shell.SelectedItem!.OcrIndexState.Should().Be("no_ocr");
+            vm.Shell.SelectedItem.OcrStatus.Should().Be(vm.Shell.SelectedItem.OcrIndexStateDetail);
             vm.IsSettingsVisible.Should().BeTrue();
             vm.ShowSettingsTab.Should().BeTrue();
             vm.Settings.OcrProviderSettings.MinerUCredentialStatus.Should().Contain("未配置");
@@ -1768,6 +1904,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1837,6 +1974,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1869,6 +2007,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1904,6 +2043,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -1944,6 +2084,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2005,7 +2146,7 @@ public sealed class UiViewModelTests : IDisposable
             tokenUsed.Should().Be("token");
             OcrQueueTask ocrTask = (await queue.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
             ocrTask.State.Should().Be(OcrQueueTaskState.Succeeded);
-            vm.Shell.Items.Single().OcrStatus.Should().Contain("已索引");
+            vm.Shell.Items.Single().OcrIndexStateLabel.Should().Be("已索引");
             Result<McpSearchLibraryResponse> search =
                 await services.Mcp.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
             search.IsSuccess.Should().BeTrue(search.ErrorMessage);
@@ -2026,6 +2167,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2095,6 +2237,7 @@ public sealed class UiViewModelTests : IDisposable
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -2145,6 +2288,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2194,6 +2338,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2260,6 +2405,7 @@ public sealed class UiViewModelTests : IDisposable
             SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -2302,6 +2448,7 @@ public sealed class UiViewModelTests : IDisposable
             SqliteConnection.ClearAllPools();
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2328,6 +2475,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2394,10 +2542,12 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
-            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1))).Success.Should()
-                .BeTrue();
-            (await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1))).Success
-                .Should().BeTrue();
+            PdfImportResult firstImport =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1));
+            firstImport.Success.Should().BeTrue();
+            PdfImportResult secondImport =
+                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(secondPdf, longTitle, null, 1));
+            secondImport.Success.Should().BeTrue();
             await vm.Shell.RefreshItemsAsync();
 
             vm.Shell.SelectedItem = vm.Shell.Items.Single(item => item.Title == "短标题");
@@ -2417,6 +2567,10 @@ public sealed class UiViewModelTests : IDisposable
             vm.ActiveTab!.Title.Should().StartWith("编辑题录：");
             vm.ActiveTab.Title.Should().EndWith("...");
             vm.ActiveTab.Title.Length.Should().BeLessThanOrEqualTo(32);
+            await services.PageRenders.ReleaseDocumentSessionAsync(
+                DocumentInstanceId.Parse(firstImport.CreatedDocumentInstanceId!));
+            await services.PageRenders.ReleaseDocumentSessionAsync(
+                DocumentInstanceId.Parse(secondImport.CreatedDocumentInstanceId!));
         }
         finally
         {
@@ -2432,6 +2586,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2460,6 +2615,8 @@ public sealed class UiViewModelTests : IDisposable
             vm.Shell.SelectedItem.Should().NotBeNull();
             vm.ShowSelectedDocumentTab.Should().BeFalse();
             vm.IsLibraryTabActive.Should().BeTrue();
+            await services.PageRenders.ReleaseDocumentSessionAsync(
+                DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
         }
         finally
         {
@@ -2470,6 +2627,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2513,6 +2671,8 @@ public sealed class UiViewModelTests : IDisposable
             vm.ShowSettingsTab.Should().BeFalse();
             vm.ShowSelectedDocumentTab.Should().BeTrue();
             vm.IsReaderTabActive.Should().BeTrue();
+            await services.PageRenders.ReleaseDocumentSessionAsync(
+                DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
         }
         finally
         {
@@ -2523,6 +2683,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2559,6 +2720,8 @@ public sealed class UiViewModelTests : IDisposable
                 vm.PdfWorkspace.Image.Should().NotBeNull(vm.PdfWorkspace.Status);
                 vm.PdfWorkspace.Status.Should().Contain($"pdfium-{PdfiumDocumentEngine.Version}-dpi120");
                 Directory.EnumerateFiles(root, "*.png").Should().BeEmpty();
+                await services.PageRenders.ReleaseDocumentSessionAsync(
+                    DocumentInstanceId.Parse(import.CreatedDocumentInstanceId!));
                 return true;
             }, CancellationToken.None);
         }
@@ -2566,6 +2729,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (Directory.Exists(root))
             {
+                SqliteConnection.ClearAllPools();
                 Directory.Delete(root, true);
             }
         }
@@ -2610,6 +2774,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2666,6 +2831,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2691,6 +2857,7 @@ public sealed class UiViewModelTests : IDisposable
         {
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2729,6 +2896,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -2765,6 +2933,7 @@ public sealed class UiViewModelTests : IDisposable
 
             if (File.Exists(path))
             {
+                SqliteConnection.ClearAllPools();
                 File.Delete(path);
             }
         }
@@ -3033,6 +3202,12 @@ public sealed class UiViewModelTests : IDisposable
 
     private sealed class RecordingRegionEngine : IOcrRunEngine
     {
+        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        {
+            add { }
+            remove { }
+        }
+
         private readonly PageId _pageId;
         private readonly DocumentTreeRevisionId _regionRevisionId;
 

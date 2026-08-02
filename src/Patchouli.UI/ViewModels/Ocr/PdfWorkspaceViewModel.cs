@@ -19,6 +19,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private readonly MainWindowViewModel _main;
     private int _pageIndex;
     private int _pageCount;
+    private int _lastNavigationDirection;
+    private CancellationTokenSource? _prefetchCancellation;
     private int _widthPixels;
     private int _heightPixels;
     private int _renderGeneration;
@@ -55,6 +57,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private DocumentBoxId? _previewSelectedBoxId;
     private DocumentBox[] _pendingMergeBoxes = [];
     private string _mergeText = string.Empty;
+    private string _sourceValidationState = SourceValidationStatus.Unverified;
+    private string? _sourceWarning;
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
@@ -175,6 +179,54 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public double Zoom { get; private set; } = 1.0;
     public double ActualWidthPixels => _widthPixels;
     public double ActualHeightPixels => _heightPixels;
+
+    /// <summary>
+    /// Last-known source validation state for the currently rendered page (AC16). It stays
+    /// <see cref="SourceValidationStatus.Unverified"/> until a render lazily validates the
+    /// source, transitions through <see cref="SourceValidationStatus.Validating"/> only while a
+    /// render that may validate is in flight, and then settles on
+    /// <see cref="SourceValidationStatus.Current"/>, <see cref="SourceValidationStatus.Changed"/>
+    /// or <see cref="SourceValidationStatus.Unavailable"/>.
+    /// </summary>
+    public string SourceValidationState
+    {
+        get => _sourceValidationState;
+        private set
+        {
+            if (_sourceValidationState == value)
+            {
+                return;
+            }
+
+            _sourceValidationState = value;
+            Raise();
+            Raise(nameof(IsSourceValidating));
+            Raise(nameof(HasSourceWarning));
+        }
+    }
+
+    /// <summary>True only while a render that may lazily validate the source is in flight.</summary>
+    public bool IsSourceValidating => _sourceValidationState == SourceValidationStatus.Validating;
+
+    /// <summary>Distinct source warning (e.g. source_changed/bbox_basis_stale) for the page.</summary>
+    public string? SourceWarning
+    {
+        get => _sourceWarning;
+        private set
+        {
+            if (_sourceWarning == value)
+            {
+                return;
+            }
+
+            _sourceWarning = value;
+            Raise();
+            Raise(nameof(HasSourceWarning));
+        }
+    }
+
+    /// <summary>True when the source warning is present and validation is not still running.</summary>
+    public bool HasSourceWarning => !string.IsNullOrWhiteSpace(SourceWarning) && !IsSourceValidating;
 
     public bool IsEditMode
     {
@@ -1777,12 +1829,16 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public async Task LoadAsync()
     {
         _pageIndex = 0;
+        _lastNavigationDirection = 0;
         _renderGeneration++;
         await RenderCurrentPageAsync();
     }
 
     public void Clear()
     {
+        _prefetchCancellation?.Cancel();
+        _prefetchCancellation = null;
+        _ = ReleaseDocumentSessionAsync();
         PageEditSessionId? sessionId = _editSessionId;
         Image?.Dispose();
         Image = null;
@@ -1811,6 +1867,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         ClearSplit();
         ClearPendingBox();
         ClearLocalOcrCandidate();
+        ClearSourceValidation();
         Status = "选择题录后可预览 PDF。";
         RaiseAll();
         if (sessionId is not null)
@@ -1833,6 +1890,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
 
         _pageIndex--;
+        _lastNavigationDirection = -1;
         await RenderCurrentPageAsync();
     }
 
@@ -1850,6 +1908,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
 
         _pageIndex++;
+        _lastNavigationDirection = 1;
         await RenderCurrentPageAsync();
     }
 
@@ -1874,6 +1933,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
+        _lastNavigationDirection = target > _pageIndex ? 1 : target < _pageIndex ? -1 : 0;
         _pageIndex = target;
         await RenderCurrentPageAsync();
     }
@@ -1916,6 +1976,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         Image = null;
         _widthPixels = 0;
         IsBusy = true;
+        BeginSourceValidation();
         Status = "正在渲染 PDF 预览...";
         RaiseAll();
 
@@ -1925,6 +1986,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             {
                 if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
                 {
+                    ClearSourceValidation();
                     Status = "该题录没有可预览的 PDF 文件。";
                     return;
                 }
@@ -1935,6 +1997,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             FileAssetId? fileAssetId = await ResolveFileAssetIdAsync(services, documentInstanceId);
             if (fileAssetId is null)
             {
+                ClearSourceValidation();
                 Status = "该题录没有可预览的 PDF 文件。";
                 return;
             }
@@ -1942,6 +2005,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentInstanceId);
             if (pages.IsFailure)
             {
+                ClearSourceValidation();
                 Status = $"ERROR {pages.ErrorCode}: {pages.ErrorMessage}";
                 return;
             }
@@ -1950,6 +2014,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             _pages = pages.Value;
             if (_pageCount == 0)
             {
+                ClearSourceValidation();
                 Status = "该文档还没有页面记录。";
                 return;
             }
@@ -1962,6 +2027,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                     Purpose: PageRenderPurpose.Preview));
             if (preview.IsFailure)
             {
+                ApplyPreviewFailure(preview);
                 Status = $"ERROR {preview.ErrorCode}: {preview.ErrorMessage}";
                 return;
             }
@@ -1997,9 +2063,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
             Status =
                 $"{Item.Title} · 第 {_pageIndex + 1}/{_pageCount} 页 · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
+            CompleteSourceValidation(SourceValidationStatus.Current, null);
+            SchedulePrefetchAsync(services, documentInstanceId, fileAssetId);
         }
         catch (Exception ex)
         {
+            ClearSourceValidation();
             Status = $"PDF 预览失败：{ex.Message}";
         }
         finally
@@ -2010,6 +2079,126 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 RaiseAll();
             }
         }
+    }
+
+    // AC16: the workspace exposes a lazy source-validation state machine. It stays unverified
+    // until a render that may validate runs, is observed as "validating" only while that render
+    // is in flight (UI stays interactive), and settles on a terminal state with a distinct
+    // warning for changed/unavailable sources. Non-source outcomes leave it unverified.
+    private void BeginSourceValidation()
+    {
+        SourceWarning = null;
+        SourceValidationState = SourceValidationStatus.Validating;
+    }
+
+    private void CompleteSourceValidation(string terminalState, string? warning)
+    {
+        SourceWarning = warning;
+        SourceValidationState = terminalState;
+    }
+
+    private void ClearSourceValidation()
+    {
+        CompleteSourceValidation(SourceValidationStatus.Unverified, null);
+    }
+
+    private void ApplyPreviewFailure(Result<PdfPagePixelBufferLease> preview)
+    {
+        string message = preview.ErrorMessage ?? string.Empty;
+        if (message.Contains("bbox_basis_stale", StringComparison.Ordinal) ||
+            message.Contains("source_changed", StringComparison.Ordinal))
+        {
+            CompleteSourceValidation(SourceValidationStatus.Changed, message);
+            return;
+        }
+
+        if (preview.ErrorCode == AppErrorCodes.NotFound ||
+            message.Contains("unavailable", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("source file", StringComparison.OrdinalIgnoreCase))
+        {
+            CompleteSourceValidation(SourceValidationStatus.Unavailable, message);
+            return;
+        }
+
+        ClearSourceValidation();
+    }
+
+    // Adjacent-page pre-fetch. Current page rendering keeps the highest priority; prefetch
+    // only warms the shared preview raster cache (bounded LRU), never mutates the current
+    // page, and failures are swallowed so a prefetch can never change the current page's
+    // success state. Fast navigation cancels the previous prefetch window.
+    private void SchedulePrefetchAsync(AppServices services, DocumentInstanceId documentInstanceId,
+        FileAssetId? fileAssetId)
+    {
+        _prefetchCancellation?.Cancel();
+        _prefetchCancellation?.Dispose();
+        _prefetchCancellation = new CancellationTokenSource();
+        CancellationToken token = _prefetchCancellation.Token;
+        // Keep the window ordered and render it serially. Starting all neighbours at once can
+        // put low-priority PDFium work ahead of the page the user has just requested. Identical
+        // foreground/prefetch requests still merge in PageRenderService's in-flight cache.
+        int[] targets = PrefetchWindow(_pageIndex, _pageCount, _lastNavigationDirection);
+        _ = PrefetchWindowAsync(services, documentInstanceId, fileAssetId, targets, token);
+    }
+
+    private async Task PrefetchWindowAsync(AppServices services, DocumentInstanceId documentInstanceId,
+        FileAssetId? fileAssetId, IReadOnlyList<int> pageIndexes, CancellationToken cancellationToken)
+    {
+        try
+        {
+            foreach (int pageIndex in pageIndexes)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await PrefetchPageAsync(services, documentInstanceId, fileAssetId, pageIndex, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // A newer page selection owns the next prefetch window.
+        }
+    }
+
+    private async Task PrefetchPageAsync(AppServices services, DocumentInstanceId documentInstanceId,
+        FileAssetId? fileAssetId, int pageIndex, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (pageIndex < 0 || pageIndex >= _pages.Count || pageIndex == _pageIndex)
+            {
+                return;
+            }
+
+            Page page = _pages[pageIndex];
+            Result<PdfPagePixelBufferLease> preview = await services.PageRenders.RenderPreviewAsync(
+                new PageRenderRequest(documentInstanceId, page.PageId, fileAssetId, 120,
+                    Purpose: PageRenderPurpose.Preview), cancellationToken);
+            if (preview.IsSuccess)
+            {
+                preview.Value.Dispose();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception)
+        {
+            // Pre-fetch must never affect the current page's success state.
+        }
+    }
+
+    // Default working set is current, previous, and the next two pages. While navigating
+    // forward/back the window is ordered by direction so the pages closest to the user's
+    // next move are prefetched first.
+    private static int[] PrefetchWindow(int current, int pageCount, int direction)
+    {
+        int[] window = direction > 0
+            ? [current + 1, current + 2, current - 1]
+            : direction < 0
+                ? [current - 1, current - 2, current + 1]
+                : [current - 1, current + 1, current + 2];
+        return window.Where(index => index >= 0 && index < pageCount && index != current)
+            .Distinct()
+            .ToArray();
     }
 
     private async Task<FileAssetId?> ResolveFileAssetIdAsync(AppServices services,
@@ -2043,6 +2232,24 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         catch (Exception ex)
         {
             _main.ReportError($"放弃页面草稿失败：{ex.Message}");
+        }
+    }
+
+    private async Task ReleaseDocumentSessionAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+            {
+                return;
+            }
+
+            await (await _main.ServicesAsync()).PageRenders.ReleaseDocumentSessionAsync(
+                DocumentInstanceId.Parse(Item.DocumentInstanceId));
+        }
+        catch (Exception ex)
+        {
+            _main.ReportError($"释放 PDF 会话失败：{ex.Message}");
         }
     }
 
@@ -2090,7 +2297,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
 
         RebuildTreeBoxes();
-        UpdateOverlapWarnings();
+        await UpdateOverlapWarningsAsync(revisionId);
         await UpdateContinuationLinksAsync();
         await LoadPreviewAsync(revisionId);
     }
@@ -2194,7 +2401,11 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         SelectedBox = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == target.HeadBoxId);
     }
 
-    private void UpdateOverlapWarnings()
+    // AC16: overlap markers are a bounded, revision-keyed lazy projection. The workspace requests
+    // the projection for the page it entered; immutable revisions are reused from cache, Box edits
+    // invalidate only this page, and the projection never reads the source file or computes a full
+    // hash. The in-memory box set is passed through as the provider so there is no second read.
+    private async Task UpdateOverlapWarningsAsync(DocumentTreeRevisionId revisionId)
     {
         OverlapMarkers.Clear();
         Dictionary<DocumentBoxId, PdfBBoxViewModel> byId = BoundingBoxes.ToDictionary(box => box.BoxId);
@@ -2203,15 +2414,28 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             box.HasOverlapWarning = false;
         }
 
-        foreach (DocumentBoxOverlap overlap in DocumentBoxOverlapDetector.Detect(_loadedBoxes))
+        if (_currentPageId is { } pageId)
         {
-            if (byId.TryGetValue(overlap.First.BoxId, out PdfBBoxViewModel? first) &&
-                byId.TryGetValue(overlap.Second.BoxId, out PdfBBoxViewModel? second))
+            IReadOnlyList<DocumentBox> boxes = _loadedBoxes;
+            AppServices services = await _main.ServicesAsync();
+            Result<IReadOnlyList<DocumentBoxOverlap>> overlaps = await services.Overlaps.GetOrCreateAsync(
+                revisionId,
+                pageId,
+                DocumentBoxOverlapDetector.PolicyBasis,
+                _ => Task.FromResult(Result<IReadOnlyList<DocumentBox>>.Success(boxes)));
+            if (overlaps.IsSuccess)
             {
-                first.HasOverlapWarning = true;
-                second.HasOverlapWarning = true;
-                OverlapMarkers.Add(new PdfOverlapMarkerViewModel(
-                    first, second, overlap.Intersection, _widthPixels, _heightPixels));
+                foreach (DocumentBoxOverlap overlap in overlaps.Value)
+                {
+                    if (byId.TryGetValue(overlap.First.BoxId, out PdfBBoxViewModel? first) &&
+                        byId.TryGetValue(overlap.Second.BoxId, out PdfBBoxViewModel? second))
+                    {
+                        first.HasOverlapWarning = true;
+                        second.HasOverlapWarning = true;
+                        OverlapMarkers.Add(new PdfOverlapMarkerViewModel(
+                            first, second, overlap.Intersection, _widthPixels, _heightPixels));
+                    }
+                }
             }
         }
 
@@ -2258,6 +2482,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         if (_draftRevisionId is null)
         {
             return;
+        }
+
+        // AC16: a Box edit invalidates only the affected page's cached overlap projection;
+        // the recompute that follows never reads the source file or computes a full hash.
+        if (_currentPageId is { } pageId)
+        {
+            (await _main.ServicesAsync()).Overlaps.Invalidate(pageId);
         }
 
         BoundingBoxes.Clear();

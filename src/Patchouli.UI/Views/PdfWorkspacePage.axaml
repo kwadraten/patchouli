@@ -442,11 +442,29 @@
                     <ProgressBar IsIndeterminate="True" Width="220" Height="4" IsVisible="{Binding IsBusy}" />
                   </StackPanel>
 
-                  <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4" HorizontalAlignment="Left"
-                          VerticalAlignment="Top" Margin="10" IsVisible="{Binding HasImage}">
-                    <TextBlock Text="{Binding PageNumberText}" FontSize="11"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  </Border>
+                  <StackPanel Spacing="6" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="10"
+                              IsVisible="{Binding HasImage}">
+                    <Border Background="#CCFFFFFF" Padding="8,4" CornerRadius="4">
+                      <TextBlock Text="{Binding PageNumberText}" FontSize="11"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Border>
+                    <!-- Source validation indicator: "validating" is transient and non-blocking,
+                         while a changed/unavailable source shows a distinct warning (AC16). -->
+                    <Border Background="#CCE3F2FD" BorderBrush="#1976D2" BorderThickness="1" Padding="8,4"
+                            CornerRadius="4" IsVisible="{Binding IsSourceValidating}">
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <lucide:Lucide Icon="refresh-cw" Width="12" Height="12"
+                                       StrokeBrush="#1565C0" />
+                        <TextBlock Text="正在验证源文件..." FontSize="11" Foreground="#1565C0"
+                                   VerticalAlignment="Center" />
+                      </StackPanel>
+                    </Border>
+                    <Border Background="#CCFFF3E0" BorderBrush="#E65100" BorderThickness="1" Padding="8,4"
+                            CornerRadius="4" IsVisible="{Binding HasSourceWarning}">
+                      <TextBlock Text="{Binding SourceWarning}" FontSize="11" Foreground="#8A4B00"
+                                 TextWrapping="Wrap" MaxWidth="380" />
+                    </Border>
+                  </StackPanel>
                 </Grid>
               </Border>
             </LayoutTransformControl>

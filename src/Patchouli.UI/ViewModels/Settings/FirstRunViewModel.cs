@@ -1,6 +1,5 @@
 ﻿using Patchouli.UI.ViewModels;
 using System.Collections.ObjectModel;
-using Microsoft.Data.Sqlite;
 using Patchouli.Core.Import;
 using Patchouli.Core.Files;
 using Patchouli.Infrastructure.Workflows;
@@ -47,7 +46,7 @@ public sealed class FirstRunViewModel : ViewModelBase
     }
 
     private FirstRunWorkflowState _state;
-    private ExistingDatabaseSetupState? _existingDatabaseSetup;
+    private ExistingDatabaseSetup? _existingDatabaseSetup;
 
     public FirstRunViewModel(FirstRunWorkflow workflow, PdfDiscoveryService discovery)
     {
@@ -267,7 +266,7 @@ public sealed class FirstRunViewModel : ViewModelBase
 
             try
             {
-                _existingDatabaseSetup = await InspectExistingDatabaseAsync(DatabasePath);
+                _existingDatabaseSetup = await ExistingDatabaseSetupInspector.InspectAsync(DatabasePath);
             }
             catch (Exception ex)
             {
@@ -288,7 +287,7 @@ public sealed class FirstRunViewModel : ViewModelBase
             State = _existingDatabaseSetup is null
                 ? new FirstRunWorkflowState(FirstRunStep.Library, "数据库已就绪。请创建资料库身份。", null, null, null, null, null,
                     null, false)
-                : _existingDatabaseSetup.ToWorkflowState();
+                : ToWorkflowState(_existingDatabaseSetup);
         }
         catch (Exception ex)
         {
@@ -482,101 +481,10 @@ public sealed class FirstRunViewModel : ViewModelBase
         return Task.CompletedTask;
     }
 
-    private static async Task<ExistingDatabaseSetupState> InspectExistingDatabaseAsync(string databasePath)
+    private static FirstRunWorkflowState ToWorkflowState(ExistingDatabaseSetup setup)
     {
-        using SqliteConnection conn = new($"Data Source={databasePath}");
-        await conn.OpenAsync();
-
-        if (!await TableExistsAsync(conn, "library_metadata"))
-        {
-            throw new InvalidOperationException("缺少 library_metadata 表。");
-        }
-
-        LibraryMetadataRow? library = await Dapper.SqlMapper.QuerySingleOrDefaultAsync<LibraryMetadataRow>(
-            conn,
-            "select library_id as LibraryId, display_name as DisplayName from library_metadata limit 1;");
-        if (library is null || string.IsNullOrWhiteSpace(library.LibraryId) ||
-            string.IsNullOrWhiteSpace(library.DisplayName))
-        {
-            throw new InvalidOperationException("缺少 library_metadata 资料库身份数据。");
-        }
-
-        bool hasSearchRoots = await CountRowsIfTableExistsAsync(conn, "file_search_root_definitions") > 0 ||
-                              await CountRowsIfTableExistsAsync(conn, "file_search_roots") > 0;
-        bool hasOcrPresets = await CountRowsIfTableExistsAsync(conn, "ocr_presets") > 0;
-
-        List<string> skipped = new() { $"已检测到资料库「{library.DisplayName}」，跳过资料库身份步骤" };
-        if (hasSearchRoots)
-        {
-            skipped.Add("已检测到 file_search_roots，跳过文件搜索根配置步骤");
-        }
-
-        if (hasOcrPresets)
-        {
-            skipped.Add("已检测到 ocr_presets，跳过 OCR Preset 配置步骤");
-        }
-
-        List<string> missing = new();
-        if (!hasSearchRoots)
-        {
-            missing.Add("缺少 file_search_roots，请在向导中选择 PDF 扫描目录");
-        }
-
-        if (!hasOcrPresets)
-        {
-            missing.Add("缺少 ocr_presets，请在向导中完成 OCR Preset 配置");
-        }
-
-        string step = !hasSearchRoots
-            ? FirstRunStep.Scan
-            : !hasOcrPresets
-                ? FirstRunStep.MinerUConfig
-                : FirstRunStep.Complete;
-
-        return new ExistingDatabaseSetupState(
-            library.LibraryId,
-            step,
-            string.Join("；", skipped.Concat(missing)),
-            step == FirstRunStep.Complete);
-    }
-
-    private static async Task<bool> TableExistsAsync(SqliteConnection conn, string tableName)
-    {
-        int count = await Dapper.SqlMapper.ExecuteScalarAsync<int>(
-            conn,
-            "select count(1) from sqlite_master where type = 'table' and name = @TableName;",
-            new { TableName = tableName });
-        return count > 0;
-    }
-
-    private static async Task<int> CountRowsIfTableExistsAsync(SqliteConnection conn,
-        string tableName)
-    {
-        if (!await TableExistsAsync(conn, tableName))
-        {
-            return 0;
-        }
-
-        return await Dapper.SqlMapper.ExecuteScalarAsync<int>(conn, $"select count(1) from {tableName};");
-    }
-
-    private sealed class LibraryMetadataRow
-    {
-        public string LibraryId { get; set; } = "";
-        public string DisplayName { get; set; } = "";
-    }
-
-    private sealed record ExistingDatabaseSetupState(
-        string LibraryId,
-        string CurrentStep,
-        string ProgressText,
-        bool IsComplete)
-    {
-        public FirstRunWorkflowState ToWorkflowState()
-        {
-            return new FirstRunWorkflowState(CurrentStep, ProgressText, null, LibraryId, null, null, null, null,
-                IsComplete);
-        }
+        return new FirstRunWorkflowState(setup.CurrentStep, setup.ProgressText, null, setup.LibraryId, null, null,
+            null, null, setup.IsComplete);
     }
 
     private void SetWorkflowMissingError()

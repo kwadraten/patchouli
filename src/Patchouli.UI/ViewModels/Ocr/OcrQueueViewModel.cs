@@ -1,7 +1,5 @@
 using System.Collections.ObjectModel;
 using Avalonia.Threading;
-using Dapper;
-using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
@@ -12,7 +10,6 @@ public sealed class OcrQueueViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private IOcrQueueScheduler? _subscribedQueue;
-    private CancellationTokenSource? _autoRefresh;
     private int _refreshScheduled;
 
     public OcrQueueViewModel(MainWindowViewModel main)
@@ -119,7 +116,6 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         await queue.StartAsync();
-        EnsureAutoRefreshLoop();
         _main.Report("OCR 队列已启动。");
         await RefreshAsync();
     }
@@ -229,66 +225,24 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         Result<OcrQueueStatus> status = await queue.GetQueueStatusAsync();
-        Result<IReadOnlyList<OcrQueueTask>> tasks =
-            await queue.ListTasksAsync(new OcrQueueTaskFilter(IncludeCompleted: true));
-        if (status.IsFailure || tasks.IsFailure)
+        AppServices services = await _main.ServicesAsync();
+        Result<IOcrQueueRowService> rowService = await services.GetOcrQueueRowsAsync();
+        Result<IReadOnlyList<OcrQueueRow>> rows = rowService.IsSuccess
+            ? await rowService.Value.ListRowsAsync(true)
+            : Result<IReadOnlyList<OcrQueueRow>>.Failure(rowService.ErrorCode!, rowService.ErrorMessage!);
+        if (status.IsFailure || rows.IsFailure)
         {
-            _main.ReportError($"读取队列状态失败：{status.ErrorMessage ?? tasks.ErrorMessage}");
+            _main.ReportError($"读取队列状态失败：{status.ErrorMessage ?? rows.ErrorMessage}");
             return;
         }
 
-        Dictionary<string, string> titles = new();
-        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress = new();
-        AppServices services = await _main.ServicesAsync();
-        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-
-        List<string> docs = tasks.Value.Select(t => t.DocumentInstanceId.ToString()).Distinct().ToList();
-        if (docs.Count > 0)
-        {
-            IEnumerable<(string DocId, string Title)> query = await connection.QueryAsync<(string DocId, string Title)>(
-                "select di.document_instance_id as DocId, i.title as Title from document_instances di join items i on di.item_id = i.item_id where di.document_instance_id in @docs",
-                new { docs });
-            foreach ((string DocId, string Title) row in query)
-            {
-                titles[row.DocId] = row.Title;
-            }
-
-            string[] runningDocs = tasks.Value
-                .Where(task => task.State == OcrQueueTaskState.Running || task.RunId is not null)
-                .Select(task => task.DocumentInstanceId.ToString())
-                .Distinct()
-                .ToArray();
-            if (runningDocs.Length > 0)
-            {
-                OcrRunProgressRow[] rows = (await connection.QueryAsync<OcrRunProgressRow>(
-                    """
-                    select r.ocr_run_id as RunId,
-                           r.document_instance_id as DocumentInstanceId,
-                           sum(case when pr.state = 'succeeded' then 1 else 0 end) as Succeeded,
-                           sum(case when pr.state in ('failed', 'skipped', 'cancelled') then 1 else 0 end) as Failed,
-                           sum(case when pr.state = 'processing' then 1 else 0 end) as Processing,
-                           count(pr.result_id) as Total
-                    from ocr_runs r
-                    left join ocr_page_results pr on pr.ocr_run_id = r.ocr_run_id
-                    where r.document_instance_id in @DocumentIds
-                    group by r.ocr_run_id, r.document_instance_id, r.updated_at
-                    order by r.updated_at desc;
-                    """,
-                    new { DocumentIds = runningDocs })).ToArray();
-                foreach (OcrQueueTask task in tasks.Value)
-                {
-                    OcrRunProgressRow? run = rows.FirstOrDefault(row =>
-                        task.RunId?.ToString() == row.RunId ||
-                        (task.RunId is null && task.DocumentInstanceId.ToString() == row.DocumentInstanceId));
-                    if (run is not null)
-                    {
-                        progress[task.TaskId] =
-                            new OcrQueueProgress(run.Succeeded, run.Failed, run.Processing, run.Total);
-                    }
-                }
-            }
-        }
+        Dictionary<string, string> titles = rows.Value.ToDictionary(
+            static row => row.Task.DocumentInstanceId.ToString(),
+            static row => row.ItemTitle,
+            StringComparer.Ordinal);
+        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress = rows.Value
+            .Where(static row => row.PageProgress is not null)
+            .ToDictionary(static row => row.TaskId, static row => row.PageProgress!);
 
         IsQueueRunning = status.Value.IsRunning;
         IsGloballyPaused = status.Value.PausedScopes.Contains("global:");
@@ -297,7 +251,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
 
         List<OcrQueueTask> active = [];
         List<OcrQueueTask> finished = [];
-        foreach (OcrQueueTask task in tasks.Value)
+        foreach (OcrQueueTask task in rows.Value.Select(static row => row.Task))
         {
             (IsActiveState(task.State) ? active : finished).Add(task);
         }
@@ -431,12 +385,8 @@ public sealed class OcrQueueViewModel : ViewModelBase
     {
         if (e.Task?.State == OcrQueueTaskState.Succeeded)
         {
-            PostStatus(() =>
-            {
-                _main.Report("OCR 完成，搜索索引已更新。");
-                _main.Shell.ApplyOcrQueueTerminalState(e.Task);
-            });
-            RefreshLibraryAsync().Observe("ocr-queue-ui", "refresh-library-after-success");
+            PostStatus(() => _main.Report("OCR 完成，搜索索引已更新。"));
+            RefreshAffectedItemsAsync(e.Task).Observe("ocr-queue-ui", "refresh-items-after-success");
         }
         else if (e.Task?.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked)
         {
@@ -446,7 +396,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
                 _main.ReportError(message);
                 _main.Shell.ApplyOcrQueueTerminalState(e.Task);
             });
-            RefreshLibraryAsync().Observe("ocr-queue-ui", "refresh-library-after-failure");
+            RefreshAffectedItemsAsync(e.Task).Observe("ocr-queue-ui", "refresh-items-after-failure");
         }
         else if (e.Task?.State == OcrQueueTaskState.Cancelled)
         {
@@ -458,15 +408,12 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         ScheduleRefresh();
-        if (e.Task?.State == OcrQueueTaskState.Running || e.ChangeKind == OcrQueueChangeKind.Started)
-        {
-            EnsureAutoRefreshLoop();
-        }
     }
 
-    private Task RefreshLibraryAsync()
+    private async Task RefreshAffectedItemsAsync(OcrQueueTask task)
     {
-        return DispatcherTasks.RunAsync(_main.Shell.RefreshItemsAsync);
+        await DispatcherTasks.RunAsync(() => _main.Shell.ApplyDocumentChangeSetAsync([task.DocumentInstanceId]));
+        PostStatus(() => _main.Shell.ApplyOcrQueueTerminalState(task));
     }
 
     private static void PostStatus(Action update)
@@ -506,48 +453,6 @@ public sealed class OcrQueueViewModel : ViewModelBase
     private Task RefreshOnUiThreadAsync()
     {
         return DispatcherTasks.RunAsync(RefreshAsync);
-    }
-
-    private void EnsureAutoRefreshLoop()
-    {
-        if (_autoRefresh is { IsCancellationRequested: false })
-        {
-            return;
-        }
-
-        _autoRefresh = new CancellationTokenSource();
-        CancellationToken token = _autoRefresh.Token;
-        RunAutoRefreshLoopAsync(token).Observe("ocr-queue-ui", "auto-refresh", token);
-    }
-
-    private async Task RunAutoRefreshLoopAsync(CancellationToken token)
-    {
-        while (!token.IsCancellationRequested)
-        {
-            await Task.Delay(TimeSpan.FromSeconds(1), token);
-            await RefreshOnUiThreadAsync();
-            IOcrQueueScheduler? queue = _subscribedQueue;
-            if (queue is null)
-            {
-                continue;
-            }
-
-            Result<OcrQueueStatus> status = await queue.GetQueueStatusAsync(token);
-            if (status.IsSuccess && status.Value.Running == 0)
-            {
-                _autoRefresh?.Cancel();
-            }
-        }
-    }
-
-    private sealed class OcrRunProgressRow
-    {
-        public string RunId { get; set; } = "";
-        public string DocumentInstanceId { get; set; } = "";
-        public int Succeeded { get; set; }
-        public int Failed { get; set; }
-        public int Processing { get; set; }
-        public int Total { get; set; }
     }
 }
 
@@ -893,5 +798,3 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         };
     }
 }
-
-public sealed record OcrQueueProgress(int Succeeded, int Failed, int Processing, int Total);

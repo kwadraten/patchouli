@@ -1,7 +1,7 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.UI.ViewModels;
 

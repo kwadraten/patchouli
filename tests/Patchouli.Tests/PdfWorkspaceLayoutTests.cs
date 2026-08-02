@@ -117,6 +117,31 @@ public sealed class PdfWorkspaceLayoutTests
     }
 
     [Fact]
+    public void PdfWorkspace_prefetches_the_adjacent_window_with_generation_and_cancellation_guards()
+    {
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        viewModel.Should().Contain("SchedulePrefetchAsync")
+            .And.Contain("PrefetchPageAsync")
+            .And.Contain("PrefetchWindow")
+            .And.Contain("_prefetchCancellation?.Cancel()")
+            .And.Contain("_lastNavigationDirection")
+            .And.Contain("_renderGeneration")
+            .And.Contain("preview.Value.Dispose()")
+            .And.Contain("Pre-fetch must never affect the current page's success state");
+    }
+
+    [Fact]
+    public void PdfWorkspace_prefetch_never_overwrites_the_current_page()
+    {
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        viewModel.Should().NotContain("Image = preview.Value");
+    }
+
+    [Fact]
     public void PdfWorkspace_document_ocr_uses_background_queue_without_modal_operation()
     {
         string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
@@ -155,6 +180,38 @@ public sealed class PdfWorkspaceLayoutTests
             .And.Contain("CopyMarkdownCommand")
             .And.Contain("LocalOcrSourceText")
             .And.NotContain("CandidateBoxes[0]");
+    }
+
+    [Fact]
+    public void PdfWorkspace_overlaps_use_the_revision_keyed_lazy_projection_and_invalidate_on_edit()
+    {
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+        string detector = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.Core", "Documents", "DocumentBoxOverlap.cs"));
+
+        viewModel.Should().Contain("services.Overlaps.GetOrCreateAsync")
+            .And.Contain("DocumentBoxOverlapDetector.PolicyBasis")
+            .And.Contain("Overlaps.Invalidate")
+            .And.NotContain("DocumentBoxOverlapDetector.Detect(_loadedBoxes)");
+        detector.Should().Contain("PolicyBasis");
+    }
+
+    [Fact]
+    public void PdfWorkspace_overlap_projection_never_touches_the_source_file()
+    {
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        int start = viewModel.IndexOf("UpdateOverlapWarningsAsync(", StringComparison.Ordinal);
+        int end = viewModel.IndexOf("Raise(nameof(HasOverlapWarnings));", start, StringComparison.Ordinal);
+
+        start.Should().BeGreaterThanOrEqualTo(0);
+        end.Should().BeGreaterThan(start);
+        string method = viewModel[start..end];
+        method.Should().NotContain("PageRenders")
+            .And.NotContain("SourceFingerprint")
+            .And.NotContain("ResolveFile");
     }
 
     [Fact]

@@ -8,7 +8,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Documents;
@@ -21,7 +21,7 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Mcp;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
 

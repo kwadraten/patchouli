@@ -22,7 +22,7 @@ public sealed partial class App : Application
             {
                 mainWindow = new MainWindow();
                 desktop.MainWindow = mainWindow;
-                await mainWindow.ShowFirstRunIfNeededAsync(startMcpServer: false);
+                await mainWindow.ShowFirstRunIfNeededAsync(false);
                 initialized = true;
             }
         }

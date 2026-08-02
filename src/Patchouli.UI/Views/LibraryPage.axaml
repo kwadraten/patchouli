@@ -172,8 +172,14 @@
                               Width="150" />
 
           <!-- Status -->
-          <DataGridTextColumn Header="OCR/索引状态" Binding="{Binding OcrStatus}" IsVisible="{Binding ShowStatusColumn}"
-                              Width="120" />
+          <DataGridTemplateColumn Header="OCR/索引状态" IsVisible="{Binding ShowStatusColumn}" Width="120">
+            <DataGridTemplateColumn.CellTemplate>
+              <DataTemplate>
+                <TextBlock Text="{Binding OcrIndexStateLabel}" ToolTip.Tip="{Binding OcrIndexStateDetail}"
+                           VerticalAlignment="Center" />
+              </DataTemplate>
+            </DataGridTemplateColumn.CellTemplate>
+          </DataGridTemplateColumn>
 
           <!-- Pages -->
           <DataGridTextColumn Header="页数" Binding="{Binding PageCountDisplay}" IsVisible="{Binding ShowPagesColumn}"

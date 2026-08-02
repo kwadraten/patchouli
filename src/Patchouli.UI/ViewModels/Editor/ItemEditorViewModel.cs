@@ -1282,7 +1282,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _main.Report(Status);
         await RefreshIdentifiersAsync();
         await RefreshCslPreviewAsync();
-        await _main.Shell.RefreshItemsAsync();
         if (_itemId is not null)
         {
             _main.RefreshItemWorkspaceTabTitles(_itemId.Value.ToString(), title.Trim(), this);
@@ -1460,7 +1459,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 await LoadAsync(targetItemId.ToString());
             }
 
-            await _main.Shell.RefreshItemsAsync();
             Status = "元数据已获取并应用。";
         }
         catch (OperationCanceledException)

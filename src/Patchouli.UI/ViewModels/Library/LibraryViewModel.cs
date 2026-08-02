@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -13,13 +13,13 @@ using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.UI.ViewModels;
 

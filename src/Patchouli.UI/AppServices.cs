@@ -15,7 +15,7 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
@@ -44,7 +44,7 @@ using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
@@ -68,11 +68,13 @@ public sealed class AppServices
         MigrationRunner = new MigrationRunner(ConnectionFactory, Path.Combine(AppContext.BaseDirectory, "migrations"));
         Library = new LibraryIdentityService(ConnectionFactory, Clock);
         LibraryPreferences = new LibraryPreferencesService(ConnectionFactory, Library, Clock);
+        LibraryRevisions = new LibraryRevisionService(ConnectionFactory);
         LibraryItems = new LibraryItemQueryService(ConnectionFactory);
-        Items = new ItemService(ConnectionFactory, Library, Clock);
+        Items = new ItemService(ConnectionFactory, Library, Clock, LibraryRevisions);
         _cslCatalogHttpClient = new HttpClient();
         CslCatalog = new CslStyleCatalog(ConnectionFactory, _cslCatalogHttpClient);
-        CslStore = new CslStyleStore(ConnectionFactory, Clock, blockingOperations: BlockingOperations);
+        CslStore = new CslStyleStore(ConnectionFactory, Clock, blockingOperations: BlockingOperations,
+            revisions: LibraryRevisions);
         CslItemMapper = new CslItemMapper();
         CslRenderer = new CslRenderer(Items, CslStore, CslItemMapper);
         ItemTypeProfiles = new CslItemTypeProfileService();
@@ -85,8 +87,8 @@ public sealed class AppServices
         LibrarySettings = new LibrarySettingStore(ConnectionFactory);
         LibrarySettingRecords = new LibrarySettingRecordService(LibrarySettings, Clock);
         LibrarySettingCoordinator = new LibrarySettingCoordinator(LibrarySettings, LibrarySettingRecords);
-        Files = new FileAssetService(ConnectionFactory, Library, Clock);
-        Documents = new DocumentInstanceService(ConnectionFactory, Clock);
+        Files = new FileAssetService(ConnectionFactory, Library, Clock, revisions: LibraryRevisions);
+        Documents = new DocumentInstanceService(ConnectionFactory, Clock, LibraryRevisions);
         INativeFileAccessAdapter? nativeAdapter = OperatingSystem.IsMacOS()
             ? new MacOSNativeFileAccessAdapter()
             : null;
@@ -106,9 +108,12 @@ public sealed class AppServices
         ]);
         Pages = new PageService(ConnectionFactory, Clock);
         Markdown = new MarkdigMarkdownEngine();
-        DocumentTrees = new DocumentTreeService(ConnectionFactory, Clock, Markdown);
+        DocumentTrees = new DocumentTreeService(ConnectionFactory, Clock, Markdown, LibraryRevisions);
         DocumentTreeEditor = (IDocumentTreeEditor)DocumentTrees;
-        DocumentMarkdown = new DocumentMarkdownCompiler(DocumentTrees, Markdown);
+        Overlaps = new OverlapProjectionService();
+        CompiledMarkdownCache = new CompiledMarkdownCache();
+        DocumentMarkdown = new CachedDocumentMarkdownCompiler(
+            new DocumentMarkdownCompiler(DocumentTrees, Markdown), CompiledMarkdownCache);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
         OcrAdapterRegistry adapterRegistry = new();
@@ -126,7 +131,8 @@ public sealed class AppServices
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
             Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"), FileSearchRootAccess);
-        PageCoordinates = new PageCoordinateService(ConnectionFactory);
+        SourceFingerprintValidation = new SourceFingerprintValidationService();
+        PageCoordinates = new PageCoordinateService(ConnectionFactory, SourceFingerprintValidation);
         SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
         SearchUnits = searchUnitBuilder;
         SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock);
@@ -135,7 +141,7 @@ public sealed class AppServices
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
-        Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates);
+        Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates, LibraryRevisions);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
         Credentials = new CredentialStore(settingsPath);
@@ -143,7 +149,7 @@ public sealed class AppServices
             pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
             configuration => (MinerUClientFactoryOverride ?? CreateMinerUClient)(configuration),
-            fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess);
+            fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess, revisions: LibraryRevisions);
         OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex);
         OcrQueueScheduler ocrQueueScheduler = new(
             async cancellationToken =>
@@ -161,7 +167,8 @@ public sealed class AppServices
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
-            ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown);
+            ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
+            CompiledMarkdownCache);
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore);
         CliPath = new CliPathService();
         SnapshotPublisher = new SnapshotPublisher(Clock);
@@ -187,6 +194,7 @@ public sealed class AppServices
     public IBlockingOperationService BlockingOperations { get; }
     public MigrationRunner MigrationRunner { get; }
     public ILibraryIdentityService Library { get; }
+    public ILibraryRevisionService LibraryRevisions { get; }
     public ILibraryPreferencesService LibraryPreferences { get; }
     public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
@@ -212,6 +220,8 @@ public sealed class AppServices
     public IMarkdownEngine Markdown { get; }
     public IDocumentTreeService DocumentTrees { get; }
     public IDocumentTreeEditor DocumentTreeEditor { get; }
+    public IOverlapProjectionService Overlaps { get; }
+    public ICompiledMarkdownCache CompiledMarkdownCache { get; }
     public IDocumentMarkdownCompiler DocumentMarkdown { get; }
     public IOcrPresetService OcrPresets { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
@@ -219,6 +229,7 @@ public sealed class AppServices
     public IPageRenderService PageRenders { get; }
     public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
+    public ISourceFingerprintValidationService SourceFingerprintValidation { get; }
     public IOcrRunCoordinator Ocr { get; }
     public Func<MinerUConfiguration, IMinerUClient>? MinerUClientFactoryOverride { get; set; }
     public ILogicalPageOcrService LogicalPageOcr { get; }

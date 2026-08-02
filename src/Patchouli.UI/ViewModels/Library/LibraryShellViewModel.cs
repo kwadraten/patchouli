@@ -1,6 +1,5 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
-using Dapper;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Ids;
@@ -8,7 +7,6 @@ using Patchouli.Core.Import;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
 using Avalonia.Threading;
-using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Library;
 using Patchouli.UI.ViewModels.Core;
@@ -18,6 +16,8 @@ namespace Patchouli.UI.ViewModels;
 public sealed class LibraryShellViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private readonly SemaphoreSlim _committedChangeGate = new(1, 1);
+    private ILibraryRevisionService? _observedLibraryRevisions;
 
     public LibraryShellViewModel(MainWindowViewModel main)
     {
@@ -27,6 +27,63 @@ public sealed class LibraryShellViewModel : ViewModelBase
         SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
         LookupMetadataBatchCommand = new AsyncCommand(LookupMetadataBatchAsync);
         CancelMetadataBatchCommand = new AsyncCommand(CancelMetadataBatchAsync);
+    }
+
+    /// <summary>
+    /// Binds this shell to the revision stream for the currently open Library. The main window
+    /// owns Library lifetime and calls this again with <see langword="null"/> before switching
+    /// databases, so a notification from a previous Library cannot update the new shell.
+    /// </summary>
+    internal void ObserveLibraryRevisions(ILibraryRevisionService? revisions)
+    {
+        if (ReferenceEquals(_observedLibraryRevisions, revisions))
+        {
+            return;
+        }
+
+        if (_observedLibraryRevisions is not null)
+        {
+            _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
+        }
+
+        _observedLibraryRevisions = revisions;
+        if (_observedLibraryRevisions is not null)
+        {
+            _observedLibraryRevisions.ChangeCommitted += OnLibraryChangeCommitted;
+        }
+    }
+
+    private void OnLibraryChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs eventArgs)
+    {
+        if (_observedLibraryRevisions is null || !ReferenceEquals(sender, _observedLibraryRevisions))
+        {
+            return;
+        }
+
+        ILibraryRevisionService revisions = _observedLibraryRevisions;
+        ApplyCommittedChangeSetAsync(revisions, eventArgs.ChangeSet)
+            .Observe("library-shell-revision", $"apply-{eventArgs.ChangeSet.NewRevision}");
+    }
+
+    private async Task ApplyCommittedChangeSetAsync(ILibraryRevisionService revisions, LibraryChangeSet changeSet)
+    {
+        await _committedChangeGate.WaitAsync();
+        try
+        {
+            if (!ReferenceEquals(revisions, _observedLibraryRevisions))
+            {
+                return;
+            }
+
+            if (ReferenceEquals(revisions, _observedLibraryRevisions))
+            {
+                await ApplyChangeSetAsync(changeSet);
+            }
+        }
+        finally
+        {
+            _committedChangeGate.Release();
+        }
     }
 
     public string LibraryName { get; set; } = "我的书库";
@@ -305,48 +362,12 @@ public sealed class LibraryShellViewModel : ViewModelBase
             throw new InvalidOperationException(rowsResult.ErrorMessage);
         }
 
-        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        Dictionary<string, (string DocumentInstanceId, string SourcePath, string? FileAssetId)> sourcePaths =
-            (await connection.QueryAsync<(string DocumentInstanceId, string SourcePath, string? FileAssetId)>(
-                """
-                select di.document_instance_id as DocumentInstanceId,
-                       coalesce(fa.original_path, '') as SourcePath,
-                       fa.file_asset_id as FileAssetId
-                from document_instances di
-                left join file_assets fa on fa.file_asset_id = di.file_asset_id;
-                """))
-            .ToDictionary(value => value.DocumentInstanceId, value => value, StringComparer.Ordinal);
-
         List<LibraryItemViewModel> refreshedItems = new();
         List<string> refreshedRecentItems = new();
         List<string> refreshedRecentDocuments = new();
         foreach (LibraryItemRow row in rowsResult.Value)
         {
-            string? documentInstanceKey = row.DocumentInstanceId?.ToString();
-            (string DocumentInstanceId, string SourcePath, string? FileAssetId) source =
-                documentInstanceKey is not null && sourcePaths.TryGetValue(documentInstanceKey,
-                    out (string DocumentInstanceId, string SourcePath, string? FileAssetId) value)
-                    ? value
-                    : default;
-            LibraryItemViewModel item = new(
-                row.ItemId.ToString(),
-                row.Title,
-                row.ItemType,
-                row.Authors,
-                row.Year ?? "",
-                row.PublicationTitle ?? "",
-                row.DocumentInstanceId?.ToString(),
-                source.FileAssetId,
-                row.LinkedFileName ?? "",
-                source.SourcePath ?? "",
-                row.PageCount,
-                row.SearchUnitCount,
-                row.IndexStatus,
-                RunOcrForItemAsync,
-                EditMetadataForItemAsync,
-                ViewPdfForItemAsync,
-                row.OcrStatus);
+            LibraryItemViewModel item = CreateItemViewModel(row);
             refreshedItems.Add(item);
             refreshedRecentItems.Add(row.Title);
             if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
@@ -387,42 +408,163 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(NoSelectedItem));
     }
 
+    /// <summary>
+    /// Applies a host commit notification by fetching only the changed rows and updating the
+    /// collection by stable primary key. Never clears and reloads the whole Library, and never
+    /// runs a long database query synchronously on the UI dispatcher.
+    /// </summary>
+    public async Task ApplyChangeSetAsync(IReadOnlyCollection<ItemId> itemIds)
+    {
+        if (itemIds.Count == 0)
+        {
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<LibraryItemRow>> rowsResult =
+            await Task.Run(() => services.LibraryItems.GetRowsByIdsAsync(itemIds));
+        if (rowsResult.IsFailure)
+        {
+            await DispatcherTasks.RunAsync(RefreshItemsAsync);
+            return;
+        }
+
+        await DispatcherTasks.RunAsync(() =>
+        {
+            ApplyRows(rowsResult.Value);
+            return Task.CompletedTask;
+        });
+    }
+
+    private void ApplyRows(IReadOnlyList<LibraryItemRow> rows)
+    {
+        Dictionary<string, int> indexByItemId = new(StringComparer.Ordinal);
+        for (int index = 0; index < Items.Count; index++)
+        {
+            indexByItemId[Items[index].ItemId] = index;
+        }
+
+        bool selectedChanged = false;
+        string? selectedItemId = SelectedItem?.ItemId;
+        foreach (LibraryItemRow row in rows)
+        {
+            string key = row.ItemId.ToString();
+            if (indexByItemId.TryGetValue(key, out int existingIndex))
+            {
+                Items[existingIndex].ApplyRow(row);
+            }
+            else
+            {
+                InsertItemByCreatedAt(CreateItemViewModel(row));
+            }
+
+            if (selectedItemId is not null &&
+                string.Equals(selectedItemId, key, StringComparison.OrdinalIgnoreCase))
+            {
+                selectedChanged = true;
+            }
+        }
+
+        if (selectedChanged)
+        {
+            Raise(nameof(InspectorTitle));
+            Raise(nameof(InspectorSubtitle));
+            Raise(nameof(InspectorStatus));
+            Raise(nameof(InspectorPath));
+        }
+    }
+
+    /// <summary>
+    /// Routes the complete host notification to its affected item rows. Both item and document
+    /// changes are projected by stable IDs; no full Library refresh is needed after a commit.
+    /// </summary>
+    public async Task ApplyChangeSetAsync(LibraryChangeSet changeSet)
+    {
+        await ApplyChangeSetAsync(changeSet.ItemIds);
+        await ApplyDocumentChangeSetAsync(changeSet.DocumentInstanceIds);
+    }
+
+    /// <summary>
+    /// Resolves the owning items of the given document instances and refreshes only those rows by
+    /// stable primary key, so a terminal OCR event updates just the affected row instead of
+    /// clearing and rebuilding the whole Library.
+    /// </summary>
+    public async Task ApplyDocumentChangeSetAsync(IReadOnlyCollection<DocumentInstanceId> documentInstanceIds)
+    {
+        if (documentInstanceIds.Count == 0)
+        {
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<ItemId>> itemIds = await Task.Run(() =>
+            services.LibraryItems.GetItemIdsByDocumentInstanceIdsAsync(documentInstanceIds));
+        if (itemIds.IsSuccess)
+        {
+            await ApplyChangeSetAsync(itemIds.Value);
+        }
+    }
+
+    private LibraryItemViewModel CreateItemViewModel(LibraryItemRow row)
+    {
+        return new LibraryItemViewModel(
+            row.ItemId.ToString(),
+            row.Title,
+            row.ItemType,
+            row.Authors,
+            row.Year ?? "",
+            row.PublicationTitle ?? "",
+            row.DocumentInstanceId?.ToString(),
+            row.FileAssetId,
+            row.LinkedFileName ?? "",
+            row.SourcePath,
+            row.PageCount,
+            row.SearchUnitCount,
+            row.IndexStatus,
+            RunOcrForItemAsync,
+            EditMetadataForItemAsync,
+            ViewPdfForItemAsync,
+            createdAt: row.CreatedAt,
+            primaryDocumentOcrIndexState: row.PrimaryDocumentOcrIndexState);
+    }
+
+    private void InsertItemByCreatedAt(LibraryItemViewModel item)
+    {
+        int insertAt = Items.Count;
+        for (int index = 0; index < Items.Count; index++)
+        {
+            // created_at is stored as ISO-8601 UTC ("O"), so ordinal comparison matches time order.
+            if (string.CompareOrdinal(Items[index].CreatedAt, item.CreatedAt) < 0)
+            {
+                insertAt = index;
+                break;
+            }
+        }
+
+        Items.Insert(insertAt, item);
+    }
+
     public async Task<LibraryItemViewModel?> ResolveDocumentItemAsync(string documentInstanceId)
     {
         AppServices services = await _main.ServicesAsync();
-        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        DocumentNavigationRow? row = await connection.QuerySingleOrDefaultAsync<DocumentNavigationRow>(
-            """
-            select di.item_id as ItemId,
-                   di.document_instance_id as DocumentInstanceId,
-                   di.file_asset_id as FileAssetId,
-                   coalesce(fa.file_name, '') as FileName,
-                   coalesce(fa.original_path, '') as SourcePath,
-                   (select count(1) from pages p where p.document_instance_id = di.document_instance_id) as PageCount,
-                   (select count(1) from search_units su
-                    where su.document_instance_id = di.document_instance_id and su.status = 'current') as SearchUnitCount,
-                   coalesce((select sis.status from search_index_status sis
-                             where sis.scope_type = 'document_instance'
-                               and sis.scope_id = di.document_instance_id), 'not_indexed') as IndexStatus
-            from document_instances di
-            left join file_assets fa on fa.file_asset_id = di.file_asset_id
-            where di.document_instance_id = @DocumentInstanceId;
-            """,
-            new { DocumentInstanceId = documentInstanceId });
-        if (row is null)
+        Result<DocumentNavigationRow?> result =
+            await services.LibraryItems.GetDocumentNavigationAsync(DocumentInstanceId.Parse(documentInstanceId));
+        if (result.IsFailure || result.Value is null)
         {
             return null;
         }
 
+        DocumentNavigationRow row = result.Value;
+
         LibraryItemViewModel? item = Items.FirstOrDefault(candidate =>
-            string.Equals(candidate.ItemId, row.ItemId, StringComparison.OrdinalIgnoreCase));
+            string.Equals(candidate.ItemId, row.ItemId.ToString(), StringComparison.OrdinalIgnoreCase));
         if (item is null)
         {
             return null;
         }
 
-        if (string.Equals(item.DocumentInstanceId, row.DocumentInstanceId, StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(item.DocumentInstanceId, row.DocumentInstanceId.ToString(),
+                StringComparison.OrdinalIgnoreCase))
         {
             return item;
         }
@@ -434,7 +576,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             item.Authors,
             item.Year,
             item.PublicationTitle,
-            row.DocumentInstanceId,
+            row.DocumentInstanceId.ToString(),
             row.FileAssetId,
             row.FileName,
             row.SourcePath,
@@ -451,41 +593,29 @@ public sealed class LibraryShellViewModel : ViewModelBase
         return DispatcherTasks.RunAsync(RefreshItemsAsync);
     }
 
-    private sealed class DocumentNavigationRow
-    {
-        public string ItemId { get; init; } = "";
-        public string DocumentInstanceId { get; init; } = "";
-        public string? FileAssetId { get; init; }
-        public string FileName { get; init; } = "";
-        public string SourcePath { get; init; } = "";
-        public int PageCount { get; init; }
-        public int SearchUnitCount { get; init; }
-        public string IndexStatus { get; init; } = "";
-    }
-
     public async Task RunOcrForItemAsync(LibraryItemViewModel item)
     {
         SelectedItem = item;
         string token = await ResolveMinerUTokenAsync();
         if (string.IsNullOrWhiteSpace(token))
         {
-            item.OcrStatus = "需要 MinerU API token。请先在设置中完成配置后再重试 OCR。";
             await _main.OpenSettingsAsync("mineru", "运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
             _main.Report("运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
-            Raise(nameof(InspectorStatus));
             return;
         }
 
         if (string.IsNullOrWhiteSpace(item.DocumentInstanceId) || string.IsNullOrWhiteSpace(item.SourcePath))
         {
-            item.OcrStatus = "该题录没有可用于 OCR 的文档源。";
-            _main.Report(item.OcrStatus);
+            item.ApplyPrimaryDocumentOcrIndexState(
+                PrimaryDocumentOcrIndexState.Resolve(false, null, null, false, false));
+            _main.Report("该题录没有可用于 OCR 的文档源。");
             Raise(nameof(InspectorStatus));
             return;
         }
 
         IsBusy = true;
-        item.OcrStatus = "OCR 正在运行...";
+        item.ApplyPrimaryDocumentOcrIndexState(
+            PrimaryDocumentOcrIndexState.Resolve(true, "running", null, false, false));
         Raise(nameof(IsBusy));
         Raise(nameof(InspectorStatus));
         try
@@ -494,10 +624,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
             OcrPresetId presetId = await EnsureMinerUPresetAsync(services);
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
             Result<OcrQueueTask> queued = await QueueOcrForItemAsync(services, documentInstanceId, presetId);
-            item.OcrStatus = queued.IsSuccess
+            _main.Report(queued.IsSuccess
                 ? $"OCR 已加入后台队列：{queued.Value.TaskId}"
-                : queued.ErrorMessage ?? "OCR 入队失败。";
-            _main.Report(item.OcrStatus);
+                : queued.ErrorMessage ?? "OCR 入队失败。");
             Raise(nameof(InspectorStatus));
             await _main.OcrQueue.RefreshAsync();
         }
@@ -587,19 +716,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
     private async Task<Result<OcrQueueTask>> QueueOcrForItemAsync(AppServices services,
         DocumentInstanceId documentInstanceId, OcrPresetId presetId)
     {
-        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
+        Result<IReadOnlyList<Patchouli.Core.Layout.Page>> pages =
+            await services.Pages.ListPagesAsync(documentInstanceId);
+        if (pages.IsFailure)
+        {
+            return Result<OcrQueueTask>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
+        }
 
-        PageId[] pageIds = (await connection.QueryAsync<string>(
-                """
-                select page_id
-                from pages
-                where document_instance_id = @DocumentInstanceId
-                order by page_index, page_id;
-                """,
-                new { DocumentInstanceId = documentInstanceId.ToString() }))
-            .Select(PageId.Parse)
-            .ToArray();
+        PageId[] pageIds = pages.Value.Select(static page => page.PageId).ToArray();
 
         if (pageIds.Length == 0)
         {
@@ -607,18 +731,10 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 "Document instance has no pages to OCR.");
         }
 
-        string? engineId = await connection.ExecuteScalarAsync<string?>(
-            """
-            select v.engine_id
-            from ocr_presets p
-            join ocr_preset_versions v on v.preset_version_id = p.current_version_id
-            where p.preset_id = @PresetId
-            limit 1;
-            """,
-            new { PresetId = presetId.ToString() });
-        if (string.IsNullOrWhiteSpace(engineId))
+        Result<OcrPresetVersion> version = await services.OcrPresets.GetCurrentVersionAsync(presetId);
+        if (version.IsFailure)
         {
-            return Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidState, "Active OCR preset/version was not found.");
+            return Result<OcrQueueTask>.Failure(version.ErrorCode!, version.ErrorMessage!);
         }
 
         Result<IOcrQueueScheduler> queue = await services.GetOcrQueueAsync();
@@ -629,9 +745,12 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
         _main.OcrQueue.ObserveQueue(queue.Value);
 
-        string adapterKind = engineId == OcrEngineIds.MinerU ? OcrAdapterKind.CloudApi : OcrAdapterKind.LocalLibrary;
-        string? providerId = engineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
-        return await services.Ocr.QueueDocumentOcrAsync(documentInstanceId, presetId, pageIds, engineId, adapterKind,
+        string adapterKind = version.Value.EngineId == OcrEngineIds.MinerU
+            ? OcrAdapterKind.CloudApi
+            : OcrAdapterKind.LocalLibrary;
+        string? providerId = version.Value.EngineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
+        return await services.Ocr.QueueDocumentOcrAsync(documentInstanceId, presetId, pageIds, version.Value.EngineId,
+            adapterKind,
             providerId, OcrQueuePriority.UserStartedDocument);
     }
 
@@ -645,7 +764,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        item.OcrStatus = "OCR 正在运行...";
+        item.ApplyPrimaryDocumentOcrIndexState(
+            PrimaryDocumentOcrIndexState.Resolve(true, "running", null, false, false));
         Raise(nameof(InspectorStatus));
     }
 
@@ -659,13 +779,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        item.OcrStatus = task.State switch
-        {
-            OcrQueueTaskState.Succeeded => "OCR 完成，搜索索引已更新。",
-            OcrQueueTaskState.Cancelled => "OCR 已取消。",
-            _ => $"OCR 失败：{task.LastErrorMessage ?? "OCR 任务失败。"}"
-        };
-        Raise(nameof(InspectorStatus));
+        ApplyDocumentChangeSetAsync([task.DocumentInstanceId])
+            .Observe("library-shell-ocr", "refresh-terminal-ocr-state");
     }
 
     private async Task<string> ResolveMinerUTokenAsync()
@@ -688,22 +803,15 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     internal static async Task<OcrPresetId> EnsureMinerUPresetAsync(AppServices services)
     {
-        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        string? existing = await connection.ExecuteScalarAsync<string?>(
-            """
-            select p.preset_id
-            from ocr_presets p
-            join ocr_preset_versions v on v.preset_version_id = p.current_version_id
-            where p.archived = 0
-              and v.engine_id = @EngineId
-            order by p.updated_at desc
-            limit 1;
-            """,
-            new { EngineId = OcrEngineIds.MinerU });
-        if (!string.IsNullOrWhiteSpace(existing))
+        Result<OcrPreset?> existing = await services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.MinerU);
+        if (existing.IsFailure)
         {
-            return OcrPresetId.Parse(existing);
+            throw new InvalidOperationException(existing.ErrorMessage);
+        }
+
+        if (existing.Value is not null)
+        {
+            return existing.Value.PresetId;
         }
 
         Result<OcrPreset> created = await services.OcrPresets.CreatePresetAsync(
@@ -830,6 +938,7 @@ internal static class MetadataLookupUiBridge
 public sealed class LibraryItemViewModel : ViewModelBase
 {
     private string _ocrStatus;
+    private PrimaryDocumentOcrIndexState _primaryDocumentOcrIndexState;
 
     public LibraryItemViewModel(
         string itemId,
@@ -848,42 +957,230 @@ public sealed class LibraryItemViewModel : ViewModelBase
         Func<LibraryItemViewModel, Task> runOcr,
         Func<LibraryItemViewModel, Task> editMetadata,
         Func<LibraryItemViewModel, Task>? viewPdf = null,
-        string? ocrStatus = null)
+        string? ocrStatus = null,
+        string? createdAt = null,
+        PrimaryDocumentOcrIndexState? primaryDocumentOcrIndexState = null)
     {
         ItemId = itemId;
-        Title = title;
-        ItemType = itemType;
-        Authors = authors;
-        Year = year;
-        PublicationTitle = publicationTitle;
-        DocumentInstanceId = documentInstanceId;
-        FileAssetId = fileAssetId;
-        FileName = fileName;
-        SourcePath = sourcePath;
-        PageCount = pageCount;
-        SearchUnitCount = searchUnitCount;
-        IndexStatus = indexStatus;
-        _ocrStatus = ocrStatus ?? (searchUnitCount > 0
-            ? $"已索引（{searchUnitCount} 个单元，{indexStatus}）"
-            : $"未索引（{indexStatus}）");
+        _title = title;
+        _itemType = itemType;
+        _authors = authors;
+        _year = year;
+        _publicationTitle = publicationTitle;
+        _documentInstanceId = documentInstanceId;
+        _fileAssetId = fileAssetId;
+        _fileName = fileName;
+        _sourcePath = sourcePath;
+        _pageCount = pageCount;
+        _searchUnitCount = searchUnitCount;
+        _indexStatus = indexStatus;
+        CreatedAt = createdAt ?? "";
+        _primaryDocumentOcrIndexState = primaryDocumentOcrIndexState ??
+                                        PrimaryDocumentOcrIndexState.Resolve(documentInstanceId is not null, null, null,
+                                            false, false);
+        _ocrStatus = ocrStatus ?? _primaryDocumentOcrIndexState.Detail;
         RunOcrCommand = new AsyncCommand(() => runOcr(this));
         EditMetadataCommand = new AsyncCommand(() => editMetadata(this));
         ViewPdfCommand = new AsyncCommand(() => (viewPdf ?? editMetadata)(this));
     }
 
     public string ItemId { get; }
-    public string Title { get; }
-    public string ItemType { get; }
-    public string Authors { get; }
-    public string Year { get; }
-    public string PublicationTitle { get; }
-    public string? DocumentInstanceId { get; }
-    public string? FileAssetId { get; }
-    public string FileName { get; }
-    public string SourcePath { get; }
-    public int PageCount { get; }
-    public int SearchUnitCount { get; }
-    public string IndexStatus { get; }
+    public string CreatedAt { get; }
+
+    private string _title = "";
+    private string _itemType = "";
+    private string _authors = "";
+    private string _year = "";
+    private string _publicationTitle = "";
+    private string? _documentInstanceId;
+    private string? _fileAssetId;
+    private string _fileName = "";
+    private string _sourcePath = "";
+    private int _pageCount;
+    private int _searchUnitCount;
+    private string _indexStatus = "";
+
+    public string Title
+    {
+        get => _title;
+        set
+        {
+            if (_title == value)
+            {
+                return;
+            }
+
+            _title = value;
+            Raise();
+        }
+    }
+
+    public string ItemType
+    {
+        get => _itemType;
+        set
+        {
+            if (_itemType == value)
+            {
+                return;
+            }
+
+            _itemType = value;
+            Raise();
+        }
+    }
+
+    public string Authors
+    {
+        get => _authors;
+        set
+        {
+            if (_authors == value)
+            {
+                return;
+            }
+
+            _authors = value;
+            Raise();
+        }
+    }
+
+    public string Year
+    {
+        get => _year;
+        set
+        {
+            if (_year == value)
+            {
+                return;
+            }
+
+            _year = value;
+            Raise();
+        }
+    }
+
+    public string PublicationTitle
+    {
+        get => _publicationTitle;
+        set
+        {
+            if (_publicationTitle == value)
+            {
+                return;
+            }
+
+            _publicationTitle = value;
+            Raise();
+        }
+    }
+
+    public string? DocumentInstanceId
+    {
+        get => _documentInstanceId;
+        set
+        {
+            if (_documentInstanceId == value)
+            {
+                return;
+            }
+
+            _documentInstanceId = value;
+            Raise();
+        }
+    }
+
+    public string? FileAssetId
+    {
+        get => _fileAssetId;
+        set
+        {
+            if (_fileAssetId == value)
+            {
+                return;
+            }
+
+            _fileAssetId = value;
+            Raise();
+        }
+    }
+
+    public string FileName
+    {
+        get => _fileName;
+        set
+        {
+            if (_fileName == value)
+            {
+                return;
+            }
+
+            _fileName = value;
+            Raise();
+        }
+    }
+
+    public string SourcePath
+    {
+        get => _sourcePath;
+        set
+        {
+            if (_sourcePath == value)
+            {
+                return;
+            }
+
+            _sourcePath = value;
+            Raise();
+        }
+    }
+
+    public int PageCount
+    {
+        get => _pageCount;
+        set
+        {
+            if (_pageCount == value)
+            {
+                return;
+            }
+
+            _pageCount = value;
+            Raise();
+            Raise(nameof(PageCountDisplay));
+        }
+    }
+
+    public int SearchUnitCount
+    {
+        get => _searchUnitCount;
+        set
+        {
+            if (_searchUnitCount == value)
+            {
+                return;
+            }
+
+            _searchUnitCount = value;
+            Raise();
+        }
+    }
+
+    public string IndexStatus
+    {
+        get => _indexStatus;
+        set
+        {
+            if (_indexStatus == value)
+            {
+                return;
+            }
+
+            _indexStatus = value;
+            Raise();
+        }
+    }
+
     public string PageCountDisplay => PageCount <= 0 ? "-" : PageCount.ToString();
     public AsyncCommand RunOcrCommand { get; }
     public AsyncCommand EditMetadataCommand { get; }
@@ -902,5 +1199,39 @@ public sealed class LibraryItemViewModel : ViewModelBase
             _ocrStatus = value;
             Raise();
         }
+    }
+
+    public string OcrIndexState => _primaryDocumentOcrIndexState.Value;
+    public string OcrIndexStateLabel => _primaryDocumentOcrIndexState.ChineseLabel;
+    public string OcrIndexStateDetail => _primaryDocumentOcrIndexState.Detail;
+
+    public void ApplyPrimaryDocumentOcrIndexState(PrimaryDocumentOcrIndexState state)
+    {
+        _primaryDocumentOcrIndexState = state;
+        OcrStatus = state.Detail;
+        Raise(nameof(OcrIndexState));
+        Raise(nameof(OcrIndexStateLabel));
+        Raise(nameof(OcrIndexStateDetail));
+    }
+
+    /// <summary>
+    /// Replaces every mutable display field from a fresh read-model row while keeping the
+    /// stable ItemId and the collection position, so selection and virtualization survive.
+    /// </summary>
+    public void ApplyRow(LibraryItemRow row)
+    {
+        Title = row.Title;
+        ItemType = row.ItemType;
+        Authors = row.Authors;
+        Year = row.Year ?? "";
+        PublicationTitle = row.PublicationTitle ?? "";
+        DocumentInstanceId = row.DocumentInstanceId?.ToString();
+        FileAssetId = row.FileAssetId;
+        FileName = row.LinkedFileName ?? "";
+        SourcePath = row.SourcePath;
+        PageCount = row.PageCount;
+        SearchUnitCount = row.SearchUnitCount;
+        IndexStatus = row.IndexStatus;
+        ApplyPrimaryDocumentOcrIndexState(row.PrimaryDocumentOcrIndexState);
     }
 }

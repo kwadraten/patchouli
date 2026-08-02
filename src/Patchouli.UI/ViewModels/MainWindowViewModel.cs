@@ -4,8 +4,6 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Media;
-using Dapper;
-using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Credentials;
@@ -21,7 +19,7 @@ using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Migrations;
@@ -30,7 +28,7 @@ using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -45,7 +43,7 @@ using Services;
 public sealed class MainWindowViewModel : ViewModelBase
 {
     private AppServices? _services;
-    private IMcpWriteApi? _observedMcpWrites;
+    private ILibraryRevisionService? _observedLibraryRevisions;
     private McpHttpServer? _mcpServer;
     private Task? _backgroundMcpStartTask;
     private long? _mcpRunningSettingsRevision;
@@ -620,6 +618,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (_services is not null)
         {
+            EnsureLibraryChangeNotifications(_services);
             return _services;
         }
 
@@ -640,50 +639,64 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         if (ReferenceEquals(_services, services))
         {
+            EnsureLibraryChangeNotifications(services);
             return;
         }
 
-        DetachMcpWriteNotifications();
+        DetachLibraryChangeNotifications();
         _services = services;
-        _observedMcpWrites = services.McpWrites;
-        _observedMcpWrites.ResourceChanged += OnMcpResourceChanged;
+        EnsureLibraryChangeNotifications(services);
     }
 
-    private void DetachMcpWriteNotifications()
+    private void EnsureLibraryChangeNotifications(AppServices services)
     {
-        if (_observedMcpWrites is not null)
+        if (_observedLibraryRevisions is not null &&
+            !ReferenceEquals(_observedLibraryRevisions, services.LibraryRevisions))
         {
-            _observedMcpWrites.ResourceChanged -= OnMcpResourceChanged;
-            _observedMcpWrites = null;
+            _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
+        }
+
+        _observedLibraryRevisions = services.LibraryRevisions;
+        _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
+        _observedLibraryRevisions.ChangeCommitted += OnLibraryChangeCommitted;
+        Shell.ObserveLibraryRevisions(_observedLibraryRevisions);
+    }
+
+    private void DetachLibraryChangeNotifications()
+    {
+        Shell.ObserveLibraryRevisions(null);
+        if (_observedLibraryRevisions is not null)
+        {
+            _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
+            _observedLibraryRevisions = null;
         }
     }
 
-    private void OnMcpResourceChanged(object? sender, McpResourceChangedEventArgs change)
+    private void OnLibraryChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs change)
     {
-        if (_observedMcpWrites is null || !ReferenceEquals(sender, _observedMcpWrites))
+        if (_observedLibraryRevisions is null || !ReferenceEquals(sender, _observedLibraryRevisions))
         {
             return;
         }
 
-        DispatcherTasks.RunAsync(() => RefreshAfterMcpWriteAsync(change))
-            .Observe("mcp-ui-refresh", $"refresh-{change.Kind}");
+        ILibraryRevisionService revisions = _observedLibraryRevisions;
+        DispatcherTasks.RunAsync(() => RefreshAfterLibraryChangeAsync(revisions, change.ChangeSet))
+            .Observe("library-revision-ui", $"refresh-{change.ChangeSet.NewRevision}");
     }
 
-    private async Task RefreshAfterMcpWriteAsync(McpResourceChangedEventArgs change)
+    private async Task RefreshAfterLibraryChangeAsync(ILibraryRevisionService revisions, LibraryChangeSet changeSet)
     {
-        if (_services is null)
+        if (_services is null || !ReferenceEquals(revisions, _observedLibraryRevisions))
         {
             return;
         }
 
-        if (string.Equals(change.Kind, "item", StringComparison.Ordinal) && change.ItemId is { } itemId)
+        if (changeSet.ItemIds.Count > 0)
         {
-            await Shell.RefreshItemsAsync();
-            await RefreshOpenItemEditorsAsync([itemId]);
-            return;
+            await RefreshOpenItemEditorsAsync(changeSet.ItemIds);
         }
 
-        if (string.Equals(change.Kind, "style", StringComparison.Ordinal))
+        if (changeSet.StyleIds.Count > 0)
         {
             foreach (CslStyleManagerViewModel manager in OpenTabs.Select(tab => tab.Content)
                          .OfType<CslStyleManagerViewModel>())
@@ -717,7 +730,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task StartMcpServerInBackgroundAsync()
     {
-        AppServices services = await ServicesAsync(startMcpServer: false);
+        AppServices services = await ServicesAsync(false);
         await Task.Run(() => StartMcpServerAsync(services));
     }
 
@@ -766,11 +779,13 @@ public sealed class MainWindowViewModel : ViewModelBase
             Result<IReadOnlyList<FileSearchRoot>> roots = await services.FileResolution.ListSearchRootsAsync();
             if (roots.IsSuccess)
             {
-                await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-                await connection.OpenAsync();
+                Result<IReadOnlyList<string>> paths = await services.Files.ListOriginalPathsAsync();
+                if (paths.IsFailure)
+                {
+                    throw new InvalidOperationException(paths.ErrorMessage);
+                }
 
-                string[] filePaths = (await connection.QueryAsync<string>(
-                    "select original_path from file_assets;")).ToArray();
+                string[] filePaths = paths.Value.ToArray();
 
                 foreach (FileSearchRoot root in roots.Value)
                 {
@@ -1119,10 +1134,13 @@ public sealed class MainWindowViewModel : ViewModelBase
     private static async Task<HashSet<string>> LoadKnownFilePathsAsync(AppServices services,
         CancellationToken cancellationToken)
     {
-        await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        IEnumerable<string> paths = await connection.QueryAsync<string>("select original_path from file_assets;");
-        return paths.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Result<IReadOnlyList<string>> paths = await services.Files.ListOriginalPathsAsync(cancellationToken);
+        if (paths.IsFailure)
+        {
+            throw new InvalidOperationException(paths.ErrorMessage);
+        }
+
+        return paths.Value.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task RebuildSearchIndexAsync()
@@ -1325,7 +1343,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
         await StopMcpServerAsync(detail);
-        DetachMcpWriteNotifications();
+        DetachLibraryChangeNotifications();
         _services = null;
         Interlocked.Increment(ref _libraryGeneration);
         Settings.NotifyLibraryContextChanged();
@@ -2185,7 +2203,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         Report(applied.Value.StatusMessage);
-        await Shell.RefreshItemsAsync();
+        await Shell.ApplyChangeSetAsync(applied.Value.CreatedItemIds.Concat(applied.Value.UpdatedItemIds)
+            .Select(ItemId.Parse).ToArray());
         if (targetItemId is { } existingItemId)
         {
             await EditItemByIdAsync(existingItemId.ToString());
@@ -2293,7 +2312,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         Report(applied.Value.StatusMessage);
-        await Shell.RefreshItemsAsync();
+        await Shell.ApplyChangeSetAsync(applied.Value.CreatedItemIds.Concat(applied.Value.UpdatedItemIds)
+            .Select(ItemId.Parse).ToArray());
     }
 
     private async Task ExportBiblatexAsync()
