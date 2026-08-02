@@ -485,6 +485,12 @@ public sealed class OcrQueueSchedulerTests
 
     private sealed class RecordingCoordinator : IOcrRunEngine
     {
+        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        {
+            add { }
+            remove { }
+        }
+
         public List<string> Calls { get; } = new();
         public CancellationToken Token { get; private set; }
 
@@ -592,6 +598,12 @@ public sealed class OcrQueueSchedulerTests
 
     private sealed class PageFailureCoordinator : IOcrRunEngine
     {
+        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        {
+            add { }
+            remove { }
+        }
+
         public DocumentInstanceId DocumentId { get; } = DocumentInstanceId.New();
         public OcrPresetId PresetId { get; } = OcrPresetId.New();
         public PageId PageId { get; } = PageId.New();

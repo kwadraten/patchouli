@@ -206,6 +206,12 @@ public sealed class MinerURegionCandidateTests
         {
             throw new NotSupportedException();
         }
+
+        public Task ReleaseDocumentSessionAsync(DocumentInstanceId documentInstanceId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeMinerUClient : IMinerUClient

@@ -10,7 +10,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Settings;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;

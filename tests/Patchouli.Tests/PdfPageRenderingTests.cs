@@ -10,11 +10,12 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
+using Patchouli.Infrastructure.Hashing;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
@@ -24,7 +25,7 @@ using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
 
@@ -134,7 +135,7 @@ public sealed class PdfPageRenderingTests
     }
 
     [Fact]
-    public async Task RenderPreview_materializes_source_for_the_pixel_renderer()
+    public async Task RenderPreview_materializes_source_once_without_a_second_render()
     {
         await using Context c = await Context.CreateAsync();
 
@@ -143,9 +144,106 @@ public sealed class PdfPageRenderingTests
                 Purpose: PageRenderPurpose.Preview));
         using PdfPagePixelBufferLease lease = preview.Value;
 
-        c.Materializer.Paths.Count.Should().Be(2);
+        c.Materializer.Paths.Count.Should().Be(1);
         string pdfPath = c.PdfPath;
         c.Materializer.Paths.Should().OnlyContain(path => path == pdfPath);
+        c.Renderer.CallCount.Should().Be(0, "the preview must not perform a disk PNG render first");
+    }
+
+    [Fact]
+    public async Task RenderPreview_does_not_write_a_disk_png()
+    {
+        await using Context c = await Context.CreateAsync();
+
+        Result<PdfPagePixelBufferLease> preview = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease lease = preview.Value;
+
+        if (Directory.Exists(c.CacheRoot))
+        {
+            Directory.EnumerateFiles(c.CacheRoot, "*.png", SearchOption.AllDirectories).Should().BeEmpty();
+        }
+    }
+
+    [Fact]
+    public async Task RenderPreview_reuses_one_document_session_across_pages()
+    {
+        await using Context c = await Context.CreateAsync();
+        await c.AddSecondPageAsync();
+
+        Result<PdfPagePixelBufferLease> first = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease firstLease = first.Value;
+        Result<PdfPagePixelBufferLease> second = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.SecondPageId!.Value, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease secondLease = second.Value;
+
+        c.Renderer.OpenCount.Should().Be(1, "the PDFium document must be opened once and reused");
+        c.Renderer.PixelCallCount.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task RenderPreview_raster_cache_is_bounded_and_evicts()
+    {
+        await using Context c = await Context.CreateAsync(previewByteLimit: 1500);
+        await c.AddSecondPageAsync();
+        await c.AddThirdPageAsync();
+
+        foreach (PageId pageId in new[] { c.PageId, c.SecondPageId!.Value, c.ThirdPageId!.Value })
+        {
+            Result<PdfPagePixelBufferLease> preview = await c.RenderService.RenderPreviewAsync(
+                new PageRenderRequest(c.DocumentInstanceId, pageId, c.AssetId, 120,
+                    Purpose: PageRenderPurpose.Preview));
+            using PdfPagePixelBufferLease lease = preview.Value;
+        }
+
+        c.RenderService.PreviewCacheEvictions.Should().BeGreaterThanOrEqualTo(1);
+        c.RenderService.PreviewCacheBytes.Should().BeLessThanOrEqualTo(1500);
+    }
+
+    [Fact]
+    public async Task RenderPreview_cached_page_skips_resolution_and_document_open()
+    {
+        await using Context c = await Context.CreateAsync();
+
+        Result<PdfPagePixelBufferLease> first = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease firstLease = first.Value;
+        int pixelCallsAfterFirst = c.Renderer.PixelCallCount;
+        int opensAfterFirst = c.Renderer.OpenCount;
+
+        Result<PdfPagePixelBufferLease> second = await c.RenderService.RenderPreviewAsync(
+            new PageRenderRequest(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+                Purpose: PageRenderPurpose.Preview));
+        using PdfPagePixelBufferLease secondLease = second.Value;
+
+        secondLease.PixelAddress.Should().NotBe(IntPtr.Zero);
+        c.Renderer.PixelCallCount.Should().Be(pixelCallsAfterFirst);
+        c.Renderer.OpenCount.Should().Be(opensAfterFirst);
+    }
+
+    [Fact]
+    public async Task RenderPreview_concurrent_requests_share_one_in_flight_raster()
+    {
+        await using Context c = await Context.CreateAsync();
+        c.Renderer.PixelRenderEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        c.Renderer.PixelRenderGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        PageRenderRequest request = new(c.DocumentInstanceId, c.PageId, c.AssetId, 120,
+            Purpose: PageRenderPurpose.Preview);
+
+        Task<Result<PdfPagePixelBufferLease>> first = c.RenderService.RenderPreviewAsync(request);
+        await c.Renderer.PixelRenderEntered.Task;
+        Task<Result<PdfPagePixelBufferLease>> second = c.RenderService.RenderPreviewAsync(request);
+        c.Renderer.PixelRenderGate.SetResult();
+
+        Result<PdfPagePixelBufferLease>[] previews = await Task.WhenAll(first, second);
+        using PdfPagePixelBufferLease firstLease = previews[0].Value;
+        using PdfPagePixelBufferLease secondLease = previews[1].Value;
+        c.Renderer.PixelCallCount.Should().Be(1);
     }
 
     [Fact]
@@ -269,6 +367,59 @@ public sealed class PdfPageRenderingTests
     }
 
     [Fact]
+    public async Task RenderPage_reuses_session_validation_without_a_full_hash_per_render()
+    {
+        int fullHashes = 0;
+        RecordingSourceValidation recording = new(new SourceValidationService(
+            fullHashFactory: (path, ct) =>
+            {
+                Interlocked.Increment(ref fullHashes);
+                return Blake3Hash.ComputeFileAsync(path, ct);
+            }));
+        await using Context c = await Context.CreateAsync(sourceValidation: recording);
+
+        Result<PageRenderResult> first = await c.RenderAsync();
+        first.Value.Status.Should().Be(PageRenderStatus.Rendered);
+        int tryGetAfterFirst = recording.TryGetCurrentCalls;
+        int hashesAfterFirst = fullHashes;
+
+        Result<PageRenderResult> second = await c.RenderAsync();
+
+        second.Value.Status.Should().Be(PageRenderStatus.FromCache);
+        recording.TryGetCurrentCalls.Should().BeGreaterThan(tryGetAfterFirst,
+            "a second render of the same unchanged source must consult the session's lazy validation reuse");
+        fullHashes.Should().Be(hashesAfterFirst,
+            "an unchanged source within a session must not be fully re-hashed per render");
+    }
+
+    [Fact]
+    public async Task Box_edit_does_not_trigger_source_hash_and_render_still_reuses_validation()
+    {
+        int fullHashes = 0;
+        SourceValidationService validation = new(fullHashFactory: (path, ct) =>
+        {
+            Interlocked.Increment(ref fullHashes);
+            return Blake3Hash.ComputeFileAsync(path, ct);
+        });
+        await using Context c = await Context.CreateAsync(sourceValidation: validation);
+
+        Result<PageRenderResult> first = await c.RenderAsync();
+        first.Value.Status.Should().Be(PageRenderStatus.Rendered);
+        int hashesBeforeEdit = fullHashes;
+
+        await BoxTreeTestData.CommitTextAsync(c.Database.ConnectionFactory, c.Clock, c.DocumentInstanceId, c.PageId,
+            "edited box");
+
+        fullHashes.Should().Be(hashesBeforeEdit,
+            "a box edit only touches the document tree and must not hash the source file");
+
+        Result<PageRenderResult> again = await c.RenderAsync();
+        again.Value.Status.Should().Be(PageRenderStatus.FromCache);
+        fullHashes.Should().Be(hashesBeforeEdit,
+            "re-rendering an affected page after a box edit reuses the validated session entry without a new full hash");
+    }
+
+    [Fact]
     public void Agent_prd_keeps_render_cache_out_of_mcp_and_snapshots()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md")).Should()
@@ -309,7 +460,9 @@ public sealed class PdfPageRenderingTests
                 "026_add_document_box_continuation.sql",
                 "027_split_file_search_root_bindings.sql",
                 "028_expand_item_creator_and_date_roles.sql",
-                "029_index_current_visible_document_box_payload.sql");
+                "029_index_current_visible_document_box_payload.sql",
+                "030_add_library_revision.sql",
+                "031_add_first_screen_indexes.sql");
     }
 
     private sealed class Context : IAsyncDisposable
@@ -339,6 +492,8 @@ public sealed class PdfPageRenderingTests
         public LibraryId LibraryId { get; }
         public DocumentInstanceId DocumentInstanceId { get; }
         public PageId PageId { get; }
+        public PageId? SecondPageId { get; private set; }
+        public PageId? ThirdPageId { get; private set; }
         public FileAssetId AssetId { get; }
         public string PdfPath { get; }
         public string CacheRoot { get; }
@@ -349,7 +504,9 @@ public sealed class PdfPageRenderingTests
         public PageService Pages { get; }
         public McpReadApi Mcp { get; }
 
-        public static async Task<Context> CreateAsync(string extension = ".pdf")
+        public static async Task<Context> CreateAsync(string extension = ".pdf",
+            long previewByteLimit = PageRenderService.DefaultPreviewRasterByteLimit,
+            ISourceValidationService? sourceValidation = null)
         {
             TemporarySqliteDatabase db = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-06-20T00:00:00Z"));
@@ -376,7 +533,7 @@ public sealed class PdfPageRenderingTests
             CountingRenderer renderer = new();
             TrackingMaterializer materializer = new();
             PageRenderService renderService = new(db.ConnectionFactory, library, resolution, renderer, clock, cache,
-                materializer);
+                materializer, sourceValidation, previewRasterByteLimit: previewByteLimit);
             return new Context(db, clock, lib.Value.LibraryId, doc.Value.DocumentInstanceId, page.Value.PageId,
                 asset.Value.FileAssetId, pdf, cache, sync, renderService, renderer, materializer, pages,
                 new McpReadApi(db.ConnectionFactory, new SqliteSearchService(db.ConnectionFactory),
@@ -389,6 +546,18 @@ public sealed class PdfPageRenderingTests
         {
             return RenderService.RenderPageAsync(new PageRenderRequest(DocumentInstanceId, PageId, Dpi: 200,
                 Purpose: PageRenderPurpose.Ocr, ForceRerender: force));
+        }
+
+        public async Task AddSecondPageAsync()
+        {
+            SecondPageId ??= (await Pages.CreatePageAsync(DocumentInstanceId, 1, "2", null, null, 0,
+                CoordinateBasis.NormalizedPage, null, null, "initial", null)).Value.PageId;
+        }
+
+        public async Task AddThirdPageAsync()
+        {
+            ThirdPageId ??= (await Pages.CreatePageAsync(DocumentInstanceId, 2, "3", null, null, 0,
+                CoordinateBasis.NormalizedPage, null, null, "initial", null)).Value.PageId;
         }
 
         public async Task SetAssetStatusAsync(string status)
@@ -409,12 +578,15 @@ public sealed class PdfPageRenderingTests
         }
     }
 
-    private sealed class CountingRenderer : IPdfPageRenderer, IPdfPagePixelBufferRenderer
+    private sealed class CountingRenderer : IPdfPageRenderer, IPdfPagePixelBufferRenderer, IPdfPageSessionRenderer
     {
         public int CallCount { get; private set; }
         public int PixelCallCount { get; private set; }
+        public int OpenCount { get; private set; }
         public bool ThrowOnRender { get; set; }
         public bool ThrowTimeout { get; set; }
+        public TaskCompletionSource? PixelRenderEntered { get; set; }
+        public TaskCompletionSource? PixelRenderGate { get; set; }
 
         public async Task<PdfPageRenderOutput> RenderPageToPngAsync(string pdfPath, int pageIndex, string outputPath,
             int dpi, CancellationToken cancellationToken = default)
@@ -436,12 +608,51 @@ public sealed class PdfPageRenderingTests
                 "fake-test-renderer-v1");
         }
 
-        public Task<PdfPagePixelBufferOutput> RenderPageToBgraBytesAsync(string pdfPath, int pageIndex, int dpi,
+        public async Task<PdfPagePixelBufferOutput> RenderPageToBgraBytesAsync(string pdfPath, int pageIndex, int dpi,
             CancellationToken cancellationToken = default)
         {
             PixelCallCount++;
-            return Task.FromResult(new PdfPagePixelBufferOutput(new byte[16], 2, 2, 8, 0,
-                CoordinateBasis.NormalizedPage, 2, 2, "fake-test-renderer-v1"));
+            PixelRenderEntered?.TrySetResult();
+            if (PixelRenderGate is not null)
+            {
+                await PixelRenderGate.Task.WaitAsync(cancellationToken);
+            }
+
+            return new PdfPagePixelBufferOutput(new byte[16], 2, 2, 8, 0,
+                CoordinateBasis.NormalizedPage, 2, 2, "fake-test-renderer-v1");
+        }
+
+        public Task<IPdfPageSession> OpenSessionAsync(string pdfPath,
+            CancellationToken cancellationToken = default)
+        {
+            OpenCount++;
+            return Task.FromResult<IPdfPageSession>(new FakeSession(this, Path.GetFullPath(pdfPath)));
+        }
+
+        private sealed class FakeSession : IPdfPageSession
+        {
+            private readonly CountingRenderer _owner;
+
+            public FakeSession(CountingRenderer owner, string path)
+            {
+                _owner = owner;
+                Path = path;
+            }
+
+            public string Path { get; }
+
+            public int PageCount => 3;
+
+            public Task<PdfPagePixelBufferOutput> RenderPageAsync(int pageIndex, int dpi,
+                CancellationToken cancellationToken = default)
+            {
+                return _owner.RenderPageToBgraBytesAsync(Path, pageIndex, dpi, cancellationToken);
+            }
+
+            public ValueTask DisposeAsync()
+            {
+                return ValueTask.CompletedTask;
+            }
         }
     }
 
@@ -453,6 +664,47 @@ public sealed class PdfPageRenderingTests
         {
             Paths.Add(path);
             return Task.FromResult(Result.Success());
+        }
+    }
+
+    private sealed class RecordingSourceValidation : ISourceValidationService
+    {
+        private readonly ISourceValidationService _inner;
+
+        public RecordingSourceValidation(ISourceValidationService inner)
+        {
+            _inner = inner;
+        }
+
+        private int _tryGetCurrentCalls;
+        private int _ensureValidatedCalls;
+
+        public int TryGetCurrentCalls => _tryGetCurrentCalls;
+        public int EnsureValidatedCalls => _ensureValidatedCalls;
+
+        public Task<SourceValidationResult> GetLastKnownAsync(SourceValidationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return _inner.GetLastKnownAsync(request, cancellationToken);
+        }
+
+        public Task<SourceValidationResult?> TryGetCurrentAsync(SourceValidationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _tryGetCurrentCalls);
+            return _inner.TryGetCurrentAsync(request, cancellationToken);
+        }
+
+        public Task<SourceValidationResult> EnsureValidatedAsync(SourceValidationRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _ensureValidatedCalls);
+            return _inner.EnsureValidatedAsync(request, cancellationToken);
+        }
+
+        public Task InvalidateAsync(FileAssetId fileAssetId, CancellationToken cancellationToken = default)
+        {
+            return _inner.InvalidateAsync(fileAssetId, cancellationToken);
         }
     }
 }

@@ -102,6 +102,37 @@ public sealed class RealPdfRendererTests
     }
 
     [Fact]
+    public async Task PdfiumRenderer_opens_one_document_session_and_renders_multiple_pages()
+    {
+        PdfiumPdfPageRenderer renderer = new();
+        renderer.Should().BeAssignableTo<IPdfPageSessionRenderer>();
+
+        await using IPdfPageSession session = await renderer.OpenSessionAsync(TestFixtures.RealThreePagePdf);
+
+        session.PageCount.Should().Be(3);
+        PdfPagePixelBufferOutput first = await session.RenderPageAsync(0, 100);
+        PdfPagePixelBufferOutput second = await session.RenderPageAsync(1, 100);
+
+        first.WidthPixels.Should().BeGreaterThan(0);
+        first.RendererBasisVersion.Should().Be($"pdfium-{PdfiumDocumentEngine.Version}-dpi100");
+        second.WidthPixels.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task PdfiumSession_dispose_is_idempotent_and_does_not_double_close()
+    {
+        PdfiumPdfPageRenderer renderer = new();
+        IPdfPageSession session = await renderer.OpenSessionAsync(TestFixtures.RealThreePagePdf);
+
+        await session.DisposeAsync();
+        await session.DisposeAsync();
+
+        // A closed session rejects further renders instead of using a dangling native handle.
+        Func<Task<PdfPagePixelBufferOutput>> action = () => session.RenderPageAsync(0, 100);
+        await action.Should().ThrowAsync<ObjectDisposedException>();
+    }
+
+    [Fact]
     public void Production_services_wire_pdfium_pdf_renderer()
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs")).Should()

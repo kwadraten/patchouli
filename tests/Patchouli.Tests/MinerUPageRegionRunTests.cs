@@ -424,6 +424,12 @@ public sealed class MinerUPageRegionRunTests
         {
             throw new NotSupportedException();
         }
+
+        public Task ReleaseDocumentSessionAsync(DocumentInstanceId documentInstanceId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class RecordingMinerUClient : IMinerUClient
@@ -503,6 +509,12 @@ public sealed class MinerUPageRegionRunTests
 
     private sealed class DirectOcrRunCoordinator : IOcrRunCoordinator
     {
+        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        {
+            add { }
+            remove { }
+        }
+
         private readonly IOcrRunEngine _engine;
 
         public DirectOcrRunCoordinator(IOcrRunEngine engine)

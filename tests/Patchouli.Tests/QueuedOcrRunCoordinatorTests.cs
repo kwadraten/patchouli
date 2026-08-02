@@ -260,6 +260,12 @@ public sealed class QueuedOcrRunCoordinatorTests
 
     private sealed class FakeEngine : IOcrRunEngine
     {
+        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        {
+            add { }
+            remove { }
+        }
+
         public FakeEngine()
         {
             OcrPresetVersion version = new(OcrPresetVersionId.New(), OcrPresetId.New(), OcrEngineIds.Mock, "model",
