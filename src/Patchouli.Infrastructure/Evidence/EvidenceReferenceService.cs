@@ -3,13 +3,14 @@ using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Ocr;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Infrastructure.Evidence;
 
@@ -20,13 +21,15 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
     private readonly IPageCoordinateService? _coordinates;
+    private readonly ILibraryRevisionService? _revisions;
 
     public EvidenceReferenceService(SqliteConnectionFactory connectionFactory, IClock clock,
-        IPageCoordinateService? coordinates = null)
+        IPageCoordinateService? coordinates = null, ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _coordinates = coordinates;
+        _revisions = revisions;
     }
 
     public async Task<Result<EvidenceRefRecord>> CreateFromSearchUnitAsync(SearchUnitId unitId,
@@ -54,6 +57,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = connection.BeginTransaction(false);
@@ -144,7 +148,17 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                 await LoadRecordsAsync(connection, transaction, chunk, recordsByRefId, cancellationToken);
             }
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(connection, transaction,
+                rowsByUnitId.Values.Select(row => (row.DocumentInstanceId, row.PageId)), cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<IReadOnlyList<EvidenceReferenceCreateResult>>.Failure(
+                    revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             EvidenceReferenceCreateResult[] results = unitIds.Select(unitId =>
             {
                 string unitIdText = unitId.ToString();
@@ -208,7 +222,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             string? libraryId =
                 await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
@@ -251,7 +265,9 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
             };
             if (_coordinates is not null)
             {
-                IReadOnlyList<string> warnings = await _coordinates.DetectBBoxWarningsAsync(PageId.Parse(record.PageId),
+                IReadOnlyList<string> warnings = await _coordinates.DetectBBoxWarningsAsync(
+                    PageId.Parse(record.PageId),
+                    includeFullHashValidation: mode is EvidenceResolutionMode.Current or EvidenceResolutionMode.Compare,
                     cancellationToken: cancellationToken);
                 if (warnings.Count > 0)
                 {
@@ -311,6 +327,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             Result<RecordRow> predecessor = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
@@ -342,7 +359,19 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                     Reason = reason.Trim(), CreatedAt = _clock.UtcNow.ToUniversalTime().ToString("O")
                 },
                 tx);
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(connection, tx,
+            [
+                (predecessor.Value.DocumentInstanceId, predecessor.Value.PageId),
+                (successor.Value.DocumentInstanceId, successor.Value.PageId)
+            ], cancellationToken);
+            if (revision.IsFailure)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await tx.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result.Success();
         }
         catch (OperationCanceledException)
@@ -371,6 +400,7 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             Result<RecordRow> record = await ValidateCurrentLibraryRecordAsync(connection, evidenceRefId);
@@ -418,7 +448,16 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
                     _clock.UtcNow.ToUniversalTime().ToString("O"));
             }
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(connection, tx,
+                [(record.Value.DocumentInstanceId, record.Value.PageId)], cancellationToken);
+            if (revision.IsFailure)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await tx.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             if (isDeletionMarker)
             {
                 await MarkSearchStaleAsync(connection, record.Value,
@@ -436,6 +475,40 @@ public sealed class EvidenceReferenceService : IEvidenceReferenceService
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.evidence-reference"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(SqliteConnection connection,
+        DbTransaction transaction, IEnumerable<(string DocumentInstanceId, string PageId)> resources,
+        CancellationToken cancellationToken)
+    {
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        (string DocumentInstanceId, string PageId)[] affected = resources.Distinct().ToArray();
+        string[] documentIds = affected.Select(resource => resource.DocumentInstanceId).Distinct().ToArray();
+        string[] itemIds = (await connection.QueryAsync<string>(
+            "select distinct item_id from document_instances where document_instance_id in @DocumentIds;",
+            new { DocumentIds = documentIds }, transaction)).ToArray();
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(connection, transaction,
+            LibraryChangeSet.Empty with
+            {
+                ItemIds = itemIds.Select(ItemId.Parse).ToArray(),
+                DocumentInstanceIds = documentIds.Select(DocumentInstanceId.Parse).ToArray(),
+                PageIds = affected.Select(resource => PageId.Parse(resource.PageId)).Distinct().ToArray()
+            }, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private void PublishRevision(LibraryChangeSet? changeSet)
+    {
+        if (changeSet is not null)
+        {
+            _revisions!.PublishCommitted(changeSet);
         }
     }
 

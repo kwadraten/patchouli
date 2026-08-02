@@ -16,6 +16,9 @@ public interface IOcrPresetService
     Task<Result<OcrPresetVersion>> GetCurrentVersionAsync(OcrPresetId presetId,
         CancellationToken cancellationToken = default);
 
+    Task<Result<OcrPreset?>> FindActivePresetByEngineIdAsync(string engineId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<OcrPresetVersion>> RebindModelPathAsync(OcrPresetId presetId, string newModelPath,
         CancellationToken cancellationToken = default);
 

@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,6 +9,7 @@ using Microsoft.Data.Sqlite;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
@@ -22,18 +24,21 @@ public sealed class CslStyleStore : ICslStyleStore
     private readonly string _stylesRoot;
     private readonly string _installedRoot;
     private readonly IBlockingOperationService? _blockingOperations;
+    private readonly ILibraryRevisionService? _revisions;
 
     public CslStyleStore(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
         string? stylesRoot = null,
-        IBlockingOperationService? blockingOperations = null)
+        IBlockingOperationService? blockingOperations = null,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _stylesRoot = stylesRoot ?? CslStoragePaths.GetStylesRoot(connectionFactory.DatabasePath);
         _installedRoot = Path.Combine(_stylesRoot, "installed");
         _blockingOperations = blockingOperations;
+        _revisions = revisions;
         Directory.CreateDirectory(_installedRoot);
     }
 
@@ -42,7 +47,7 @@ public sealed class CslStyleStore : ICslStyleStore
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             IEnumerable<Row> rows = await connection.QueryAsync<Row>(
                 """
@@ -83,7 +88,7 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """
@@ -187,7 +192,8 @@ public sealed class CslStyleStore : ICslStyleStore
         string? currentDeclaredId;
         try
         {
-            currentDeclaredId = GetDeclaredStyleId(XDocument.Parse(currentContent.Value, LoadOptions.PreserveWhitespace));
+            currentDeclaredId =
+                GetDeclaredStyleId(XDocument.Parse(currentContent.Value, LoadOptions.PreserveWhitespace));
         }
         catch (Exception exception) when (exception is XmlException or InvalidOperationException)
         {
@@ -213,17 +219,20 @@ public sealed class CslStyleStore : ICslStyleStore
         string temporaryPath = path + ".mcp-put-" + Guid.NewGuid().ToString("N") + ".tmp";
         string backupPath = path + ".mcp-put-" + Guid.NewGuid().ToString("N") + ".bak";
         bool replacedFile = false;
+        bool committed = false;
         try
         {
             await File.WriteAllTextAsync(temporaryPath, contentXml, Encoding.UTF8, cancellationToken);
-            File.Copy(path, backupPath, overwrite: true);
-            File.Move(temporaryPath, path, overwrite: true);
+            File.Copy(path, backupPath, true);
+            File.Move(temporaryPath, path, true);
             replacedFile = true;
 
             CslStyle metadata = ParseMetadata(current.Value.StyleId, current.Value.DisplayName,
                 current.Value.SourceUrl, current.Value.SourceKind, contentXml);
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateWriteConnection();
             await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
             int changed = await connection.ExecuteAsync(
                 """
                 update csl_styles
@@ -241,19 +250,32 @@ public sealed class CslStyleStore : ICslStyleStore
                     metadata.ContentHash,
                     UpdatedAt = metadata.UpdatedAt.ToUniversalTime().ToString("O"),
                     ExpectedHash = current.Value.ContentHash
-                });
+                }, transaction);
             if (changed != 1)
             {
+                await transaction.RollbackAsync(cancellationToken);
                 RestoreFile(path, backupPath);
                 return Result<CslStyle>.Failure(AppErrorCodes.Conflict, "CSL style revision is stale.");
             }
 
+            Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
+                connection, transaction, metadata.StyleId, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                RestoreFile(path, backupPath);
+                return Result<CslStyle>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            committed = true;
+            PublishRevision(revision.Value);
             File.Delete(backupPath);
             return Result<CslStyle>.Success(metadata);
         }
         catch (OperationCanceledException)
         {
-            if (replacedFile)
+            if (replacedFile && !committed)
             {
                 RestoreFile(path, backupPath);
             }
@@ -261,9 +283,9 @@ public sealed class CslStyleStore : ICslStyleStore
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
-            "infrastructure.csl-style-store", "replace-style"))
+                                              "infrastructure.csl-style-store", "replace-style"))
         {
-            if (replacedFile && File.Exists(backupPath))
+            if (replacedFile && !committed && File.Exists(backupPath))
             {
                 RestoreFile(path, backupPath);
             }
@@ -289,7 +311,7 @@ public sealed class CslStyleStore : ICslStyleStore
     {
         if (File.Exists(backupPath))
         {
-            File.Move(backupPath, path, overwrite: true);
+            File.Move(backupPath, path, true);
         }
     }
 
@@ -349,8 +371,10 @@ public sealed class CslStyleStore : ICslStyleStore
             Directory.CreateDirectory(_installedRoot);
             await File.WriteAllTextAsync(resolvedPath.Value, contentXml, cancellationToken);
 
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateWriteConnection();
             await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
             await connection.ExecuteAsync(
                 """
                 insert into csl_styles (
@@ -381,7 +405,18 @@ public sealed class CslStyleStore : ICslStyleStore
                     metadata.ContentHash,
                     InstalledAt = metadata.InstalledAt.ToString("O"),
                     UpdatedAt = metadata.UpdatedAt.ToString("O")
-                });
+                }, transaction);
+
+            Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
+                connection, transaction, metadata.StyleId, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<CslStyle>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
 
             await TryCompleteInstallOperationAsync(
                 installOperationId,
@@ -416,11 +451,24 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateWriteConnection();
             await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
             await connection.ExecuteAsync(
                 "update csl_styles set enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
-                new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") });
+                new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") },
+                transaction);
+            Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
+                connection, transaction, style.Value.StyleId, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<CslStyle>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result<CslStyle>.Success(style.Value with
             {
                 Enabled = false, UpdatedAt = _clock.UtcNow.ToUniversalTime()
@@ -448,11 +496,24 @@ public sealed class CslStyleStore : ICslStyleStore
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateWriteConnection();
             await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
             await connection.ExecuteAsync(
                 "update csl_styles set deleted = 1, enabled = 0, updated_at = @UpdatedAt where style_id = @StyleId;",
-                new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") });
+                new { StyleId = style.Value.StyleId, UpdatedAt = _clock.UtcNow.ToUniversalTime().ToString("O") },
+                transaction);
+            Result<LibraryChangeSet?> revision = await IncrementStyleRevisionAsync(
+                connection, transaction, style.Value.StyleId, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             Result<string> resolvedPath = ResolveStylePath(style.Value.StyleId);
             if (resolvedPath.IsFailure)
             {
@@ -478,11 +539,34 @@ public sealed class CslStyleStore : ICslStyleStore
         }
     }
 
+    private async Task<Result<LibraryChangeSet?>> IncrementStyleRevisionAsync(SqliteConnection connection,
+        DbTransaction transaction, string styleId, CancellationToken cancellationToken)
+    {
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(connection, transaction,
+            LibraryChangeSet.Empty with { StyleIds = [styleId] }, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private void PublishRevision(LibraryChangeSet? changeSet)
+    {
+        if (changeSet is not null)
+        {
+            _revisions!.PublishCommitted(changeSet);
+        }
+    }
+
     public async Task<Result<CslSettings>> GetSettingsAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             SettingsRow? row = await connection.QuerySingleOrDefaultAsync<SettingsRow>(
                 """

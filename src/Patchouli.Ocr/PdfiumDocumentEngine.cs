@@ -13,6 +13,71 @@ public sealed class PdfiumDocumentException : Exception
 
 public sealed record PdfiumPageBitmap(byte[] BgraBytes, int Width, int Height, int Stride);
 
+/// <summary>
+/// A PDFium document that stays open across page renders so a viewing session does not
+/// reopen the PDF for every page. Native handles are closed deterministically either by
+/// <see cref="DisposeAsync"/> or when the engine shuts down at process exit; the same
+/// document is never closed twice.
+/// </summary>
+public sealed class PdfiumDocumentSession : IAsyncDisposable
+{
+    private readonly PdfiumDocumentEngine _engine;
+    private readonly FpdfDocumentT _document;
+    private int _disposed;
+
+    internal PdfiumDocumentSession(PdfiumDocumentEngine engine, FpdfDocumentT document, string path)
+    {
+        _engine = engine;
+        _document = document;
+        Path = path;
+        PageCount = fpdfview.FPDF_GetPageCount(document);
+    }
+
+    public string Path { get; }
+
+    public int PageCount { get; }
+
+    public Task<PdfiumPageBitmap> RenderPageAsync(int pageIndex, int dpi,
+        CancellationToken cancellationToken = default)
+    {
+        return _engine.RenderPageAsync(this, pageIndex, dpi, cancellationToken);
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        if (Volatile.Read(ref _disposed) == 0)
+        {
+            return new ValueTask(_engine.CloseSessionAsync(this));
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    internal FpdfDocumentT Document
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _document;
+        }
+    }
+
+    internal void MarkDisposed()
+    {
+        Interlocked.Exchange(ref _disposed, 1);
+    }
+
+    internal void ThrowIfDisposed()
+    {
+        if (IsDisposed)
+        {
+            throw new ObjectDisposedException(nameof(PdfiumDocumentSession));
+        }
+    }
+}
+
 public sealed class PdfiumDocumentEngine
 {
     public const string Version = "151.0.7920";
@@ -20,6 +85,7 @@ public sealed class PdfiumDocumentEngine
     private static readonly SemaphoreSlim NativeGate = new(1, 1);
     private static readonly object InitializationGate = new();
     private static readonly ConcurrentDictionary<IntPtr, Stream> SaveStreams = new();
+    private static readonly ConcurrentDictionary<PdfiumDocumentSession, PdfiumDocumentEngine> AllSessions = new();
     private static bool _initialized;
 
     public async Task CheckAvailabilityAsync(CancellationToken cancellationToken = default)
@@ -43,6 +109,47 @@ public sealed class PdfiumDocumentEngine
         }, cancellationToken);
     }
 
+    /// <summary>
+    /// Opens a PDF once and keeps the native document handle alive for the returned session.
+    /// The handle is registered globally so process-exit shutdown closes every session before
+    /// the PDFium library is destroyed.
+    /// </summary>
+    public async Task<PdfiumDocumentSession> OpenSessionAsync(string pdfPath,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteAsync(() =>
+        {
+            FpdfDocumentT document = OpenDocument(pdfPath);
+            PdfiumDocumentSession session = new(this, document, Path.GetFullPath(pdfPath));
+            AllSessions[session] = this;
+            return session;
+        }, cancellationToken);
+    }
+
+    internal async Task<PdfiumPageBitmap> RenderPageAsync(PdfiumDocumentSession session, int pageIndex, int dpi,
+        CancellationToken cancellationToken = default)
+    {
+        return await ExecuteAsync(() =>
+        {
+            FpdfDocumentT document = session.Document;
+            return RenderPage(document, pageIndex, dpi);
+        }, cancellationToken);
+    }
+
+    internal Task CloseSessionAsync(PdfiumDocumentSession session)
+    {
+        return ExecuteAsync(() =>
+        {
+            if (!session.IsDisposed)
+            {
+                fpdfview.FPDF_CloseDocument(session.Document);
+                session.MarkDisposed();
+            }
+
+            _ = AllSessions.TryRemove(session, out _);
+        }, CancellationToken.None);
+    }
+
     public async Task<PdfiumPageBitmap> RenderPageAsync(string pdfPath, int pageIndex, int dpi,
         CancellationToken cancellationToken = default)
     {
@@ -51,38 +158,7 @@ public sealed class PdfiumDocumentEngine
             FpdfDocumentT document = OpenDocument(pdfPath);
             try
             {
-                int pageCount = fpdfview.FPDF_GetPageCount(document);
-                if (pageIndex < 0 || pageIndex >= pageCount)
-                {
-                    throw new InvalidOperationException("Page index is outside the PDF page range.");
-                }
-
-                FpdfPageT page = fpdfview.FPDF_LoadPage(document, pageIndex);
-                EnsureHandle(page, "page");
-                try
-                {
-                    int width = Math.Max(1, (int)Math.Ceiling(fpdfview.FPDF_GetPageWidthF(page) * dpi / 72d));
-                    int height = Math.Max(1, (int)Math.Ceiling(fpdfview.FPDF_GetPageHeightF(page) * dpi / 72d));
-                    FpdfBitmapT bitmap = fpdfview.FPDFBitmapCreate(width, height, 1);
-                    EnsureHandle(bitmap, "bitmap");
-                    try
-                    {
-                        _ = fpdfview.FPDFBitmapFillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF);
-                        fpdfview.FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, RenderAnnotations);
-                        int stride = fpdfview.FPDFBitmapGetStride(bitmap);
-                        byte[] bytes = new byte[checked(stride * height)];
-                        Marshal.Copy(fpdfview.FPDFBitmapGetBuffer(bitmap), bytes, 0, bytes.Length);
-                        return new PdfiumPageBitmap(bytes, width, height, stride);
-                    }
-                    finally
-                    {
-                        fpdfview.FPDFBitmapDestroy(bitmap);
-                    }
-                }
-                finally
-                {
-                    fpdfview.FPDF_ClosePage(page);
-                }
+                return RenderPage(document, pageIndex, dpi);
             }
             finally
             {
@@ -138,6 +214,42 @@ public sealed class PdfiumDocumentEngine
         }, cancellationToken);
     }
 
+    private static PdfiumPageBitmap RenderPage(FpdfDocumentT document, int pageIndex, int dpi)
+    {
+        int pageCount = fpdfview.FPDF_GetPageCount(document);
+        if (pageIndex < 0 || pageIndex >= pageCount)
+        {
+            throw new InvalidOperationException("Page index is outside the PDF page range.");
+        }
+
+        FpdfPageT page = fpdfview.FPDF_LoadPage(document, pageIndex);
+        EnsureHandle(page, "page");
+        try
+        {
+            int width = Math.Max(1, (int)Math.Ceiling(fpdfview.FPDF_GetPageWidthF(page) * dpi / 72d));
+            int height = Math.Max(1, (int)Math.Ceiling(fpdfview.FPDF_GetPageHeightF(page) * dpi / 72d));
+            FpdfBitmapT bitmap = fpdfview.FPDFBitmapCreate(width, height, 1);
+            EnsureHandle(bitmap, "bitmap");
+            try
+            {
+                _ = fpdfview.FPDFBitmapFillRect(bitmap, 0, 0, width, height, 0xFFFFFFFF);
+                fpdfview.FPDF_RenderPageBitmap(bitmap, page, 0, 0, width, height, 0, RenderAnnotations);
+                int stride = fpdfview.FPDFBitmapGetStride(bitmap);
+                byte[] bytes = new byte[checked(stride * height)];
+                Marshal.Copy(fpdfview.FPDFBitmapGetBuffer(bitmap), bytes, 0, bytes.Length);
+                return new PdfiumPageBitmap(bytes, width, height, stride);
+            }
+            finally
+            {
+                fpdfview.FPDFBitmapDestroy(bitmap);
+            }
+        }
+        finally
+        {
+            fpdfview.FPDF_ClosePage(page);
+        }
+    }
+
     private static async Task<T> ExecuteAsync<T>(Func<T> action, CancellationToken cancellationToken)
     {
         await NativeGate.WaitAsync(cancellationToken);
@@ -186,13 +298,41 @@ public sealed class PdfiumDocumentEngine
             {
                 lock (InitializationGate)
                 {
-                    if (_initialized)
+                    if (!_initialized)
                     {
-                        fpdfview.FPDF_DestroyLibrary();
-                        _initialized = false;
+                        return;
                     }
+
+                    CloseAllSessionsSynchronously();
+                    fpdfview.FPDF_DestroyLibrary();
+                    _initialized = false;
                 }
             };
+        }
+    }
+
+    // PDFium is not thread-safe, so closing every registered session at shutdown must go
+    // through the same native gate as rendering. Process exit is already under the
+    // initialization lock, so this only waits for an in-flight render to finish.
+    private static void CloseAllSessionsSynchronously()
+    {
+        NativeGate.Wait();
+        try
+        {
+            foreach (PdfiumDocumentSession session in AllSessions.Keys)
+            {
+                if (!session.IsDisposed)
+                {
+                    fpdfview.FPDF_CloseDocument(session.Document);
+                    session.MarkDisposed();
+                }
+            }
+
+            AllSessions.Clear();
+        }
+        finally
+        {
+            NativeGate.Release();
         }
     }
 

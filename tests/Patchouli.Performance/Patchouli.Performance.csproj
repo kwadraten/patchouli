@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>patchouli-perf</AssemblyName>
+    <RootNamespace>Patchouli.Performance</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Mcp\Patchouli.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.UI\Patchouli.UI.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia.Headless" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="$(MSBuildProjectDirectory)\..\..\src\Patchouli.Infrastructure\migrations\*.sql"
+          Link="migrations\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

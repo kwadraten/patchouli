@@ -47,7 +47,8 @@ public sealed class CslRenderer : ICslRenderer
             return Result<CslRenderResult>.Failure(style.ErrorCode!, style.ErrorMessage!);
         }
 
-        Result<string> styleContent = await _styleStore.GetStyleContentAsync(style.Value.Style.StyleId, cancellationToken);
+        Result<string> styleContent =
+            await _styleStore.GetStyleContentAsync(style.Value.Style.StyleId, cancellationToken);
         if (styleContent.IsFailure)
         {
             return Result<CslRenderResult>.Failure(styleContent.ErrorCode!, styleContent.ErrorMessage!);

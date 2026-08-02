@@ -22,8 +22,6 @@ public sealed class McpWriteApi : IMcpWriteApi
         _styles = styles;
     }
 
-    public event EventHandler<McpResourceChangedEventArgs>? ResourceChanged;
-
     public async Task<Result<McpPutResponse>> PutAsync(
         McpPutRequest request,
         CancellationToken cancellationToken = default)
@@ -69,10 +67,8 @@ public sealed class McpWriteApi : IMcpWriteApi
             return Result<McpPutResponse>.Failure(replacedStyle.ErrorCode!, replacedStyle.ErrorMessage!);
         }
 
-        string revision = $"style:{replacedStyle.Value.ContentHash}";
-        NotifyResourceChanged(request.Uri, "style", revision);
         return Result<McpPutResponse>.Success(new McpPutResponse(
-            request.Uri, "csl_style", true, ContentBytes(request.Content)));
+            request.Uri, "csl_style", true, ContentBytes(request.Content), []));
     }
 
     private async Task<Result<McpPutResponse>> ReplaceItemAsync(
@@ -117,11 +113,14 @@ public sealed class McpWriteApi : IMcpWriteApi
             ? "general"
             : mapped.Value.ItemType;
 
-        if (!string.Equals(mapped.Value.SourceEntryKey, existing.Value.CitationKey, StringComparison.Ordinal))
-        {
-            return Result<McpPutResponse>.Failure(AppErrorCodes.UnsupportedOperation,
-                "The BibLaTeX key must match the existing item citation key.");
-        }
+        IReadOnlyList<string> warnings = string.Equals(mapped.Value.SourceEntryKey, existing.Value.CitationKey,
+            StringComparison.Ordinal)
+            ? []
+            : ["BIBLATEX_ENTRY_KEY_IGNORED: content entry 1 key was ignored; target identity comes from uri."];
+
+        // The URI selects the existing Item, so an agent-supplied BibLaTeX key is not an
+        // identity update. Match the UI import path by treating it as presentation-only and
+        // preserving the target Item's authoritative citation key.
 
         UpdateItemRequest update = new(
             resolvedItemType,
@@ -158,25 +157,8 @@ public sealed class McpWriteApi : IMcpWriteApi
             return Result<McpPutResponse>.Failure(replaced.ErrorCode!, replaced.ErrorMessage!);
         }
 
-        string itemRevision = Revision(replaced.Value);
-        NotifyResourceChanged(request.Uri, "item", itemRevision, itemId);
         return Result<McpPutResponse>.Success(new McpPutResponse(
-            request.Uri, "item_bib", true, ContentBytes(request.Content)));
-    }
-
-    private void NotifyResourceChanged(string uri, string kind, string revision, ItemId? itemId = null)
-    {
-        ResourceChanged?.Invoke(this, new McpResourceChangedEventArgs(uri, kind, revision, itemId));
-    }
-
-    public static string Revision(ItemMetadata item)
-    {
-        return $"item:{item.UpdatedAt.ToUniversalTime():O}";
-    }
-
-    public static string Revision(DateTimeOffset updatedAt)
-    {
-        return $"item:{updatedAt.ToUniversalTime():O}";
+            request.Uri, "item_bib", true, ContentBytes(request.Content), warnings));
     }
 
     private static int ContentBytes(string content)

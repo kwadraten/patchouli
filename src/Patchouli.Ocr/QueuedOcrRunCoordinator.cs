@@ -17,9 +17,13 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
     {
         Queue = queue;
         _engine = engine;
+        _engine.AdoptionCommitted += (_, args) => AdoptionCommitted?.Invoke(this, args);
     }
 
     public IOcrQueueScheduler Queue { get; }
+
+    /// <inheritdoc />
+    public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted;
 
     public async Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(
         DocumentInstanceId documentInstanceId,

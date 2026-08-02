@@ -5,7 +5,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
-using Patchouli.Infrastructure.Hashing;
 using Patchouli.Ocr;
 
 namespace Patchouli.Infrastructure.Coordinates;
@@ -13,10 +12,13 @@ namespace Patchouli.Infrastructure.Coordinates;
 public sealed class PageCoordinateService : IPageCoordinateService
 {
     private readonly SqliteConnectionFactory _connectionFactory;
+    private readonly ISourceFingerprintValidationService? _sourceValidation;
 
-    public PageCoordinateService(SqliteConnectionFactory connectionFactory)
+    public PageCoordinateService(SqliteConnectionFactory connectionFactory,
+        ISourceFingerprintValidationService? sourceValidation = null)
     {
         _connectionFactory = connectionFactory;
+        _sourceValidation = sourceValidation;
     }
 
     public async Task<BBoxConversionResult> ConvertToNormalizedPageAsync(PageId pageId, SourceBBox box,
@@ -74,7 +76,7 @@ public sealed class PageCoordinateService : IPageCoordinateService
     {
         try
         {
-            await using SqliteConnection c = _connectionFactory.CreateConnection();
+            await using SqliteConnection c = _connectionFactory.CreateReadConnection();
             await c.OpenAsync(cancellationToken);
             Row? r = await c.QuerySingleOrDefaultAsync<Row>(
                 "select page_id as PageId,coordinate_basis as CoordinateBasis,basis_width as BasisWidth,basis_height as BasisHeight,rotation as Rotation,renderer_basis_version as RendererBasisVersion,source_file_hash as SourceFileHash from pages where page_id=@Id",
@@ -92,11 +94,11 @@ public sealed class PageCoordinateService : IPageCoordinateService
     }
 
     public async Task<IReadOnlyList<string>> DetectBBoxWarningsAsync(PageId pageId, FileAssetId? fileAssetId = null,
-        CancellationToken cancellationToken = default)
+        bool includeFullHashValidation = true, CancellationToken cancellationToken = default)
     {
         try
         {
-            await using SqliteConnection c = _connectionFactory.CreateConnection();
+            await using SqliteConnection c = _connectionFactory.CreateReadConnection();
             await c.OpenAsync(cancellationToken);
             WarningRow? row = await c.QuerySingleOrDefaultAsync<WarningRow>(
                 "select p.source_file_hash as SourceFileHash,fa.status as Status,fa.original_path as Path from pages p join document_instances d on d.document_instance_id=p.document_instance_id left join file_assets fa on fa.file_asset_id=d.file_asset_id where p.page_id=@Id",
@@ -113,22 +115,54 @@ public sealed class PageCoordinateService : IPageCoordinateService
                 warnings.Add(BBoxWarning.BasisStale);
             }
 
-            if (!string.IsNullOrWhiteSpace(row.SourceFileHash) && !string.IsNullOrWhiteSpace(row.Path) &&
-                File.Exists(row.Path))
+            if (includeFullHashValidation && !string.IsNullOrWhiteSpace(row.SourceFileHash) &&
+                !string.IsNullOrWhiteSpace(row.Path) && _sourceValidation is not null &&
+                await SourceHashDriftedAsync(row.Path, row.SourceFileHash, cancellationToken))
             {
-                string current = await Blake3Hash.ComputeFileAsync(row.Path, cancellationToken);
-                if (!string.Equals(current, row.SourceFileHash, StringComparison.OrdinalIgnoreCase) &&
-                    !warnings.Contains(BBoxWarning.BasisStale))
-                {
-                    warnings.Add(BBoxWarning.BasisStale);
-                }
+                warnings.Add(BBoxWarning.BasisStale);
             }
 
             return warnings;
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch
         {
             return [];
+        }
+    }
+
+    /// <summary>
+    /// Lazy, merged full-hash source validation. The low-cost binding (normalized path, length,
+    /// mtime, quick hash, fingerprint basis) is checked first; an unchanged file reuses the cached
+    /// full hash and never re-hashes the whole source. Concurrent callers share one in-flight
+    /// validation, and a caller's cancellation never cancels the shared work.
+    /// </summary>
+    private async Task<bool> SourceHashDriftedAsync(string path, string expectedHash,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            FileInfo info = new(path);
+            if (!info.Exists)
+            {
+                return false;
+            }
+
+            Result<SourceFingerprintValidation> validation = await _sourceValidation!.ValidateAsync(path,
+                info.Length, info.LastWriteTimeUtc, SourceFingerprintBasis.Blake3V1, cancellationToken);
+            return validation.IsSuccess &&
+                   !string.Equals(validation.Value.FullBlake3, expectedHash, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
         }
     }
 

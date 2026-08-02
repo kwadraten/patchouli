@@ -3,6 +3,8 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Ocr;
 
+public sealed record OcrQueueProgress(int Succeeded, int Failed, int Processing, int Total);
+
 public sealed record OcrQueueRow(
     OcrQueueTaskId TaskId,
     string ItemTitle,
@@ -11,11 +13,15 @@ public sealed record OcrQueueRow(
     string Priority,
     string EngineId,
     int PageCount,
-    string? LastErrorCode);
+    string? LastErrorCode,
+    OcrQueueTask Task,
+    OcrQueueProgress? PageProgress);
 
 public interface IOcrQueueRowService
 {
-    Task<Result<IReadOnlyList<OcrQueueRow>>> ListRowsAsync(CancellationToken cancellationToken = default);
+    Task<Result<IReadOnlyList<OcrQueueRow>>> ListRowsAsync(bool includeCompleted = false,
+        CancellationToken cancellationToken = default);
+
     Task<Result> PauseRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default);
     Task<Result> ResumeRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default);
     Task<Result> CancelRowAsync(OcrQueueTaskId taskId, CancellationToken cancellationToken = default);

@@ -6,7 +6,7 @@ using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Infrastructure.Workflows;
 
@@ -33,7 +33,7 @@ public sealed class McpVerificationService
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
 
             string? indexStatus = await connection.ExecuteScalarAsync<string?>(

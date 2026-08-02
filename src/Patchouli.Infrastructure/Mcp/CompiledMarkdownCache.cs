@@ -5,7 +5,7 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Infrastructure.Mcp;
 
-internal sealed class CompiledMarkdownCache
+public sealed class CompiledMarkdownCache : ICompiledMarkdownCache
 {
     internal const long DefaultByteLimit = 32 * 1024 * 1024;
 
@@ -14,11 +14,29 @@ internal sealed class CompiledMarkdownCache
     private readonly LinkedList<CacheKey> _lru = new();
     private readonly object _sync = new();
     private long _cachedBytes;
+    private long _hits;
+    private long _misses;
+    private long _evictions;
+    private long _inserted;
+    private long _failed;
 
     public CompiledMarkdownCache(long byteLimit = DefaultByteLimit)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(byteLimit);
         _byteLimit = byteLimit;
+    }
+
+    /// <summary>Observable cache counters; safe for performance logging because they carry no content.</summary>
+    public CompiledMarkdownCacheMetrics Metrics
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return new CompiledMarkdownCacheMetrics(_hits, _misses, _evictions, _inserted, _failed, _entries.Count,
+                    _cachedBytes);
+            }
+        }
     }
 
     public Task<Result<CompiledMarkdown>> GetOrCreateAsync(
@@ -36,6 +54,7 @@ internal sealed class CompiledMarkdownCache
             if (_entries.TryGetValue(key, out entry!))
             {
                 Touch(entry);
+                _hits++;
             }
             else
             {
@@ -43,6 +62,7 @@ internal sealed class CompiledMarkdownCache
                     TaskCreationOptions.RunContinuationsAsynchronously);
                 entry = new Entry(completion.Task);
                 _entries.Add(key, entry);
+                _misses++;
             }
         }
 
@@ -67,10 +87,14 @@ internal sealed class CompiledMarkdownCache
             {
                 if (result.IsSuccess)
                 {
-                    CacheSuccessfulResult(key, entry, result.Value);
+                    if (CacheSuccessfulResult(key, entry, result.Value))
+                    {
+                        _inserted++;
+                    }
                 }
                 else
                 {
+                    _failed++;
                     _entries.Remove(key);
                 }
             }
@@ -79,24 +103,34 @@ internal sealed class CompiledMarkdownCache
         }
         catch (OperationCanceledException exception)
         {
-            RemoveEntry(key, entry);
+            lock (_sync)
+            {
+                _failed++;
+                RemoveEntry(key, entry);
+            }
+
             completion.TrySetCanceled(exception.CancellationToken);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.compiled-markdown-cache"))
         {
-            RemoveEntry(key, entry);
+            lock (_sync)
+            {
+                _failed++;
+                RemoveEntry(key, entry);
+            }
+
             completion.TrySetException(exception);
         }
     }
 
-    private void CacheSuccessfulResult(CacheKey key, Entry entry, CompiledMarkdown result)
+    private bool CacheSuccessfulResult(CacheKey key, Entry entry, CompiledMarkdown result)
     {
         entry.Size = EstimateSize(result);
         if (entry.Size > _byteLimit)
         {
             _entries.Remove(key);
-            return;
+            return false;
         }
 
         entry.Node = _lru.AddFirst(key);
@@ -108,7 +142,10 @@ internal sealed class CompiledMarkdownCache
             Entry removed = _entries[oldestKey];
             _entries.Remove(oldestKey);
             _cachedBytes -= removed.Size;
+            _evictions++;
         }
+
+        return true;
     }
 
     private static long EstimateSize(CompiledMarkdown result)

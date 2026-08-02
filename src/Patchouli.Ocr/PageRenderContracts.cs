@@ -167,6 +167,31 @@ public interface IPdfPageRendererAvailability
     Task<PdfRendererAvailability> CheckAvailabilityAsync(CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// An open PDFium document that is reused across page renders within one viewing session.
+/// The document handle is released deterministically by <see cref="IAsyncDisposable.DisposeAsync"/>;
+/// closing is idempotent and safe under concurrent close attempts.
+/// </summary>
+public interface IPdfPageSession : IAsyncDisposable
+{
+    string Path { get; }
+
+    int PageCount { get; }
+
+    Task<PdfPagePixelBufferOutput> RenderPageAsync(int pageIndex, int dpi,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// A renderer that can open a reusable document session instead of opening and closing the
+/// PDF for every single page. Renderers that do not implement this fall back to stateless
+/// per-page rendering.
+/// </summary>
+public interface IPdfPageSessionRenderer
+{
+    Task<IPdfPageSession> OpenSessionAsync(string pdfPath, CancellationToken cancellationToken = default);
+}
+
 public interface IPageRenderService
 {
     Task<Result<PageRenderResult>> RenderPageAsync(PageRenderRequest request,
@@ -188,4 +213,11 @@ public interface IPageRenderService
         NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default);
 
     Task<PdfRendererAvailability> GetRendererAvailabilityAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Releases the open PDFium document session for a document instance so its source file is
+    /// no longer held open. Called when a viewing workspace closes or reloads.
+    /// </summary>
+    Task ReleaseDocumentSessionAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default);
 }

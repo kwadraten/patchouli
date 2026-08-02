@@ -6,6 +6,12 @@ namespace Patchouli.Ocr;
 
 public interface IOcrRunCoordinator
 {
+    /// <summary>
+    /// Raised once per successful OCR candidate adoption commit, after the adoption transaction
+    /// and its successor state have been persisted. Progress and staging events never raise it.
+    /// </summary>
+    event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted;
+
     Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         IReadOnlyList<PageId> pageIds, string engineId, string adapterKind, string? providerId, string priority,
         CancellationToken cancellationToken = default);

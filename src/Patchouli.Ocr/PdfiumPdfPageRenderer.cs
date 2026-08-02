@@ -20,7 +20,7 @@ public sealed class PdfRendererTimeoutException : Exception
 }
 
 public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRenderer, IPdfPageRendererAvailability,
-    IPdfPageRendererIdentity, IPdfPagePixelBufferRenderer
+    IPdfPageRendererIdentity, IPdfPagePixelBufferRenderer, IPdfPageSessionRenderer
 {
     private readonly PdfiumDocumentEngine _engine;
 
@@ -32,6 +32,13 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
     public string GetRendererBasisVersion(int dpi)
     {
         return $"pdfium-{PdfiumDocumentEngine.Version}-dpi{dpi}";
+    }
+
+    public async Task<IPdfPageSession> OpenSessionAsync(string pdfPath,
+        CancellationToken cancellationToken = default)
+    {
+        PdfiumDocumentSession session = await _engine.OpenSessionAsync(pdfPath, cancellationToken);
+        return new PdfiumPageSession(session);
     }
 
     public async Task<PdfRendererAvailability> CheckAvailabilityAsync(CancellationToken cancellationToken = default)
@@ -94,7 +101,39 @@ public sealed class PdfiumPdfPageRenderer : IPdfPageRenderer, IPdfPageMemoryRend
         }
 
         PdfiumPageBitmap raster = await _engine.RenderPageAsync(pdfPath, pageIndex, dpi, cancellationToken);
+        return ToBufferOutput(raster, dpi);
+    }
+
+    private static PdfPagePixelBufferOutput ToBufferOutput(PdfiumPageBitmap raster, int dpi)
+    {
         return new PdfPagePixelBufferOutput(raster.BgraBytes, raster.Width, raster.Height, raster.Stride, 0,
-            CoordinateBasis.NormalizedPage, raster.Width, raster.Height, GetRendererBasisVersion(dpi));
+            CoordinateBasis.NormalizedPage, raster.Width, raster.Height,
+            $"pdfium-{PdfiumDocumentEngine.Version}-dpi{dpi}");
+    }
+
+    private sealed class PdfiumPageSession : IPdfPageSession
+    {
+        private readonly PdfiumDocumentSession _session;
+
+        public PdfiumPageSession(PdfiumDocumentSession session)
+        {
+            _session = session;
+        }
+
+        public string Path => _session.Path;
+
+        public int PageCount => _session.PageCount;
+
+        public async Task<PdfPagePixelBufferOutput> RenderPageAsync(int pageIndex, int dpi,
+            CancellationToken cancellationToken = default)
+        {
+            PdfiumPageBitmap raster = await _session.RenderPageAsync(pageIndex, dpi, cancellationToken);
+            return ToBufferOutput(raster, dpi);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return _session.DisposeAsync();
+        }
     }
 }

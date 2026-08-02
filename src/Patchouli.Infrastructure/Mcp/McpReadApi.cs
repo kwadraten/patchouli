@@ -5,12 +5,13 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Mcp;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 using Patchouli.Ocr;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
@@ -28,12 +29,16 @@ public sealed class McpReadApi : IMcpReadApi
     private readonly ICslRenderer? _cslRenderer;
     private readonly IMarkdownEngine _markdown;
     private readonly IDocumentMarkdownCompiler _markdownCompiler;
-    private readonly CompiledMarkdownCache _compiledMarkdownCache = new();
+    private readonly ICompiledMarkdownCache _compiledMarkdownCache;
+
+    /// <summary>Safe, content-free counters for the shared compiled-markdown read cache.</summary>
+    public CompiledMarkdownCacheMetrics CompiledMarkdownCacheMetrics => _compiledMarkdownCache.Metrics;
 
     public McpReadApi(SqliteConnectionFactory connectionFactory, ISearchService searchService,
         IEvidenceReferenceService evidenceService, IPageCoordinateService? coordinates = null,
         ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null,
-        IMarkdownEngine? markdown = null, IDocumentMarkdownCompiler? markdownCompiler = null)
+        IMarkdownEngine? markdown = null, IDocumentMarkdownCompiler? markdownCompiler = null,
+        ICompiledMarkdownCache? compiledMarkdownCache = null)
     {
         _connectionFactory = connectionFactory;
         _searchService = searchService;
@@ -42,8 +47,14 @@ public sealed class McpReadApi : IMcpReadApi
         _cslStyleStore = cslStyleStore;
         _cslRenderer = cslRenderer;
         _markdown = markdown ?? new MarkdigMarkdownEngine();
-        _markdownCompiler = markdownCompiler ?? new DocumentMarkdownCompiler(
+        _compiledMarkdownCache = compiledMarkdownCache ??
+                                 (markdownCompiler as CachedDocumentMarkdownCompiler)?.Cache ??
+                                 new CompiledMarkdownCache();
+        IDocumentMarkdownCompiler compiler = markdownCompiler ?? new DocumentMarkdownCompiler(
             new DocumentTreeService(connectionFactory, new SystemClock(), _markdown), _markdown);
+        _markdownCompiler = compiler is CachedDocumentMarkdownCompiler
+            ? compiler
+            : new CachedDocumentMarkdownCompiler(compiler, _compiledMarkdownCache);
     }
 
     public async Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,
@@ -94,15 +105,6 @@ public sealed class McpReadApi : IMcpReadApi
                 page.PageIndex,
                 units,
                 await SourceFileStatusForDocumentAsync(page.DocumentInstanceId)));
-            if (_coordinates is not null)
-            {
-                IReadOnlyList<string> pageWarnings =
-                    await _coordinates.DetectBBoxWarningsAsync(page.PageId, cancellationToken: cancellationToken);
-                if (pageWarnings.Count > 0)
-                {
-                    warnings.Add($"page {page.PageId}: {string.Join(", ", pageWarnings)}");
-                }
-            }
         }
 
         return Result<McpSearchLibraryResponse>.Success(new McpSearchLibraryResponse(
@@ -120,7 +122,7 @@ public sealed class McpReadApi : IMcpReadApi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             ItemRow? item = await connection.QuerySingleOrDefaultAsync<ItemRow>(
                 """
@@ -182,7 +184,7 @@ public sealed class McpReadApi : IMcpReadApi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int exists = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances where document_instance_id = @Id;",
@@ -207,17 +209,21 @@ public sealed class McpReadApi : IMcpReadApi
             string? indexStatus = await connection.ExecuteScalarAsync<string?>(
                 "select status from search_index_status where scope_type = 'document_instance' and scope_id = @Id;",
                 new { Id = documentInstanceId.ToString() });
-            string? status = await RawSourceFileStatusAsync(connection, documentInstanceId);
-            string mapped = MapSourceStatus(status, out string? warning);
-            if (status == FileAssetStatus.Changed)
+            string? sourceStatus = await RawSourceFileStatusAsync(connection, documentInstanceId);
+            string mapped = MapSourceStatus(sourceStatus, out string? warning);
+            if (sourceStatus == FileAssetStatus.Changed)
             {
                 warning = string.Join("; ",
                     new[] { warning, BBoxWarning.SourceChanged, BBoxWarning.BasisStale }.Where(x =>
                         !string.IsNullOrWhiteSpace(x)));
             }
 
+            string documentStatus = await connection.ExecuteScalarAsync<string?>(
+                "select status from document_instances where document_instance_id = @Id;",
+                new { Id = documentInstanceId.ToString() }) ?? "missing_source";
             return Result<McpDocumentStatusResponse>.Success(new McpDocumentStatusResponse(documentInstanceId, hasText,
-                currentRevisionCount > 0, indexStatus == SearchIndexStatusValue.Current, mapped, warning));
+                currentRevisionCount > 0, indexStatus == SearchIndexStatusValue.Current,
+                sourceStatus ?? "unavailable", warning, documentStatus));
         }
         catch (OperationCanceledException)
         {
@@ -297,7 +303,7 @@ public sealed class McpReadApi : IMcpReadApi
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             PageMeta? meta = await PageMetaAsync(connection, request.PageId);
             if (meta is null)
@@ -346,8 +352,8 @@ public sealed class McpReadApi : IMcpReadApi
             List<string> warnings = new();
             if (_coordinates is not null)
             {
-                warnings.AddRange(
-                    await _coordinates.DetectBBoxWarningsAsync(request.PageId, cancellationToken: cancellationToken));
+                warnings.AddRange(await _coordinates.DetectBBoxWarningsAsync(request.PageId,
+                    includeFullHashValidation: request.IncludeBbox, cancellationToken: cancellationToken));
             }
 
             List<McpPageBlock> blocks = new();
@@ -407,7 +413,7 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpSearchContextResponse>.Failure(context.ErrorCode!, context.ErrorMessage!);
         }
 
-        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
         await connection.OpenAsync(cancellationToken);
         Dictionary<string, NormalizedBBox?> bboxMap = (await connection.QueryAsync<UnitBBoxRow>(
                 "select unit_id as UnitId, bbox_json as BboxJson from search_units where unit_id in @UnitIds;",
@@ -432,14 +438,7 @@ public sealed class McpReadApi : IMcpReadApi
                 unit.TreeRevisionId));
         }
 
-        string? warning = _coordinates is null
-            ? null
-            : string.Join("; ",
-                (await Task.WhenAll(units.Select(async unit =>
-                    await _coordinates.DetectBBoxWarningsAsync(unit.PageId, cancellationToken: cancellationToken))))
-                .SelectMany(x => x).Distinct());
-        return Result<McpSearchContextResponse>.Success(new McpSearchContextResponse(units,
-            string.IsNullOrWhiteSpace(warning) ? null : warning));
+        return Result<McpSearchContextResponse>.Success(new McpSearchContextResponse(units, null));
     }
 
     public async Task<Result<IReadOnlyList<McpCslStyleSummary>>> ListCslStylesAsync(
@@ -542,7 +541,7 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             ItemFilter filter = BuildItemBrowseFilter(where);
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from items where deleted_at is null;");
@@ -556,7 +555,8 @@ public sealed class McpReadApi : IMcpReadApi
             };
             IReadOnlyList<ItemRow> rows = (await connection.QueryAsync<ItemRow>(
                 $"""
-                 select item_id, title, item_type, status, citation_key, updated_at
+                 select item_id, title, item_type, status, citation_key, updated_at,
+                        {PrimaryDocumentOcrIndexStatusExpression("items.item_id")} as primary_document_ocr_index_status
                  from items
                  where deleted_at is null{filter.Sql}
                  order by updated_at desc, item_id
@@ -566,7 +566,7 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpBrowseItemPage>.Success(new McpBrowseItemPage(
                 rows.Select(row => new McpBrowseItemRow(
                     ItemId.Parse(row.ItemId), row.Title, row.ItemType, row.Status, row.CitationKey,
-                    DateTimeOffset.Parse(row.UpdatedAt))).ToArray(),
+                    DateTimeOffset.Parse(row.UpdatedAt), row.PrimaryDocumentOcrIndexStatus)).ToArray(),
                 skip + rows.Count < filteredTotal,
                 domainTotal,
                 filteredTotal));
@@ -620,7 +620,7 @@ public sealed class McpReadApi : IMcpReadApi
                 ["Limit"] = limit,
                 ["Skip"] = skip
             };
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from items where deleted_at is null;");
@@ -629,7 +629,8 @@ public sealed class McpReadApi : IMcpReadApi
                 searchParameters);
             IReadOnlyList<ItemRow> rows = (await connection.QueryAsync<ItemRow>(
                 $"""
-                 select item_id, title, item_type, status, citation_key, updated_at
+                 select item_id, title, item_type, status, citation_key, updated_at,
+                        {PrimaryDocumentOcrIndexStatusExpression("items.item_id")} as primary_document_ocr_index_status
                  from items
                  where deleted_at is null and {searchPredicate}{filter.Sql}
                  order by updated_at desc, item_id
@@ -639,7 +640,7 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpBrowseItemPage>.Success(new McpBrowseItemPage(
                 rows.Select(row => new McpBrowseItemRow(
                     ItemId.Parse(row.ItemId), row.Title, row.ItemType, row.Status, row.CitationKey,
-                    DateTimeOffset.Parse(row.UpdatedAt))).ToArray(),
+                    DateTimeOffset.Parse(row.UpdatedAt), row.PrimaryDocumentOcrIndexStatus)).ToArray(),
                 skip + rows.Count < filteredTotal,
                 domainTotal,
                 filteredTotal));
@@ -667,7 +668,7 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             DocumentFilter filter = BuildDocumentBrowseFilter(where);
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances;");
@@ -689,7 +690,8 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpBrowseDocumentPage>.Success(new McpBrowseDocumentPage(
                 rows.Select(row => new McpBrowseDocumentRow(
                     DocumentInstanceId.Parse(row.DocumentInstanceId), row.Title, row.RevisionId,
-                    DateTimeOffset.Parse(row.CreatedAt), ParseOptionalItemId(row.ItemId))).ToArray(),
+                    DateTimeOffset.Parse(row.CreatedAt), ParseOptionalItemId(row.ItemId), row.ItemStatus,
+                    row.DocumentStatus, row.SourceStatus, row.OcrIndexStatus, row.Citable)).ToArray(),
                 skip + rows.Count < filteredTotal,
                 domainTotal,
                 filteredTotal));
@@ -702,6 +704,66 @@ public sealed class McpReadApi : IMcpReadApi
         {
             return Result<McpBrowseDocumentPage>.Failure(AppErrorCodes.DatabaseError,
                 $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<McpTextResourceProjection>>> GetTextResourceProjectionsAsync(
+        IReadOnlyList<DocumentInstanceId> documentInstanceIds, IReadOnlyList<McpWhereClause>? where = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (documentInstanceIds.Count == 0)
+            {
+                return Result<IReadOnlyList<McpTextResourceProjection>>.Success([]);
+            }
+
+            DocumentFilter filter = BuildDocumentBrowseFilter(where);
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            Dictionary<string, object> parameters = new(filter.Parameters, StringComparer.Ordinal)
+            {
+                ["DocumentIds"] = documentInstanceIds.Select(id => id.ToString()).Distinct().ToArray()
+            };
+            IReadOnlyList<DocumentRow> rows = (await connection.QueryAsync<DocumentRow>(
+                $"select * from ({DocumentBrowseProjection}) d where document_instance_id in @DocumentIds{AppendFilter(filter)};",
+                parameters)).ToArray();
+            return Result<IReadOnlyList<McpTextResourceProjection>>.Success(rows.Select(row =>
+                new McpTextResourceProjection(DocumentInstanceId.Parse(row.DocumentInstanceId),
+                    ParseOptionalItemId(row.ItemId), row.ItemStatus, row.DocumentStatus, row.SourceStatus,
+                    row.OcrIndexStatus, row.Citable)).ToArray());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<IReadOnlyList<McpTextResourceProjection>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<string>> GetPrimaryDocumentOcrIndexStatusAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            string status = await connection.ExecuteScalarAsync<string?>(
+                                $"select {PrimaryDocumentOcrIndexStatusExpression("@ItemId")};",
+                                new { ItemId = itemId.ToString() })
+                            ?? "no_primary_document";
+            return Result<string>.Success(status);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<string>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {ex.Message}");
         }
     }
 
@@ -762,7 +824,7 @@ public sealed class McpReadApi : IMcpReadApi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             DocumentOwnerRow? owner = await connection.QuerySingleOrDefaultAsync<DocumentOwnerRow>(
                 "select title, item_id as ItemId from document_instances where document_instance_id = @Id;",
@@ -810,7 +872,7 @@ public sealed class McpReadApi : IMcpReadApi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             EvidenceRow? row = await connection.QuerySingleOrDefaultAsync<EvidenceRow>(
                 """
@@ -849,7 +911,7 @@ public sealed class McpReadApi : IMcpReadApi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             string? itemIdText = await connection.ExecuteScalarAsync<string?>(
                 "select item_id from document_instances where document_instance_id = @Id;",
@@ -878,18 +940,24 @@ public sealed class McpReadApi : IMcpReadApi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
-            string? libraryId = await connection.ExecuteScalarAsync<string?>(
-                "select library_id from library_metadata order by created_at, library_id limit 1;");
-            if (string.IsNullOrWhiteSpace(libraryId))
+            LibraryStateRow? stateRow = await connection.QuerySingleOrDefaultAsync<LibraryStateRow>(
+                """
+                select library_id as LibraryId, library_revision as LibraryRevision
+                from library_metadata
+                order by created_at, library_id
+                limit 1;
+                """);
+            if (stateRow is null || string.IsNullOrWhiteSpace(stateRow.LibraryId))
             {
                 return Result<McpLibraryStateResponse>.Failure(AppErrorCodes.NotFound,
                     "No library identity exists in this runtime database.");
             }
 
             return Result<McpLibraryStateResponse>.Success(new McpLibraryStateResponse(
-                LibraryId.Parse(libraryId).ToString(), "lib:1"));
+                LibraryId.Parse(stateRow.LibraryId).ToString(),
+                LibraryRevisionFormatter.Format(stateRow.LibraryRevision)));
         }
         catch (OperationCanceledException)
         {
@@ -902,12 +970,18 @@ public sealed class McpReadApi : IMcpReadApi
         }
     }
 
+    private sealed class LibraryStateRow
+    {
+        public string LibraryId { get; init; } = "";
+        public long LibraryRevision { get; init; }
+    }
+
     private async Task<Result<McpPageTextResponse>> CurrentPageTextAsync(PageId pageId, bool includeSuppressed,
         CancellationToken cancellationToken)
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             PageMeta? meta = await PageMetaAsync(connection, pageId);
             if (meta is null)
@@ -928,11 +1002,8 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             DocumentTreeRevisionId treeRevisionId = DocumentTreeRevisionId.Parse(revisionId);
-            Result<CompiledMarkdown> compiled = await _compiledMarkdownCache.GetOrCreateAsync(
-                treeRevisionId, includeSuppressed, true,
-                sharedCancellationToken => _markdownCompiler.CompilePageMarkdownAsync(
-                    treeRevisionId, includeSuppressed, sharedCancellationToken, true),
-                cancellationToken);
+            Result<CompiledMarkdown> compiled = await _markdownCompiler.CompilePageMarkdownAsync(
+                treeRevisionId, includeSuppressed, cancellationToken, true);
             if (compiled.IsFailure)
             {
                 return Result<McpPageTextResponse>.Failure(compiled.ErrorCode!, compiled.ErrorMessage!);
@@ -940,7 +1011,8 @@ public sealed class McpReadApi : IMcpReadApi
 
             string[] warnings = _coordinates is null
                 ? Array.Empty<string>()
-                : (await _coordinates.DetectBBoxWarningsAsync(pageId, cancellationToken: cancellationToken)).ToArray();
+                : (await _coordinates.DetectBBoxWarningsAsync(pageId, includeFullHashValidation: false,
+                    cancellationToken: cancellationToken)).ToArray();
             return Result<McpPageTextResponse>.Success(new McpPageTextResponse(pageId,
                 DocumentInstanceId.Parse(meta.DocumentInstanceId), meta.PageLabel, meta.PageIndex,
                 compiled.Value.Markdown, McpReadMode.Current, null, warnings, revisionId));
@@ -958,7 +1030,7 @@ public sealed class McpReadApi : IMcpReadApi
 
     private async Task<string> SourceFileStatusForDocumentAsync(DocumentInstanceId documentInstanceId)
     {
-        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
         await connection.OpenAsync();
         return MapSourceStatus(await RawSourceFileStatusAsync(connection, documentInstanceId), out _);
     }
@@ -1000,7 +1072,7 @@ public sealed class McpReadApi : IMcpReadApi
 
     private async Task<PageMeta?> PageMetaAsync(PageId pageId)
     {
-        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
         await connection.OpenAsync();
         return await PageMetaAsync(connection, pageId);
     }
@@ -1127,6 +1199,7 @@ public sealed class McpReadApi : IMcpReadApi
         public string CollectionsJson { get; set; } = "";
         public string CustomFieldsJson { get; set; } = "";
         public string UpdatedAt { get; set; } = "";
+        public string PrimaryDocumentOcrIndexStatus { get; set; } = "no_primary_document";
 
         public McpItemMetadataResponse ToResponse(
             IReadOnlyList<McpItemCreator> creators,
@@ -1235,43 +1308,26 @@ public sealed class McpReadApi : IMcpReadApi
         }
     }
 
-    private const string DocumentBrowseProjection =
-        """
-        select di.document_instance_id, di.item_id, di.title, di.created_at,
-               (select r.tree_revision_id from document_tree_revisions r
-                where r.document_instance_id = di.document_instance_id
-                  and r.status = 'committed' and r.is_current = 1
-                order by r.committed_at desc, r.tree_revision_id desc
-                limit 1) as revision_id,
-               i.item_type as item_type,
-               coalesce(i.status, 'unset') as item_status,
-               case coalesce(fa.status, '')
-                 when 'available' then 'available'
-                 when 'missing' then 'missing'
-                 when 'offline_root' then 'offline_root'
-                 when 'changed' then 'changed'
-                 when 'conflict' then 'conflict'
-                 else 'unknown'
-               end as source_status,
-               case
-                 when exists (select 1 from document_tree_revisions r
-                              where r.document_instance_id = di.document_instance_id
-                                and r.status = 'committed' and r.is_current = 1) then
-                   case when (select status from search_index_status
-                              where scope_type = 'document_instance' and scope_id = di.document_instance_id)
-                             = 'current'
-                        then 'indexed' else 'layout' end
-                 when exists (select 1 from document_boxes b
-                              join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
-                              where b.document_instance_id = di.document_instance_id
-                                and r.status = 'committed' and r.is_current = 1
-                                and b.suppressed = 0 and b.payload_json is not null) then 'ocr'
-                 else 'unavailable'
-               end as document_status
-        from document_instances di
-        left join items i on i.item_id = di.item_id
-        left join file_assets fa on fa.file_asset_id = di.file_asset_id
-        """;
+    private static string DocumentBrowseProjection =>
+        $"""
+         select di.document_instance_id, di.item_id, di.title, di.created_at,
+                (select r.tree_revision_id from document_tree_revisions r
+                 where r.document_instance_id = di.document_instance_id
+                   and r.status = 'committed' and r.is_current = 1
+                 order by r.committed_at desc, r.tree_revision_id desc
+                 limit 1) as revision_id,
+                i.item_type as item_type,
+                coalesce(i.status, 'unset') as item_status,
+                di.status as document_status,
+                coalesce(fa.status, 'unavailable') as source_status,
+                {DocumentOcrIndexStatusExpression("di.document_instance_id")} as ocr_index_status,
+                case when i.item_id is not null and
+                               (i.item_type <> 'general' or length(trim(i.title)) > 0)
+                     then 1 else 0 end as citable
+         from document_instances di
+         left join items i on i.item_id = di.item_id
+         left join file_assets fa on fa.file_asset_id = di.file_asset_id
+         """;
 
     private static ItemFilter BuildItemBrowseFilter(IReadOnlyList<McpWhereClause>? where)
     {
@@ -1291,6 +1347,11 @@ public sealed class McpReadApi : IMcpReadApi
                     break;
                 case "citable":
                     clauses.Add(CitableClause(clause.Value));
+                    break;
+                case "primary_document_ocr_index_status":
+                    clauses.Add(PrimaryDocumentOcrIndexStatusExpression("items.item_id") +
+                                " = @PrimaryDocumentOcrIndexStatus");
+                    parameters["PrimaryDocumentOcrIndexStatus"] = clause.Value;
                     break;
             }
         }
@@ -1322,6 +1383,10 @@ public sealed class McpReadApi : IMcpReadApi
                     clauses.Add("document_status = @DocumentStatus");
                     parameters["DocumentStatus"] = clause.Value;
                     break;
+                case "ocr_index_status":
+                    clauses.Add("ocr_index_status = @OcrIndexStatus");
+                    parameters["OcrIndexStatus"] = clause.Value;
+                    break;
                 case "citable":
                     clauses.Add(string.Equals(clause.Value, "true", StringComparison.OrdinalIgnoreCase)
                         ? "item_id is not null"
@@ -1330,7 +1395,12 @@ public sealed class McpReadApi : IMcpReadApi
             }
         }
 
-        return new DocumentFilter(clauses.Count == 0 ? "" : " and " + string.Join(" and ", clauses), parameters);
+        return new DocumentFilter(clauses.Count == 0 ? "" : " where " + string.Join(" and ", clauses), parameters);
+    }
+
+    private static string AppendFilter(DocumentFilter filter)
+    {
+        return string.IsNullOrEmpty(filter.Sql) ? "" : " and " + filter.Sql[7..];
     }
 
     private static string CitableClause(string value)
@@ -1338,6 +1408,38 @@ public sealed class McpReadApi : IMcpReadApi
         return string.Equals(value, "true", StringComparison.OrdinalIgnoreCase)
             ? "(item_type <> 'general' or length(trim(title)) > 0)"
             : "(item_type = 'general' and length(trim(title)) = 0)";
+    }
+
+    private static string PrimaryDocumentOcrIndexStatusExpression(string itemIdSql)
+    {
+        return $"""
+                coalesce((select {DocumentOcrIndexStatusExpression("primary_di.document_instance_id")}
+                          from document_instances primary_di
+                          where primary_di.item_id = {itemIdSql} and primary_di.is_primary = 1
+                          limit 1), 'no_primary_document')
+                """;
+    }
+
+    private static string DocumentOcrIndexStatusExpression(string documentIdSql)
+    {
+        return $"""
+                case
+                  when (select r.state from ocr_runs r where r.document_instance_id = {documentIdSql}
+                        and r.hidden = 0 order by r.created_at desc, r.ocr_run_id desc limit 1)
+                       in ('failed', 'completed_with_errors') then 'ocr_failed'
+                  when (select r.state from ocr_runs r where r.document_instance_id = {documentIdSql}
+                        and r.hidden = 0 order by r.created_at desc, r.ocr_run_id desc limit 1) = 'running'
+                       then 'ocr_running'
+                  when not exists (select 1 from document_tree_revisions revision
+                                   where revision.document_instance_id = {documentIdSql}
+                                     and revision.status = 'committed' and revision.is_current = 1) then 'no_ocr'
+                  when exists (select 1 from search_index_status search_status
+                               where search_status.scope_type = 'document_instance'
+                                 and search_status.scope_id = {documentIdSql}
+                                 and search_status.status = 'current') then 'indexed'
+                  else 'ocr_not_indexed'
+                end
+                """;
     }
 
     private sealed class ItemFilter
@@ -1371,6 +1473,11 @@ public sealed class McpReadApi : IMcpReadApi
         public string? Title { get; set; }
         public string? RevisionId { get; set; }
         public string CreatedAt { get; set; } = "";
+        public string? ItemStatus { get; set; }
+        public string DocumentStatus { get; set; } = "missing_source";
+        public string SourceStatus { get; set; } = "unavailable";
+        public string OcrIndexStatus { get; set; } = "no_ocr";
+        public bool Citable { get; set; }
     }
 
     private sealed class DocumentOwnerRow

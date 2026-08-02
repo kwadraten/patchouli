@@ -1,0 +1,28 @@
+name: Performance smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  perf-smoke:
+    name: Perf smoke + regression gate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run small performance smoke with regression check
+        shell: pwsh
+        run: ./scripts/run-perf.ps1 -Profile smoke -Check -Ui
+      - name: Upload machine-readable report
+        uses: actions/upload-artifact@v7
+        with:
+          name: perf-smoke-report
+          path: artifacts/perf/smoke-*.json
+          if-no-files-found: error

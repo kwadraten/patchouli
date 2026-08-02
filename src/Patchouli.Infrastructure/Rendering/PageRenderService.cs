@@ -1,6 +1,5 @@
 using Dapper;
 using Microsoft.Data.Sqlite;
-using System.Collections.Concurrent;
 using System.Globalization;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -8,6 +7,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Infrastructure.Caching;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Hashing;
@@ -17,19 +17,28 @@ namespace Patchouli.Infrastructure.Rendering;
 
 public sealed class PageRenderService : IPageRenderService
 {
+    public const long DefaultPreviewRasterByteLimit = 256L * 1024 * 1024;
+
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ILibraryIdentityService _library;
     private readonly IFileResolutionService _fileResolution;
     private readonly IFileMaterializationService _fileMaterialization;
     private readonly IPdfPageRenderer _renderer;
     private readonly IPdfPagePixelBufferRenderer? _pixelRenderer;
+    private readonly IPdfPageSessionRenderer? _sessionRenderer;
+    private readonly ISourceValidationService _sourceValidation;
+    private readonly FileAssetPdfViewingSessions? _viewingSessions;
     private readonly IClock _clock;
     private readonly string _cacheRoot;
-    private readonly ConcurrentDictionary<string, PreviewPixels> _previewPixels = new(StringComparer.OrdinalIgnoreCase);
+    private readonly BoundedLruCache<string, PreviewPixels> _rasterCache;
+    private readonly object _pendingPreviewSync = new();
+    private readonly Dictionary<string, Task<PreviewPixels>> _pendingPreviews = [];
 
     public PageRenderService(SqliteConnectionFactory connectionFactory, ILibraryIdentityService library,
         IFileResolutionService fileResolution, IPdfPageRenderer renderer, IClock clock, string cacheRoot,
-        IFileMaterializationService? fileMaterialization = null)
+        IFileMaterializationService? fileMaterialization = null, ISourceValidationService? sourceValidation = null,
+        PdfiumSessionCache? sessionCache = null, long previewRasterByteLimit = DefaultPreviewRasterByteLimit,
+        FileAssetPdfViewingSessions? viewingSessions = null)
     {
         _connectionFactory = connectionFactory;
         _library = library;
@@ -37,8 +46,33 @@ public sealed class PageRenderService : IPageRenderService
         _fileMaterialization = fileMaterialization ?? new FileSearchRootAccess();
         _renderer = renderer;
         _pixelRenderer = renderer as IPdfPagePixelBufferRenderer;
+        _sessionRenderer = renderer as IPdfPageSessionRenderer;
+        _sourceValidation = sourceValidation ?? new SourceValidationService();
+        _viewingSessions = viewingSessions ??
+                           (_sessionRenderer is null
+                               ? null
+                               : new FileAssetPdfViewingSessions(_sessionRenderer, sessionCache));
         _clock = clock;
         _cacheRoot = Path.GetFullPath(cacheRoot);
+        _rasterCache = new BoundedLruCache<string, PreviewPixels>(previewRasterByteLimit);
+    }
+
+    /// <summary>Bounded preview raster cache metrics (AC15: hard caps, LRU eviction).</summary>
+    public long PreviewCacheHits => _rasterCache.Hits;
+
+    public long PreviewCacheMisses => _rasterCache.Misses;
+    public long PreviewCacheEvictions => _rasterCache.Evictions;
+    public long PreviewCacheBytes => _rasterCache.CachedBytes;
+    public int OpenDocumentSessions => _viewingSessions?.OpenDocumentSessions ?? 0;
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_viewingSessions is not null)
+        {
+            await _viewingSessions.DisposeAsync();
+        }
+
+        _rasterCache.Clear();
     }
 
     public async Task<Result<PageRenderResult>> RenderPageAsync(PageRenderRequest request,
@@ -92,10 +126,19 @@ public sealed class PageRenderService : IPageRenderService
 
             FileAssetId fileAssetId = FileAssetId.Parse(assetId);
             string rendererBasisVersion = GetRendererBasisVersion(request.Dpi);
-            string? recordedStatus =
-                await connection.ExecuteScalarAsync<string?>("select status from file_assets where file_asset_id=@Id;",
-                    new { Id = assetId });
-            if (recordedStatus == FileAssetStatus.Conflict)
+            AssetRecord? asset = await connection.QuerySingleOrDefaultAsync<AssetRecord>(
+                """
+                select status as Status, original_path as OriginalPath, size_bytes as SizeBytes,
+                       mtime_utc as MtimeUtc, quick_hash as QuickHash, full_blake3 as FullBlake3
+                from file_assets where file_asset_id=@Id;
+                """,
+                new { Id = assetId });
+            if (asset is null)
+            {
+                return Result<PageRenderResult>.Failure(AppErrorCodes.NotFound, "File asset was not found.");
+            }
+
+            if (asset.Status == FileAssetStatus.Conflict)
             {
                 return Result<PageRenderResult>.Success(SourceState(PageRenderStatus.Conflict, request, page,
                     rendererBasisVersion, "Source file conflict requires user confirmation before rendering."));
@@ -143,7 +186,33 @@ public sealed class PageRenderService : IPageRenderService
                     rendererBasisVersion, materialized.ErrorMessage ?? "Source file is not available locally."));
             }
 
-            string sourceHash = await Blake3Hash.ComputeFileAsync(resolution.Value.ResolvedPath, cancellationToken);
+            SourceValidationRequest validationRequest = new(fileAssetId, string.Empty, asset.OriginalPath,
+                asset.SizeBytes, ParseMtime(asset.MtimeUtc), asset.QuickHash, asset.FullBlake3, asset.Status,
+                rendererBasisVersion);
+            SourceValidationResult? reuse = await _sourceValidation.TryGetCurrentAsync(validationRequest,
+                cancellationToken);
+            string sourceHash;
+            if (reuse is { Status: SourceValidationStatus.Current })
+            {
+                sourceHash = reuse.FullHash ?? string.Empty;
+            }
+            else
+            {
+                SourceValidationResult validation = await _sourceValidation.EnsureValidatedAsync(
+                    validationRequest with { ResolvedPath = resolution.Value.ResolvedPath }, cancellationToken);
+                if (validation.Status != SourceValidationStatus.Current)
+                {
+                    return Result<PageRenderResult>.Success(SourceState(
+                        validation.Status == SourceValidationStatus.Unavailable
+                            ? PageRenderStatus.SourceMissing
+                            : PageRenderStatus.SourceChanged,
+                        request, page, rendererBasisVersion,
+                        validation.Warning ?? $"Page render is not ready: {validation.Status}."));
+                }
+
+                sourceHash = validation.FullHash ?? string.Empty;
+            }
+
             PageRenderCacheKey key = new(library.Value.LibraryId, request.DocumentInstanceId, request.PageId,
                 fileAssetId, page.PageIndex, request.Dpi, rendererBasisVersion, sourceHash);
             string path = CachePath(key);
@@ -216,6 +285,13 @@ public sealed class PageRenderService : IPageRenderService
                 : null);
     }
 
+    /// <summary>
+    /// Renders the interactive preview straight to a memory BGRA raster. Unlike the OCR/disk
+    /// path this never encodes a PNG first, so the first UI preview performs exactly one
+    /// PDFium render and never a "PNG render + second BGRA render". The raster is kept in the
+    /// bounded preview LRU keyed by source basis; unchanged sources are validated lazily and
+    /// do not re-hash the whole file on page flips.
+    /// </summary>
     public async Task<Result<PdfPagePixelBufferLease>> RenderPreviewAsync(PageRenderRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -225,71 +301,144 @@ public sealed class PageRenderService : IPageRenderService
                 "The configured PDF renderer does not support pixel previews.");
         }
 
-        Result<PageRenderResult> rendered = await RenderPageAsync(request with { Purpose = PageRenderPurpose.Preview },
-            cancellationToken);
-        if (rendered.IsFailure)
-        {
-            return Result<PdfPagePixelBufferLease>.Failure(rendered.ErrorCode!, rendered.ErrorMessage!);
-        }
-
-        if (rendered.Value.Status is not (PageRenderStatus.Rendered or PageRenderStatus.FromCache))
+        if (request.Dpi is < 50 or > 600)
         {
             return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
-                rendered.Value.Warning ?? $"Page render is not ready: {rendered.Value.Status}.");
+                "Render DPI must be between 50 and 600.");
         }
 
-        string cachePath = rendered.Value.CacheImagePath!;
-        if (!request.ForceRerender && _previewPixels.TryGetValue(cachePath, out PreviewPixels? cached))
+        Result<LibraryMetadata> library = await _library.GetCurrentLibraryAsync(cancellationToken);
+        if (library.IsFailure)
         {
-            return Result<PdfPagePixelBufferLease>.Success(cached.Lease());
-        }
-
-        await using SqliteConnection connection = _connectionFactory.CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        string? assetId = request.FileAssetId?.ToString() ?? await connection.ExecuteScalarAsync<string?>(
-            "select file_asset_id from document_instances where document_instance_id=@Id;",
-            new { Id = request.DocumentInstanceId.ToString() });
-        if (assetId is null)
-        {
-            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
-                "Document instance has no source file asset.");
-        }
-
-        Result<FileResolutionResult> resolution = await _fileResolution.ResolveFileAsync(FileAssetId.Parse(assetId),
-            ResolveFilePurpose.RenderPage, cancellationToken);
-        if (resolution.IsFailure)
-        {
-            return Result<PdfPagePixelBufferLease>.Failure(resolution.ErrorCode!, resolution.ErrorMessage!);
-        }
-
-        if (resolution.Value.Status != FileAssetStatus.Available ||
-            string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath))
-        {
-            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
-                resolution.Value.Warning ?? "Source file is unavailable.");
-        }
-
-        Result materialized = await _fileMaterialization.EnsureAvailableAsync(resolution.Value.ResolvedPath,
-            cancellationToken);
-        if (materialized.IsFailure)
-        {
-            return Result<PdfPagePixelBufferLease>.Failure(materialized.ErrorCode!, materialized.ErrorMessage!);
-        }
-
-        PagePreviewRow? page = await connection.QuerySingleOrDefaultAsync<PagePreviewRow>(
-            "select page_index as PageIndex from pages where page_id=@Id;", new { Id = request.PageId.ToString() });
-        if (page is null)
-        {
-            return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound, "Page was not found.");
+            return Result<PdfPagePixelBufferLease>.Failure(library.ErrorCode!, library.ErrorMessage!);
         }
 
         try
         {
-            PdfPagePixelBufferOutput output = await _pixelRenderer.RenderPageToBgraBytesAsync(
-                resolution.Value.ResolvedPath, page.PageIndex, request.Dpi, cancellationToken);
-            PreviewPixels pixels = new(output);
-            _previewPixels[cachePath] = pixels;
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            PagePreviewRow? page = await connection.QuerySingleOrDefaultAsync<PagePreviewRow>(
+                "select page_index as PageIndex from pages where page_id=@Id;",
+                new { Id = request.PageId.ToString() });
+            if (page is null)
+            {
+                return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound, "Page was not found.");
+            }
+
+            string? assetId = request.FileAssetId?.ToString() ?? await connection.ExecuteScalarAsync<string?>(
+                "select file_asset_id from document_instances where document_instance_id=@Id;",
+                new { Id = request.DocumentInstanceId.ToString() });
+            if (assetId is null)
+            {
+                return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
+                    "Document instance has no source file asset.");
+            }
+
+            FileAssetId fileAssetId = FileAssetId.Parse(assetId);
+            AssetRecord? asset = await connection.QuerySingleOrDefaultAsync<AssetRecord>(
+                """
+                select status as Status, original_path as OriginalPath, size_bytes as SizeBytes,
+                       mtime_utc as MtimeUtc, quick_hash as QuickHash, full_blake3 as FullBlake3
+                from file_assets where file_asset_id=@Id;
+                """,
+                new { Id = assetId });
+            if (asset is null)
+            {
+                return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound, "File asset was not found.");
+            }
+
+            if (asset.Status == FileAssetStatus.Conflict)
+            {
+                return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                    "Source file conflict requires user confirmation before rendering.");
+            }
+
+            string rendererBasis = GetRendererBasisVersion(request.Dpi);
+            SourceValidationRequest validationRequest = new(fileAssetId, string.Empty, asset.OriginalPath,
+                asset.SizeBytes, ParseMtime(asset.MtimeUtc), asset.QuickHash, asset.FullBlake3, asset.Status,
+                rendererBasis);
+
+            string resolvedPath;
+            string? sourceBasisHash;
+            SourceValidationResult? reuse = await _sourceValidation.TryGetCurrentAsync(validationRequest,
+                cancellationToken);
+            if (reuse is not null)
+            {
+                if (reuse.Status != SourceValidationStatus.Current)
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                        reuse.Warning ?? $"Page render is not ready: {reuse.Status}.");
+                }
+
+                resolvedPath = reuse.ResolvedPath;
+                sourceBasisHash = reuse.FullHash;
+            }
+            else
+            {
+                Result<FileResolutionResult> resolution =
+                    await _fileResolution.ResolveFileAsync(fileAssetId, ResolveFilePurpose.RenderPage,
+                        cancellationToken);
+                if (resolution.IsFailure)
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(resolution.ErrorCode!,
+                        resolution.ErrorMessage!);
+                }
+
+                if (resolution.Value.Status == FileAssetStatus.Changed)
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                        "source_changed: rendering is blocked because existing bbox values may be bbox_basis_stale.");
+                }
+
+                if (resolution.Value.Status != FileAssetStatus.Available ||
+                    string.IsNullOrWhiteSpace(resolution.Value.ResolvedPath))
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.NotFound,
+                        resolution.Value.Warning ?? "Source file is unavailable.");
+                }
+
+                if (!string.Equals(Path.GetExtension(resolution.Value.ResolvedPath), ".pdf",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                        "Page rendering MVP supports PDF file assets only.");
+                }
+
+                Result materialized = await _fileMaterialization.EnsureAvailableAsync(
+                    resolution.Value.ResolvedPath, cancellationToken);
+                if (materialized.IsFailure)
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(materialized.ErrorCode!,
+                        materialized.ErrorMessage!);
+                }
+
+                SourceValidationResult validation = await _sourceValidation.EnsureValidatedAsync(
+                    validationRequest with { ResolvedPath = resolution.Value.ResolvedPath },
+                    cancellationToken);
+                if (validation.Status != SourceValidationStatus.Current)
+                {
+                    return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
+                        validation.Warning ?? $"Page render is not ready: {validation.Status}.");
+                }
+
+                resolvedPath = validation.ResolvedPath;
+                sourceBasisHash = validation.FullHash;
+            }
+
+            string cacheKey = PreviewCacheKey(library.Value.LibraryId, request, page.PageIndex, rendererBasis,
+                sourceBasisHash ?? "");
+            if (!request.ForceRerender && _rasterCache.TryGet(cacheKey, out PreviewPixels? cached))
+            {
+                return Result<PdfPagePixelBufferLease>.Success(cached.Lease());
+            }
+
+            PreviewPixels pixels = await GetOrRenderPreviewAsync(cacheKey, fileAssetId, resolvedPath,
+                sourceBasisHash ?? string.Empty, page.PageIndex, request.Dpi, cancellationToken);
             return Result<PdfPagePixelBufferLease>.Success(pixels.Lease());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
         }
         catch (PdfRendererUnavailableException ex)
         {
@@ -299,10 +448,6 @@ public sealed class PageRenderService : IPageRenderService
         {
             return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed, ex.Message);
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.page-preview"))
         {
             return Result<PdfPagePixelBufferLease>.Failure(AppErrorCodes.ValidationFailed,
@@ -310,7 +455,7 @@ public sealed class PageRenderService : IPageRenderService
         }
     }
 
-    public Task<Result> ClearRenderCacheForDocumentAsync(DocumentInstanceId documentInstanceId,
+    public async Task<Result> ClearRenderCacheForDocumentAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
         string directory = Path.Combine(_cacheRoot, documentInstanceId.ToString());
@@ -319,12 +464,25 @@ public sealed class PageRenderService : IPageRenderService
             Directory.Delete(directory, true);
         }
 
-        foreach (string key in _previewPixels.Keys.Where(path => Path.GetDirectoryName(path) == directory))
+        string docKey = documentInstanceId.ToString();
+        _rasterCache.EvictWhere(key => key.Contains(docKey, StringComparison.Ordinal));
+
+        if (_viewingSessions is not null)
         {
-            _previewPixels.TryRemove(key, out _);
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            string? assetId = await connection.ExecuteScalarAsync<string?>(
+                "select file_asset_id from document_instances where document_instance_id=@Id;",
+                new { Id = documentInstanceId.ToString() });
+            if (assetId is not null)
+            {
+                FileAssetId fileAssetId = FileAssetId.Parse(assetId);
+                await _sourceValidation.InvalidateAsync(fileAssetId, cancellationToken);
+                await _viewingSessions.InvalidateAsync(fileAssetId);
+            }
         }
 
-        return Task.FromResult(Result.Success());
+        return Result.Success();
     }
 
     public async Task<Result<OcrInputDescriptor>> BuildOcrInputFromRenderedPageAsync(
@@ -401,6 +559,71 @@ public sealed class PageRenderService : IPageRenderService
             : Task.FromResult(new PdfRendererAvailability(_renderer.GetType().Name, true, "Renderer is configured."));
     }
 
+    public async Task ReleaseDocumentSessionAsync(DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        if (_viewingSessions is null)
+        {
+            return;
+        }
+
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        string? assetId = await connection.ExecuteScalarAsync<string?>(
+            "select file_asset_id from document_instances where document_instance_id=@Id;",
+            new { Id = documentInstanceId.ToString() });
+        if (assetId is null)
+        {
+            return;
+        }
+
+        await _viewingSessions.ReleaseAsync(FileAssetId.Parse(assetId));
+    }
+
+    private async Task<PreviewPixels> GetOrRenderPreviewAsync(string cacheKey, FileAssetId fileAssetId,
+        string resolvedPath, string sourceVersion, int pageIndex, int dpi, CancellationToken cancellationToken)
+    {
+        Task<PreviewPixels> pending;
+        lock (_pendingPreviewSync)
+        {
+            if (!_pendingPreviews.TryGetValue(cacheKey, out pending!))
+            {
+                // The render is intentionally independent of any one UI request. A cancelled
+                // prefetch must not cancel the same in-flight work that a foreground page just
+                // joined; each caller instead observes its own token through WaitAsync below.
+                pending = RenderPreviewCoreAsync(cacheKey, fileAssetId, resolvedPath, sourceVersion, pageIndex, dpi);
+                _pendingPreviews.Add(cacheKey, pending);
+                _ = pending.ContinueWith(_ => RemovePendingPreview(cacheKey, pending),
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
+        }
+
+        return await pending.WaitAsync(cancellationToken);
+    }
+
+    private async Task<PreviewPixels> RenderPreviewCoreAsync(string cacheKey, FileAssetId fileAssetId,
+        string resolvedPath, string sourceVersion, int pageIndex, int dpi)
+    {
+        PdfPagePixelBufferOutput output = _viewingSessions is not null
+            ? await _viewingSessions.RenderAsync(fileAssetId, resolvedPath, sourceVersion, pageIndex, dpi)
+            : await _pixelRenderer!.RenderPageToBgraBytesAsync(resolvedPath, pageIndex, dpi);
+        PreviewPixels pixels = new(output);
+        _rasterCache.Set(cacheKey, pixels, EstimatePreviewBytes(output));
+        return pixels;
+    }
+
+    private void RemovePendingPreview(string cacheKey, Task<PreviewPixels> completed)
+    {
+        lock (_pendingPreviewSync)
+        {
+            if (_pendingPreviews.TryGetValue(cacheKey, out Task<PreviewPixels>? current) &&
+                ReferenceEquals(current, completed))
+            {
+                _pendingPreviews.Remove(cacheKey);
+            }
+        }
+    }
+
     private static string RegionCropPath(string fullPagePath, NormalizedBBox region)
     {
         string token = Blake3Hash.ComputeUtf8(string.Create(CultureInfo.InvariantCulture,
@@ -415,6 +638,18 @@ public sealed class PageRenderService : IPageRenderService
         return _renderer is IPdfPageRendererIdentity identity
             ? identity.GetRendererBasisVersion(dpi)
             : _renderer.GetType().Name;
+    }
+
+    private static string PreviewCacheKey(LibraryId libraryId, PageRenderRequest request, int pageIndex,
+        string rendererBasis, string sourceHash)
+    {
+        return $"{libraryId}|{request.DocumentInstanceId}|{request.PageId}|{request.FileAssetId}|{pageIndex}|" +
+               $"{request.Dpi}|{rendererBasis}|{sourceHash}";
+    }
+
+    private static long EstimatePreviewBytes(PdfPagePixelBufferOutput output)
+    {
+        return Math.Max(1024L, (long)output.Stride * output.HeightPixels);
     }
 
     private string CachePath(PageRenderCacheKey key)
@@ -446,6 +681,23 @@ public sealed class PageRenderService : IPageRenderService
     private sealed class PagePreviewRow
     {
         public int PageIndex { get; set; }
+    }
+
+    private sealed class AssetRecord
+    {
+        public string Status { get; set; } = "";
+        public string OriginalPath { get; set; } = "";
+        public long SizeBytes { get; set; }
+        public string? MtimeUtc { get; set; }
+        public string? QuickHash { get; set; }
+        public string? FullBlake3 { get; set; }
+    }
+
+    private static DateTimeOffset? ParseMtime(string? value)
+    {
+        return value is null
+            ? null
+            : DateTimeOffset.Parse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
     }
 
     private sealed record PreviewPixels(PdfPagePixelBufferOutput Output)

@@ -33,7 +33,7 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """
@@ -64,7 +64,7 @@ public sealed class LibrarySettingStore : ILibrarySettingStore
             string[] allowed = LibrarySettingCatalog.All.Where(entry => entry.IsSnapshotEligible)
                 .Select(entry => entry.SettingKey)
                 .ToArray();
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             Row[] records = (await connection.QueryAsync<Row>(
                 """

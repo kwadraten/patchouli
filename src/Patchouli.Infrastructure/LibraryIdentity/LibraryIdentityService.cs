@@ -83,8 +83,17 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                 ToParameters(metadata),
                 transaction);
 
+            long revision = await connection.ExecuteScalarAsync<long>(
+                """
+                select library_revision
+                from library_metadata
+                order by created_at, library_id
+                limit 1;
+                """,
+                transaction: transaction);
+
             await transaction.CommitAsync(cancellationToken);
-            return Result<LibraryMetadata>.Success(metadata);
+            return Result<LibraryMetadata>.Success(metadata with { LibraryRevision = revision });
         }
         catch (OperationCanceledException)
         {
@@ -102,7 +111,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
 
             LibraryMetadataRow[] rows = (await connection.QueryAsync<LibraryMetadataRow>(
@@ -111,6 +120,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                     library_id as LibraryId,
                     display_name as DisplayName,
                     schema_version as SchemaVersion,
+                    library_revision as LibraryRevision,
                     created_at as CreatedAt,
                     updated_at as UpdatedAt
                 from library_metadata
@@ -153,6 +163,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                     library_id as LibraryId,
                     display_name as DisplayName,
                     schema_version as SchemaVersion,
+                    library_revision as LibraryRevision,
                     created_at as CreatedAt,
                     updated_at as UpdatedAt
                 from library_metadata
@@ -272,6 +283,7 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
         public string LibraryId { get; set; } = string.Empty;
         public string DisplayName { get; set; } = string.Empty;
         public int SchemaVersion { get; set; }
+        public long LibraryRevision { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
 
@@ -282,7 +294,8 @@ public sealed class LibraryIdentityService : ILibraryIdentityService
                 DisplayName,
                 SchemaVersion,
                 DateTimeOffset.Parse(CreatedAt),
-                DateTimeOffset.Parse(UpdatedAt));
+                DateTimeOffset.Parse(UpdatedAt),
+                LibraryRevision);
         }
     }
 }

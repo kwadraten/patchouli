@@ -19,15 +19,18 @@ public sealed class ItemService : IItemService
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ILibraryIdentityService _libraryIdentityService;
     private readonly IClock _clock;
+    private readonly ILibraryRevisionService? _revisions;
 
     public ItemService(
         SqliteConnectionFactory connectionFactory,
         ILibraryIdentityService libraryIdentityService,
-        IClock clock)
+        IClock clock,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _libraryIdentityService = libraryIdentityService;
         _clock = clock;
+        _revisions = revisions;
     }
 
     public async Task<Result<ItemMetadata>> CreateItemAsync(
@@ -171,6 +174,7 @@ public sealed class ItemService : IItemService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -289,7 +293,17 @@ public sealed class ItemService : IItemService
                     await InsertIdentifierAsync(connection, transaction, itemId, identifier, now);
                 }
             }
+
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
+                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<ItemMetadata>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return await GetItemAsync(itemId, cancellationToken);
         }
         catch (OperationCanceledException)
@@ -307,8 +321,10 @@ public sealed class ItemService : IItemService
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             int affected = await connection.ExecuteAsync(
                 """
@@ -322,11 +338,26 @@ public sealed class ItemService : IItemService
                     ItemId = itemId.ToString(),
                     DeletedAt = FormatUtc(_clock.UtcNow),
                     UpdatedAt = FormatUtc(_clock.UtcNow)
-                });
+                }, transaction);
 
-            return affected == 0
-                ? Result.Failure(AppErrorCodes.NotFound, "Item was not found.")
-                : Result.Success();
+            if (affected == 0)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound, "Item was not found.");
+            }
+
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
+                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
+
+            return Result.Success();
         }
         catch (OperationCanceledException)
         {
@@ -508,6 +539,7 @@ public sealed class ItemService : IItemService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -569,7 +601,16 @@ public sealed class ItemService : IItemService
                 },
                 transaction);
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
+                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<ItemIdentifier>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result<ItemIdentifier>.Success(identifier);
         }
         catch (OperationCanceledException)
@@ -1089,6 +1130,7 @@ public sealed class ItemService : IItemService
                 now,
                 now);
 
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -1125,7 +1167,16 @@ public sealed class ItemService : IItemService
                 await InsertIdentifierAsync(connection, transaction, itemId, normalized, now);
             }
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
+                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<ItemMetadata>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return await GetItemAsync(itemId, cancellationToken);
         }
         catch (OperationCanceledException)
@@ -1136,6 +1187,32 @@ public sealed class ItemService : IItemService
                                               "infrastructure.item-service"))
         {
             return DatabaseFailure<ItemMetadata>(exception);
+        }
+    }
+
+    private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        LibraryChangeSet changeSet,
+        CancellationToken cancellationToken)
+    {
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(
+            connection, transaction, changeSet, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private void PublishRevision(LibraryChangeSet? changeSet)
+    {
+        if (changeSet is not null)
+        {
+            _revisions!.PublishCommitted(changeSet);
         }
     }
 

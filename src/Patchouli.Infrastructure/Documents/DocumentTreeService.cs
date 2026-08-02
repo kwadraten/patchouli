@@ -1,9 +1,11 @@
 using System.Data.Common;
+using System.Text;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
@@ -15,22 +17,25 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
     private readonly DocumentTreeValidator _validator;
+    private readonly ILibraryRevisionService? _revisions;
 
     public DocumentTreeService(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
-        IMarkdownEngine markdownEngine)
+        IMarkdownEngine markdownEngine,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _validator = new DocumentTreeValidator(markdownEngine);
+        _revisions = revisions;
     }
 
     public async Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             IEnumerable<DocumentTreeRevisionRow> revisions = await connection.QueryAsync<DocumentTreeRevisionRow>(
                 SelectRevisionSql + " order by tree_revision_id;");
@@ -293,7 +298,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     {
         return await InTransactionAsync(async (connection, transaction) =>
         {
-            List<(DocumentTreeRevision Revision, DocumentBox[] Boxes)> staging = [];
+            List<DocumentTreeRevision> staging = [];
             HashSet<(DocumentInstanceId DocumentInstanceId, PageId PageId)> pages = [];
             foreach (DocumentTreeRevisionId stagingRevisionId in stagingRevisionIds)
             {
@@ -322,11 +327,15 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                         valid.ErrorCode!, valid.ErrorMessage!, valid.Conflicts);
                 }
 
-                staging.Add((revision, boxes));
+                staging.Add(revision);
             }
 
+            // Pre-generate the staging -> committed revision mapping, then copy boxes within
+            // SQLite via INSERT ... SELECT so a large staging tree is never read back into
+            // .NET just to re-serialize and insert one row at a time.
+            DateTimeOffset committedAt = _clock.UtcNow.ToUniversalTime();
             List<DocumentTreeRevision> committedRevisions = [];
-            foreach ((DocumentTreeRevision stagingRevision, DocumentBox[] stagingBoxes) in staging)
+            foreach (DocumentTreeRevision stagingRevision in staging)
             {
                 DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
                     connection, transaction, stagingRevision.DocumentInstanceId, stagingRevision.PageId);
@@ -337,26 +346,47 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     DocumentTreeRevisionSource.OcrAdopted,
                     DocumentTreeRevisionStatus.Committed,
                     true,
-                    _clock.UtcNow.ToUniversalTime());
+                    committedAt);
 
                 await ClearCurrentAsync(connection, transaction, stagingRevision.DocumentInstanceId,
                     stagingRevision.PageId);
                 await InsertRevisionAsync(connection, transaction, committed, null);
-                await ReplaceBoxesAsync(
-                    connection,
-                    transaction,
-                    committed.TreeRevisionId,
-                    stagingBoxes.Select(box => box with { TreeRevisionId = committed.TreeRevisionId }).ToArray());
-                await connection.ExecuteAsync(
-                    "update document_tree_revisions set status = 'discarded' where tree_revision_id = @RevisionId;",
-                    new { RevisionId = stagingRevision.TreeRevisionId.ToString() },
-                    transaction);
-                await MarkSearchStaleAsync(connection, transaction, committed.DocumentInstanceId, committed.PageId);
+                await CopyStagingBoxesAsync(
+                    connection, transaction, stagingRevision.TreeRevisionId, committed.TreeRevisionId);
                 committedRevisions.Add(committed);
             }
 
+            await connection.ExecuteAsync(
+                """
+                update document_tree_revisions set status = 'discarded'
+                where tree_revision_id in @StagingRevisionIds;
+                """,
+                new { StagingRevisionIds = stagingRevisionIds.Select(id => id.ToString()).ToArray() },
+                transaction);
+            foreach (IGrouping<DocumentInstanceId, (DocumentInstanceId DocumentInstanceId, PageId PageId)> group
+                     in pages.GroupBy(page => page.DocumentInstanceId))
+            {
+                await connection.ExecuteAsync(
+                    """
+                    update search_units set status = 'stale', updated_at = @Now
+                    where document_instance_id = @DocumentInstanceId
+                      and page_id in @PageIds and status = 'current';
+                    """,
+                    new
+                    {
+                        DocumentInstanceId = group.Key.ToString(),
+                        PageIds = group.Select(page => page.PageId.ToString()).ToArray(),
+                        Now = FormatUtc(committedAt)
+                    },
+                    transaction);
+            }
+
             return Result<IReadOnlyList<DocumentTreeRevision>>.Success(committedRevisions);
-        }, cancellationToken);
+        }, cancellationToken, revisions => LibraryChangeSet.Empty with
+        {
+            DocumentInstanceIds = revisions.Select(revision => revision.DocumentInstanceId).Distinct().ToArray(),
+            PageIds = revisions.Select(revision => revision.PageId).Distinct().ToArray()
+        });
     }
 
     public async Task<Result<DocumentTreeRevision>> CommitPageEditAsync(
@@ -397,7 +427,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 IsCurrent = true,
                 CommittedAt = committedAt
             });
-        }, cancellationToken);
+        }, cancellationToken, revision => LibraryChangeSet.Empty with
+        {
+            DocumentInstanceIds = [revision.DocumentInstanceId],
+            PageIds = [revision.PageId]
+        });
     }
 
     public async Task<Result> DiscardPageEditAsync(
@@ -965,10 +999,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
     private async Task<Result<T>> InTransactionAsync<T>(
         Func<SqliteConnection, DbTransaction, Task<Result<T>>> action,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<T, LibraryChangeSet>? revisionFactory = null)
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -979,7 +1015,26 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 return result;
             }
 
+            LibraryChangeSet? changeSet = null;
+            if (_revisions is not null && revisionFactory is not null)
+            {
+                Result<LibraryChangeSet> incremented = await _revisions.IncrementInTransactionAsync(
+                    connection, transaction, revisionFactory(result.Value), cancellationToken);
+                if (incremented.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<T>.Failure(incremented.ErrorCode!, incremented.ErrorMessage!);
+                }
+
+                changeSet = incremented.Value;
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            if (changeSet is not null)
+            {
+                _revisions!.PublishCommitted(changeSet);
+            }
+
             return result;
         }
         catch (OperationCanceledException)
@@ -999,7 +1054,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             return await action(connection);
         }
@@ -1176,6 +1231,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             transaction);
     }
 
+    private const int BoxWriteBatchSize = 500;
+
     private static async Task ReplaceBoxesAsync(
         SqliteConnection connection,
         DbTransaction transaction,
@@ -1186,44 +1243,91 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             "delete from document_boxes where tree_revision_id = @RevisionId;",
             new { RevisionId = revisionId.ToString() },
             transaction);
-        foreach (DocumentBox box in boxes)
+        foreach (DocumentBox[] chunk in boxes.Chunk(BoxWriteBatchSize))
         {
-            await connection.ExecuteAsync(
-                """
-                insert into document_boxes (
-                    tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
-                    next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
-                    bbox_width, bbox_height, payload_json, heading_level, code_language,
-                    confidence, suppressed, continues_from_box_id)
-                values (@TreeRevisionId, @BoxId, @DocumentInstanceId, @PageId, @ParentBoxId,
-                    @NextSiblingBoxId, @BoxType, @SubType, @BaseType, @BBoxX, @BBoxY,
-                    @BBoxWidth, @BBoxHeight, @PayloadJson, @HeadingLevel, @CodeLanguage,
-                    @Confidence, @Suppressed, @ContinuesFromBoxId);
-                """,
-                new
-                {
-                    TreeRevisionId = box.TreeRevisionId.ToString(),
-                    BoxId = box.BoxId.ToString(),
-                    DocumentInstanceId = box.DocumentInstanceId.ToString(),
-                    PageId = box.PageId.ToString(),
-                    ParentBoxId = box.ParentBoxId?.ToString(),
-                    NextSiblingBoxId = box.NextSiblingBoxId?.ToString(),
-                    box.BoxType,
-                    box.SubType,
-                    box.BaseType,
-                    BBoxX = box.BBox.X,
-                    BBoxY = box.BBox.Y,
-                    BBoxWidth = box.BBox.Width,
-                    BBoxHeight = box.BBox.Height,
-                    PayloadJson = DocumentBoxPayloadSerializer.Serialize(box.Payload),
-                    box.HeadingLevel,
-                    box.CodeLanguage,
-                    box.Confidence,
-                    Suppressed = box.Suppressed ? 1 : 0,
-                    ContinuesFromBoxId = box.ContinuesFromBoxId?.ToString()
-                },
-                transaction);
+            await InsertBoxesAsync(connection, transaction, chunk);
         }
+    }
+
+    private static Task InsertBoxesAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        IReadOnlyList<DocumentBox> boxes)
+    {
+        StringBuilder values = new();
+        Dictionary<string, object?> parameters = new();
+        for (int i = 0; i < boxes.Count; i++)
+        {
+            DocumentBox box = boxes[i];
+            if (i > 0)
+            {
+                values.Append(',');
+            }
+
+            values.Append("(@p").Append(i).Append("_TreeRevisionId,@p").Append(i).Append("_BoxId,@p").Append(i)
+                .Append("_DocumentInstanceId,@p").Append(i).Append("_PageId,@p").Append(i).Append("_ParentBoxId,@p")
+                .Append(i).Append("_NextSiblingBoxId,@p").Append(i).Append("_BoxType,@p").Append(i)
+                .Append("_SubType,@p").Append(i).Append("_BaseType,@p").Append(i).Append("_BBoxX,@p").Append(i)
+                .Append("_BBoxY,@p").Append(i).Append("_BBoxWidth,@p").Append(i).Append("_BBoxHeight,@p").Append(i)
+                .Append("_PayloadJson,@p").Append(i).Append("_HeadingLevel,@p").Append(i).Append("_CodeLanguage,@p")
+                .Append(i).Append("_Confidence,@p").Append(i).Append("_Suppressed,@p").Append(i)
+                .Append("_ContinuesFromBoxId)");
+            string prefix = "p" + i + "_";
+            parameters[prefix + "TreeRevisionId"] = box.TreeRevisionId.ToString();
+            parameters[prefix + "BoxId"] = box.BoxId.ToString();
+            parameters[prefix + "DocumentInstanceId"] = box.DocumentInstanceId.ToString();
+            parameters[prefix + "PageId"] = box.PageId.ToString();
+            parameters[prefix + "ParentBoxId"] = box.ParentBoxId?.ToString();
+            parameters[prefix + "NextSiblingBoxId"] = box.NextSiblingBoxId?.ToString();
+            parameters[prefix + "BoxType"] = box.BoxType;
+            parameters[prefix + "SubType"] = box.SubType;
+            parameters[prefix + "BaseType"] = box.BaseType;
+            parameters[prefix + "BBoxX"] = box.BBox.X;
+            parameters[prefix + "BBoxY"] = box.BBox.Y;
+            parameters[prefix + "BBoxWidth"] = box.BBox.Width;
+            parameters[prefix + "BBoxHeight"] = box.BBox.Height;
+            parameters[prefix + "PayloadJson"] = DocumentBoxPayloadSerializer.Serialize(box.Payload);
+            parameters[prefix + "HeadingLevel"] = box.HeadingLevel;
+            parameters[prefix + "CodeLanguage"] = box.CodeLanguage;
+            parameters[prefix + "Confidence"] = box.Confidence;
+            parameters[prefix + "Suppressed"] = box.Suppressed ? 1 : 0;
+            parameters[prefix + "ContinuesFromBoxId"] = box.ContinuesFromBoxId?.ToString();
+        }
+
+        return connection.ExecuteAsync(
+            "insert into document_boxes (" +
+            "tree_revision_id, box_id, document_instance_id, page_id, parent_box_id, next_sibling_box_id, " +
+            "box_type, sub_type, base_type, bbox_x, bbox_y, bbox_width, bbox_height, payload_json, " +
+            "heading_level, code_language, confidence, suppressed, continues_from_box_id) values " + values,
+            parameters,
+            transaction);
+    }
+
+    private static Task CopyStagingBoxesAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevisionId stagingRevisionId,
+        DocumentTreeRevisionId committedRevisionId)
+    {
+        return connection.ExecuteAsync(
+            """
+            insert into document_boxes (
+                tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
+                next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                bbox_width, bbox_height, payload_json, heading_level, code_language,
+                confidence, suppressed, continues_from_box_id)
+            select @CommittedRevisionId, box_id, document_instance_id, page_id, parent_box_id,
+                next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                bbox_width, bbox_height, payload_json, heading_level, code_language,
+                confidence, suppressed, continues_from_box_id
+            from document_boxes where tree_revision_id = @StagingRevisionId;
+            """,
+            new
+            {
+                CommittedRevisionId = committedRevisionId.ToString(),
+                StagingRevisionId = stagingRevisionId.ToString()
+            },
+            transaction);
     }
 
     private static Task ClearCurrentAsync(

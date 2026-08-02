@@ -13,4 +13,6 @@ tools/patchouli-macos-fs/*.dylib
 .tmp/
 tools/**/target/
 artifacts/
+.codegraph/
 artifacts/
+**/TestResults/

@@ -1,7 +1,7 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Infrastructure.Ocr;
 

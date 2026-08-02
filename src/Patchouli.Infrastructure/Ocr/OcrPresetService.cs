@@ -173,6 +173,49 @@ public sealed class OcrPresetService : IOcrPresetService
         }
     }
 
+    public async Task<Result<OcrPreset?>> FindActivePresetByEngineIdAsync(string engineId,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(engineId))
+        {
+            return Result<OcrPreset?>.Failure(AppErrorCodes.ValidationFailed, "OCR engine ID is required.");
+        }
+
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            PresetRow? row = await connection.QuerySingleOrDefaultAsync<PresetRow>(
+                """
+                select p.preset_id as PresetId,
+                       p.library_id as LibraryId,
+                       p.name as Name,
+                       p.description as Description,
+                       p.current_version_id as CurrentVersionId,
+                       p.archived as Archived,
+                       p.created_at as CreatedAt,
+                       p.updated_at as UpdatedAt
+                from ocr_presets p
+                join ocr_preset_versions v on v.preset_version_id = p.current_version_id
+                where p.archived = 0
+                  and v.engine_id = @EngineId
+                order by p.updated_at desc
+                limit 1;
+                """,
+                new { EngineId = engineId.Trim() });
+            return Result<OcrPreset?>.Success(row?.ToPreset());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.ocr-preset"))
+        {
+            return DbFail<OcrPreset?>(exception);
+        }
+    }
+
     public async Task<Result<OcrPresetVersion>> RebindModelPathAsync(OcrPresetId presetId, string newModelPath,
         CancellationToken cancellationToken = default)
     {

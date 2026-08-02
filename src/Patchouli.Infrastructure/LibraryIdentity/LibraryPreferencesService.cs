@@ -35,7 +35,7 @@ public sealed class LibraryPreferencesService : ILibraryPreferencesService
 
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             Row? row = await connection.QuerySingleOrDefaultAsync<Row>(
                 """

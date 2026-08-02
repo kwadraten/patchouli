@@ -30,8 +30,11 @@ public sealed class MigrationRunner
             .Select(MigrationFile.FromPath)
             .ToArray();
 
-        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await new SqliteWalBootstrapper(_connectionFactory).EnableWalAsync(cancellationToken);
+
+        await using SqliteConnection connection = _connectionFactory.CreateAdminConnection();
         await connection.OpenAsync(cancellationToken);
+        await connection.ExecuteAsync("pragma busy_timeout = 30000;");
 
         await EnsureSupportedSchemaEpochAsync(connection);
         await EnsureSchemaMigrationsTableAsync(connection);

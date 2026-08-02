@@ -1,0 +1,158 @@
+{
+  "Schema": 1,
+  "Profile": "smoke",
+  "GeneratedAtUtc": "2026-08-02T05:45:26.1321297\u002B00:00",
+  "Environment": {
+    "Os": "Microsoft Windows 10.0.26100",
+    "Framework": ".NET 10.0.8",
+    "Architecture": "X64",
+    "SqliteVersion": "3.53.3",
+    "GeneratorVersion": "0.3.0"
+  },
+  "Fixture": {
+    "Profile": "smoke",
+    "Items": 20,
+    "PagesPerItem": 3,
+    "BoxesPerPage": 8,
+    "TotalItems": 20,
+    "TotalPages": 60,
+    "TotalBoxes": 480,
+    "TotalSearchUnits": 480,
+    "Seed": 20260802
+  },
+  "Database": {
+    "BytesAfterSeed": 1830912,
+    "WalBytesAfterSeed": 0,
+    "BytesAfterOcr": 1921024,
+    "WalBytesAfterOcr": 0,
+    "OcrGrowthBytes": 90112,
+    "JournalMode": "wal",
+    "BusyTimeoutMs": 5000
+  },
+  "Cache": {
+    "Measured": false,
+    "ColdMedianMs": 7.0796,
+    "WarmMedianMs": 2.8185,
+    "WarmVsColdRatio": 0.39811571275213287,
+    "WarmMateriallyFaster": true
+  },
+  "Operations": [
+    {
+      "Name": "browse_items_first_page",
+      "Iterations": 5,
+      "MedianMs": 3.3049,
+      "P95Ms": 3.5922,
+      "MinMs": 3.1437,
+      "MaxMs": 3.5922,
+      "MeanMs": 3.37672,
+      "SqlStatements": 3,
+      "RowsRead": 20,
+      "AllocatedBytes": 110400
+    },
+    {
+      "Name": "mcp_item_fetch",
+      "Iterations": 5,
+      "MedianMs": 2.9525,
+      "P95Ms": 3.5182,
+      "MinMs": 2.8504,
+      "MaxMs": 3.5182,
+      "MeanMs": 3.0512400000000004,
+      "SqlStatements": 4,
+      "RowsRead": 1,
+      "AllocatedBytes": 107400
+    },
+    {
+      "Name": "mcp_document_status",
+      "Iterations": 5,
+      "MedianMs": 4.002,
+      "P95Ms": 5.7193,
+      "MinMs": 3.808,
+      "MaxMs": 5.7193,
+      "MeanMs": 4.37042,
+      "SqlStatements": 5,
+      "RowsRead": 0,
+      "AllocatedBytes": 49280
+    },
+    {
+      "Name": "mcp_document_outline",
+      "Iterations": 5,
+      "MedianMs": 3.6705,
+      "P95Ms": 4.1845,
+      "MinMs": 3.4302,
+      "MaxMs": 4.1845,
+      "MeanMs": 3.72628,
+      "SqlStatements": 3,
+      "RowsRead": 4,
+      "AllocatedBytes": 46320
+    },
+    {
+      "Name": "mcp_page_text_cold",
+      "Iterations": 5,
+      "MedianMs": 7.0796,
+      "P95Ms": 10.193,
+      "MinMs": 5.892,
+      "MaxMs": 10.193,
+      "MeanMs": 7.414460000000001,
+      "SqlStatements": 4,
+      "RowsRead": 10,
+      "AllocatedBytes": 406008
+    },
+    {
+      "Name": "mcp_page_text_warm",
+      "Iterations": 5,
+      "MedianMs": 2.8185,
+      "P95Ms": 3.4228,
+      "MinMs": 2.5644,
+      "MaxMs": 3.4228,
+      "MeanMs": 2.89458,
+      "SqlStatements": 2,
+      "RowsRead": 1,
+      "AllocatedBytes": 30240
+    },
+    {
+      "Name": "mcp_page_blocks",
+      "Iterations": 5,
+      "MedianMs": 29.1401,
+      "P95Ms": 31.0856,
+      "MinMs": 28.516,
+      "MaxMs": 31.0856,
+      "MeanMs": 29.37826,
+      "SqlStatements": 27,
+      "RowsRead": 33,
+      "AllocatedBytes": 1470200
+    },
+    {
+      "Name": "mcp_evidence_fetch",
+      "Iterations": 5,
+      "MedianMs": 3.3718,
+      "P95Ms": 3.7092,
+      "MinMs": 3.205,
+      "MaxMs": 3.7092,
+      "MeanMs": 3.44232,
+      "SqlStatements": 1,
+      "RowsRead": 1,
+      "AllocatedBytes": 28240
+    },
+    {
+      "Name": "ocr_stage_adopt",
+      "Iterations": 5,
+      "MedianMs": 38.85,
+      "P95Ms": 45.1781,
+      "MinMs": 34.6444,
+      "MaxMs": 45.1781,
+      "MeanMs": 39.90848,
+      "SqlStatements": 12,
+      "RowsRead": 10,
+      "AllocatedBytes": 1232560,
+      "DbBytesBefore": 1830912
+    }
+  ],
+  "QueryPlan": [
+    {
+      "Detail": "SEARCH items USING INDEX idx_items_deleted_at (deleted_at=?)"
+    },
+    {
+      "Detail": "USE TEMP B-TREE FOR ORDER BY"
+    }
+  ]
+}

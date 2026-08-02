@@ -73,5 +73,5 @@ public interface IPageCoordinateService
         CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<string>> DetectBBoxWarningsAsync(PageId pageId, FileAssetId? fileAssetId = null,
-        CancellationToken cancellationToken = default);
+        bool includeFullHashValidation = true, CancellationToken cancellationToken = default);
 }

@@ -17,17 +17,20 @@ public sealed class FileAssetService : IFileAssetService
     private readonly ILibraryIdentityService _libraryIdentityService;
     private readonly IClock _clock;
     private readonly IFileFingerprintService _fingerprintService;
+    private readonly ILibraryRevisionService? _revisions;
 
     public FileAssetService(
         SqliteConnectionFactory connectionFactory,
         ILibraryIdentityService libraryIdentityService,
         IClock clock,
-        IFileFingerprintService? fingerprintService = null)
+        IFileFingerprintService? fingerprintService = null,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _libraryIdentityService = libraryIdentityService;
         _clock = clock;
         _fingerprintService = fingerprintService ?? new FileFingerprintService();
+        _revisions = revisions;
     }
 
     public async Task<Result<FileAsset>> RegisterFileAsync(
@@ -75,6 +78,7 @@ public sealed class FileAssetService : IFileAssetService
                 now,
                 now);
 
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -154,7 +158,16 @@ public sealed class FileAssetService : IFileAssetService
                         FileAssetStatus.Available,
                         now);
 
+                    Result<LibraryChangeSet?> existingRevision = await IncrementRevisionAsync(
+                        connection, transaction, updatedAsset.FileAssetId, cancellationToken);
+                    if (existingRevision.IsFailure)
+                    {
+                        await transaction.RollbackAsync(cancellationToken);
+                        return Result<FileAsset>.Failure(existingRevision.ErrorCode!, existingRevision.ErrorMessage!);
+                    }
+
                     await transaction.CommitAsync(cancellationToken);
+                    PublishRevision(existingRevision.Value);
                     return Result<FileAsset>.Success(updatedAsset);
                 }
             }
@@ -186,7 +199,16 @@ public sealed class FileAssetService : IFileAssetService
                     now);
             }
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
+                connection, transaction, asset.FileAssetId, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<FileAsset>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result<FileAsset>.Success(asset);
         }
         catch (OperationCanceledException)
@@ -243,6 +265,68 @@ public sealed class FileAssetService : IFileAssetService
         {
             return DatabaseFailure<FileAsset>(exception);
         }
+    }
+
+    public async Task<Result<IReadOnlyList<string>>> ListOriginalPathsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            IEnumerable<string> paths = await connection.QueryAsync<string>("select original_path from file_assets;");
+            return Result<IReadOnlyList<string>>.Success(paths.ToArray());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.file-asset"))
+        {
+            return DatabaseFailure<IReadOnlyList<string>>(exception);
+        }
+    }
+
+    private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(SqliteConnection connection,
+        DbTransaction transaction, FileAssetId fileAssetId, CancellationToken cancellationToken)
+    {
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        FileAssetImpactRow[] impacts = (await connection.QueryAsync<FileAssetImpactRow>(
+            """
+            select di.document_instance_id as DocumentInstanceId, di.item_id as ItemId
+            from document_instances di
+            where di.file_asset_id = @FileAssetId;
+            """,
+            new { FileAssetId = fileAssetId.ToString() }, transaction)).ToArray();
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(connection, transaction,
+            LibraryChangeSet.Empty with
+            {
+                ItemIds = impacts.Select(row => ItemId.Parse(row.ItemId)).Distinct().ToArray(),
+                DocumentInstanceIds = impacts.Select(row => DocumentInstanceId.Parse(row.DocumentInstanceId)).Distinct()
+                    .ToArray()
+            }, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private void PublishRevision(LibraryChangeSet? changeSet)
+    {
+        if (changeSet is not null)
+        {
+            _revisions!.PublishCommitted(changeSet);
+        }
+    }
+
+    private sealed class FileAssetImpactRow
+    {
+        public string DocumentInstanceId { get; init; } = string.Empty;
+        public string ItemId { get; init; } = string.Empty;
     }
 
     private static object ToParameters(FileAsset asset)

@@ -4,7 +4,7 @@ using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Infrastructure.Search;
 
@@ -33,7 +33,7 @@ public sealed class SqliteSearchService : ISearchService
             SearchRewritePlan? plan = null;
             if (_rewriter is not null)
             {
-                await using SqliteConnection planConnection = _connectionFactory.CreateConnection();
+                await using SqliteConnection planConnection = _connectionFactory.CreateReadConnection();
                 await planConnection.OpenAsync(cancellationToken);
                 string? libraryText =
                     await planConnection.ExecuteScalarAsync<string?>(
@@ -59,7 +59,7 @@ public sealed class SqliteSearchService : ISearchService
                 }
             }
 
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             string? libraryId =
                 await connection.ExecuteScalarAsync<string?>("select library_id from library_metadata limit 1;");
@@ -166,7 +166,7 @@ public sealed class SqliteSearchService : ISearchService
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             UnitHitRow? row = await connection.QuerySingleOrDefaultAsync<UnitHitRow>(
                 "select unit_id as UnitId, page_id as PageId, box_id as BoxId, resolved_text as Text, box_type as BoxType, ordinal as Ordinal, tree_revision_id as TreeRevisionId from search_units where unit_id = @UnitId;",

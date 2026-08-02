@@ -4,6 +4,7 @@ using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
@@ -14,11 +15,14 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
 {
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
+    private readonly ILibraryRevisionService? _revisions;
 
-    public DocumentInstanceService(SqliteConnectionFactory connectionFactory, IClock clock)
+    public DocumentInstanceService(SqliteConnectionFactory connectionFactory, IClock clock,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
+        _revisions = revisions;
     }
 
     public async Task<Result<DocumentInstance>> AttachDocumentInstanceAsync(
@@ -37,6 +41,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
 
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -125,7 +130,17 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                 ToParameters(instance),
                 transaction);
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = [itemId], DocumentInstanceIds = [instance.DocumentInstanceId] },
+                cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<DocumentInstance>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result<DocumentInstance>.Success(instance);
         }
         catch (OperationCanceledException)
@@ -145,6 +160,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
@@ -173,6 +189,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
 
@@ -210,6 +227,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -260,7 +278,17 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                 new { UpdatedAt = now, DocumentInstanceId = documentInstanceId.ToString() },
                 transaction);
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = [itemId], DocumentInstanceIds = [documentInstanceId] },
+                cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result.Success();
         }
         catch (OperationCanceledException)
@@ -281,6 +309,7 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
@@ -352,7 +381,17 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                 }
             }
 
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = [itemId], DocumentInstanceIds = [documentInstanceId] },
+                cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
             await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
             return Result.Success();
         }
         catch (OperationCanceledException)
@@ -363,6 +402,29 @@ public sealed class DocumentInstanceService : IDocumentInstanceService
                                               "infrastructure.document-instance"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(SqliteConnection connection,
+        DbTransaction transaction, LibraryChangeSet changeSet, CancellationToken cancellationToken)
+    {
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(
+            connection, transaction, changeSet, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private void PublishRevision(LibraryChangeSet? changeSet)
+    {
+        if (changeSet is not null)
+        {
+            _revisions!.PublishCommitted(changeSet);
         }
     }
 

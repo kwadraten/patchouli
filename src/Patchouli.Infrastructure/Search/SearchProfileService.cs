@@ -7,7 +7,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Infrastructure.Search;
 

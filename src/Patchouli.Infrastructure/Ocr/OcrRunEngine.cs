@@ -9,13 +9,14 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Infrastructure.Ocr;
 
@@ -37,6 +38,10 @@ public sealed class OcrRunEngine : IOcrRunEngine
     private readonly MinerUUploadLimits _minerUUploadLimits;
     private readonly IFileResolutionService? _fileResolution;
     private readonly IFileMaterializationService? _fileMaterialization;
+    private readonly ILibraryRevisionService? _revisions;
+
+    /// <summary>Raised exactly once after a successful OCR candidate adoption commit.</summary>
+    public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted;
 
     public OcrRunEngine(
         SqliteConnectionFactory connectionFactory,
@@ -52,7 +57,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         string? minerUCacheRoot = null,
         MinerUUploadLimits? minerUUploadLimits = null,
         IFileResolutionService? fileResolution = null,
-        IFileMaterializationService? fileMaterialization = null)
+        IFileMaterializationService? fileMaterialization = null,
+        ILibraryRevisionService? revisions = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
@@ -68,6 +74,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         _minerUUploadLimits = minerUUploadLimits ?? MinerUUploadLimits.Default;
         _fileResolution = fileResolution;
         _fileMaterialization = fileMaterialization;
+        _revisions = revisions;
     }
 
     public OcrRunEngine(
@@ -85,7 +92,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
         string? minerUCacheRoot = null,
         MinerUUploadLimits? minerUUploadLimits = null,
         IFileResolutionService? fileResolution = null,
-        IFileMaterializationService? fileMaterialization = null)
+        IFileMaterializationService? fileMaterialization = null,
+        ILibraryRevisionService? revisions = null)
         : this(
             connectionFactory,
             clock,
@@ -100,7 +108,8 @@ public sealed class OcrRunEngine : IOcrRunEngine
             minerUCacheRoot,
             minerUUploadLimits,
             fileResolution,
-            fileMaterialization)
+            fileMaterialization,
+            revisions)
     {
         _credentialResolver = credentialResolver;
     }
@@ -148,6 +157,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync(
@@ -326,6 +336,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             int affected = await connection.ExecuteAsync(
@@ -360,15 +371,19 @@ public sealed class OcrRunEngine : IOcrRunEngine
     {
         try
         {
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
-            await connection.OpenAsync(cancellationToken);
-            await connection.ExecuteAsync(
-                """
-                update document_tree_revisions set is_current = 0
-                where document_instance_id = @DocumentInstanceId
-                  and status = 'committed' and source = 'ocr_adopted' and is_current = 1;
-                """,
-                new { DocumentInstanceId = documentInstanceId.ToString() });
+            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
+            {
+                await using SqliteConnection connection = _connectionFactory.CreateConnection();
+                await connection.OpenAsync(cancellationToken);
+                await connection.ExecuteAsync(
+                    """
+                    update document_tree_revisions set is_current = 0
+                    where document_instance_id = @DocumentInstanceId
+                      and status = 'committed' and source = 'ocr_adopted' and is_current = 1;
+                    """,
+                    new { DocumentInstanceId = documentInstanceId.ToString() });
+            }
+
             if (_searchDirtyMarker is not null)
             {
                 await _searchDirtyMarker.MarkDocumentInstanceDirtyAsync(documentInstanceId, cancellationToken);
@@ -386,6 +401,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
     {
         try
         {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             int affected = await connection.ExecuteAsync(
@@ -454,30 +470,50 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 adopted.Value,
                 JsonSerializer.Serialize(selected.Select(result => result.PageId.ToString())),
                 _clock.UtcNow.ToUniversalTime());
-            await using SqliteConnection connection = _connectionFactory.CreateConnection();
-            await connection.OpenAsync(cancellationToken);
-            await connection.ExecuteAsync(
-                """
-                insert into ocr_candidate_adoptions (
-                    adoption_id, ocr_run_id, document_instance_id, adopted_tree_revisions_json,
-                    adopted_pages_json, created_at)
-                values (@AdoptionId, @RunId, @DocumentInstanceId, @Revisions, @Pages, @CreatedAt);
-                """,
-                new
+            LibraryChangeSet? committedRevision;
+            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
+            {
+                await using SqliteConnection connection = _connectionFactory.CreateConnection();
+                await connection.OpenAsync(cancellationToken);
+                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+                await connection.ExecuteAsync(
+                    """
+                    insert into ocr_candidate_adoptions (
+                        adoption_id, ocr_run_id, document_instance_id, adopted_tree_revisions_json,
+                        adopted_pages_json, created_at)
+                    values (@AdoptionId, @RunId, @DocumentInstanceId, @Revisions, @Pages, @CreatedAt);
+                    """,
+                    new
+                    {
+                        AdoptionId = adoption.AdoptionId.ToString(),
+                        RunId = runId.ToString(),
+                        DocumentInstanceId = run.Value.DocumentInstanceId.ToString(),
+                        Revisions = JsonSerializer.Serialize(adopted.Value.Select(id => id.ToString())),
+                        Pages = adoption.AdoptedPagesJson,
+                        CreatedAt = FormatUtc(adoption.CreatedAt)
+                    }, transaction);
+
+                Result<LibraryChangeSet?> revision = await IncrementAdoptionRevisionAsync(connection, transaction,
+                    run.Value.DocumentInstanceId, runId, selected.Select(result => result.PageId).ToArray(),
+                    cancellationToken);
+                if (revision.IsFailure)
                 {
-                    AdoptionId = adoption.AdoptionId.ToString(),
-                    RunId = runId.ToString(),
-                    DocumentInstanceId = run.Value.DocumentInstanceId.ToString(),
-                    Revisions = JsonSerializer.Serialize(adopted.Value.Select(id => id.ToString())),
-                    Pages = adoption.AdoptedPagesJson,
-                    CreatedAt = FormatUtc(adoption.CreatedAt)
-                });
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<OcrCandidateAdoption>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                committedRevision = revision.Value;
+            }
+
+            PublishRevision(committedRevision);
             if (_searchDirtyMarker is not null)
             {
                 await _searchDirtyMarker.MarkDocumentInstanceDirtyAsync(run.Value.DocumentInstanceId,
                     cancellationToken);
             }
 
+            OnAdoptionCommitted(run.Value.DocumentInstanceId, runId, adoption.AdoptedTreeRevisionIds);
             return Result<OcrCandidateAdoption>.Success(adoption);
         }
         finally
@@ -669,8 +705,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 : failures > 0
                     ? OcrRunState.CompletedWithErrors
                     : OcrRunState.Completed;
-            await using (SqliteConnection connection = _connectionFactory.CreateConnection())
+            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
             {
+                await using SqliteConnection connection = _connectionFactory.CreateConnection();
                 await connection.OpenAsync(cancellationToken);
                 await connection.ExecuteAsync(
                     """
@@ -854,37 +891,40 @@ public sealed class OcrRunEngine : IOcrRunEngine
                     cancellationToken);
             }
 
-            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
-            string now = FormatUtc(_clock.UtcNow);
-            foreach (Page page in pages)
+            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
             {
-                TreePageRow row = requested[page.PageId.ToString()];
+                await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+                string now = FormatUtc(_clock.UtcNow);
+                foreach (Page page in pages)
+                {
+                    TreePageRow row = requested[page.PageId.ToString()];
+                    await connection.ExecuteAsync(
+                        """
+                        update ocr_page_results set state=@State, staging_tree_revision_id=@Revision,
+                            error_code=null, error_message=null, updated_at=@Now
+                        where ocr_run_id=@RunId and page_id=@PageId;
+                        """,
+                        new
+                        {
+                            State = OcrPageResultState.Succeeded,
+                            Revision = row.TreeRevisionId,
+                            Now = now,
+                            RunId = run.OcrRunId.ToString(),
+                            PageId = page.PageId.ToString()
+                        }, transaction);
+                }
+
                 await connection.ExecuteAsync(
-                    """
-                    update ocr_page_results set state=@State, staging_tree_revision_id=@Revision,
-                        error_code=null, error_message=null, updated_at=@Now
-                    where ocr_run_id=@RunId and page_id=@PageId;
-                    """,
+                    "update ocr_runs set state=@State, output_tree_revision_id=@Revision, updated_at=@Now where ocr_run_id=@RunId;",
                     new
                     {
-                        State = OcrPageResultState.Succeeded,
-                        Revision = row.TreeRevisionId,
+                        State = OcrRunState.Completed,
+                        Revision = requested[pages[0].PageId.ToString()].TreeRevisionId,
                         Now = now,
-                        RunId = run.OcrRunId.ToString(),
-                        PageId = page.PageId.ToString()
+                        RunId = run.OcrRunId.ToString()
                     }, transaction);
+                await transaction.CommitAsync(cancellationToken);
             }
-
-            await connection.ExecuteAsync(
-                "update ocr_runs set state=@State, output_tree_revision_id=@Revision, updated_at=@Now where ocr_run_id=@RunId;",
-                new
-                {
-                    State = OcrRunState.Completed,
-                    Revision = requested[pages[0].PageId.ToString()].TreeRevisionId,
-                    Now = now,
-                    RunId = run.OcrRunId.ToString()
-                }, transaction);
-            await transaction.CommitAsync(cancellationToken);
 
             return await CompleteRunAsync(run.OcrRunId, version, cancellationToken);
         }
@@ -1026,8 +1066,9 @@ public sealed class OcrRunEngine : IOcrRunEngine
             DocumentTreeRevisionId revisionId = staged.Value.StagingRevisionIds.Single();
             await UpdatePageResultAsync(
                 run.OcrRunId, page.PageId, OcrPageResultState.Succeeded, revisionId, null, null);
-            await using (SqliteConnection connection = _connectionFactory.CreateConnection())
+            using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
             {
+                await using SqliteConnection connection = _connectionFactory.CreateConnection();
                 await connection.OpenAsync(cancellationToken);
                 await connection.ExecuteAsync(
                     "update ocr_runs set state=@State, output_tree_revision_id=@Revision, updated_at=@Now where ocr_run_id=@RunId;",
@@ -1224,6 +1265,48 @@ public sealed class OcrRunEngine : IOcrRunEngine
             $"OCR post-run processing failed: {exception.Message}", CancellationToken.None);
     }
 
+    private async Task<Result<LibraryChangeSet?>> IncrementAdoptionRevisionAsync(SqliteConnection connection,
+        DbTransaction transaction, DocumentInstanceId documentInstanceId, OcrRunId runId,
+        IReadOnlyCollection<PageId> pageIds, CancellationToken cancellationToken)
+    {
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        string? itemId = await connection.ExecuteScalarAsync<string?>(
+            "select item_id from document_instances where document_instance_id = @DocumentInstanceId;",
+            new { DocumentInstanceId = documentInstanceId.ToString() }, transaction);
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(connection, transaction,
+            LibraryChangeSet.Empty with
+            {
+                ItemIds = itemId is null ? [] : [ItemId.Parse(itemId)],
+                DocumentInstanceIds = [documentInstanceId],
+                PageIds = pageIds.ToArray(),
+                OcrRunIds = [runId]
+            }, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+    }
+
+    private void PublishRevision(LibraryChangeSet? changeSet)
+    {
+        if (changeSet is not null)
+        {
+            _revisions!.PublishCommitted(changeSet);
+        }
+    }
+
+    private void OnAdoptionCommitted(
+        DocumentInstanceId documentInstanceId,
+        OcrRunId ocrRunId,
+        IReadOnlyList<DocumentTreeRevisionId> adoptedRevisionIds)
+    {
+        AdoptionCommitted?.Invoke(this,
+            new OcrAdoptionCommittedEventArgs(documentInstanceId, ocrRunId, adoptedRevisionIds));
+    }
+
     private async Task<OcrCandidateAdoption?> GetExistingAdoptionAsync(
         OcrRunId runId,
         CancellationToken cancellationToken)
@@ -1250,33 +1333,37 @@ public sealed class OcrRunEngine : IOcrRunEngine
         string? errorMessage,
         CancellationToken cancellationToken)
     {
-        await using SqliteConnection connection = _connectionFactory.CreateConnection();
-        await connection.OpenAsync(cancellationToken);
-        await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
-        string now = FormatUtc(_clock.UtcNow);
-        foreach (Page page in pages)
+        using (IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken))
         {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            string now = FormatUtc(_clock.UtcNow);
+            foreach (Page page in pages)
+            {
+                await connection.ExecuteAsync(
+                    """
+                    update ocr_page_results set state=@State, staging_tree_revision_id=null,
+                        error_code=@ErrorCode, error_message=@ErrorMessage, updated_at=@Now
+                    where ocr_run_id=@RunId and page_id=@PageId;
+                    """,
+                    new
+                    {
+                        State = OcrPageResultState.Failed,
+                        ErrorCode = errorCode ?? AppErrorCodes.InvalidState,
+                        ErrorMessage = errorMessage ?? "MinerU OCR failed.",
+                        Now = now,
+                        RunId = run.OcrRunId.ToString(),
+                        PageId = page.PageId.ToString()
+                    }, transaction);
+            }
+
             await connection.ExecuteAsync(
-                """
-                update ocr_page_results set state=@State, staging_tree_revision_id=null,
-                    error_code=@ErrorCode, error_message=@ErrorMessage, updated_at=@Now
-                where ocr_run_id=@RunId and page_id=@PageId;
-                """,
-                new
-                {
-                    State = OcrPageResultState.Failed,
-                    ErrorCode = errorCode ?? AppErrorCodes.InvalidState,
-                    ErrorMessage = errorMessage ?? "MinerU OCR failed.",
-                    Now = now,
-                    RunId = run.OcrRunId.ToString(),
-                    PageId = page.PageId.ToString()
-                }, transaction);
+                "update ocr_runs set state=@State, updated_at=@Now where ocr_run_id=@RunId;",
+                new { State = OcrRunState.Failed, Now = now, RunId = run.OcrRunId.ToString() }, transaction);
+            await transaction.CommitAsync(cancellationToken);
         }
 
-        await connection.ExecuteAsync(
-            "update ocr_runs set state=@State, updated_at=@Now where ocr_run_id=@RunId;",
-            new { State = OcrRunState.Failed, Now = now, RunId = run.OcrRunId.ToString() }, transaction);
-        await transaction.CommitAsync(cancellationToken);
         return await GetRunAsync(run.OcrRunId, cancellationToken);
     }
 
@@ -1437,6 +1524,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
 
     private async Task InsertRunAsync(OcrRun run, CancellationToken cancellationToken)
     {
+        using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await connection.ExecuteAsync(
@@ -1472,6 +1560,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         IReadOnlyList<Page> pages,
         CancellationToken cancellationToken)
     {
+        using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         string now = FormatUtc(_clock.UtcNow);
@@ -1503,6 +1592,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
         string? errorCode,
         string? errorMessage)
     {
+        using IDisposable writeLease = await _connectionFactory.EnterWriteAsync();
         await using SqliteConnection connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync();
         await connection.ExecuteAsync(

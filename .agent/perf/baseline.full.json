@@ -1,0 +1,170 @@
+{
+  "Schema": 1,
+  "Profile": "full",
+  "GeneratedAtUtc": "2026-08-02T05:58:07.1809897\u002B00:00",
+  "Environment": {
+    "Os": "Microsoft Windows 10.0.26100",
+    "Framework": ".NET 10.0.8",
+    "Architecture": "X64",
+    "SqliteVersion": "3.53.3",
+    "GeneratorVersion": "0.3.0"
+  },
+  "Fixture": {
+    "Profile": "full",
+    "Items": 100,
+    "PagesPerItem": 8,
+    "BoxesPerPage": 25,
+    "TotalItems": 100,
+    "TotalPages": 800,
+    "TotalBoxes": 20000,
+    "TotalSearchUnits": 20000,
+    "Seed": 20260802
+  },
+  "Database": {
+    "BytesAfterSeed": 50552832,
+    "WalBytesAfterSeed": 0,
+    "BytesAfterOcr": 50552832,
+    "WalBytesAfterOcr": 0,
+    "OcrGrowthBytes": 0,
+    "JournalMode": "wal",
+    "BusyTimeoutMs": 5000
+  },
+  "Cache": {
+    "Measured": false,
+    "ColdMedianMs": 8.7018,
+    "WarmMedianMs": 3.7069,
+    "WarmVsColdRatio": 0.42599232342733684,
+    "WarmMateriallyFaster": true
+  },
+  "Ui": {
+    "Measured": true,
+    "InteractiveFrameworkColdMs": 1146.5137,
+    "InteractiveFrameworkHotMs": 62.6466,
+    "FirstLibraryRowsColdMs": 576.9518,
+    "FirstLibraryRowsHotMs": 479.1973,
+    "HeartbeatMaxGapMs": 116.1699,
+    "HeartbeatTargetMs": 100,
+    "HeartbeatSamples": 187,
+    "UiThreadDatabaseCommands": 0,
+    "FirstLibraryRowCount": 100
+  },
+  "Operations": [
+    {
+      "Name": "browse_items_first_page",
+      "Iterations": 5,
+      "MedianMs": 3.6064,
+      "P95Ms": 4.4429,
+      "MinMs": 2.6167,
+      "MaxMs": 4.4429,
+      "MeanMs": 3.5509,
+      "SqlStatements": 3,
+      "RowsRead": 20,
+      "AllocatedBytes": 117600
+    },
+    {
+      "Name": "mcp_item_fetch",
+      "Iterations": 5,
+      "MedianMs": 4.5392,
+      "P95Ms": 4.823,
+      "MinMs": 3.8785,
+      "MaxMs": 4.823,
+      "MeanMs": 4.40226,
+      "SqlStatements": 4,
+      "RowsRead": 1,
+      "AllocatedBytes": 112720
+    },
+    {
+      "Name": "mcp_document_status",
+      "Iterations": 5,
+      "MedianMs": 48.8114,
+      "P95Ms": 51.7343,
+      "MinMs": 41.3668,
+      "MaxMs": 51.7343,
+      "MeanMs": 47.79379999999999,
+      "SqlStatements": 5,
+      "RowsRead": 0,
+      "AllocatedBytes": 50320
+    },
+    {
+      "Name": "mcp_document_outline",
+      "Iterations": 5,
+      "MedianMs": 2.9418,
+      "P95Ms": 3.9395,
+      "MinMs": 2.5982,
+      "MaxMs": 3.9395,
+      "MeanMs": 3.1611400000000005,
+      "SqlStatements": 3,
+      "RowsRead": 9,
+      "AllocatedBytes": 64640
+    },
+    {
+      "Name": "mcp_page_text_cold",
+      "Iterations": 5,
+      "MedianMs": 8.7018,
+      "P95Ms": 9.1732,
+      "MinMs": 7.6452,
+      "MaxMs": 9.1732,
+      "MeanMs": 8.60556,
+      "SqlStatements": 4,
+      "RowsRead": 27,
+      "AllocatedBytes": 1086368
+    },
+    {
+      "Name": "mcp_page_text_warm",
+      "Iterations": 5,
+      "MedianMs": 3.7069,
+      "P95Ms": 3.7685,
+      "MinMs": 2.7957,
+      "MaxMs": 3.7685,
+      "MeanMs": 3.4427,
+      "SqlStatements": 2,
+      "RowsRead": 1,
+      "AllocatedBytes": 34160
+    },
+    {
+      "Name": "mcp_page_blocks",
+      "Iterations": 5,
+      "MedianMs": 91.2226,
+      "P95Ms": 110.6064,
+      "MinMs": 78.0408,
+      "MaxMs": 110.6064,
+      "MeanMs": 92.6332,
+      "SqlStatements": 78,
+      "RowsRead": 101,
+      "AllocatedBytes": 4678880
+    },
+    {
+      "Name": "mcp_evidence_fetch",
+      "Iterations": 5,
+      "MedianMs": 5.6402,
+      "P95Ms": 6.2617,
+      "MinMs": 3.7215,
+      "MaxMs": 6.2617,
+      "MeanMs": 5.07776,
+      "SqlStatements": 1,
+      "RowsRead": 1,
+      "AllocatedBytes": 30400
+    },
+    {
+      "Name": "ocr_stage_adopt",
+      "Iterations": 5,
+      "MedianMs": 42.0467,
+      "P95Ms": 48.1559,
+      "MinMs": 37.9105,
+      "MaxMs": 48.1559,
+      "MeanMs": 42.959880000000005,
+      "SqlStatements": 12,
+      "RowsRead": 10,
+      "AllocatedBytes": 1245200,
+      "DbBytesBefore": 50552832
+    }
+  ],
+  "QueryPlan": [
+    {
+      "Detail": "SEARCH items USING INDEX idx_items_deleted_at (deleted_at=?)"
+    },
+    {
+      "Detail": "USE TEMP B-TREE FOR ORDER BY"
+    }
+  ]
+}
