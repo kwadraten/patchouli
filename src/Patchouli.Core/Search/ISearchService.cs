@@ -1,7 +1,7 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
-namespace Patchouli.Search;
+namespace Patchouli.Core.Search;
 
 /// <summary>Searches durable search units through the configured local search provider.</summary>
 public interface ISearchService

@@ -1,7 +1,7 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
-namespace Patchouli.Search;
+namespace Patchouli.Core.Search;
 
 public static class SearchRuleType
 {

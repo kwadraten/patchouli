@@ -2,7 +2,5 @@
   <ItemGroup>
     <PackageReference Include="Corvus.Toon.SystemTextJson" />
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
-    <ProjectReference Include="..\Patchouli.Search\Patchouli.Search.csproj" />
-    <ProjectReference Include="..\Patchouli.Evidence\Patchouli.Evidence.csproj" />
   </ItemGroup>
 </Project>

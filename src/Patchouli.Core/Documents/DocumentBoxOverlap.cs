@@ -9,6 +9,13 @@ public static class DocumentBoxOverlapDetector
 {
     private const double SignificantOverlapRatio = 0.1;
 
+    /// <summary>
+    /// Stable identity of the current overlap policy (significance ratio and exempt box types).
+    /// The overlap projection cache keys on this basis; changing the policy must change this
+    /// value so cached projections are invalidated naturally.
+    /// </summary>
+    public const string PolicyBasis = "sibling-overlap-significant-ratio-0.1-v1";
+
     // Reports significant overlaps between ordinary sibling boxes. Parent-child nesting is
     // legitimate and never reported; staging normalizes contained boxes into children at import.
     public static IReadOnlyList<DocumentBoxOverlap> Detect(IReadOnlyList<DocumentBox> boxes)

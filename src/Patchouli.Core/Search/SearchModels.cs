@@ -1,6 +1,6 @@
 using Patchouli.Core.Ids;
 
-namespace Patchouli.Search;
+namespace Patchouli.Core.Search;
 
 public sealed record SearchUnit(
     SearchUnitId UnitId,
@@ -94,29 +94,29 @@ public sealed record SearchIndexStatus(
 
 public interface ISearchUnitBuilder
 {
-    Task<Core.Results.Result> RebuildForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
+    Task<Results.Result> RebuildForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
-    Task<Core.Results.Result> RebuildForPageAsync(PageId pageId, DocumentTreeRevisionId treeRevisionId,
+    Task<Results.Result> RebuildForPageAsync(PageId pageId, DocumentTreeRevisionId treeRevisionId,
         CancellationToken cancellationToken = default);
 
-    Task<Core.Results.Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId,
+    Task<Results.Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 }
 
 public interface ISearchDirtyMarker
 {
-    Task<Core.Results.Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId,
+    Task<Results.Result> MarkDocumentInstanceDirtyAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 }
 
 public interface ISearchIndexRebuilder
 {
-    Task<Core.Results.Result> RebuildFtsForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
+    Task<Results.Result> RebuildFtsForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
-    Task<Core.Results.Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default);
+    Task<Results.Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default);
 
-    Task<Core.Results.Result> SetIndexUnavailableAsync(string scopeType, string scopeId, string reason,
+    Task<Results.Result> SetIndexUnavailableAsync(string scopeType, string scopeId, string reason,
         CancellationToken cancellationToken = default);
 }

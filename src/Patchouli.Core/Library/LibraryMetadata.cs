@@ -7,4 +7,5 @@ public sealed record LibraryMetadata(
     string DisplayName,
     int SchemaVersion,
     DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    long LibraryRevision = 0);

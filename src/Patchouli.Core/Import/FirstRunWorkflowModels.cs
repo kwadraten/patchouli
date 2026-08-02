@@ -45,6 +45,12 @@ public sealed record MinerUConfiguration(
     bool EnableFormula,
     int PollingTimeoutSeconds);
 
+public sealed record ExistingDatabaseSetup(
+    string LibraryId,
+    string CurrentStep,
+    string ProgressText,
+    bool IsComplete);
+
 public sealed record McpVerificationResult(
     bool IsSearchable,
     string IndexStatus,

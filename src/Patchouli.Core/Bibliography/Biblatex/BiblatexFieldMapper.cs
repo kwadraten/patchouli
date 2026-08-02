@@ -91,6 +91,7 @@ public static class BiblatexFieldMapper
         {
             itemType = BiblatexEntryTypeMap.ResolvePatchouliItemType(entry.EntryType, out originalType);
         }
+
         IReadOnlyList<ItemCreatorInput> creators = MapCreators(entry);
         IReadOnlyList<ItemDateInput> dates = MapDates(entry);
         IReadOnlyList<ItemIdentifierInput> identifiers = MapIdentifiers(entry);
@@ -135,7 +136,7 @@ public static class BiblatexFieldMapper
             tags,
             NullIfEmpty(entry.File),
             entry.Key,
-                entry.EntryType));
+            entry.EntryType));
     }
 
     private static Result<BiblatexMappedItem> VerificationFailure(BiblatexEntryDto entry)

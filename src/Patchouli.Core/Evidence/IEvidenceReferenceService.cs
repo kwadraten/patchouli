@@ -1,7 +1,7 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
-namespace Patchouli.Evidence;
+namespace Patchouli.Core.Evidence;
 
 public sealed record EvidenceReferenceCreateResult(
     SearchUnitId SearchUnitId,

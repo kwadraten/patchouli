@@ -12,4 +12,6 @@ public interface IFileAssetService
     Task<Result<FileAsset>> GetFileAssetAsync(
         FileAssetId fileAssetId,
         CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<string>>> ListOriginalPathsAsync(CancellationToken cancellationToken = default);
 }

@@ -5,13 +5,12 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Patchouli.Core\Patchouli.Core.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
-    <ProjectReference Include="..\..\src\Patchouli.Search\Patchouli.Search.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Ocr\Patchouli.Ocr.csproj" />
-    <ProjectReference Include="..\..\src\Patchouli.Evidence\Patchouli.Evidence.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.UI\Patchouli.UI.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.McpServer\Patchouli.McpServer.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Cli\Patchouli.Cli.csproj" />
+    <ProjectReference Include="..\Patchouli.Performance\Patchouli.Performance.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="FluentAssertions" />

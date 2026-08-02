@@ -3,7 +3,7 @@ using System.Text.Json;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
-namespace Patchouli.Evidence;
+namespace Patchouli.Core.Evidence;
 
 public sealed record EvidenceReference(
     LibraryId LibraryId,

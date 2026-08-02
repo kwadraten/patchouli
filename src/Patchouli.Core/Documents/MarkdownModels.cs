@@ -50,3 +50,30 @@ public interface IDocumentMarkdownCompiler
         CancellationToken cancellationToken = default,
         bool includeComplexTableHtml = false);
 }
+
+/// <summary>
+/// A host-owned cache for immutable document-tree markdown revisions.  The cache key includes
+/// every rendering option, so moving a page to a new revision naturally makes the old entry
+/// unreachable without broad invalidation.
+/// </summary>
+public interface ICompiledMarkdownCache
+{
+    CompiledMarkdownCacheMetrics Metrics { get; }
+
+    Task<Result<CompiledMarkdown>> GetOrCreateAsync(
+        DocumentTreeRevisionId revisionId,
+        bool includeSuppressed,
+        bool includeComplexTableHtml,
+        Func<CancellationToken, Task<Result<CompiledMarkdown>>> factory,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>Content-free counters suitable for runtime performance reporting.</summary>
+public sealed record CompiledMarkdownCacheMetrics(
+    long Hits,
+    long Misses,
+    long Evictions,
+    long Inserted,
+    long Failed,
+    long CachedEntries,
+    long CachedBytes);

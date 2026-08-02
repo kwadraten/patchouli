@@ -13,7 +13,7 @@ using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
 
