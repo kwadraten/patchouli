@@ -2,7 +2,7 @@
 
 状态：正式版  
 版本线：0.3.x（迈向 1.0）  
-日期：2026-08-01
+日期：2026-08-02
 
 仓库只维护这一份 PRD。已完成能力压缩为顶部 walkthrough；长期不变量以 `.agent/CONTEXT.md` 与 `.agent/adr/` 为准。
 
@@ -51,12 +51,170 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 | 序号 | 任务 | 状态 |
 |---|---|---|
+| V3-T7 | 性能与响应性治理（首屏、OCR 入库、MCP 读取、PDF 查看） | **P0；高优先级；立即开始** |
 | V3-T1 | MCP 路线选择与完善 | B 已择优；结构化生产迁移进行中 |
 | V3-T2 | 增强 OCR 文本编辑校注 UI | 占位；正文后续补全 |
 | V3-T3 | 集成更多 OCR provider | 方向已定；细则后续补全 |
 | V3-T4 | Linux 桌面适配与发行打包 | 新增；未开始 |
 | V3-T5 | 桌面 UI 体验提升（书库页、搜索框、PDF 工作台 Markdown 预览） | 新增；方案评估中 |
 | V3-T6 | 版本控制、证据引用及其 UI 表示 | 占位；待决策 |
+
+### 2.1 V3-T7：性能与响应性治理
+
+**状态**：P0，高优先级；立即开始。该任务优先于其他尚未开始的 v3 体验增强任务，但不得以削弱 Document Tree、OCR adoption、EvidenceRef、快照或 MCP 契约为代价换取表面速度。需要 ADR 的 staging 持久化模型重设计是低优先级、非阻塞后续项，不属于当前 P0 完成条件。
+
+#### 2.1.1 问题与目标
+
+当前性能问题集中在四个用户可感知路径：
+
+1. 桌面 UI 首屏与书库首批数据出现过慢；启动路径可能执行与首屏无关的聚合、相关子查询或大量数据库读取。
+2. OCR 在导入数据库及 adoption 阶段会阻塞 UI；后台任务、数据库连接与 UI dispatcher 的边界不清晰，staging/adoption 还可能造成大规模 Box Tree 重复写入和数据库膨胀。
+3. MCP 读取 OCR 页面、document outline 或单条题录的响应偏慢；重复元数据查询、页面 Markdown 编译、源文件指纹计算和 helper 启动不得在未变化资源的每次读取中重复发生。
+4. PDF 工作台按页串行执行文件解析、source hash、PDFium document open、raster、Box/preview 加载；PDFium 足够快时掩盖了切页等待，但该模型无法支持大文件、云端文件、快速翻页和后续更丰富的页面 UI。
+
+本任务建立可回归的性能预算，并从数据库访问、宿主服务、UI 数据流、缓存和代码净化五个方面共同治理。优化不能只用 loading UI、延迟显示或更长 timeout 掩盖实际工作量，也不能在保留旧路径的同时继续叠加一套“新版”实现。
+
+#### 2.1.2 数据库与首屏
+
+- 建立带固定规模与数据分布的性能 fixture，至少覆盖 100 个 Item、50 万个 DocumentBox、15 万个 SearchUnit、20 GiB 聚合源文件及一个不小于 500 MiB 的 PDF；冷启动与热启动分开记录。
+- 首屏只读取形成可交互框架和首批书库行所需的数据。昂贵聚合、详情、状态统计与非首屏关系采用分页、按需加载或提交后的增量投影。
+- 对启动和书库列表查询执行 query-plan、SQL 调用次数与索引审计；消除逐行相关子查询和 N+1 读取，补充由代表性 fixture 验证的复合索引。不得以把整库常驻内存作为默认修复。
+- 数据库读写不得在 Avalonia UI dispatcher 上执行。所有长查询支持 cancellation；关闭窗口、切换视图或新查询取代旧查询时，过期结果不得覆盖新状态。
+- 评估并以并发、崩溃恢复和快照测试验证 SQLite journal、busy timeout、连接复用、批量事务及单写者调度策略；不得依赖高频重试或 UI polling 掩盖锁争用。
+
+#### 2.1.3 OCR 导入与 staging 性能
+
+- OCR provider 继续输出 `OcrDocumentTreeCandidate`，当前 ADR `0007`、`0015` 定义的 staging、独立 adoption、bbox 校验和 committed-current 可见性保持不变；本 PRD 任务本身不修改或绕过这些 ADR。
+- 在现行语义内，候选解析、验证、规范化、Box/SearchUnit 写入和 adoption 使用有界后台流水线、批量参数与少量明确事务；UI 线程只接收进度、结果和提交后通知。
+- adoption 必须继续原子更新 current revision pointer、search dirty state、evidence successor 和所有协议可见关系；取消、失败或连接中断不得产生部分 current tree。
+- 专门测量 staging 与 adoption 对 Box 数量、写放大、WAL/数据库峰值、提交时间和最终数据库体积的贡献。优先消除不必要的重复序列化、逐 Box 往返和永久残留的已丢弃中间数据。
+- V3-T7 的 P0 交付只优化现行 ADR 语义内的 SQL、事务、调度和清理，不以消除 staging 或整树双份持久化为完成条件。
+- “原地提升同一 normalized revision”或“临时候选存储、adoption 时只写一次 canonical tree”等改变持久化模型的方案记为后续决策子项 `V3-T7-D1`。该子项只保留测量结果、备选设计与迁移影响，优先级低于当前 P0 实施，且不阻塞 V3-T7 的开发、验收或发布。
+- `V3-T7-D1` 若要进入实现，必须先由新的或修订后的 ADR 明确 staging 生命周期、Candidate Result 保留语义、immutable revision、EvidenceRef 与快照兼容边界。在该 ADR 生效前不得删除 staging 阶段或改变 committed-current 可见性。
+
+#### 2.1.4 响应式 UI 与单一宿主数据源
+
+- UI、MCP 与 CLI 的一致性以 ADR `0024` 的单一 Library runtime host 为边界。UI 与 MCP 复用宿主内部同一套查询、投影、revision 和写入服务；CLI 仍是本地 MCP HTTP 瘦客户端，不得直连 SQLite 或新增第二套领域数据源。
+- 所有改变 protocol-visible canonical 状态的成功写入经宿主写服务提交后发布类型化 `resource-changed` 通知。书库列表、打开的题录、CSL 样式、OCR 队列与 PDF 工作台订阅相关变更并增量刷新，不以固定周期轮询作为主要一致性机制；FTS rebuild、预取和运行时缓存维护只发布内部状态，不伪造 Library commit。
+- 变更通知只在事务成功后发出，并携带足以定位受影响资源的信息；订阅者不得在通知处理期间同步执行长数据库查询。OCR 运行进度事件与 protocol-visible Library commit 通知是不同事件，不能提前暴露未 adoption 的 staging 内容。
+- MCP 不增加服务端推送式撤回或远程 cache invalidation。外部 MCP/CLI 调用者仍通过 `meta.library_revision`、`RESULT_SET_MAY_HAVE_CHANGED` 和 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE` 观察变化。
+
+#### 2.1.5 共享读取缓存与 MCP 延迟
+
+- 在 runtime host 的共享读取层实现有界、可观测、可重建的缓存，使 UI 与 MCP 复用；不得只在 MCP transport/controller 内建立另一套领域缓存。CLI 通过 MCP 间接受益。
+- 已有 compiled page Markdown 缓存继续以 immutable `tree_revision_id` 与完整 compilation options 为键。对题录、outline、关系投影和文件指纹扩展缓存时，键必须包含 `library_id`、资源身份及有效 revision/basis，或在对应 commit notification 后精确失效。
+- 共享领域读取 LRU 必须有按实际 UTF-8/对象估算的内存上限、并发请求合并、命中/未命中/驱逐指标；不缓存失败、取消、超限结果、secret、本地路径、图像或不可重建状态。UI raster 只进入 2.1.6 定义的独立、本机、有界页面缓存，不能混入 MCP/read-store 或被其返回。
+- 响应的 `meta.library_revision`、会话 warning、权限和 truncation envelope 每次按当前请求重新计算，不得作为旧响应整体缓存。`find` cursor 继续是无状态、实时 continuation；缓存不得物化结果集、创建客户端可寻址的服务端 handle、TTL snapshot 或承诺跨页一致性。宿主内部、不可由协议寻址且可随时重建的 viewing session 不属于结果集 handle。
+- 未变化源文件的 page/evidence fetch 不得每次重新散列整份 PDF。文件指纹缓存必须以受验证的文件身份、长度、修改时间和 fingerprint basis 失效，同时继续遵守不向 MCP 暴露路径的边界。
+
+#### 2.1.6 PDF 查看会话与响应式预取
+
+- PDF 查看以下沉到 runtime host 的 `FileAsset` 级 viewing session 为目标。一次 session 统一拥有 resolved source、可选且共享的 source-basis 验证状态/结果、PDFium document handle、page count/metadata、当前 renderer basis、页面 raster working set 和页面 read-model 预取；ViewModel 不逐页重新拼装这些步骤。
+- 首次进入需要 source basis 的操作时只允许一个共享的 full hash validation；单纯打开题录、outline 或纯文本页面不以预先散列源文件作为前置条件。相同 resolved binding、size、mtime、quick hash、stored full hash 与 fingerprint basis 未变化时，后续页面复用该结果；并发 UI/MCP/evidence 访问共享同一个 in-flight validation。文件 watcher、重新绑定、metadata/quick hash 变化、Library 切换或 fingerprint basis 升级使 session 失效。
+- source-basis warning 与 overlap marker 是不同投影。source validation 以 FileAsset 为粒度；页面 overlap marker 由当前 `tree_revision_id` 的 Box 集生成，不触发文件 hash。纯 Item/outline/default search 不触发 source validation；PDF+bbox、包含 bbox 的页面读取以及要求 source drift 的 evidence current/compare 才需要验证。
+
+**惰性 source validation 与警告投影**：
+
+- viewing session 维护可重建、非 canonical 的运行时验证状态：`unverified`、`validating`、`current`、`changed`、`unavailable`。该状态和在途任务不进入快照，也不得成为 EvidenceRef 身份的一部分。
+- 每次真正访问文件时先做低成本 binding/size/mtime/quick-hash 检查。元数据变化、重新绑定或 fingerprint basis 升级只把旧验证标为失效，不自行启动整文件扫描；下一次坐标敏感访问或用户显式执行“重新验证源文件”时才计算 full hash。多个调用必须合并到同一在途验证，不得按页或按 endpoint 重算。
+- 纯 Item、document outline、default search、纯文本 page fetch 和 pinned EvidenceRef 文本解析不等待 full hash，使用已持久化的 last-known source status。它们不得为了附带 warning 把整个 PDF 散列变成热路径；pinned 仍按固定 revision 提供可复现文本。
+- UI 打开 PDF 页时，当前页 raster、Box/Markdown 读取和 source validation 并行启动。raster 可先显示，但验证完成前只作为 session 内临时画面，不写入以 full hash 为 basis 的持久 render cache；依赖 source basis 的 bbox overlay、source-drift warning 和坐标交互显示明确“验证中”状态或暂不启用。overlap marker 可以先由 Box 投影计算，但在 source basis 未确认前不得把它呈现为已验证的源文件坐标结论。
+- MCP 的纯文本 page/document/evidence 读取不触发 full hash。任何已由既有契约声明的坐标敏感读取，以及 evidence current/compare，必须等待共享验证并继续服从 ADR `0024` 的 deadline/cancellation；超时返回既有 `DEADLINE_EXCEEDED`。V3-T7 不为此新增 bbox 参数、服务端推送、隐式成功的“稍后验证”结果或另一套协议状态机。
+- full hash 验证结果属于整个 FileAsset，而非单页。确认未变化时不产生数据库写入或 `library_revision` 递增；确认内容变化、稳定缺失或重新绑定时，由 host write service 一次提交协议可见的 FileAsset/source status，递增 revision、发布 change set，并失效相关 viewing session、raster 与坐标投影。取消、deadline 或瞬时 I/O 失败只更新运行时状态并允许重试，不缓存失败、不写库、不递增 revision。
+- overlap 计算以 `(tree_revision_id, page_id, overlap-policy-basis)` 为键，在用户进入该页或低优先级预取命中该页时惰性执行。immutable revision 的结果可复用；工作台草稿或 Box 编辑只失效受影响页，不读取文件、不计算 hash，也不触发整份文档重算。
+
+- PDFium document 在 session 内打开一次并复用，页面 handle 仍按页短期持有并及时释放。当前页面渲染拥有最高优先级；预取任务不得占用全局 native gate 而延迟用户刚请求的页面。切换文档、source 失效、session 驱逐和 host 关闭必须确定性释放所有 native handle。
+- 打开文档后并行加载当前页 raster、Page/current revision/Box projection 和 Markdown preview；只在 UI dispatcher 上提交最终 DTO/bitmap。raster 就绪即可先显示页面，Box、overlap、continuation 和 Markdown 可随后以同一 generation 增量出现；旧 generation 完成时不得覆盖新页。
+- 当前页可交互后按导航方向预取相邻页面。默认 working set 为当前页、前一页和后两页；连续向前/向后翻页时动态调整窗口。预取至少包含目标 DPI raster、Page metadata、current revision identity 和 Box projection；Markdown/overlap 等派生投影只在预算允许时低优先级预计算。
+- UI preview 直接消费一次 PDFium BGRA raster，不得为了预览先编码 PNG 到磁盘、再重新打开同一 PDF 渲染第二份 BGRA。OCR/导出所需的持久 PNG 与交互 preview 是不同 projection，可以共享 document session 和 source hash，但按各自 DPI/格式生成。
+- 页面 raster cache、compiled projection cache 与 document session cache 均为有界 LRU。预算按实际像素字节和 native/managed 占用计算；当前页 pin，预取页可驱逐，不缓存失败、取消或失效结果。不得使用无上限 dictionary 保留所有已查看页面。
+- “整份文件进入内存”只能是小型、本地、已验证 PDF 的可选策略，必须受单文件阈值和全局内存预算约束；大文件、云端文件和内存压力场景使用 file-backed PDFium handle/操作系统页缓存。不得默认把 500 MiB 级 PDF 复制为一个 managed byte array。
+- 用户快速翻页时取消尚未开始的远端预取并降低已开始任务优先级；请求合并保证同一 session/page/DPI/renderer basis 只有一个在途 render。预取失败不影响当前页，且不得伪装为当前页失败。
+- viewing session、验证状态、native handle 与 raster cache 均为本机运行时资源；MCP 仍不返回缓存图像或路径。V3-T7 只负责提供可预取的 canonical Markdown/read-model projection，V3-T5 继续负责 Markdown 预览组件和具体交互表现，二者不得各建一套内容数据源。
+
+#### 2.1.7 架构净化与冗余剔除
+
+- 每项性能改造必须同时盘点并处理它所替代的旧实现。新路径达到契约与测试要求后，应在同一任务范围删除不再使用的 service、repository、query、事件、轮询器、adapter、DTO、DI 注册、feature flag、设置项、helper、依赖和对应测试 fixture，不保留无调用者的“备用实现”。
+- UI、runtime host、MCP 和 CLI 的同一领域操作只允许一条权威数据流。不得以兼容、渐进迁移或便于回滚为由长期保留 direct-SQL frontend、重复 projection、双写、双缓存、双通知或新旧查询并行分支；确有受支持兼容义务的例外必须写明契约来源、调用者和删除条件。
+- 优先删除死代码、不可达分支、已失效 abstraction、仅转发而无边界价值的包装层、重复 mapping/validation，以及已被 ADR 或 PRD 淘汰的实现残余。新增抽象必须有明确所有者和边界，不得只为隐藏一次调用或为未来假设预建层级。
+- 性能关键路径不得同时存在多个可被生产选择的实现。迁移期间允许短期双路径时，必须由同一个 issue 跟踪，有明确默认路径、对照测试和删除截止条件；V3-T7 完成时不得遗留永久 compatibility toggle 或“旧版 fallback”。
+- 删除数据库表、列、迁移、序列化字段或快照内容仍受 schema epoch、ADR 和兼容范围约束。历史迁移只要仍用于打开受支持 Library 就不是死代码；任何数据删除先证明不存在 current revision、pinned EvidenceRef、Candidate Result、快照或回滚依赖。
+- 删除后同步清理测试、文档、打包清单、配置 schema、遥测维度和依赖锁定；构建产物不得继续携带已经没有生产入口的 helper、native payload 或资源文件。
+- 净化以降低认知复杂度和错误表面积为目标，不以代码删除行数为指标。不得为了“少代码”合并具有不同事务、权限、安全或 revision 语义的边界。
+
+#### 2.1.8 SQL 与数据访问实施设计
+
+本节固定 V3-T7 的实施顺序与 SQL 边界；具体类型名可以在实现中调整，但不得退化为 UI/MCP 各自持有连接或用无界 `Task.Run` 包装同步 SQLite 调用。
+
+**连接与执行模型**：
+
+- Library host 取得独占所有权后、运行普通 migration 之前，以不池化的管理连接执行并验证 `PRAGMA journal_mode=WAL`。该 PRAGMA 不得放入现有事务化 migration；无法进入 WAL 时必须阻止正常打开并给出可诊断错误。
+- 普通连接保持 `Cache=Private` 并启用 pooling。查询使用只读连接和 `query_only=ON`；所有写入使用 host write service 拥有的单写者队列。read/write 使用可区分的连接池或在归还前可靠复位每连接 PRAGMA，禁止把带 `query_only=ON` 的 pooled connection 借给 writer。migration、snapshot、恢复和 desktop/headless 交接使用第三类独占管理连接。
+- 每个连接明确设置 foreign keys、busy timeout 和 synchronous。目标配置为 WAL + `synchronous=NORMAL`，但 NORMAL 必须先通过进程强杀、恢复和快照完整性测试；不满足耐久性要求时保留 `FULL`，不得降低原子性换取性能。
+- read executor 有固定并发上限，每次查询及时释放连接并传播 cancellation；write executor 每个 Library 只有一个 worker。SQL 锁等待不再作为进程内写入调度机制，30 秒 busy timeout 不得成为正常 UI 行为。
+- 启用 pooling 后，Library 切换、host 交接、migration、snapshot 和运行库文件操作必须先停止接单、排空 writer、取消 read、关闭连接并清理对应连接池。日常 checkpoint 不阻塞活跃请求；`FULL`/`TRUNCATE` checkpoint 仅在独占维护窗口执行。
+
+**持久 revision 与响应式提交**：
+
+- Library 持久保存正整数 `library_revision`。每个改变协议可见资源或关系的成功事务在同一事务末尾递增并返回 revision；desktop/headless 交接不得重置。staging 和本地 FTS cache rebuild 不单独递增，成功 adoption 作为一次协议可见提交递增一次。
+- host write service 在 commit 成功后发布类型化 `LibraryChangeSet`，至少能够携带受影响的 Item、DocumentInstance、Page、OCR Run、CSL style 与新的 Library revision。回滚、取消和 staging 中间状态不得发布 protocol-visible change。
+- UI 根据 change set 请求 `GetRowsByIds` 一类小批量 read model 并按稳定主键更新集合；不得在通知处理器中全量刷新 Library。OCR progress 走独立运行时事件，不能用数据库轮询代替。
+
+**首屏与书库查询**：
+
+- 首屏采用稳定 keyset pagination：先选择首批 Item 核心行，再仅针对这批 ID 聚合作者、primary document、页数、latest OCR、latest error、SearchUnit count 和 source status。不得对全部 Item 执行多层 correlated scalar subquery，也不得为得到 source path 额外读取全部 DocumentInstance。
+- latest OCR 使用受当前 document ID 集限制的 window/ordered CTE；作者、页数与 SearchUnit count 使用 batch aggregate。详情字段在选择行后按需读取。文件搜索根先显示定义与可用性，文件计数延迟加载；不得用不符合跨平台路径语义的裸 `LIKE root || '%'` 代替路径归属判断。
+- 首轮复合索引候选至少覆盖 active Item 排序、primary DocumentInstance、`ocr_runs(document_instance_id, hidden, created_at)`、`ocr_page_results(ocr_run_id, created_at)` 的有效错误行，以及 `search_units(document_instance_id, status)`。每个索引必须由代表性 fixture 的 query plan、读取行数和总写放大证明；删除旧单列索引前先证明没有其他查询依赖。
+
+**OCR、SearchUnit 与 FTS 写入**：
+
+- Candidate 解析、bbox 转换、包含关系规范化、Markdown/plain-text projection 和 payload 序列化尽量在写事务外完成；进入 writer 后复核 immutable staging/current basis，避免长时间持有写事务执行 CPU 工作。
+- staging 以一个 document 的连接/写 lease 执行，通过 prepared command 或 `json_each` 按有界 chunk 批量写 Box 和 page result，不按页重新开连接、不按 Box 单独往返。失败或取消不得留下可 adoption 的不完整 candidate。
+- adoption 继续保持 DocumentInstance 级原子性。预生成 staging→committed revision mapping，并使用 `INSERT ... SELECT` 在 SQLite 内复制 Box；不得把整树读回 .NET 后逐 Box 重新序列化和 INSERT。该优化不改变当前 staging/committed 双份语义。
+- SearchUnit predecessor matching 一次加载旧集合并在内存中建立索引，不允许每个 unit 再 SELECT 或对 previous units 做 O(n²) 扫描。新旧 unit 状态、Evidence successor 和 search status 通过 temp table/JSON batch 在 adoption 事务内提交。
+- FTS 是本地可重建缓存，在 canonical adoption commit 后由 writer job 重建。每个 DocumentInstance 使用集合 delete 与 batch insert；如果 index text 必须由 .NET 生成，则在事务外生成后批量传入，不逐 unit 执行 INSERT。FTS 失败不得回滚已经成功的 canonical adoption，但必须保持 stale/unavailable 状态并可重试。
+
+**MCP 读取 SQL**：
+
+- 纯文本 page/document/evidence 热读取不得同步散列整个源 PDF，只读取已持久化的 FileAsset status、size、mtime、fingerprint 与 page source basis。坐标敏感读取通过共享 fingerprint service 等待一次合并后的惰性验证，不得在 endpoint 内直接重算；结果变化后经 write service 提交并使相关投影失效。
+- 页面 Box/SearchUnit 一次批量读取；需要 EvidenceRef 时收集全部 unit ID，并最多执行一次 `CreateFromSearchUnits` batch write。名义读取接口中的必要副作用必须显式经过 host write service，不能在循环中偷偷创建连接和事务。
+- text search 的 owning Item metadata、Item/DocumentInstance/FileAsset 原始 status、OCR 索引能力、citable 字段和 filter 数据由同一查询投影或按本页 ID 一次批量加载，不得按搜索结果逐项调用 metadata/status 查询。Item 浏览的 primary-document OCR 索引能力同样必须以本页 Item ID 批量聚合，不得形成 N+1 查询。
+- compiled Markdown、题录、outline、关系和文件 fingerprint 缓存位于共享 read store；数据库查询返回领域投影，transport envelope、当前 Library revision、warning、权限与 truncation 每次重新组装。
+
+**分阶段交付**：
+
+1. S0 固定 fixture、statement count、query plan、lock wait、WAL 大小、UI heartbeat 和 MCP cold/warm 基线。
+2. S1 落地 WAL bootstrap、read/write/admin 三类执行边界、连接池、单写者、持久 revision 与 commit change set。
+3. S2 落地首屏分页 read model、复合索引、侧栏延迟计数和按 ID 增量查询。
+4. S3 落地 OCR bulk staging、set-based adoption、批量 SearchUnit/Evidence 与 FTS 后置任务。
+5. S4 落地 MCP hash 解耦、Evidence/metadata/status batch 和共享缓存。
+6. S5 删除 UI direct SQL、数据库轮询、全量 refresh、逐条写 helper、旧 fallback、无调用者 DTO/service 和经证明冗余的索引。
+
+`V3-T7-D1` 不属于上述 S0-S5 阻塞链；只有 ADR 决策明确后才单独排期 staging 持久化模型迁移。
+
+#### 2.1.9 性能预算与验收
+
+以下为初始预算。基准硬件、操作系统、SQLite 版本、fixture 生成器、冷/热缓存条件和原始结果必须随测试版本化；若预算需要调整，必须以新的测量证据修订 PRD，不能在实现中静默放宽。
+
+| 编号 | 标准 |
+|---|---|
+| V3-T7-AC1 | 存在可重复的性能基准，分别报告 UI 冷/热启动、首批书库行、OCR staging/adoption、MCP item/document/page/evidence fetch 的 median、p95、SQL 调用次数、读取行数、分配量、缓存命中率、数据库峰值增长和 UI dispatcher 最大停顿；性能日志不记录正文、查询内容、路径、EvidenceRef 或 secret |
+| V3-T7-AC2 | 在规定 fixture 与基准机上，冷启动 2 秒内出现可交互应用框架、3 秒内出现首批书库行；热启动 1 秒内出现可交互框架。首屏不等待整库聚合、OCR 状态全扫描或全文索引统计 |
+| V3-T7-AC3 | 导入并 adoption 50 万个 DocumentBox 时，数据库工作不在 UI dispatcher 执行，100 ms UI heartbeat 的最大观测间隔不超过 250 ms；用户可以继续切换视图、滚动和取消尚未进入原子提交点的任务 |
+| V3-T7-AC4 | OCR 取消或失败不产生 partial current tree；成功 adoption 只发布一次提交后变更批次，并原子更新 current/search/evidence/revision 状态。现行 staging/candidate 行为的任何语义变化均有先行 ADR 和迁移/回滚测试；未作该语义变更不妨碍 V3-T7 验收 |
+| V3-T7-AC5 | 书库列表、题录编辑、CSL 样式、OCR 队列和 PDF 工作台对宿主提交采用订阅式增量刷新；正常运行不依赖固定周期数据库轮询，连续快速写入不会造成旧结果回覆盖或 UI 查询风暴 |
+| V3-T7-AC6 | 在本机 HTTP transport、热缓存和默认响应大小内，单条 item fetch 的 p95 不超过 200 ms，纯文本 document/page/evidence fetch 的 p95 不超过 300 ms；冷缓存相应 p95 不超过 1.5 秒。首次坐标敏感 source validation 单独报告，不伪装进纯文本预算；未变化的 500 MiB PDF 连续读取不重复执行整文件哈希 |
+| V3-T7-AC7 | 缓存大小有硬上限，跨 revision、跨 Library、权限变化、资源提交、DocumentTree current pointer 变化和 renderer/fingerprint basis 变化的测试均不返回陈旧或跨库内容；失败、取消和超限响应不会污染缓存 |
+| V3-T7-AC8 | cursor 仍为无状态实时 continuation，缓存不会创建物化结果集或客户端可寻址的服务端 session/result handle；每个 MCP 响应返回当前 `meta.library_revision` 并保持 ADR `0024` 的 warning、deadline、cancellation、partial 与 text-only 契约 |
+| V3-T7-AC9 | 每个被替代的生产路径都有删除清单；代码、DI/config schema、测试、文档、打包资源和依赖中不存在无调用者残余。契约测试证明 UI/MCP/CLI 对同一领域操作只经过一套宿主查询、投影、validation、revision 与写入语义 |
+| V3-T7-AC10 | 不存在无删除条件的旧版 fallback、compatibility toggle、重复轮询/通知、direct-SQL frontend、双写或双缓存路径；因受支持 schema/协议必须保留的兼容代码均有可追踪的契约来源、调用测试和退出条件 |
+| V3-T7-AC11 | CI 至少运行小型性能烟测并检测明显回退；完整 fixture 基准在指定 runner 可重复执行，连续三次结果超出预算时构建或发布检查失败，并保存可比较的机器可读报告 |
+| V3-T7-AC12 | 同一 FileAsset 在 resolved binding 与 fingerprint basis 未变化的一个 viewing session 内，只有首次坐标敏感访问可以触发一次 full hash validation；纯文本 MCP 读取不触发，其他页面、预取及重复 current/compare evidence 复用结果。并发调用共享一个在途 validation |
+| V3-T7-AC13 | PDFium document handle 在 viewing session 内复用；首次 UI preview 不执行“PNG render + 第二次 BGRA render”。当前页请求优先于预取，缓存命中切页无需等待 source resolve、full hash 或 document reopen |
+| V3-T7-AC14 | 当前页可交互后自动预取默认相邻窗口，并在导航方向变化时调整；快速翻页的旧 generation、已取消预取或已失效 source 不会覆盖当前页。预取失败不改变当前页成功状态 |
+| V3-T7-AC15 | document session、page raster 和 page projection cache 均有可测试的硬内存上限、LRU 驱逐和确定性 native handle 释放；500 MiB PDF 不会默认复制进 managed memory，连续浏览长文档不会使进程内存随已访问页数无界增长 |
+| V3-T7-AC16 | source validation 具有可测试的惰性触发矩阵；UI 验证期间保持可交互并明确区分“验证中”与 warning，坐标敏感 MCP 调用遵守既有 deadline/cancellation。overlap 只对进入或预取的页面按 revision 惰性计算，Box 编辑只失效受影响页且不触发文件 hash |
+| V3-T7-AC17 | V3-T7 的完成、验收和发布不依赖 `V3-T7-D1` 或 staging 持久化模型 ADR；S0-S5 在现行 ADR 语义内可独立交付，后续 ADR 不得追溯性阻塞已满足的性能预算 |
 
 ## 3. V3-T1：MCP 路线选择与完善
 
@@ -230,18 +388,27 @@ DEFAULT RESULTS
   entries: exactly uri, title, type; type is file or directory.
 
 DETAILED RESULTS (--long)
-  Preserve uri, title, type and add applicable locator/search metadata plus
-  item_status, document_status, source_status, style_enabled, and citable.
-  Because applicable detailed fields may differ by resource, detailed entries
-  may use TOON list form rather than a uniform table; default entries must
-  always remain the compact table.
+  Preserve uri, title, type and add only metadata that is applicable to the
+  returned resource. URI already identifies the DocumentInstance, physical
+  page and (when present) EvidenceRef, so long entries never repeat
+  document_instance_id, page_index or evidence_ref. The only public status
+  fields are item_status, document_status and source_status; each reflects
+  the original status of Item, DocumentInstance or FileAsset respectively.
+  OCR/search-index readiness is an independent shared FSM value, not a
+  fourth status or an alternate document_status. The stable English values
+  are no_primary_document, ocr_failed, ocr_running, no_ocr, ocr_not_indexed
+  and indexed; the UI renders the same value as a concise Chinese label plus
+  an explanatory detail.
+  Because detailed fields differ by resource, detailed entries use TOON list
+  form rather than a uniform table; default entries always remain the compact
+  table.
 ```
 
 | `--in` scope | 无 QUERY | 普通 QUERY | `--literal` | 可用 `--where` |
 |---|---|---|---|---|
 | `patchouli://` | 仅发现三个根目录；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
-| `patchouli://items/` | 浏览题录资源 | 题名、作者、identifier 元数据搜索 | 相同字段的直接字面匹配 | `item_type`、`item_status`、`citable` |
-| `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个 EvidenceRef 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_type`、`item_status`、`document_status`、`source_status`、`citable` |
+| `patchouli://items/` | 浏览题录资源 | 题名、作者、identifier 元数据搜索 | 相同字段的直接字面匹配 | `item_type`、`item_status`、`primary_document_ocr_index_status`、`citable` |
+| `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个 EvidenceRef 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
 | `patchouli://csl-styles/` | 浏览 CSL style 资源 | style id、display name 搜索 | 相同字段的直接字面匹配 | `style_enabled` |
 | 已知 file URI | 当作单资源 scope 返回该 entry，并返回 `FILE_URI_SINGLETON_SCOPE` | 仅在该资源的矩阵内搜索字段上匹配，并返回同一 warning | 相同的单资源直接字面匹配 | 使用其所属 scope 的 filter 键 |
 
@@ -272,7 +439,7 @@ entries[3	]{uri	title	type}:
   "patchouli://csl-styles/"	"/csl-styles"	"directory"
 ```
 
-`--where` 可重复，但只接受上表中当前 scope 的键。`item_status` 保留用户自定义值，并将 null 显式映射为 `unset`；`document_status` 与 `source_status` 使用稳定系统枚举，根来源无文件映射为 `unavailable`。这些过滤可在默认视图使用；需要解释状态或能力时再请求详细视图。公共协议中不存在裸 `status` 字段、过滤键、别名、重定向或兼容层；数据库 `items.status` 只作为 `item_status` 的来源。
+`--where` 可重复，但只接受上表中当前 scope 的键。`item_status` 保留 `items.status` 的用户自定义值，并将 null 显式映射为 `unset`；`document_status` 原样反映 `document_instances.status`（`active`、`deprecated`、`partial`、`missing_source`）；`source_status` 原样反映关联 `file_assets.status`，无 FileAsset 时映射为 `unavailable`。`primary_document_ocr_index_status` 与 `ocr_index_status` 接受共享 FSM 的 English value；前者检查 Item 的 `is_primary=1` DocumentInstance，后者检查当前 text DocumentInstance。它们是可实时重算的能力，不是 status。所有过滤可在默认视图使用；需要解释状态或能力时再请求详细视图。公共协议中不存在裸 `status` 字段、过滤键、别名、重定向或兼容层。
 
 #### 3.4.4 `fetch`
 
@@ -332,6 +499,8 @@ READ-ONLY
 BEHAVIOUR
   put replaces exactly one resource.
   put never creates, deletes, or renames resources.
+  For an existing item resource, the URI is authoritative: the BibLaTeX entry key in
+  replacement content is ignored and the Item's existing citation key is preserved.
   put validates the complete replacement before writing.
   put commits the replacement atomically.
   put has no --base option and does not use optimistic concurrency.
@@ -409,21 +578,21 @@ CLI 是本地 MCP HTTP 端点的客户端，四个 CLI 动词分别映射为四�
 
 #### 3.4.7.1 统一响应 schema（规范性）
 
-以下 schema 是 CLI `--json`、MCP `format=json` 与默认 TOON 的唯一逻辑模型。每个工具响应严格由 `meta`、`continuation`、可选 `message` 与 `entries` 组成；object 不得出现未声明字段。`String` 是 Unicode string，`Uri` 是 canonical `patchouli://` string，`NonNegativeInt` 是非负 JSON integer，`PositiveInt` 是大于零的 JSON integer；它们在 TOON 中分别按 string 与 integer 规则编码。`Error` 固定为 `{ "code": ErrorCode, "name": String, "correlation_id": String | null }`，其中 `ErrorCode` 是错误码表中非零项，`code`/`name` 必须是同一项；它不含自由文本异常详情。
+以下 schema 是 CLI `--json`、MCP `format=json` 与默认 TOON 的唯一逻辑模型。每个工具响应严格由 `meta`、`continuation`、可选 `message` 与 `entries` 组成；object 不得出现未声明字段。`String` 是 Unicode string，`Uri` 是 canonical `patchouli://` string，`NonNegativeInt` 是非负 JSON integer，`PositiveInt` 是大于零的 JSON integer；它们在 TOON 中分别按 string 与 integer 规则编码。`message.error` 与 `message.warnings` 都是紧凑的终端诊断文本：错误固定为 `NAME [code N]: detail`，其中 `NAME` 与非零 `N` 必须来自同一错误码表；仅内部错误可在方括号追加 `; ref <correlation-id>`。warning 固定为 `NAME: detail`。诊断 detail 必须由宿主白名单模板生成并脱敏，不得直接输出 exception、stack、路径、file URL、secret 或原始 content。
 
 ```text
 Response<TMeta, TEntry> = {
   meta: TMeta & { library_revision: LibraryRevision },
   continuation: String | null,
   message?: {
+    error: String | null,
     warnings: String[],
-    error: Error | null
   },
   entries: TEntry[]
 }
 ```
 
-`LibraryRevision` 是 `"lib:<positive decimal integer>"`。`message` 遵循 Unix 哲学：当且仅当没有 warning 且没有 request-level error 时必须省略；没有 `message` 即表示干净成功。存在 warning 时 `message.error` 为 null，仍可为成功；存在 request-level error 时 `message.error` 非 null。逐项操作的失败保留在相应 entry 的 `error` 字段；只有所有逐项操作均失败、请求本身无效，或必须以非零状态报告的 partial/truncated 情况，才同时在 `message.error` 给出对应错误。`message` 不承载自由文本、成功文案或本地实现细节。`message.error` 非 null 时，MCP tool response 必须标记 `isError=true` 并保留可用的 partial `entries`；CLI 将结构化响应写入 stdout，并以相应非零退出码报告错误。
+`LibraryRevision` 是 `"lib:<positive decimal integer>"`。`message` 遵循 Unix 哲学：当且仅当没有 warning 且没有 request-level error 时必须省略；没有 `message` 即表示干净成功。存在 warning 时 `message.error` 为 null，仍可为成功；存在 request-level error 时 `message.error` 非 null。逐项操作的失败保留在相应 entry 的同格式 `error` 字符串；只有所有逐项操作均失败、请求本身无效，或必须以非零状态报告的 partial/truncated 情况，才同时在 `message.error` 给出对应错误。warning 与 error 都是供人和 agent 直接读取的终端式诊断，不承载成功文案或本地实现细节。`message.error` 非 null 时，MCP tool response 必须标记 `isError=true` 并保留可用的 partial `entries`；CLI 将结构化响应写入 stdout，并从错误文本中的 `[code N]` 使用相应非零退出码报告错误。
 
 **旧 envelope 清理**：实现必须删除 `McpEnvelope<T>.Revision` 及其序列化顶层 `revision` 字段，并将 CLI、MCP transport、契约测试和所有调用方迁移为读取 `meta.library_revision`。在新的版本控制 ADR 明确前，不得以旧字段替代或重新引入 `fetch --revision`、`resource_revision` 或其他资源级历史版本选择字段。
 
@@ -431,10 +600,12 @@ Response<TMeta, TEntry> = {
 
 | Tool | `meta` 与 `entries` schema | 成功与逐项失败规则 |
 |---|---|---|
-| `find` | `meta` 为 `{ library_revision: LibraryRevision, domain_total: NonNegativeInt, filtered_total: NonNegativeInt, shown_total: NonNegativeInt }`；`entries` 为 `FindEntry[]` | 默认 `FindEntry` **严格只有** `{ "uri": Uri, "title": String, "type": "file" \| "directory" }`。`detail=long` 的每条为 `{ uri: Uri, title: String, type: "file"\|"directory", item_uri: Uri\|null, document_instance_id: String\|null, page_index: PositiveInt\|null, evidence_ref: String\|null, item_status: String\|null, document_status: String\|null, source_status: String\|null, style_enabled: boolean\|null, citable: boolean }`；不适用字段必须为 null，不得省略或另造字段。`meta.shown_total` 必须等于 entries 长度。 |
+| `find` | `meta` 为 `{ library_revision: LibraryRevision, domain_total: NonNegativeInt, filtered_total: NonNegativeInt, shown_total: NonNegativeInt }`；`entries` 为 `FindEntry[]` | 默认 `FindEntry` **严格只有** `{ "uri": Uri, "title": String, "type": "file" \| "directory" }`。`detail=long` 使用按资源种类判别的精确投影：`ItemLongEntry = { uri, title, type: "file", item_status, primary_document_ocr_index_status, citable }`；`TextLongEntry = { uri, title, type: "file"\|"directory", item_uri, item_status, document_status, source_status, ocr_index_status, citable }`；`StyleLongEntry = { uri, title, type: "file", style_enabled }`。除 `item_status` 可为 `"unset"` 外，三个 `*_status` 均为对应实体的原始持久化值；没有关联 FileAsset 的 text 资源使用 `source_status: "unavailable"`。字段只在其适用 variant 中出现，严禁用 null 填充其他 variant，也不得重复 URI 已表达的 document/page/evidence locator。`meta.shown_total` 必须等于 entries 长度。 |
 | `fetch` | `meta` 为 `{ library_revision: LibraryRevision }`；`entries` 为 `FetchResult[]` | 每个输入 URI 产生一个同序 `FetchResult`，不得因其他 URI 失败而丢失。见下方 discriminated variant。 |
 | `put` | `meta` 为 `{ library_revision: LibraryRevision }`；成功时 `entries` 为单元素 `PutResult[]`，失败、取消或超限写入时为 `[]` | `PutResult = { uri: Uri, resource_type: "item_bib" \| "csl_style", committed: true, content_bytes: NonNegativeInt }`。失败详情由 `message.error` 表达。`content_bytes` 是已提交 UTF-8 content 的实际字节数。 |
 | `cite` | `meta` 为 `{ library_revision: LibraryRevision, effective_style_uri: Uri, effective_locale: String, render_format: "text" \| "html", bibliography: String\|null }`；`entries` 为 `CitationResult[]` | 每个输入 REF 产生一个同序 result；可渲染 result 与不可解析/不可引用 result 可以共存。`bibliography` 仅在请求时为 String，否则为 null；其去重不影响 entries 长度与顺序。 |
+
+上述 long entry 由固定宽表改为资源专属 variant 是协议 schema 变更：实现该条款时必须提升 MCP protocol revision，并在同一变更中更新 MCP tool schema、CLI help、DTO、TOON/JSON fixture 与所有调用方；不得保留输出旧 null 填充字段的兼容分支。
 
 ```text
 FetchResult = CompleteFetch | TruncatedFetch | FailedFetch
@@ -453,28 +624,28 @@ TruncatedFetch = {
   complete: false, truncated: true,
   returned_bytes: NonNegativeInt, limit_bytes: PositiveInt,
   continuation: String | null, next_range: String | null,
-  error: { code: 7, name: "RESPONSE_TRUNCATED", correlation_id: String | null }
+  error: "RESPONSE_TRUNCATED [code 7]: detail"
 }
 
 FailedFetch = {
   uri: Uri, resource_type: null, item_uri: null,
   content: null, complete: false, truncated: false,
   returned_bytes: 0, limit_bytes: PositiveInt,
-  continuation: null, next_range: null, error: Error
+  continuation: null, next_range: null, error: "NAME [code N]: detail"
 }
 
 CitationResult = {
-  ref: String, item_uri: Uri | null, citation: String | null, error: Error | null
+  ref: String, item_uri: Uri | null, citation: String | null, error: String | null
 }
 ```
 
-`ResourceType` 是 `item_bib`、`text_document`、`text_page`、`evidence` 或 `csl_style`。`CompleteFetch.returned_bytes` 必须等于 content 的 UTF-8 字节数且不超过 `limit_bytes`；`TruncatedFetch` 有相同字节约束，且 `continuation` 与 `next_range` 至少一个为非 null。任一 `TruncatedFetch` 使顶层 `message.error` 为 `RESPONSE_TRUNCATED`，但仍保留完整 `entries`；`FailedFetch.error.code` 不得为 7。`CitationResult` 成功时 `item_uri`、`citation` 非 null 且 `error` 为 null，失败时前两者为 null 且 `error` 非 null。若所有 citation result 均失败，`message.error` 为相应错误；否则 `message.error` 为 null（若也没有 warning，省略 `message`）。错误码、schema 或类型新增/变更均为协议 revision 变更。资源级历史版本与 `fetch --revision` 在新的版本控制 ADR 明确前不属于 v3 协议。
+`ResourceType` 是 `item_bib`、`text_document`、`text_page`、`evidence` 或 `csl_style`。`CompleteFetch.returned_bytes` 必须等于 content 的 UTF-8 字节数且不超过 `limit_bytes`；`TruncatedFetch` 有相同字节约束，且 `continuation` 与 `next_range` 至少一个为非 null。任一 `TruncatedFetch` 使顶层 `message.error` 为 `RESPONSE_TRUNCATED [code 7]: …`，但仍保留完整 `entries`；`FailedFetch.error` 不得包含 `[code 7]`。`CitationResult` 成功时 `item_uri`、`citation` 非 null 且 `error` 为 null，失败时前两者为 null 且 `error` 为终端错误行。若所有 citation result 均失败，`message.error` 为相应错误；否则 `message.error` 为 null（若也没有 warning，省略 `message`）。错误码、schema 或类型新增/变更均为协议 revision 变更。资源级历史版本与 `fetch --revision` 在新的版本控制 ADR 明确前不属于 v3 协议。
 
 `meta.library_revision` 是当前 Library 的宿主权威 revision，格式固定为 `lib:<十进制正整数>`；它持久化于该 Library，且每次成功、会改变协议可见资源或关系的 Library 写入后严格单调递增，即使桌面/headless 宿主交接也不得回退或复用。它不是默认 `find` entry 的资源 revision，也不是 `put` 的写前置条件。客户端保存的 fetch 内容只是该 revision 时的本地快照；v3 不推送或撤回其已交付内容。cursor 继续按实时语义读取，且其创建 revision 与当前 revision 不同时继续在 `message.warnings` 返回 `RESULT_SET_MAY_HAVE_CHANGED`。MCP 会话中宿主发现上一次已观察 revision 已落后于当前 revision 时，也必须在 `message.warnings` 追加 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`；无会话或断线客户端可通过 `meta.library_revision` 自行检测陈旧性并按需重新 fetch。
 
 `patchouli://` 始终解析到处理请求的宿主当前 Library。当前 UI 尚不支持切换 Library，但宿主的生命周期内仍必须固定一个 `library_id`。cursor、EvidenceRef（包括 `?evref=` 内含的 Library 绑定）或未来显式 Library 上下文若与该 `library_id` 不匹配，解析器必须丢弃已经准备的内容，以 `NOT_FOUND` 返回，不得混入旧 Library 的 entries、partial entries 或 citation 结果。
 
-`find` 的 warning 使用稳定代码：`RESULT_SET_MAY_HAVE_CHANGED`（实时分页可能漂移）、`WHITESPACE_QUERY_TREATED_AS_BROWSE`、`CURSOR_CONTEXT_RESTORED`、`ROOT_DISCOVERY_PAGINATED`、`FILE_URI_SINGLETON_SCOPE`、`WHERE_VALUE_CONTAINS_EQUALS` 与 `DUPLICATE_WHERE_KEY_LAST_WINS`。所有工具还可在 `message.warnings` 返回 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`。warning 是成功响应的一部分，不改变 exit/error code；没有 warning/error 时不返回 `message`。
+`find` 的 warning 使用稳定名称：`RESULT_SET_MAY_HAVE_CHANGED`（实时分页可能漂移）、`WHITESPACE_QUERY_TREATED_AS_BROWSE`、`CURSOR_CONTEXT_RESTORED`、`ROOT_DISCOVERY_PAGINATED`、`FILE_URI_SINGLETON_SCOPE`、`WHERE_VALUE_CONTAINS_EQUALS` 与 `DUPLICATE_WHERE_KEY_LAST_WINS`。所有工具还可在 `message.warnings` 返回 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`。每一项按 `NAME: detail` 输出，使 agent 可立即知道宿主如何解释或调整了请求；warning 是成功响应的一部分，不改变 exit/error code；没有 warning/error 时不返回 `message`。
 
 Exit / error codes：
 
@@ -493,15 +664,15 @@ Exit / error codes：
 | 10 | DEADLINE_EXCEEDED | 宿主在请求 deadline 前未能完成；不返回 timeout 导致的 partial data |
 | 11 | CANCELLED | 调用方取消且宿主在原子提交前停止了操作；不产生写入 |
 
-推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/csl-styles` → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态与引用能力 → 本地处理 → 仅对最终合法 `.bib`/`.csl` 执行 `put`。全文搜索返回的 `?evref=` page URI 可直接 `fetch` evidence 或作为 `cite.refs`；其他资源引用前使用 `where citable=true`。
+推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/csl-styles` → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.bib`/`.csl` 执行 `put`。全文搜索返回的 `?evref=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。
 
 #### 3.4.8 Agent 可用性与关系解析
 
-- `citable=true` 必须与 `cite` 实际接受的 URI 类型一致。Document、Page 和 Evidence 是只读资源，但可以是 citable；`writable` 与 `citable` 是两个独立维度。可引用资格由单一确定性规则计算；协议不返回 `citation_target`，宿主在 `cite` 内部解析到所属 Item。
+- `citable=true` 必须与 `cite.refs` 实际接受的 URI 类型一致。Item、Document、Page 和 Evidence 可以是 citable；CSL style 仅可作为 `cite.style` 使用，绝不是 citable，因此 StyleLongEntry 不包含 `citable`。`writable` 与 `citable` 是两个独立维度。可引用资格由单一确定性规则计算；协议不返回 `citation_target`，宿主在 `cite` 内部解析到所属 Item。
 - Document、Page 和 Evidence 的详细 `find`/`fetch` 结果应返回 `item_uri` 或等价的 `parent_uri`。这是关系元数据，不构成自动 link following。
 - `cite` 对 text document/page 的解析只使用持久化的 `document_instances.item_id` 关系，不通过标题、文件名或全文搜索猜测 Item。Page URI 必须先验证 page 属于 URI 中声明的 text document。
 - 如果多个 REF 解析到同一个 Item，bibliography 默认去重，但响应应保留每个 REF 的解析结果。
-- `find` 带 query 时应搜索所声明的 `--in` scope。Item 至少支持题名/作者/identifier 等 metadata search，CSL style 至少支持 id/display name search；`item_type`、`item_status`、`document_status`、`source_status`、`style_enabled` 与 `citable` 在适用的 text document/page/evidence 资源上按其所属 Item、Document、source 或 style 关系解析。尚未支持的 scope/filter 必须返回明确的 `INVALID_ARGUMENT`，不得以成功的空数组代替“不支持”。
+- `find` 带 query 时应搜索所声明的 `--in` scope。Item 至少支持题名/作者/identifier 等 metadata search，CSL style 至少支持 id/display name search；`item_status`、`document_status`、`source_status` 与 `style_enabled` 分别按其 Item、DocumentInstance、FileAsset 或 style 配置的权威记录读取，不能以派生索引/布局状态替代原始实体 status。`primary_document_ocr_index_status` 与 `ocr_index_status` 是共享 FSM 的独立能力：前者按 Item 的 primary DocumentInstance 关系解析，后者按 text document/page/evidence URI 所属 DocumentInstance 解析。Evidence 不是可浏览根资源；它只在 text 搜索中通过已含 `?evref=` 的 page URI 表示，long 投影不得再次输出 EvidenceRef、页码或 document ID。尚未支持的 scope/filter 必须返回明确的 `INVALID_ARGUMENT`，不得以成功的空数组代替“不支持”。
 - `find` 在 `patchouli://texts/` 中带 query 时按 EvidenceRef 命中逐项返回，不聚合为缺少 evidence 身份的 document 条目；每个默认 entry 的 `uri` 都必须内嵌该命中的 canonical `?evref=`，因此 agent 仅凭 `uri`、`title`、`type` 就能继续 `fetch` 或 `cite`。
 - `fetch <URI>...` 和 `cite <REF>...` 均采用逐项结果语义。单个资源的 `NOT_FOUND`、`NOT_CITABLE` 或 `RESPONSE_TRUNCATED` 不得丢弃同一请求中其他成功结果。
 - `limit_bytes` 的默认值可以由服务配置，但必须有服务端硬上限；调用者请求超过硬上限时可以钳制并返回 warning，不得因此取消已可安全返回的 partial 内容。
@@ -539,7 +710,7 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC10 | 裸 `find` 仅返回 `/items`、`/texts`、`/csl-styles` 三个 VFS 根 directory；旧 `AGENTS.md`、`library.yml`、evidence 根和 shell 入口均不可发现或访问 |
 | V3-AC11 | 经 UI、CLI 或 MCP 成功写入的宿主写服务均发出资源变更通知；连接到该宿主的桌面书库列表、打开的题录编辑器和 CSL 样式视图无需重启即可显示最新数据 |
 | V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，干净成功不返回 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
-| V3-AC13 | `--long` / `detail=long` 才返回状态、能力、关系与定位元数据；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status` |
+| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 EvidenceRef；Style 不包含 `citable` |
 | V3-AC14 | `find` 对声明支持的 scope/query/`--literal`/filter 执行搜索或过滤，严格遵循 scope × flag 合法矩阵；不支持的组合返回 `INVALID_ARGUMENT`，不以成功空数组代替 |
 | V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行四个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
 | V3-AC16 | MCP `format=json` 与 CLI `--json` 为批量机器处理返回等价 JSON；无需解析 TOON，且三种编码均使用相同的 `meta`、`continuation`、可选 `message`、`entries` schema。格式切换不改变默认/详细投影、字段、分页、warning 或 error 语义 |
@@ -554,6 +725,7 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC25 | `patchouli://` 只解析到宿主固定的当前 `library_id`；含有不匹配 Library 绑定的 cursor、EvidenceRef 或显式上下文必须丢弃已准备 entries 并以 `NOT_FOUND` 失败，不得返回跨库内容。当前 UI 不能切库不构成省略该校验的理由 |
 | V3-AC26 | 宿主对 `find`/`fetch`/`cite` 默认执行 60 秒、`put` 默认执行 120 秒的 deadline；超时为 `DEADLINE_EXCEEDED`，取消为 `CANCELLED`。取消或断连能停止校验/查询，且 `put` 要么在提交前不写、要么完整原子完成，绝无部分写入 |
 | V3-AC27 | 四个工具均有封闭、逐字段类型化的统一响应 schema fixture；默认与 long find、complete/truncated/failed fetch、put 成功、cite 部分成功/全部失败均验证 `meta`、`continuation`、可选 `message`、`entries` 的 required/null/省略规则、无额外字段、同序逐项结果、UTF-8 byte 计数及 message/error 对应关系；help 和 MCP 初次握手 fixture 还必须验证“无 `message` 即干净成功”的 Unix 语义。迁移 fixture 还必须验证输出中不存在顶层 `revision` 或 `resource_revision`，且 CLI help/MCP schema 不含 `fetch --revision`；Library revision 只在 `meta.library_revision` |
+| V3-AC28 | Long `find` fixture 分别验证 Item、Text 与 Style 的精确 variant：仅 `item_status`、`document_status`、`source_status` 是公共 status，且分别等于 Item、DocumentInstance、FileAsset 的原始持久化值；OCR 索引为共享 English FSM 能力，UI 使用同一 FSM 的中文标签与说明。`primary_document_ocr_index_status` 与 `ocr_index_status` 由数据库侧本页批量投影过滤，且不存在逐项 metadata/status 查询 |
 
 ## 4. V3-T2：增强 OCR 文本编辑校注 UI
 
