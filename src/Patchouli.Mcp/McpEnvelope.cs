@@ -30,17 +30,17 @@ public sealed record McpEnvelope<TMeta, TEntry>(
 }
 
 /// <summary>
-/// The optional message slot of a response. Present exactly when there are stable warnings
-/// and/or a request-level error; never carries free-text success prose.
+/// The optional terminal-style message slot of a response. Present exactly when there are
+/// warnings and/or a request-level error; never carries success prose.
 /// </summary>
 public sealed record McpMessage(
+    [property: JsonPropertyName("error")] string? Error,
     [property: JsonPropertyName("warnings")]
-    IReadOnlyList<string> Warnings,
-    [property: JsonPropertyName("error")] McpToolError? Error);
+    IReadOnlyList<string> Warnings);
 
 /// <summary>
-/// Strict, closed error value: { code, name, correlation_id }. code and name always come
-/// from the same error-table row. It never carries free-text exception details.
+/// Internal error classification used to produce compact, sanitized terminal diagnostics at
+/// the protocol boundary.
 /// </summary>
 public sealed record McpToolError(
     [property: JsonPropertyName("code")] int Code,
@@ -55,6 +55,40 @@ public sealed record McpToolError(
     public static McpToolError From(McpErrorCode code, string? detail = null, string? correlationId = null)
     {
         return new McpToolError((int)code, ErrorName(code), correlationId) { Detail = detail };
+    }
+
+    public string ToTerminalLine()
+    {
+        string reference = string.IsNullOrWhiteSpace(CorrelationId) ? string.Empty : $"; ref {CorrelationId}";
+        string detail = Code == (int)McpErrorCode.Internal || string.IsNullOrWhiteSpace(Detail)
+            ? DefaultDetail((McpErrorCode)Code)
+            : McpOutputSanitizer.Sanitize(Detail);
+        return $"{Name} [code {Code}{reference}]: {detail}";
+    }
+
+    public static bool TryGetCode(string? terminalLine, out McpErrorCode code)
+    {
+        const string marker = "[code ";
+        int start = terminalLine?.IndexOf(marker, StringComparison.Ordinal) ?? -1;
+        if (start >= 0)
+        {
+            start += marker.Length;
+            int end = start;
+            while (end < terminalLine!.Length && char.IsDigit(terminalLine[end]))
+            {
+                end++;
+            }
+
+            if (end > start && int.TryParse(terminalLine[start..end], out int numeric) &&
+                Enum.IsDefined((McpErrorCode)numeric) && numeric != (int)McpErrorCode.Ok)
+            {
+                code = (McpErrorCode)numeric;
+                return true;
+            }
+        }
+
+        code = McpErrorCode.Internal;
+        return false;
     }
 
     public static string ErrorName(McpErrorCode code)
@@ -74,6 +108,24 @@ public sealed record McpToolError(
             McpErrorCode.DeadlineExceeded => "DEADLINE_EXCEEDED",
             McpErrorCode.Cancelled => "CANCELLED",
             _ => "UNKNOWN"
+        };
+    }
+
+    private static string DefaultDetail(McpErrorCode code)
+    {
+        return code switch
+        {
+            McpErrorCode.Internal => "The host could not complete the request.",
+            McpErrorCode.InvalidArgument => "The request is invalid.",
+            McpErrorCode.NotFound => "The requested resource was not found.",
+            McpErrorCode.PermissionDenied => "The requested operation is not permitted.",
+            McpErrorCode.InvalidContent => "The supplied content is invalid.",
+            McpErrorCode.ResponseTruncated => "The response was truncated.",
+            McpErrorCode.Unavailable => "The requested service is unavailable.",
+            McpErrorCode.NotCitable => "The requested resource cannot be cited.",
+            McpErrorCode.DeadlineExceeded => "The request exceeded its deadline.",
+            McpErrorCode.Cancelled => "The request was cancelled.",
+            _ => "The request failed."
         };
     }
 }

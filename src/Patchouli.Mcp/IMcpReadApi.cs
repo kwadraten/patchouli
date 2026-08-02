@@ -42,6 +42,15 @@ public interface IMcpReadApi
     Task<Result<McpBrowseDocumentPage>> BrowseDocumentsAsync(int skip, int limit,
         IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 
+    /// <summary>Returns one database-side long projection for each requested text document.</summary>
+    Task<Result<IReadOnlyList<McpTextResourceProjection>>> GetTextResourceProjectionsAsync(
+        IReadOnlyList<DocumentInstanceId> documentInstanceIds, IReadOnlyList<McpWhereClause>? where = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Computes the current primary-document OCR indexing capability for one Item.</summary>
+    Task<Result<string>> GetPrimaryDocumentOcrIndexStatusAsync(ItemId itemId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<McpBrowseStylePage>> BrowseStylesAsync(int skip, int limit,
         IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 

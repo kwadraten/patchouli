@@ -59,60 +59,6 @@ public sealed class McpServerOptionsParseResult
     }
 }
 
-/// <summary>
-/// Defense-in-depth text sanitizer for diagnostics. It redacts host paths, file URLs, cache
-/// and model paths, and secret-like tokens while preserving canonical <c>patchouli://</c>
-/// resource URIs. The v3 structured surface never places free-text exception details in
-/// responses; this only guards diagnostic output (for example server logs).
-/// </summary>
-public static class McpOutputSanitizer
-{
-    private const string FileUrlPattern = @"file://\S+";
-    private const string DrivePathPattern = @"(?<![A-Za-z0-9_:/])[A-Za-z]:[\\/][^\s""']+";
-    private const string UncPathPattern = @"\\\\[^\s""']+";
-    private const string PosixPathPattern = @"(?<![A-Za-z0-9_:/])/[^\s""']+";
-
-    private const string SecretPattern =
-        @"(?i)(?:api[_-]?key|provider[_-]?secret|secret|token|sk-[A-Za-z0-9_-]+)\s*[:=_-]\s*[A-Za-z0-9_-]+";
-
-    private const string SensitiveTokenPattern =
-        @"(?i)(?:cache[/\\]|page-renders[/\\]|manifest\.json|model_path|[/\\]models[/\\]|staging[/\\])[^\s""']*";
-
-    public static string Sanitize(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return value;
-        }
-
-        string sanitized = value;
-        foreach (string pattern in new[]
-                 {
-                     FileUrlPattern, DrivePathPattern, UncPathPattern, PosixPathPattern, SecretPattern,
-                     SensitiveTokenPattern
-                 })
-        {
-            sanitized = System.Text.RegularExpressions.Regex.Replace(sanitized, pattern, "[redacted]");
-        }
-
-        return sanitized;
-    }
-
-    public static bool IsSafe(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            return true;
-        }
-
-        return !System.Text.RegularExpressions.Regex.IsMatch(value, DrivePathPattern)
-               && !System.Text.RegularExpressions.Regex.IsMatch(value, UncPathPattern)
-               && !System.Text.RegularExpressions.Regex.IsMatch(value, PosixPathPattern)
-               && !System.Text.RegularExpressions.Regex.IsMatch(value, SecretPattern)
-               && !System.Text.RegularExpressions.Regex.IsMatch(value, SensitiveTokenPattern);
-    }
-}
-
 public sealed class McpProtocolHandler
 {
     private readonly IMcpReadApi _readApi;
@@ -257,13 +203,13 @@ public sealed class McpProtocolHandler
                     ["query"] = ToolSchemaProperty.String("Search query. Omit to browse the scope."),
                     ["in"] = ToolSchemaProperty.String("Resource scope URI to search or browse."),
                     ["where"] = ToolSchemaProperty.Array(
-                        "Filter clauses as KEY=VALUE; supported keys: item_type, item_status, document_status, source_status, style_enabled, citable.",
+                        "Filter clauses as KEY=VALUE; supported keys: item_type, item_status, document_status, source_status, primary_document_ocr_index_status, ocr_index_status, style_enabled, citable.",
                         ToolSchemaProperty.String("KEY=VALUE filter clause.")),
                     ["literal"] = ToolSchemaProperty.Boolean("Require an exact literal substring match."),
                     ["limit"] = ToolSchemaProperty.Integer("Maximum results, from 1 through 50."),
                     ["cursor"] = ToolSchemaProperty.String("Pagination cursor from a previous find response."),
                     ["detail"] = ToolSchemaProperty.String(
-                        "Detailed projection; set to \"long\" to request status, relation, and locator metadata."),
+                        "Detailed projection; set to \"long\" to request resource-specific status, relation, and capability metadata."),
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
                 }),
             new ToolDefinition(
@@ -763,12 +709,6 @@ public sealed class McpProtocolHandler
 
     private sealed class UnavailableWriteApi : IMcpWriteApi
     {
-        public event EventHandler<McpResourceChangedEventArgs>? ResourceChanged
-        {
-            add { }
-            remove { }
-        }
-
         public Task<Result<McpPutResponse>> PutAsync(McpPutRequest request,
             CancellationToken cancellationToken = default)
         {
@@ -880,13 +820,14 @@ public static class McpErrorEnvelope
         return toolName switch
         {
             "find" => McpEnvelope<McpFindMeta, object>.Create(
-                new McpFindMeta(libraryRevision, 0, 0, 0), [], message: new McpMessage([], error)),
+                new McpFindMeta(libraryRevision, 0, 0, 0), [], message: new McpMessage(error.ToTerminalLine(), [])),
             "fetch" => McpEnvelope<McpFetchMeta, object>.Create(
-                new McpFetchMeta(libraryRevision), [], message: new McpMessage([], error)),
+                new McpFetchMeta(libraryRevision), [], message: new McpMessage(error.ToTerminalLine(), [])),
             "cite" => McpEnvelope<McpCiteMeta, object>.Create(
-                new McpCiteMeta(libraryRevision, null, null, "text", null), [], message: new McpMessage([], error)),
+                new McpCiteMeta(libraryRevision, null, null, "text", null), [],
+                message: new McpMessage(error.ToTerminalLine(), [])),
             _ => McpEnvelope<McpPutMeta, object>.Create(
-                new McpPutMeta(libraryRevision), [], message: new McpMessage([], error))
+                new McpPutMeta(libraryRevision), [], message: new McpMessage(error.ToTerminalLine(), []))
         };
     }
 }

@@ -18,7 +18,7 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
 

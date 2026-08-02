@@ -93,11 +93,12 @@ try
     }
 
     LibraryIdentityService library = new(db, clock);
+    LibraryRevisionService revisions = new(db);
     SearchProfileService profiles = new(db, library, clock);
     SqliteSearchService search = new(db, profiles);
     EvidenceReferenceService evidence = new(db, clock);
     ItemService items = new(db, library, clock);
-    CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations);
+    CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations, revisions: revisions);
     CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
     McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
     McpWriteApi writes = new(items, new BiblatexHelperClient(), cslStore);

@@ -245,7 +245,7 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
-    public async Task Protocol_internal_errors_are_sanitized_with_correlation_id()
+    public async Task Protocol_internal_errors_are_compact_and_sanitized_with_a_reference()
     {
         FakeApi api = new() { ThrowOnLibraryState = true };
         McpProtocolHandler h = new(api,
@@ -255,10 +255,8 @@ public sealed class McpServerTransportTests
             "{\"name\":\"patchouli.find\",\"arguments\":{}}}");
         using JsonDocument envelope = ToolResultEnvelope(response);
         ToolIsError(response).Should().BeTrue();
-        JsonElement error = envelope.RootElement.GetProperty("message").GetProperty("error");
-        error.GetProperty("code").GetInt32().Should().Be(1);
-        error.GetProperty("name").GetString().Should().Be("INTERNAL");
-        error.GetProperty("correlation_id").GetString().Should().NotBeNullOrWhiteSpace();
+        string error = envelope.RootElement.GetProperty("message").GetProperty("error").GetString()!;
+        error.Should().StartWith("INTERNAL [code 1; ref ").And.Contain("]: The host could not complete the request.");
         string text = envelope.RootElement.GetRawText();
         text.Should().NotContain("Exception").And.NotContain("SqliteConnectionFactory");
         envelope.RootElement.TryGetProperty("revision", out _).Should().BeFalse();
@@ -289,9 +287,8 @@ public sealed class McpServerTransportTests
             "{\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"patchouli.find\",\"arguments\":{}}}");
         using JsonDocument envelope = ToolResultEnvelope(call);
         ToolIsError(call).Should().BeTrue();
-        JsonElement error = envelope.RootElement.GetProperty("message").GetProperty("error");
-        error.GetProperty("code").GetInt32().Should().Be(8);
-        error.GetProperty("name").GetString().Should().Be("UNAVAILABLE");
+        string error = envelope.RootElement.GetProperty("message").GetProperty("error").GetString()!;
+        error.Should().Be("UNAVAILABLE [code 8]: disabled: Disabled for test");
     }
 
     [Fact]
@@ -522,13 +519,16 @@ public sealed class McpServerTransportTests
     private static int ToolErrorCode(string response)
     {
         using JsonDocument envelope = ToolResultEnvelope(response);
-        return envelope.RootElement.GetProperty("message").GetProperty("error").GetProperty("code").GetInt32();
+        string line = envelope.RootElement.GetProperty("message").GetProperty("error").GetString()!;
+        McpToolError.TryGetCode(line, out McpErrorCode code).Should().BeTrue();
+        return (int)code;
     }
 
     private static string ToolErrorName(string response)
     {
         using JsonDocument envelope = ToolResultEnvelope(response);
-        return envelope.RootElement.GetProperty("message").GetProperty("error").GetProperty("name").GetString()!;
+        string line = envelope.RootElement.GetProperty("message").GetProperty("error").GetString()!;
+        return line.Split(" [", 2, StringSplitOptions.None)[0];
     }
 
     private static int GetFreeTcpPort()
@@ -677,6 +677,19 @@ public sealed class McpServerTransportTests
             IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<McpBrowseDocumentPage>.Failure("fake", "x"));
+        }
+
+        public Task<Result<IReadOnlyList<McpTextResourceProjection>>> GetTextResourceProjectionsAsync(
+            IReadOnlyList<DocumentInstanceId> documentInstanceIds, IReadOnlyList<McpWhereClause>? where = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<McpTextResourceProjection>>.Failure("fake", "x"));
+        }
+
+        public Task<Result<string>> GetPrimaryDocumentOcrIndexStatusAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<string>.Failure("fake", "x"));
         }
 
         public Task<Result<McpBrowseStylePage>> BrowseStylesAsync(int skip, int limit,

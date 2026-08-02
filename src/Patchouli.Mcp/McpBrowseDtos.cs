@@ -8,7 +8,8 @@ public sealed record McpBrowseItemRow(
     string ItemType,
     string? Status,
     string? CitationKey,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    string PrimaryDocumentOcrIndexStatus = "no_primary_document");
 
 public sealed record McpBrowseItemPage(
     IReadOnlyList<McpBrowseItemRow> Rows,
@@ -21,7 +22,21 @@ public sealed record McpBrowseDocumentRow(
     string? Title,
     string? Revision,
     DateTimeOffset CreatedAt,
-    ItemId? ItemId = null);
+    ItemId? ItemId = null,
+    string? ItemStatus = null,
+    string DocumentStatus = "missing_source",
+    string SourceStatus = "unavailable",
+    string OcrIndexStatus = "no_ocr",
+    bool Citable = false);
+
+public sealed record McpTextResourceProjection(
+    DocumentInstanceId DocumentInstanceId,
+    ItemId? ItemId,
+    string? ItemStatus,
+    string DocumentStatus,
+    string SourceStatus,
+    string OcrIndexStatus,
+    bool Citable);
 
 public sealed record McpBrowseDocumentPage(
     IReadOnlyList<McpBrowseDocumentRow> Rows,

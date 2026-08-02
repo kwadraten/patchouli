@@ -187,11 +187,11 @@ public sealed class CliCommandMappingTests
     }
 
     [Fact]
-    public void Extract_exit_code_reads_unified_json_error_envelope()
+    public void Extract_exit_code_reads_terminal_json_error_envelope()
     {
         const string text =
             "{\"meta\":{\"library_revision\":\"lib:1\"},\"continuation\":null," +
-            "\"message\":{\"warnings\":[],\"error\":{\"code\":3,\"name\":\"NOT_FOUND\",\"correlation_id\":null}}," +
+            "\"message\":{\"error\":\"NOT_FOUND [code 3]: resource was not found\",\"warnings\":[]}," +
             "\"entries\":[]}";
         McpHttpClient.ExtractExitCode(text, true).Should().Be(3);
     }
@@ -204,9 +204,9 @@ public sealed class CliCommandMappingTests
     }
 
     [Fact]
-    public void Extract_exit_code_scans_toon_error_block_when_not_json()
+    public void Extract_exit_code_scans_terminal_toon_error_when_not_json()
     {
-        const string text = "message:\n  error: { code: 2, name: \"INVALID_ARGUMENT\", correlation_id: null }";
+        const string text = "message:\n  error: INVALID_ARGUMENT [code 2]: uri must be a patchouli URI";
         McpHttpClient.ExtractExitCode(text, true).Should().Be(2);
     }
 }

@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Patchouli.Core.Csl;
+using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Csl;
@@ -52,6 +53,31 @@ public sealed class CslStyleStoreTests
         Result<CslSettings> result = await context.Store.SaveSettingsAsync("apa", "en-US");
 
         result.IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Style_writes_increment_and_publish_the_library_revision_only_after_commit()
+    {
+        await using TestContext context = await CreateContextAsync();
+        List<LibraryChangeSet> changes = [];
+        context.Revisions.ChangeCommitted += (_, args) => changes.Add(args.ChangeSet);
+        long revisionBeforeWrites = (await context.Revisions.GetCurrentRevisionAsync()).Value;
+
+        CslStyle installed = (await context.Store.InstallStyleAsync(
+            new CslCatalogStyle("apa", "APA", "https://example.test/apa.csl", "test"),
+            StyleXml("apa", "APA", "en-US"))).Value;
+        Result<CslStyle> stale = await context.Store.ReplaceStyleAsync("apa",
+            StyleXml("apa", "Stale", "en-US"), "style:not-the-current-hash");
+        CslStyle replaced = (await context.Store.ReplaceStyleAsync("apa",
+            StyleXml("apa", "APA updated", "en-US"), $"style:{installed.ContentHash}")).Value;
+        await context.Store.DisableStyleAsync("apa");
+        await context.Store.RemoveStyleAsync("apa");
+
+        stale.IsFailure.Should().BeTrue();
+        replaced.DisplayName.Should().Be("APA updated");
+        changes.Should().HaveCount(4);
+        changes.Should().OnlyContain(change => change.StyleIds.Single() == "apa");
+        (await context.Revisions.GetCurrentRevisionAsync()).Value.Should().Be(revisionBeforeWrites + 4);
     }
 
     [Fact]
@@ -154,10 +180,13 @@ public sealed class CslStyleStoreTests
         LibraryIdentityService library = new(database.ConnectionFactory, clock);
         await library.CreateLibraryAsync("CSL Styles");
         BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
+        LibraryRevisionService revisions = new(database.ConnectionFactory);
         return new TestContext(
             database,
-            new CslStyleStore(database.ConnectionFactory, clock, blockingOperations: blockingOperations),
-            blockingOperations);
+            new CslStyleStore(database.ConnectionFactory, clock, blockingOperations: blockingOperations,
+                revisions: revisions),
+            blockingOperations,
+            revisions);
     }
 
     private static string StyleXml(string id, string title, string locale)
@@ -198,16 +227,19 @@ public sealed class CslStyleStoreTests
         public TestContext(
             TemporarySqliteDatabase database,
             CslStyleStore store,
-            IBlockingOperationService blockingOperations)
+            IBlockingOperationService blockingOperations,
+            ILibraryRevisionService revisions)
         {
             Database = database;
             Store = store;
             BlockingOperations = blockingOperations;
+            Revisions = revisions;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public CslStyleStore Store { get; }
         public IBlockingOperationService BlockingOperations { get; }
+        public ILibraryRevisionService Revisions { get; }
 
         public ValueTask DisposeAsync()
         {

@@ -10,7 +10,7 @@ namespace Patchouli.Tests;
 
 /// <summary>
 /// Pure v3 protocol-contract tests: resource tree grammar, the closed
-/// { meta, continuation, message?, entries } envelope shape, and the closed error table.
+/// { meta, continuation, message?, entries } envelope shape, terminal diagnostics, and the error table.
 /// These do not touch the database or infrastructure.
 /// </summary>
 public sealed class McpV3ContractTests
@@ -101,25 +101,22 @@ public sealed class McpV3ContractTests
             McpEnvelope<McpFindMeta, McpFindEntry>.Create(
                 new McpFindMeta("lib:1", 3, 3, 1),
                 [new McpFindEntry("patchouli://items/", "/items", "directory")],
-                message: new McpMessage([McpWarningCodes.WhitespaceQueryTreatedAsBrowse], null));
+                message: new McpMessage(null,
+                    [McpWarningCodes.ToTerminalLine(McpWarningCodes.WhitespaceQueryTreatedAsBrowse)]));
         JsonNode root = JsonSerializer.SerializeToNode(envelope)!;
         root["message"]!["warnings"]![0]!.GetValue<string>().Should()
-            .Be(McpWarningCodes.WhitespaceQueryTreatedAsBrowse);
+            .Be(McpWarningCodes.ToTerminalLine(McpWarningCodes.WhitespaceQueryTreatedAsBrowse));
         root["message"]!["error"].Should().BeNull();
     }
 
     [Fact]
-    public void Error_is_closed_to_code_name_and_correlation_id()
+    public void Error_renders_a_compact_sanitized_terminal_diagnostic()
     {
-        McpToolError error = McpToolError.From(McpErrorCode.NotFound, "detail is never serialized",
+        McpToolError error = McpToolError.From(McpErrorCode.NotFound, "resource was not found",
             "corr-1");
         error.Code.Should().Be(3);
         error.Name.Should().Be("NOT_FOUND");
-        JsonNode node = JsonSerializer.SerializeToNode(error)!;
-        node.AsObject().Select(pair => pair.Key).Should().Equal("code", "name", "correlation_id");
-        node["code"]!.GetValue<int>().Should().Be(3);
-        node["name"]!.GetValue<string>().Should().Be("NOT_FOUND");
-        node["correlation_id"]!.GetValue<string>().Should().Be("corr-1");
+        error.ToTerminalLine().Should().Be("NOT_FOUND [code 3; ref corr-1]: resource was not found");
     }
 
     [Theory]
@@ -153,19 +150,15 @@ public sealed class McpV3ContractTests
     }
 
     [Fact]
-    public void Long_find_entry_keeps_inapplicable_fields_null()
+    public void Long_find_variants_omit_inapplicable_fields()
     {
-        McpFindLongEntry entry = new("patchouli://items/x.bib", "Title", "file",
-            "patchouli://items/x.bib", null, null, null, "active", null, null, null, true);
+        McpItemLongEntry entry = new("patchouli://items/x.bib", "Title", "file", "active", "indexed", true);
         JsonNode node = JsonSerializer.SerializeToNode(entry)!;
-        node["item_uri"]!.GetValue<string>().Should().Be("patchouli://items/x.bib");
-        node["document_instance_id"].Should().BeNull();
-        node["page_index"].Should().BeNull();
-        node["evidence_ref"].Should().BeNull();
         node["item_status"]!.GetValue<string>().Should().Be("active");
-        node["document_status"].Should().BeNull();
-        node["source_status"].Should().BeNull();
-        node["style_enabled"].Should().BeNull();
+        node["primary_document_ocr_index_status"]!.GetValue<string>().Should().Be("indexed");
+        node.AsObject().ContainsKey("document_status").Should().BeFalse();
+        node.AsObject().ContainsKey("source_status").Should().BeFalse();
+        node.AsObject().ContainsKey("style_enabled").Should().BeFalse();
         node["citable"]!.GetValue<bool>().Should().BeTrue();
     }
 
@@ -229,8 +222,9 @@ public sealed class McpV3ContractTests
             McpEnvelope<McpFindMeta, McpFindEntry>.Create(
                 new McpFindMeta("lib:1", 3, 3, 1),
                 [new McpFindEntry("patchouli://items/", "/items", "directory")],
-                message: new McpMessage([McpWarningCodes.WhitespaceQueryTreatedAsBrowse],
-                    McpToolError.From(McpErrorCode.NotFound, "detail is never serialized", "corr-1")));
+                message: new McpMessage(
+                    McpToolError.From(McpErrorCode.NotFound, "resource was not found", "corr-1").ToTerminalLine(),
+                    [McpWarningCodes.ToTerminalLine(McpWarningCodes.WhitespaceQueryTreatedAsBrowse)]));
         string json = JsonSerializer.Serialize(envelope);
         McpToonCodec.DecodeToJson(McpToonCodec.Encode(envelope)).Should().Be(json);
     }

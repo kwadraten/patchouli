@@ -164,9 +164,9 @@ internal sealed class McpHttpClient
             using JsonDocument document = JsonDocument.Parse(text);
             if (document.RootElement.TryGetProperty("message", out JsonElement message) &&
                 message.TryGetProperty("error", out JsonElement error) &&
-                error.TryGetProperty("code", out JsonElement code))
+                error.ValueKind == JsonValueKind.String)
             {
-                return code.GetInt32();
+                return ExtractTerminalCode(error.GetString());
             }
         }
         catch (JsonException)
@@ -174,27 +174,26 @@ internal sealed class McpHttpClient
             // TOON (or a partial body) is not JSON; fall back to the scan below.
         }
 
-        // The default encoding is TOON. The error object is the closed shape
-        // { code, name, correlation_id } inside a "message:" block.
-        const string marker = "code: ";
-        int index = text.LastIndexOf(marker, StringComparison.Ordinal);
-        if (index >= 0 && int.TryParse(ReadDigits(text, index + marker.Length), out int toonCode))
-        {
-            return toonCode;
-        }
-
-        return CliExitCode.Internal;
+        return ExtractTerminalCode(text);
     }
 
-    private static string ReadDigits(string text, int start)
+    private static int ExtractTerminalCode(string? text)
     {
-        int end = start;
-        while (end < text.Length && char.IsDigit(text[end]))
+        const string marker = "[code ";
+        int index = text?.LastIndexOf(marker, StringComparison.Ordinal) ?? -1;
+        if (index < 0)
+        {
+            return CliExitCode.Internal;
+        }
+
+        index += marker.Length;
+        int end = index;
+        while (end < text!.Length && char.IsDigit(text[end]))
         {
             end++;
         }
 
-        return end > start ? text[start..end] : string.Empty;
+        return int.TryParse(text[index..end], out int code) ? code : CliExitCode.Internal;
     }
 
     private static int MapRpcError(int code)

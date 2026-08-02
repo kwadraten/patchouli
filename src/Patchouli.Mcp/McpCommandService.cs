@@ -2,8 +2,9 @@ using System.Text;
 using System.Text.Json;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Evidence;
+using Patchouli.Core.Evidence;
 
 namespace Patchouli.Mcp;
 
@@ -179,7 +180,7 @@ public sealed class McpCommandService
         }
 
         McpFindMeta meta = new(state.Value.LibraryRevision, page.DomainTotal, page.FilteredTotal, page.Entries.Count);
-        McpMessage? message = warnings.Count == 0 ? null : new McpMessage(warnings, null);
+        McpMessage? message = warnings.Count == 0 ? null : new McpMessage(null, warnings);
         McpEnvelope<McpFindMeta, object> envelope =
             McpEnvelope<McpFindMeta, object>.Create(meta, page.Entries, page.Continuation, message);
         return McpCommandResult<McpFindMeta, object>.Ok(envelope);
@@ -220,14 +221,16 @@ public sealed class McpCommandService
         List<string> warnings = [];
         if (request.LimitBytes is > MaxLimitBytes)
         {
-            warnings.Add($"limit_bytes was clamped to the server hard maximum of {MaxLimitBytes}.");
+            warnings.Add(
+                $"LIMIT_BYTES_CLAMPED: limit_bytes was clamped to the server hard maximum of {MaxLimitBytes}.");
         }
 
-        McpToolError? topError = null;
+        string? topError = null;
         if (entries.Any(entry => entry.Truncated))
         {
             topError = McpToolError.From(McpErrorCode.ResponseTruncated,
-                "At least one response exceeds limit_bytes; partial content is available and must not be treated as complete.");
+                    "At least one response exceeds limit_bytes; partial content is available and must not be treated as complete.")
+                .ToTerminalLine();
         }
         else if (entries.Count > 0 && entries.All(entry => entry.Error is not null))
         {
@@ -236,14 +239,15 @@ public sealed class McpCommandService
 
         McpMessage? message = warnings.Count == 0 && topError is null
             ? null
-            : new McpMessage(warnings, topError);
+            : new McpMessage(topError, warnings);
         McpEnvelope<McpFetchMeta, McpFetchResult> envelope =
             McpEnvelope<McpFetchMeta, McpFetchResult>.Create(
                 new McpFetchMeta(state.Value.LibraryRevision), entries, null, message);
         return topError is null
             ? McpCommandResult<McpFetchMeta, McpFetchResult>.Ok(envelope)
-            : McpCommandResult<McpFetchMeta, McpFetchResult>.Partial(envelope, (McpErrorCode)topError.Code,
-                topError.Detail ?? topError.Name);
+            : McpCommandResult<McpFetchMeta, McpFetchResult>.Partial(envelope,
+                McpToolError.TryGetCode(topError, out McpErrorCode topErrorCode) ? topErrorCode : McpErrorCode.Internal,
+                topError);
     }
 
     public async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutAsync(McpPutRequest request,
@@ -291,7 +295,7 @@ public sealed class McpCommandService
             string detail = result.ErrorMessage ?? result.ErrorCode ?? "Put failed.";
             McpEnvelope<McpPutMeta, McpPutResult> failed =
                 McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(baseRevision), []);
-            McpMessage message = new([], McpToolError.From(code, detail));
+            McpMessage message = new(McpToolError.From(code, detail).ToTerminalLine(), []);
             failed = failed with { Message = message };
             return McpCommandResult<McpPutMeta, McpPutResult>.Partial(failed, code, detail);
         }
@@ -300,8 +304,10 @@ public sealed class McpCommandService
         string newRevision = afterWrite.IsSuccess ? afterWrite.Value.LibraryRevision : baseRevision;
         McpPutResult putResult = new(request.Uri, result.Value.ResourceType, result.Value.Committed,
             result.Value.ContentBytes);
+        IReadOnlyList<string> warnings = result.Value.Warnings ?? [];
         McpEnvelope<McpPutMeta, McpPutResult> envelope =
-            McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(newRevision), [putResult]);
+            McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(newRevision), [putResult],
+                message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
         return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
     }
 
@@ -349,7 +355,7 @@ public sealed class McpCommandService
             {
                 results[index] = new McpCitationResult(reference, null, null,
                     McpToolError.From(McpErrorCode.InvalidArgument,
-                        parsed.ErrorMessage ?? $"'{reference}' is not a valid URI."));
+                        parsed.ErrorMessage ?? $"'{reference}' is not a valid URI.").ToTerminalLine());
                 continue;
             }
 
@@ -363,7 +369,7 @@ public sealed class McpCommandService
                     : McpErrorMappings.ToReadError(resolved.ErrorCode);
                 results[index] = new McpCitationResult(reference, null, null,
                     McpToolError.From(code,
-                        resolved.ErrorMessage ?? "Reference cannot be resolved to a citable item."));
+                        resolved.ErrorMessage ?? "Reference cannot be resolved to a citable item.").ToTerminalLine());
                 continue;
             }
 
@@ -374,12 +380,12 @@ public sealed class McpCommandService
                 McpErrorCode code = McpErrorMappings.ToReadError(rendered.ErrorCode);
                 results[index] = new McpCitationResult(reference, null, null,
                     McpToolError.From(code,
-                        rendered.ErrorMessage ?? rendered.ErrorCode ?? "Citation rendering failed."));
+                        rendered.ErrorMessage ?? rendered.ErrorCode ?? "Citation rendering failed.").ToTerminalLine());
                 continue;
             }
 
             effectiveStyleId ??= rendered.Value.StyleId;
-            warnings.AddRange(rendered.Value.Warnings);
+            warnings.AddRange(rendered.Value.Warnings.Select(McpWarningCodes.ToTerminalLine));
             results[index] = new McpCitationResult(reference, McpResourceUris.ItemUri(resolved.Value),
                 rendered.Value.RenderedText, null);
             itemIds.Add(resolved.Value);
@@ -395,14 +401,14 @@ public sealed class McpCommandService
             {
                 bibliography = bibliographyRender.Value.RenderedText;
                 effectiveStyleId ??= bibliographyRender.Value.StyleId;
-                warnings.AddRange(bibliographyRender.Value.Warnings);
+                warnings.AddRange(bibliographyRender.Value.Warnings.Select(McpWarningCodes.ToTerminalLine));
             }
         }
 
         string? effectiveStyleUri = effectiveStyleId is null ? null : McpResourceUris.StyleUri(effectiveStyleId);
         effectiveStyleUri ??= request.Style;
 
-        McpToolError? topError = null;
+        string? topError = null;
         if (results.Length > 0 && results.All(result => result.Error is not null))
         {
             topError = results[0].Error;
@@ -412,13 +418,14 @@ public sealed class McpCommandService
             request.Html ? "html" : "text", bibliography);
         McpMessage? message = warnings.Count == 0 && topError is null
             ? null
-            : new McpMessage(warnings.Distinct(StringComparer.Ordinal).ToArray(), topError);
+            : new McpMessage(topError, warnings.Distinct(StringComparer.Ordinal).ToArray());
         McpEnvelope<McpCiteMeta, McpCitationResult> envelope =
             McpEnvelope<McpCiteMeta, McpCitationResult>.Create(meta, results, null, message);
         return topError is null
             ? McpCommandResult<McpCiteMeta, McpCitationResult>.Ok(envelope)
-            : McpCommandResult<McpCiteMeta, McpCitationResult>.Partial(envelope, (McpErrorCode)topError.Code,
-                topError.Detail ?? topError.Name);
+            : McpCommandResult<McpCiteMeta, McpCitationResult>.Partial(envelope,
+                McpToolError.TryGetCode(topError, out McpErrorCode topErrorCode) ? topErrorCode : McpErrorCode.Internal,
+                topError);
     }
 
     private async Task<McpFetchResult> FetchSingleAsync(string uri, string? range, int limitBytes,
@@ -698,7 +705,7 @@ public sealed class McpCommandService
                 McpToolError error = McpToolError.From(McpErrorCode.ResponseTruncated,
                     "Response exceeds limit_bytes; partial content is available and must not be treated as complete.");
                 return new McpFetchResult(uri, "text_document", itemUri, content, false, true, returned, limitBytes,
-                    nextRange, nextRange, error);
+                    nextRange, nextRange, error.ToTerminalLine());
             }
         }
 
@@ -741,7 +748,7 @@ public sealed class McpCommandService
         McpToolError error = McpToolError.From(McpErrorCode.ResponseTruncated,
             "Response exceeds limit_bytes; partial content is available and must not be treated as complete.");
         return new McpFetchResult(uri, resourceType, itemUri, best, false, true, returned, limitBytes, nextRange,
-            nextRange, error);
+            nextRange, error.ToTerminalLine());
     }
 
     private static McpFetchResult CompleteFetch(string uri, string resourceType, string? itemUri, string content,
@@ -753,7 +760,8 @@ public sealed class McpCommandService
 
     private static McpFetchResult FailedFetch(string uri, McpToolError error, int limitBytes)
     {
-        return new McpFetchResult(uri, null, null, null, false, false, 0, limitBytes, null, null, error);
+        return new McpFetchResult(uri, null, null, null, false, false, 0, limitBytes, null, null,
+            error.ToTerminalLine());
     }
 
     private static int SerializedSize(McpFetchResult entry, string libraryRevision)
@@ -873,7 +881,7 @@ public sealed class McpCommandService
                 List<object> entries = [];
                 foreach (McpBrowseDocumentRow row in page.Value.Rows)
                 {
-                    entries.Add(await BuildDocumentEntryAsync(row, longMode, cancellationToken));
+                    entries.Add(BuildDocumentEntryAsync(row, longMode));
                 }
 
                 string? continuation = page.Value.HasMore
@@ -942,29 +950,25 @@ public sealed class McpCommandService
                         search.ErrorMessage ?? search.ErrorCode ?? "Search failed.");
                 }
 
+                Result<IReadOnlyList<McpTextResourceProjection>> projections =
+                    await _read.GetTextResourceProjectionsAsync(
+                        search.Value.Results.Select(result => result.DocumentInstanceId).Distinct().ToArray(), where,
+                        cancellationToken);
+                if (projections.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(projections.ErrorCode),
+                        projections.ErrorMessage ?? projections.ErrorCode ?? "Text resource projection failed.");
+                }
+
+                Dictionary<DocumentInstanceId, McpTextResourceProjection> projectionByDocument = projections.Value
+                    .ToDictionary(projection => projection.DocumentInstanceId);
                 List<object> entries = [];
-                Dictionary<ItemId, McpItemMetadataResponse?> metadataCache = new();
                 foreach (McpSearchPageResult page in search.Value.Results)
                 {
-                    if (!metadataCache.TryGetValue(page.ItemId, out McpItemMetadataResponse? metadata))
+                    if (!projectionByDocument.TryGetValue(page.DocumentInstanceId,
+                            out McpTextResourceProjection? projection))
                     {
-                        Result<McpItemMetadataResponse> fetched = await _read.GetItemMetadataAsync(page.ItemId,
-                            cancellationToken);
-                        metadata = fetched.IsSuccess ? fetched.Value : null;
-                        metadataCache[page.ItemId] = metadata;
-                    }
-
-                    string? documentStatus = null;
-                    string? sourceStatus = null;
-                    if (longMode)
-                    {
-                        Result<McpDocumentStatusResponse> status = await _read.GetDocumentStatusAsync(
-                            page.DocumentInstanceId, cancellationToken);
-                        if (status.IsSuccess)
-                        {
-                            documentStatus = DeriveDocumentStatus(status.Value);
-                            sourceStatus = status.Value.SourceFileStatus;
-                        }
+                        continue;
                     }
 
                     foreach (McpMatchedUnit unit in page.MatchedUnits)
@@ -979,16 +983,7 @@ public sealed class McpCommandService
                             continue;
                         }
 
-                        bool citable = metadata is not null && IsCitableItem(metadata.ItemType, metadata.Title);
-                        bool keep = await MatchesResourceWhereAsync(page.ItemId, page.DocumentInstanceId, citable,
-                            where, cancellationToken);
-                        if (!keep)
-                        {
-                            continue;
-                        }
-
-                        entries.Add(BuildEvidenceEntry(page, unit, metadata, citable, documentStatus, sourceStatus,
-                            longMode));
+                        entries.Add(BuildEvidenceEntry(page, unit, projection, longMode));
                     }
                 }
 
@@ -1080,10 +1075,15 @@ public sealed class McpCommandService
                     return null;
                 }
 
+                Result<string> primaryStatus = await _read.GetPrimaryDocumentOcrIndexStatusAsync(target.ItemId.Value,
+                    cancellationToken);
                 string uri = McpResourceUris.ItemUri(target.ItemId.Value);
                 return new SingletonResource(uri, metadata.Value.Title, "file",
                     IsCitableItem(metadata.Value.ItemType, metadata.Value.Title),
-                    target.ItemId, uri, ItemStatus: metadata.Value.Status ?? "unset");
+                    target.ItemId, ItemStatus: metadata.Value.Status ?? "unset",
+                    PrimaryDocumentOcrIndexStatus: primaryStatus.IsSuccess
+                        ? primaryStatus.Value
+                        : "no_primary_document");
             }
 
             case McpUriKind.Document:
@@ -1119,8 +1119,7 @@ public sealed class McpCommandService
                 {
                     Uri = McpResourceUris.PageUri(target.DocumentId.Value, target.PageIndex!.Value),
                     Type = "file",
-                    DocumentId = target.DocumentId.Value,
-                    PageIndex = target.PageIndex.Value
+                    DocumentId = target.DocumentId.Value
                 };
             }
 
@@ -1152,8 +1151,9 @@ public sealed class McpCommandService
                 Result<ItemId> owner = await _read.GetItemIdForDocumentAsync(documentId, cancellationToken);
                 string? itemUri = owner.IsSuccess ? McpResourceUris.ItemUri(owner.Value) : null;
                 string? itemStatus = null;
-                string? documentStatus = null;
-                string? sourceStatus = null;
+                string documentStatus = "missing_source";
+                string sourceStatus = "unavailable";
+                string ocrIndexStatus = "no_ocr";
                 if (owner.IsSuccess)
                 {
                     Result<McpItemMetadataResponse> metadata = await _read.GetItemMetadataAsync(owner.Value,
@@ -1164,19 +1164,22 @@ public sealed class McpCommandService
                     }
                 }
 
-                Result<McpDocumentStatusResponse> status = await _read.GetDocumentStatusAsync(documentId,
-                    cancellationToken);
-                if (status.IsSuccess)
+                Result<IReadOnlyList<McpTextResourceProjection>> projections =
+                    await _read.GetTextResourceProjectionsAsync([documentId], cancellationToken: cancellationToken);
+                McpTextResourceProjection? projection =
+                    projections.IsSuccess ? projections.Value.SingleOrDefault() : null;
+                if (projection is not null)
                 {
-                    documentStatus = DeriveDocumentStatus(status.Value);
-                    sourceStatus = status.Value.SourceFileStatus;
+                    documentStatus = projection.DocumentStatus;
+                    sourceStatus = projection.SourceStatus;
+                    ocrIndexStatus = projection.OcrIndexStatus;
                 }
 
                 bool citable = owner.IsSuccess;
                 return new SingletonResource(uri, record.Value.SourceTitle ?? record.Value.EvidenceRefId, "file",
                     citable, owner.IsSuccess ? owner.Value : null, itemUri,
-                    documentId, pageIndex, target.EvidenceRefId,
-                    itemStatus, documentStatus, sourceStatus);
+                    documentId, itemStatus, documentStatus, sourceStatus,
+                    OcrIndexStatus: ocrIndexStatus);
             }
 
             default:
@@ -1192,8 +1195,9 @@ public sealed class McpCommandService
         bool citable = outline.ItemId is not null;
         string? itemUri = outline.ItemId is null ? null : McpResourceUris.ItemUri(outline.ItemId.Value);
         string? itemStatus = null;
-        string? documentStatus = null;
-        string? sourceStatus = null;
+        string documentStatus = "missing_source";
+        string sourceStatus = "unavailable";
+        string ocrIndexStatus = "no_ocr";
         if (outline.ItemId is { } itemId)
         {
             Result<McpItemMetadataResponse> metadata = await _read.GetItemMetadataAsync(itemId, cancellationToken);
@@ -1203,24 +1207,35 @@ public sealed class McpCommandService
             }
         }
 
-        Result<McpDocumentStatusResponse> status = await _read.GetDocumentStatusAsync(documentId, cancellationToken);
-        if (status.IsSuccess)
+        Result<IReadOnlyList<McpTextResourceProjection>> projections =
+            await _read.GetTextResourceProjectionsAsync([documentId], cancellationToken: cancellationToken);
+        McpTextResourceProjection? projection = projections.IsSuccess ? projections.Value.SingleOrDefault() : null;
+        if (projection is not null)
         {
-            documentStatus = DeriveDocumentStatus(status.Value);
-            sourceStatus = status.Value.SourceFileStatus;
+            documentStatus = projection.DocumentStatus;
+            sourceStatus = projection.SourceStatus;
+            ocrIndexStatus = projection.OcrIndexStatus;
         }
 
         return new SingletonResource(uri, outline.Title ?? documentId.ToString(), "directory", citable,
-            outline.ItemId, itemUri, documentId, ItemStatus: itemStatus,
-            DocumentStatus: documentStatus, SourceStatus: sourceStatus);
+            outline.ItemId, itemUri, documentId, itemStatus,
+            documentStatus, sourceStatus,
+            OcrIndexStatus: ocrIndexStatus);
     }
 
     private static object BuildLongEntryFromSingleton(SingletonResource singleton)
     {
-        return new McpFindLongEntry(singleton.Uri, singleton.Title, singleton.Type,
-            singleton.ItemUri, singleton.DocumentId?.ToString(), singleton.PageIndex, singleton.EvidenceRef,
-            singleton.ItemStatus, singleton.DocumentStatus, singleton.SourceStatus, singleton.StyleEnabled,
-            singleton.Citable);
+        return singleton.StyleEnabled is { } styleEnabled
+            ? new McpStyleLongEntry(singleton.Uri, singleton.Title, singleton.Type, styleEnabled)
+            : singleton.DocumentId is not null
+                ? new McpTextLongEntry(singleton.Uri, singleton.Title, singleton.Type, singleton.ItemUri,
+                    singleton.ItemStatus, singleton.DocumentStatus ?? "missing_source",
+                    singleton.SourceStatus ?? "unavailable",
+                    PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable)
+                : new McpItemLongEntry(singleton.Uri, singleton.Title, singleton.Type,
+                    singleton.ItemStatus ?? "unset",
+                    PrimaryDocumentOcrIndexState.FromValue(singleton.PrimaryDocumentOcrIndexStatus).Value,
+                    singleton.Citable);
     }
 
     private static object BuildItemEntry(McpBrowseItemRow row, bool longMode)
@@ -1232,12 +1247,11 @@ public sealed class McpCommandService
             return new McpFindEntry(uri, row.Title, "file");
         }
 
-        return new McpFindLongEntry(uri, row.Title, "file", uri, null, null, null, row.Status ?? "unset", null, null,
-            null, citable);
+        return new McpItemLongEntry(uri, row.Title, "file", row.Status ?? "unset",
+            PrimaryDocumentOcrIndexState.FromValue(row.PrimaryDocumentOcrIndexStatus).Value, citable);
     }
 
-    private async Task<object> BuildDocumentEntryAsync(McpBrowseDocumentRow row, bool longMode,
-        CancellationToken cancellationToken)
+    private static object BuildDocumentEntryAsync(McpBrowseDocumentRow row, bool longMode)
     {
         string uri = McpResourceUris.DocumentUri(row.DocumentInstanceId);
         string title = row.Title ?? row.DocumentInstanceId.ToString();
@@ -1248,28 +1262,8 @@ public sealed class McpCommandService
             return new McpFindEntry(uri, title, "directory");
         }
 
-        string? itemStatus = null;
-        string? documentStatus = null;
-        string? sourceStatus = null;
-        if (row.ItemId is { } itemId)
-        {
-            Result<McpItemMetadataResponse> metadata = await _read.GetItemMetadataAsync(itemId, cancellationToken);
-            if (metadata.IsSuccess)
-            {
-                itemStatus = metadata.Value.Status ?? "unset";
-            }
-        }
-
-        Result<McpDocumentStatusResponse> status = await _read.GetDocumentStatusAsync(row.DocumentInstanceId,
-            cancellationToken);
-        if (status.IsSuccess)
-        {
-            documentStatus = DeriveDocumentStatus(status.Value);
-            sourceStatus = status.Value.SourceFileStatus;
-        }
-
-        return new McpFindLongEntry(uri, title, "directory", itemUri, row.DocumentInstanceId.ToString(), null, null,
-            itemStatus, documentStatus, sourceStatus, null, citable);
+        return new McpTextLongEntry(uri, title, "directory", itemUri, row.ItemStatus, row.DocumentStatus,
+            row.SourceStatus, PrimaryDocumentOcrIndexState.FromValue(row.OcrIndexStatus).Value, row.Citable);
     }
 
     private static object BuildStyleEntry(McpBrowseStyleRow row, bool longMode)
@@ -1280,8 +1274,7 @@ public sealed class McpCommandService
             return new McpFindEntry(uri, row.DisplayName, "file");
         }
 
-        return new McpFindLongEntry(uri, row.DisplayName, "file", null, null, null, null, null, null, null,
-            row.Enabled, false);
+        return new McpStyleLongEntry(uri, row.DisplayName, "file", row.Enabled);
     }
 
     private static object BuildStyleSummaryEntry(McpCslStyleSummary style, bool longMode)
@@ -1292,12 +1285,11 @@ public sealed class McpCommandService
             return new McpFindEntry(uri, style.DisplayName, "file");
         }
 
-        return new McpFindLongEntry(uri, style.DisplayName, "file", null, null, null, null, null, null, null,
-            style.Enabled, false);
+        return new McpStyleLongEntry(uri, style.DisplayName, "file", style.Enabled);
     }
 
     private static object BuildEvidenceEntry(McpSearchPageResult page, McpMatchedUnit unit,
-        McpItemMetadataResponse? metadata, bool citable, string? documentStatus, string? sourceStatus, bool longMode)
+        McpTextResourceProjection projection, bool longMode)
     {
         int pageIndex = page.PageIndex + 1;
         string uri = McpResourceUris.EvidencePageUri(page.DocumentInstanceId, pageIndex, unit.EvidenceRef!);
@@ -1307,10 +1299,10 @@ public sealed class McpCommandService
             return new McpFindEntry(uri, title, "file");
         }
 
-        string? itemUri = McpResourceUris.ItemUri(page.ItemId);
-        string? itemStatus = metadata is null ? null : metadata.Status ?? "unset";
-        return new McpFindLongEntry(uri, title, "file", itemUri, page.DocumentInstanceId.ToString(), pageIndex,
-            unit.EvidenceRef, itemStatus, documentStatus, sourceStatus, null, citable);
+        string? itemUri = projection.ItemId is null ? null : McpResourceUris.ItemUri(projection.ItemId.Value);
+        return new McpTextLongEntry(uri, title, "file", itemUri, projection.ItemStatus, projection.DocumentStatus,
+            projection.SourceStatus, PrimaryDocumentOcrIndexState.FromValue(projection.OcrIndexStatus).Value,
+            projection.Citable);
     }
 
     private async Task<bool> MatchesResourceWhereAsync(ItemId? itemId, DocumentInstanceId? documentId, bool citable,
@@ -1364,22 +1356,30 @@ public sealed class McpCommandService
 
                 case "document_status":
                 case "source_status":
+                case "ocr_index_status":
                     if (documentId is null)
                     {
                         return false;
                     }
 
                 {
-                    Result<McpDocumentStatusResponse> status = await _read.GetDocumentStatusAsync(documentId.Value,
-                        cancellationToken);
-                    if (status.IsFailure)
+                    Result<IReadOnlyList<McpTextResourceProjection>> projections =
+                        await _read.GetTextResourceProjectionsAsync([documentId.Value],
+                            cancellationToken: cancellationToken);
+                    McpTextResourceProjection? projection = projections.IsSuccess
+                        ? projections.Value.SingleOrDefault()
+                        : null;
+                    if (projection is null)
                     {
                         return false;
                     }
 
-                    string actual = clause.Key == "document_status"
-                        ? DeriveDocumentStatus(status.Value)
-                        : status.Value.SourceFileStatus;
+                    string actual = clause.Key switch
+                    {
+                        "document_status" => projection.DocumentStatus,
+                        "source_status" => projection.SourceStatus,
+                        _ => PrimaryDocumentOcrIndexState.FromValue(projection.OcrIndexStatus).Value
+                    };
                     if (!string.Equals(actual, clause.Value, StringComparison.Ordinal))
                     {
                         return false;
@@ -1387,6 +1387,22 @@ public sealed class McpCommandService
 
                     break;
                 }
+
+                case "primary_document_ocr_index_status":
+                    if (itemId is null)
+                    {
+                        return false;
+                    }
+
+                    Result<string> primaryStatus = await _read.GetPrimaryDocumentOcrIndexStatusAsync(itemId.Value,
+                        cancellationToken);
+                    if (primaryStatus.IsFailure || !string.Equals(primaryStatus.Value, clause.Value,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        return false;
+                    }
+
+                    break;
 
                 default:
                     return false;
@@ -1433,9 +1449,9 @@ public sealed class McpCommandService
         IReadOnlyList<string>? allowed = kind switch
         {
             McpUriKind.ItemsScope or McpUriKind.Item =>
-                new[] { "item_type", "item_status", "citable" },
+                new[] { "item_type", "item_status", "primary_document_ocr_index_status", "citable" },
             McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.EvidenceRef =>
-                new[] { "item_type", "item_status", "document_status", "source_status", "citable" },
+                new[] { "item_type", "item_status", "document_status", "source_status", "ocr_index_status", "citable" },
             McpUriKind.StylesScope or McpUriKind.Style => new[] { "style_enabled" },
             _ => null
         };
@@ -1534,16 +1550,6 @@ public sealed class McpCommandService
         return McpCursor.Encode(scope, query, literal, where, offset, searchCursor);
     }
 
-    private static string DeriveDocumentStatus(McpDocumentStatusResponse status)
-    {
-        if (status.HasCurrentLayout)
-        {
-            return status.IsSearchIndexed ? McpDocumentStatusValue.Indexed : McpDocumentStatusValue.Layout;
-        }
-
-        return status.HasOcrText ? McpDocumentStatusValue.Ocr : McpDocumentStatusValue.Unavailable;
-    }
-
     private static bool IsCitableItem(string itemType, string? title)
     {
         return !string.Equals(itemType, "general", StringComparison.Ordinal) ||
@@ -1552,9 +1558,10 @@ public sealed class McpCommandService
 
     private static void AddWarning(List<string> warnings, string code)
     {
-        if (!warnings.Contains(code, StringComparer.Ordinal))
+        string line = McpWarningCodes.ToTerminalLine(code);
+        if (!warnings.Contains(line, StringComparer.Ordinal))
         {
-            warnings.Add(code);
+            warnings.Add(line);
         }
     }
 
@@ -1656,12 +1663,12 @@ public sealed class McpCommandService
         ItemId? ItemId = null,
         string? ItemUri = null,
         DocumentInstanceId? DocumentId = null,
-        int? PageIndex = null,
-        string? EvidenceRef = null,
         string? ItemStatus = null,
         string? DocumentStatus = null,
         string? SourceStatus = null,
-        bool? StyleEnabled = null);
+        bool? StyleEnabled = null,
+        string PrimaryDocumentOcrIndexStatus = "no_primary_document",
+        string OcrIndexStatus = "no_ocr");
 
     private sealed record FindPage(
         IReadOnlyList<object> Entries,

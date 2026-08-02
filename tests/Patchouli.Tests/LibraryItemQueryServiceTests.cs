@@ -65,7 +65,10 @@ public sealed class LibraryItemQueryServiceTests
 
         Result<IReadOnlyList<LibraryItemRow>> rows = await context.Query.ListRowsAsync();
 
-        rows.Value.Single().OcrStatus.Should().Be("OCR 失败：MinerU rejected model_version");
+        rows.Value.Single().PrimaryDocumentOcrIndexState.Value.Should().Be("ocr_failed");
+        rows.Value.Single().PrimaryDocumentOcrIndexState.ChineseLabel.Should().Be("OCR 失败");
+        rows.Value.Single().PrimaryDocumentOcrIndexState.Detail.Should()
+            .Be("最近一次 OCR 失败：MinerU rejected model_version");
     }
 
     [Fact]
@@ -97,6 +100,87 @@ public sealed class LibraryItemQueryServiceTests
             rows.Value.Single().PageCount.Should().Be(1);
             rows.Value.Single().SearchUnitCount.Should().BeGreaterThan(0);
             rows.Value.Single().IndexStatus.Should().Be("current");
+        }
+        finally
+        {
+            File.Delete(filePath);
+        }
+    }
+
+    [Fact]
+    public async Task Keyset_pages_cover_every_item_without_overlap_or_duplicates()
+    {
+        await using TestContext context = await CreateContextAsync();
+        for (int index = 0; index < 5; index++)
+        {
+            context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+            await context.Items.CreateItemAsync("book", $"Paged Item {index}");
+        }
+
+        List<string> seen = new();
+        LibraryItemCursor? cursor = null;
+        int pages = 0;
+        while (true)
+        {
+            Result<LibraryItemPage> pageResult = await context.Query.ListRowsAsync(2, cursor);
+            pageResult.IsSuccess.Should().BeTrue();
+            LibraryItemPage page = pageResult.Value;
+            pages++;
+            foreach (LibraryItemRow row in page.Rows)
+            {
+                seen.Should().NotContain(row.ItemId.ToString());
+                seen.Add(row.ItemId.ToString());
+            }
+
+            if (!page.HasMore)
+            {
+                break;
+            }
+
+            cursor = page.NextCursor;
+        }
+
+        seen.Should().HaveCount(5);
+        pages.Should().BeGreaterThan(1);
+        seen.Distinct().Should().HaveCount(seen.Count);
+    }
+
+    [Fact]
+    public async Task GetRowsByIds_returns_only_the_requested_items()
+    {
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> first = await context.Items.CreateItemAsync("book", "Wanted One");
+        Result<ItemMetadata> second = await context.Items.CreateItemAsync("book", "Wanted Two");
+        Result<ItemMetadata> third = await context.Items.CreateItemAsync("book", "Unwanted");
+
+        Result<IReadOnlyList<LibraryItemRow>> rows =
+            await context.Query.GetRowsByIdsAsync([first.Value.ItemId, second.Value.ItemId]);
+
+        rows.IsSuccess.Should().BeTrue();
+        rows.Value.Select(row => row.ItemId.ToString()).Should().Contain(first.Value.ItemId.ToString());
+        rows.Value.Select(row => row.ItemId.ToString()).Should().Contain(second.Value.ItemId.ToString());
+        rows.Value.Select(row => row.ItemId.ToString()).Should().NotContain(third.Value.ItemId.ToString());
+        rows.Value.Select(row => row.Title).Should().Contain(new[] { "Wanted One", "Wanted Two" });
+    }
+
+    [Fact]
+    public async Task Rows_carry_the_source_path_and_file_asset_id_of_the_primary_document()
+    {
+        await using TestContext context = await CreateContextAsync();
+        string filePath = Path.Combine(Path.GetTempPath(), $"patchouli-path-{Guid.NewGuid():N}.pdf");
+        await File.WriteAllTextAsync(filePath, "fake pdf payload");
+
+        try
+        {
+            Result<ItemMetadata> item = await context.Items.CreateItemAsync("book", "Path Test");
+            Result<FileAsset> asset = await context.Files.RegisterFileAsync(filePath);
+            await context.Documents.AttachDocumentInstanceAsync(item.Value.ItemId, asset.Value.FileAssetId,
+                DocumentInstanceType.PrimaryScan, makePrimary: true);
+
+            Result<IReadOnlyList<LibraryItemRow>> rows = await context.Query.ListRowsAsync();
+
+            rows.Value.Single().SourcePath.Should().Be(filePath);
+            rows.Value.Single().FileAssetId.Should().Be(asset.Value.FileAssetId.ToString());
         }
         finally
         {

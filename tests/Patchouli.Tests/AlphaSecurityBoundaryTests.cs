@@ -1,5 +1,5 @@
 using FluentAssertions;
-using Patchouli.McpServer;
+using Patchouli.Mcp;
 
 namespace Patchouli.Tests;
 
@@ -41,7 +41,8 @@ public sealed class AlphaSecurityBoundaryTests
     [Fact]
     public void EvidenceRef_payload_has_no_local_path_or_secret()
     {
-        string codec = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Evidence", "EvidenceModels.cs"));
+        string codec =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Core", "Evidence", "EvidenceModels.cs"));
         codec.Should().Contain("evref:v2:").And.NotContain("OriginalPath").And.NotContain("ResolvedPath");
     }
 

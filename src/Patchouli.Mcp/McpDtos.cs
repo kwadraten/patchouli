@@ -1,6 +1,6 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
-using Patchouli.Search;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Mcp;
 
@@ -102,7 +102,8 @@ public sealed record McpDocumentStatusResponse(
     bool HasCurrentLayout,
     bool IsSearchIndexed,
     string SourceFileStatus,
-    string? Warning);
+    string? Warning,
+    string DocumentStatus = "missing_source");
 
 public sealed record McpPageTextRequest(
     PageId PageId,
