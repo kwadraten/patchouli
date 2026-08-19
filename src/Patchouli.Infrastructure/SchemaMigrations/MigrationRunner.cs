@@ -182,7 +182,7 @@ public sealed class UnsupportedLibrarySchemaException : Exception
     private static string BuildMessage(IReadOnlyCollection<int> schemaVersions)
     {
         string found = schemaVersions.Count == 0 ? "unknown" : string.Join(", ", schemaVersions.Order());
-        return $"Library schema epoch {found} is not supported by Patchouli 0.3.0. " +
+        return $"Library schema epoch {found} is not supported by Patchouli 0.3.1. " +
                "Create a new library and re-import the source documents.";
     }
 }

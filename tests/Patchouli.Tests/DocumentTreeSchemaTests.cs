@@ -57,7 +57,7 @@ public sealed class DocumentTreeSchemaTests
         UnsupportedLibrarySchemaException error =
             await Assert.ThrowsAsync<UnsupportedLibrarySchemaException>(() => runner.RunAsync());
 
-        error.Message.Should().Contain("not supported by Patchouli 0.3.0");
+        error.Message.Should().Contain("not supported by Patchouli 0.3.1");
         await using SqliteConnection verify = database.ConnectionFactory.CreateConnection();
         await verify.OpenAsync();
         int rows = await verify.ExecuteScalarAsync<int>("select count(1) from layout_nodes;");
