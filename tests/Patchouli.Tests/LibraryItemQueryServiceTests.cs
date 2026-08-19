@@ -69,6 +69,7 @@ public sealed class LibraryItemQueryServiceTests
         rows.Value.Single().PrimaryDocumentOcrIndexState.ChineseLabel.Should().Be("OCR 失败");
         rows.Value.Single().PrimaryDocumentOcrIndexState.Detail.Should()
             .Be("最近一次 OCR 失败：MinerU rejected model_version");
+        rows.Value.Single().HasOcrText.Should().BeFalse();
     }
 
     [Fact]
@@ -99,6 +100,7 @@ public sealed class LibraryItemQueryServiceTests
             rows.Value.Single().LinkedFileName.Should().Be(Path.GetFileName(filePath));
             rows.Value.Single().PageCount.Should().Be(1);
             rows.Value.Single().SearchUnitCount.Should().BeGreaterThan(0);
+            rows.Value.Single().HasOcrText.Should().BeTrue();
             rows.Value.Single().IndexStatus.Should().Be("current");
         }
         finally

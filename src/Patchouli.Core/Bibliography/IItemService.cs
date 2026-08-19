@@ -44,6 +44,10 @@ public interface IItemService
         ItemId itemId,
         CancellationToken cancellationToken = default);
 
+    Task<Result<ItemLifecycleInfo>> GetItemLifecycleAsync(
+        ItemId itemId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<ItemMetadata>> UpdateItemAsync(
         ItemId itemId,
         UpdateItemRequest request,
@@ -59,8 +63,25 @@ public interface IItemService
         ItemId itemId,
         CancellationToken cancellationToken = default);
 
+    Task<Result> DeleteItemsAsync(
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<ItemMetadata>> RestoreItemAsync(
+        ItemId itemId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result> RestoreItemsAsync(
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken = default);
+
     Task<Result<ItemListPage>> ListItemsAsync(
         ListItemsRequest request,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<ItemListPage>> ListTrashedItemsAsync(
+        int pageSize = 50,
+        string? cursor = null,
         CancellationToken cancellationToken = default);
 
     Task<Result<ItemIdentifier>> AddIdentifierAsync(

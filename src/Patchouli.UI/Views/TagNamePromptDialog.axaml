@@ -1,0 +1,30 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        mc:Ignorable="d" d:DesignWidth="440" d:DesignHeight="200"
+        x:Class="Patchouli.UI.Views.TagNamePromptDialog"
+        x:DataType="vm:TagNamePromptDialogViewModel"
+        Title="{Binding Title}"
+        Icon="/Assets/AppIcon.ico"
+        Width="440" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowDecorations="Full"
+        Background="{DynamicResource SurfaceBrush}">
+
+  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+          CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
+    <Grid RowDefinitions="Auto,Auto,Auto" RowSpacing="14">
+      <TextBlock Grid.Row="0" Text="{Binding Prompt}" FontSize="13" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      <TextBox Grid.Row="1" Text="{Binding TagName}" FontSize="13" PlaceholderText="标签名" />
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <Button Content="取消" Command="{Binding CancelCommand}" />
+        <Button Content="{Binding ConfirmText}" Command="{Binding ConfirmCommand}" Classes="Primary" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>

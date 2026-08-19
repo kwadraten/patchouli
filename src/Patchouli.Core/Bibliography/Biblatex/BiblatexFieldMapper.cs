@@ -95,10 +95,7 @@ public static class BiblatexFieldMapper
         IReadOnlyList<ItemCreatorInput> creators = MapCreators(entry);
         IReadOnlyList<ItemDateInput> dates = MapDates(entry);
         IReadOnlyList<ItemIdentifierInput> identifiers = MapIdentifiers(entry);
-        IReadOnlyList<string> tags = entry.Keywords
-            .Select(static value => value.Trim())
-            .Where(static value => value.Length > 0)
-            .ToArray();
+        IReadOnlyList<string> tags = TagNormalizer.NormalizeMany(entry.Keywords);
 
         string? publicationTitle = MapPublicationTitle(entry, itemType);
         string? publisher = MapPublisher(entry, itemType);

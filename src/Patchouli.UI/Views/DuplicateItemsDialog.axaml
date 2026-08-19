@@ -1,0 +1,68 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        mc:Ignorable="d" d:DesignWidth="600" d:DesignHeight="420"
+        x:Class="Patchouli.UI.Views.DuplicateItemsDialog"
+        x:DataType="vm:DuplicateItemsDialogViewModel"
+        Title="检测重复题录"
+        Icon="/Assets/AppIcon.ico"
+        Width="600" MinHeight="420" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True"
+        ShowInTaskbar="False"
+        WindowDecorations="Full"
+        Background="{DynamicResource SurfaceBrush}">
+
+  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+          CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
+    <Grid RowDefinitions="Auto,*,Auto" RowSpacing="16">
+      <Grid RowDefinitions="Auto,Auto" RowSpacing="8">
+        <TextBlock Text="检测到以下重复题录" FontSize="16" FontWeight="SemiBold"
+                   Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+        <TextBlock Grid.Row="1" Text="每对中默认保留排序较早的一边。请选择处理或跳过。"
+                   FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+      </Grid>
+
+      <Border Grid.Row="1" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
+              Background="{DynamicResource SurfaceContainerLowBrush}" Padding="12">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="12">
+            <ItemsControl x:Name="PairsItemsControl" ItemsSource="{Binding Pairs}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate DataType="vm:DuplicateItemPairViewModel">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                    <StackPanel Spacing="4">
+                      <TextBlock Text="{Binding TitleA}" FontSize="13" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding TitleB}" FontSize="13"
+                                 Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding ReasonsText}" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                      <TextBlock Text="{Binding DefaultTargetText}" FontSize="12"
+                                 Foreground="{DynamicResource PrimaryBrush}" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                                VerticalAlignment="Center">
+                      <Button Content="处理" Command="{Binding ProcessCommand}" CommandParameter="{Binding}" />
+                      <Button Content="跳过" Command="{Binding SkipCommand}" CommandParameter="{Binding}" />
+                    </StackPanel>
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <TextBlock Text="没有检测到重复题录。" FontSize="13"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                       IsVisible="{Binding NoPairs}" TextWrapping="Wrap" />
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+
+      <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <Button Content="关闭" Command="{Binding CloseCommand}" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</Window>

@@ -139,6 +139,65 @@ public sealed class ItemService : IItemService
         }
     }
 
+    public async Task<Result<ItemLifecycleInfo>> GetItemLifecycleAsync(
+        ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            LifecycleRow? row = await connection.QuerySingleOrDefaultAsync<LifecycleRow>(
+                """
+                select deleted_at as DeletedAt, merged_into_item_id as MergedIntoItemId
+                from items
+                where item_id = @ItemId;
+                """,
+                new { ItemId = itemId.ToString() });
+
+            if (row is not null)
+            {
+                ItemLifecycleState state = row.MergedIntoItemId is not null
+                    ? ItemLifecycleState.Merged
+                    : row.DeletedAt is not null
+                        ? ItemLifecycleState.Trash
+                        : ItemLifecycleState.Active;
+
+                return Result<ItemLifecycleInfo>.Success(new ItemLifecycleInfo(
+                    itemId,
+                    state,
+                    row.MergedIntoItemId is null ? null : new ItemId(Guid.Parse(row.MergedIntoItemId)),
+                    row.DeletedAt is null ? null : DateTimeOffset.Parse(row.DeletedAt),
+                    null));
+            }
+
+            string? purgedAt = await connection.ExecuteScalarAsync<string?>(
+                "select purged_at from item_purge_records where item_id = @ItemId;",
+                new { ItemId = itemId.ToString() });
+            if (purgedAt is not null)
+            {
+                return Result<ItemLifecycleInfo>.Success(new ItemLifecycleInfo(
+                    itemId,
+                    ItemLifecycleState.Purged,
+                    null,
+                    null,
+                    DateTimeOffset.Parse(purgedAt)));
+            }
+
+            return Result<ItemLifecycleInfo>.Failure(AppErrorCodes.NotFound, "Item was not found.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
+        {
+            return DatabaseFailure<ItemLifecycleInfo>(exception);
+        }
+    }
+
     public async Task<Result<ItemMetadata>> UpdateItemAsync(
         ItemId itemId,
         UpdateItemRequest request,
@@ -264,6 +323,7 @@ public sealed class ItemService : IItemService
                     updated_at = @UpdatedAt
                 where item_id = @ItemId
                   and deleted_at is null
+                  and merged_into_item_id is null
                   and (@ExpectedUpdatedAt is null or updated_at = @ExpectedUpdatedAt);
                 """,
                 updateParameters,
@@ -317,8 +377,23 @@ public sealed class ItemService : IItemService
         }
     }
 
-    public async Task<Result> DeleteItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
+    public Task<Result> DeleteItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
     {
+        return DeleteItemsAsync([itemId], cancellationToken);
+    }
+
+    public async Task<Result> DeleteItemsAsync(
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (itemIds.Count == 0)
+        {
+            return Result.Success();
+        }
+
+        ItemId[] distinctIds = itemIds.Distinct().ToArray();
+        string[] idStrings = distinctIds.Select(id => id.ToString()).ToArray();
+
         try
         {
             using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
@@ -326,28 +401,31 @@ public sealed class ItemService : IItemService
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
+            string now = FormatUtc(_clock.UtcNow);
             int affected = await connection.ExecuteAsync(
                 """
                 update items
                 set deleted_at = @DeletedAt,
                     updated_at = @UpdatedAt
-                where item_id = @ItemId and deleted_at is null;
+                where item_id in @ItemIds
+                  and deleted_at is null
+                  and merged_into_item_id is null;
                 """,
                 new
                 {
-                    ItemId = itemId.ToString(),
-                    DeletedAt = FormatUtc(_clock.UtcNow),
-                    UpdatedAt = FormatUtc(_clock.UtcNow)
+                    ItemIds = idStrings,
+                    DeletedAt = now,
+                    UpdatedAt = now
                 }, transaction);
 
-            if (affected == 0)
+            if (affected != distinctIds.Length)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(AppErrorCodes.NotFound, "Item was not found.");
+                return Result.Failure(AppErrorCodes.NotFound, "One or more items were not found.");
             }
 
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
-                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+                connection, transaction, LibraryChangeSet.Empty with { ItemIds = distinctIds }, cancellationToken);
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -367,6 +445,201 @@ public sealed class ItemService : IItemService
                                               "infrastructure.item-service"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result<ItemMetadata>> RestoreItemAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        Result restored = await RestoreItemsAsync([itemId], cancellationToken);
+        if (restored.IsFailure)
+        {
+            return Result<ItemMetadata>.Failure(restored.ErrorCode!, restored.ErrorMessage!);
+        }
+
+        return await GetItemAsync(itemId, cancellationToken);
+    }
+
+    public async Task<Result> RestoreItemsAsync(
+        IReadOnlyList<ItemId> itemIds,
+        CancellationToken cancellationToken = default)
+    {
+        if (itemIds.Count == 0)
+        {
+            return Result.Success();
+        }
+
+        ItemId[] distinctIds = itemIds.Distinct().ToArray();
+        string[] idStrings = distinctIds.Select(id => id.ToString()).ToArray();
+
+        try
+        {
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+            int affected = await connection.ExecuteAsync(
+                """
+                update items
+                set deleted_at = null,
+                    updated_at = @UpdatedAt
+                where item_id in @ItemIds
+                  and deleted_at is not null
+                  and merged_into_item_id is null;
+                """,
+                new
+                {
+                    ItemIds = idStrings,
+                    UpdatedAt = FormatUtc(_clock.UtcNow)
+                }, transaction);
+
+            if (affected != distinctIds.Length)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(AppErrorCodes.NotFound, "One or more items were not found in trash.");
+            }
+
+            Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
+                connection, transaction, LibraryChangeSet.Empty with { ItemIds = distinctIds }, cancellationToken);
+            if (revision.IsFailure)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            PublishRevision(revision.Value);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result<ItemListPage>> ListTrashedItemsAsync(
+        int pageSize = 50,
+        string? cursor = null,
+        CancellationToken cancellationToken = default)
+    {
+        int clampedPageSize = Math.Clamp(pageSize, 1, MaxPageSize);
+        if (!TryParseCursor(cursor, out string? cursorCreatedAt, out string? cursorItemId))
+        {
+            return Result<ItemListPage>.Failure(AppErrorCodes.ValidationFailed, "Item list cursor is invalid.");
+        }
+
+        Result<LibraryMetadata> libraryResult = await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (libraryResult.IsFailure)
+        {
+            return Result<ItemListPage>.Failure(libraryResult.ErrorCode!, libraryResult.ErrorMessage!);
+        }
+
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+
+            var parameters = new
+            {
+                LibraryId = libraryResult.Value.LibraryId.ToString(),
+                CursorCreatedAt = cursorCreatedAt,
+                CursorItemId = cursorItemId,
+                Take = clampedPageSize + 1
+            };
+
+            int totalCount = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1)
+                from items
+                where library_id = @LibraryId
+                  and deleted_at is not null
+                  and merged_into_item_id is null;
+                """,
+                parameters);
+
+            ItemRow[] rows = (await connection.QueryAsync<ItemRow>(
+                """
+                select
+                    item_id as ItemId,
+                    library_id as LibraryId,
+                    item_type as ItemType,
+                    citation_key as CitationKey,
+                    title as Title,
+                    subtitle as Subtitle,
+                    title_short as TitleShort,
+                    creators_json as CreatorsJson,
+                    date as Date,
+                    publication_title as PublicationTitle,
+                    container_title_short as ContainerTitleShort,
+                    collection_title as CollectionTitle,
+                    publisher as Publisher,
+                    place as Place,
+                    edition as Edition,
+                    genre as Genre,
+                    number as Number,
+                    chapter_number as ChapterNumber,
+                    volume as Volume,
+                    version as Version,
+                    issue as Issue,
+                    pages as Pages,
+                    language as Language,
+                    status as Status,
+                    note as Note,
+                    abstract as Abstract,
+                    tags_json as TagsJson,
+                    collections_json as CollectionsJson,
+                    custom_fields_json as CustomFieldsJson,
+                    created_at as CreatedAt,
+                    updated_at as UpdatedAt,
+                    deleted_at as DeletedAt,
+                    merged_into_item_id as MergedIntoItemId
+                from items
+                where library_id = @LibraryId
+                  and deleted_at is not null
+                  and merged_into_item_id is null
+                  and (
+                      @CursorCreatedAt is null
+                      or created_at < @CursorCreatedAt
+                      or (created_at = @CursorCreatedAt and item_id < @CursorItemId)
+                  )
+                order by created_at desc, item_id desc
+                limit @Take;
+                """,
+                parameters)).ToArray();
+
+            bool hasMore = rows.Length > clampedPageSize;
+            ItemRow[] pageRows = hasMore ? rows[..clampedPageSize] : rows;
+            string? nextCursor = hasMore ? CreateCursor(pageRows[^1]) : null;
+            ItemId[] itemIds = pageRows.Select(row => row.ToItemId()).ToArray();
+            Dictionary<ItemId, IReadOnlyList<ItemCreator>> creators =
+                await LoadCreatorsAsync(connection, itemIds, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemDate>> dates =
+                await LoadDatesAsync(connection, itemIds, cancellationToken);
+            Dictionary<ItemId, IReadOnlyList<ItemIdentifier>> identifiers =
+                await LoadIdentifiersAsync(connection, itemIds, cancellationToken);
+
+            return Result<ItemListPage>.Success(new ItemListPage(
+                pageRows.Select(row => row.ToMetadata(
+                    creators.GetValueOrDefault(row.ToItemId()) ?? LegacyCreators(row),
+                    dates.GetValueOrDefault(row.ToItemId()) ?? LegacyDates(row),
+                    identifiers.GetValueOrDefault(row.ToItemId()) ?? Array.Empty<ItemIdentifier>())).ToArray(),
+                nextCursor,
+                totalCount));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.item-service"))
+        {
+            return DatabaseFailure<ItemListPage>(exception);
         }
     }
 
@@ -411,6 +684,7 @@ public sealed class ItemService : IItemService
                 from items
                 where library_id = @LibraryId
                   and deleted_at is null
+                  and merged_into_item_id is null
                   and (@ItemType is null or item_type = @ItemType)
                   and (
                       @Query is null
@@ -466,6 +740,7 @@ public sealed class ItemService : IItemService
                 from items
                 where library_id = @LibraryId
                   and deleted_at is null
+                  and merged_into_item_id is null
                   and (@ItemType is null or item_type = @ItemType)
                   and (
                       @Query is null
@@ -545,7 +820,13 @@ public sealed class ItemService : IItemService
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             int itemExists = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from items where item_id = @ItemId and deleted_at is null;",
+                """
+                select count(1)
+                from items
+                where item_id = @ItemId
+                  and deleted_at is null
+                  and merged_into_item_id is null;
+                """,
                 new { ItemId = itemId.ToString() },
                 transaction);
 
@@ -973,9 +1254,12 @@ public sealed class ItemService : IItemService
                 custom_fields_json as CustomFieldsJson,
                 created_at as CreatedAt,
                 updated_at as UpdatedAt,
-                deleted_at as DeletedAt
+                deleted_at as DeletedAt,
+                merged_into_item_id as MergedIntoItemId
             from items
-            where item_id = @ItemId and deleted_at is null;
+            where item_id = @ItemId
+              and deleted_at is null
+              and merged_into_item_id is null;
             """,
             new { ItemId = itemId.ToString() },
             transaction);
@@ -1479,6 +1763,12 @@ public sealed class ItemService : IItemService
         }
     }
 
+    private sealed class LifecycleRow
+    {
+        public string? DeletedAt { get; set; }
+        public string? MergedIntoItemId { get; set; }
+    }
+
     private sealed class ItemRow
     {
         public string ItemId { get; set; } = string.Empty;
@@ -1513,6 +1803,7 @@ public sealed class ItemService : IItemService
         public string CreatedAt { get; set; } = string.Empty;
         public string UpdatedAt { get; set; } = string.Empty;
         public string? DeletedAt { get; set; }
+        public string? MergedIntoItemId { get; set; }
 
         public ItemId ToItemId()
         {

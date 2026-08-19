@@ -1,0 +1,73 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        xmlns:bib="using:Patchouli.Core.Bibliography"
+        mc:Ignorable="d" d:DesignWidth="520" d:DesignHeight="360"
+        x:Class="Patchouli.UI.Views.PurgeConfirmDialog"
+        x:DataType="vm:PurgeConfirmDialogViewModel"
+        Title="永久删除题录"
+        Icon="/Assets/AppIcon.ico"
+        Width="520" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        ShowInTaskbar="False"
+        WindowDecorations="Full"
+        Background="{DynamicResource SurfaceBrush}">
+
+  <Border Margin="1" Padding="20" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+          CornerRadius="8" Background="{DynamicResource SurfaceBrush}">
+    <Grid RowDefinitions="Auto,*,Auto,Auto" RowSpacing="14">
+      <TextBlock Grid.Row="0" Text="{Binding SummaryMessage}" FontSize="13" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+
+      <Border Grid.Row="1" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
+              Padding="8" MaxHeight="160">
+        <ScrollViewer>
+          <ItemsControl ItemsSource="{Binding Titles}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="x:String">
+                <TextBlock Text="{Binding}" FontSize="13" Margin="0,2" TextTrimming="CharacterEllipsis" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </Border>
+
+      <StackPanel Grid.Row="2" Orientation="Vertical" Spacing="4"
+                  IsVisible="{Binding IsDetailsVisible}">
+        <TextBlock Text="依赖详情" FontSize="12" FontWeight="SemiBold"
+                   Foreground="{DynamicResource OnSurfaceBrush}" />
+        <ItemsControl ItemsSource="{Binding Reports}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="bib:ItemPurgeDependencyReport">
+              <StackPanel Orientation="Vertical" Spacing="2" Margin="0,4">
+                <TextBlock Text="{Binding ItemId}" FontSize="12" FontWeight="SemiBold" />
+                <TextBlock FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}">
+                  <TextBlock.Text>
+                    <MultiBinding StringFormat="{}{0} 个快照分片 | 活动 OCR: {1} | OCR 候选: {2} | 工作版本: {3}">
+                      <Binding Path="SnapshotCount" />
+                      <Binding Path="HasActiveOcr" />
+                      <Binding Path="HasOcrCandidates" />
+                      <Binding Path="HasWorking" />
+                    </MultiBinding>
+                  </TextBlock.Text>
+                </TextBlock>
+              </StackPanel>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+
+      <Grid Grid.Row="3" ColumnDefinitions="*,Auto">
+        <Button Grid.Column="0" Content="{Binding DetailsToggleText}" Command="{Binding ToggleDetailsCommand}"
+                HorizontalAlignment="Left" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+          <Button Content="取消" Command="{Binding CancelCommand}" />
+          <Button Content="永久删除" Command="{Binding ConfirmCommand}" Classes="Danger" />
+        </StackPanel>
+      </Grid>
+    </Grid>
+  </Border>
+</Window>

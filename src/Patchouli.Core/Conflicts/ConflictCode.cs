@@ -9,6 +9,7 @@ public static class ConflictCode
     public const string SourceFileChangedOrBBoxBasisStale = "CF-05";
     public const string BiblatexItemFieldConflict = "CF-06";
     public const string BiblatexBatchLinkCandidates = "CF-07";
+    public const string ItemLevelBranch = "CF-08";
 
     public static bool IsKnown(string value)
     {
@@ -18,6 +19,7 @@ public static class ConflictCode
             or FileRelocationMultipleCandidates
             or SourceFileChangedOrBBoxBasisStale
             or BiblatexItemFieldConflict
-            or BiblatexBatchLinkCandidates;
+            or BiblatexBatchLinkCandidates
+            or ItemLevelBranch;
     }
 }

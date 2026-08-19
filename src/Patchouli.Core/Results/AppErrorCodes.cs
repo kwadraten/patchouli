@@ -7,14 +7,9 @@ public static class AppErrorCodes
     public const string InvalidState = "invalid_state";
     public const string InvalidArgument = "invalid_argument";
     public const string ValidationFailed = "validation_failed";
-    public const string InvalidEvidenceReference = "invalid_evidence_reference";
-    public const string InvalidEvref = "invalid_evref";
-    public const string UnsupportedEvrefTarget = "unsupported_evref_target";
-    public const string EvidenceResourceMismatch = "evidence_resource_mismatch";
-    public const string EvidenceLibraryMismatch = "evidence_library_mismatch";
-    public const string EvidenceUnavailable = "evidence_unavailable";
     public const string DatabaseError = "database_error";
     public const string UnsupportedOperation = "unsupported_operation";
+    public const string NetworkError = "network_error";
     public const string Conflict = "conflict";
     public const string MappingRequired = "mapping_required";
     public const string StaleSettingsRevision = "stale_settings_revision";
@@ -26,4 +21,6 @@ public static class AppErrorCodes
     public const string BiblatexEncodingError = "biblatex_encoding_error";
     public const string BiblatexGeneralExportForbidden = "biblatex_general_export_forbidden";
     public const string NotCitable = "not_citable";
+    public const string ItemMerged = "item_merged";
+    public const string ItemInTrash = "item_in_trash";
 }

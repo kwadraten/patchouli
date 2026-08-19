@@ -42,4 +42,15 @@
   <Style Selector="ListBox.SidebarListBox ListBoxItem:selected lucide|Lucide.ItemIcon">
     <Setter Property="StrokeBrush" Value="{DynamicResource PrimaryBrush}" />
   </Style>
+  <Style Selector="Border.TagItemBorder">
+    <Setter Property="Padding" Value="12,6" />
+    <Setter Property="CornerRadius" Value="4" />
+    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Cursor" Value="Hand" />
+  </Style>
+  <Style Selector="Border.TagItemBorder:pointerover">
+    <Setter Property="Background" Value="{DynamicResource SurfaceVariantBrush}" />
+  </Style>
 </Styles>

@@ -25,16 +25,25 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         _connectionFactory = connectionFactory;
     }
 
+    private enum QueryScope
+    {
+        Active,
+        Trash
+    }
+
     public async Task<Result<IReadOnlyList<LibraryItemRow>>> ListRowsAsync(
+        IReadOnlyList<string>? requiredTags = null,
         CancellationToken cancellationToken = default)
     {
-        (Result<IReadOnlyList<LibraryItemRow>> result, _) = await QueryPageAsync(null, null, cancellationToken);
+        (Result<IReadOnlyList<LibraryItemRow>> result, _) =
+            await QueryPageAsync(null, null, QueryScope.Active, cancellationToken, requiredTags: requiredTags);
         return result;
     }
 
     public async Task<Result<LibraryItemPage>> ListRowsAsync(
         int limit,
         LibraryItemCursor? after,
+        IReadOnlyList<string>? requiredTags = null,
         CancellationToken cancellationToken = default)
     {
         if (limit <= 0)
@@ -44,7 +53,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         }
 
         (Result<IReadOnlyList<LibraryItemRow>> result, bool hasMore) =
-            await QueryPageAsync(limit, after, cancellationToken);
+            await QueryPageAsync(limit, after, QueryScope.Active, cancellationToken, requiredTags: requiredTags);
         if (result.IsFailure)
         {
             return Result<LibraryItemPage>.Failure(result.ErrorCode!, result.ErrorMessage!);
@@ -67,8 +76,41 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         }
 
         (Result<IReadOnlyList<LibraryItemRow>> result, _) =
-            await QueryPageAsync(null, null, cancellationToken, itemIds);
+            await QueryPageAsync(null, null, QueryScope.Active, cancellationToken, itemIds, null);
         return result;
+    }
+
+    public async Task<Result<IReadOnlyList<LibraryItemRow>>> ListTrashedRowsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        (Result<IReadOnlyList<LibraryItemRow>> result, _) =
+            await QueryPageAsync(null, null, QueryScope.Trash, cancellationToken);
+        return result;
+    }
+
+    public async Task<Result<LibraryItemPage>> ListTrashedRowsAsync(
+        int limit,
+        LibraryItemCursor? after,
+        CancellationToken cancellationToken = default)
+    {
+        if (limit <= 0)
+        {
+            return Result<LibraryItemPage>.Failure(AppErrorCodes.ValidationFailed,
+                "Page limit must be a positive integer.");
+        }
+
+        (Result<IReadOnlyList<LibraryItemRow>> result, bool hasMore) =
+            await QueryPageAsync(limit, after, QueryScope.Trash, cancellationToken);
+        if (result.IsFailure)
+        {
+            return Result<LibraryItemPage>.Failure(result.ErrorCode!, result.ErrorMessage!);
+        }
+
+        LibraryItemRow[] rows = result.Value.ToArray();
+        LibraryItemCursor? nextCursor = rows.Length == 0
+            ? null
+            : new LibraryItemCursor(rows[^1].ItemId, rows[^1].CreatedAt);
+        return Result<LibraryItemPage>.Success(new LibraryItemPage(rows, nextCursor, hasMore));
     }
 
     public async Task<Result<IReadOnlyList<ItemId>>> GetItemIdsByDocumentInstanceIdsAsync(
@@ -154,8 +196,10 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
     private async Task<(Result<IReadOnlyList<LibraryItemRow>> Result, bool HasMore)> QueryPageAsync(
         int? limit,
         LibraryItemCursor? after,
+        QueryScope scope,
         CancellationToken cancellationToken,
-        IReadOnlyCollection<ItemId>? itemIds = null)
+        IReadOnlyCollection<ItemId>? itemIds = null,
+        IReadOnlyList<string>? requiredTags = null)
     {
         try
         {
@@ -167,14 +211,21 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             string itemIdFilter = itemIds is null
                 ? ""
                 : "and i.item_id in @ItemIds ";
+            string lifecycleClause = scope == QueryScope.Trash
+                ? "and i.deleted_at is not null and i.merged_into_item_id is null"
+                : "and i.deleted_at is null and i.merged_into_item_id is null";
+            string tagFilter = BuildTagFilter(requiredTags);
             IEnumerable<CoreRow> rows = await connection.QueryAsync<CoreRow>(
-                string.Format(CultureInfo.InvariantCulture, CoreRowSqlTemplate, itemIdFilter),
+                string.Format(CultureInfo.InvariantCulture, CoreRowSqlTemplate, itemIdFilter, lifecycleClause,
+                    tagFilter),
                 new
                 {
                     Limit = take,
                     AfterCreatedAt = after?.CreatedAt,
                     AfterItemId = after?.ItemId.ToString(),
-                    ItemIds = itemIds?.Select(static id => id.ToString()).ToArray()
+                    ItemIds = itemIds?.Select(static id => id.ToString()).ToArray(),
+                    RequiredTags = requiredTags?.ToArray(),
+                    RequiredTagCount = requiredTags?.Count ?? 0
                 });
 
             CoreRow[] coreRows = rows.ToArray();
@@ -210,6 +261,8 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             Dictionary<string, int> searchUnitCounts = ToCountMap(await connection.QueryAsync<DocCountRow>(
                 SearchUnitCountSql, new { DocIds = docIdTexts }));
             HashSet<string> currentLayouts = (await connection.QueryAsync<string>(CurrentLayoutSql,
+                new { DocIds = docIdTexts })).ToHashSet(StringComparer.Ordinal);
+            HashSet<string> documentsWithOcrText = (await connection.QueryAsync<string>(OcrTextDocumentSql,
                 new { DocIds = docIdTexts })).ToHashSet(StringComparer.Ordinal);
             Dictionary<string, string> indexStatusByDoc = (await connection.QueryAsync<IndexStatusRow>(
                     IndexStatusSql, new { DocIds = docIdTexts }))
@@ -259,6 +312,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     string.IsNullOrWhiteSpace(authors) ? FormatCreators(row.CreatorsJson) : authors,
                     string.IsNullOrWhiteSpace(issuedLiteral) ? NullIfWhiteSpace(row.Date) : issuedLiteral,
                     NullIfWhiteSpace(row.PublicationTitle),
+                    NullIfWhiteSpace(row.Publisher),
                     string.IsNullOrWhiteSpace(row.DocumentInstanceId)
                         ? null
                         : DocumentInstanceId.Parse(row.DocumentInstanceId),
@@ -268,10 +322,14 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     row.CreatedAt,
                     pageCount,
                     searchUnitCount,
+                    row.DocumentInstanceId is not null && documentsWithOcrText.Contains(row.DocumentInstanceId),
                     PrimaryDocumentOcrIndexState.Resolve(row.DocumentInstanceId is not null, latestState, latestError,
                         row.DocumentInstanceId is not null && currentLayouts.Contains(row.DocumentInstanceId),
                         string.Equals(indexStatus, "current", StringComparison.Ordinal)),
-                    indexStatus));
+                    indexStatus,
+                    NullIfWhiteSpace(row.DeletedAt),
+                    NullIfWhiteSpace(row.MergedIntoItemId),
+                    ParseTags(row.TagsJson)));
             }
 
             return (Result<IReadOnlyList<LibraryItemRow>>.Success(models), hasMore);
@@ -297,7 +355,11 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
             i.creators_json as CreatorsJson,
             i.date as Date,
             i.publication_title as PublicationTitle,
+            i.publisher as Publisher,
             i.created_at as CreatedAt,
+            i.deleted_at as DeletedAt,
+            i.merged_into_item_id as MergedIntoItemId,
+            i.tags_json as TagsJson,
             di.document_instance_id as DocumentInstanceId,
             fa.file_name as LinkedFileName,
             fa.file_asset_id as FileAssetId,
@@ -305,10 +367,12 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         from items i
         left join document_instances di on di.item_id = i.item_id and di.is_primary = 1
         left join file_assets fa on fa.file_asset_id = di.file_asset_id
-        where i.deleted_at is null
+        where 1 = 1
+          {1}
           and (@AfterCreatedAt is null or i.created_at < @AfterCreatedAt
                or (i.created_at = @AfterCreatedAt and i.item_id < @AfterItemId))
           {0}
+          {2}
         order by i.created_at desc, i.item_id desc
         limit @Limit;
         """;
@@ -368,6 +432,25 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         where document_instance_id in @DocIds and status = 'committed' and is_current = 1;
         """;
 
+    private const string OcrTextDocumentSql =
+        """
+        select distinct r.document_instance_id
+        from document_tree_revisions r
+        join document_boxes b on b.tree_revision_id = r.tree_revision_id
+        where r.document_instance_id in @DocIds
+          and r.status = 'committed'
+          and r.is_current = 1
+          and b.suppressed = 0
+          and b.payload_json is not null
+          and json_valid(b.payload_json) = 1
+          and (
+              length(trim(coalesce(json_extract(b.payload_json, '$.markdown'), ''))) > 0
+              or length(trim(coalesce(json_extract(b.payload_json, '$.latex'), ''))) > 0
+              or length(trim(coalesce(json_extract(b.payload_json, '$.code'), ''))) > 0
+              or length(trim(coalesce(json_extract(b.payload_json, '$.description'), ''))) > 0
+          );
+        """;
+
     private const string LatestOcrStateSql =
         """
         select document_instance_id as DocumentInstanceId, state as State
@@ -402,6 +485,49 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
     {
         return rows.ToDictionary(static row => row.DocumentInstanceId, static row => row.Value,
             StringComparer.Ordinal);
+    }
+
+    private static string BuildTagFilter(IReadOnlyList<string>? requiredTags)
+    {
+        if (requiredTags is null || requiredTags.Count == 0)
+        {
+            return "";
+        }
+
+        return """
+               and (
+                   select count(distinct value)
+                   from json_each(i.tags_json)
+                   where value in @RequiredTags
+               ) = @RequiredTagCount
+               """;
+    }
+
+    private static IReadOnlyList<string> ParseTags(string? tagsJson)
+    {
+        if (string.IsNullOrWhiteSpace(tagsJson))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(tagsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<string>();
+            }
+
+            return document.RootElement.EnumerateArray()
+                .Select(element => element.GetString())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value!)
+                .ToArray();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
     }
 
     private static string? NullIfWhiteSpace(string? value)
@@ -441,7 +567,11 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         public string CreatorsJson { get; init; } = "[]";
         public string? Date { get; init; }
         public string? PublicationTitle { get; init; }
+        public string? Publisher { get; init; }
         public string CreatedAt { get; init; } = "";
+        public string? DeletedAt { get; init; }
+        public string? MergedIntoItemId { get; init; }
+        public string TagsJson { get; init; } = "[]";
         public string? DocumentInstanceId { get; init; }
         public string? LinkedFileName { get; init; }
         public string? FileAssetId { get; init; }

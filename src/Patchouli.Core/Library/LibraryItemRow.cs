@@ -9,6 +9,7 @@ public sealed record LibraryItemRow(
     string Authors,
     string? Year,
     string? PublicationTitle,
+    string? Publisher,
     DocumentInstanceId? DocumentInstanceId,
     string? LinkedFileName,
     string? FileAssetId,
@@ -16,8 +17,12 @@ public sealed record LibraryItemRow(
     string CreatedAt,
     int PageCount,
     int SearchUnitCount,
+    bool HasOcrText,
     PrimaryDocumentOcrIndexState PrimaryDocumentOcrIndexState,
-    string IndexStatus);
+    string IndexStatus,
+    string? DeletedAt = null,
+    string? MergedIntoItemId = null,
+    IReadOnlyList<string>? Tags = null);
 
 /// <summary>
 /// A stable keyset cursor over the first-screen library read model, ordered by

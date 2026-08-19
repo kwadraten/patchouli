@@ -31,6 +31,7 @@ public static class SettingsMergePolicies
 public static class LibrarySettingKeys
 {
     public const string MetadataLookup = "metadata_lookup";
+    public const string PinnedTags = "library.tags.pinned";
 }
 
 public enum SettingStorageScope
@@ -60,6 +61,8 @@ public static class LibrarySettingCatalog
         new SettingCatalogEntry[]
         {
             new(LibrarySettingKeys.MetadataLookup, 1, SettingStorageScope.LibrarySnapshot, false,
+                SettingsMergePolicies.ScalarReplace),
+            new(LibrarySettingKeys.PinnedTags, 1, SettingStorageScope.LibrarySnapshot, false,
                 SettingsMergePolicies.ScalarReplace),
             new("runtime", 1, SettingStorageScope.DeviceLocal, false, SettingsMergePolicies.DeviceOverride),
             new("mineru", 1, SettingStorageScope.DeviceLocal, false, SettingsMergePolicies.DeviceOverride),
@@ -129,6 +132,7 @@ public static class LibrarySettingCatalog
         return entry.SettingKey switch
         {
             LibrarySettingKeys.MetadataLookup => ValidateMetadataLookupJson(valueJson),
+            LibrarySettingKeys.PinnedTags => ValidatePinnedTagsJson(valueJson),
             _ => Result.Failure(AppErrorCodes.UnsupportedOperation,
                 $"Setting '{entry.SettingKey}' does not define a JSON validator.")
         };
@@ -137,6 +141,11 @@ public static class LibrarySettingCatalog
     public static Result ValidateClrValue(SettingCatalogEntry entry, Type type)
     {
         if (entry.SettingKey == LibrarySettingKeys.MetadataLookup && type.Name == "MetadataLookupAppSettings")
+        {
+            return Result.Success();
+        }
+
+        if (entry.SettingKey == LibrarySettingKeys.PinnedTags && type.Name == "PinnedTagsAppSettings")
         {
             return Result.Success();
         }
@@ -204,6 +213,35 @@ public static class LibrarySettingCatalog
     private static bool TryGetProperty(JsonElement element, string name, out JsonElement value)
     {
         return element.TryGetProperty(name, out value);
+    }
+
+    private static Result ValidatePinnedTagsJson(string valueJson)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(valueJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return Result.Failure(AppErrorCodes.ValidationFailed,
+                    "library.tags.pinned setting value must be a JSON array.");
+            }
+
+            foreach (JsonElement element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(element.GetString()))
+                {
+                    return Result.Failure(AppErrorCodes.ValidationFailed,
+                        "library.tags.pinned must contain non-empty strings.");
+                }
+            }
+
+            return Result.Success();
+        }
+        catch (JsonException exception)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed,
+                $"library.tags.pinned setting value is invalid JSON: {exception.Message}");
+        }
     }
 }
 

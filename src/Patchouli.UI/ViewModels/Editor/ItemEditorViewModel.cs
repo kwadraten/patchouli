@@ -1,13 +1,17 @@
 using System.Collections.ObjectModel;
 using System.Text.Json;
+using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels.Editor;
 
@@ -559,6 +563,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private ExtraCslVariableOption? _selectedExtraCslVariable;
     private NavCategoryViewModel _activeNavSection = null!;
     private bool _availableItemTypesLoaded;
+    private bool _hasUnsavedChanges;
+    private bool _isSaving;
 
     /// <summary>Test seam over <see cref="MetadataLookupUiBridge" />; production code never overrides it.</summary>
     internal Func<AppServices, ItemId, ItemIdentifier, CancellationToken, Task<MetadataLookupOutcome>> LookupRunner =
@@ -618,6 +624,22 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public string Header => _itemId is null ? "新建题录" : "编辑题录";
     public string ItemIdText => _itemId?.ToString() ?? "";
     public bool HasItem => _itemId is not null;
+    public bool IsSaving => _isSaving;
+
+    /// <summary>
+    /// Indicates whether the editor has unsaved changes. Used by the merge service guard to refuse
+    /// merging items that are currently being edited.
+    /// </summary>
+    public bool HasUnsavedChanges => _hasUnsavedChanges || HasPendingOperations();
+
+    /// <summary>
+    /// True when the loaded item has been merged into another item. In this state editing is disabled
+    /// and a banner points to the target item.
+    /// </summary>
+    public bool IsMergedSource { get; private set; }
+
+    public string MergedIntoItemIdText { get; private set; } = "";
+    public string MergedBannerText { get; private set; } = "";
 
     private string _itemType = "book";
 
@@ -791,6 +813,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return field;
         }
 
+        field.ValueChanged = (_, _) => MarkUnsaved();
+
         if (_fieldValueCache.TryGetValue(def.Key, out string? val))
         {
             field.Value = val;
@@ -809,6 +833,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
             {
                 field.Creators.Add(CreateCreatorItem());
             }
+
+            field.Creators.CollectionChanged += (_, _) => MarkUnsaved();
 
             field.AddCreatorCommand = new AsyncCommand(() =>
             {
@@ -874,6 +900,55 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
 
+    private bool HasPendingOperations()
+    {
+        return _pendingIdentifiers.Count > 0 ||
+               _pendingIdentifierRemovals.Count > 0 ||
+               _pendingFileRegistrations.Count > 0 ||
+               _pendingDocumentRemovals.Count > 0 ||
+               _projectionStaged.Count > 0 ||
+               _pendingPrimaryDocumentId is not null;
+    }
+
+    private static async Task<string?> TryGetMergedIntoAsync(AppServices services, ItemId itemId)
+    {
+        try
+        {
+            await using SqliteConnection connection = services.ConnectionFactory.CreateReadConnection();
+            await connection.OpenAsync();
+            return await connection.ExecuteScalarAsync<string>(
+                """
+                select merged_into_item_id
+                from items
+                where item_id = @ItemId
+                  and deleted_at is null
+                  and merged_into_item_id is not null;
+                """,
+                new { ItemId = itemId.ToString() });
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void MarkUnsaved()
+    {
+        if (_hasUnsavedChanges)
+        {
+            return;
+        }
+
+        _hasUnsavedChanges = true;
+        Raise(nameof(HasUnsavedChanges));
+    }
+
+    private void ResetUnsavedState()
+    {
+        _hasUnsavedChanges = false;
+        Raise(nameof(HasUnsavedChanges));
+    }
+
     private string _status = "就绪";
 
     public string Status
@@ -901,7 +976,27 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public ObservableCollection<IdentifierItemViewModel> Identifiers { get; } = new();
     public ObservableCollection<IdentifierSchemeShortcutViewModel> IdentifierSchemeShortcuts { get; } = new();
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
+    public ObservableCollection<DocumentCommitViewModel> DocumentCommits { get; } = new();
     public bool HasIdentifierSchemeShortcuts => IdentifierSchemeShortcuts.Count > 0;
+    public bool HasDocumentCommits => DocumentCommits.Count > 0;
+
+    private LinkedDocumentInstanceItemViewModel? _selectedHistoryDocument;
+
+    public LinkedDocumentInstanceItemViewModel? SelectedHistoryDocument
+    {
+        get => _selectedHistoryDocument;
+        set
+        {
+            if (ReferenceEquals(_selectedHistoryDocument, value))
+            {
+                return;
+            }
+
+            _selectedHistoryDocument = value;
+            Raise();
+            _ = LoadDocumentCommitsAsync();
+        }
+    }
 
     public AsyncCommand NewCommand { get; }
     public AsyncCommand SaveCommand { get; }
@@ -971,6 +1066,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
         await EnsureAvailableItemTypesAsync();
         _itemId = null;
         _loadedItem = null;
+        IsMergedSource = false;
+        MergedIntoItemIdText = "";
+        MergedBannerText = "";
         _fieldValueCache.Clear();
         _creatorCache.Clear();
         _projectionStaged.Clear();
@@ -994,9 +1092,12 @@ public sealed class ItemEditorViewModel : ViewModelBase
         _pendingDocumentRemovals.Clear();
         _pendingPrimaryDocumentId = null;
         LinkedFiles.Clear();
+        DocumentCommits.Clear();
+        SelectedHistoryDocument = null;
         ExtraCslRows.Clear();
         RefreshExtraCslVariableChoices();
         UpdateUnsavedCslPreviewState();
+        ResetUnsavedState();
         RaiseAll();
     }
 
@@ -1023,11 +1124,32 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
         if (item.IsFailure)
         {
+            string? mergedInto = await TryGetMergedIntoAsync(services, parsed);
+            if (!string.IsNullOrWhiteSpace(mergedInto))
+            {
+                _itemId = parsed;
+                _loadedItem = null;
+                IsMergedSource = true;
+                MergedIntoItemIdText = mergedInto;
+                MergedBannerText = $"该题录已合并到 {mergedInto}。";
+                Status = MergedBannerText;
+                Raise(nameof(IsMergedSource));
+                Raise(nameof(MergedIntoItemIdText));
+                Raise(nameof(MergedBannerText));
+                Raise(nameof(Status));
+                RaiseAll();
+                return;
+            }
+
             Status = item.ErrorMessage ?? "无法加载题录。";
             Raise(nameof(Status));
             _main.Report(Status);
             return;
         }
+
+        IsMergedSource = false;
+        MergedIntoItemIdText = "";
+        MergedBannerText = "";
 
         _itemId = parsed;
         _loadedItem = item.Value;
@@ -1086,7 +1208,9 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
         await RefreshIdentifiersAsync();
         await RefreshLinkedFilesAsync();
+        await RefreshDocumentCommitsAsync();
         await RefreshCslPreviewAsync();
+        ResetUnsavedState();
         RaiseAll();
     }
 
@@ -1131,6 +1255,34 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private async Task SaveAsync()
     {
+        if (_isSaving)
+        {
+            return;
+        }
+
+        _isSaving = true;
+        Raise(nameof(IsSaving));
+        try
+        {
+            await SaveCoreAsync();
+        }
+        finally
+        {
+            _isSaving = false;
+            Raise(nameof(IsSaving));
+        }
+    }
+
+    private async Task SaveCoreAsync()
+    {
+        if (IsMergedSource)
+        {
+            Status = "已合并的题录无法保存。";
+            Raise(nameof(Status));
+            _main.Report(Status);
+            return;
+        }
+
         CacheCurrentFields();
         string title = GetSavedFieldValue("Title");
         if (string.IsNullOrWhiteSpace(title))
@@ -1278,12 +1430,15 @@ public sealed class ItemEditorViewModel : ViewModelBase
             Status += $"。部分暂存操作失败：{string.Join("；", stagedOperationFailures)}";
         }
 
+        ResetUnsavedState();
         RaiseAll();
         _main.Report(Status);
         await RefreshIdentifiersAsync();
+        await RefreshDocumentCommitsAsync();
         await RefreshCslPreviewAsync();
         if (_itemId is not null)
         {
+            await _main.Shell.RefreshItemsAsync();
             _main.RefreshItemWorkspaceTabTitles(_itemId.Value.ToString(), title.Trim(), this);
         }
     }
@@ -1649,6 +1804,98 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Raise(nameof(Status));
         _main.Report(Status);
         await RefreshLinkedFilesAsync();
+        await RefreshDocumentCommitsAsync();
+    }
+
+    private async Task RefreshDocumentCommitsAsync()
+    {
+        if (LinkedFiles.Count == 0)
+        {
+            DocumentCommits.Clear();
+            SelectedHistoryDocument = null;
+            Raise(nameof(HasDocumentCommits));
+            return;
+        }
+
+        LinkedDocumentInstanceItemViewModel? primary = LinkedFiles.FirstOrDefault(f => f.IsPrimary)
+                                                       ?? LinkedFiles.FirstOrDefault(f => !f.IsPendingRegistration);
+        if (primary is not null && !ReferenceEquals(SelectedHistoryDocument, primary))
+        {
+            SelectedHistoryDocument = primary;
+        }
+        else
+        {
+            await LoadDocumentCommitsAsync();
+        }
+    }
+
+    private async Task LoadDocumentCommitsAsync()
+    {
+        DocumentCommits.Clear();
+        if (SelectedHistoryDocument is null || SelectedHistoryDocument.IsPendingRegistration)
+        {
+            Raise(nameof(HasDocumentCommits));
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentInstanceId = SelectedHistoryDocument.DocumentInstanceId;
+        Result<IReadOnlyList<DocumentCommitDetail>> commits =
+            await services.DocumentTrees.ListDocumentCommitsAsync(documentInstanceId);
+        if (commits.IsFailure)
+        {
+            Status = $"无法加载文档版本历史：{commits.ErrorMessage}";
+            Raise(nameof(Status));
+            Raise(nameof(HasDocumentCommits));
+            return;
+        }
+
+        Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentInstanceId);
+        IReadOnlyList<Page> pageList = pages.IsSuccess ? pages.Value : Array.Empty<Page>();
+
+        foreach (DocumentCommitDetail detail in commits.Value)
+        {
+            DocumentCommits.Add(new DocumentCommitViewModel(detail, pageList, RevertCommitPageAsync));
+        }
+
+        Raise(nameof(HasDocumentCommits));
+    }
+
+    private async Task RevertCommitPageAsync(DocumentCommitPageViewModel page)
+    {
+        if (SelectedHistoryDocument is null || SelectedHistoryDocument.IsPendingRegistration)
+        {
+            return;
+        }
+
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "恢复页面版本",
+                $"确定要将“{page.PageLabel}”恢复到版本 {page.TreeRevisionId} 吗？这将创建一个新的提交。",
+                "恢复",
+                confirmDanger: true));
+        if (choice != ConfirmDialogResult.Confirm)
+        {
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        Result<DocumentTreeRevision> result = await services.DocumentTrees.RevertToRevisionAsync(
+            SelectedHistoryDocument.DocumentInstanceId,
+            page.PageId,
+            page.TreeRevisionId);
+        if (result.IsFailure)
+        {
+            Status = $"恢复页面版本失败：{result.ErrorMessage}";
+            Raise(nameof(Status));
+            _main.Report(Status);
+            return;
+        }
+
+        await LoadDocumentCommitsAsync();
+        Status = $"已恢复“{page.PageLabel}”到版本 {result.Value.TreeRevisionId}。";
+        Raise(nameof(Status));
+        _main.Report(Status);
     }
 
     private async Task CancelPendingFileRegistrationAsync(string path)

@@ -1,0 +1,62 @@
+<UserControl x:Class="Patchouli.UI.Views.ItemInspectorView"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Patchouli.UI.ViewModels"
+             x:DataType="vm:ItemInspectorViewModel">
+  <ScrollViewer>
+    <StackPanel Spacing="8">
+      <ItemsControl ItemsSource="{Binding Tags}" Margin="0,4">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate>
+            <WrapPanel />
+          </ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:InspectorTagViewModel">
+            <Border Background="{DynamicResource TertiaryContainerBrush}" CornerRadius="12"
+                    Padding="10,4" BorderThickness="0" Margin="0,0,6,6">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="{Binding Name}" FontSize="12"
+                           Foreground="{DynamicResource OnTertiaryContainerBrush}" VerticalAlignment="Center" />
+                <Button Content="×" Padding="0" FontSize="12" Width="16" Height="16"
+                        Foreground="{DynamicResource OnTertiaryContainerBrush}"
+                        Background="Transparent"
+                        Command="{Binding RemoveCommand}" />
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+      <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding HasContent}">
+        <TextBox Grid.Column="0" Text="{Binding NewTagName, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="新标签"
+                 FontSize="12" />
+        <Button Grid.Column="1" Content="添加" Command="{Binding AddTagCommand}" Margin="8,0,0,0" />
+      </Grid>
+      <ItemsControl ItemsSource="{Binding Groups}" Margin="0,8">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="vm:InspectorGroupViewModel">
+            <Expander Header="{Binding Title}" IsExpanded="True" Margin="0,0,0,8"
+                      Background="{DynamicResource SurfaceContainerLowestBrush}"
+                      BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                      CornerRadius="4">
+              <ItemsControl ItemsSource="{Binding Fields}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:InspectorFieldViewModel">
+                    <Grid ColumnDefinitions="90,*" ColumnSpacing="8" Margin="0,4">
+                      <TextBlock Grid.Column="0" Text="{Binding Label}" FontSize="11"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                 VerticalAlignment="Top" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="12"
+                                 Foreground="{DynamicResource OnSurfaceBrush}"
+                                 TextWrapping="Wrap" VerticalAlignment="Top" />
+                    </Grid>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </Expander>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </StackPanel>
+  </ScrollViewer>
+</UserControl>

@@ -242,6 +242,62 @@ public static class ConflictDescriptorMapper
             }).ToArray());
     }
 
+    public static ConflictDescriptor ItemLevelBranchConflict(
+        ItemId itemId,
+        string? localDeletedAt,
+        string? localMergedIntoItemId,
+        string? incomingDeletedAt,
+        string? incomingMergedIntoItemId)
+    {
+        string localStatus = DescribeItemStatus(localDeletedAt, localMergedIntoItemId);
+        string incomingStatus = DescribeItemStatus(incomingDeletedAt, incomingMergedIntoItemId);
+        return new ConflictDescriptor(
+            ConflictCode.ItemLevelBranch,
+            ConflictDomain.SnapshotSync,
+            ConflictSeverity.Blocking,
+            "item",
+            itemId.ToString(),
+            "Item 在分支间的生命周期状态不一致。",
+            Serialize(new
+            {
+                status = localStatus,
+                deleted_at = localDeletedAt,
+                merged_into_item_id = localMergedIntoItemId
+            }),
+            Serialize(new
+            {
+                status = incomingStatus,
+                deleted_at = incomingDeletedAt,
+                merged_into_item_id = incomingMergedIntoItemId
+            }),
+            [
+                new ConflictAction("resolve_item_branch", "确认选择",
+                    "选择保留本地状态或采用传入分支的 Item 状态。", RequiresOption: true)
+            ],
+            Options:
+            [
+                new ConflictActionOption("keep_local_item", "保留本地 Item 状态",
+                    $"继续使用本地分支状态：{localStatus}"),
+                new ConflictActionOption("use_incoming_item", "采用传入 Item 状态",
+                    $"用传入分支状态覆盖本地：{incomingStatus}")
+            ]);
+    }
+
+    private static string DescribeItemStatus(string? deletedAt, string? mergedIntoItemId)
+    {
+        if (!string.IsNullOrWhiteSpace(deletedAt))
+        {
+            return "已软删除";
+        }
+
+        if (!string.IsNullOrWhiteSpace(mergedIntoItemId))
+        {
+            return $"已合并到 {mergedIntoItemId}";
+        }
+
+        return "正常";
+    }
+
     private static string Serialize(object value)
     {
         return JsonSerializer.Serialize(value);
