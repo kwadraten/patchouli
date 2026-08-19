@@ -41,10 +41,10 @@ public sealed record SourceValidationResult(
 
 /// <summary>
 /// Runtime, rebuildable, non-canonical source-basis validation for a viewing session.
-/// The state machine is <c>unverified → validating → current | changed | unavailable</c> and
-/// never becomes part of an EvidenceRef identity. Plain reads reuse the last-known persisted
-/// status; coordinate-sensitive first access triggers at most one shared full-hash validation
-/// for unchanged sources, and concurrent callers coalesce onto a single in-flight validation.
+/// The state machine is <c>unverified → validating → current | changed | unavailable</c>.
+/// Plain reads reuse the last-known persisted status; coordinate-sensitive first access
+/// triggers at most one shared full-hash validation for unchanged sources, and concurrent
+/// callers coalesce onto a single in-flight validation.
 /// </summary>
 public interface ISourceValidationService
 {

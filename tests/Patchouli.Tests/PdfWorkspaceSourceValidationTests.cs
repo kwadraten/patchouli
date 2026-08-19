@@ -29,7 +29,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     {
         MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
         PdfWorkspaceViewModel pdf = new(vm, new LibraryItemViewModel(
-            ItemId.New().ToString(), "Title", "book", "", "", "", null, null, "source.pdf", "", 0, 0, "",
+            ItemId.New().ToString(), "Title", "book", "", "", "", null, null, null, "source.pdf", "", 0, 0, "",
             _ => Task.CompletedTask, _ => Task.CompletedTask));
 
         pdf.SourceValidationState.Should().Be(SourceValidationStatus.Unverified);
