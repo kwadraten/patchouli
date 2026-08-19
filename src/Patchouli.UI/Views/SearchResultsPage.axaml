@@ -59,7 +59,7 @@
                         <Border Classes="CardTile" Margin="0,0,0,8">
                           <Border.ContextMenu>
                             <ContextMenu>
-                              <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceRefClick" />
+                              <MenuItem Header="复制证据引用" Click="OnCopySearchUnitEvidenceUriClick" />
                               <MenuItem Header="复制证据 Markdown" Click="OnCopySearchUnitEvidenceMarkdownClick" />
                               <MenuItem Header="导出 Markdown" Click="OnExportSearchUnitEvidenceMarkdownClick" />
                             </ContextMenu>
@@ -69,7 +69,7 @@
                               <TextBlock Text="{Binding Text}" FontSize="13"
                                          Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
                               <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
-                                <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceRefClick"
+                                <Button Classes="EvidenceAction" Click="OnCopySearchUnitEvidenceUriClick"
                                         ToolTip.Tip="复制证据引用">
                                   <lucide:Lucide Icon="Copy" Width="14" Height="14"
                                                  StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
@@ -86,10 +86,10 @@
                                          Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                               <TextBlock Grid.Column="1" Text="{Binding ReadingOrder, StringFormat='阅读顺序：\{0\}'}"
                                          FontSize="11" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                              <TextBlock Grid.Column="2" Text="{Binding EvidenceRef, StringFormat='证据引用：\{0\}'}"
+                              <TextBlock Grid.Column="2" Text="{Binding VersionedUri, StringFormat='证据引用：\{0\}'}"
                                          FontSize="11" Foreground="{DynamicResource PrimaryBrush}"
-                                         IsVisible="{Binding HasEvidenceRef}" TextTrimming="CharacterEllipsis"
-                                         ToolTip.Tip="{Binding EvidenceRef}" />
+                                         IsVisible="{Binding HasVersionedUri}" TextTrimming="CharacterEllipsis"
+                                         ToolTip.Tip="{Binding VersionedUri}" />
                             </Grid>
                           </StackPanel>
                         </Border>

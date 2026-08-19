@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Patchouli.Core.Ids;
 using Patchouli.Mcp;
 
 namespace Patchouli.Tests;
@@ -39,11 +40,25 @@ public sealed class AlphaSecurityBoundaryTests
     }
 
     [Fact]
-    public void EvidenceRef_payload_has_no_local_path_or_secret()
+    public void Versioned_evidence_uri_has_no_local_path_or_secret()
     {
-        string codec =
-            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Core", "Evidence", "EvidenceModels.cs"));
-        codec.Should().Contain("evref:v2:").And.NotContain("OriginalPath").And.NotContain("ResolvedPath");
+        DocumentInstanceId documentId = DocumentInstanceId.New();
+        DocumentTreeRevisionId revisionId = DocumentTreeRevisionId.New();
+        DocumentBoxId boxId = DocumentBoxId.New();
+
+        string uri = McpResourceUris.EvidencePageUri(documentId, 1, revisionId, boxId);
+
+        uri.Should().StartWith("patchouli://texts/").And.Contain("?rev=").And.Contain("&box=");
+        uri.Should().NotContain("evref").And.NotContain("/tmp/").And.NotContain("C:\\");
+    }
+
+    [Theory]
+    [InlineData("patchouli://texts/00000000-0000-0000-0000-000000000000/page-1.md?evref=v2:abc")]
+    [InlineData("patchouli://evidence/00000000-0000-0000-0000-000000000000")]
+    [InlineData("patchouli://documents/00000000-0000-0000-0000-000000000000")]
+    public void Mcp_rejects_legacy_evidence_and_document_uris(string uri)
+    {
+        McpResourceUris.Parse(uri).IsFailure.Should().BeTrue();
     }
 
     [Fact]

@@ -73,6 +73,7 @@ public sealed class BiblatexImportApplyTests
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(db);
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, true);
@@ -122,6 +123,7 @@ public sealed class BiblatexImportApplyTests
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(db);
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, true);

@@ -17,7 +17,7 @@ public sealed class CoreIdTests
         DocumentBoxId.New().Should().NotBe(DocumentBoxId.New());
         PageEditSessionId.New().Should().NotBe(PageEditSessionId.New());
         SearchUnitId.New().Should().NotBe(SearchUnitId.New());
-        EvidenceRefId.New().Should().NotBe(EvidenceRefId.New());
+        DocumentCommitId.New().Should().NotBe(DocumentCommitId.New());
     }
 
     [Fact]
@@ -32,7 +32,7 @@ public sealed class CoreIdTests
         DocumentBoxId boxId = DocumentBoxId.New();
         PageEditSessionId editSessionId = PageEditSessionId.New();
         SearchUnitId searchUnitId = SearchUnitId.New();
-        EvidenceRefId evidenceRefId = EvidenceRefId.New();
+        DocumentCommitId documentCommitId = DocumentCommitId.New();
 
         LibraryId.Parse(libraryId.ToString()).Should().Be(libraryId);
         ItemId.Parse(itemId.ToString()).Should().Be(itemId);
@@ -43,6 +43,6 @@ public sealed class CoreIdTests
         DocumentBoxId.Parse(boxId.ToString()).Should().Be(boxId);
         PageEditSessionId.Parse(editSessionId.ToString()).Should().Be(editSessionId);
         SearchUnitId.Parse(searchUnitId.ToString()).Should().Be(searchUnitId);
-        EvidenceRefId.Parse(evidenceRefId.ToString()).Should().Be(evidenceRefId);
+        DocumentCommitId.Parse(documentCommitId.ToString()).Should().Be(documentCommitId);
     }
 }

@@ -9,7 +9,7 @@ public sealed class AlphaEndToEndWorkflowTests
     {
         File.ReadAllText(TestPaths.FromRepositoryRoot("tests", "Patchouli.Tests", "AlphaRegressionWorkflowTests.cs"))
             .Should().Contain("CreateItemAsync").And.Contain("CompilePageMarkdownAsync").And
-            .Contain("CreateFromSearchUnitAsync");
+            .Contain("GetBoxTextAsync");
     }
 
     [Fact]

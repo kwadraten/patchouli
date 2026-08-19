@@ -12,14 +12,14 @@ public sealed partial class SearchResultsPage : UserControl
         InitializeComponent();
     }
 
-    private async void OnCopySearchUnitEvidenceRefClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private async void OnCopySearchUnitEvidenceUriClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         await UnexpectedExceptionBoundary.RunAsync(
-            () => CopySearchUnitEvidenceRefAsync(sender),
-            "copy-search-unit-evidence-ref");
+            () => CopySearchUnitEvidenceUriAsync(sender),
+            "copy-search-unit-evidence-uri");
     }
 
-    private async Task CopySearchUnitEvidenceRefAsync(object? sender)
+    private async Task CopySearchUnitEvidenceUriAsync(object? sender)
     {
         if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
@@ -27,7 +27,7 @@ public sealed partial class SearchResultsPage : UserControl
             return;
         }
 
-        await main.SearchEvidence.CopyEvidenceRefForSearchUnitAsync(unit);
+        await main.SearchEvidence.CopyVersionedUriForSearchUnitAsync(unit);
     }
 
     private async void OnCopySearchUnitEvidenceMarkdownClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -69,11 +69,7 @@ public sealed partial class SearchResultsPage : UserControl
             return;
         }
 
-        string? evidenceRef = await main.SearchEvidence.EnsureEvidenceRefAsync(unit);
-        if (string.IsNullOrWhiteSpace(evidenceRef))
-        {
-            return;
-        }
+        string versionedUri = main.SearchEvidence.BuildVersionedUri(unit);
 
         IStorageFile? file = await storage.SaveFilePickerAsync(new FilePickerSaveOptions
         {
@@ -89,7 +85,7 @@ public sealed partial class SearchResultsPage : UserControl
 
         if (file?.Path.LocalPath is { Length: > 0 } path)
         {
-            await main.ExportEvidenceMarkdownToFileAsync(evidenceRef, path);
+            await main.ExportEvidenceMarkdownToFileAsync(versionedUri, path);
         }
     }
 }

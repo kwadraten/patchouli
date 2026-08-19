@@ -451,6 +451,7 @@ public sealed record PatchouliAppSettings(
     public SyncAppSettings Sync { get; init; } = SyncAppSettings.Default(Runtime);
     public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
     public FileScanningAppSettings FileScanning { get; init; } = FileScanningAppSettings.Default();
+    public OcrEnginesAppSettings OcrEngines { get; init; } = OcrEnginesAppSettings.Default();
 
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
@@ -513,6 +514,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? fileScanning = GetSection(root, "FileScanning");
             JsonElement? credentials = GetSection(root, "Credentials");
             JsonElement? sync = GetSection(root, "Sync");
+            JsonElement? ocrEngines = GetSection(root, "OcrEngines");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -541,6 +543,7 @@ public sealed record PatchouliAppSettings(
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
                     ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns)),
+                OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
                 Sync = new SyncAppSettings(
                     ReadString(sync, "DeviceId", defaults.Sync.DeviceId),
@@ -710,6 +713,12 @@ public sealed record PatchouliAppSettings(
             }
 
             root["FileScanning"] = JsonSerializer.SerializeToNode(new { FileScanning.ExclusionPatterns });
+            root["OcrEngines"] = JsonSerializer.SerializeToNode(new
+            {
+                OcrEngines.DocumentOcrEngine,
+                OcrEngines.PageOcrEngine,
+                OcrEngines.RegionOcrEngine
+            });
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -785,6 +794,19 @@ public sealed record PatchouliAppSettings(
         }
 
         return new CredentialsAppSettings(values);
+    }
+
+    private static OcrEnginesAppSettings ReadOcrEngines(JsonElement? section, OcrEnginesAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return new OcrEnginesAppSettings(
+            ReadString(element, "DocumentOcrEngine", fallback.DocumentOcrEngine),
+            ReadString(element, "PageOcrEngine", fallback.PageOcrEngine),
+            ReadString(element, "RegionOcrEngine", fallback.RegionOcrEngine));
     }
 
     private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)

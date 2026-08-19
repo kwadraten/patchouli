@@ -100,18 +100,29 @@
     <!-- Content Area -->
     <Grid Grid.Column="1" RowDefinitions="Auto,*">
       <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="32,16">
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-          <StackPanel Spacing="4" VerticalAlignment="Center">
+        <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto" ColumnSpacing="16" RowSpacing="12">
+          <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4" VerticalAlignment="Center">
             <TextBlock Text="{Binding Header}" FontSize="24" FontWeight="SemiBold"
                        Foreground="{DynamicResource OnSurfaceBrush}" />
           </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Content="粘贴 BibLaTeX" Command="{Binding ImportBiblatexFromClipboardCommand}" Height="32" />
-            <Button Content="导入 .bib" Command="{Binding ImportBiblatexFromFileCommand}" Height="32" />
+          <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <Button Content="粘贴 BibLaTeX" Command="{Binding ImportBiblatexFromClipboardCommand}" Height="32"
+                    IsEnabled="{Binding !IsMergedSource}" />
+            <Button Content="导入 .bib" Command="{Binding ImportBiblatexFromFileCommand}" Height="32"
+                    IsEnabled="{Binding !IsMergedSource}" />
             <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger" />
-            <Button Content="保存题录" Command="{Binding SaveCommand}" Height="32" Classes="Primary" />
+            <Button Content="保存题录" Command="{Binding SaveCommand}" Height="32" Classes="Primary"
+                    IsEnabled="{Binding !IsMergedSource}" />
             <Button Content="新建" Command="{Binding NewCommand}" Height="32" />
           </StackPanel>
+
+          <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
+                  Background="{DynamicResource ErrorContainerBrush}"
+                  BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4" Padding="12"
+                  IsVisible="{Binding IsMergedSource}">
+            <TextBlock Text="{Binding MergedBannerText}" FontWeight="Bold"
+                       Foreground="{DynamicResource OnErrorContainerBrush}" TextWrapping="Wrap" />
+          </Border>
         </Grid>
       </Border>
 
@@ -300,6 +311,49 @@
                                             DialogTitle="选择关联文件" PlaceholderText="文件路径" />
                 <Button Grid.Column="1" Content="注册" Command="{Binding RegisterFileCommand}" />
               </Grid>
+            </StackPanel>
+          </Border>
+
+          <!-- 文档版本历史 -->
+          <Border Classes="Card" IsVisible="{Binding IsFilesSectionActive}">
+            <StackPanel Spacing="12">
+              <TextBlock Text="文档版本历史" Classes="CardTitle" />
+              <ComboBox ItemsSource="{Binding LinkedFiles}" SelectedItem="{Binding SelectedHistoryDocument}"
+                        HorizontalAlignment="Stretch" PlaceholderText="选择要查看历史的文档">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate DataType="editor:LinkedDocumentInstanceItemViewModel">
+                    <TextBlock Text="{Binding DisplayName}" />
+                  </DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <TextBlock Text="没有已提交的版本历史。" FontSize="13"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                         IsVisible="{Binding !HasDocumentCommits}" />
+              <ScrollViewer MaxHeight="360" IsVisible="{Binding HasDocumentCommits}">
+                <ItemsControl ItemsSource="{Binding DocumentCommits}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="editor:DocumentCommitViewModel">
+                      <StackPanel Spacing="6" Margin="0,0,0,12">
+                        <TextBlock Text="{Binding DisplayText}" FontSize="13"
+                                   Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                        <ItemsControl ItemsSource="{Binding Pages}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate DataType="editor:DocumentCommitPageViewModel">
+                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="8,0,0,4">
+                                <TextBlock Text="{Binding PageLabel}" FontSize="12"
+                                           VerticalAlignment="Center"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                <Button Grid.Column="1" Content="恢复此页" Command="{Binding RevertCommand}"
+                                        FontSize="11" Classes="Danger" />
+                              </Grid>
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
             </StackPanel>
           </Border>
 

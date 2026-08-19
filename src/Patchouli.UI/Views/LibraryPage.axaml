@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:vm="using:Patchouli.UI.ViewModels"
+             xmlns:views="using:Patchouli.UI.Views"
              x:DataType="vm:LibraryShellViewModel">
   <UserControl.Styles>
     <Style Selector="TextBlock.ListHeader">
@@ -33,16 +34,20 @@
               <StackPanel Spacing="16">
                 <!-- Main navigation -->
                 <StackPanel Spacing="2">
-                  <!-- 我的书库 (Selected/Plank style) -->
-                  <Border Background="{DynamicResource TertiaryBrush}" BorderBrush="{DynamicResource PrimaryBrush}"
-                          BorderThickness="3,0,0,0" Padding="16,8">
-                    <StackPanel Orientation="Horizontal" Spacing="10">
-                      <lucide:Lucide Icon="Database" Width="13" Height="13"
-                                     StrokeBrush="{DynamicResource PrimaryBrush}" />
-                      <TextBlock Text="我的书库" FontSize="13" FontWeight="SemiBold"
-                                 Foreground="{DynamicResource PrimaryBrush}" />
-                    </StackPanel>
-                  </Border>
+                  <ListBox Classes="SidebarListBox"
+                           ItemsSource="{Binding Sidebar.Sections}"
+                           SelectedItem="{Binding Sidebar.SelectedSection}">
+                    <ListBox.ItemTemplate>
+                      <DataTemplate x:DataType="vm:LibrarySidebarSectionViewModel">
+                        <Border Classes="ItemBorder">
+                          <StackPanel Orientation="Horizontal" Spacing="10">
+                            <lucide:Lucide Classes="ItemIcon" Icon="{Binding Icon}" Width="13" Height="13" />
+                            <TextBlock Classes="ItemText" Text="{Binding Label}" FontSize="13" />
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ListBox.ItemTemplate>
+                  </ListBox>
                 </StackPanel>
 
                 <Separator Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="16,0" />
@@ -114,6 +119,57 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </StackPanel>
+
+                <Separator Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="16,0" />
+
+                <!-- Tags -->
+                <StackPanel Classes="SidebarItemContainer"
+                            IsVisible="{Binding Sidebar.IsTagAreaVisible}">
+                  <TextBlock Classes="SidebarSectionHeader" Text="标签" />
+                  <ItemsControl ItemsSource="{Binding Sidebar.Tags}">
+                    <ItemsControl.Styles>
+                      <Style Selector="ContentPresenter">
+                        <Setter Property="(DragDrop.AllowDrop)" Value="True" />
+                      </Style>
+                    </ItemsControl.Styles>
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <StackPanel Spacing="2" />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:TagListItemViewModel">
+                        <Border Classes="TagItemBorder"
+                                Background="{Binding IsSelected, Converter={StaticResource BoolChoiceConverter}, ConverterParameter='PrimaryContainerBrush|Transparent'}"
+                                PointerPressed="OnTagPointerPressed"
+                                PointerMoved="OnTagPointerMoved"
+                                PointerReleased="OnTagPointerReleased"
+                                DragDrop.DragOver="OnTagDragOver"
+                                DragDrop.Drop="OnTagDrop">
+                          <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
+                              <lucide:Lucide Classes="ItemIcon" Icon="Pin" Width="12" Height="12"
+                                             IsVisible="{Binding IsPinned}" />
+                              <TextBlock Classes="ItemText" Text="{Binding DisplayText}" FontSize="12" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" Classes="ItemText" Text="{Binding CountText}" FontSize="11"
+                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                          </Grid>
+                          <Border.ContextMenu>
+                            <ContextMenu>
+                              <MenuItem
+                                Header="{Binding IsPinned, Converter={StaticResource BoolChoiceConverter}, ConverterParameter='取消置顶|置顶'}"
+                                Command="{Binding TogglePinCommand}" />
+                              <MenuItem Header="重命名" Command="{Binding RenameCommand}" />
+                              <MenuItem Header="合并到…" Command="{Binding MergeIntoCommand}" />
+                              <MenuItem Header="移除" Command="{Binding RemoveCommand}" />
+                            </ContextMenu>
+                          </Border.ContextMenu>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
               </StackPanel>
             </ScrollViewer>
           </Grid>
@@ -131,24 +187,39 @@
         <DataGrid.ContextMenu>
           <ContextMenu>
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
-                      IsEnabled="{Binding IsSingleSelectionOrNone}" />
+                      IsEnabled="{Binding IsSingleSelectionOrNone}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="合并条目" Command="{Binding MergeSelectedItemsCommand}"
+                      IsEnabled="{Binding CanMergeSelectedItems}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="检测重复题录"
+                      Command="{Binding DetectDuplicatesCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="获取所选题录元数据"
                       Command="{Binding LookupMetadataBatchCommand}"
-                      IsEnabled="{Binding HasBatchSelection}" />
+                      IsEnabled="{Binding HasBatchSelection}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="取消批量获取元数据"
                       Command="{Binding CancelMetadataBatchCommand}"
                       IsVisible="{Binding IsMetadataBatchBusy}" />
-            <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}" />
-            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}" />
+            <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
                       Command="{Binding CopyCslBibliographyDescriptor}"
-                      ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
+                      ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="{Binding ExportItemDescriptor.Label}"
                       Command="{Binding ExportItemDescriptor}"
-                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
-            <MenuItem Header="{Binding CheckSyncStateDescriptor.Label}"
-                      Command="{Binding CheckSyncStateDescriptor}"
-                      ToolTip.Tip="{Binding CheckSyncStateDescriptor.DisabledReason}" />
+                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="删除" Command="{Binding DeleteSelectedItemsCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="还原" Command="{Binding RestoreSelectedItemsCommand}"
+                      IsVisible="{Binding Sidebar.IsTrashSelected}" />
+            <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
+                      IsVisible="{Binding Sidebar.IsTrashSelected}" />
           </ContextMenu>
         </DataGrid.ContextMenu>
         <DataGrid.Columns>
@@ -168,7 +239,7 @@
           <DataGridTextColumn Header="标题" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}" Width="*" />
 
           <!-- Source -->
-          <DataGridTextColumn Header="来源" Binding="{Binding PublicationTitle}" IsVisible="{Binding ShowSourceColumn}"
+          <DataGridTextColumn Header="来源" Binding="{Binding SourceText}" IsVisible="{Binding ShowSourceColumn}"
                               Width="150" />
 
           <!-- Status -->
@@ -219,66 +290,8 @@
                            Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
               </StackPanel>
 
-              <!-- Selected state -->
-              <ContentControl Content="{Binding SelectedItem}" IsVisible="{Binding HasSelectedItem}">
-                <ContentControl.ContentTemplate>
-                  <DataTemplate x:DataType="vm:LibraryItemViewModel">
-                    <StackPanel Spacing="16">
-                      <!-- Metadata Table Grid -->
-                      <Border Background="{DynamicResource SurfaceContainerLowestBrush}"
-                              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
-                              Padding="12">
-                        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
-                              ColumnDefinitions="80,*"
-                              RowSpacing="10">
-                          <!-- Row 0: Item Type -->
-                          <TextBlock Grid.Row="0" Grid.Column="0" Text="条目类型" FontSize="11"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="0" Grid.Column="1"
-                                     Text="{Binding ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
-                                     FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" FontWeight="SemiBold"
-                                     VerticalAlignment="Center" />
-
-                          <!-- Row 1: Authors -->
-                          <TextBlock Grid.Row="1" Grid.Column="0" Text="作者" FontSize="11"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Authors}" FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
-                                     VerticalAlignment="Center" />
-
-                          <!-- Row 2: Year -->
-                          <TextBlock Grid.Row="2" Grid.Column="0" Text="年份" FontSize="11"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding Year}" FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
-
-                          <!-- Row 3: Publication -->
-                          <TextBlock Grid.Row="3" Grid.Column="0" Text="期刊/出处" FontSize="11"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding PublicationTitle}"
-                                     FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
-                                     VerticalAlignment="Center" />
-
-                          <!-- Row 4: OCR Status -->
-                          <TextBlock Grid.Row="4" Grid.Column="0" Text="OCR/索引" FontSize="11"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding OcrStatus}" FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
-                                     VerticalAlignment="Center" />
-
-                          <!-- Row 5: File Name -->
-                          <TextBlock Grid.Row="5" Grid.Column="0" Text="关联文件" FontSize="11"
-                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-                          <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding FileName}" FontSize="12"
-                                     Foreground="{DynamicResource OnSurfaceBrush}" TextTrimming="CharacterEllipsis"
-                                     VerticalAlignment="Center" />
-                        </Grid>
-                      </Border>
-                    </StackPanel>
-                  </DataTemplate>
-                </ContentControl.ContentTemplate>
-              </ContentControl>
+              <!-- Inspector -->
+              <views:ItemInspectorView DataContext="{Binding Inspector}" IsVisible="{Binding HasContent}" />
             </StackPanel>
           </ScrollViewer>
         </Border>

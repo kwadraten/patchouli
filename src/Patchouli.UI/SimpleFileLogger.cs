@@ -1,9 +1,6 @@
-namespace Patchouli.UI;
+using Patchouli.Core.Diagnostics;
 
-public interface IAppLogger
-{
-    Task LogAsync(string operation, string message);
-}
+namespace Patchouli.UI;
 
 public sealed class SimpleFileLogger : IAppLogger
 {

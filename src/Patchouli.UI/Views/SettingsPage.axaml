@@ -350,6 +350,42 @@
 
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
+                    <TextBlock Text="默认 OCR 引擎" Classes="CardTitle" />
+                    <TextBlock Text="为不同作用域选择当前使用的 OCR 引擎。保存后生效。" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" VerticalAlignment="Center">
+                      <TextBlock Grid.Row="0" Grid.Column="0" Text="文档级 OCR" VerticalAlignment="Center"
+                                 Margin="0,0,12,8" />
+                      <ComboBox Grid.Row="0" Grid.Column="1"
+                                ItemsSource="{Binding AvailableEngines}"
+                                DisplayMemberBinding="{Binding DisplayName}"
+                                SelectedValue="{Binding SelectedDocumentEngine}"
+                                SelectedValueBinding="{Binding EngineId}"
+                                HorizontalAlignment="Stretch" Margin="0,0,0,8" />
+
+                      <TextBlock Grid.Row="1" Grid.Column="0" Text="页面级 OCR" VerticalAlignment="Center"
+                                 Margin="0,0,12,8" />
+                      <ComboBox Grid.Row="1" Grid.Column="1"
+                                ItemsSource="{Binding AvailableEngines}"
+                                DisplayMemberBinding="{Binding DisplayName}"
+                                SelectedValue="{Binding SelectedPageEngine}"
+                                SelectedValueBinding="{Binding EngineId}"
+                                HorizontalAlignment="Stretch" Margin="0,0,0,8" />
+
+                      <TextBlock Grid.Row="2" Grid.Column="0" Text="区域级 OCR" VerticalAlignment="Center"
+                                 Margin="0,0,12,0" />
+                      <ComboBox Grid.Row="2" Grid.Column="1"
+                                ItemsSource="{Binding AvailableEngines}"
+                                DisplayMemberBinding="{Binding DisplayName}"
+                                SelectedValue="{Binding SelectedRegionEngine}"
+                                SelectedValueBinding="{Binding EngineId}"
+                                HorizontalAlignment="Stretch" />
+                    </Grid>
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
                     <TextBlock Text="搜索配置" Classes="CardTitle" />
                     <TextBlock Text="OCR 结果进入搜索单元后，可通过搜索菜单重建本地 FTS 索引。" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
@@ -374,6 +410,72 @@
                               Command="{Binding RemoveMinerUCredentialCommand}"
                               IsEnabled="{Binding HasPersistedCredential}" />
                     </Grid>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </DataTemplate>
+
+            <!-- Local File Management -->
+            <DataTemplate DataType="settings:LocalFileManagementSettingsViewModel">
+              <StackPanel Spacing="20" MaxWidth="720">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                  <StackPanel Spacing="6">
+                    <TextBlock Text="本地文件管理" FontSize="24" FontWeight="SemiBold"
+                               Foreground="{DynamicResource OnSurfaceBrush}" />
+                    <TextBlock Text="管理 OCR 模型文件与运行时产生的临时文件。删除的模型可重新下载。"
+                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <Button Grid.Column="1" Content="刷新" Command="{Binding RefreshCommand}" VerticalAlignment="Top" />
+                </Grid>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="12">
+                    <TextBlock Text="托管位置" Classes="CardTitle" />
+                    <ItemsControl ItemsSource="{Binding Locations}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="settings:ManagedLocationViewModel">
+                          <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="12" Margin="0,6">
+                            <StackPanel Spacing="2">
+                              <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold" />
+                              <TextBlock Text="{Binding Path}" FontSize="11"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                         TextTrimming="CharacterEllipsis"
+                                         ToolTip.Tip="{Binding Path}" />
+                              <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="{Binding SizeDisplay}" FontSize="11"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                <TextBlock Text="{Binding ItemCountDisplay}" FontSize="11"
+                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                              </StackPanel>
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="下载模型" Command="{Binding DownloadCommand}"
+                                    IsVisible="{Binding CanDownload}" Padding="12,4" />
+                            <Button Grid.Column="2" Content="打开目录" Command="{Binding OpenCommand}" Padding="12,4" />
+                            <Button Grid.Column="3" Content="清理" Command="{Binding ClearCommand}" Classes="Danger"
+                                    IsVisible="{Binding CanClear}" Padding="12,4" />
+                          </Grid>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="Card" IsVisible="{Binding IsDownloading}">
+                  <StackPanel Spacing="8">
+                    <TextBlock Text="下载进度" Classes="CardTitle" />
+                    <ProgressBar Value="{Binding DownloadProgress}" Minimum="0" Maximum="1" />
+                    <TextBlock Text="{Binding Status}" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+
+                <Border Background="{DynamicResource SecondaryContainerBrush}" CornerRadius="4" Padding="12">
+                  <StackPanel Spacing="4">
+                    <TextBlock Text="许可说明" FontSize="12" FontWeight="SemiBold" />
+                    <TextBlock
+                      Text="NDL Koten OCR Lite 模型与配置文件来自 NDL Lab（https://github.com/ndl-lab/ndlkotenocr-lite），使用 CC-BY-4.0 许可证。"
+                      FontSize="11" TextWrapping="Wrap"
+                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
               </StackPanel>

@@ -210,13 +210,22 @@ public sealed class PerformanceHarnessTests
     }
 
     [Fact]
-    public void Report_privacy_scan_rejects_sensitive_markers()
+    public void Report_privacy_scan_rejects_evref_and_local_paths()
     {
         ReportPrivacy.IsSafe("{}").Should().BeTrue();
         ReportPrivacy.IsSafe("{\"median_ms\": 1.5}").Should().BeTrue();
         ReportPrivacy.IsSafe("{\"x\":\"evref:v2:abc\"}").Should().BeFalse();
+        ReportPrivacy.IsSafe("{\"x\":\"evref=abc\"}").Should().BeFalse();
         ReportPrivacy.IsSafe("{\"x\":\"C:\\\\Users\\\\secret\\\\db.sqlite\"}").Should().BeFalse();
         ReportPrivacy.IsSafe("{\"x\":\"api_key=topsecret\"}").Should().BeFalse();
+    }
+
+    [Fact]
+    public void Report_privacy_scan_accepts_versioned_evidence_uri_without_local_path()
+    {
+        const string versionedUri =
+            "patchouli://texts/00000000-0000-0000-0000-000000000000/page-1.md?rev=00000000-0000-0000-0000-000000000001&box=00000000-0000-0000-0000-000000000002";
+        ReportPrivacy.IsSafe($"{{\"uri\":\"{versionedUri}\"}}").Should().BeTrue();
     }
 
     [Fact]
@@ -283,8 +292,8 @@ public sealed class PerformanceHarnessTests
         result.RegressionFailed.Should().BeFalse();
         result.Report.Operations.Should().Contain(operation => operation.Name == "browse_items_first_page");
         result.Report.Operations.Should().Contain(operation => operation.Name == "mcp_page_text_cold");
-        result.Report.Operations.Should().Contain(operation => operation.Name == "ocr_stage_adopt");
-        result.Report.Operations.Should().Contain(operation => operation.Name == "mcp_evidence_fetch");
+        result.Report.Operations.Should().Contain(operation => operation.Name == "ocr_begin_commit");
+        result.Report.Operations.Should().Contain(operation => operation.Name == "mcp_versioned_uri_fetch");
 
         OperationReport cold = result.Report.Operations.Single(operation => operation.Name == "mcp_page_text_cold");
         OperationReport warm = result.Report.Operations.Single(operation => operation.Name == "mcp_page_text_warm");

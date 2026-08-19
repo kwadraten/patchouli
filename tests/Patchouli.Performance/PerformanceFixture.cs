@@ -6,10 +6,8 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
@@ -25,11 +23,17 @@ public sealed record PerformanceFixtureState(
     IReadOnlyList<ItemId> ItemIds,
     IReadOnlyList<DocumentInstanceId> DocumentIds,
     IReadOnlyList<PageId> PageIds,
-    string? EvidenceRefId,
     long TotalItems,
     long TotalPages,
     long TotalBoxes,
-    long TotalSearchUnits);
+    long TotalSearchUnits,
+    VersionedEvidenceTarget? SampleEvidence);
+
+public sealed record VersionedEvidenceTarget(
+    DocumentInstanceId DocumentInstanceId,
+    int PageIndex1Based,
+    DocumentTreeRevisionId RevisionId,
+    DocumentBoxId BoxId);
 
 /// <summary>
 /// Seeds a deterministic, privacy-safe synthetic Library: <c>items</c> items, each with
@@ -72,6 +76,7 @@ public static class PerformanceFixture
         List<ItemId> itemIds = new(items);
         List<DocumentInstanceId> documentIds = new(items);
         List<PageId> pageIds = new(items * pagesPerItem);
+        VersionedEvidenceTarget? sampleEvidence = null;
 
         for (int itemIndex = 0; itemIndex < items; itemIndex++)
         {
@@ -94,8 +99,13 @@ public static class PerformanceFixture
                 ThrowIfFailed(page, $"create page {itemIndex}/{pageIndex}");
                 pageIds.Add(page.Value.PageId);
 
-                await StageAndAdoptAsync(treeService, document.Value.DocumentInstanceId, page.Value.PageId,
+                Result<DocumentTreeRevision> committed = await BeginAndCommitAsync(
+                    treeService, document.Value.DocumentInstanceId, page.Value.PageId,
                     boxesPerPage, itemIndex, pageIndex, cancellationToken);
+                ThrowIfFailed(committed, $"commit revision {itemIndex}/{pageIndex}");
+
+                sampleEvidence ??= await ResolveSampleEvidenceAsync(
+                    treeService, document.Value.DocumentInstanceId, pageIndex, committed.Value.TreeRevisionId);
             }
 
             Result units = await searchUnits.RebuildForDocumentInstanceAsync(
@@ -107,32 +117,14 @@ public static class PerformanceFixture
             .RebuildFtsForLibraryAsync(cancellationToken);
         ThrowIfFailed(index, "rebuild FTS");
 
-        string? evidenceRefId = null;
-        await using (SqliteConnection connection = connectionFactory.CreateConnection())
-        {
-            await connection.OpenAsync(cancellationToken);
-            string? firstUnit = await connection.ExecuteScalarAsync<string>(
-                "select unit_id from search_units where status = 'current' order by ordinal, unit_id limit 1;");
-            if (!string.IsNullOrWhiteSpace(firstUnit))
-            {
-                EvidenceReferenceService evidenceService = new(connectionFactory, clock);
-                Result<EvidenceRefRecord> evidenceRecord = await evidenceService.CreateFromSearchUnitAsync(
-                    SearchUnitId.Parse(firstUnit), cancellationToken);
-                if (evidenceRecord.IsSuccess)
-                {
-                    evidenceRefId = evidenceRecord.Value.EvidenceRefId;
-                }
-            }
-        }
-
         long totalPages = (long)items * pagesPerItem;
         long totalBoxes = totalPages * boxesPerPage;
         return new PerformanceFixtureState(
             connectionFactory.DatabasePath, createdLibrary.Value.LibraryId, itemIds, documentIds, pageIds,
-            evidenceRefId, items, totalPages, totalBoxes, totalBoxes);
+            items, totalPages, totalBoxes, totalBoxes, sampleEvidence);
     }
 
-    private static async Task StageAndAdoptAsync(
+    private static async Task<Result<DocumentTreeRevision>> BeginAndCommitAsync(
         DocumentTreeService treeService,
         DocumentInstanceId documentId,
         PageId pageId,
@@ -152,12 +144,33 @@ public static class PerformanceFixture
                 null);
         }
 
-        Result<DocumentTreeRevision> staging = await treeService.StagePageAsync(
+        Result<DocumentTreeRevision> working = await treeService.BeginWorkingRevisionAsync(
             documentId, pageId, seeds, DocumentTreeRevisionSource.Import, cancellationToken: cancellationToken);
-        ThrowIfFailed(staging, "stage revision");
-        Result<DocumentTreeRevision> committed = await treeService.AdoptStagingRevisionAsync(
-            staging.Value.TreeRevisionId, cancellationToken);
-        ThrowIfFailed(committed, "adopt revision");
+        if (working.IsFailure)
+        {
+            return working;
+        }
+
+        return await treeService.CommitWorkingRevisionAsync(
+            working.Value.TreeRevisionId, null, cancellationToken);
+    }
+
+    private static async Task<VersionedEvidenceTarget?> ResolveSampleEvidenceAsync(
+        DocumentTreeService treeService,
+        DocumentInstanceId documentInstanceId,
+        int pageIndex0Based,
+        DocumentTreeRevisionId revisionId)
+    {
+        Result<IReadOnlyList<DocumentBox>> boxes = await treeService.ListBoxesAsync(revisionId);
+        if (boxes.IsFailure)
+        {
+            return null;
+        }
+
+        DocumentBox? first = boxes.Value.FirstOrDefault(box => box.BoxType == DocumentBoxType.Text);
+        return first is null
+            ? null
+            : new VersionedEvidenceTarget(documentInstanceId, pageIndex0Based + 1, revisionId, first.BoxId);
     }
 
     private static void ThrowIfFailed<T>(Result<T> result, string operation)

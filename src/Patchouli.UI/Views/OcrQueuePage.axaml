@@ -36,6 +36,8 @@
               <Button Content="取消" Classes="Danger" Command="{Binding CancelCommand}" Height="28" Padding="12,0"
                       FontSize="12" />
             </StackPanel>
+            <Button Grid.Column="1" Content="重试" Command="{Binding RetryCommand}" Height="28" Padding="12,0"
+                    FontSize="12" IsVisible="{Binding IsFailed}" />
           </Grid>
 
           <!-- 进度条 + 百分比 -->
@@ -85,6 +87,8 @@
                     IsVisible="{Binding IsGloballyPaused}" />
             <Button Content="清空已完成" Command="{Binding ClearFinishedCommand}" Height="32"
                     IsEnabled="{Binding HasFinishedTasks}" />
+            <Button Content="重试失败任务" Command="{Binding RetryFailedCommand}" Height="32"
+                    IsEnabled="{Binding HasRetryableTasks}" />
           </StackPanel>
         </Grid>
 

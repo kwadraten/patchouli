@@ -8,7 +8,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Core.Search;
@@ -251,7 +250,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         }
 
         List<UnitInsertRow> inserts = new(generated.Length);
-        List<EvidenceSuccessorLink> successorLinks = [];
+        List<SearchUnitSuccessorLink> successorLinks = [];
         foreach (GeneratedUnit unit in generated)
         {
             string unitId = existingByBox.GetValueOrDefault(unit.BoxId) ?? SearchUnitId.New().ToString();
@@ -275,7 +274,7 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 predecessor?.UnitId, now, now));
             if (predecessor is not null)
             {
-                successorLinks.Add(new EvidenceSuccessorLink(predecessor.UnitId, unitId, unit, now));
+                successorLinks.Add(new SearchUnitSuccessorLink(predecessor.UnitId, unitId, unit, now));
             }
         }
 
@@ -285,7 +284,6 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         }
 
         await UpdatePredecessorsAsync(connection, transaction, successorLinks, now, cancellationToken);
-        await LinkEvidenceSuccessorsAsync(connection, transaction, successorLinks, cancellationToken);
 
         await connection.ExecuteAsync(
             """
@@ -420,11 +418,11 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
     private static async Task UpdatePredecessorsAsync(
         SqliteConnection connection,
         DbTransaction transaction,
-        IReadOnlyList<EvidenceSuccessorLink> links,
+        IReadOnlyList<SearchUnitSuccessorLink> links,
         string now,
         CancellationToken cancellationToken)
     {
-        foreach (EvidenceSuccessorLink[] chunk in links.Chunk(SearchWriteBatchSize))
+        foreach (SearchUnitSuccessorLink[] chunk in links.Chunk(SearchWriteBatchSize))
         {
             StringBuilder cases = new();
             Dictionary<string, object?> parameters = new()
@@ -455,173 +453,6 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
                 transaction,
                 cancellationToken: cancellationToken);
             await connection.ExecuteAsync(update);
-        }
-    }
-
-    private static async Task LinkEvidenceSuccessorsAsync(
-        SqliteConnection connection,
-        DbTransaction transaction,
-        IReadOnlyList<EvidenceSuccessorLink> links,
-        CancellationToken cancellationToken)
-    {
-        if (links.Count == 0)
-        {
-            return;
-        }
-
-        // Load every active evidence record for all matched predecessors in one pass instead of
-        // issuing a SELECT per predecessor.
-        Dictionary<string, List<EvidenceRecordRow>> recordsByUnitId = new(StringComparer.Ordinal);
-        foreach (string[] chunk in links.Select(link => link.PredecessorUnitId).Distinct().Chunk(SearchWriteBatchSize))
-        {
-            CommandDefinition command = new(
-                """
-                select r.evidence_record_id as EvidenceRecordId, r.evidence_ref_id as EvidenceRefId,
-                       r.library_id as LibraryId, r.source_title as SourceTitle,
-                       r.page_label as PageLabel, r.page_index as PageIndex, r.unit_id as UnitId
-                from json_each(@UnitIds) requested
-                join evidence_ref_records r on r.unit_id = requested.value and r.status = @Status;
-                """,
-                new { UnitIds = JsonSerializer.Serialize(chunk), Status = EvidenceRecordStatus.Active },
-                transaction,
-                cancellationToken: cancellationToken);
-            foreach (EvidenceRecordRow row in await connection.QueryAsync<EvidenceRecordRow>(command))
-            {
-                if (!recordsByUnitId.TryGetValue(row.UnitId, out List<EvidenceRecordRow>? records))
-                {
-                    records = [];
-                    recordsByUnitId[row.UnitId] = records;
-                }
-
-                records.Add(row);
-            }
-        }
-
-        // Pre-generate one successor record per distinct successor evidence ref so the batch can
-        // insert them with a single pass and link every predecessor to the same stored record.
-        Dictionary<string, SuccessorInsertRow> successorByRef = new(StringComparer.Ordinal);
-        List<SupersedeRow> supersedes = [];
-        foreach (EvidenceSuccessorLink link in links)
-        {
-            if (!recordsByUnitId.TryGetValue(link.PredecessorUnitId, out List<EvidenceRecordRow>? records))
-            {
-                continue;
-            }
-
-            foreach (EvidenceRecordRow record in records)
-            {
-                EvidenceReference reference = new(
-                    LibraryId.Parse(record.LibraryId),
-                    DocumentInstanceId.Parse(link.Successor.DocumentInstanceId),
-                    PageId.Parse(link.Successor.PageId),
-                    DocumentTreeRevisionId.Parse(link.Successor.TreeRevisionId),
-                    DocumentBoxId.Parse(link.Successor.BoxId));
-                Result<string> encoded = EvidenceReferenceCodec.Encode(reference);
-                if (encoded.IsFailure)
-                {
-                    throw new InvalidOperationException(encoded.ErrorMessage);
-                }
-
-                if (!successorByRef.TryGetValue(encoded.Value, out SuccessorInsertRow? successor))
-                {
-                    successor = new SuccessorInsertRow(
-                        Guid.NewGuid().ToString("D"), encoded.Value, record.LibraryId,
-                        link.Successor.DocumentInstanceId, link.Successor.PageId, link.SuccessorUnitId,
-                        link.Successor.TreeRevisionId, link.Successor.BoxId, link.Successor.ResolvedText,
-                        record.SourceTitle, record.PageLabel, record.PageIndex, EvidenceRecordStatus.Active,
-                        link.Now);
-                    successorByRef[encoded.Value] = successor;
-                }
-
-                supersedes.Add(new SupersedeRow(record.EvidenceRecordId, encoded.Value, link.Now));
-            }
-        }
-
-        foreach (SuccessorInsertRow[] chunk in successorByRef.Values.Chunk(SearchWriteBatchSize))
-        {
-            CommandDefinition insert = new(
-                """
-                insert into evidence_ref_records (
-                    evidence_record_id, evidence_ref_id, library_id, document_instance_id, page_id, unit_id,
-                    tree_revision_id, box_id, snapshot_id, pinned_text, source_title, page_label, page_index,
-                    status, created_at)
-                select json_extract(value, '$.RecordId'), json_extract(value, '$.EvidenceRefId'),
-                       json_extract(value, '$.LibraryId'), json_extract(value, '$.DocumentInstanceId'),
-                       json_extract(value, '$.PageId'), json_extract(value, '$.UnitId'),
-                       json_extract(value, '$.TreeRevisionId'), json_extract(value, '$.BoxId'), null,
-                       json_extract(value, '$.PinnedText'), json_extract(value, '$.SourceTitle'),
-                       json_extract(value, '$.PageLabel'), json_extract(value, '$.PageIndex'),
-                       json_extract(value, '$.Status'), json_extract(value, '$.CreatedAt')
-                from json_each(@Records)
-                where true
-                on conflict(evidence_ref_id) do nothing;
-                """,
-                new { Records = JsonSerializer.Serialize(chunk) }, transaction,
-                cancellationToken: cancellationToken);
-            await connection.ExecuteAsync(insert);
-        }
-
-        // Resolve the actual stored successor record ids: an insert-or-ignore skips a ref that
-        // already exists, and every predecessor must still link to the real successor row.
-        Dictionary<string, string> successorIdByRef = new(StringComparer.Ordinal);
-        foreach (string[] chunk in successorByRef.Keys.Chunk(SearchWriteBatchSize))
-        {
-            CommandDefinition load = new(
-                """
-                select r.evidence_ref_id as EvidenceRefId, r.evidence_record_id as EvidenceRecordId
-                from json_each(@EvidenceRefIds) requested
-                join evidence_ref_records r on r.evidence_ref_id = requested.value;
-                """,
-                new { EvidenceRefIds = JsonSerializer.Serialize(chunk) }, transaction,
-                cancellationToken: cancellationToken);
-            foreach (RecordRefRow row in await connection.QueryAsync<RecordRefRow>(load))
-            {
-                successorIdByRef[row.EvidenceRefId] = row.EvidenceRecordId;
-            }
-        }
-
-        foreach (SupersedeRow[] chunk in supersedes.Chunk(SearchWriteBatchSize))
-        {
-            await connection.ExecuteAsync(
-                "update evidence_ref_records set status = @Status where evidence_record_id in @Ids;",
-                new
-                {
-                    Status = EvidenceRecordStatus.Superseded,
-                    Ids = chunk.Select(row => row.PredecessorRecordId).ToArray()
-                },
-                transaction);
-        }
-
-        foreach (SupersedeRow[] chunk in supersedes.Chunk(SearchWriteBatchSize))
-        {
-            SuccessorLinkRow[] rows = chunk
-                .Where(row => successorIdByRef.TryGetValue(row.EvidenceRefId, out _))
-                .Select(row => new SuccessorLinkRow(
-                    row.PredecessorRecordId, successorIdByRef[row.EvidenceRefId], row.CreatedAt))
-                .ToArray();
-            if (rows.Length == 0)
-            {
-                continue;
-            }
-
-            CommandDefinition link = new(
-                """
-                insert into evidence_successors (predecessor_record_id, successor_record_id, reason, created_at)
-                select json_extract(value, '$.Predecessor'), json_extract(value, '$.Successor'),
-                       @Reason, @CreatedAt
-                from json_each(@Rows)
-                where true
-                on conflict(predecessor_record_id, successor_record_id) do nothing;
-                """,
-                new
-                {
-                    Rows = JsonSerializer.Serialize(rows),
-                    Reason = EvidenceSuccessorReason.LayoutReplaced,
-                    CreatedAt = rows[0].CreatedAt
-                },
-                transaction,
-                cancellationToken: cancellationToken);
-            await connection.ExecuteAsync(link);
         }
     }
 
@@ -774,46 +605,9 @@ public sealed class SearchUnitBuilder : ISearchUnitBuilder, ISearchDirtyMarker
         string CreatedAt,
         string UpdatedAt);
 
-    private sealed record EvidenceSuccessorLink(
+    private sealed record SearchUnitSuccessorLink(
         string PredecessorUnitId,
         string SuccessorUnitId,
         GeneratedUnit Successor,
         string Now);
-
-    private sealed record SuccessorInsertRow(
-        string RecordId,
-        string EvidenceRefId,
-        string LibraryId,
-        string DocumentInstanceId,
-        string PageId,
-        string UnitId,
-        string TreeRevisionId,
-        string BoxId,
-        string PinnedText,
-        string SourceTitle,
-        string? PageLabel,
-        int PageIndex,
-        string Status,
-        string CreatedAt);
-
-    private sealed record SupersedeRow(string PredecessorRecordId, string EvidenceRefId, string CreatedAt);
-
-    private sealed record SuccessorLinkRow(string Predecessor, string Successor, string CreatedAt);
-
-    private sealed class RecordRefRow
-    {
-        public string EvidenceRefId { get; set; } = string.Empty;
-        public string EvidenceRecordId { get; set; } = string.Empty;
-    }
-
-    private sealed class EvidenceRecordRow
-    {
-        public string EvidenceRecordId { get; set; } = string.Empty;
-        public string EvidenceRefId { get; set; } = string.Empty;
-        public string LibraryId { get; set; } = string.Empty;
-        public string SourceTitle { get; set; } = string.Empty;
-        public string? PageLabel { get; set; }
-        public int PageIndex { get; set; }
-        public string UnitId { get; set; } = string.Empty;
-    }
 }

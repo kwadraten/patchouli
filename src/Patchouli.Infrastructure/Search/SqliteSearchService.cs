@@ -85,10 +85,13 @@ public sealed class SqliteSearchService : ISearchService
                     join search_units su on su.unit_id = f.unit_id
                     join pages p on p.page_id = su.page_id
                     join document_instances di on di.document_instance_id = su.document_instance_id
+                    join items i on i.item_id = di.item_id
                     where search_units_fts match @Match
                       and su.status = @Status
                       and (@DocumentInstanceId is null or su.document_instance_id = @DocumentInstanceId)
                       and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
+                      and i.deleted_at is null
+                      and i.merged_into_item_id is null
                     group by su.page_id
                 )
                 select PageId, PageIndex, MatchCount
@@ -125,6 +128,8 @@ public sealed class SqliteSearchService : ISearchService
                     where search_units_fts match @Match
                       and su.page_id = @PageId
                       and su.status = @Status
+                      and i.deleted_at is null
+                      and i.merged_into_item_id is null
                     order by su.ordinal, su.unit_id
                     limit @Limit;
                     """,

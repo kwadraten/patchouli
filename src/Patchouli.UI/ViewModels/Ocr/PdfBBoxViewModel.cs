@@ -35,7 +35,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         DocumentBox box,
         double imageWidth,
         double imageHeight,
-        bool isStaging,
+        bool isDraft,
         int readingOrder = 0,
         int depth = 0)
     {
@@ -61,7 +61,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         _normalizedHeight = box.BBox.Height;
         ReadingOrder = readingOrder;
         Depth = depth;
-        IsStaging = isStaging;
+        IsDraft = isDraft;
         SaveTextCommand = new AsyncCommand(SaveTextAsync);
         DeleteCommand = new AsyncCommand(DeleteAsync);
         SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync);
@@ -165,7 +165,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 
     public IBrush BoxColor => ColorFor(BoxType);
     public IBrush VisualBoxColor => IsSuppressed ? Brushes.Gray : BoxColor;
-    public bool IsStaging { get; }
+    public bool IsDraft { get; }
 
     public string? AssetId
     {

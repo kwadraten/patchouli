@@ -1,16 +1,30 @@
-﻿namespace Patchouli.UI.ViewModels;
+using Patchouli.Core.Ids;
+using Patchouli.UI.Services;
+
+namespace Patchouli.UI.ViewModels;
 
 public sealed class SearchMatchedUnitViewModel
 {
-    public SearchMatchedUnitViewModel(string unitId, string text, string nodeType, int readingOrder, bool isMatch,
-        string? evidenceRef)
+    public SearchMatchedUnitViewModel(
+        string unitId,
+        string text,
+        string nodeType,
+        int readingOrder,
+        bool isMatch,
+        DocumentInstanceId documentInstanceId,
+        int pageIndex,
+        DocumentBoxId boxId,
+        DocumentTreeRevisionId treeRevisionId)
     {
         UnitId = unitId;
         Text = text;
         NodeType = nodeType;
         ReadingOrder = readingOrder;
         IsMatch = isMatch;
-        EvidenceRef = evidenceRef ?? "";
+        DocumentInstanceId = documentInstanceId;
+        PageIndex = pageIndex;
+        BoxId = boxId;
+        TreeRevisionId = treeRevisionId;
     }
 
     public string UnitId { get; }
@@ -18,8 +32,18 @@ public sealed class SearchMatchedUnitViewModel
     public string NodeType { get; }
     public int ReadingOrder { get; }
     public bool IsMatch { get; }
-    public string EvidenceRef { get; set; }
-    public bool HasEvidenceRef => !string.IsNullOrWhiteSpace(EvidenceRef);
+    public DocumentInstanceId DocumentInstanceId { get; }
+    public int PageIndex { get; }
+    public DocumentBoxId BoxId { get; }
+    public DocumentTreeRevisionId TreeRevisionId { get; }
+
+    public string VersionedUri => PatchouliUriNavigationParser.BuildTextPageUri(
+        DocumentInstanceId,
+        PageIndex,
+        TreeRevisionId,
+        BoxId);
+
+    public bool HasVersionedUri => true;
 }
 
 public sealed class SearchPageResultViewModel

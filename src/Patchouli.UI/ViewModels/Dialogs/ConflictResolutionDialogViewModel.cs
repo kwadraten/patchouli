@@ -362,6 +362,7 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
         {
             Patchouli.Core.Conflicts.ConflictCode.BiblatexItemFieldConflict => "处理题录字段冲突",
             Patchouli.Core.Conflicts.ConflictCode.BiblatexBatchLinkCandidates => "处理题录关联冲突",
+            Patchouli.Core.Conflicts.ConflictCode.ItemLevelBranch => "处理 Item 分支状态冲突",
             _ => "处理冲突"
         };
         ConflictDescription = descriptor.ConflictCode switch
@@ -370,6 +371,8 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
                 "导入的 BibLaTeX 字段与目标题录不同，请逐项选择处理方式。",
             Patchouli.Core.Conflicts.ConflictCode.BiblatexBatchLinkCandidates =>
                 "一个或多个 BibLaTeX 源条目存在候选题录，请明确选择关联现有题录或新建题录。",
+            Patchouli.Core.Conflicts.ConflictCode.ItemLevelBranch =>
+                "Item 在分支间的生命周期状态不一致，请选择保留本地状态或采用传入状态。",
             _ => descriptor.Summary
         };
         Severity = descriptor.Severity switch

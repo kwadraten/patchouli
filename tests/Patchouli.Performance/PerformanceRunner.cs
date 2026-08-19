@@ -10,7 +10,6 @@ using Patchouli.Core.Time;
 using SQLitePCL;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Search;
@@ -64,9 +63,12 @@ public static class PerformanceRunner
             LibraryIdentityService libraryService = new(database, clock);
             SearchProfileService profiles = new(database, libraryService, clock);
             SqliteSearchService search = new(database, profiles);
-            EvidenceReferenceService evidence = new(database, clock);
-            McpReadApi api = new(database, search, evidence);
+            McpReadApi api = new(database, search);
             DocumentTreeService tree = new(database, clock, new MarkdigMarkdownEngine());
+            MarkdigMarkdownEngine markdownEngine = new();
+            IDocumentMarkdownCompiler compiler = new DocumentMarkdownCompiler(tree, markdownEngine);
+            IVersionedEvidenceReader evidenceReader = new VersionedEvidenceReader(
+                database, libraryService, tree, compiler);
 
             if (!options.Quiet)
             {
@@ -100,33 +102,35 @@ public static class PerformanceRunner
             operations.Add(await MeasureAsync(counters, "mcp_page_blocks", options.Iterations,
                 (iteration, ct) => api.GetPageBlocksAsync(new McpPageBlocksRequest(fixture.PageIds[0]), ct),
                 null, null, cancellationToken));
-            if (fixture.EvidenceRefId is not null)
+            if (fixture.SampleEvidence is not null)
             {
-                operations.Add(await MeasureAsync(counters, "mcp_evidence_fetch", options.Iterations,
-                    (iteration, ct) => api.GetEvidenceRecordAsync(fixture.EvidenceRefId!, ct), null, null,
-                    cancellationToken));
+                VersionedEvidenceTarget target = fixture.SampleEvidence;
+                operations.Add(await MeasureAsync(counters, "mcp_versioned_uri_fetch", options.Iterations,
+                    (iteration, ct) => evidenceReader.GetBoxTextAsync(
+                        target.DocumentInstanceId, target.PageIndex1Based, target.RevisionId, target.BoxId, ct),
+                    null, null, cancellationToken));
             }
 
             long beforeOcr = DbBytes(database).Main;
-            operations.Add(await MeasureAsync(counters, "ocr_stage_adopt", options.Iterations,
+            operations.Add(await MeasureAsync(counters, "ocr_begin_commit", options.Iterations,
                 async (iteration, ct) =>
                 {
                     DocumentBoxSeed[] seeds = BoxSeeds(iteration);
-                    Core.Results.Result<DocumentTreeRevision> staging = await tree.StagePageAsync(
+                    Core.Results.Result<DocumentTreeRevision> working = await tree.BeginWorkingRevisionAsync(
                         fixture.DocumentIds[0], fixture.PageIds[0], seeds,
                         DocumentTreeRevisionSource.Import, cancellationToken: ct);
-                    if (staging.IsFailure)
+                    if (working.IsFailure)
                     {
                         throw new InvalidOperationException(
-                            $"stage failed: {staging.ErrorCode} {staging.ErrorMessage}");
+                            $"begin working failed: {working.ErrorCode} {working.ErrorMessage}");
                     }
 
-                    Core.Results.Result<DocumentTreeRevision> committed = await tree.AdoptStagingRevisionAsync(
-                        staging.Value.TreeRevisionId, ct);
+                    Core.Results.Result<DocumentTreeRevision> committed = await tree.CommitWorkingRevisionAsync(
+                        working.Value.TreeRevisionId, null, ct);
                     if (committed.IsFailure)
                     {
                         throw new InvalidOperationException(
-                            $"adopt failed: {committed.ErrorCode} {committed.ErrorMessage}");
+                            $"commit failed: {committed.ErrorCode} {committed.ErrorMessage}");
                     }
                 },
                 beforeOcr, null, cancellationToken));
@@ -160,7 +164,7 @@ public static class PerformanceRunner
             if (options.CheckRegression)
             {
                 string baselinePath = options.BaselinePath
-                                      ?? Path.Combine(".agent", "perf", $"baseline.{options.ProfileName}.json");
+                                      ?? Path.Combine(".agents", "perf", $"baseline.{options.ProfileName}.json");
                 if (!File.Exists(baselinePath))
                 {
                     throw new InvalidOperationException(

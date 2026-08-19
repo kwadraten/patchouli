@@ -11,6 +11,8 @@ using Patchouli.Ocr;
 using System.Linq;
 using Patchouli.Core.Results;
 using Patchouli.UI.Services;
+using Patchouli.UI;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -59,6 +61,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private string _mergeText = string.Empty;
     private string _sourceValidationState = SourceValidationStatus.Unverified;
     private string? _sourceWarning;
+    private DocumentTreeRevisionId? _liveCurrentRevisionId;
+    private bool _isViewingHistoricalRevision;
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
@@ -96,7 +100,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             SetActiveTool(PdfWorkspaceTool.CreateBox);
             return Task.CompletedTask;
         });
-        InsertPendingBoxCommand = new AsyncCommand(PersistStagingBoxAsync);
+        InsertPendingBoxCommand = new AsyncCommand(PersistDraftBoxAsync);
         CancelPendingBoxCommand = new AsyncCommand(() =>
         {
             ClearPendingBox();
@@ -115,7 +119,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         RejectLocalOcrCommand = new AsyncCommand(() =>
         {
             ClearLocalOcrCandidate();
-            Status = "已拒绝局部 OCR 候选结果；未写入识别记录或暂存树。";
+            Status = "已拒绝局部 OCR 候选结果；未写入识别记录或工作版本。";
             return Task.CompletedTask;
         });
         RunLogicalPageOcrCommand = new AsyncCommand(RunLogicalPageOcrAsync);
@@ -239,6 +243,21 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
 
             _isEditMode = value;
+            Raise();
+        }
+    }
+
+    public bool IsViewingHistoricalRevision
+    {
+        get => _isViewingHistoricalRevision;
+        private set
+        {
+            if (_isViewingHistoricalRevision == value)
+            {
+                return;
+            }
+
+            _isViewingHistoricalRevision = value;
             Raise();
         }
     }
@@ -521,6 +540,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> CandidateBoxes { get; } = new();
 
+    public System.Collections.ObjectModel.ObservableCollection<PageRevisionViewModel> PageRevisions { get; } = new();
+
     public System.Collections.ObjectModel.ObservableCollection<PdfOverlapMarkerViewModel> OverlapMarkers { get; } =
         new();
 
@@ -535,6 +556,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> TreeBoxes { get; } = new();
 
     public bool HasNoBoundingBoxes => BoundingBoxes.Count == 0;
+    public bool HasPageRevisions => PageRevisions.Count > 0;
     public bool HasNoPreviewBlocks => PreviewBlocks.Count == 0;
     public bool HasOverlapWarnings => OverlapMarkers.Count > 0;
     public bool HasContinuationLinks => ContinuationLinks.Count > 0;
@@ -839,7 +861,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _ = OpenNewBoxEditorAsync();
     }
 
-    private async Task PersistStagingBoxAsync()
+    private async Task PersistDraftBoxAsync()
     {
         if (_editSessionId is null || _draftRevisionId is null || _currentPageId is null)
         {
@@ -910,11 +932,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         };
     }
 
-    private async Task<OcrPresetId?> ResolveOcrPresetIdAsync()
+    private async Task<OcrPresetId?> ResolveOcrPresetIdAsync(OcrScope scope)
     {
         try
         {
-            return await LibraryShellViewModel.EnsureMinerUPresetAsync(await _main.ServicesAsync());
+            AppServices services = await _main.ServicesAsync();
+            string engineId = _main.AppOptions.OcrEngines.EngineFor(scope);
+            return await LibraryShellViewModel.EnsurePresetForEngineAsync(services, engineId);
         }
         catch (Exception exception)
         {
@@ -938,7 +962,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync();
+        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Region);
         if (presetId is null)
         {
             return;
@@ -1052,7 +1076,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync();
+        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Region);
         if (presetId is null)
         {
             return;
@@ -1093,7 +1117,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 false), _widthPixels, _heightPixels, true));
 
             Raise(nameof(HasCandidate));
-            Status = "局部 OCR 候选结果已生成；这是一个短生命周期的完整内容差异，不会写入识别记录或暂存树。";
+            Status = "局部 OCR 候选结果已生成；这是一个短生命周期的完整内容差异，不会写入识别记录或工作版本。";
             return Result.Success();
         });
         if (_localOcrCandidate is not null && _localOcrTargetBoxId is { } targetId &&
@@ -1158,7 +1182,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync();
+        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Page);
         if (presetId is null)
         {
             return;
@@ -1177,7 +1201,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 return Result.Failure(result.ErrorCode!, result.ErrorMessage!);
             }
 
-            Status = $"逻辑页 OCR 已合成为暂存树 {result.Value.StagingTreeRevisionId}；区域已映射回物理页。";
+            Status = "逻辑页 OCR 已完成并生成工作版本；区域已映射回物理页。";
             return Result.Success();
         });
     }
@@ -1190,7 +1214,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync();
+        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Document);
         if (presetId is null)
         {
             return;
@@ -1254,7 +1278,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync();
+        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Page);
         if (presetId is null)
         {
             return;
@@ -1281,8 +1305,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
 
             Status = result.Value.UsedLogicalPages
-                ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个逻辑页生成暂存树 {result.Value.StagingTreeRevisionId}。"
-                : $"本页整页 OCR 已生成暂存树 {result.Value.StagingTreeRevisionId}。";
+                ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个逻辑页完成并生成工作版本。"
+                : "本页整页 OCR 已完成并生成工作版本。";
             return Result.Success();
         });
     }
@@ -1848,10 +1872,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _heightPixels = 0;
         _renderGeneration++;
         IsEditMode = false;
+        IsViewingHistoricalRevision = false;
         IsSidebarOpen = false;
         SetActiveTool(PdfWorkspaceTool.Select);
         BoundingBoxes.Clear();
         TreeBoxes.Clear();
+        PageRevisions.Clear();
         OverlapMarkers.Clear();
         ContinuationLinks.Clear();
         CrossPageContinuationMarkers.Clear();
@@ -2057,9 +2083,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 if (rev.IsSuccess)
                 {
                     _currentRevisionId = rev.Value.TreeRevisionId;
+                    _liveCurrentRevisionId = rev.Value.TreeRevisionId;
+                    IsViewingHistoricalRevision = false;
                     await LoadBoxesIntoViewAsync(rev.Value.TreeRevisionId, false);
                 }
             }
+
+            await LoadPageRevisionsAsync(services, documentInstanceId, page.PageId);
 
             Status =
                 $"{Item.Title} · 第 {_pageIndex + 1}/{_pageCount} 页 · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
@@ -2279,7 +2309,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         return result.IsSuccess ? result.Value : [];
     }
 
-    private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isStaging)
+    private async Task LoadBoxesIntoViewAsync(DocumentTreeRevisionId revisionId, bool isDraft)
     {
         _loadedBoxes = await LoadBoxesAsync(revisionId);
         int readingOrder = 0;
@@ -2287,7 +2317,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         {
             DocumentBox box = item.Box;
             BoundingBoxes.Add(new PdfBBoxViewModel(
-                _main, this, box, _widthPixels, _heightPixels, isStaging, ++readingOrder, item.Depth));
+                _main, this, box, _widthPixels, _heightPixels, isDraft, ++readingOrder, item.Depth));
         }
 
         foreach (PdfBBoxViewModel view in BoundingBoxes)
@@ -2582,6 +2612,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
+        if (IsViewingHistoricalRevision)
+        {
+            Status = "当前正在查看历史版本，请重新加载页面后再进入编辑模式。";
+            return;
+        }
+
         AppServices services = await _main.ServicesAsync();
         DocumentInstanceId docId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         if (_currentPageId is null)
@@ -2651,6 +2687,88 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         ClearSplit();
         ClearLocalOcrCandidate();
         await ReloadAsync();
+    }
+
+    private async Task LoadPageRevisionsAsync(AppServices services, DocumentInstanceId documentInstanceId,
+        PageId pageId)
+    {
+        PageRevisions.Clear();
+        Result<IReadOnlyList<DocumentTreeRevision>> revisions =
+            await services.DocumentTrees.ListRevisionsAsync(documentInstanceId, pageId);
+        if (revisions.IsFailure)
+        {
+            return;
+        }
+
+        foreach (DocumentTreeRevision revision in revisions.Value)
+        {
+            PageRevisions.Add(new PageRevisionViewModel(revision, ViewPageRevisionAsync, RevertPageRevisionAsync));
+        }
+
+        Raise(nameof(HasPageRevisions));
+    }
+
+    private async Task ViewPageRevisionAsync(PageRevisionViewModel revision)
+    {
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再查看历史版本。";
+            return;
+        }
+
+        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            Status = "请先加载页面。";
+            return;
+        }
+
+        BoundingBoxes.Clear();
+        PreviewBlocks.Clear();
+        SelectedBox = null;
+        IsViewingHistoricalRevision = true;
+        _currentRevisionId = revision.RevisionId;
+        await LoadBoxesIntoViewAsync(revision.RevisionId, false);
+        Status = $"正在查看历史版本 {revision.RevisionId}（来源：{revision.Source}）。重新加载页面可返回当前版本。";
+    }
+
+    private async Task RevertPageRevisionAsync(PageRevisionViewModel revision)
+    {
+        if (IsEditMode)
+        {
+            Status = "请先提交或放弃当前页面草稿，再恢复历史版本。";
+            return;
+        }
+
+        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            Status = "请先加载页面。";
+            return;
+        }
+
+        ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "恢复历史版本",
+                $"确定要将此页面恢复到版本 {revision.RevisionId} 吗？这将创建一个新的提交，不会删除后续版本。",
+                "恢复",
+                confirmDanger: true));
+        if (choice != ConfirmDialogResult.Confirm)
+        {
+            return;
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        Result<DocumentTreeRevision> result = await services.DocumentTrees.RevertToRevisionAsync(
+            documentInstanceId, _currentPageId.Value, revision.RevisionId);
+        if (result.IsFailure)
+        {
+            Status = $"恢复版本失败：{result.ErrorMessage}";
+            return;
+        }
+
+        IsViewingHistoricalRevision = false;
+        await RenderCurrentPageAsync();
+        Status = $"已恢复到版本 {result.Value.TreeRevisionId}（来源：{result.Value.Source}）。";
     }
 
     private void RaiseAll()

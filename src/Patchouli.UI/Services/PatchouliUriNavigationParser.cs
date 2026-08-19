@@ -1,4 +1,5 @@
 using System.Globalization;
+using Patchouli.Core.Ids;
 
 namespace Patchouli.UI.Services;
 
@@ -15,7 +16,8 @@ public sealed record PatchouliNavigationTarget(
     string CanonicalUri,
     string ResourceId,
     int? PageIndex = null,
-    string? EvidenceRef = null);
+    DocumentTreeRevisionId? RevisionId = null,
+    DocumentBoxId? BoxId = null);
 
 public sealed record PatchouliNavigationParseResult(
     bool HasProtocolPrefix,
@@ -81,6 +83,29 @@ public static class PatchouliUriNavigationParser
         };
     }
 
+    public static string BuildTextPageUri(
+        DocumentInstanceId documentInstanceId,
+        int pageIndex0Based,
+        DocumentTreeRevisionId? revisionId = null,
+        DocumentBoxId? boxId = null)
+    {
+        string uri = $"patchouli://texts/{documentInstanceId}/page-{pageIndex0Based}.md";
+        if (revisionId is not null)
+        {
+            uri += $"?rev={revisionId.Value}";
+            if (boxId is not null)
+            {
+                uri += $"&box={boxId.Value}";
+            }
+        }
+        else if (boxId is not null)
+        {
+            uri += $"?box={boxId.Value}";
+        }
+
+        return uri;
+    }
+
     private static PatchouliNavigationParseResult ParseItem(Uri uri, string[] segments)
     {
         if (segments.Length != 1 || !string.IsNullOrEmpty(uri.Query) ||
@@ -110,7 +135,7 @@ public static class PatchouliUriNavigationParser
         {
             if (!string.IsNullOrEmpty(uri.Query))
             {
-                return Invalid("只有 text page URI 可以携带 evref。");
+                return Invalid("只有 text page URI 可以携带查询参数。");
             }
 
             return Success(PatchouliNavigationKind.TextDocument,
@@ -128,20 +153,21 @@ public static class PatchouliUriNavigationParser
             return Invalid("Text page URI 必须使用 page-{0-based-index}.md。");
         }
 
-        PatchouliNavigationParseResult query = ParseEvidenceQuery(uri.Query);
+        PatchouliNavigationParseResult query = ParseVersionQuery(uri.Query);
         if (query.ErrorMessage is not null)
         {
             return query;
         }
 
-        string? evidenceRef = query.Target?.EvidenceRef;
-        string canonical = $"patchouli://texts/{documentInstanceId}/page-{pageIndex}.md";
-        if (evidenceRef is not null)
-        {
-            canonical += "?evref=" + Uri.EscapeDataString(evidenceRef);
-        }
+        DocumentTreeRevisionId? revisionId = query.Target?.RevisionId;
+        DocumentBoxId? boxId = query.Target?.BoxId;
+        string canonical = BuildTextPageUri(
+            DocumentInstanceId.Parse(documentInstanceId),
+            pageIndex,
+            revisionId,
+            boxId);
 
-        return Success(PatchouliNavigationKind.TextPage, canonical, documentInstanceId, pageIndex, evidenceRef);
+        return Success(PatchouliNavigationKind.TextPage, canonical, documentInstanceId, pageIndex, revisionId, boxId);
     }
 
     private static PatchouliNavigationParseResult ParseCslStyle(Uri uri, string[] segments)
@@ -162,45 +188,72 @@ public static class PatchouliUriNavigationParser
             $"patchouli://csl-styles/{Uri.EscapeDataString(styleId)}.csl", styleId);
     }
 
-    private static PatchouliNavigationParseResult ParseEvidenceQuery(string query)
+    private static PatchouliNavigationParseResult ParseVersionQuery(string query)
     {
         if (string.IsNullOrEmpty(query))
         {
             return new PatchouliNavigationParseResult(true,
-                new PatchouliNavigationTarget(PatchouliNavigationKind.TextPage, "", "", EvidenceRef: null), null);
+                new PatchouliNavigationTarget(PatchouliNavigationKind.TextPage, "", ""), null);
         }
 
         string value = query[1..];
         string[] parts = value.Split('&');
-        if (parts.Length != 1)
+        DocumentTreeRevisionId? revisionId = null;
+        DocumentBoxId? boxId = null;
+
+        foreach (string part in parts)
         {
-            return Invalid("Text page URI 最多允许一个 evref。");
+            int equals = part.IndexOf('=');
+            if (equals <= 0 || equals == part.Length - 1)
+            {
+                return Invalid("Text page URI 的查询参数格式无效。");
+            }
+
+            string key = part[..equals];
+            string encoded = part[(equals + 1)..];
+            if (!HasValidPercentEncoding(encoded))
+            {
+                return Invalid("Text page URI 的查询参数 percent-encoding 无效。");
+            }
+
+            string decoded;
+            try
+            {
+                decoded = Uri.UnescapeDataString(encoded);
+            }
+            catch (UriFormatException)
+            {
+                return Invalid("Text page URI 的查询参数 percent-encoding 无效。");
+            }
+
+            if (string.Equals(key, "rev", StringComparison.Ordinal))
+            {
+                if (!Guid.TryParse(decoded, out _))
+                {
+                    return Invalid("Text page URI 的 rev 参数必须是有效的 GUID。");
+                }
+
+                revisionId = DocumentTreeRevisionId.Parse(decoded);
+            }
+            else if (string.Equals(key, "box", StringComparison.Ordinal))
+            {
+                if (!Guid.TryParse(decoded, out _))
+                {
+                    return Invalid("Text page URI 的 box 参数必须是有效的 GUID。");
+                }
+
+                boxId = DocumentBoxId.Parse(decoded);
+            }
+            else
+            {
+                return Invalid($"Text page URI 不支持查询参数：{key}。");
+            }
         }
 
-        int equals = parts[0].IndexOf('=');
-        if (equals <= 0 || !string.Equals(parts[0][..equals], "evref", StringComparison.Ordinal) ||
-            equals == parts[0].Length - 1)
-        {
-            return Invalid("Text page URI 的 evref 为空或格式无效。");
-        }
-
-        string encoded = parts[0][(equals + 1)..];
-        if (!HasValidPercentEncoding(encoded))
-        {
-            return Invalid("Text page URI 的 evref percent-encoding 无效。");
-        }
-
-        try
-        {
-            string evidenceRef = Uri.UnescapeDataString(encoded);
-            return new PatchouliNavigationParseResult(true,
-                new PatchouliNavigationTarget(PatchouliNavigationKind.TextPage, "", "",
-                    EvidenceRef: evidenceRef), null);
-        }
-        catch (UriFormatException)
-        {
-            return Invalid("Text page URI 的 evref percent-encoding 无效。");
-        }
+        return new PatchouliNavigationParseResult(true,
+            new PatchouliNavigationTarget(PatchouliNavigationKind.TextPage, "", "", RevisionId: revisionId,
+                BoxId: boxId),
+            null);
     }
 
     private static string ExtractCandidate(string input, int prefixIndex)
@@ -238,10 +291,11 @@ public static class PatchouliUriNavigationParser
     }
 
     private static PatchouliNavigationParseResult Success(PatchouliNavigationKind kind, string canonicalUri,
-        string resourceId, int? pageIndex = null, string? evidenceRef = null)
+        string resourceId, int? pageIndex = null, DocumentTreeRevisionId? revisionId = null,
+        DocumentBoxId? boxId = null)
     {
         return new PatchouliNavigationParseResult(true,
-            new PatchouliNavigationTarget(kind, canonicalUri, resourceId, pageIndex, evidenceRef), null);
+            new PatchouliNavigationTarget(kind, canonicalUri, resourceId, pageIndex, revisionId, boxId), null);
     }
 
     private static PatchouliNavigationParseResult Invalid(string message)

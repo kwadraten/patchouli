@@ -1,6 +1,4 @@
 using Avalonia.Controls;
-using Patchouli.Core.Library;
-using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels.Dialogs;
@@ -27,15 +25,7 @@ public sealed partial class MainWindow : Window
 
     public async Task ShowFirstRunIfNeededAsync(bool startMcpServer = true)
     {
-        AppServices services = await _viewModel.ServicesAsync(startMcpServer);
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
-        if (library.IsFailure)
-        {
-            await _viewModel.ShowInlineFirstRunAsync();
-            return;
-        }
-
-        await _viewModel.Shell.RefreshAsync();
+        await _viewModel.RunStartupAsync(startMcpServer);
     }
 
     public void StartMcpServerInBackground()
@@ -94,11 +84,11 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            await _viewModel.StopMcpServerAsync();
+            await _viewModel.ShutdownAsync();
         }
         catch (Exception exception)
         {
-            UnexpectedExceptions.Sink.Report(exception, "window-shutdown", "stop-mcp-server");
+            UnexpectedExceptions.Sink.Report(exception, "window-shutdown", "shutdown-view-model");
         }
         finally
         {

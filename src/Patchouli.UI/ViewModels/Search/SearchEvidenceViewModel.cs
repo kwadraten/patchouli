@@ -1,24 +1,10 @@
-using System.ComponentModel;
 using System.Collections.ObjectModel;
-using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Windows.Input;
-using Avalonia.Media;
-using Dapper;
-using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
-using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
-using Patchouli.Core.Import;
-using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
-using Patchouli.Core.Evidence;
-using Patchouli.Infrastructure.Snapshots;
-using Patchouli.Infrastructure.Workflows;
-using Patchouli.Mcp;
-using Patchouli.McpServer;
-using Patchouli.Ocr;
 using Patchouli.Core.Search;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -28,7 +14,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
     public string DocumentInstanceId { get; set; } = "";
     public string Query { get; set; } = "";
     public string UnitId { get; set; } = "";
-    public string EvidenceRef { get; set; } = "";
+    public string VersionedUri { get; set; } = "";
     public string Markdown { get; set; } = "";
     public string Output { get; set; } = "";
     public string IndexStatus { get; private set; } = "";
@@ -40,7 +26,6 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
     public bool HasNoResults => !HasResults && !string.IsNullOrWhiteSpace(Query);
     public AsyncCommand RebuildCommand { get; }
     public AsyncCommand SearchCommand { get; }
-    public AsyncCommand CreateEvidenceCommand { get; }
     public AsyncCommand MarkdownCommand { get; }
     public AsyncCommand CopyMarkdownCommand { get; }
 
@@ -59,30 +44,9 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             await _main.LogOperationAsync("rebuild_search_fts", Output);
         });
         SearchCommand = new AsyncCommand(SearchAsync);
-        CreateEvidenceCommand = new AsyncCommand(async () =>
-        {
-            Result<EvidenceRefRecord> r =
-                await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(SearchUnitId.Parse(UnitId));
-            Output = r.IsSuccess ? r.Value.EvidenceRefId : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
-            if (r.IsSuccess)
-            {
-                EvidenceRef = r.Value.EvidenceRefId;
-                Result<EvidenceMarkdown> markdown =
-                    await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
-                if (markdown.IsSuccess)
-                {
-                    Markdown = markdown.Value.Markdown;
-                }
-            }
-
-            Raise(nameof(Output));
-            Raise(nameof(EvidenceRef));
-            Raise(nameof(Markdown));
-            await _main.LogOperationAsync("create_evidence_ref", Output);
-        });
         MarkdownCommand = new AsyncCommand(async () =>
         {
-            Result<EvidenceMarkdown> r = await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(EvidenceRef);
+            Result<EvidencePageText> r = await ResolveMarkdownAsync(VersionedUri);
             Markdown = r.IsSuccess ? r.Value.Markdown : "";
             Output = r.IsSuccess ? Markdown : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
             Raise(nameof(Markdown));
@@ -112,22 +76,22 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         });
     }
 
-    public async Task CopyEvidenceRefAsync(string? evidenceRef)
+    public async Task CopyVersionedUriAsync(string? versionedUri)
     {
-        if (string.IsNullOrWhiteSpace(evidenceRef))
+        if (string.IsNullOrWhiteSpace(versionedUri))
         {
-            Output = "ERROR validation_failed: 缺少证据引用。";
+            Output = "ERROR validation_failed: 缺少版本化证据 URI。";
             Raise(nameof(Output));
-            await _main.LogOperationAsync("copy_evidence_ref", Output);
+            await _main.LogOperationAsync("copy_evidence_uri", Output);
             return;
         }
 
         try
         {
-            await _main.Clipboard.SetTextAsync(evidenceRef);
-            EvidenceRef = evidenceRef;
-            Output = "Copied EvidenceRef";
-            Raise(nameof(EvidenceRef));
+            await _main.Clipboard.SetTextAsync(versionedUri);
+            VersionedUri = versionedUri;
+            Output = "Copied Evidence URI";
+            Raise(nameof(VersionedUri));
         }
         catch (Exception ex)
         {
@@ -135,32 +99,27 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         }
 
         Raise(nameof(Output));
-        await _main.LogOperationAsync("copy_evidence_ref", Output);
+        await _main.LogOperationAsync("copy_evidence_uri", Output);
     }
 
-    public async Task CopyEvidenceRefForSearchUnitAsync(SearchMatchedUnitViewModel unit)
+    public async Task CopyVersionedUriForSearchUnitAsync(SearchMatchedUnitViewModel unit)
     {
-        string? evidence = await EnsureEvidenceRefAsync(unit);
-        if (string.IsNullOrWhiteSpace(evidence))
-        {
-            return;
-        }
-
-        await CopyEvidenceRefAsync(evidence);
+        string uri = unit.VersionedUri;
+        string text = $"{uri}\n\n> {unit.Text}";
+        await CopyVersionedUriAsync(text);
     }
 
-    public async Task CopyEvidenceMarkdownAsync(string? evidenceRef)
+    public async Task CopyEvidenceMarkdownAsync(string? versionedUri)
     {
-        if (string.IsNullOrWhiteSpace(evidenceRef))
+        if (string.IsNullOrWhiteSpace(versionedUri))
         {
-            Output = "ERROR validation_failed: 缺少证据引用。";
+            Output = "ERROR validation_failed: 缺少版本化证据 URI。";
             Raise(nameof(Output));
             await _main.LogOperationAsync("copy_search_result_evidence_markdown", Output);
             return;
         }
 
-        Result<EvidenceMarkdown> markdown =
-            await (await _main.ServicesAsync()).Evidence.CreateMarkdownAsync(evidenceRef);
+        Result<EvidencePageText> markdown = await ResolveMarkdownAsync(versionedUri);
         if (markdown.IsFailure)
         {
             Output = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";
@@ -173,10 +132,10 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         try
         {
             await _main.Clipboard.SetTextAsync(markdown.Value.Markdown);
-            EvidenceRef = evidenceRef;
+            VersionedUri = versionedUri;
             Markdown = markdown.Value.Markdown;
             Output = "Copied Evidence Markdown";
-            Raise(nameof(EvidenceRef));
+            Raise(nameof(VersionedUri));
             Raise(nameof(Markdown));
             _main.Report("已复制证据 Markdown。");
         }
@@ -191,51 +150,12 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
 
     public async Task CopyEvidenceMarkdownForSearchUnitAsync(SearchMatchedUnitViewModel unit)
     {
-        string? evidence = await EnsureEvidenceRefAsync(unit);
-        if (string.IsNullOrWhiteSpace(evidence))
-        {
-            return;
-        }
-
-        await CopyEvidenceMarkdownAsync(evidence);
+        await CopyEvidenceMarkdownAsync(unit.VersionedUri);
     }
 
-    public async Task<string?> EnsureEvidenceRefAsync(SearchMatchedUnitViewModel unit)
+    public string BuildVersionedUri(SearchMatchedUnitViewModel unit)
     {
-        if (!string.IsNullOrWhiteSpace(unit.EvidenceRef))
-        {
-            EvidenceRef = unit.EvidenceRef;
-            Raise(nameof(EvidenceRef));
-            return unit.EvidenceRef;
-        }
-
-        try
-        {
-            Result<EvidenceRefRecord> result =
-                await (await _main.ServicesAsync()).Evidence.CreateFromSearchUnitAsync(SearchUnitId.Parse(unit.UnitId));
-            if (result.IsFailure)
-            {
-                Output = $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
-                Raise(nameof(Output));
-                _main.Report(Output);
-                return null;
-            }
-
-            unit.EvidenceRef = result.Value.EvidenceRefId;
-            EvidenceRef = result.Value.EvidenceRefId;
-            Output = "Created EvidenceRef";
-            Raise(nameof(EvidenceRef));
-            Raise(nameof(Output));
-            await _main.LogOperationAsync("create_evidence_ref", EvidenceRef);
-            return EvidenceRef;
-        }
-        catch (Exception ex)
-        {
-            Output = $"ERROR validation_failed: {ex.Message}";
-            Raise(nameof(Output));
-            _main.Report(Output);
-            return null;
-        }
+        return unit.VersionedUri;
     }
 
     public void RaiseMarkdown()
@@ -246,6 +166,27 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
     public void RaiseOutput()
     {
         Raise(nameof(Output));
+    }
+
+    private async Task<Result<EvidencePageText>> ResolveMarkdownAsync(string? versionedUri)
+    {
+        if (string.IsNullOrWhiteSpace(versionedUri))
+        {
+            return Result<EvidencePageText>.Failure(AppErrorCodes.ValidationFailed, "缺少版本化证据 URI。");
+        }
+
+        PatchouliNavigationParseResult parsed = PatchouliUriNavigationParser.ParseInput(versionedUri);
+        if (!parsed.IsSuccess || parsed.Target is not { Kind: PatchouliNavigationKind.TextPage } target)
+        {
+            return Result<EvidencePageText>.Failure(AppErrorCodes.ValidationFailed, "无法解析版本化证据 URI。");
+        }
+
+        AppServices services = await _main.ServicesAsync();
+        return await services.VersionedEvidenceReader.GetBoxTextAsync(
+            Patchouli.Core.Ids.DocumentInstanceId.Parse(target.ResourceId),
+            (target.PageIndex ?? 0) + 1,
+            target.RevisionId,
+            target.BoxId);
     }
 
     private async Task SearchAsync()
@@ -289,7 +230,10 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
                         unit.BoxType,
                         unit.Ordinal,
                         unit.IsMatch,
-                        null));
+                        page.DocumentInstanceId,
+                        page.PageIndex,
+                        unit.BoxId,
+                        unit.TreeRevisionId));
                     firstMatchedUnit ??= unit.UnitId.ToString();
                 }
 
@@ -305,7 +249,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             }
 
             UnitId = firstMatchedUnit ?? "";
-            EvidenceRef = "";
+            VersionedUri = "";
             IndexStatus = r.Value.IndexStatus;
             AffectedScopesSummary = r.Value.AffectedScopesSummary ?? "";
             EstimatedTotalText = r.Value.EstimatedTotal?.ToString() ?? $"{r.Value.Results.Count} 页";
@@ -317,7 +261,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         else
         {
             UnitId = "";
-            EvidenceRef = "";
+            VersionedUri = "";
             IndexStatus = "";
             AffectedScopesSummary = "";
             EstimatedTotalText = "";
@@ -326,7 +270,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
         }
 
         Raise(nameof(UnitId));
-        Raise(nameof(EvidenceRef));
+        Raise(nameof(VersionedUri));
         Raise(nameof(IndexStatus));
         Raise(nameof(AffectedScopesSummary));
         Raise(nameof(EstimatedTotalText));

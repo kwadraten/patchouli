@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core;
 using Patchouli.Ocr;
 using Patchouli.UI;
@@ -70,8 +71,8 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void Agent_docs_live_under_agent_directory()
     {
-        File.Exists(TestPaths.FromRepositoryRoot(".agent", "PRD.md")).Should().BeTrue();
-        File.Exists(TestPaths.FromRepositoryRoot(".agent", "domain.md")).Should().BeTrue();
+        File.Exists(TestPaths.FromRepositoryRoot(".agents", "PRD.md")).Should().BeTrue();
+        File.Exists(TestPaths.FromRepositoryRoot(".agents", "domain.md")).Should().BeTrue();
         Directory.Exists(TestPaths.FromRepositoryRoot("docs")).Should().BeFalse();
     }
 
@@ -86,7 +87,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void PRD_documents_queue_search_and_mcp_boundaries()
     {
-        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md"));
+        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md"));
         r.Should().Contain("MCP 从不触发 OCR 或索引重建").And.Contain("搜索配置文件").And.Contain("本地 FTS 索引是可重建的本地缓存");
     }
 
@@ -245,7 +246,7 @@ public sealed class AlphaPackagingTests
     public void ADR_records_mineru_as_product_ocr_provider()
     {
         string adr =
-            File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "adr",
+            File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "adr",
                 "0014-use-mineru-as-first-product-ocr-provider.md"));
         adr.Should().Contain("MinerU").And.Contain("first product OCR/layout path");
     }
@@ -278,10 +279,11 @@ public sealed class AlphaPackagingTests
             AppServices services =
                 await AppServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime });
             services.OcrAdapters.ListCapabilities().Select(x => x.EngineId).Should()
-                .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm);
+                .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten);
         }
         finally
         {
+            SqliteConnection.ClearAllPools();
             if (Directory.Exists(root))
             {
                 Directory.Delete(root, true);

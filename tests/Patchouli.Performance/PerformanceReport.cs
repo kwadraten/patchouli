@@ -130,19 +130,20 @@ public sealed class PerformanceReport
 
 /// <summary>
 /// Last-line defense that the report never leaks sensitive content. The harness never writes
-/// bodies, paths, SQL, or EvidenceRefs; this scan (using the same patterns the MCP surface uses)
-/// turns any accidental leak into a hard failure.
+/// bodies, paths, SQL, versioned evidence URIs, or secrets; this scan (using the same patterns the
+/// MCP surface uses) turns any accidental leak into a hard failure.
 /// </summary>
 public static class ReportPrivacy
 {
     private static readonly string[] ForbiddenMarkers =
     [
-        "evref:v2:",
         "Bearer ",
         "sk-",
         "api_key=",
         "provider_secret",
-        "file:///"
+        "file:///",
+        "evref:v2:",
+        "evref="
     ];
 
     public static void AssertSafe(string reportJson)

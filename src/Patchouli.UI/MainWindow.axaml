@@ -94,27 +94,44 @@
           <MenuItem Header="题录">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
-                      IsEnabled="{Binding Shell.IsSingleSelectionOrNone}" />
+                      IsEnabled="{Binding Shell.IsSingleSelectionOrNone}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="检测重复题录" Command="{Binding DetectDuplicateItemsCommand}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
             <MenuItem Header="获取所选题录元数据" Command="{Binding Shell.LookupMetadataBatchCommand}"
-                      IsEnabled="{Binding Shell.HasBatchSelection}" />
+                      IsEnabled="{Binding Shell.HasBatchSelection}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
             <MenuItem Header="取消批量获取元数据" Command="{Binding Shell.CancelMetadataBatchCommand}"
                       IsVisible="{Binding Shell.IsMetadataBatchBusy}" />
             <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
                       Command="{Binding CopyCslBibliographyDescriptor}"
-                      ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}" />
+                      ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
             <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}"
-                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}" />
+                      ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="删除" Command="{Binding Shell.DeleteSelectedItemsCommand}"
+                      IsVisible="{Binding Shell.Sidebar.IsActiveSelected}" />
+            <MenuItem Header="还原" Command="{Binding Shell.RestoreSelectedItemsCommand}"
+                      IsVisible="{Binding Shell.Sidebar.IsTrashSelected}" />
+            <MenuItem Header="永久删除" Command="{Binding Shell.PurgeSelectedItemsCommand}"
+                      IsVisible="{Binding Shell.Sidebar.IsTrashSelected}" />
             <Separator />
             <MenuItem Header="{Binding ImportBiblatexBatchDescriptor.Label}"
                       Command="{Binding ImportBiblatexBatchDescriptor}" />
             <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}"
-                      Command="{Binding ExportBiblatexDescriptor}" />
+                      Command="{Binding ExportBiblatexDescriptor}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
             <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}"
-                      Command="{Binding CopyBiblatexDescriptor}" />
+                      Command="{Binding CopyBiblatexDescriptor}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
           </MenuItem>
           <MenuItem Header="OCR">
             <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />
-            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}" />
+            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="快速补全 OCR" Command="{Binding Shell.QuickFillOcrCommand}"
+                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
           </MenuItem>
           <MenuItem Header="搜索">
             <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
@@ -175,6 +192,7 @@
       </TabControl>
 
       <views:FirstRunPage IsVisible="{Binding IsFirstRunVisible}" ZIndex="10" />
+      <views:StartupLoadingPage IsVisible="{Binding IsStartupLoadingVisible}" ZIndex="20" />
     </Grid>
 
     <Border Grid.Row="2" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">

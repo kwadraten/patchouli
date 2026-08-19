@@ -1,4 +1,5 @@
-﻿using FluentAssertions;
+using FluentAssertions;
+using Patchouli.Core.Diagnostics;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 
@@ -53,6 +54,7 @@ public sealed class AlphaStabilizationTests : IDisposable
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(database);
             if (File.Exists(database))
             {
                 File.Delete(database);
@@ -74,6 +76,7 @@ public sealed class AlphaStabilizationTests : IDisposable
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(database);
             if (File.Exists(database))
             {
                 File.Delete(database);
@@ -96,6 +99,7 @@ public sealed class AlphaStabilizationTests : IDisposable
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(database);
             if (File.Exists(database))
             {
                 File.Delete(database);
@@ -118,6 +122,7 @@ public sealed class AlphaStabilizationTests : IDisposable
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(database);
             if (File.Exists(database))
             {
                 File.Delete(database);
@@ -142,9 +147,9 @@ public sealed class AlphaStabilizationTests : IDisposable
     [Fact]
     public void Agent_domain_doc_records_single_context_layout()
     {
-        string path = TestPaths.FromRepositoryRoot(".agent", "domain.md");
+        string path = TestPaths.FromRepositoryRoot(".agents", "domain.md");
         File.Exists(path).Should().BeTrue();
-        File.ReadAllText(path).Should().Contain("single-context domain-doc layout").And.Contain(".agent/PRD.md");
+        File.ReadAllText(path).Should().Contain("single-context domain-doc layout").And.Contain(".agents/PRD.md");
     }
 
     private sealed class NoopClipboard : IClipboardService

@@ -13,7 +13,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Mcp;
@@ -49,6 +48,7 @@ public sealed class BibliographyViewModel : ViewModelBase
                 ItemId = r.Value.ItemId.ToString();
                 RecentItems.Add($"{r.Value.ItemId} | {r.Value.Title}");
                 Raise(nameof(ItemId));
+                await _main.Shell.RefreshItemsAsync();
             }
 
             Output = r.IsSuccess

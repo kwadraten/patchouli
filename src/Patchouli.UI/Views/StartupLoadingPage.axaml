@@ -1,0 +1,32 @@
+<UserControl x:Class="Patchouli.UI.Views.StartupLoadingPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Patchouli.UI.ViewModels"
+             x:DataType="vm:MainWindowViewModel">
+  <Grid Background="{DynamicResource SurfaceBrush}">
+    <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="24" MaxWidth="560">
+      <StackPanel Spacing="12">
+        <TextBlock Text="Patchouli.Net"
+                   FontSize="32"
+                   FontWeight="Bold"
+                   HorizontalAlignment="Center"
+                   Foreground="{DynamicResource OnSurfaceBrush}" />
+        <TextBlock Text="{Binding StartupLoadingStatus}"
+                   FontSize="14"
+                   HorizontalAlignment="Center"
+                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      </StackPanel>
+
+      <ProgressBar IsIndeterminate="True"
+                   Height="4"
+                   Background="{DynamicResource SurfaceContainerHighestBrush}"
+                   Foreground="{DynamicResource PrimaryBrush}" />
+
+      <TextBlock Text="升级后首次打开大型资料库可能需要较长时间。"
+                 FontSize="12"
+                 HorizontalAlignment="Center"
+                 TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    </StackPanel>
+  </Grid>
+</UserControl>

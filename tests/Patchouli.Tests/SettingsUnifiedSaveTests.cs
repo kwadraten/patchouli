@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Settings;
@@ -97,6 +98,36 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
             // Switching back shows the in-memory draft, still dirty.
             vm.Settings.ActiveCategory = libraryCategory;
             vm.Settings.LibrarySettings.IsDirty.Should().BeTrue();
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
+    [Fact]
+    public async Task Ocr_engine_selection_save_persists_scope_engines()
+    {
+        string path = TempDbPath("ocr-engines");
+        try
+        {
+            MainWindowViewModel vm = await OpenMainAsync(path);
+            await vm.Settings.OcrProviderSettings.LoadAsync();
+
+            string originalDocument = vm.Settings.OcrProviderSettings.SelectedDocumentEngine;
+            string target = vm.Settings.OcrProviderSettings.AvailableEngines
+                .FirstOrDefault(option => option.EngineId != originalDocument)?.EngineId ?? originalDocument;
+
+            vm.Settings.OcrProviderSettings.SelectedDocumentEngine = target;
+            vm.Settings.OcrProviderSettings.IsDirty.Should().BeTrue();
+
+            await vm.Settings.SaveCommand.ExecuteAsync();
+
+            vm.Settings.OcrProviderSettings.SaveState.Should()
+                .Be(SettingsSaveState.Saved, $"status: {vm.Settings.GlobalStatus}");
+            vm.Settings.OcrProviderSettings.IsDirty.Should().BeFalse();
+            PatchouliAppSettings loaded = PatchouliAppSettings.Load(_settings.Path);
+            loaded.OcrEngines.DocumentOcrEngine.Should().Be(target);
         }
         finally
         {

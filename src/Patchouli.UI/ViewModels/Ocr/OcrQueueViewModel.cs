@@ -22,6 +22,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
         PauseGlobalCommand = new AsyncCommand(() => PauseAsync(OcrPauseScope.Global));
         ResumeGlobalCommand = new AsyncCommand(() => ResumeAsync(OcrPauseScope.Global));
         ClearFinishedCommand = new AsyncCommand(ClearFinishedAsync);
+        RetryFailedCommand = new AsyncCommand(RetryFailedAsync);
     }
 
     private string _statusSummary = "";
@@ -76,6 +77,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
     public bool NoActiveTasks => !HasActiveTasks;
     public bool HasFinishedTasks => FinishedTaskRows.Count > 0;
     public bool NoFinishedTasks => !HasFinishedTasks;
+    public bool HasRetryableTasks => FinishedTaskRows.Any(row => row.IsFailed);
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand EnqueueMockCommand { get; }
@@ -84,6 +86,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
     public AsyncCommand PauseGlobalCommand { get; }
     public AsyncCommand ResumeGlobalCommand { get; }
     public AsyncCommand ClearFinishedCommand { get; }
+    public AsyncCommand RetryFailedCommand { get; }
 
     private async Task EnqueueMockAsync()
     {
@@ -130,6 +133,71 @@ public sealed class OcrQueueViewModel : ViewModelBase
 
         await queue.StopAsync();
         _main.Report("OCR 队列已停止。");
+        await RefreshAsync();
+    }
+
+    private async Task RetryFailedAsync()
+    {
+        IOcrQueueScheduler? queue = await GetQueueAsync();
+        if (queue is null)
+        {
+            return;
+        }
+
+        Result<IReadOnlyList<OcrQueueTask>> tasks = await queue.ListTasksAsync(new OcrQueueTaskFilter());
+        if (tasks.IsFailure)
+        {
+            _main.ReportError($"读取失败 OCR 任务失败：{tasks.ErrorMessage}");
+            return;
+        }
+
+        int retried = 0;
+        int failed = 0;
+        foreach (OcrQueueTask task in tasks.Value.Where(task =>
+                     task.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked))
+        {
+            Result<OcrQueueTask> result = await queue.RetryTaskAsync(task.TaskId);
+            if (result.IsSuccess)
+            {
+                retried++;
+            }
+            else
+            {
+                failed++;
+            }
+        }
+
+        _main.Report(failed == 0
+            ? $"已重新加入 {retried} 个失败或阻塞的 OCR 任务。"
+            : $"重新加入失败或阻塞的 OCR 任务：成功 {retried}，失败 {failed}。");
+        await RefreshAsync();
+    }
+
+    internal async Task RetryAsync(string taskId)
+    {
+        IOcrQueueScheduler? queue = await GetQueueAsync();
+        if (queue is null)
+        {
+            return;
+        }
+
+        try
+        {
+            Result<OcrQueueTask> result = await queue.RetryTaskAsync(OcrQueueTaskId.Parse(taskId));
+            if (result.IsSuccess)
+            {
+                _main.Report("已重新加入 OCR 任务。");
+            }
+            else
+            {
+                _main.ReportError($"重试 OCR 任务失败：{result.ErrorMessage}");
+            }
+        }
+        catch (Exception exception)
+        {
+            _main.ReportError($"重试 OCR 任务失败：{exception.Message}");
+        }
+
         await RefreshAsync();
     }
 
@@ -267,6 +335,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
         Raise(nameof(NoActiveTasks));
         Raise(nameof(HasFinishedTasks));
         Raise(nameof(NoFinishedTasks));
+        Raise(nameof(HasRetryableTasks));
     }
 
     private static bool IsActiveState(string state)
@@ -473,6 +542,7 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         PauseCommand = new AsyncCommand(() => queueViewModel.PauseAsync(OcrPauseScope.Task, TaskId));
         ResumeCommand = new AsyncCommand(() => queueViewModel.ResumeAsync(OcrPauseScope.Task, TaskId));
         CancelCommand = new AsyncCommand(() => queueViewModel.CancelAsync(TaskId));
+        RetryCommand = new AsyncCommand(() => queueViewModel.RetryAsync(TaskId));
 
         Update(task, title, pageProgress, stage, finishedAt, now);
     }
@@ -634,6 +704,7 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
     public AsyncCommand PauseCommand { get; }
     public AsyncCommand ResumeCommand { get; }
     public AsyncCommand CancelCommand { get; }
+    public AsyncCommand RetryCommand { get; }
 
     public void Update(OcrQueueTask task, string title, OcrQueueProgress? pageProgress,
         OcrTaskProgressReport? stage, DateTimeOffset? finishedAt, DateTimeOffset now)
@@ -705,12 +776,28 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         string label = StageLabel(stage.Stage);
         string? detail = stage.Stage switch
         {
+            OcrTaskStage.Recognizing => FormatPageDetail(stage.Detail),
             OcrTaskStage.Uploading => FormatChunkDetail(stage.Detail),
             OcrTaskStage.WaitingCloud => FormatWaitingDetail(stage.Detail, now),
             OcrTaskStage.Downloading => FormatBytesDetail(stage.Detail),
             _ => null
         };
         return detail is null ? label : $"{label} · {detail}";
+    }
+
+    private static string? FormatPageDetail(string? detail)
+    {
+        if (detail is not null && detail.StartsWith("pages:", StringComparison.Ordinal))
+        {
+            string[] parts = detail["pages:".Length..].Split('/');
+            if (parts.Length == 2 && int.TryParse(parts[0], out int processed) &&
+                int.TryParse(parts[1], out int total))
+            {
+                return $"{processed}/{total} 页";
+            }
+        }
+
+        return null;
     }
 
     private string FormatWaitingDetail(string? providerStatus, DateTimeOffset now)
@@ -777,6 +864,7 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         return stage switch
         {
             OcrTaskStage.Preparing => (0, 5),
+            OcrTaskStage.Recognizing => (0, 95),
             OcrTaskStage.Uploading => (5, 30),
             OcrTaskStage.WaitingCloud => (30, 80),
             OcrTaskStage.Downloading => (80, 95),
@@ -790,6 +878,7 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         return stage switch
         {
             OcrTaskStage.Preparing => "准备中",
+            OcrTaskStage.Recognizing => "逐页识别",
             OcrTaskStage.Uploading => "上传",
             OcrTaskStage.WaitingCloud => "等待云端",
             OcrTaskStage.Downloading => "下载结果",

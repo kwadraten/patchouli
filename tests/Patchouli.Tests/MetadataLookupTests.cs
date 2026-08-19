@@ -482,6 +482,13 @@ public sealed class MetadataLookupTests
             return Task.FromResult(Result<ItemMetadata>.Success(Item));
         }
 
+        public Task<Result<ItemLifecycleInfo>> GetItemLifecycleAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<ItemLifecycleInfo>.Success(
+                new ItemLifecycleInfo(itemId, ItemLifecycleState.Active, null, null, null)));
+        }
+
         public Task<Result<ItemMetadata>> UpdateItemAsync(ItemId itemId, UpdateItemRequest request,
             CancellationToken cancellationToken = default)
         {
@@ -546,7 +553,32 @@ public sealed class MetadataLookupTests
             throw new NotSupportedException();
         }
 
+        public Task<Result> DeleteItemsAsync(IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<Result<ItemMetadata>> RestoreItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<Result> RestoreItemsAsync(IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
         public Task<Result<ItemListPage>> ListItemsAsync(ListItemsRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<Result<ItemListPage>> ListTrashedItemsAsync(
+            int pageSize = 50,
+            string? cursor = null,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();

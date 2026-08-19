@@ -7,6 +7,7 @@ using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Documents;
@@ -172,10 +173,10 @@ public static class UiPerfProbe
     }
 
     /// <summary>
-    /// Runs a real stage + adopt of the full fixture box count through <see cref="DocumentTreeService"/>
-    /// on a background worker while a 100 ms heartbeat is posted to the UI dispatcher. The max
-    /// observed gap is the AC3 UI-responsiveness signal; the counting connection proves none of the
-    /// adoption's database commands executed on the UI dispatcher thread.
+    /// Runs a real begin-working + commit of the full fixture box count through
+    /// <see cref="DocumentTreeService"/> on a background worker while a 100 ms heartbeat is posted to
+    /// the UI dispatcher. The max observed gap is the AC3 UI-responsiveness signal; the counting
+    /// connection proves none of the commit's database commands executed on the UI dispatcher thread.
     /// </summary>
     private static async Task<(double MaxGapMs, int Samples, long UiThreadCommands)> MeasureHeartbeatAsync(
         string databasePath,
@@ -198,7 +199,7 @@ public static class UiPerfProbe
         try
         {
             long requestedBoxes = (long)options.Items * options.PagesPerItem * options.BoxesPerPage;
-            await Task.Run(() => AdoptHeartbeatAsync(treeService, heartbeatDatabase, requestedBoxes,
+            await Task.Run(() => CommitHeartbeatAsync(treeService, heartbeatDatabase, requestedBoxes,
                 cancellationToken), cancellationToken);
         }
         finally
@@ -218,10 +219,10 @@ public static class UiPerfProbe
     }
 
     /// <summary>
-    /// Stages and adopts one synthetic revision with the configured total Box count (for example
-    /// 500,000) so the heartbeat measures the actual high-volume atomic adoption boundary.
+    /// Creates and commits one synthetic revision with the configured total Box count (for example
+    /// 500,000) so the heartbeat measures the actual high-volume atomic commit boundary.
     /// </summary>
-    private static async Task AdoptHeartbeatAsync(
+    private static async Task CommitHeartbeatAsync(
         DocumentTreeService treeService,
         CountingConnectionFactory database,
         long requestedBoxes,
@@ -245,23 +246,24 @@ public static class UiPerfProbe
             seeds[boxIndex] = new DocumentBoxSeed(
                 null, null, boxIndex, DocumentBoxType.Text, null, null,
                 new NormalizedBBox(0.04, top, 0.92, Math.Max(0.004, 0.88 / boxCount)),
-                new TextBoxPayload($"ui heartbeat adoption box {boxIndex:000000}"), null);
+                new TextBoxPayload($"ui heartbeat commit box {boxIndex:000000}"), null);
         }
 
-        Result<DocumentTreeRevision> staging = await treeService.StagePageAsync(
+        Result<DocumentTreeRevision> working = await treeService.BeginWorkingRevisionAsync(
             DocumentInstanceId.Parse(page.DocumentInstanceId), PageId.Parse(page.PageId), seeds,
             DocumentTreeRevisionSource.Import, cancellationToken: cancellationToken);
-        if (staging.IsFailure)
+        if (working.IsFailure)
         {
-            throw new InvalidOperationException($"heartbeat stage failed: {staging.ErrorCode} {staging.ErrorMessage}");
+            throw new InvalidOperationException(
+                $"heartbeat begin working failed: {working.ErrorCode} {working.ErrorMessage}");
         }
 
-        Result<DocumentTreeRevision> committed = await treeService.AdoptStagingRevisionAsync(
-            staging.Value.TreeRevisionId, cancellationToken);
+        Result<DocumentTreeRevision> committed = await treeService.CommitWorkingRevisionAsync(
+            working.Value.TreeRevisionId, null, cancellationToken);
         if (committed.IsFailure)
         {
             throw new InvalidOperationException(
-                $"heartbeat adopt failed: {committed.ErrorCode} {committed.ErrorMessage}");
+                $"heartbeat commit failed: {committed.ErrorCode} {committed.ErrorMessage}");
         }
     }
 

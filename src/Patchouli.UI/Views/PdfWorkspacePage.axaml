@@ -48,7 +48,7 @@
       <Setter Property="BorderThickness" Value="4" />
       <Setter Property="Background" Value="#44FFFFFF" />
     </Style>
-    <Style Selector="Border.BBox.staging">
+    <Style Selector="Border.BBox.draft">
       <Setter Property="BorderBrush" Value="DarkOrange" />
       <Setter Property="Opacity" Value="0.8" />
     </Style>
@@ -271,7 +271,7 @@
                       <DataTemplate x:DataType="vm:PdfBBoxViewModel">
                         <Border Classes="BBox"
                                 Classes.selected="{Binding IsSelected}"
-                                Classes.staging="{Binding IsStaging}"
+                                Classes.draft="{Binding IsDraft}"
                                 Classes.suppressed="{Binding IsSuppressed}"
                                 Classes.overlapWarning="{Binding HasOverlapWarning}"
                                 BorderBrush="{Binding VisualBoxColor}"
@@ -392,7 +392,7 @@
                   <!-- Selection Drawing Preview -->
                   <Canvas Width="{Binding ActualWidthPixels}" Height="{Binding ActualHeightPixels}"
                           IsVisible="{Binding HasImage}" IsHitTestVisible="False">
-                    <Border Classes="BBox staging"
+                    <Border Classes="BBox draft"
                             BorderBrush="DarkOrange"
                             Canvas.Left="{Binding SelectionLeft}"
                             Canvas.Top="{Binding SelectionTop}"
@@ -419,7 +419,7 @@
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:SplitDraftBoxViewModel">
-                        <Border Classes="BBox staging"
+                        <Border Classes="BBox draft"
                                 BorderBrush="DarkOrange"
                                 Width="{Binding Width}"
                                 Height="{Binding Height}">
@@ -478,7 +478,7 @@
 
       <!-- Right: Sidebar Viewer/Editor -->
       <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding IsSidebarOpen}">
-        <Grid RowDefinitions="Auto,Auto,*">
+        <Grid RowDefinitions="Auto,Auto,Auto,*">
           <!-- Split wizard -->
           <Border Classes="WizardCard" Grid.RowSpan="3" IsVisible="{Binding IsSplitPending}">
             <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8">
@@ -515,7 +515,31 @@
             </StackPanel>
           </Border>
 
-          <Grid Grid.Row="2" IsVisible="{Binding !IsSplitPending}">
+          <Border Grid.Row="2" Classes="WizardCard" IsVisible="{Binding !IsEditMode}">
+            <StackPanel Spacing="8">
+              <TextBlock Text="页面版本历史" FontWeight="SemiBold" FontSize="14" />
+              <TextBlock Text="没有已提交的历史版本。" FontSize="12"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding !HasPageRevisions}" />
+              <ScrollViewer MaxHeight="160" IsVisible="{Binding HasPageRevisions}">
+                <ItemsControl ItemsSource="{Binding PageRevisions}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="vm:PageRevisionViewModel">
+                      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,6">
+                        <TextBlock Text="{Binding DisplayText}" FontSize="12"
+                                   Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                        <Button Grid.Column="1" Content="查看" Command="{Binding ViewCommand}" FontSize="11" />
+                        <Button Grid.Column="2" Content="恢复此版本" Command="{Binding RevertCommand}" FontSize="11"
+                                Classes="Danger" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </StackPanel>
+          </Border>
+
+          <Grid Grid.Row="3" IsVisible="{Binding !IsSplitPending}">
             <!-- View mode: read-only Markdown preview -->
             <Grid RowDefinitions="Auto,*" IsVisible="{Binding !IsEditMode}">
               <Border Classes="SidebarHeader">

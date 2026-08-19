@@ -2,6 +2,7 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Cli;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Documents;
@@ -15,7 +16,6 @@ using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Core.Time;
-using Patchouli.Core.Evidence;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
@@ -27,7 +27,6 @@ using Patchouli.Infrastructure.Coordinates;
 using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -35,6 +34,7 @@ using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
+using Patchouli.Infrastructure.Ocr.NdlKoten;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Rendering;
 using Patchouli.Infrastructure.Search;
@@ -54,14 +54,18 @@ public sealed class AppServices
     private readonly OcrRunEngine _ocrEngine;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
+    private HttpClient? _ndlKotenModelHttpClient;
 
     private IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
 
-    private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath)
+    private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
+        IAppLogger? logger = null)
     {
         RuntimeDatabasePath = runtimeDatabasePath;
         Settings = settings;
+        AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
+        OcrStorage = OcrStorageLocations.FromResolved(appPaths);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
         Clock = new SystemClock();
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
@@ -71,6 +75,9 @@ public sealed class AppServices
         LibraryRevisions = new LibraryRevisionService(ConnectionFactory);
         LibraryItems = new LibraryItemQueryService(ConnectionFactory);
         Items = new ItemService(ConnectionFactory, Library, Clock, LibraryRevisions);
+        Tags = new ItemTagService(ConnectionFactory, LibraryRevisions);
+        MergeItems = new ItemMergeService(ConnectionFactory, Clock, Library, LibraryRevisions);
+        DuplicateItemDetection = new DuplicateItemDetectionService(ConnectionFactory, Library);
         _cslCatalogHttpClient = new HttpClient();
         CslCatalog = new CslStyleCatalog(ConnectionFactory, _cslCatalogHttpClient);
         CslStore = new CslStyleStore(ConnectionFactory, Clock, blockingOperations: BlockingOperations,
@@ -125,12 +132,16 @@ public sealed class AppServices
 
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
         adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter());
+        adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
 
         OcrAdapters = adapterRegistry;
+        _ndlKotenModelHttpClient = new HttpClient();
+        NdlKotenModelDownload =
+            new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory);
         PdfiumPdfPageRenderer pdfRenderer = new();
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
-            Path.Combine(new PlatformAppPaths().Resolve().CacheDirectory, "page-renders"), FileSearchRootAccess);
+            Path.Combine(appPaths.CacheDirectory, "page-renders"), FileSearchRootAccess);
         SourceFingerprintValidation = new SourceFingerprintValidationService();
         PageCoordinates = new PageCoordinateService(ConnectionFactory, SourceFingerprintValidation);
         SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
@@ -141,7 +152,8 @@ public sealed class AppServices
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);
-        Evidence = new EvidenceReferenceService(ConnectionFactory, Clock, PageCoordinates, LibraryRevisions);
+        VersionedEvidenceReader =
+            new VersionedEvidenceReader(ConnectionFactory, Library, DocumentTrees, DocumentMarkdown);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
         Credentials = new CredentialStore(settingsPath);
@@ -149,6 +161,7 @@ public sealed class AppServices
             pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
             configuration => (MinerUClientFactoryOverride ?? CreateMinerUClient)(configuration),
+            OcrStorage.MinerUWorkDirectory,
             fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess, revisions: LibraryRevisions);
         OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex);
         OcrQueueScheduler ocrQueueScheduler = new(
@@ -167,19 +180,24 @@ public sealed class AppServices
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
-            ConnectionFactory, Search, Evidence, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
+            ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
             CompiledMarkdownCache);
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore);
         CliPath = new CliPathService();
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
+        SnapshotSyncSettingsStore snapshotSyncSettingsStore =
+            new(runtimeDatabasePath, settingsPath, settings.Runtime.DefaultStagingRoot);
         SnapshotSync = new SnapshotSyncCoordinator(
             SnapshotPublisher,
             SnapshotImporter,
             BranchInspection,
-            new SnapshotSyncSettingsStore(runtimeDatabasePath, settingsPath, settings.Runtime.DefaultStagingRoot),
+            snapshotSyncSettingsStore,
             Clock);
+        PurgeItems =
+            new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions);
+        FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
         PdfMetadata = new PdfMetadataReader();
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess);
         PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
@@ -198,6 +216,11 @@ public sealed class AppServices
     public ILibraryPreferencesService LibraryPreferences { get; }
     public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
+    public IItemTagService Tags { get; }
+    public IItemMergeService MergeItems { get; }
+    public IDuplicateItemDetectionService DuplicateItemDetection { get; }
+    public IItemPurgeService PurgeItems { get; }
+    public IFileAssetGcService FileAssetGc { get; }
     public ICslStyleCatalog CslCatalog { get; }
     public ICslStyleStore CslStore { get; }
     public ICslItemMapper CslItemMapper { get; }
@@ -226,6 +249,8 @@ public sealed class AppServices
     public IOcrPresetService OcrPresets { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
+    public OcrStorageLocations OcrStorage { get; }
+    public INdlKotenModelDownloadService NdlKotenModelDownload { get; }
     public IPageRenderService PageRenders { get; }
     public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }
@@ -238,7 +263,7 @@ public sealed class AppServices
     public ISearchService Search { get; }
     public ISearchProfileService SearchProfiles { get; }
     public IQueryRewriter QueryRewriter { get; }
-    public IEvidenceReferenceService Evidence { get; }
+    public IVersionedEvidenceReader VersionedEvidenceReader { get; }
     public IMcpReadApi Mcp { get; }
     public IMcpWriteApi McpWrites { get; }
     public IMcpServerSettingsService McpSettings { get; }
@@ -365,7 +390,7 @@ public sealed class AppServices
     }
 
     public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
-        string? settingsPath = null)
+        string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null)
     {
         settingsPath ??= PatchouliAppSettings.ResolvePath();
         settings ??= PatchouliAppSettings.Load(settingsPath);
@@ -382,38 +407,44 @@ public sealed class AppServices
             UnexpectedExceptions.Sink.Report(exception, "operation-log", "startup");
         }
 
-        AppServices services = new(path, settings, settingsPath);
-        await services.MigrationRunner.RunAsync();
-        if (services.FileResolution is FileResolutionService fileResolution)
+        AppServices services = new(path, settings, settingsPath, logger);
+
+        // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
+        // onto the thread pool so the UI thread stays responsive while the loading page is shown.
+        await Task.Run(async () =>
         {
-            Result adopted = await fileResolution.AdoptLegacyDeviceRootBindingsAsync();
-            if (adopted.IsFailure)
+            await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+            if (services.FileResolution is FileResolutionService fileResolution)
+            {
+                Result adopted = await fileResolution.AdoptLegacyDeviceRootBindingsAsync();
+                if (adopted.IsFailure)
+                {
+                    try
+                    {
+                        await logger.LogAsync("migration",
+                            adopted.ErrorMessage ?? "Legacy root binding migration failed.");
+                    }
+                    catch (Exception exception)
+                    {
+                        UnexpectedExceptions.Sink.Report(exception, "operation-log", "legacy-root-binding-migration");
+                    }
+                }
+            }
+
+            Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
+            if (ocrReconcile.IsFailure)
             {
                 try
                 {
-                    await logger.LogAsync("migration",
-                        adopted.ErrorMessage ?? "Legacy root binding migration failed.");
+                    await logger.LogAsync("ocr-reconcile",
+                        ocrReconcile.ErrorMessage ?? "OCR startup reconciliation failed.");
                 }
                 catch (Exception exception)
                 {
-                    UnexpectedExceptions.Sink.Report(exception, "operation-log", "legacy-root-binding-migration");
+                    UnexpectedExceptions.Sink.Report(exception, "operation-log", "ocr-reconcile");
                 }
             }
-        }
-
-        Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
-        if (ocrReconcile.IsFailure)
-        {
-            try
-            {
-                await logger.LogAsync("ocr-reconcile",
-                    ocrReconcile.ErrorMessage ?? "OCR startup reconciliation failed.");
-            }
-            catch (Exception exception)
-            {
-                UnexpectedExceptions.Sink.Report(exception, "operation-log", "ocr-reconcile");
-            }
-        }
+        });
 
         await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
 

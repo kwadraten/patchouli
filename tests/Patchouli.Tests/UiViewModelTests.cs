@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using Avalonia;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
@@ -15,6 +16,7 @@ using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
@@ -57,12 +59,69 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Ocr_menus_expose_quick_fill_only_in_the_main_menu()
+    {
+        string mainWindowXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI",
+            "MainWindow.axaml"));
+        string libraryXaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views",
+            "LibraryPage.axaml"));
+
+        mainWindowXaml.Should().Contain("Header=\"快速补全 OCR\" Command=\"{Binding Shell.QuickFillOcrCommand}\"");
+        libraryXaml.Should().NotContain("对所选题录运行 OCR");
+        libraryXaml.Should().NotContain("对当前列表运行 OCR");
+    }
+
+    [Fact]
+    public void Quick_fill_selects_only_ocr_eligible_items_without_existing_text()
+    {
+        LibraryItemViewModel missing = CreateQuickFillItem(false,
+            PrimaryDocumentOcrIndexState.Resolve(true, null, null, false, false));
+        LibraryItemViewModel failedWithoutText = CreateQuickFillItem(false,
+            PrimaryDocumentOcrIndexState.Resolve(true, "failed", null, false, false));
+        LibraryItemViewModel failedWithExistingText = CreateQuickFillItem(true,
+            PrimaryDocumentOcrIndexState.Resolve(true, "failed", null, true, true));
+        LibraryItemViewModel running = CreateQuickFillItem(false,
+            PrimaryDocumentOcrIndexState.Resolve(true, "running", null, false, false));
+        LibraryItemViewModel withoutDocument = CreateQuickFillItem(false,
+            PrimaryDocumentOcrIndexState.Resolve(false, null, null, false, false), false);
+
+        IReadOnlyList<LibraryItemViewModel> selected = LibraryShellViewModel.SelectQuickFillOcrCandidates(
+            [missing, failedWithoutText, failedWithExistingText, running, withoutDocument]);
+
+        selected.Should().Equal(missing, failedWithoutText);
+    }
+
+    private static LibraryItemViewModel CreateQuickFillItem(bool hasOcrText,
+        PrimaryDocumentOcrIndexState state, bool hasDocument = true)
+    {
+        return new LibraryItemViewModel(
+            ItemId.New().ToString(),
+            "Quick fill",
+            "book",
+            "",
+            "",
+            "",
+            null,
+            hasDocument ? DocumentInstanceId.New().ToString() : null,
+            null,
+            hasDocument ? "document.pdf" : "",
+            hasDocument ? "C:/documents/document.pdf" : "",
+            hasDocument ? 1 : 0,
+            0,
+            "not_indexed",
+            _ => Task.CompletedTask,
+            _ => Task.CompletedTask,
+            primaryDocumentOcrIndexState: state,
+            hasOcrText: hasOcrText);
+    }
+
+    [Fact]
     public void Queue_running_state_updates_the_library_row_through_the_shared_fsm()
     {
         MainWindowViewModel vm = CreateMainWindow();
         DocumentInstanceId documentId = DocumentInstanceId.New();
         LibraryItemViewModel item = new(
-            ItemId.New().ToString(), "OCR item", "book", "", "", "", documentId.ToString(), null, "", "",
+            ItemId.New().ToString(), "OCR item", "book", "", "", "", null, documentId.ToString(), null, "", "",
             0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask);
         vm.Shell.Items.Add(item);
         OcrQueueTask task = new(
@@ -121,6 +180,24 @@ public sealed class UiViewModelTests : IDisposable
         PatchouliUriNavigationParser.ParseInput(
                 $"patchouli://texts/{DocumentInstanceId.New()}/page-0.md?evref=one&evref=two")
             .IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Toolbar_uri_parser_reads_rev_and_box_query_parameters()
+    {
+        DocumentInstanceId documentId = DocumentInstanceId.New();
+        DocumentTreeRevisionId revisionId = DocumentTreeRevisionId.New();
+        DocumentBoxId boxId = DocumentBoxId.New();
+
+        PatchouliNavigationParseResult parsed = PatchouliUriNavigationParser.ParseInput(
+            $"patchouli://texts/{documentId}/page-2.md?rev={revisionId}&box={boxId}");
+
+        parsed.IsSuccess.Should().BeTrue(parsed.ErrorMessage);
+        parsed.Target!.Kind.Should().Be(PatchouliNavigationKind.TextPage);
+        parsed.Target.ResourceId.Should().Be(documentId.ToString());
+        parsed.Target.PageIndex.Should().Be(2);
+        parsed.Target.RevisionId.Should().Be(revisionId);
+        parsed.Target.BoxId.Should().Be(boxId);
     }
 
     [Fact]
@@ -264,12 +341,16 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Settings_page_uses_five_editable_groups_and_keeps_csl_about_outside()
+    public void Settings_page_uses_six_groups_and_keeps_csl_about_outside()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源");
-        vm.Settings.Categories.Select(category => category.Content is ISettingsSection { SupportsEditing: true })
+            "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源", "本地文件");
+        vm.Settings.Categories.Select(category => category.Content)
+            .Should()
+            .AllBeAssignableTo<ISettingsSection>();
+        vm.Settings.Categories.Where(category => category.Title != "本地文件")
+            .Select(category => category.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
     }
@@ -522,9 +603,10 @@ public sealed class UiViewModelTests : IDisposable
     public async Task BibliographyViewModel_CreateItem_returns_item()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-{Guid.NewGuid():N}.sqlite");
+        MainWindowViewModel? vm = null;
         try
         {
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             vm.Bibliography.Title = "UI Item";
@@ -533,6 +615,11 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            if (vm is not null)
+            {
+                await vm.ShutdownAsync();
+            }
+
             if (File.Exists(path))
             {
                 SqliteConnection.ClearAllPools();
@@ -584,20 +671,22 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task CopyEvidenceRef_writes_ref_to_clipboard()
+    public async Task CopyEvidenceUri_writes_versioned_uri_to_clipboard()
     {
         FakeClipboard clipboard = new();
         MainWindowViewModel vm = CreateMainWindow(clipboard);
+        string versionedUri =
+            $"patchouli://texts/{DocumentInstanceId.New()}/page-1.md?rev={DocumentTreeRevisionId.New()}&box={DocumentBoxId.New()}";
 
-        await vm.SearchEvidence.CopyEvidenceRefAsync("evref:v1:test");
+        await vm.SearchEvidence.CopyVersionedUriAsync(versionedUri);
 
-        clipboard.Text.Should().Be("evref:v1:test");
-        vm.SearchEvidence.EvidenceRef.Should().Be("evref:v1:test");
-        vm.SearchEvidence.Output.Should().Be("Copied EvidenceRef");
+        clipboard.Text.Should().Be(versionedUri);
+        vm.SearchEvidence.VersionedUri.Should().Be(versionedUri);
+        vm.SearchEvidence.Output.Should().Be("Copied Evidence URI");
     }
 
     [Fact]
-    public async Task CopySearchResultEvidenceMarkdown_creates_search_unit_evidence_lazily()
+    public async Task CopySearchResultEvidenceUri_writes_versioned_uri_and_quoted_text_without_db_side_effect()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-evidence-copy-{Guid.NewGuid():N}.sqlite");
         FakeClipboard clipboard = new();
@@ -613,8 +702,8 @@ public sealed class UiViewModelTests : IDisposable
                     DocumentInstanceType.PrimaryScan);
             Result<Page> page = await services.Pages.CreatePageAsync(document.Value.DocumentInstanceId, 0, "1", null,
                 null, 0, CoordinateBasis.NormalizedPage, null, null, "renderer-v1", null);
-            await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory, services.Clock,
-                document.Value.DocumentInstanceId, page.Value.PageId, "Pinned clipboard text");
+            DocumentTreeRevision committed = await BoxTreeTestData.CommitTextAsync(services.ConnectionFactory,
+                services.Clock, document.Value.DocumentInstanceId, page.Value.PageId, "Pinned clipboard text");
             await services.SearchUnits.RebuildForDocumentInstanceAsync(document.Value.DocumentInstanceId);
 
             await using SqliteConnection connection = services.ConnectionFactory.CreateConnection();
@@ -622,16 +711,31 @@ public sealed class UiViewModelTests : IDisposable
             string? unitId =
                 await connection.ExecuteScalarAsync<string>(
                     "select unit_id from search_units where resolved_text = 'Pinned clipboard text';");
-            SearchMatchedUnitViewModel unit = new(unitId!, "Pinned clipboard text", DocumentBoxType.Text, 1, true,
-                null);
+            IReadOnlyList<DocumentBox> boxes = (await services.DocumentTrees.ListBoxesAsync(committed.TreeRevisionId))
+                .Value;
+            DocumentBoxId boxId = boxes.Should().ContainSingle().Which.BoxId;
+            SearchMatchedUnitViewModel unit = new(
+                unitId!,
+                "Pinned clipboard text",
+                DocumentBoxType.Text,
+                1,
+                true,
+                document.Value.DocumentInstanceId,
+                page.Value.PageIndex,
+                boxId,
+                committed.TreeRevisionId);
 
-            await vm.SearchEvidence.CopyEvidenceMarkdownForSearchUnitAsync(unit);
+            await vm.SearchEvidence.CopyVersionedUriForSearchUnitAsync(unit);
 
-            unit.EvidenceRef.Should().StartWith("evref:v2:");
-            clipboard.Text.Should().Contain("Pinned clipboard text").And.Contain("UI Evidence Item").And
-                .Contain(unit.EvidenceRef);
-            vm.SearchEvidence.Markdown.Should().Be(clipboard.Text);
-            vm.SearchEvidence.Output.Should().Be("Copied Evidence Markdown");
+            string expectedUri = PatchouliUriNavigationParser.BuildTextPageUri(
+                document.Value.DocumentInstanceId, page.Value.PageIndex, committed.TreeRevisionId, boxId);
+            clipboard.Text.Should().Be($"{expectedUri}\n\n> Pinned clipboard text");
+            vm.SearchEvidence.VersionedUri.Should().Be(clipboard.Text);
+            vm.SearchEvidence.Output.Should().Be("Copied Evidence URI");
+
+            int evidenceTables = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from sqlite_master where type = 'table' and name in ('evidence_ref_records', 'evidence_successors');");
+            evidenceTables.Should().Be(0, "evidence tables must not exist after the evref:v2 removal");
         }
         finally
         {
@@ -774,6 +878,84 @@ public sealed class UiViewModelTests : IDisposable
 
             return true;
         }, CancellationToken.None);
+    }
+
+    [Fact]
+    public void LibraryGrid_ctrl_and_shift_selection_survive_drag_handlers()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        session.Dispatch(() =>
+        {
+            MainWindow window = CreateMainWindowShell();
+            window.Width = 1280;
+            window.Height = 820;
+            MainWindowViewModel vm = (MainWindowViewModel)window.DataContext!;
+            LibraryItemViewModel[] items = Enumerable.Range(0, 6)
+                .Select(index => new LibraryItemViewModel(
+                    ItemId.New().ToString(), $"Item {index}", "book", "Author", "2026", "", null, null, null, "", "",
+                    0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask))
+                .ToArray();
+            foreach (LibraryItemViewModel item in items)
+            {
+                vm.Shell.Items.Add(item);
+            }
+
+            window.Show();
+            window.Measure(new Size(1280, 820));
+            window.Arrange(new Rect(0, 0, 1280, 820));
+
+            UI.Views.LibraryPage page = window.GetVisualDescendants().OfType<UI.Views.LibraryPage>().Single();
+            Avalonia.Controls.DataGrid grid = page.LibraryGrid;
+            Avalonia.Controls.DataGridRow[] rows = grid.GetVisualDescendants().OfType<Avalonia.Controls.DataGridRow>()
+                .OrderBy(row => row.Bounds.Y)
+                .ToArray();
+            rows.Should().HaveCountGreaterThanOrEqualTo(4);
+
+            Point Center(Avalonia.Controls.DataGridRow row)
+            {
+                return row.TranslatePoint(new Point(row.Bounds.Width / 2, row.Bounds.Height / 2), window) ?? default;
+            }
+
+            window.MouseDown(Center(rows[0]), MouseButton.Left, RawInputModifiers.None);
+            window.MouseUp(Center(rows[0]), MouseButton.Left, RawInputModifiers.None);
+            vm.Shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(items[0]);
+
+            window.MouseDown(Center(rows[2]), MouseButton.Left, RawInputModifiers.Control);
+            window.MouseUp(Center(rows[2]), MouseButton.Left, RawInputModifiers.Control);
+            vm.Shell.SelectedItems.Should().HaveCount(2);
+            vm.Shell.SelectedItems.Should().Contain(items[0]).And.Contain(items[2]);
+
+            window.MouseDown(Center(rows[1]), MouseButton.Left, RawInputModifiers.None);
+            window.MouseUp(Center(rows[1]), MouseButton.Left, RawInputModifiers.None);
+            vm.Shell.SelectedItems.Should().ContainSingle().Which.Should().BeSameAs(items[1]);
+
+            window.MouseDown(Center(rows[3]), MouseButton.Left, RawInputModifiers.Shift);
+            window.MouseUp(Center(rows[3]), MouseButton.Left, RawInputModifiers.Shift);
+            vm.Shell.SelectedItems.Select(item => item.ItemId)
+                .Should().BeEquivalentTo(items.Skip(1).Take(3).Select(item => item.ItemId));
+
+            window.Close();
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public void LibraryShell_can_merge_only_when_exactly_two_items_are_selected()
+    {
+        MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
+        LibraryItemViewModel[] items = Enumerable.Range(0, 3)
+            .Select(index => new LibraryItemViewModel(
+                ItemId.New().ToString(), $"Item {index}", "book", "", "", "", null, null, null, "", "",
+                0, 0, "not_indexed", _ => Task.CompletedTask, _ => Task.CompletedTask))
+            .ToArray();
+
+        vm.Shell.SetSelectedItems([items[0]]);
+        vm.Shell.CanMergeSelectedItems.Should().BeFalse();
+
+        vm.Shell.SetSelectedItems([items[0], items[1]]);
+        vm.Shell.CanMergeSelectedItems.Should().BeTrue();
+
+        vm.Shell.SetSelectedItems([items[0], items[1], items[2]]);
+        vm.Shell.CanMergeSelectedItems.Should().BeFalse();
     }
 
     [Fact]
@@ -920,11 +1102,12 @@ public sealed class UiViewModelTests : IDisposable
             File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
         xaml.Should().Contain("DefaultSyncRootPath");
         xaml.Should().Contain("FileSearchRoots");
+        xaml.Should().Contain("Sidebar.Sections");
+        xaml.Should().Contain("Sidebar.SelectedSection");
         xaml.Should().NotContain("/Documents/Papers");
         xaml.Should().NotContain("/Downloads/Scan");
         xaml.Should().NotContain("WPS Drive");
         xaml.Should().NotContain("最近更改");
-        xaml.Should().NotContain("回收站");
     }
 
     [Fact]
@@ -1160,27 +1343,32 @@ public sealed class UiViewModelTests : IDisposable
             .FullName;
         string database = Path.Combine(root, "ui.sqlite");
         string pdf = Path.Combine(root, "new-source.pdf");
+        MainWindowViewModel? vm = null;
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
             await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
 
-            Result<FileSearchRootRescanSummary> first = await vm.RescanFileSearchRootsAsync();
-            Result<FileSearchRootRescanSummary> second = await vm.RescanFileSearchRootsAsync();
+            Task<Result<FileSearchRootRescanSummary>> firstScan = vm.RescanFileSearchRootsAsync();
+            Task<Result<FileSearchRootRescanSummary>> secondScan = vm.RescanFileSearchRootsAsync();
+            Result<FileSearchRootRescanSummary>[] scans = await Task.WhenAll(firstScan, secondScan);
 
-            first.IsSuccess.Should().BeTrue();
-            first.Value.ImportedPdfCount.Should().Be(1);
-            second.IsSuccess.Should().BeTrue();
-            second.Value.ImportedPdfCount.Should().Be(0);
-            second.Value.SkippedKnownPdfCount.Should().BeGreaterThanOrEqualTo(1);
+            scans.Should().OnlyContain(scan => scan.IsSuccess);
+            scans.Sum(scan => scan.Value.ImportedPdfCount).Should().Be(1);
+            scans.Sum(scan => scan.Value.SkippedKnownPdfCount).Should().BeGreaterThanOrEqualTo(1);
             vm.Shell.Items.Should().ContainSingle(item => item.FileName == "new-source.pdf");
         }
         finally
         {
+            if (vm is not null)
+            {
+                await vm.ShutdownAsync();
+            }
+
             if (Directory.Exists(root))
             {
                 SqliteConnection.ClearAllPools();
@@ -1196,12 +1384,12 @@ public sealed class UiViewModelTests : IDisposable
             .FullName;
         string database = Path.Combine(root, "ui.sqlite");
         string pdf = Path.Combine(root, "logged-source.pdf");
+        MainWindowViewModel? vm = null;
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
             CapturingLogger logger = new();
-            MainWindowViewModel vm =
-                WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard(), logger), database);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard(), logger), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             AppServices services = await vm.ServicesAsync();
@@ -1232,6 +1420,11 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            if (vm is not null)
+            {
+                await vm.ShutdownAsync();
+            }
+
             if (Directory.Exists(root))
             {
                 SqliteConnection.ClearAllPools();
@@ -1263,6 +1456,8 @@ public sealed class UiViewModelTests : IDisposable
         queueXaml.Should().Contain("PauseGlobalCommand");
         queueXaml.Should().Contain("CancelCommand");
         queueXaml.Should().Contain("ClearFinishedCommand");
+        queueXaml.Should().Contain("RetryFailedCommand");
+        queueXaml.Should().Contain("IsEnabled=\"{Binding HasRetryableTasks}\"");
         queueXaml.Should().Contain("ActiveTaskRows");
         queueXaml.Should().Contain("FinishedTaskRows");
         queueXaml.Should().Contain("StatusSummary");
@@ -1285,13 +1480,13 @@ public sealed class UiViewModelTests : IDisposable
         shellXaml.Should().NotContain("复制证据 Markdown");
         shellXaml.Should().NotContain("导出证据 Markdown");
         libraryXaml.Should().NotContain("复制证据 Markdown");
-        searchXaml.Should().Contain("OnCopySearchUnitEvidenceRefClick");
+        searchXaml.Should().Contain("OnCopySearchUnitEvidenceUriClick");
         searchXaml.Should().Contain("OnCopySearchUnitEvidenceMarkdownClick");
         searchXaml.Should().Contain("OnExportSearchUnitEvidenceMarkdownClick");
         searchXaml.Should().Contain("<ContextMenu>");
         codeBehind.Should().NotContain("SaveFilePickerAsync");
         codeBehind.Should().NotContain("OnExportEvidenceMarkdownClick");
-        searchCodeBehind.Should().Contain("CopyEvidenceRefForSearchUnitAsync");
+        searchCodeBehind.Should().Contain("CopyVersionedUriForSearchUnitAsync");
         searchCodeBehind.Should().Contain("CopyEvidenceMarkdownForSearchUnitAsync");
         searchCodeBehind.Should().Contain("SaveFilePickerAsync");
         searchCodeBehind.Should().Contain("ExportEvidenceMarkdownToFileAsync");
@@ -1326,7 +1521,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task ExportEvidenceMarkdownToFile_without_evidence_ref_reports_validation_error()
+    public async Task ExportEvidenceMarkdownToFile_without_versioned_uri_reports_validation_error()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
@@ -1334,7 +1529,7 @@ public sealed class UiViewModelTests : IDisposable
             Path.Combine(Path.GetTempPath(), $"evidence-{Guid.NewGuid():N}.md"));
 
         vm.SearchEvidence.Output.Should().Contain("validation_failed");
-        vm.Status.Should().Contain("EvidenceRef");
+        vm.Status.Should().Contain("版本化证据 URI");
     }
 
     [Fact]
@@ -1439,6 +1634,7 @@ public sealed class UiViewModelTests : IDisposable
             vm.OcrQueue.ActiveTaskRows.Should().HaveCount(2);
             vm.OcrQueue.HasActiveTasks.Should().BeTrue();
             vm.OcrQueue.NoActiveTasks.Should().BeFalse();
+            vm.OcrQueue.HasRetryableTasks.Should().BeFalse();
             vm.OcrQueue.ActiveTabHeader.Should().Be("进行中 (2)");
             vm.OcrQueue.ActiveTaskRows.Should().OnlyContain(row => row.State == OcrQueueTaskState.Queued);
 
@@ -1447,6 +1643,7 @@ public sealed class UiViewModelTests : IDisposable
             vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
             vm.OcrQueue.FinishedTaskRows.Should().ContainSingle(row => row.State == OcrQueueTaskState.Cancelled);
             vm.OcrQueue.FinishedTabHeader.Should().Be("已完成 (1)");
+            vm.OcrQueue.HasRetryableTasks.Should().BeFalse();
             vm.Status.Should().Contain("已请求取消任务");
         }
         finally
@@ -1515,6 +1712,7 @@ public sealed class UiViewModelTests : IDisposable
             queue.GetTaskFinishedAt(task.TaskId).Should().NotBeNull();
             vm.OcrQueue.ActiveTaskRows.Should().BeEmpty();
             vm.OcrQueue.FinishedTaskRows.Should().ContainSingle();
+            vm.OcrQueue.HasRetryableTasks.Should().BeTrue();
 
             await queue.StopAsync();
         }
@@ -1526,6 +1724,46 @@ public sealed class UiViewModelTests : IDisposable
                 File.Delete(path);
             }
         }
+    }
+
+    [Fact]
+    public void Queue_task_view_model_formats_page_recognition_progress()
+    {
+        OcrQueueTaskId taskId = OcrQueueTaskId.New();
+        OcrQueueTask task = new(
+            taskId,
+            LibraryId.New(),
+            DocumentInstanceId.New(),
+            OcrPresetId.New(),
+            [PageId.New(), PageId.New()],
+            OcrQueueTaskKind.Document,
+            OcrEngineIds.NdlKoten,
+            OcrAdapterKind.LocalLibrary,
+            null,
+            OcrQueuePriority.BatchCollection,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow,
+            OcrQueueTaskState.Running,
+            0,
+            3,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null);
+        OcrTaskProgressReport stage = new(taskId, OcrTaskStage.Recognizing, 0.5, "pages:1/2");
+        OcrQueueTaskViewModel row = new(
+            task,
+            "NDL progress",
+            new OcrQueueViewModel(CreateMainWindow()),
+            null,
+            stage,
+            null,
+            DateTimeOffset.UtcNow);
+
+        row.ProgressValue.Should().Be(47.5);
+        row.StageText.Should().Be("逐页识别 · 1/2 页");
     }
 
     [Fact]
@@ -1594,7 +1832,7 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Library_run_ocr_enqueues_document_task_visible_on_queue_board()
+    public async Task Library_quick_fill_ocr_enqueues_missing_text_as_batch_task_visible_on_queue_board()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.sqlite");
         string pdf = Path.Combine(Path.GetTempPath(), $"ui-queue-real-{Guid.NewGuid():N}.pdf");
@@ -1612,15 +1850,16 @@ public sealed class UiViewModelTests : IDisposable
             vm.Shell.MinerUToken = "token";
             await vm.OcrQueue.PauseGlobalCommand.ExecuteAsync();
 
-            await vm.Shell.Items.Single().RunOcrCommand.ExecuteAsync();
+            await vm.Shell.QuickFillOcrCommand.ExecuteAsync();
             await vm.OcrQueue.RefreshAsync();
 
-            vm.Status.Should().Contain("OCR 已加入后台队列");
+            vm.Status.Should().Contain("快速补全 OCR：成功入队 1，失败 0，无可用文档源 0。");
             vm.OcrQueue.StatusSummary.Should().Contain("运行中");
             vm.OcrQueue.ActiveTaskRows.Should().ContainSingle();
             OcrQueueTaskViewModel row = vm.OcrQueue.ActiveTaskRows.Single();
             row.DocumentTitle.Should().Be("Queued OCR Item");
             row.Kind.Should().Be(OcrQueueTaskKind.Document);
+            row.Priority.Should().Be(OcrQueuePriority.BatchCollection);
             row.PageCount.Should().Be(1);
 
             await vm.OcrQueue.StopCommand.ExecuteAsync();
@@ -1836,6 +2075,10 @@ public sealed class UiViewModelTests : IDisposable
         try
         {
             MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath);
+            vm.UpdateAppOptions(vm.AppOptions with
+            {
+                OcrEngines = new OcrEnginesAppSettings(OcrEngineIds.MinerU, OcrEngineIds.MinerU, OcrEngineIds.MinerU)
+            });
             LibraryItemViewModel item = new(
                 "item-1",
                 "Needs OCR",
@@ -1843,6 +2086,7 @@ public sealed class UiViewModelTests : IDisposable
                 "",
                 "",
                 "",
+                null,
                 "doc-1",
                 null,
                 "needs-ocr.pdf",
@@ -2110,6 +2354,10 @@ public sealed class UiViewModelTests : IDisposable
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "selected.pdf");
             MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: settingsPath)
                 { RuntimeDatabasePath = path };
+            vm.UpdateAppOptions(vm.AppOptions with
+            {
+                OcrEngines = new OcrEnginesAppSettings(OcrEngineIds.MinerU, OcrEngineIds.MinerU, OcrEngineIds.MinerU)
+            });
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
             await vm.FirstRun.CreateLibraryCommand.ExecuteAsync();
@@ -3202,7 +3450,7 @@ public sealed class UiViewModelTests : IDisposable
 
     private sealed class RecordingRegionEngine : IOcrRunEngine
     {
-        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted
         {
             add { }
             remove { }
@@ -3323,7 +3571,7 @@ public sealed class UiViewModelTests : IDisposable
             throw new NotSupportedException();
         }
 
-        public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId,
+        public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId runId,
             IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
@@ -3341,7 +3589,8 @@ public sealed class UiViewModelTests : IDisposable
             _documentInstanceId = documentInstanceId;
             _pageId = pageId;
             _currentRevision = new DocumentTreeRevision(DocumentTreeRevisionId.New(), documentInstanceId, pageId, null,
-                DocumentTreeRevisionSource.Import, "current", true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+                DocumentTreeRevisionSource.Import, DocumentTreeRevisionStatus.Committed, true, DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow);
         }
 
         public DocumentBoxId LogicalPageBoxId { get; } = DocumentBoxId.New();
@@ -3383,25 +3632,34 @@ public sealed class UiViewModelTests : IDisposable
             return Task.FromResult(Result<IReadOnlyList<DocumentBox>>.Success(boxes));
         }
 
-        public Task<Result<DocumentTreeRevision>> StagePageAsync(DocumentInstanceId documentInstanceId, PageId pageId,
-            IReadOnlyList<DocumentBoxSeed> boxes, string source = DocumentTreeRevisionSource.Import,
-            DocumentTreeRevisionId? parentTreeRevisionId = null, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(Result<DocumentTreeRevision>.Success(new DocumentTreeRevision(
-                DocumentTreeRevisionId.New(), documentInstanceId, pageId, parentTreeRevisionId, source, "staging",
-                false, DateTimeOffset.UtcNow, null)));
-        }
-
         public Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
         }
 
-        public Task<Result<DocumentTreeRevision>> CreateStagingRevisionAsync(DocumentInstanceId documentInstanceId,
-            PageId pageId, string source, DocumentTreeRevisionId? parentTreeRevisionId = null,
-            CancellationToken cancellationToken = default)
+        public Task<Result<DocumentTreeRevision>> BeginWorkingRevisionAsync(DocumentInstanceId documentInstanceId,
+            PageId pageId, IReadOnlyList<DocumentBoxSeed> boxes, string source,
+            DocumentTreeRevisionId? parentTreeRevisionId = null, CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            return Task.FromResult(Result<DocumentTreeRevision>.Success(new DocumentTreeRevision(
+                DocumentTreeRevisionId.New(), documentInstanceId, pageId, parentTreeRevisionId, source,
+                DocumentTreeRevisionStatus.Working, false, DateTimeOffset.UtcNow, null)));
+        }
+
+        public Task<Result<DocumentTreeRevision>> CommitWorkingRevisionAsync(DocumentTreeRevisionId workingRevisionId,
+            DocumentCommitId? commitId = null, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<DocumentTreeRevision>.Success(new DocumentTreeRevision(
+                workingRevisionId, _documentInstanceId, _pageId, _currentRevision.TreeRevisionId,
+                DocumentTreeRevisionSource.Import, DocumentTreeRevisionStatus.Committed, true, DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow)));
+        }
+
+        public Task<Result<DocumentCommit>> CreateDocumentCommitAsync(DocumentInstanceId documentInstanceId,
+            string source, string? message = null, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<DocumentCommit>.Success(new DocumentCommit(
+                DocumentCommitId.New(), documentInstanceId, null, source, message, DateTimeOffset.UtcNow)));
         }
 
         public Task<Result<PageEditSession>> BeginPageEditAsync(DocumentInstanceId documentInstanceId, PageId pageId,
@@ -3410,14 +3668,22 @@ public sealed class UiViewModelTests : IDisposable
             throw new NotSupportedException();
         }
 
-        public Task<Result<DocumentTreeRevision>> AdoptStagingRevisionAsync(DocumentTreeRevisionId stagingRevisionId,
-            CancellationToken cancellationToken = default)
+        public Task<Result<IReadOnlyList<DocumentTreeRevision>>> ListRevisionsAsync(
+            DocumentInstanceId documentInstanceId, PageId pageId, CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            return Task.FromResult(Result<IReadOnlyList<DocumentTreeRevision>>.Success([_currentRevision]));
         }
 
-        public Task<Result<IReadOnlyList<DocumentTreeRevision>>> AdoptStagingRevisionsAsync(
-            IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds, CancellationToken cancellationToken = default)
+        public Task<Result<IReadOnlyList<DocumentCommitDetail>>> ListDocumentCommitsAsync(
+            DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<DocumentCommitDetail>>.Success(
+                Array.Empty<DocumentCommitDetail>()));
+        }
+
+        public Task<Result<DocumentTreeRevision>> RevertToRevisionAsync(DocumentInstanceId documentInstanceId,
+            PageId pageId, DocumentTreeRevisionId targetRevisionId,
+            CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
         }

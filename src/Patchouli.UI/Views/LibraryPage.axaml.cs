@@ -1,9 +1,12 @@
 using Avalonia.Controls;
 using Avalonia;
 using System.Collections.Specialized;
+using System.Linq;
 using Patchouli.UI.ViewModels;
 using Avalonia.VisualTree;
 using Patchouli.UI.Diagnostics;
+using Avalonia.Input;
+using Patchouli.Core.Bibliography;
 
 namespace Patchouli.UI.Views;
 
@@ -16,10 +19,21 @@ public sealed partial class LibraryPage : UserControl
     public LibraryPage()
     {
         InitializeComponent();
+        LibraryGrid.AddHandler(PointerPressedEvent, OnDataGridPointerPressed,
+            Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        LibraryGrid.AddHandler(PointerMovedEvent, OnDataGridPointerMoved,
+            Avalonia.Interactivity.RoutingStrategies.Tunnel);
+        LibraryGrid.AddHandler(PointerReleasedEvent, OnDataGridPointerReleased,
+            Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
-    private async void OnDataGridDoubleTapped(object? sender, Avalonia.Input.TappedEventArgs e)
+    private async void OnDataGridDoubleTapped(object? sender, TappedEventArgs e)
     {
+        if (DataContext is LibraryShellViewModel { Sidebar.IsTrashSelected: true })
+        {
+            return;
+        }
+
         await UnexpectedExceptionBoundary.RunAsync(ViewSelectedPdfAsync, "view-selected-pdf");
     }
 
@@ -193,5 +207,274 @@ public sealed partial class LibraryPage : UserControl
             "关联文件" => "File",
             _ => null
         };
+    }
+
+    // ---------- Tag interactions ----------
+
+    private TagListItemViewModel? _dragTag;
+    private PointerPressedEventArgs? _dragTagStartArgs;
+
+    private void OnTagPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is not Border border || border.DataContext is not TagListItemViewModel tag)
+        {
+            return;
+        }
+
+        _dragTag = tag;
+        _dragTagStartArgs = e;
+    }
+
+    private async void OnTagPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_dragTag is null || _dragTagStartArgs is null || sender is not Border ||
+            DataContext is not LibraryShellViewModel)
+        {
+            return;
+        }
+
+        PointerPointProperties properties = e.GetCurrentPoint(this).Properties;
+        if (!properties.IsLeftButtonPressed)
+        {
+            _dragTag = null;
+            _dragTagStartArgs = null;
+            return;
+        }
+
+        if (_dragTag.IsNoTagEntry)
+        {
+            _dragTag = null;
+            _dragTagStartArgs = null;
+            return;
+        }
+
+        DataTransfer data = CreateTagDataTransfer(_dragTag.Name);
+        PointerPressedEventArgs startArgs = _dragTagStartArgs;
+        _dragTag = null;
+        _dragTagStartArgs = null;
+        await DragDrop.DoDragDropAsync(startArgs, data, DragDropEffects.Move);
+        e.Handled = true;
+    }
+
+    private void OnTagPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_dragTag is null || sender is not Border border || border.DataContext is not TagListItemViewModel tag ||
+            DataContext is not LibraryShellViewModel shell)
+        {
+            _dragTag = null;
+            return;
+        }
+
+        if (e.InitialPressMouseButton == MouseButton.Left)
+        {
+            shell.Sidebar.ToggleTagSelection(tag);
+        }
+
+        _dragTag = null;
+        _dragTagStartArgs = null;
+        e.Handled = true;
+    }
+
+    private void OnTagDragOver(object? sender, DragEventArgs e)
+    {
+        if (sender is not Border border || border.DataContext is not TagListItemViewModel tag ||
+            DataContext is not LibraryShellViewModel shell)
+        {
+            e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        if (tag.IsNoTagEntry && HasItemDrag(e))
+        {
+            e.DragEffects = DragDropEffects.Copy;
+        }
+        else if (!tag.IsNoTagEntry && HasItemDrag(e))
+        {
+            e.DragEffects = DragDropEffects.Copy;
+        }
+        else if (!tag.IsNoTagEntry && HasTagDrag(e))
+        {
+            e.DragEffects = DragDropEffects.Move;
+        }
+        else
+        {
+            e.DragEffects = DragDropEffects.None;
+        }
+
+        e.Handled = true;
+    }
+
+    private async void OnTagDrop(object? sender, DragEventArgs e)
+    {
+        if (sender is not Border border || border.DataContext is not TagListItemViewModel tag ||
+            DataContext is not LibraryShellViewModel shell)
+        {
+            return;
+        }
+
+        IReadOnlyList<string> draggedItemIds = GetDraggedItemIds(e);
+        if (draggedItemIds.Count > 0)
+        {
+            LibraryItemViewModel[] draggedItems = shell.Items
+                .Where(item => draggedItemIds.Contains(item.ItemId, StringComparer.Ordinal))
+                .ToArray();
+            if (draggedItems.Length > 0)
+            {
+                if (tag.IsNoTagEntry)
+                {
+                    await shell.DropItemsOnNoTagAsync(draggedItems);
+                }
+                else
+                {
+                    await shell.DropItemsOnTagAsync(draggedItems, tag.Name);
+                }
+            }
+
+            e.Handled = true;
+            return;
+        }
+
+        string? draggedTag = GetDraggedTag(e);
+        if (!string.IsNullOrWhiteSpace(draggedTag) && !tag.IsNoTagEntry &&
+            !string.Equals(draggedTag, tag.Name, StringComparison.Ordinal))
+        {
+            await shell.DropTagOnTagAsync(draggedTag, tag.Name);
+            e.Handled = true;
+        }
+    }
+
+    // ---------- DataGrid row drag source ----------
+
+    private LibraryItemViewModel? _dragItem;
+    private PointerPressedEventArgs? _dragItemStartArgs;
+    private Point _dragItemStartPoint;
+    private const double DataGridDragStartThreshold = 4;
+
+    private void OnDataGridPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (DataContext is not LibraryShellViewModel shell)
+        {
+            return;
+        }
+
+        if (e.Source is not Control source)
+        {
+            return;
+        }
+
+        DataGridRow? row = source.FindAncestorOfType<DataGridRow>();
+        if (row?.DataContext is not LibraryItemViewModel item)
+        {
+            return;
+        }
+
+        _dragItem = item;
+        _dragItemStartArgs = e;
+        _dragItemStartPoint = e.GetPosition(this);
+
+        // Left button selection (plain click, Ctrl, Shift) is handled by DataGrid itself.
+        // Only keep right-click selection for the context menu.
+        if (e.GetCurrentPoint(this).Properties.IsRightButtonPressed && !shell.SelectedItems.Contains(item))
+        {
+            shell.SelectedItem = item;
+        }
+    }
+
+    private async void OnDataGridPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_dragItem is null || _dragItemStartArgs is null || DataContext is not LibraryShellViewModel shell)
+        {
+            return;
+        }
+
+        PointerPointProperties properties = e.GetCurrentPoint(this).Properties;
+        if (!properties.IsLeftButtonPressed)
+        {
+            _dragItem = null;
+            _dragItemStartArgs = null;
+            return;
+        }
+
+        Point current = e.GetPosition(this);
+        if (Math.Abs(current.X - _dragItemStartPoint.X) < DataGridDragStartThreshold &&
+            Math.Abs(current.Y - _dragItemStartPoint.Y) < DataGridDragStartThreshold)
+        {
+            return;
+        }
+
+        IReadOnlyList<LibraryItemViewModel> items = shell.SelectedItems.Contains(_dragItem)
+            ? shell.SelectedItems.ToArray()
+            : [_dragItem];
+        DataTransfer data = CreateItemDataTransfer(items);
+        PointerPressedEventArgs startArgs = _dragItemStartArgs;
+        _dragItem = null;
+        _dragItemStartArgs = null;
+        await DragDrop.DoDragDropAsync(startArgs, data, DragDropEffects.Copy);
+        e.Handled = true;
+    }
+
+    private void OnDataGridPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        _dragItem = null;
+        _dragItemStartArgs = null;
+    }
+
+    // ---------- Drag helpers ----------
+
+    private const string ItemDragPrefix = "patchouli:items:";
+    private const string TagDragPrefix = "patchouli:tag:";
+
+    private static bool HasItemDrag(DragEventArgs e)
+    {
+        string? text = e.DataTransfer.TryGetText();
+        return text is not null && text.StartsWith(ItemDragPrefix, StringComparison.Ordinal);
+    }
+
+    private static bool HasTagDrag(DragEventArgs e)
+    {
+        string? text = e.DataTransfer.TryGetText();
+        return text is not null && text.StartsWith(TagDragPrefix, StringComparison.Ordinal);
+    }
+
+    private static IReadOnlyList<string> GetDraggedItemIds(DragEventArgs e)
+    {
+        string? text = e.DataTransfer.TryGetText();
+        if (string.IsNullOrWhiteSpace(text) || !text.StartsWith(ItemDragPrefix, StringComparison.Ordinal))
+        {
+            return Array.Empty<string>();
+        }
+
+        return text[ItemDragPrefix.Length..]
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(id => id.Trim())
+            .Where(id => id.Length > 0)
+            .ToArray();
+    }
+
+    private static string? GetDraggedTag(DragEventArgs e)
+    {
+        string? text = e.DataTransfer.TryGetText();
+        if (string.IsNullOrWhiteSpace(text) || !text.StartsWith(TagDragPrefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        return TagNormalizer.Normalize(text[TagDragPrefix.Length..]);
+    }
+
+    private static DataTransfer CreateItemDataTransfer(IEnumerable<LibraryItemViewModel> items)
+    {
+        DataTransfer data = new();
+        string payload = ItemDragPrefix + string.Join("\n", items.Select(item => item.ItemId));
+        data.Add(DataTransferItem.CreateText(payload));
+        return data;
+    }
+
+    private static DataTransfer CreateTagDataTransfer(string tagName)
+    {
+        DataTransfer data = new();
+        data.Add(DataTransferItem.CreateText(TagDragPrefix + tagName));
+        return data;
     }
 }

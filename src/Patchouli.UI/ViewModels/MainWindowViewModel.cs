@@ -7,6 +7,7 @@ using Avalonia.Media;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Credentials;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Documents;
@@ -19,7 +20,6 @@ using Patchouli.Core.Mcp;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Migrations;
@@ -56,7 +56,12 @@ public sealed class MainWindowViewModel : ViewModelBase
     private readonly Dictionary<string, FileSystemWatcher> _fileSearchRootWatchers =
         new(StringComparer.OrdinalIgnoreCase);
 
+    private readonly object _fileSearchRootWatchSync = new();
+    private readonly SemaphoreSlim _fileSearchRootRescanGate = new(1, 1);
     private CancellationTokenSource? _fileSearchRootWatchDebounce;
+    private Task? _fileSearchRootWatchDebounceTask;
+    private long _fileSearchRootWatchGeneration;
+    private bool _fileSearchRootWatchersActive;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -118,6 +123,40 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool IsFirstRunVisible { get; set; }
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
+
+    private bool _isStartupLoadingVisible = true;
+
+    public bool IsStartupLoadingVisible
+    {
+        get => _isStartupLoadingVisible;
+        set
+        {
+            if (_isStartupLoadingVisible == value)
+            {
+                return;
+            }
+
+            _isStartupLoadingVisible = value;
+            Raise();
+        }
+    }
+
+    private string _startupLoadingStatus = "正在启动…";
+
+    public string StartupLoadingStatus
+    {
+        get => _startupLoadingStatus;
+        set
+        {
+            if (_startupLoadingStatus == value)
+            {
+                return;
+            }
+
+            _startupLoadingStatus = value;
+            Raise();
+        }
+    }
 
     public bool ShowInspectorPane
     {
@@ -224,6 +263,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand CreateItemMenuCommand { get; }
     public AsyncCommand OpenItemEditorCommand { get; }
     public AsyncCommand EditSelectedItemCommand { get; }
+    public AsyncCommand DetectDuplicateItemsCommand { get; }
     public AsyncCommand RunSelectedItemOcrCommand { get; }
     public AsyncCommand ClosePdfWorkspaceTabCommand { get; }
     public AsyncCommand CloseSettingsTabCommand { get; }
@@ -454,36 +494,39 @@ public sealed class MainWindowViewModel : ViewModelBase
             }
 
             await BeginLibrarySwitchAsync("正在切换运行数据库。");
-            ResetFileSearchRootWatchers();
-            AppServices services;
-            try
+            await ResetFileSearchRootWatchersAsync();
+            await RunWithStartupLoadingAsync(async () =>
             {
-                services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
-                SetServices(services);
-            }
-            catch (UnsupportedLibrarySchemaException exception)
-            {
-                string epochs = exception.SchemaVersions.Count == 0
-                    ? "未知"
-                    : string.Join("、", exception.SchemaVersions.Order());
-                ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.0 支持的数据库 schema epoch（{epochs}）。" +
-                            "0.3.0 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
-                return;
-            }
+                AppServices services;
+                try
+                {
+                    services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+                    SetServices(services);
+                }
+                catch (UnsupportedLibrarySchemaException exception)
+                {
+                    string epochs = exception.SchemaVersions.Count == 0
+                        ? "未知"
+                        : string.Join("、", exception.SchemaVersions.Order());
+                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.0 支持的数据库 schema epoch（{epochs}）。" +
+                                "0.3.0 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                    return;
+                }
 
-            await RefreshSyncedMetadataLookupAsync(services);
-            await Settings.ReloadCleanSectionsAsync();
-            PersistRuntimeDatabasePathIfEnabled();
-            await LoadPersistedMinerUTokenAsync();
-            await RefreshSidebarPathsAsync();
-            Status = $"数据库已就绪：{RuntimeDatabasePath}";
-            Raise(nameof(Status));
-            Raise(nameof(VersionInfo));
-            Raise(nameof(StatusBarVersion));
-            if (_autoStartMcpServer)
-            {
-                await StartMcpServerAsync(services);
-            }
+                await RefreshSyncedMetadataLookupAsync(services);
+                await Settings.ReloadCleanSectionsAsync();
+                PersistRuntimeDatabasePathIfEnabled();
+                await LoadPersistedMinerUTokenAsync();
+                await RefreshSidebarPathsAsync();
+                Status = $"数据库已就绪：{RuntimeDatabasePath}";
+                Raise(nameof(Status));
+                Raise(nameof(VersionInfo));
+                Raise(nameof(StatusBarVersion));
+                if (_autoStartMcpServer)
+                {
+                    await StartMcpServerAsync(services);
+                }
+            });
         });
         FirstRun = CreateFirstRunViewModel();
 
@@ -509,6 +552,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         CreateItemMenuCommand = new AsyncCommand(OpenNewItemEditorAsync);
         OpenItemEditorCommand = new AsyncCommand(OpenItemEditorTabAsync);
         EditSelectedItemCommand = new AsyncCommand(EditSelectedItemAsync);
+        DetectDuplicateItemsCommand = new AsyncCommand(() => Shell.DetectDuplicatesAsync());
         RunSelectedItemOcrCommand = new AsyncCommand(RunSelectedItemOcrAsync);
         ClosePdfWorkspaceTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.PdfWorkspace));
         CloseSettingsTabCommand = new AsyncCommand(CloseSettingsTabAsync);
@@ -622,17 +666,59 @@ public sealed class MainWindowViewModel : ViewModelBase
             return _services;
         }
 
-        AppServices services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
-        SetServices(services);
-        await RefreshSyncedMetadataLookupAsync(services);
-        await LoadPersistedMinerUTokenAsync();
-        await RefreshSidebarPathsAsync();
-        if (startMcpServer && _autoStartMcpServer)
-        {
-            await StartMcpServerAsync(services);
-        }
+        await RunStartupAsync(startMcpServer);
+        return _services!;
+    }
 
-        return services;
+    public async Task RunStartupAsync(bool startMcpServer)
+    {
+        IsStartupLoadingVisible = true;
+        StartupLoadingStatus = "正在启动…";
+        try
+        {
+            AppServices services = await AppServices.CreateAsync(
+                RuntimeDatabasePath,
+                _settings,
+                SettingsFilePath,
+                new Progress<MigrationProgress>(p =>
+                    StartupLoadingStatus = $"正在应用数据库迁移 ({p.Ordinal}/{p.Total})：{p.Name}"));
+            SetServices(services);
+            await RefreshSyncedMetadataLookupAsync(services);
+            await LoadPersistedMinerUTokenAsync();
+            await RefreshSidebarPathsAsync();
+            if (startMcpServer && _autoStartMcpServer)
+            {
+                await StartMcpServerAsync(services);
+            }
+
+            Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+            if (library.IsFailure)
+            {
+                await ShowInlineFirstRunAsync();
+            }
+            else
+            {
+                await Shell.RefreshAsync();
+            }
+        }
+        finally
+        {
+            IsStartupLoadingVisible = false;
+        }
+    }
+
+    private async Task RunWithStartupLoadingAsync(Func<Task> action)
+    {
+        IsStartupLoadingVisible = true;
+        StartupLoadingStatus = "正在切换数据库…";
+        try
+        {
+            await action();
+        }
+        finally
+        {
+            IsStartupLoadingVisible = false;
+        }
     }
 
     private void SetServices(AppServices services)
@@ -820,37 +906,45 @@ public sealed class MainWindowViewModel : ViewModelBase
         Action<int?, int?, string, string?>? progress = null,
         string trigger = "manual")
     {
-        AppServices services = await ServicesAsync();
-        Result<FileSearchRootRescanSummary> result;
+        await _fileSearchRootRescanGate.WaitAsync(cancellationToken);
         try
         {
-            if (showBlockingDialog)
+            AppServices services = await ServicesAsync();
+            Result<FileSearchRootRescanSummary> result;
+            try
             {
-                result = await ModalOperations.RunAsync(
-                    new ModalOperationOptions(
-                        "文件重新扫描",
-                        "正在扫描文件搜索根并导入新发现的 PDF。",
-                        true),
-                    context => RescanFileSearchRootsCoreAsync(services, completionMessage, context.CancellationToken,
-                        context.Report, trigger),
-                    cancellationToken);
-            }
-            else
-            {
-                result = await Task.Run(
-                    () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress,
-                        trigger),
-                    cancellationToken);
-            }
+                if (showBlockingDialog)
+                {
+                    result = await ModalOperations.RunAsync(
+                        new ModalOperationOptions(
+                            "文件重新扫描",
+                            "正在扫描文件搜索根并导入新发现的 PDF。",
+                            true),
+                        context => RescanFileSearchRootsCoreAsync(services, completionMessage,
+                            context.CancellationToken, context.Report, trigger),
+                        cancellationToken);
+                }
+                else
+                {
+                    result = await Task.Run(
+                        () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress,
+                            trigger),
+                        cancellationToken);
+                }
 
-            await ApplyFileSearchRootRescanResultAsync(result, completionMessage);
-            return result;
+                await ApplyFileSearchRootRescanResultAsync(result, completionMessage);
+                return result;
+            }
+            catch (OperationCanceledException exception) when (
+                cancellationToken.IsCancellationRequested || exception.CancellationToken.IsCancellationRequested)
+            {
+                Report("文件重新扫描已取消。");
+                throw;
+            }
         }
-        catch (OperationCanceledException exception) when (
-            cancellationToken.IsCancellationRequested || exception.CancellationToken.IsCancellationRequested)
+        finally
         {
-            Report("文件重新扫描已取消。");
-            throw;
+            _fileSearchRootRescanGate.Release();
         }
     }
 
@@ -864,8 +958,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         BlockingOperationId? operationId = null;
         try
         {
-            using IDisposable databaseExecution =
-                await services.ConnectionFactory.EnterExclusiveAsync(cancellationToken);
             Result<IReadOnlyList<FileSearchRoot>> roots =
                 await services.FileResolution.ListSearchRootsAsync(cancellationToken);
             if (roots.IsFailure)
@@ -1208,6 +1300,13 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private void RefreshFileSearchRootWatchers(IReadOnlyList<FileSearchRoot> roots)
     {
+        long watcherGeneration;
+        lock (_fileSearchRootWatchSync)
+        {
+            _fileSearchRootWatchersActive = true;
+            watcherGeneration = _fileSearchRootWatchGeneration;
+        }
+
         HashSet<string> wanted = roots.Where(root => root.IsAvailable && Directory.Exists(root.RootPath))
             .Select(root => Path.GetFullPath(root.RootPath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (string path in _fileSearchRootWatchers.Keys.Where(path => !wanted.Contains(path)).ToArray())
@@ -1234,11 +1333,11 @@ public sealed class MainWindowViewModel : ViewModelBase
                     EnableRaisingEvents = true
                 };
                 FileSystemEventHandler changed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}");
+                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}", watcherGeneration);
                 RenamedEventHandler renamed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}");
+                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}", watcherGeneration);
                 ErrorEventHandler error = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Error: {e.GetException()?.Message ?? "unknown"}");
+                    ScheduleFileSearchRootRescan($"Error: {e.GetException()?.Message ?? "unknown"}", watcherGeneration);
                 watcher.Created += changed;
                 watcher.Changed += changed;
                 watcher.Deleted += changed;
@@ -1253,34 +1352,112 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    private void ScheduleFileSearchRootRescan(string changeDescription)
+    private void ScheduleFileSearchRootRescan(string changeDescription, long watcherGeneration)
     {
-        _ = LogOperationAsync("file-watcher", $"Change detected: {changeDescription}; rescan scheduled.");
-        _fileSearchRootWatchDebounce?.Cancel();
-        _fileSearchRootWatchDebounce?.Dispose();
-        CancellationTokenSource cts = new();
-        _fileSearchRootWatchDebounce = cts;
-        DebounceFileSearchRootRescanAsync(cts.Token).Observe("file-watcher", "debounced-rescan", cts.Token);
+        try
+        {
+            CancellationTokenSource current = new();
+            CancellationTokenSource? previous;
+            Task? previousTask;
+            Task currentTask;
+            lock (_fileSearchRootWatchSync)
+            {
+                if (!_fileSearchRootWatchersActive || watcherGeneration != _fileSearchRootWatchGeneration)
+                {
+                    current.Dispose();
+                    return;
+                }
+
+                previous = _fileSearchRootWatchDebounce;
+                previousTask = _fileSearchRootWatchDebounceTask;
+                currentTask = DebounceFileSearchRootRescanAsync(current.Token);
+                _fileSearchRootWatchDebounce = current;
+                _fileSearchRootWatchDebounceTask = currentTask;
+            }
+
+            _ = LogOperationAsync("file-watcher", $"Change detected: {changeDescription}; rescan scheduled.");
+            previous?.Cancel();
+            if (previous is not null)
+            {
+                if (previousTask is null)
+                {
+                    previous.Dispose();
+                }
+                else
+                {
+                    DisposeCancellationSourceAfterTask(previous, previousTask);
+                }
+            }
+
+            currentTask.Observe("file-watcher", "debounced-rescan", current.Token);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "file-watcher", "schedule-rescan");
+        }
+    }
+
+    private static void DisposeCancellationSourceAfterTask(CancellationTokenSource source, Task task)
+    {
+        _ = task.ContinueWith(
+            static (_, state) => ((CancellationTokenSource)state!).Dispose(),
+            source,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     private async Task DebounceFileSearchRootRescanAsync(CancellationToken cancellationToken)
     {
         await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         await DispatcherTasks.RunAsync(() =>
-            RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", trigger: "file-watcher"));
+            RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", cancellationToken: cancellationToken,
+                trigger: "file-watcher"));
     }
 
-    private void ResetFileSearchRootWatchers()
+    private async Task ResetFileSearchRootWatchersAsync()
     {
-        _fileSearchRootWatchDebounce?.Cancel();
-        _fileSearchRootWatchDebounce?.Dispose();
-        _fileSearchRootWatchDebounce = null;
+        CancellationTokenSource? debounce;
+        Task? debounceTask;
+        lock (_fileSearchRootWatchSync)
+        {
+            _fileSearchRootWatchersActive = false;
+            _fileSearchRootWatchGeneration++;
+            debounce = _fileSearchRootWatchDebounce;
+            debounceTask = _fileSearchRootWatchDebounceTask;
+            _fileSearchRootWatchDebounce = null;
+            _fileSearchRootWatchDebounceTask = null;
+        }
+
+        debounce?.Cancel();
         foreach (FileSystemWatcher watcher in _fileSearchRootWatchers.Values)
         {
             watcher.Dispose();
         }
 
         _fileSearchRootWatchers.Clear();
+        try
+        {
+            if (debounceTask is not null)
+            {
+                await debounceTask;
+            }
+        }
+        catch (OperationCanceledException) when (debounce?.IsCancellationRequested == true)
+        {
+            // Expected when a database switch or application shutdown cancels a pending watcher rescan.
+        }
+        finally
+        {
+            debounce?.Dispose();
+        }
+    }
+
+    public async Task ShutdownAsync()
+    {
+        await ResetFileSearchRootWatchersAsync();
+        DetachLibraryChangeNotifications();
+        await StopMcpServerAsync();
     }
 
     public async Task StartMcpServerAsync()
@@ -1410,7 +1587,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         McpProtocolHandler handler = new(services.Mcp, services.McpWrites, services.BiblatexImport,
-            services.ConnectionFactory, serverSettings, ReportMcpException);
+            services.Items, services.VersionedEvidenceReader, services.ConnectionFactory, serverSettings,
+            ReportMcpException);
         McpHttpServer server = new(handler, serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
         try
@@ -1706,6 +1884,66 @@ public sealed class MainWindowViewModel : ViewModelBase
         return true;
     }
 
+    public async Task<bool> SaveMinerUModelSettingsAsync(string modelVersion, int pollingTimeoutSeconds)
+    {
+        if (modelVersion is not ("vlm" or "pipeline"))
+        {
+            ReportError("MinerU 模型必须选择 vlm 或 pipeline。");
+            return false;
+        }
+
+        SettingsSaveResult settingsSaved = UpdateAppOptions(_settings with
+        {
+            MinerU = _settings.MinerU with
+            {
+                ModelVersion = modelVersion,
+                PollingTimeoutSeconds = pollingTimeoutSeconds
+            }
+        });
+        if (!settingsSaved.IsSuccess)
+        {
+            ReportError(settingsSaved.ErrorMessage ?? "无法保存 MinerU 模型设置。");
+            return false;
+        }
+
+        Report("MinerU 模型设置已保存。");
+        return true;
+    }
+
+    public async Task<bool> SaveOcrEngineSettingsAsync(OcrEnginesAppSettings engines)
+    {
+        AppServices services = await ServicesAsync();
+        IReadOnlyList<string> availableEngineIds = services.OcrAdapters.ListCapabilities()
+            .Select(capability => capability.EngineId)
+            .ToList();
+        string[] requested = [engines.DocumentOcrEngine, engines.PageOcrEngine, engines.RegionOcrEngine];
+        foreach (string engineId in requested)
+        {
+            if (string.IsNullOrWhiteSpace(engineId))
+            {
+                ReportError("OCR 引擎选择不能为空。");
+                return false;
+            }
+
+            if (!availableEngineIds.Contains(engineId, StringComparer.Ordinal))
+            {
+                ReportError($"OCR 引擎 '{engineId}' 当前不可用。");
+                return false;
+            }
+        }
+
+        SettingsSaveResult saved = UpdateAppOptions(_settings with { OcrEngines = engines });
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存 OCR 引擎设置。");
+            return false;
+        }
+
+        Settings.OcrProviderSettings.LoadPersistedToken(await GetPersistedMinerUTokenAsync());
+        Report("OCR 引擎选择已保存。");
+        return true;
+    }
+
     public async Task<bool> RemoveMinerUCredentialAsync()
     {
         ConfirmDialogResult? choice = await Dialogs.ShowDialogAsync<ConfirmDialogResult>(
@@ -1757,8 +1995,12 @@ public sealed class MainWindowViewModel : ViewModelBase
         service.Register<ConflictResolutionDialogViewModel, ConflictResolutionDialog>();
         service.Register<BiblatexImportPreviewDialogViewModel, BiblatexImportPreviewDialog>();
         service.Register<ConfirmDialogViewModel, ConfirmDialog>();
+        service.Register<PurgeConfirmDialogViewModel, PurgeConfirmDialog>();
+        service.Register<TagNamePromptDialogViewModel, TagNamePromptDialog>();
         service.Register<PdfBBoxViewModel, BoxEditorDialog>();
         service.Register<PdfWorkspaceViewModel, NewBoxDialog>();
+        service.Register<ItemMergePreviewDialogViewModel, ItemMergePreviewDialog>();
+        service.Register<DuplicateItemsDialogViewModel, DuplicateItemsDialog>();
         return service;
     }
 
@@ -1813,11 +2055,22 @@ public sealed class MainWindowViewModel : ViewModelBase
         HashSet<string> wanted = itemIds.Select(itemId => itemId.ToString()).ToHashSet(StringComparer.Ordinal);
         foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>())
         {
-            if (wanted.Contains(editor.ItemIdText))
+            if (wanted.Contains(editor.ItemIdText) && !editor.IsSaving)
             {
                 await editor.LoadAsync(editor.ItemIdText);
             }
         }
+    }
+
+    /// <summary>
+    /// Returns whether the given item is open in an editor with unsaved changes. Used by the merge
+    /// service to refuse merging items that are currently being edited.
+    /// </summary>
+    public bool ItemHasUnsavedEdits(ItemId itemId)
+    {
+        string id = itemId.ToString();
+        return OpenTabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>()
+            .Any(editor => string.Equals(editor.ItemIdText, id, StringComparison.Ordinal) && editor.HasUnsavedChanges);
     }
 
     private static string BuildItemWorkspaceTabTitle(string pageName, string itemTitle)
@@ -1983,36 +2236,31 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         int pageIndex = target.PageIndex ?? 0;
         await pdf.GoToPageAsync(pageIndex + 1);
-        if (target.EvidenceRef is null)
+        if (target.RevisionId is null && target.BoxId is null)
         {
             Report($"已打开文档第 {pageIndex + 1} 页。");
             return;
         }
 
-        Result<EvidenceResolutionResult> resolved =
-            await services.Evidence.ResolveAsync(target.EvidenceRef, EvidenceResolutionMode.Pinned);
-        Result<EvidenceReference> decoded = EvidenceReferenceCodec.Decode(target.EvidenceRef);
-        bool resourceMatches = decoded.IsSuccess &&
-                               string.Equals(decoded.Value.DocumentInstanceId.ToString(), target.ResourceId,
-                                   StringComparison.OrdinalIgnoreCase) &&
-                               resolved.IsSuccess &&
-                               resolved.Value.PageIndex == pageIndex;
-        bool highlighted = resourceMatches && pdf.TryHighlightBox(decoded.Value.BoxId);
+        Result<EvidencePageText> resolved = await services.VersionedEvidenceReader.GetBoxTextAsync(
+            DocumentInstanceId.Parse(target.ResourceId),
+            pageIndex + 1,
+            target.RevisionId,
+            target.BoxId);
         if (resolved.IsFailure)
         {
-            ReportError($"证据校验失败：{resolved.ErrorMessage}");
+            ReportError($"证据解析失败：{resolved.ErrorMessage}");
+            return;
         }
-        else if (!resourceMatches)
+
+        bool highlighted = target.BoxId is not null && pdf.TryHighlightBox(target.BoxId.Value);
+        if (!highlighted)
         {
-            ReportError($"已打开基础页面，但证据与该页面不匹配：{resolved.Value.Status}");
-        }
-        else if (!highlighted)
-        {
-            Report($"已打开 pinned 证据页面；当前布局中没有可高亮的原 Box（{resolved.Value.Status}）。");
+            Report($"已打开证据页面；当前布局中没有可高亮的原 Box（{resolved.Value.TreeRevisionId}）。");
         }
         else
         {
-            Report($"已打开并高亮 pinned 证据（{resolved.Value.Status}）。");
+            Report($"已打开并高亮证据（版本 {resolved.Value.TreeRevisionId}）。");
         }
     }
 
@@ -2041,6 +2289,12 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task EditSelectedItemAsync()
     {
+        if (!Shell.CanModifyLibraryItems)
+        {
+            Report("回收站中的题录不可编辑。");
+            return;
+        }
+
         if (Shell.SelectedItems.Count > 1)
         {
             Report("编辑元数据仅支持单选，请只选中一个题录。");
@@ -2075,6 +2329,12 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task RunSelectedItemOcrAsync()
     {
+        if (!Shell.CanModifyLibraryItems)
+        {
+            Report("回收站中的题录不可运行 OCR。");
+            return;
+        }
+
         IReadOnlyList<LibraryItemViewModel> items = Shell.SelectedItems.Count > 0
             ? Shell.SelectedItems.ToArray()
             : Shell.SelectedItem is not null
@@ -2087,14 +2347,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
 
         await ActivateTabAsync(WorkspaceTabKind.Library, "Library", LibraryTabTitle, "Database", false, () => Shell);
-        foreach (LibraryItemViewModel item in items)
-        {
-            await item.RunOcrCommand.ExecuteAsync();
-        }
-
-        Report(items.Count > 1
-            ? $"已将 {items.Count} 个题录加入 OCR 队列。"
-            : "已将题录加入 OCR 队列。");
+        await Shell.RunOcrBatchAsync(items);
     }
 
     private Task ActivateExistingTabAsync(WorkspaceTabKind kind)
@@ -2472,12 +2725,12 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsItemEditorVisible));
     }
 
-    public async Task ExportEvidenceMarkdownToFileAsync(string evidenceRef, string targetPath)
+    public async Task ExportEvidenceMarkdownToFileAsync(string versionedUri, string targetPath)
     {
-        if (string.IsNullOrWhiteSpace(evidenceRef))
+        if (string.IsNullOrWhiteSpace(versionedUri))
         {
-            Report("请先选择一个可导出的 EvidenceRef。");
-            SearchEvidence.Output = "ERROR validation_failed: EvidenceRef is required.";
+            Report("请先选择一个可导出的版本化证据 URI。");
+            SearchEvidence.Output = "ERROR validation_failed: Versioned evidence URI is required.";
             SearchEvidence.RaiseOutput();
             return;
         }
@@ -2490,7 +2743,21 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        Result<EvidenceMarkdown> markdown = await (await ServicesAsync()).Evidence.CreateMarkdownAsync(evidenceRef);
+        PatchouliNavigationParseResult parsed = PatchouliUriNavigationParser.ParseInput(versionedUri);
+        if (!parsed.IsSuccess || parsed.Target is not { Kind: PatchouliNavigationKind.TextPage } target)
+        {
+            Report("无法解析版本化证据 URI。");
+            SearchEvidence.Output = "ERROR validation_failed: Invalid versioned evidence URI.";
+            SearchEvidence.RaiseOutput();
+            return;
+        }
+
+        AppServices services = await ServicesAsync();
+        Result<EvidencePageText> markdown = await services.VersionedEvidenceReader.GetBoxTextAsync(
+            DocumentInstanceId.Parse(target.ResourceId),
+            (target.PageIndex ?? 0) + 1,
+            target.RevisionId,
+            target.BoxId);
         if (markdown.IsFailure)
         {
             string message = $"ERROR {markdown.ErrorCode}: {markdown.ErrorMessage}";

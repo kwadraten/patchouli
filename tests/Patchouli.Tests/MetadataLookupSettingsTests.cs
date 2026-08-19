@@ -212,6 +212,7 @@ public sealed class MetadataLookupSettingsTests
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(databasePath);
             Directory.Delete(root, true);
         }
     }
@@ -271,6 +272,8 @@ public sealed class MetadataLookupSettingsTests
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(firstDatabase);
+            SqliteTestCleanup.ReleasePools(secondDatabase);
             Directory.Delete(root, true);
         }
     }

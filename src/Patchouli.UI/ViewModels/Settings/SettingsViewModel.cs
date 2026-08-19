@@ -22,9 +22,13 @@ public sealed class SettingsViewModel : ViewModelBase
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
         SyncSettings = new SyncSettingsViewModel(main);
+        LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
 
         foreach (ISettingsSection section in new ISettingsSection[]
-                     { LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings, MetadataLookupSettings })
+                 {
+                     LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings, MetadataLookupSettings,
+                     LocalFileManagement
+                 })
         {
             ((INotifyPropertyChanged)section).PropertyChanged += SectionPropertyChanged;
         }
@@ -35,7 +39,8 @@ public sealed class SettingsViewModel : ViewModelBase
             new("同步与快照", "Cloud", SyncSettings),
             new("MCP 服务与安全", "Server", McpSettings),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
-            new("元数据来源", "Search", MetadataLookupSettings)
+            new("元数据来源", "Search", MetadataLookupSettings),
+            new("本地文件", "FolderOpen", LocalFileManagement)
         };
 
         ActiveCategory = Categories.First();
@@ -50,6 +55,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
+    public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
 
     public ObservableCollection<NavCategoryViewModel> Categories { get; }
 

@@ -14,5 +14,6 @@ tools/patchouli-macos-fs/*.dylib
 tools/**/target/
 artifacts/
 .codegraph/
+.mcp.json
 artifacts/
 **/TestResults/

@@ -17,6 +17,7 @@
         <ResourceInclude Source="avares://Patchouli.UI/Styles/TabStyles.axaml" />
       </ResourceDictionary.MergedDictionaries>
       <converters:ItemTypeDisplayConverter x:Key="ItemTypeDisplayConverter" />
+      <converters:BoolChoiceConverter x:Key="BoolChoiceConverter" />
     </ResourceDictionary>
   </Application.Resources>
 </Application>
