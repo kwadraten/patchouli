@@ -85,10 +85,13 @@ fetching or citing it validates that the EvidenceRef belongs to the declared
 document and page, and returns `NOT_FOUND` when it does not.
 
 A `find` query in `patchouli://texts/` returns one result per matching
-EvidenceRef, not a document-level aggregate that hides the evidence identity.
+SearchUnit, not a document-level aggregate that hides the evidence identity.
 The default result `uri` is the matching page's canonical `?evref=` URI, so an
 agent can fetch that evidence or supply the URI directly to `cite` without
 requesting a detailed projection or reconstructing an evidence URI.
+
+> Note: the `?evref=` token shape and EvidenceRef resolution semantics are
+> superseded by ADR `0028`; production evidence URIs use `?rev=&box=`.
 
 TOON v3.0 is the default compact textual projection. The production encoder and
 decoder are the MIT `Corvus.Toon.SystemTextJson` NuGet package; Patchouli does

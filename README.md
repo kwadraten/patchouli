@@ -68,7 +68,7 @@ dotnet test Patchouli.sln
 ./scripts/run-perf.ps1 -Profile smoke -Check -Ui
 ```
 
-性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试和大规模 fixture 请参考 `.agent/perf/README.md`。
+性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试和大规模 fixture 请参考 `.agents/perf/README.md`。
 
 ### 代码格式化和静态分析
 

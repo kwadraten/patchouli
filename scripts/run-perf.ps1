@@ -44,7 +44,7 @@ function Invoke-PerfRun {
         $runArgs += '--enforce-ui-budgets'
     }
     if ($Check) {
-        $baselinePath = if ($Baseline) { $Baseline } else { Join-Path $root ".agent\perf\baseline.$Profile.json" }
+        $baselinePath = if ($Baseline) { $Baseline } else { Join-Path $root ".agents\perf\baseline.$Profile.json" }
         $runArgs += @('--check', '--baseline', $baselinePath)
     }
     & dotnet run --project (Join-Path $root 'tests\Patchouli.Performance') -- $runArgs

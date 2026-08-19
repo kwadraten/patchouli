@@ -11,7 +11,7 @@ budget enforcement on a designated runner).
 
 `tests/Patchouli.Performance` (`patchouli-perf`) seeds a deterministic synthetic Library through the
 same services the production host uses, then drives representative operations through the MCP read
-path (`McpReadApi`) and the OCR staging/adoption path (`DocumentTreeService`). Every run reports,
+path (`McpReadApi`) and the OCR working/commit path (`DocumentTreeService`). Every run reports,
 per operation, the **median / p95 / min / max / mean latency**, **SQL statement count**, **rows
 read**, and **allocated bytes**, plus:
 
@@ -80,11 +80,11 @@ dotnet run --project tests/Patchouli.Performance -- --profile smoke
 ./scripts/run-perf.ps1 -Profile full -Check -FullBudgetCheck -Ui -UiBudgetCheck
 
 # Emit a new baseline after a hardware/OS change (designated runner)
-dotnet run --project tests/Patchouli.Performance -- --profile full --ui --emit-baseline .agent/perf/baseline.full.json
+dotnet run --project tests/Patchouli.Performance -- --profile full --ui --emit-baseline .agents/perf/baseline.full.json
 ```
 
 `dotnet run` writes reports to `artifacts/perf/` (gitignored). Baselines live in
-`.agent/perf/baseline.{smoke,full}.json` (committed, versioned with the code). See
+`.agents/perf/baseline.{smoke,full}.json` (committed, versioned with the code). See
 `patchouli-perf --help` for all options.
 
 ## Scaling to the full fixture

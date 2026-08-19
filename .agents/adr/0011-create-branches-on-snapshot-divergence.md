@@ -8,6 +8,8 @@ When a device publishes from a parent snapshot that is no longer current in the 
 
 Automatic merge is deliberately conservative, especially for OCR/layout revisions, SearchUnits, and EvidenceRefs.
 
+> Note: EvidenceRef identity and resolution semantics are superseded by ADR `0028`.
+
 **Standing Constraints**
 
 - A divergent snapshot is opened as an independent branch for inspection.

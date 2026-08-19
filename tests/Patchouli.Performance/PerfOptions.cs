@@ -251,7 +251,7 @@ public sealed record PerfOptions(
           --report <path.md>           Optional human-readable markdown report path.
           --emit-baseline <path>       Write this run's metric values as a baseline file (no --check).
           --check                      Compare this run against a baseline and fail on regression.
-          --baseline <path>            Baseline JSON (default .agent/perf/baseline.<profile>.json).
+          --baseline <path>            Baseline JSON (default .agents/perf/baseline.<profile>.json).
           --det-tolerance <x>          SQL/rows regression factor (default 1.5).
           --alloc-tolerance <x>        Allocation regression factor (default 2.0).
           --latency-tolerance <x>      Latency regression factor (default 3.0).

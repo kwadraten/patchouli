@@ -4,7 +4,7 @@
 版本线：0.3.x（迈向 1.0）  
 日期：2026-08-02
 
-仓库只维护这一份 PRD。已完成能力压缩为顶部 walkthrough；长期不变量以 `.agent/CONTEXT.md` 与 `.agent/adr/` 为准。
+仓库只维护这一份 PRD。已完成能力压缩为顶部 walkthrough；长期不变量以 `.agents/CONTEXT.md` 与 `.agents/adr/` 为准。
 
 ## Walkthrough（已完成基线）
 
@@ -13,8 +13,8 @@ v1/v2 已交付、可视为 0.2.x 稳定面的能力。细节以代码、测试�
 - 桌面栈：.NET + Avalonia；首轮初始化、库页、题录编辑、搜索、OCR 队列、PDF 工作台、设置、About
 - 库与文件：路径无关 `library_id`；Item / FileAsset / DocumentInstance；FileSearchRoot 与文件解析冲突
 - Document Box Tree：0.2.0 fresh schema；页级 immutable revision；typed leaf；sibling 顺序；Markdig 中央编译
-- 搜索与证据：SearchUnit + 可重建本地 FTS；搜索配置文件；`evref:v2`；pinned 默认、current/compare 显示漂移
-- OCR：MinerU 为首选生产路径；`OcrDocumentTreeCandidate` 统一 staging/adoption；队列看板；局部 OCR 与工作台编辑
+- 搜索与证据：SearchUnit + 可重建本地 FTS；搜索配置文件；versioned URI `?rev=&box=`；带 `rev` 读固定版本、无 `rev` 读 HEAD
+- OCR：MinerU 为首选生产路径；`OcrDocumentTreeCandidate` 统一进入 working revision；队列看板；局部 OCR 与工作台编辑
 - CSL：type-aware `CslItemTypeProfile`；`general` 不可静默当 CSL `document`；样式管理与复制/导出；渲染失败不空成功
 - MCP（当前实现）：可配置端口/bind/CORS/token/工具开关；v1/v2 首发 MCP 是只读且纯文本的，v3 生产路线已选定为结构化 `patchouli.find` / `patchouli.fetch` / `patchouli.put` / `patchouli.cite`（ADR `0024`），并允许可选的有限题录/样式写入
 - UI 信息架构：设置五分组；`UiCommandDescriptor`；书库 DataGrid（列宽/顺序/排序/显隐/持久化）；阻塞与冲突模态
@@ -53,22 +53,24 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 |---|---|---|
 | V3-T7 | 性能与响应性治理（首屏、OCR 入库、MCP 读取、PDF 查看） | **P0；高优先级；立即开始** |
 | V3-T1 | MCP 路线选择与完善 | B 已择优；结构化生产迁移进行中 |
-| V3-T2 | 增强 OCR 文本编辑校注 UI | 占位；正文后续补全 |
+| V3-T2 | PDF 工作台与 OCR 文本编辑校注 | 范围重组；校注编辑方案待补全 |
 | V3-T3 | 集成更多 OCR provider | 方向已定；细则后续补全 |
 | V3-T4 | Linux 桌面适配与发行打包 | 新增；未开始 |
-| V3-T5 | 桌面 UI 体验提升（书库页、搜索框、PDF 工作台 Markdown 预览） | 新增；方案评估中 |
-| V3-T6 | 版本控制、证据引用及其 UI 表示 | 占位；待决策 |
+| V3-T5 | 书库 UI 与题录管理 | 已实现；AC1~AC19 验收通过 |
+| V3-T8 | 搜索功能强化 | 从原 V3-T5 拆分；方案评估中 |
+| V3-T6 | 版本控制、证据引用及其 UI 表示 | 已决策；见 ADR `0027`/`0028` |
+| V3-T10 | 统一 working/commit 版本模型与 versioned URI 证据 | 新增；准备实现 |
 
 ### 2.1 V3-T7：性能与响应性治理
 
-**状态**：P0，高优先级；立即开始。该任务优先于其他尚未开始的 v3 体验增强任务，但不得以削弱 Document Tree、OCR adoption、EvidenceRef、快照或 MCP 契约为代价换取表面速度。需要 ADR 的 staging 持久化模型重设计是低优先级、非阻塞后续项，不属于当前 P0 完成条件。
+**状态**：P0，高优先级；立即开始。该任务优先于其他尚未开始的 v3 体验增强任务，但不得以削弱 Document Tree、working/commit 生命周期、versioned evidence URI、快照或 MCP 契约为代价换取表面速度。持久化模型重设计已由 ADR `0027`/`0028` 决策并转入 V3-T10，不再是 V3-T7 的阻塞后续项。
 
 #### 2.1.1 问题与目标
 
 当前性能问题集中在四个用户可感知路径：
 
 1. 桌面 UI 首屏与书库首批数据出现过慢；启动路径可能执行与首屏无关的聚合、相关子查询或大量数据库读取。
-2. OCR 在导入数据库及 adoption 阶段会阻塞 UI；后台任务、数据库连接与 UI dispatcher 的边界不清晰，staging/adoption 还可能造成大规模 Box Tree 重复写入和数据库膨胀。
+2. OCR 在导入数据库及 commit 阶段会阻塞 UI；后台任务、数据库连接与 UI dispatcher 的边界不清晰，working/commit 路径还可能造成大规模 Box Tree 写入和数据库膨胀。
 3. MCP 读取 OCR 页面、document outline 或单条题录的响应偏慢；重复元数据查询、页面 Markdown 编译、源文件指纹计算和 helper 启动不得在未变化资源的每次读取中重复发生。
 4. PDF 工作台按页串行执行文件解析、source hash、PDFium document open、raster、Box/preview 加载；PDFium 足够快时掩盖了切页等待，但该模型无法支持大文件、云端文件、快速翻页和后续更丰富的页面 UI。
 
@@ -82,21 +84,20 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 - 数据库读写不得在 Avalonia UI dispatcher 上执行。所有长查询支持 cancellation；关闭窗口、切换视图或新查询取代旧查询时，过期结果不得覆盖新状态。
 - 评估并以并发、崩溃恢复和快照测试验证 SQLite journal、busy timeout、连接复用、批量事务及单写者调度策略；不得依赖高频重试或 UI polling 掩盖锁争用。
 
-#### 2.1.3 OCR 导入与 staging 性能
+#### 2.1.3 OCR 导入与 working/commit 性能
 
-- OCR provider 继续输出 `OcrDocumentTreeCandidate`，当前 ADR `0007`、`0015` 定义的 staging、独立 adoption、bbox 校验和 committed-current 可见性保持不变；本 PRD 任务本身不修改或绕过这些 ADR。
-- 在现行语义内，候选解析、验证、规范化、Box/SearchUnit 写入和 adoption 使用有界后台流水线、批量参数与少量明确事务；UI 线程只接收进度、结果和提交后通知。
-- adoption 必须继续原子更新 current revision pointer、search dirty state、evidence successor 和所有协议可见关系；取消、失败或连接中断不得产生部分 current tree。
-- 专门测量 staging 与 adoption 对 Box 数量、写放大、WAL/数据库峰值、提交时间和最终数据库体积的贡献。优先消除不必要的重复序列化、逐 Box 往返和永久残留的已丢弃中间数据。
-- V3-T7 的 P0 交付只优化现行 ADR 语义内的 SQL、事务、调度和清理，不以消除 staging 或整树双份持久化为完成条件。
-- “原地提升同一 normalized revision”或“临时候选存储、adoption 时只写一次 canonical tree”等改变持久化模型的方案记为后续决策子项 `V3-T7-D1`。该子项只保留测量结果、备选设计与迁移影响，优先级低于当前 P0 实施，且不阻塞 V3-T7 的开发、验收或发布。
-- `V3-T7-D1` 若要进入实现，必须先由新的或修订后的 ADR 明确 staging 生命周期、Candidate Result 保留语义、immutable revision、EvidenceRef 与快照兼容边界。在该 ADR 生效前不得删除 staging 阶段或改变 committed-current 可见性。
+- OCR provider 继续输出 `OcrDocumentTreeCandidate`，由 ADR `0027` 定义为统一的 working revision；commit 原地提升该 revision 为 current，bbox 校验与 committed-current 可见性由 `0027` 保证。
+- 在 working/commit 语义内，候选解析、验证、规范化、Box/SearchUnit 写入和 commit 使用有界后台流水线、批量参数与少量明确事务；UI 线程只接收进度、结果和提交后通知。
+- commit 必须原子更新 current revision pointer、search dirty state 和所有协议可见关系；取消、失败或连接中断不得产生部分 current tree。
+- 专门测量 working 与 commit 对 Box 数量、写放大、WAL/数据库峰值、提交时间和最终数据库体积的贡献。优先消除不必要的重复序列化、逐 Box 往返和永久残留的已丢弃中间数据。
+- V3-T7 的 P0 交付优化 ADR `0027` 语义内的 SQL、事务、调度和清理，不以再次消除 staging 或整树双份持久化为完成条件（该问题已由 `0027` 的 in-place commit 解决）。
+- 子项 `V3-T7-D1` 的方向已由 ADR `0027` 决定并转入 V3-T10；V3-T7 不再单独保留该决策子项，也不阻塞 V3-T7 的开发、验收或发布。
 
 #### 2.1.4 响应式 UI 与单一宿主数据源
 
 - UI、MCP 与 CLI 的一致性以 ADR `0024` 的单一 Library runtime host 为边界。UI 与 MCP 复用宿主内部同一套查询、投影、revision 和写入服务；CLI 仍是本地 MCP HTTP 瘦客户端，不得直连 SQLite 或新增第二套领域数据源。
 - 所有改变 protocol-visible canonical 状态的成功写入经宿主写服务提交后发布类型化 `resource-changed` 通知。书库列表、打开的题录、CSL 样式、OCR 队列与 PDF 工作台订阅相关变更并增量刷新，不以固定周期轮询作为主要一致性机制；FTS rebuild、预取和运行时缓存维护只发布内部状态，不伪造 Library commit。
-- 变更通知只在事务成功后发出，并携带足以定位受影响资源的信息；订阅者不得在通知处理期间同步执行长数据库查询。OCR 运行进度事件与 protocol-visible Library commit 通知是不同事件，不能提前暴露未 adoption 的 staging 内容。
+- 变更通知只在事务成功后发出，并携带足以定位受影响资源的信息；订阅者不得在通知处理期间同步执行长数据库查询。OCR 运行进度事件与 protocol-visible Library commit 通知是不同事件，不能提前暴露未 commit 的 working 内容。
 - MCP 不增加服务端推送式撤回或远程 cache invalidation。外部 MCP/CLI 调用者仍通过 `meta.library_revision`、`RESULT_SET_MAY_HAVE_CHANGED` 和 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE` 观察变化。
 
 #### 2.1.5 共享读取缓存与 MCP 延迟
@@ -111,15 +112,15 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 - PDF 查看以下沉到 runtime host 的 `FileAsset` 级 viewing session 为目标。一次 session 统一拥有 resolved source、可选且共享的 source-basis 验证状态/结果、PDFium document handle、page count/metadata、当前 renderer basis、页面 raster working set 和页面 read-model 预取；ViewModel 不逐页重新拼装这些步骤。
 - 首次进入需要 source basis 的操作时只允许一个共享的 full hash validation；单纯打开题录、outline 或纯文本页面不以预先散列源文件作为前置条件。相同 resolved binding、size、mtime、quick hash、stored full hash 与 fingerprint basis 未变化时，后续页面复用该结果；并发 UI/MCP/evidence 访问共享同一个 in-flight validation。文件 watcher、重新绑定、metadata/quick hash 变化、Library 切换或 fingerprint basis 升级使 session 失效。
-- source-basis warning 与 overlap marker 是不同投影。source validation 以 FileAsset 为粒度；页面 overlap marker 由当前 `tree_revision_id` 的 Box 集生成，不触发文件 hash。纯 Item/outline/default search 不触发 source validation；PDF+bbox、包含 bbox 的页面读取以及要求 source drift 的 evidence current/compare 才需要验证。
+- source-basis warning 与 overlap marker 是不同投影。source validation 以 FileAsset 为粒度；页面 overlap marker 由当前 `tree_revision_id` 的 Box 集生成，不触发文件 hash。纯 Item/outline/default search 与带 `rev` 的 versioned evidence URI 不触发 source validation；PDF+bbox、包含 bbox 的页面读取以及不带 `rev` 的 evidence URI 按 HEAD 解析时才需要验证。
 
 **惰性 source validation 与警告投影**：
 
-- viewing session 维护可重建、非 canonical 的运行时验证状态：`unverified`、`validating`、`current`、`changed`、`unavailable`。该状态和在途任务不进入快照，也不得成为 EvidenceRef 身份的一部分。
+- viewing session 维护可重建、非 canonical 的运行时验证状态：`unverified`、`validating`、`current`、`changed`、`unavailable`。该状态和在途任务不进入快照，也不得成为 versioned evidence URI 身份的一部分。
 - 每次真正访问文件时先做低成本 binding/size/mtime/quick-hash 检查。元数据变化、重新绑定或 fingerprint basis 升级只把旧验证标为失效，不自行启动整文件扫描；下一次坐标敏感访问或用户显式执行“重新验证源文件”时才计算 full hash。多个调用必须合并到同一在途验证，不得按页或按 endpoint 重算。
-- 纯 Item、document outline、default search、纯文本 page fetch 和 pinned EvidenceRef 文本解析不等待 full hash，使用已持久化的 last-known source status。它们不得为了附带 warning 把整个 PDF 散列变成热路径；pinned 仍按固定 revision 提供可复现文本。
+- 纯 Item、document outline、default search、纯文本 page fetch 和带 `rev` 的 versioned evidence URI 文本解析不等待 full hash，使用已持久化的 last-known source status。它们不得为了附带 warning 把整个 PDF 散列变成热路径；带 `rev` 的 URI 按固定 revision 提供可复现文本。
 - UI 打开 PDF 页时，当前页 raster、Box/Markdown 读取和 source validation 并行启动。raster 可先显示，但验证完成前只作为 session 内临时画面，不写入以 full hash 为 basis 的持久 render cache；依赖 source basis 的 bbox overlay、source-drift warning 和坐标交互显示明确“验证中”状态或暂不启用。overlap marker 可以先由 Box 投影计算，但在 source basis 未确认前不得把它呈现为已验证的源文件坐标结论。
-- MCP 的纯文本 page/document/evidence 读取不触发 full hash。任何已由既有契约声明的坐标敏感读取，以及 evidence current/compare，必须等待共享验证并继续服从 ADR `0024` 的 deadline/cancellation；超时返回既有 `DEADLINE_EXCEEDED`。V3-T7 不为此新增 bbox 参数、服务端推送、隐式成功的“稍后验证”结果或另一套协议状态机。
+- MCP 的纯文本 page/document/evidence 读取不触发 full hash。任何已由既有契约声明的坐标敏感读取，以及不带 `rev` 的 evidence URI（按 HEAD 解析），必须等待共享验证并继续服从 ADR `0024` 的 deadline/cancellation；超时返回既有 `DEADLINE_EXCEEDED`。V3-T7 不为此新增 bbox 参数、服务端推送、隐式成功的“稍后验证”结果或另一套协议状态机。
 - full hash 验证结果属于整个 FileAsset，而非单页。确认未变化时不产生数据库写入或 `library_revision` 递增；确认内容变化、稳定缺失或重新绑定时，由 host write service 一次提交协议可见的 FileAsset/source status，递增 revision、发布 change set，并失效相关 viewing session、raster 与坐标投影。取消、deadline 或瞬时 I/O 失败只更新运行时状态并允许重试，不缓存失败、不写库、不递增 revision。
 - overlap 计算以 `(tree_revision_id, page_id, overlap-policy-basis)` 为键，在用户进入该页或低优先级预取命中该页时惰性执行。immutable revision 的结果可复用；工作台草稿或 Box 编辑只失效受影响页，不读取文件、不计算 hash，也不触发整份文档重算。
 
@@ -130,7 +131,7 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 - 页面 raster cache、compiled projection cache 与 document session cache 均为有界 LRU。预算按实际像素字节和 native/managed 占用计算；当前页 pin，预取页可驱逐，不缓存失败、取消或失效结果。不得使用无上限 dictionary 保留所有已查看页面。
 - “整份文件进入内存”只能是小型、本地、已验证 PDF 的可选策略，必须受单文件阈值和全局内存预算约束；大文件、云端文件和内存压力场景使用 file-backed PDFium handle/操作系统页缓存。不得默认把 500 MiB 级 PDF 复制为一个 managed byte array。
 - 用户快速翻页时取消尚未开始的远端预取并降低已开始任务优先级；请求合并保证同一 session/page/DPI/renderer basis 只有一个在途 render。预取失败不影响当前页，且不得伪装为当前页失败。
-- viewing session、验证状态、native handle 与 raster cache 均为本机运行时资源；MCP 仍不返回缓存图像或路径。V3-T7 只负责提供可预取的 canonical Markdown/read-model projection，V3-T5 继续负责 Markdown 预览组件和具体交互表现，二者不得各建一套内容数据源。
+- viewing session、验证状态、native handle 与 raster cache 均为本机运行时资源；MCP 仍不返回缓存图像或路径。V3-T7 只负责提供可预取的 canonical Markdown/read-model projection，V3-T2 继续负责 Markdown 预览组件和具体交互表现，二者不得各建一套内容数据源。
 
 #### 2.1.7 架构净化与冗余剔除
 
@@ -138,7 +139,7 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 - UI、runtime host、MCP 和 CLI 的同一领域操作只允许一条权威数据流。不得以兼容、渐进迁移或便于回滚为由长期保留 direct-SQL frontend、重复 projection、双写、双缓存、双通知或新旧查询并行分支；确有受支持兼容义务的例外必须写明契约来源、调用者和删除条件。
 - 优先删除死代码、不可达分支、已失效 abstraction、仅转发而无边界价值的包装层、重复 mapping/validation，以及已被 ADR 或 PRD 淘汰的实现残余。新增抽象必须有明确所有者和边界，不得只为隐藏一次调用或为未来假设预建层级。
 - 性能关键路径不得同时存在多个可被生产选择的实现。迁移期间允许短期双路径时，必须由同一个 issue 跟踪，有明确默认路径、对照测试和删除截止条件；V3-T7 完成时不得遗留永久 compatibility toggle 或“旧版 fallback”。
-- 删除数据库表、列、迁移、序列化字段或快照内容仍受 schema epoch、ADR 和兼容范围约束。历史迁移只要仍用于打开受支持 Library 就不是死代码；任何数据删除先证明不存在 current revision、pinned EvidenceRef、Candidate Result、快照或回滚依赖。
+- 删除数据库表、列、迁移、序列化字段或快照内容仍受 schema epoch、ADR 和兼容范围约束。历史迁移只要仍用于打开受支持 Library 就不是死代码；任何数据删除先证明不存在 current revision、已发出的 versioned evidence URI、working revision、快照或回滚依赖。
 - 删除后同步清理测试、文档、打包清单、配置 schema、遥测维度和依赖锁定；构建产物不得继续携带已经没有生产入口的 helper、native payload 或资源文件。
 - 净化以降低认知复杂度和错误表面积为目标，不以代码删除行数为指标。不得为了“少代码”合并具有不同事务、权限、安全或 revision 语义的边界。
 
@@ -156,8 +157,8 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 **持久 revision 与响应式提交**：
 
-- Library 持久保存正整数 `library_revision`。每个改变协议可见资源或关系的成功事务在同一事务末尾递增并返回 revision；desktop/headless 交接不得重置。staging 和本地 FTS cache rebuild 不单独递增，成功 adoption 作为一次协议可见提交递增一次。
-- host write service 在 commit 成功后发布类型化 `LibraryChangeSet`，至少能够携带受影响的 Item、DocumentInstance、Page、OCR Run、CSL style 与新的 Library revision。回滚、取消和 staging 中间状态不得发布 protocol-visible change。
+- Library 持久保存正整数 `library_revision`。每个改变协议可见资源或关系的成功事务在同一事务末尾递增并返回 revision；desktop/headless 交接不得重置。working revision 和本地 FTS cache rebuild 不单独递增，成功 commit 作为一次协议可见提交递增一次。
+- host write service 在 commit 成功后发布类型化 `LibraryChangeSet`，至少能够携带受影响的 Item、DocumentInstance、Page、OCR Run、CSL style 与新的 Library revision。回滚、取消和 working 中间状态不得发布 protocol-visible change。
 - UI 根据 change set 请求 `GetRowsByIds` 一类小批量 read model 并按稳定主键更新集合；不得在通知处理器中全量刷新 Library。OCR progress 走独立运行时事件，不能用数据库轮询代替。
 
 **首屏与书库查询**：
@@ -168,16 +169,16 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 **OCR、SearchUnit 与 FTS 写入**：
 
-- Candidate 解析、bbox 转换、包含关系规范化、Markdown/plain-text projection 和 payload 序列化尽量在写事务外完成；进入 writer 后复核 immutable staging/current basis，避免长时间持有写事务执行 CPU 工作。
-- staging 以一个 document 的连接/写 lease 执行，通过 prepared command 或 `json_each` 按有界 chunk 批量写 Box 和 page result，不按页重新开连接、不按 Box 单独往返。失败或取消不得留下可 adoption 的不完整 candidate。
-- adoption 继续保持 DocumentInstance 级原子性。预生成 staging→committed revision mapping，并使用 `INSERT ... SELECT` 在 SQLite 内复制 Box；不得把整树读回 .NET 后逐 Box 重新序列化和 INSERT。该优化不改变当前 staging/committed 双份语义。
-- SearchUnit predecessor matching 一次加载旧集合并在内存中建立索引，不允许每个 unit 再 SELECT 或对 previous units 做 O(n²) 扫描。新旧 unit 状态、Evidence successor 和 search status 通过 temp table/JSON batch 在 adoption 事务内提交。
-- FTS 是本地可重建缓存，在 canonical adoption commit 后由 writer job 重建。每个 DocumentInstance 使用集合 delete 与 batch insert；如果 index text 必须由 .NET 生成，则在事务外生成后批量传入，不逐 unit 执行 INSERT。FTS 失败不得回滚已经成功的 canonical adoption，但必须保持 stale/unavailable 状态并可重试。
+- Candidate 解析、bbox 转换、包含关系规范化、Markdown/plain-text projection 和 payload 序列化尽量在写事务外完成；进入 writer 后复核 immutable current basis，避免长时间持有写事务执行 CPU 工作。
+- working revision 以一个 document 的连接/写 lease 执行，通过 prepared command 或 `json_each` 按有界 chunk 批量写 Box 和 page result，不按页重新开连接、不按 Box 单独往返。失败或取消不得留下不完整 working revision。
+- commit 继续保持 DocumentInstance 级原子性。commit 原地提升 working revision 为 committed current，`tree_revision_id` 与 Box ID 保持不变；不再有 staging→committed 的 Box 复制。该行为由 ADR `0027` 保证。
+- SearchUnit predecessor matching 一次加载旧集合并在内存中建立索引，不允许每个 unit 再 SELECT 或对 previous units 做 O(n²) 扫描。新旧 unit 状态和 search status 通过 temp table/JSON batch 在 commit 事务内提交。
+- FTS 是本地可重建缓存，在 canonical commit 后由 writer job 重建。每个 DocumentInstance 使用集合 delete 与 batch insert；如果 index text 必须由 .NET 生成，则在事务外生成后批量传入，不逐 unit 执行 INSERT。FTS 失败不得回滚已经成功的 canonical commit，但必须保持 stale/unavailable 状态并可重试。
 
 **MCP 读取 SQL**：
 
 - 纯文本 page/document/evidence 热读取不得同步散列整个源 PDF，只读取已持久化的 FileAsset status、size、mtime、fingerprint 与 page source basis。坐标敏感读取通过共享 fingerprint service 等待一次合并后的惰性验证，不得在 endpoint 内直接重算；结果变化后经 write service 提交并使相关投影失效。
-- 页面 Box/SearchUnit 一次批量读取；需要 EvidenceRef 时收集全部 unit ID，并最多执行一次 `CreateFromSearchUnits` batch write。名义读取接口中的必要副作用必须显式经过 host write service，不能在循环中偷偷创建连接和事务。
+- 页面 Box/SearchUnit 一次批量读取；需要生成 evidence URI 时收集全部 unit ID，并最多执行一次 `CreateFromSearchUnits` batch write。名义读取接口中的必要副作用必须显式经过 host write service，不能在循环中偷偷创建连接和事务。
 - text search 的 owning Item metadata、Item/DocumentInstance/FileAsset 原始 status、OCR 索引能力、citable 字段和 filter 数据由同一查询投影或按本页 ID 一次批量加载，不得按搜索结果逐项调用 metadata/status 查询。Item 浏览的 primary-document OCR 索引能力同样必须以本页 Item ID 批量聚合，不得形成 N+1 查询。
 - compiled Markdown、题录、outline、关系和文件 fingerprint 缓存位于共享 read store；数据库查询返回领域投影，transport envelope、当前 Library revision、warning、权限与 truncation 每次重新组装。
 
@@ -186,11 +187,11 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 1. S0 固定 fixture、statement count、query plan、lock wait、WAL 大小、UI heartbeat 和 MCP cold/warm 基线。
 2. S1 落地 WAL bootstrap、read/write/admin 三类执行边界、连接池、单写者、持久 revision 与 commit change set。
 3. S2 落地首屏分页 read model、复合索引、侧栏延迟计数和按 ID 增量查询。
-4. S3 落地 OCR bulk staging、set-based adoption、批量 SearchUnit/Evidence 与 FTS 后置任务。
+4. S3 落地 OCR bulk working revision、set-based commit、批量 SearchUnit 与 FTS 后置任务。
 5. S4 落地 MCP hash 解耦、Evidence/metadata/status batch 和共享缓存。
 6. S5 删除 UI direct SQL、数据库轮询、全量 refresh、逐条写 helper、旧 fallback、无调用者 DTO/service 和经证明冗余的索引。
 
-`V3-T7-D1` 不属于上述 S0-S5 阻塞链；只有 ADR 决策明确后才单独排期 staging 持久化模型迁移。
+`V3-T7-D1` 的方向已由 ADR `0027` 决定并并入 V3-T10，不再属于 V3-T7 的 S0-S5 阻塞链。
 
 #### 2.1.9 性能预算与验收
 
@@ -198,10 +199,10 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 | 编号 | 标准 |
 |---|---|
-| V3-T7-AC1 | 存在可重复的性能基准，分别报告 UI 冷/热启动、首批书库行、OCR staging/adoption、MCP item/document/page/evidence fetch 的 median、p95、SQL 调用次数、读取行数、分配量、缓存命中率、数据库峰值增长和 UI dispatcher 最大停顿；性能日志不记录正文、查询内容、路径、EvidenceRef 或 secret |
+| V3-T7-AC1 | 存在可重复的性能基准，分别报告 UI 冷/热启动、首批书库行、OCR working/commit、MCP item/document/page/evidence fetch 的 median、p95、SQL 调用次数、读取行数、分配量、缓存命中率、数据库峰值增长和 UI dispatcher 最大停顿；性能日志不记录正文、查询内容、路径、versioned evidence URI 或 secret |
 | V3-T7-AC2 | 在规定 fixture 与基准机上，冷启动 2 秒内出现可交互应用框架、3 秒内出现首批书库行；热启动 1 秒内出现可交互框架。首屏不等待整库聚合、OCR 状态全扫描或全文索引统计 |
-| V3-T7-AC3 | 导入并 adoption 50 万个 DocumentBox 时，数据库工作不在 UI dispatcher 执行，100 ms UI heartbeat 的最大观测间隔不超过 250 ms；用户可以继续切换视图、滚动和取消尚未进入原子提交点的任务 |
-| V3-T7-AC4 | OCR 取消或失败不产生 partial current tree；成功 adoption 只发布一次提交后变更批次，并原子更新 current/search/evidence/revision 状态。现行 staging/candidate 行为的任何语义变化均有先行 ADR 和迁移/回滚测试；未作该语义变更不妨碍 V3-T7 验收 |
+| V3-T7-AC3 | 导入并 commit 50 万个 DocumentBox 时，数据库工作不在 UI dispatcher 执行，100 ms UI heartbeat 的最大观测间隔不超过 250 ms；用户可以继续切换视图、滚动和取消尚未进入原子提交点的任务 |
+| V3-T7-AC4 | OCR 取消或失败不产生 partial current tree；成功 commit 只发布一次提交后变更批次，并原子更新 current/search/evidence/commit 状态。working/commit 语义由 ADR `0027` 保证，不影响 V3-T7 验收 |
 | V3-T7-AC5 | 书库列表、题录编辑、CSL 样式、OCR 队列和 PDF 工作台对宿主提交采用订阅式增量刷新；正常运行不依赖固定周期数据库轮询，连续快速写入不会造成旧结果回覆盖或 UI 查询风暴 |
 | V3-T7-AC6 | 在本机 HTTP transport、热缓存和默认响应大小内，单条 item fetch 的 p95 不超过 200 ms，纯文本 document/page/evidence fetch 的 p95 不超过 300 ms；冷缓存相应 p95 不超过 1.5 秒。首次坐标敏感 source validation 单独报告，不伪装进纯文本预算；未变化的 500 MiB PDF 连续读取不重复执行整文件哈希 |
 | V3-T7-AC7 | 缓存大小有硬上限，跨 revision、跨 Library、权限变化、资源提交、DocumentTree current pointer 变化和 renderer/fingerprint basis 变化的测试均不返回陈旧或跨库内容；失败、取消和超限响应不会污染缓存 |
@@ -209,12 +210,12 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 | V3-T7-AC9 | 每个被替代的生产路径都有删除清单；代码、DI/config schema、测试、文档、打包资源和依赖中不存在无调用者残余。契约测试证明 UI/MCP/CLI 对同一领域操作只经过一套宿主查询、投影、validation、revision 与写入语义 |
 | V3-T7-AC10 | 不存在无删除条件的旧版 fallback、compatibility toggle、重复轮询/通知、direct-SQL frontend、双写或双缓存路径；因受支持 schema/协议必须保留的兼容代码均有可追踪的契约来源、调用测试和退出条件 |
 | V3-T7-AC11 | CI 至少运行小型性能烟测并检测明显回退；完整 fixture 基准在指定 runner 可重复执行，连续三次结果超出预算时构建或发布检查失败，并保存可比较的机器可读报告 |
-| V3-T7-AC12 | 同一 FileAsset 在 resolved binding 与 fingerprint basis 未变化的一个 viewing session 内，只有首次坐标敏感访问可以触发一次 full hash validation；纯文本 MCP 读取不触发，其他页面、预取及重复 current/compare evidence 复用结果。并发调用共享一个在途 validation |
+| V3-T7-AC12 | 同一 FileAsset 在 resolved binding 与 fingerprint basis 未变化的一个 viewing session 内，只有首次坐标敏感访问可以触发一次 full hash validation；纯文本 MCP 读取不触发，其他页面、预取及不带 `rev` 的 evidence URI 复用结果。并发调用共享一个在途 validation |
 | V3-T7-AC13 | PDFium document handle 在 viewing session 内复用；首次 UI preview 不执行“PNG render + 第二次 BGRA render”。当前页请求优先于预取，缓存命中切页无需等待 source resolve、full hash 或 document reopen |
 | V3-T7-AC14 | 当前页可交互后自动预取默认相邻窗口，并在导航方向变化时调整；快速翻页的旧 generation、已取消预取或已失效 source 不会覆盖当前页。预取失败不改变当前页成功状态 |
 | V3-T7-AC15 | document session、page raster 和 page projection cache 均有可测试的硬内存上限、LRU 驱逐和确定性 native handle 释放；500 MiB PDF 不会默认复制进 managed memory，连续浏览长文档不会使进程内存随已访问页数无界增长 |
 | V3-T7-AC16 | source validation 具有可测试的惰性触发矩阵；UI 验证期间保持可交互并明确区分“验证中”与 warning，坐标敏感 MCP 调用遵守既有 deadline/cancellation。overlap 只对进入或预取的页面按 revision 惰性计算，Box 编辑只失效受影响页且不触发文件 hash |
-| V3-T7-AC17 | V3-T7 的完成、验收和发布不依赖 `V3-T7-D1` 或 staging 持久化模型 ADR；S0-S5 在现行 ADR 语义内可独立交付，后续 ADR 不得追溯性阻塞已满足的性能预算 |
+| V3-T7-AC17 | V3-T7 的完成、验收和发布不依赖 `V3-T7-D1`；S0-S5 在 ADR `0027`/`0028` 语义内可独立交付，后续 ADR 不得追溯性阻塞已满足的性能预算 |
 
 ## 3. V3-T1：MCP 路线选择与完善
 
@@ -317,15 +318,15 @@ RESOURCE TREE
   patchouli://texts/
   patchouli://texts/{document-instance-id}/
   patchouli://texts/{document-instance-id}/page-{page-index}.md
-  patchouli://texts/{document-instance-id}/page-{page-index}.md?evref={evidence-ref}
+  patchouli://texts/{document-instance-id}/page-{page-index}.md?rev={tree-revision-id}&box={box-id}
 
   patchouli://csl-styles/
   patchouli://csl-styles/{style-id}.csl
 ```
 
-无参数 `find` 是 VFS 根目录发现，只返回 `/items`、`/texts`、`/csl-styles` 三个 directory 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/library.yml`、`collections`、`profiles` 或其他虚拟 skill 文件。Evidence 仅通过 text page URI 的 `?evref={evidence-ref}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
+无参数 `find` 是 VFS 根目录发现，只返回 `/items`、`/texts`、`/csl-styles` 三个 directory 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/library.yml`、`collections`、`profiles` 或其他虚拟 skill 文件。Evidence 仅通过 text page URI 的 `?rev={tree-revision-id}&box={box-id}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
 
-`page-index` 是指定 DocumentInstance 内与物理 PDF 页对应的**一基**页码。DocumentInstance 的物理页顺序稳定，不因 UI、CLI 或 MCP 的访问而重排；因此 `page-1.md` 是人类报告和程序调用共用的第一页。`?evref=` 是 evidence 的规范消费形式：服务在 `fetch` 或 `cite` 消费它时必须验证该 EvidenceRef 实际归属所声明的 DocumentInstance 和 page；不存在或不归属时返回 `NOT_FOUND`，不得把其他页面的 evidence 作为成功结果返回。
+`page-index` 是指定 DocumentInstance 内与物理 PDF 页对应的**一基**页码。DocumentInstance 的物理页顺序稳定，不因 UI、CLI 或 MCP 的访问而重排；因此 `page-1.md` 是人类报告和程序调用共用的第一页。`?rev=&box=` 是 evidence 的规范消费形式：服务在 `fetch` 或 `cite` 消费它时必须验证 `tree_revision_id`/`box_id` 实际归属所声明的 DocumentInstance 和 page；不存在或不归属时返回 `NOT_FOUND`，不得把其他页面的 evidence 作为成功结果返回。
 
 TOON 使用 MIT `Corvus.Toon.SystemTextJson` NuGet 包作为唯一编码/解码实现，并遵循 TOON specification **v3.0**；不得维护自定义 TOON parser 或 encoder。协议编码固定使用 UTF-8/LF、`ToonWriterOptions` 的字面 TAB delimiter 与 `KeyFolding=Off`；默认 uniform entries 使用 TOON v3 tabular form，声明的 `[N]` 必须与实际行数一致。`text/toon` 是其媒体类型。本资源发现与格式决策已由 ADR `0024` 的 2026-08-01 修订同步；后续改变 URI 根、evidence 消费形式、TOON 库或默认编码时，必须同时更新 PRD、ADR 与运行时契约。
 
@@ -367,9 +368,9 @@ BEHAVIOUR
   response returns `CURSOR_CONTEXT_RESTORED`; an invalid cursor still returns
   INVALID_ARGUMENT. limit is not bound and may change the next page size.
   A text search in `patchouli://texts/` returns one file entry per matching
-  EvidenceRef. Its default `uri` is the canonical evidence-consumption page URI:
-  `patchouli://texts/{document-instance-id}/page-{page-index}.md?evref={evidence-ref}`.
-  The `evref` is therefore present in the default three-field entry projection,
+  SearchUnit. Its default `uri` is the canonical evidence-consumption page URI:
+  `patchouli://texts/{document-instance-id}/page-{page-index}.md?rev={tree-revision-id}&box={box-id}`.
+  The `rev`/`box` query parameters are therefore present in the default three-field entry projection,
   not only in --long metadata or a separate match field.
 
 DEFAULT SCOPE
@@ -390,8 +391,8 @@ DEFAULT RESULTS
 DETAILED RESULTS (--long)
   Preserve uri, title, type and add only metadata that is applicable to the
   returned resource. URI already identifies the DocumentInstance, physical
-  page and (when present) EvidenceRef, so long entries never repeat
-  document_instance_id, page_index or evidence_ref. The only public status
+  page and (when present) versioned evidence URI, so long entries never repeat
+  document_instance_id, page_index or rev/box. The only public status
   fields are item_status, document_status and source_status; each reflects
   the original status of Item, DocumentInstance or FileAsset respectively.
   OCR/search-index readiness is an independent shared FSM value, not a
@@ -408,7 +409,7 @@ DETAILED RESULTS (--long)
 |---|---|---|---|---|
 | `patchouli://` | 仅发现三个根目录；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
 | `patchouli://items/` | 浏览题录资源 | 题名、作者、identifier 元数据搜索 | 相同字段的直接字面匹配 | `item_type`、`item_status`、`primary_document_ocr_index_status`、`citable` |
-| `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个 EvidenceRef 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
+| `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个命中 SearchUnit 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
 | `patchouli://csl-styles/` | 浏览 CSL style 资源 | style id、display name 搜索 | 相同字段的直接字面匹配 | `style_enabled` |
 | 已知 file URI | 当作单资源 scope 返回该 entry，并返回 `FILE_URI_SINGLETON_SCOPE` | 仅在该资源的矩阵内搜索字段上匹配，并返回同一 warning | 相同的单资源直接字面匹配 | 使用其所属 scope 的 filter 键 |
 
@@ -422,7 +423,7 @@ DETAILED RESULTS (--long)
 
 **实时分页与计数**：cursor 不创建服务端快照、结果集句柄、TTL 或 agent 专属命名空间。每一页都对当前 Library 状态重新求值；只要响应发出 continuation，或请求消费 cursor，响应必须包含 `RESULT_SET_MAY_HAVE_CHANGED` warning，表示后续页面的 entries、`domain_total`、`filtered_total` 可能因 UI、CLI 或其他 agent 的修改而与此前页面不同，也可能出现遗漏或重复。调用方需要稳定结果时，应在无并发修改的时段自行完成遍历；v3 不提供跨页快照一致性保证。
 
-`citable` 的含义是“该 URI 可以直接作为 `cite.refs` 输入”，不等同于资源可写，也不等同于资源本身就是 Item。只读资源可以是 citable；协议不暴露 `citation_target`。`cite` 在宿主内部按持久化关系解析 document、page 和 evidence 到所属 Item。全文搜索默认条目中的 `?evref=` page URI 本身就是可直接交给 `fetch` 或 `cite.refs` 的 canonical URI，不需要先请求 `--long` 来发现 evidence。
+`citable` 的含义是“该 URI 可以直接作为 `cite.refs` 输入”，不等同于资源可写，也不等同于资源本身就是 Item。只读资源可以是 citable；协议不暴露 `citation_target`。`cite` 在宿主内部按持久化关系解析 document、page 和 evidence 到所属 Item。全文搜索默认条目中的 `?rev=&box=` page URI 本身就是可直接交给 `fetch` 或 `cite.refs` 的 canonical URI，不需要先请求 `--long` 来发现 evidence。
 
 默认根目录响应示例：
 
@@ -459,7 +460,7 @@ CANONICAL REPRESENTATIONS
   item URI             BibLaTeX inspection / editable projection
   text document URI    Document outline, owning item link, and page links
   text page URI        Canonical Markdown and owning item/document link
-  text page ?evref URI Evidence record, source mapping, and owning item link
+  text page ?rev=&box= URI  Versioned evidence text, source mapping, and owning item link
   style URI            CSL XML
 
 BEHAVIOUR
@@ -472,9 +473,9 @@ BEHAVIOUR
   token or next range. A partial response must never be presented as a complete resource.
   For `fetch <URI>...`, each URI has an independent result; one missing or oversized URI
   must not discard successful results for the other URIs.
-  Fetch always returns the current resource projection; pinned evidence remains the
-  preferred reproducible path. Historical resource-version selection is deferred until
-  a later version-control ADR.
+  Fetch always returns the current resource projection unless the URI carries `rev`,
+  in which case it returns the immutable revision named by `rev`. Historical selection
+  by `rev` is authoritative; there is no separate pinned/current/compare mode.
 ```
 
 `pages` range 的 START/END 是包含端点的一基物理 PDF 页码，与 `page-{page-index}.md` 使用同一编号；不得在 API 边界使用零基页码。
@@ -643,7 +644,7 @@ CitationResult = {
 
 `meta.library_revision` 是当前 Library 的宿主权威 revision，格式固定为 `lib:<十进制正整数>`；它持久化于该 Library，且每次成功、会改变协议可见资源或关系的 Library 写入后严格单调递增，即使桌面/headless 宿主交接也不得回退或复用。它不是默认 `find` entry 的资源 revision，也不是 `put` 的写前置条件。客户端保存的 fetch 内容只是该 revision 时的本地快照；v3 不推送或撤回其已交付内容。cursor 继续按实时语义读取，且其创建 revision 与当前 revision 不同时继续在 `message.warnings` 返回 `RESULT_SET_MAY_HAVE_CHANGED`。MCP 会话中宿主发现上一次已观察 revision 已落后于当前 revision 时，也必须在 `message.warnings` 追加 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`；无会话或断线客户端可通过 `meta.library_revision` 自行检测陈旧性并按需重新 fetch。
 
-`patchouli://` 始终解析到处理请求的宿主当前 Library。当前 UI 尚不支持切换 Library，但宿主的生命周期内仍必须固定一个 `library_id`。cursor、EvidenceRef（包括 `?evref=` 内含的 Library 绑定）或未来显式 Library 上下文若与该 `library_id` 不匹配，解析器必须丢弃已经准备的内容，以 `NOT_FOUND` 返回，不得混入旧 Library 的 entries、partial entries 或 citation 结果。
+`patchouli://` 始终解析到处理请求的宿主当前 Library。当前 UI 尚不支持切换 Library，但宿主的生命周期内仍必须固定一个 `library_id`。cursor、versioned evidence URI（包括 `?rev=&box=` 内含的 Library 绑定）或未来显式 Library 上下文若与该 `library_id` 不匹配，解析器必须丢弃已经准备的内容，以 `NOT_FOUND` 返回，不得混入旧 Library 的 entries、partial entries 或 citation 结果。
 
 `find` 的 warning 使用稳定名称：`RESULT_SET_MAY_HAVE_CHANGED`（实时分页可能漂移）、`WHITESPACE_QUERY_TREATED_AS_BROWSE`、`CURSOR_CONTEXT_RESTORED`、`ROOT_DISCOVERY_PAGINATED`、`FILE_URI_SINGLETON_SCOPE`、`WHERE_VALUE_CONTAINS_EQUALS` 与 `DUPLICATE_WHERE_KEY_LAST_WINS`。所有工具还可在 `message.warnings` 返回 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`。每一项按 `NAME: detail` 输出，使 agent 可立即知道宿主如何解释或调整了请求；warning 是成功响应的一部分，不改变 exit/error code；没有 warning/error 时不返回 `message`。
 
@@ -664,7 +665,7 @@ Exit / error codes：
 | 10 | DEADLINE_EXCEEDED | 宿主在请求 deadline 前未能完成；不返回 timeout 导致的 partial data |
 | 11 | CANCELLED | 调用方取消且宿主在原子提交前停止了操作；不产生写入 |
 
-推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/csl-styles` → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.bib`/`.csl` 执行 `put`。全文搜索返回的 `?evref=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。
+推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/csl-styles` → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.bib`/`.csl` 执行 `put`。全文搜索返回的 `?rev=&box=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。
 
 #### 3.4.8 Agent 可用性与关系解析
 
@@ -672,8 +673,8 @@ Exit / error codes：
 - Document、Page 和 Evidence 的详细 `find`/`fetch` 结果应返回 `item_uri` 或等价的 `parent_uri`。这是关系元数据，不构成自动 link following。
 - `cite` 对 text document/page 的解析只使用持久化的 `document_instances.item_id` 关系，不通过标题、文件名或全文搜索猜测 Item。Page URI 必须先验证 page 属于 URI 中声明的 text document。
 - 如果多个 REF 解析到同一个 Item，bibliography 默认去重，但响应应保留每个 REF 的解析结果。
-- `find` 带 query 时应搜索所声明的 `--in` scope。Item 至少支持题名/作者/identifier 等 metadata search，CSL style 至少支持 id/display name search；`item_status`、`document_status`、`source_status` 与 `style_enabled` 分别按其 Item、DocumentInstance、FileAsset 或 style 配置的权威记录读取，不能以派生索引/布局状态替代原始实体 status。`primary_document_ocr_index_status` 与 `ocr_index_status` 是共享 FSM 的独立能力：前者按 Item 的 primary DocumentInstance 关系解析，后者按 text document/page/evidence URI 所属 DocumentInstance 解析。Evidence 不是可浏览根资源；它只在 text 搜索中通过已含 `?evref=` 的 page URI 表示，long 投影不得再次输出 EvidenceRef、页码或 document ID。尚未支持的 scope/filter 必须返回明确的 `INVALID_ARGUMENT`，不得以成功的空数组代替“不支持”。
-- `find` 在 `patchouli://texts/` 中带 query 时按 EvidenceRef 命中逐项返回，不聚合为缺少 evidence 身份的 document 条目；每个默认 entry 的 `uri` 都必须内嵌该命中的 canonical `?evref=`，因此 agent 仅凭 `uri`、`title`、`type` 就能继续 `fetch` 或 `cite`。
+- `find` 带 query 时应搜索所声明的 `--in` scope。Item 至少支持题名/作者/identifier 等 metadata search，CSL style 至少支持 id/display name search；`item_status`、`document_status`、`source_status` 与 `style_enabled` 分别按其 Item、DocumentInstance、FileAsset 或 style 配置的权威记录读取，不能以派生索引/布局状态替代原始实体 status。`primary_document_ocr_index_status` 与 `ocr_index_status` 是共享 FSM 的独立能力：前者按 Item 的 primary DocumentInstance 关系解析，后者按 text document/page/evidence URI 所属 DocumentInstance 解析。Evidence 不是可浏览根资源；它只在 text 搜索中通过已含 `?rev=&box=` 的 page URI 表示，long 投影不得再次输出 `rev`/`box`、页码或 document ID。尚未支持的 scope/filter 必须返回明确的 `INVALID_ARGUMENT`，不得以成功的空数组代替“不支持”。
+- `find` 在 `patchouli://texts/` 中带 query 时按 SearchUnit 命中逐项返回，不聚合为缺少 evidence 身份的 document 条目；每个默认 entry 的 `uri` 都必须内嵌该命中的 canonical `?rev=&box=`，因此 agent 仅凭 `uri`、`title`、`type` 就能继续 `fetch` 或 `cite`。
 - `fetch <URI>...` 和 `cite <REF>...` 均采用逐项结果语义。单个资源的 `NOT_FOUND`、`NOT_CITABLE` 或 `RESPONSE_TRUNCATED` 不得丢弃同一请求中其他成功结果。
 - `limit_bytes` 的默认值可以由服务配置，但必须有服务端硬上限；调用者请求超过硬上限时可以钳制并返回 warning，不得因此取消已可安全返回的 partial 内容。
 - `general` 的 `@misc` cite fallback 与无默认 style 时的 deterministic style fallback 已同步记录到 ADR `0023`/`0024`；后续实现变更必须同时维护 PRD、ADR 与运行时契约，避免三者分叉。
@@ -710,35 +711,58 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC10 | 裸 `find` 仅返回 `/items`、`/texts`、`/csl-styles` 三个 VFS 根 directory；旧 `AGENTS.md`、`library.yml`、evidence 根和 shell 入口均不可发现或访问 |
 | V3-AC11 | 经 UI、CLI 或 MCP 成功写入的宿主写服务均发出资源变更通知；连接到该宿主的桌面书库列表、打开的题录编辑器和 CSL 样式视图无需重启即可显示最新数据 |
 | V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，干净成功不返回 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
-| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 EvidenceRef；Style 不包含 `citable` |
+| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable` |
 | V3-AC14 | `find` 对声明支持的 scope/query/`--literal`/filter 执行搜索或过滤，严格遵循 scope × flag 合法矩阵；不支持的组合返回 `INVALID_ARGUMENT`，不以成功空数组代替 |
 | V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行四个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
 | V3-AC16 | MCP `format=json` 与 CLI `--json` 为批量机器处理返回等价 JSON；无需解析 TOON，且三种编码均使用相同的 `meta`、`continuation`、可选 `message`、`entries` schema。格式切换不改变默认/详细投影、字段、分页、warning 或 error 语义 |
-| V3-AC17 | `patchouli://texts/{document-instance-id}/page-{page-index}.md` 和 `pages:` range 均以一基、稳定的物理 PDF 页码寻址；带 `?evref=` 的 fetch/cite 必须校验 EvidenceRef 与所声明 document/page 的归属，不归属时返回 `NOT_FOUND` |
+| V3-AC17 | `patchouli://texts/{document-instance-id}/page-{page-index}.md` 和 `pages:` range 均以一基、稳定的物理 PDF 页码寻址；带 `?rev=&box=` 的 fetch/cite 必须校验 `tree_revision_id`/`box_id` 与所声明 document/page 的归属，不归属时返回 `NOT_FOUND` |
 | V3-AC18 | cursor 不持有服务端快照、结果集句柄、TTL 或 agent 命名空间，并绑定原 scope/query/filter/order；消费或发出 continuation 的响应在 `message.warnings` 包含 `RESULT_SET_MAY_HAVE_CHANGED` |
-| V3-AC19 | `find QUERY --in patchouli://texts/` 的每个全文命中在默认 `uri` 中内嵌 canonical `?evref=` page URI，不依赖 `--long` 或独立 evidence 字段；该 URI 可直接 fetch evidence，并可作为 `cite.refs` 输入 |
+| V3-AC19 | `find QUERY --in patchouli://texts/` 的每个全文命中在默认 `uri` 中内嵌 canonical `?rev=&box=` page URI，不依赖 `--long` 或独立 evidence 字段；该 URI 可直接 fetch evidence，并可作为 `cite.refs` 输入 |
 | V3-AC20 | CLI/MCP 的 TOON 输出仅使用 `Corvus.Toon.SystemTextJson` 产生，符合 TOON v3.0；契约 fixture 验证 UTF-8/LF、literal TAB、`KeyFolding=Off`、tabular `[N]` 计数、`text/toon`、TOON v3 词法引用/escape、number/boolean/null 的严格类型与 JSON↔TOON round-trip。不得存在自定义 TOON encoder/parser 或字符串后处理 |
 | V3-AC21 | `--regex` 不出现在 CLI help、MCP schema 或协议示例；传入时返回 `INVALID_ARGUMENT`，服务端不执行正则搜索，agent 可在 find/fetch 的返回内容上自行匹配 |
 | V3-AC22 | MCP `patchouli.put` schema 仅接受内联 `uri` 与 `content`，不含 `from`、`stdin`、`path`、streaming、multipart 或 file reference；CLI `--from`/`--stdin` 读取后与 MCP content 进入同一写服务，拥有相同的大小检查、校验、原子提交和响应。MCP 超过 `max_mcp_request_bytes`（默认 1 MiB、硬上限 4 MiB）的请求在工具调用前返回 HTTP 413，且不写入 |
 | V3-AC23 | find 的边界输入按契约归一化并带稳定 warning：whitespace QUERY 等同 browse；root `--limit`/`--cursor` 可分页；file URI 是单资源 scope；cursor 冲突时恢复其绑定上下文；where 在第一个 `=` 分割且重复 key 最后一项覆盖。无效 cursor 或矩阵外组合仍返回 `INVALID_ARGUMENT` |
 | V3-AC24 | `meta.library_revision` 是持久化、严格单调的 `lib:<十进制正整数>` Library revision；每次成功的协议可见 Library 写入及桌面/headless 交接均不重置它。已 fetch 内容仅为客户端快照；cursor 或 MCP 会话观察到 Library 变化时继续执行并在 `message.warnings` 给出相应 warning，不提供服务端推送式内容撤回 |
-| V3-AC25 | `patchouli://` 只解析到宿主固定的当前 `library_id`；含有不匹配 Library 绑定的 cursor、EvidenceRef 或显式上下文必须丢弃已准备 entries 并以 `NOT_FOUND` 失败，不得返回跨库内容。当前 UI 不能切库不构成省略该校验的理由 |
+| V3-AC25 | `patchouli://` 只解析到宿主固定的当前 `library_id`；含有不匹配 Library 绑定的 cursor、versioned evidence URI 或显式上下文必须丢弃已准备 entries 并以 `NOT_FOUND` 失败，不得返回跨库内容。当前 UI 不能切库不构成省略该校验的理由 |
 | V3-AC26 | 宿主对 `find`/`fetch`/`cite` 默认执行 60 秒、`put` 默认执行 120 秒的 deadline；超时为 `DEADLINE_EXCEEDED`，取消为 `CANCELLED`。取消或断连能停止校验/查询，且 `put` 要么在提交前不写、要么完整原子完成，绝无部分写入 |
 | V3-AC27 | 四个工具均有封闭、逐字段类型化的统一响应 schema fixture；默认与 long find、complete/truncated/failed fetch、put 成功、cite 部分成功/全部失败均验证 `meta`、`continuation`、可选 `message`、`entries` 的 required/null/省略规则、无额外字段、同序逐项结果、UTF-8 byte 计数及 message/error 对应关系；help 和 MCP 初次握手 fixture 还必须验证“无 `message` 即干净成功”的 Unix 语义。迁移 fixture 还必须验证输出中不存在顶层 `revision` 或 `resource_revision`，且 CLI help/MCP schema 不含 `fetch --revision`；Library revision 只在 `meta.library_revision` |
 | V3-AC28 | Long `find` fixture 分别验证 Item、Text 与 Style 的精确 variant：仅 `item_status`、`document_status`、`source_status` 是公共 status，且分别等于 Item、DocumentInstance、FileAsset 的原始持久化值；OCR 索引为共享 English FSM 能力，UI 使用同一 FSM 的中文标签与说明。`primary_document_ocr_index_status` 与 `ocr_index_status` 由数据库侧本页批量投影过滤，且不存在逐项 metadata/status 查询 |
 
-## 4. V3-T2：增强 OCR 文本编辑校注 UI
+## 4. V3-T2：PDF 工作台与 OCR 文本编辑校注
 
-**状态**：占位。  
+**状态**：范围重组；校注编辑方案待补全。
 
-目标方向（非正式需求）：在现有 PDF/Box Tree 工作台之上，增强面向校对与校注的文本编辑体验——选区、修订、批注、与 bbox/证据身份的稳定关联等。具体信息架构、命令集、数据模型与验收标准在后续 PRD 修订中补全。在补全前不实现范围外的校注持久化格式。
+本任务统一承载 PDF 工作台内的页面查看、OCR 文本编辑校注和 Markdown 预览，避免把工作台能力拆散在多个桌面 UI 任务中。现有 PDF/Box Tree 工作台之上的选区、修订、批注，以及与 bbox/证据身份的稳定关联仍属于本任务；具体信息架构、命令集、数据模型与校注持久化格式在后续 PRD 修订中补全。
+
+### 4.1 PDF 工作台范围
+
+- PDF 工作台负责页面导航、页面内容与 Box Tree 的联动，以及 OCR/文档内容的工作区展示。
+- 目标是增强面向校对与校注的文本编辑体验；编辑结果必须继续遵守 Document Tree、versioned evidence URI 和 revision 的边界。
+- 本任务不为 UI 预览另建一套 Markdown、Document Box Tree、SearchUnit 或证据数据源，也不在方案补全前实现范围外的校注持久化格式。
+
+### 4.2 PDF 工作台的 Markdown 预览
+
+- 预计评估并优先采用 `MarkView.Avalonia` 作为 PDF 工作台中的 Avalonia Markdown UI 预览组件；当前仅记录为候选方案，不代表依赖已经加入项目。
+- 预览必须正确处理当前 OCR/文档内容实际使用的 Markdown/GFM，包括标题、段落、列表、引用、代码、表格、链接和安全的内联 HTML。
+- 预览只是 PDF 工作台的 UI 展示投影，不得修改 canonical Markdown、Document Box Tree、SearchUnit、versioned evidence URI 或 revision 身份。
+- 预览不得暴露本地路径、`file:` URL、提供程序密钥或缓存图像路径；外部链接和 HTML 处理必须有明确的安全策略。
+- 组件选型必须验证 Avalonia/.NET 版本兼容性、中文字体与布局、PDF 工作台长文档性能、主题适配、测试可控性和发布包体积，再决定是否正式引入依赖。
+
+### 4.3 V3-T2 验收
+
+| 编号 | 标准 |
+|---|---|
+| V3-T2-AC1 | 代表性 OCR/文档 Markdown/GFM fixture 在 PDF 工作台页面中正确呈现标题、列表、引用、代码、表格、链接和安全内联 HTML |
+| V3-T2-AC2 | PDF 工作台预览失败或不支持的语法可解释，不静默丢失正文；canonical Markdown 与领域数据不被修改 |
+| V3-T2-AC3 | PDF 工作台预览不会暴露本地路径、file URL、提供程序密钥、缓存图像路径或未允许的 HTML/脚本内容 |
+| V3-T2-AC4 | MarkView.Avalonia（或其他候选组件）通过 Avalonia 兼容性、主题、中文文本、PDF 工作台长文档性能、包体积和发布构建验证后才进入生产依赖 |
 
 ## 5. V3-T3：集成更多 OCR
 
 **状态**：方向已定，细则待补。
 
-- 使用 **LLMTornado** 集成多模态大语言模型 OCR/理解路径，输出仍必须进入既有 `OcrDocumentTreeCandidate` → 统一 import/adoption，禁止 provider 直写 `document_boxes`
-- 同时探索接入：**onnxOCR**、**ultimateOCR**、**ndlocr-lite**、**ndlkotenocr-lite**
+- 使用 **LLMTornado** 集成多模态大语言模型 OCR/理解路径，输出仍必须进入既有 `OcrDocumentTreeCandidate` → 统一 import/commit，禁止 provider 直写 `document_boxes`
+- 同时探索接入：**onnxOCR**、**ultimateOCR**、**ndlocr-lite**；**ndlkotenocr-lite** 作为首个本地 OCR 实现落地，详见 V3-T9
 - MinerU 仍为已交付的生产参考路径；新 provider 的打包、模型分发、许可、preset UX、失败分类与密钥边界在后续修订中规定
 - 继续遵守：Mock/历史占位不进生产默认；secret 仅 local-only credentials；不规则表等 canonical 规则不因新 provider 回退
 
@@ -785,13 +809,13 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 | V3-T4-AC5 | 生成 AppImage，可在未安装目标依赖的干净用户目录启动应用；`.desktop`、图标、AppRun、CLI launcher/伴随 CLI 和架构均通过 smoke test |
 | V3-T4-AC6 | `.deb`、`.rpm`、AppImage 与桌面/MCP/CLI 使用同一版本与协议 revision；产物不包含 shell sidecar、secret、开发数据库、缓存图片、绝对构建路径或调试文件 |
 
-## 7. V3-T5：桌面 UI 体验提升
+## 7. V3-T5：书库 UI 与题录管理
 
-**状态**：新增；方案评估中。
+**状态**：已实现；AC1~AC19 验收通过。
 
-本任务把若干互相关联的桌面 UI 改进集中在一起，避免零散占位条目分散注意。当前包含三个子项：书库页改进、搜索框改进、PDF 工作台 Markdown 预览。子项可以分批落地，但共享同一份 UI 一致性、可测试性与安全边界要求。
+本任务聚焦书库页面和题录生命周期管理，包括题录列表、来源信息、详情展示、标签组织、回收站、FileAsset 清理和题录合并。所有操作复用统一宿主写服务、Library revision 与变更通知，不改变 Document Box Tree、SearchUnit 或 versioned evidence URI 的身份语义。
 
-### 7.1 更好的书库页
+### 7.1 书库页与题录详情
 
 - **来源列**：当前“来源”列只使用期刊名/出处文献（`publicationTitle`）。改进后按题录类型选择更合适的来源字段：
   - 专著（`book` 等）使用出版社（`publisher`）
@@ -800,51 +824,234 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
   - 缺失字段回退到现有行为，不得显示空占位误导用户
 - **详情面板**：当前右侧详情面板以固定键值网格展示少量字段。改进后使用 TableView 展示更多信息，支持折叠分组、长文本换行与可扩展的字段集，避免一次塞满有限网格列。
 - 列宽、列顺序、列显隐等已有持久化行为必须继续生效；新增来源字段策略不得破坏现有列持久化测试。
-- 详情面板扩展不得修改 Item 元数据、Document Box Tree 或证据身份；它只是展示投影。
+- 书库列表项右键菜单移除“打开同步中心”入口。
 
-### 7.2 更好的搜索框
+### 7.2 题录生命周期管理
 
-- 在顶部搜索框旁加入快捷下拉菜单，可切换两种模式：
-  - **元数据筛选**：在书库题录元数据范围内筛选
-  - **全文搜索**：现有的全文检索行为
-- 无论处于哪种模式，搜索框都必须继续解析 `patchouli://` URI 并导航到对应资源；URI 解析路径不因模式切换而失效。
-- 搜索由回车键触发，不再依赖或要求用户点击“搜索”按钮；按钮仍可保留作为备选触发方式，但回车是主交互路径。
-- 模式切换是纯 UI 状态，不得改变 SearchUnit、FTS 索引、证据或 MCP 表面；两种模式复用既有搜索服务与搜索配置文件。
-- 切换模式时必须保持当前输入文本，不得清空用户已输入内容；空查询行为按模式各自定义。
-- 下拉菜单必须有明确的当前模式标识和可访问性提示，不得依赖仅靠图标无法区分的控件。
+- **回收站**：用户删除 Item 时先执行软删除，Item 进入回收站；活动书库、默认搜索和标签筛选不显示回收站 Item。支持恢复，恢复后重新进入原有列表和筛选结果。
+- 软删除不立即销毁 DocumentInstance、Page、DocumentTree、SearchUnit 或已发出的 versioned evidence URI。永久删除另行确认，并在执行前检查证据、快照、分支、OCR working revision 等依赖。
+- **永久删除语义**：永久删除是真正的物理删除：删除 Item 及其库内相关数据（DocumentInstance、Page、DocumentTreeRevision、SearchUnit 等载荷），但不动用户原始 PDF 等源文件。证据表随 `evidence_ref_records`/`evidence_successors` 一并删除；purge 后外部已复制的 versioned evidence URI 按 `NOT_FOUND` 解析，不再有 `purged` 态。
+- **永久删除与快照**：purge 无法追溯已发布的快照分片；之后导入仍包含该 Item 的旧快照时，该 Item 作为全新内容重新加入（新 `item_id` remap），不与既有 purge 记录关联，也不复活原身份。
+- **状态词汇**：软删除与合并重定向是 `items` 行上的墓碑（tombstone）；永久删除是 purged（无 `items` 行，仅 `item_purge_records`）。tombstone 与 purged 在快照语义中必须可区分：前者可参与 Item 级分支冲突（CF-08），后者不走 CF-08，只 remap（见 7.8）。
+- 软删除是无损的状态变化，不产生题录版本记录；删除状态只能经回收站还原或永久删除这两个显式入口改变，不得出现由版本控制改写删除状态的第二入口（与 V3-T10 的文档级版本控制设想协调）。
+- 删除 Item 不删除用户原始文件。Patchouli 只负责管理自己的题录、FileAsset 记录和可重建派生资源。注意题录（ItemMetadata）本身不是可重建派生资源：它是持久化、可编辑的书目投影，删除后无法从 PDF 或标识符机械重建（ADR `0026`）。
 
-### 7.3 PDF 工作台的正确 Markdown UI 预览
+### 7.3 回收站视图与管理入口
 
-目标是为 PDF 工作台页面中的 OCR/文档 Markdown 内容提供正确且稳定的 UI 预览，替代不完整或与 Avalonia 控件行为不一致的临时渲染方式。
+- 侧边栏提供回收站入口，与“我的书库”构成同一 section；section 内容使用 DataGrid 展示，不使用设置页式卡片。
+- 回收站内不提供“删除”选项，替换为“还原”；“编辑题录”、双击进入 OCR 等会改变题录或文档内容的操作在回收站内一律隐藏。
+- 回收站视图与一般书库范围的标签相互隔离：回收站 section 下暂时直接隐藏标签列表。
+- 永久删除是阻塞（Blocking）操作：用户必须在阻塞弹窗中处理完毕后才能回到主 UI。确认弹窗将依赖检查结果（证据数量、快照引用、working revision 等）作为可展开的详细信息展示，默认折叠。
+- 右键与菜单栏中的删除、还原等操作与其他列表操作一致，同时支持单选与多选。
 
-- 预计评估并优先采用 `MarkView.Avalonia` 作为 PDF 工作台中的 Avalonia Markdown UI 预览组件；当前仅记录为候选方案，不代表依赖已经加入项目。
-- PDF 工作台预览必须正确处理当前 OCR/文档内容实际使用的 Markdown/GFM，包括标题、段落、列表、引用、代码、表格、链接和安全的内联 HTML。
-- 预览只是 PDF 工作台的 UI 展示投影，不得修改 canonical Markdown、Document Box Tree、SearchUnit、EvidenceRef 或 revision 身份。
-- PDF 工作台中的预览不得暴露本地路径、`file:` URL、提供程序密钥或缓存图像路径；外部链接和 HTML 处理必须有明确的安全策略。
-- 组件选型必须验证 Avalonia/.NET 版本兼容性、中文字体与布局、PDF 工作台长文档性能、主题适配、测试可控性和发布包体积，再决定是否正式引入依赖。
+### 7.4 FileAsset 自动清理
 
-### 7.4 V3-T5 验收
+- FileAsset 只有在不再被任何 DocumentInstance、回收站 Item、working revision、已发出的 versioned evidence URI 或快照引用时，才进入清理候选。
+- 自动清理只移除无引用的 FileAsset 数据库记录、失效路径记录和可重建派生缓存，不删除用户管理的原始文件。
+- 清理采用后台 GC，提供清理前预览、延迟执行、失败重试和操作日志；导入失败、取消或并发操作产生的临时资源不得被误判为孤儿。
+
+### 7.5 标签与书库侧边栏
+
+- 题录详情中展示标签，并支持添加、删除和编辑；导入元数据中的 `keyword` 继续按既有规则进入 Item 标签。
+- 书库左侧边栏增加标签区域，分为置顶标签和普通标签；支持置顶、取消置顶和稳定排序。
+- 标签置顶状态与顺序作为**库级**书库 UI 偏好独立保存（随库同步），不写入 Item 的标签内容，也不改变题录合并、同步或 MCP 资源语义。
+- **标签规范化**：标签文本一律 UTF-8、大小写敏感、写入时强制 trim；重命名到已存在的标签名等同标签合并，同样先经阻塞弹窗确认。
+- 点击标签直接进入元数据筛选模式；多标签默认按“同时满足”过滤。默认只统计活动 Item，回收站 Item 不参与标签数量和筛选结果。
+- 标签变更后，侧边栏、数量、书库列表和详情视图通过既有变更通知即时刷新。
+- “无标签”是标签区域中的一个固定条目，点击筛选所有没有任何标签的活动 Item。
+- 支持将单个或多个 Item 拖拽到侧边栏标签上以增加标签（已存在不重复添加）；拖拽到“无标签”上表示清空这些 Item 的全部标签，执行前显示阻塞弹窗二次确认；本来就没有标签的 Item 自然不受影响，不作特殊处理。清空标签在现有框架下不可撤销，属于重操作，暂以阻塞弹窗确认。
+- 标签编辑（添加、移除、重命名、合并）不触碰回收站中的 Item；回收站 Item 还原时按当前标签状态呈现，即使其携带的标签已被全局移除也照常还原。
+- 标签提供右键菜单：置顶（可同时置顶多个，用置顶标签快速筛选，形成类似 collection 的效果）、移除（同时从所有 Item 上去掉该标签，需阻塞弹窗二次确认）、重命名（同时改写所有 Item 中的该标签）。
+- 标签之间可以拖拽合并：放下前显示阻塞弹窗确认，实际行为视同将被合并标签重命名为目标标签。
+- 后续需将 dialog 与各类 view 的标准名称整理进 `.agents/CONTEXT.md` 领域文档。
+- **集合（collection）暂不做**：v3 专注标签，避免为集合再设计 MCP/CLI 视图。如果置顶标签与标签筛选在后续验证中能完全替代集合功能，则在后续版本中清理 `collections_json` 等集合痕迹；否则再正式引入集合。
+
+### 7.6 右键合并 Item
+
+- 用户可选中题录列表中的两个Item，然后右键点击合并题录；点击后先显示合并预览和确认对话框，用户需在对话框内选择合并目标，不能直接执行。
+- 合并后目标 Item 保留；来源 Item **不** purge、**不**物理删除行，而是成为 **合并重定向墓碑**（Merge Redirect）：`items` 行保留身份，记录指向目标的 `merged_into_item_id`，并从活动书库、默认搜索、标签筛选与查重中排除。来源 Item 的 DocumentInstance 转移到目标 Item。
+- DocumentInstance、FileAsset、Page、DocumentTree、SearchUnit 和 versioned evidence URI 的身份保持不变；合并不重复 OCR、不重建全文内容，也不修改页面 Box Tree。
+- 目标 Item 的非空字段默认优先，来源 Item 只补充目标缺失字段；题名、作者、年份、标识符和 citation key 等冲突字段必须明确展示并由用户确认。
+- 两个 Item 的标签取并集；合并操作必须原子提交，存在未保存编辑、活动 OCR 任务或并发写入时阻止合并。
+- 题录右键合并是一种有损冲突语义：以牺牲信息较不详细的来源一方为代价完成合并；合并不等于永久删除。文档级版本历史由 V3-T10 在 DocumentInstance 内维护；合并不保留跨 Item 的历史拼接。
+
+### 7.7 重复题录检测
+
+- 重复题录检测视为手动触发的冲突处理：检测结果逐对进入冲突处理弹窗，用户可以选择不处理其中部分冲突，跳过不产生任何写入。
+- 触发入口：菜单栏“题录”菜单与书库列表右键菜单。
+- 判定规则（满足任一即列为候选重复）：标识符（DOI、ISBN 等）精确匹配；题名/作者/年份相似度，复用既有 Biblatex 导入的字段冲突/相似度检测实现；对应 Document 重复，即 FileAsset 内容 hash 相同——FileAsset 的 hash 鉴定即为此类判重服务。
+- 已合并墓碑与回收站 Item 不参与查重。
+- 用户确认处理某对重复后，进入 7.6 的合并预览与确认流程，合并规则不变；合并预览中默认目标 Item 为题录列表排序中较早的一边，信息量相当时不引入额外启发式，由用户在预览中自行选择与调整。
+
+### 7.8 与其他任务协调
+
+- **V3-T2 PDF 工作台**：合并只改变 DocumentInstance 所属 Item，不修改页面、Box Tree 或 versioned evidence URI；已打开的来源文档应切换到目标 Item 或显示明确的“已合并”状态。
+- **V3-T8 搜索功能强化**：左侧标签是元数据搜索模式的快捷入口；全文搜索继续使用现有 SearchUnit 和 FTS，不因题录合并重复索引正文。
+- **V3-T7 性能与响应性治理**：删除、恢复、标签修改和合并都通过统一写服务完成，并在一次成功提交后发布一次 Library revision 和变更通知。
+- **V3-T10 文档级版本控制**：合并是有损冲突处理，来源 Item 历史随合并丢弃；软删除是无损状态变化，不产生题录版本。题录级版本控制的范围扩大设想仍处于早期，本任务不为其预留实现，也不提前承诺版本粒度。
+- **MCP/CLI**：本任务首版只扩展桌面 UI，不新增删除、恢复或合并命令；默认资源发现和搜索排除回收站及合并墓碑，versioned evidence URI 解析规则不变。对已合并墓碑或回收站 Item 执行 `patchouli.put`/`patchouli.fetch` 必须失败：使用新的错误码（如 `ITEM_MERGED`、`ITEM_IN_TRASH`），Item 当前状态与重定向目标等附加信息按既有惯例放入 message 文本。
+- **同步与快照**：回收站状态、标签和合并重定向属于 Library 持久化内容；跨分支仍采用显式冲突处理，不自动执行对象级合并。
+  - **CF-08（Item 级分支冲突）**：仅当两边仍存在同一 `item_id` 的 `items` 行，且在 active / trash（软删除墓碑）/ merged（合并重定向）之间不一致时生成。冲突对话框在字段/链接选择之外提供 Item 级分支选择（保留本地或采用传入）。软删除与合并重定向均按墓碑参与 CF-08。
+  - **purged 不走 CF-08**：本地已有该 `item_id` 的 purge 记录时，传入快照中仍携带的同一身份内容固定 remap 为新 `item_id` 后作为全新 Item 加入，不与 purge 记录关联，不复活原身份，也不弹出 Item 级 keep/use 选择。purged 与 tombstone 由此在快照语义中可区分。
+
+### 7.9 V3-T5 验收
 
 | 编号 | 标准 |
 |---|---|
 | V3-T5-AC1 | 书库页“来源”列按题录类型展示出版社/期刊名/对应来源字段；缺失字段有明确回退，不破坏现有列持久化测试 |
 | V3-T5-AC2 | 书库页详情面板使用 TableView 展示更多字段，支持折叠分组与长文本换行；展示投影不修改领域数据 |
-| V3-T5-AC3 | 搜索框下拉菜单可在元数据筛选与全文搜索间切换；两种模式均能解析 `patchouli://` URI 并导航；切换不清空输入；回车键触发搜索 |
-| V3-T5-AC4 | 模式切换不改变 SearchUnit、FTS 索引、证据或 MCP 表面；复用既有搜索服务与搜索配置文件 |
-| V3-T5-AC5 | 代表性 OCR/文档 Markdown/GFM fixture 在 PDF 工作台页面中正确呈现标题、列表、引用、代码、表格、链接和安全内联 HTML |
-| V3-T5-AC6 | PDF 工作台预览失败或不支持的语法可解释，不静默丢失正文；canonical Markdown 与领域数据不被修改 |
-| V3-T5-AC7 | PDF 工作台预览不会暴露本地路径、file URL、提供程序密钥、缓存图像路径或未允许的 HTML/脚本内容 |
-| V3-T5-AC8 | MarkView.Avalonia（或其他候选组件）通过 Avalonia 兼容性、主题、中文文本、PDF 工作台长文档性能、包体积和发布构建验证后才进入生产依赖 |
+| V3-T5-AC3 | 书库列表、题录详情与既有编辑入口之间的导航和状态保持一致；题录写入后，书库列表与打开的详情视图可通过既有变更通知刷新 |
+| V3-T5-AC4 | 删除 Item 进入回收站，默认书库、搜索和标签筛选隐藏回收站内容；恢复后重新可见；软删除不破坏既有 DocumentInstance、SearchUnit 或已发出的 versioned evidence URI |
+| V3-T5-AC5 | FileAsset 只有在不存在任何文档、回收站 Item、working revision、已发出的 versioned evidence URI 或快照引用时才可进入 GC；GC 不删除用户原始文件，并具备预览、延迟和日志语义 |
+| V3-T5-AC6 | 题录详情显示并可编辑标签；左侧边栏展示标签、置顶标签和稳定顺序，置顶状态与顺序为库级偏好；点击标签可执行元数据过滤，多标签按约定组合 |
+| V3-T5-AC7 | 标签编辑、删除、恢复和合并后，标签列表、数量、书库结果和详情视图通过变更通知保持一致 |
+| V3-T5-AC8 | 右键合并题录先展示预览和冲突字段；确认后目标 Item 保留、来源 Item 成为合并重定向墓碑（保留 `items` 行与 `merged_into_item_id`，不 purge），操作原子完成且可阻止未保存编辑或活动 OCR 冲突 |
+| V3-T5-AC9 | 合并保留 DocumentInstance、FileAsset、Page、DocumentTree、SearchUnit 和 versioned evidence URI 身份；不重复 OCR 或重建全文；目标非空字段优先、缺失字段补全、标签取并集 |
+| V3-T5-AC10 | 题录删除、恢复、标签修改和合并均发布一次 Library revision 与变更通知；V3-T2、V3-T7、V3-T8 和 MCP/CLI 边界符合本节协调规则 |
+| V3-T5-AC11 | 永久删除经阻塞弹窗确认，依赖检查结果（证据数量、快照引用、working revision）以默认折叠的可展开详情展示；确认后删载荷、留 purge 记录行，外部已复制的 versioned evidence URI 按 NOT_FOUND 解析 |
+| V3-T5-AC12 | 侧边栏回收站与“我的书库”构成 section 并以 DataGrid 展示；回收站内删除入口替换为还原，编辑题录、进入 OCR 等改动操作隐藏，标签列表隐藏；删除/还原支持单选与多选 |
+| V3-T5-AC13 | 书库列表项右键菜单不再包含“打开同步中心” |
+| V3-T5-AC14 | “无标签”作为标签区域固定条目参与筛选；拖拽单个/多个 Item 到标签可加标签且不重复添加；拖到“无标签”清空标签前经阻塞弹窗二次确认，本来无标签的 Item 不作特殊处理 |
+| V3-T5-AC15 | 标签右键支持置顶（可同时多个）、移除、重命名；移除与重命名波及所有 Item 但不触碰回收站 Item，移除需阻塞确认；标签间拖拽合并及重命名到已存在名字均视同合并/重命名并先经阻塞确认；标签文本 UTF-8、大小写敏感、写入强制 trim |
+| V3-T5-AC16 | 重复题录检测可从菜单栏“题录”与右键菜单手动触发；结果逐对进入冲突处理弹窗，允许跳过部分冲突；标识符精确匹配、题名/作者/年份相似度（复用 Biblatex 检测实现）与 FileAsset hash 重复三类规则均有命中用例；已合并墓碑与回收站 Item 不参与；合并预览默认目标为排序中较早的一边 |
+| V3-T5-AC17 | 对已合并墓碑或回收站 Item 的 `patchouli.put`/`patchouli.fetch` 以新错误码失败，Item 状态与重定向目标等附加信息放入 message 文本 |
+| V3-T5-AC18 | 跨分支 active/trash/merged 不一致时生成 CF-08，冲突对话框提供 Item 级分支选择（保留本地或采用传入）；软删除与合并重定向按墓碑参与 CF-08 |
+| V3-T5-AC19 | 本地已 purge 的 `item_id` 再从旧快照导入时不走 CF-08：内容 remap 为新身份后加入，不与既有 purge 记录关联，不复活原身份 |
 
-## 8. V3-T6：版本控制、证据引用及其 UI 表示
+## 8. V3-T8：搜索功能强化
 
-**状态**：占位；待决策。
+**状态**：从原 V3-T5 拆分；方案评估中。
 
-目标方向（非正式需求）：完善版本控制、证据引用及其在桌面 UI 中的表示。当前 OCR 内容的页级 `DocumentTreeRevision` 版本控制应推广到题录内容和 CSL 样式，并在 UI 中以一致、可理解的方式呈现版本状态、历史与相关操作。具体的数据模型、版本粒度、比较/恢复语义、同步与 MCP/CLI 契约、迁移策略及验收标准在后续 PRD 修订中补全。
+本任务只承载搜索入口和搜索交互的强化，元数据筛选与全文搜索是两个可明确切换的桌面模式。它不改变 SearchUnit、FTS 索引、证据或 MCP 表面，也不把向量化、混合搜索或语义搜索纳入 v3 范围。
 
-待决策项：证据引用应缩短其文本表示长度，还是取消证据引用这一机制。作出明确决策并完成相应的兼容性与迁移设计前，不改变既有 EvidenceRef 的稳定身份与 pinned 默认解析语义。
+### 8.1 搜索模式与交互
 
-## 9. 明确不做（v3 默认）
+- 在顶部搜索框旁加入快捷下拉菜单，可切换两种模式：
+  - **元数据筛选**：在书库题录元数据范围内筛选。
+  - **全文搜索**：现有的全文检索行为。
+- 无论处于哪种模式，搜索框都必须继续解析 `patchouli://` URI 并导航到对应资源；URI 解析路径不因模式切换而失效。
+- 搜索由回车键触发，不再依赖或要求用户点击“搜索”按钮；按钮仍可保留作为备选触发方式，但回车是主交互路径。
+- 模式切换是纯 UI 状态；两种模式复用既有搜索服务与搜索配置文件，不改变 SearchUnit、FTS 索引、证据或 MCP 表面。
+- 切换模式时必须保持当前输入文本，不得清空用户已输入内容；空查询行为按模式各自定义。
+- 下拉菜单必须有明确的当前模式标识和可访问性提示，不得依赖仅靠图标无法区分的控件。
+
+### 8.2 V3-T8 验收
+
+| 编号 | 标准 |
+|---|---|
+| V3-T8-AC1 | 搜索框下拉菜单可在元数据筛选与全文搜索间切换；当前模式有明确文字和可访问性提示 |
+| V3-T8-AC2 | 两种模式均能解析 `patchouli://` URI 并导航；URI 解析路径不因模式切换而失效 |
+| V3-T8-AC3 | 回车键触发搜索；切换模式不清空输入文本，空查询按模式返回明确结果 |
+| V3-T8-AC4 | 模式切换不改变 SearchUnit、FTS 索引、证据或 MCP 表面；复用既有搜索服务与搜索配置文件 |
+
+## 9. V3-T6：版本控制、证据引用及其 UI 表示
+
+**状态**：已决策；实现细节见 V3-T10，ADR `0027`/`0028`。
+
+V3-T6 的决策结论：
+
+- 页级 `DocumentTreeRevision` 版本控制采用 working/commit 两状态模型，由 ADR `0027` 定义；题录内容和 CSL 样式的版本控制仍按早期设想延后，不在 v3 实现。
+- 证据引用取消独立的 `evref:v2` token 机制，改为 versioned URI `?rev={tree-revision-id}&box={box_id}`，由 ADR `0028` 定义。带 `rev` 读固定版本，不带 `rev` 读 HEAD；没有 pinned/current/compare 模式，也没有漂移 surface。
+- 版本 UI 范围限定为历史 + 恢复，不做 diff/compare：页面级版本历史入口在 PDF 工作台；文档级 commit 历史入口在题录编辑器的文件管理部分。恢复以 revert-as-new-commit 实现，current 指针不倒拨。
+
+已记录的边界（与 V3-T5 协调）：右键合并题录是有损冲突语义，来源 Item 成为合并重定向墓碑（非 purge），其历史版本随合并一并丢弃，不做跨 Item 的历史拼接；软删除是无损状态变化，不产生版本，删除状态只能经回收站还原或永久删除改变，不得由版本控制改写。题录级批量操作（如标签重命名波及所有 Item）会放大版本数量，题录级版本控制的粒度、写入放大与保留策略延后；在这些问题有结论前，扩大版本控制系统范围仍属早期设想，不做提前优化，也不预留实现。
+
+## 10. V3-T9：ndlkotenocr-lite 本地 OCR 与本地文件管理
+
+**状态**：新增；准备实现。
+
+### 10.1 目标与范围
+
+- 集成 NDL 古典籍 OCR lite（`ndl-lab/ndlkotenocr-lite`）作为首个真实本地 OCR 引擎。
+- 采用 C# 原生 ONNX Runtime 移植，不依赖 Python 运行时。
+- 模型与配置文件按需从上游 GitHub 下载，存储在应用数据目录。
+- 在桌面端设置页新增“本地文件管理”区块，让用户手动清理模型文件和 OCR 临时文件（含 MinerU 与 NDL koten 工作文件）。
+- 输出必须归一化为 `OcrDocumentTreeCandidate` 并走既有统一 importer，禁止 provider 直写 `document_boxes`。
+
+### 10.2 设计约束
+
+- 上游模型/配置文件共 4 个，均使用 **CC-BY-4.0** 许可证；UI 必须展示署名信息，下载/使用前提示许可。
+- 模型下载采用固定清单（URL + 期望字节数），下载到临时文件后原子改名，提供进度与取消；不做断点续传。
+- 本地引擎实现 `IRealOcrAdapter`（`local_library` kind），`SupportsVerticalText = true`，支持 `page_image` 与 `region_image`。
+- 存储目录约定（基于 `PlatformAppPaths`）：
+  - 模型：`{DataDirectory}/models/ndl-koten/`
+  - MinerU 工作文件：`{CacheDirectory}/ocr-work/mineru/`
+  - NDL koten 工作文件：`{CacheDirectory}/ocr-work/ndl-koten/`
+- `OcrRunEngine` 的 MinerU 工作根从 OS temp 改为上述约定路径；旧 `%TEMP%/patchouli/mineru` 残留由 OS 自行清理。
+- 设置页“本地文件管理”区块 `SupportsEditing = false`，纯操作型；切换分类时 `LoadAsync` 扫描目录大小。
+- 全局设置“OCR 引擎”页允许用户为 **文档级、页面级、区域级** OCR 分别选择当前可用的引擎；选项来自运行时已注册的 `IRealOcrAdapter` 能力清单，保存后写入用户设置并即时生效。
+
+### 10.3 管线移植要点
+
+- **RTMDet-s 1280×1280**：letterbox 缩放、归一化、输出张量解码、置信度阈值、NMS。
+- **阅读顺序**：竖排从右至左排序（移植上游 `src/reading_order`）。
+- **PARSeq-ndl-32×384-tiny**：行区域裁剪、缩放至 32×384、字符集解码（字符集来自 `NDLmoji.yaml`）。
+- 图像处理使用仓库已有 `SkiaSharp`。
+
+### 10.4 设置页“本地文件管理”
+
+- 行项：
+  1. **NDL koten 模型文件**：安装状态、占用大小、下载/重新下载（带 CC-BY-4.0 说明）、删除、打开目录。
+  2. **MinerU OCR 临时文件**：大小、清空、打开目录。
+  3. **NDL koten 工作临时文件**：大小、清空。
+- 删除/清空均走 `ConfirmDialog`（danger 模式）；扫描目录大小在 `LoadAsync` 完成。
+
+### 10.5 V3-T9 验收
+
+| 编号 | 标准 |
+|---|---|
+| V3-T9-AC1 | `ndl-koten` 适配器以 `local_library` 注册，`CheckEnvironmentAsync` 在模型缺失时返回 `missing_model_path` 并指引用户到设置页下载 |
+| V3-T9-AC2 | 设置页可一键下载 4 个模型/配置文件到 `{DataDirectory}/models/ndl-koten/`；下载失败不残留半成品，进度可取消 |
+| V3-T9-AC3 | 模型下载按钮旁清晰展示 CC-BY-4.0 署名信息，满足上游许可证要求 |
+| V3-T9-AC4 | `NdlKotenOcrAdapter` 的 `RunPageAsync` 对页面/区域图像执行检测→阅读顺序→识别，输出归一化为 `OcrDocumentTreeCandidate`，经既有 importer 进入 Document Box Tree |
+| V3-T9-AC5 | 竖排文本（从右至左列）的阅读顺序与上游 Python 输出一致；提供至少一个 fixture 或合成用例验证 |
+| V3-T9-AC6 | `OcrRunEngine` 的 MinerU 与 ndl-koten 分支分别使用 `{CacheDirectory}/ocr-work/mineru/` 与 `{CacheDirectory}/ocr-work/ndl-koten/` 作为工作根 |
+| V3-T9-AC7 | 设置页“本地文件管理”显示模型文件、MinerU 临时文件、NDL 临时文件的大小与条目数，并提供打开目录与清理按钮 |
+| V3-T9-AC8 | 清理操作前显示危险确认弹窗；清理后即时刷新显示；仅删除应用自身管理的目录内容，不误删用户其他文件 |
+| V3-T9-AC9 | 模型被删除后，`ndl-koten` preset 运行自动进入 `missing_model_path` 状态，用户可重新下载 |
+| V3-T9-AC10 | 新增 `Microsoft.ML.OnnxRuntime` 包版本由 `Directory.Packages.props` 集中管理；改动文件经过 `scripts/cleanup-code.ps1`，提交前 `scripts/inspect-code.ps1` 零错误零阻塞 |
+| V3-T9-AC11 | 代码改动包括对应单元测试（NMS/阅读顺序/字符集解析/下载服务/目录清理），且 `dotnet test` 通过；端到端测试在模型不存在时自动跳过 |
+| V3-T9-AC12 | 全局设置“OCR 引擎”页提供文档级、页面级、区域级三个下拉选项；选项为当前已注册适配器；保存后写入用户设置并即时生效；未选择或选择无效时回退到默认引擎 |
+
+## 11. V3-T10：统一版本化资源模型
+
+### 11.1 目标与范围
+
+- 统一 OCR 与手动编辑的产出物为单一 **working revision**，通过 in-place commit 提升为 committed current，替代原有的 `staging`/`draft`/`discarded`/`adoption` 多层状态。
+- 以 **versioned URI** `patchouli://texts/{document-instance-id}/page-{page-index}.md?rev={tree-revision-id}&box={box-id}` 取代 `evref:v2` token 体系，作为证据的长期身份与消费形式。
+- 引入 **document-wide `DocumentCommit`**，将一次提交中涉及的各页 `DocumentTreeRevision` 分组；HEAD 为最新 commit，历史 append-only，revert 产生新 commit。
+- 版本 UI 范围限定为 **历史 + 恢复**，不做 diff/compare：PDF 工作台提供页面级版本历史；题录编辑器的文件管理部分提供文档级 commit 历史。
+
+### 11.2 设计约束
+
+- `DocumentTreeRevisionStatus` 只存在 `working` 与 `committed`；legacy 状态行物理保留但不再读取。
+- working revision 的 ID 在 commit 前后保持不变（in-place commit），从而 versioned URI 在 commit 后仍然可解析。
+- search、MCP、evidence 只读 `status='committed' AND is_current=1`；working revision 永远不进入这些只读面。
+- revert 是新 commit：`R{n+1}.content = R{old}.content`、`parent = 旧 HEAD`、`source='revert'`、`reverted_from = R{old}`；current 指针不倒拨。
+- `LibraryRevision` 仍只是全库单调 change counter；DocumentInstance 的版本历史由 `DocumentCommit` 维护。
+- `evref:v2` 完全移除：codec、`evidence_ref_records`、`evidence_successors`、successor 链、resolution mode 全部删除，无旧格式解码。
+- 带 `rev` 的 URI 永远读到该不可变 revision 原文；不带 `rev` 读 HEAD。没有 pinned/current/compare 模式，没有漂移检测或提示。
+- purge 后证据 URI 解析为 `NOT_FOUND`，不再有 `purged` 态。
+- 快照分片必须排除 working 行与 legacy-status 行；未提交内容不参与同步。
+
+### 11.3 V3-T10 验收
+
+| 编号 | 标准 |
+|---|---|
+| V3-T10-AC1 | working revision 永远不进入 search、MCP、evidence 读取面；这些只读面只返回 `committed` 且 `is_current=1` 的 revision |
+| V3-T10-AC2 | commit 原地提升 working revision，`tree_revision_id` 与 Box ID 保持不变；commit 前后同一页 Box 行数不变，不产生 staging→committed 的 Box 复制 |
+| V3-T10-AC3 | versioned URI 带 `rev` 时始终返回该 immutable revision 的原始文本；后续对同一页的编辑、删除或恢复不影响旧 URI 的解析结果 |
+| V3-T10-AC4 | 不带 `rev` 的 URI 返回当前 HEAD；HEAD 变更后旧 URI（带 `rev`）仍可复现原文 |
+| V3-T10-AC5 | purge 后外部已复制的 versioned evidence URI 解析为 `NOT_FOUND`，系统中不存在 `purged` 态 |
+| V3-T10-AC6 | revert 产生新 commit，parent 指向原 HEAD，`source='revert'`，`reverted_from` 指向目标 revision；current 指针不倒拨 |
+| V3-T10-AC7 | `DocumentCommit` 正确分组一次提交涉及的所有页面 revision；HEAD 为最新 commit；`LibraryRevision` 仍只是全库 change counter |
+| V3-T10-AC8 | 快照分片排除 working 行与 legacy `staging`/`draft`/`discarded` 行；导入端接受“无 current 的页”为未提交状态 |
+| V3-T10-AC9 | PDF 工作台提供页面级版本历史面板：可列出该页 revision/commit 历史、查看旧版文本、执行 revert |
+| V3-T10-AC10 | 题录编辑器的文件管理部分提供文档级 commit 历史：可列出 DocumentInstance 的 commit 历史、查看单次 commit 涉及的页面、执行 revert |
+| V3-T10-AC11 | MCP/CLI 的 evidence 读取按 URI 的 `rev`/`box` 直接解析，不再依赖 `evref` token 或 successor 链；help 与 schema 中不存在 `evref`、`pinned`、`current`、`compare`、`drift` 等旧概念 |
+| V3-T10-AC12 | 删除或修改与旧 staging/evref/pinned 语义相关的代码、测试、文档与 help；`scripts/inspect-code.ps1` 对改动文件零错误零阻塞规则 |
+
+## 12. 明确不做（v3 默认）
 
 - 不把向量化、混合搜索、语义搜索作为 v3 完成标准
 - 不做程序托管的原文件同步
@@ -854,18 +1061,20 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 - 不让 MCP/CLI 获得 OCR 触发、索引重建、任意删除/重命名资源、或读取提供程序密钥的能力
 - macOS 不上架 Mac App Store / 不启用 App Sandbox 作为前提（既有 ADR）
 
-## 10. 版本理念
+## 13. 版本理念
 
 - **v1**：alpha 可验证基线——保护证据，暴露歧义，拒绝不安全自动化  
 - **v2（0.2.x）**：最终用户可用面——UI、CSL、生产 OCR、可配置 MCP、冲突/阻塞  
 - **v3（0.3.x）**：迈向 1.0——用评测选择长期 agent 表面，打磨 OCR 编辑校注，扩展可替换 OCR 组合，只留下经得起稳定承诺的能力  
 - **1.0**：在 v3 验证通过的能力组合上冻结对外契约与升级策略  
 
-## 11. 长期约束索引
+## 14. 长期约束索引
 
 | 约束 | 权威位置 |
 |---|---|
-| 领域词汇与产品边界 | `.agent/CONTEXT.md` |
-| 运行库与快照分离、分片、library_id、三层模型、OCR/证据/MCP 等 | `.agent/adr/`（`0001`–`0011`、`0014`、`0015`、`0022`、`0023` 等） |
+| 领域词汇与产品边界 | `.agents/CONTEXT.md` |
+| 运行库与快照分离、分片、library_id、三层模型、OCR/证据/MCP 等 | `.agents/adr/`（`0001`–`0011`、`0014`、`0015`、`0022`、`0023`、`0027`、`0028` 等） |
 | 已移除的 Bashkit MCP 实现 | ADR `0022`（已由 ADR `0024` 取代；实现已从 main 删除，仅存于 `feature/mcp-ab-benchmark` 分支） |
 | 有限可写 MCP（item `.bib` / style `.csl` put） | ADR `0023`（修订 `0010` 的“绝对只读”后果） |
+| 统一 working/commit 版本模型 | ADR `0027` |
+| versioned URI 证据 | ADR `0028` |

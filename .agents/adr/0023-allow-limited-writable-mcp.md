@@ -36,8 +36,8 @@ Without a deliberate write path, users either leave the agent loop (manual UI on
 
 5. **Forbidden writes** (non-exhaustive; still require a future ADR if ever needed):
    - Document Box Tree / bbox / page Markdown as MCP mutations
-   - EvidenceRef mutation or fabrication of pinned evidence identity
-   - OCR run, preset rebind, staging adoption, or search index rebuild
+   - EvidenceRef mutation or fabrication of pinned evidence identity (EvidenceRef/pinned semantics are superseded by ADR `0028`)
+   - OCR run, preset rebind, working revision/commit manipulation, or search index rebuild
    - Snapshot publish/import, FileSearchRoot changes, credential changes
    - Arbitrary SQL, settings secrets, or host filesystem writes
 
