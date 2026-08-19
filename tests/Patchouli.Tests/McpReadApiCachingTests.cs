@@ -7,10 +7,8 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
@@ -32,7 +30,7 @@ public sealed class McpReadApiCachingTests
         McpPageTextResponse second = (await context.Api.GetPageTextAsync(
             new McpPageTextRequest(context.PageId))).Value;
         McpPageTextResponse includingSuppressed = (await context.Api.GetPageTextAsync(
-            new McpPageTextRequest(context.PageId, IncludeSuppressed: true))).Value;
+            new McpPageTextRequest(context.PageId, true))).Value;
 
         first.Text.Should().Be("without suppressed");
         second.Text.Should().Be("without suppressed");
@@ -148,7 +146,7 @@ public sealed class McpReadApiCachingTests
     }
 
     [Fact]
-    public async Task Adopting_a_new_revision_returns_new_text_and_never_stale_cached_markdown()
+    public async Task Committing_a_new_revision_returns_new_text_and_never_stale_cached_markdown()
     {
         await using Context context = await Context.CreateAsync(useRealMarkdownCompiler: true);
         DocumentTreeRevisionId originalRevision = context.RevisionId;
@@ -156,22 +154,22 @@ public sealed class McpReadApiCachingTests
         McpPageTextResponse initial =
             (await context.Api.GetPageTextAsync(new McpPageTextRequest(context.PageId))).Value;
         initial.Text.Should().Be("source text");
-        initial.Revision.Should().Be(originalRevision.ToString());
+        initial.TreeRevisionId.Should().Be(originalRevision);
         context.Compiler.CallCount.Should().Be(1);
 
-        DocumentTreeRevision adopted = await BoxTreeTestData.CommitTextAsync(
+        DocumentTreeRevision committed = await BoxTreeTestData.CommitTextAsync(
             context.Database.ConnectionFactory, context.Clock, context.DocumentId, context.PageId, "second text");
 
         McpPageTextResponse afterCommit =
             (await context.Api.GetPageTextAsync(new McpPageTextRequest(context.PageId))).Value;
         afterCommit.Text.Should().Be("second text");
-        afterCommit.Revision.Should().Be(adopted.TreeRevisionId.ToString());
+        afterCommit.TreeRevisionId.Should().Be(committed.TreeRevisionId);
         context.Compiler.CallCount.Should().Be(2,
             "a committed resource change moves the DocumentTree current pointer to a new immutable revision; the cache must not serve stale markdown");
 
         McpPageTextResponse reused = (await context.Api.GetPageTextAsync(new McpPageTextRequest(context.PageId))).Value;
         reused.Text.Should().Be("second text");
-        context.Compiler.CallCount.Should().Be(2, "the adopted revision's markdown is now cached and reused");
+        context.Compiler.CallCount.Should().Be(2, "the committed revision's markdown is now cached and reused");
     }
 
     [Fact]
@@ -249,7 +247,6 @@ public sealed class McpReadApiCachingTests
         CachedDocumentMarkdownCompiler uiCompiler = new(context.Compiler, cache);
         McpReadApi api = new(context.Database.ConnectionFactory,
             new SqliteSearchService(context.Database.ConnectionFactory),
-            new EvidenceReferenceService(context.Database.ConnectionFactory, context.Clock),
             markdownCompiler: uiCompiler, compiledMarkdownCache: cache);
 
         CompiledMarkdown uiMarkdown = (await uiCompiler.CompilePageMarkdownAsync(
@@ -263,12 +260,12 @@ public sealed class McpReadApiCachingTests
             "the PDF workspace compiler and MCP read API are supplied with the same host cache");
         cache.Metrics.Hits.Should().Be(1);
 
-        DocumentTreeRevision adopted = await BoxTreeTestData.CommitTextAsync(
+        DocumentTreeRevision committed = await BoxTreeTestData.CommitTextAsync(
             context.Database.ConnectionFactory, context.Clock, context.DocumentId, context.PageId, "updated text");
         McpPageTextResponse updated = (await api.GetPageTextAsync(
             new McpPageTextRequest(context.PageId))).Value;
 
-        updated.Revision.Should().Be(adopted.TreeRevisionId.ToString());
+        updated.TreeRevisionId.Should().Be(committed.TreeRevisionId);
         updated.Text.Should().Be("updated text");
         context.Compiler.CallCount.Should().Be(2,
             "a committed edit selects a new immutable revision cache key instead of reusing old markdown");
@@ -318,7 +315,7 @@ public sealed class McpReadApiCachingTests
                 : null;
             CountingCompiler compiler = new(compileGate, realCompiler);
             McpReadApi api = new(database.ConnectionFactory, new SqliteSearchService(database.ConnectionFactory),
-                new EvidenceReferenceService(database.ConnectionFactory, clock), markdownCompiler: compiler);
+                markdownCompiler: compiler);
             return new Context(database, page.PageId, document.DocumentInstanceId, revision.TreeRevisionId, clock,
                 compiler, api);
         }

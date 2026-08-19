@@ -39,8 +39,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         "ocr_candidate_adoptions",
         "search_units",
         "search_index_status",
-        "evidence_ref_records",
-        "evidence_successors",
+        "document_commits",
+        "document_commit_pages",
         "search_profiles",
         "search_rewrite_rules",
         "search_settings",
@@ -53,9 +53,9 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             "library_metadata", "items", "item_identifiers", "item_creators", "item_dates", "file_assets",
             "file_search_root_definitions", "known_file_locations", "document_instances"
         ],
-        ["pages", "document_tree_revisions", "document_boxes"],
+        ["pages", "document_tree_revisions", "document_boxes", "document_commits", "document_commit_pages"],
         ["ocr_presets", "ocr_preset_versions", "ocr_runs", "ocr_page_results", "ocr_candidate_adoptions"],
-        ["search_units", "search_index_status", "evidence_ref_records", "evidence_successors"],
+        ["search_units", "search_index_status"],
         ["search_profiles", "search_rewrite_rules", "search_settings", "library_setting_records"]
     ];
 
@@ -455,6 +455,23 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 await connection.ExecuteAsync("delete from search_units_fts;");
             }
 
+            // Snapshot shards must only contain committed revisions. Working revisions and legacy
+            // status rows ('staging', 'draft', 'discarded') are local state and are not synced.
+            if (await TableExistsAsync(connection, "document_tree_revisions"))
+            {
+                await connection.ExecuteAsync("delete from document_tree_revisions where status != 'committed';");
+            }
+
+            // Only cascade to boxes when the shard actually carries revision rows. In per-table shards
+            // the document_tree_revisions table is emptied by the table-group filter above, so we must
+            // not treat its empty state as "delete all boxes".
+            if (await TableExistsAsync(connection, "document_boxes") &&
+                (includedTables is null || includedTables.Contains("document_tree_revisions")))
+            {
+                await connection.ExecuteAsync(
+                    "delete from document_boxes where tree_revision_id not in (select tree_revision_id from document_tree_revisions);");
+            }
+
             await connection.ExecuteAsync("pragma foreign_keys = on;");
         }
 
@@ -520,7 +537,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         return false;
     }
 
-    internal static async Task<bool> TableExistsAsync(SqliteConnection connection, string table)
+    public static async Task<bool> TableExistsAsync(SqliteConnection connection, string table)
     {
         return await connection.ExecuteScalarAsync<int>(
             "select count(1) from sqlite_master where type in ('table','view') and name = @Table;",
@@ -604,7 +621,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                ?? throw new InvalidOperationException("Runtime database has no library metadata.");
     }
 
-    internal static string BuildConnectionString(string databasePath, SqliteOpenMode mode)
+    public static string BuildConnectionString(string databasePath, SqliteOpenMode mode)
     {
         return new SqliteConnectionStringBuilder
         {
@@ -920,6 +937,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
                     "Snapshot contains an unsafe shard path.");
             }
 
+            new SqliteConnectionFactory(stagingPath).DeleteDatabaseFiles();
             await CopyFileAsync(firstShardPath, stagingPath, cancellationToken);
             foreach (SnapshotShard shard in manifest.Shards.Skip(1))
             {
@@ -933,12 +951,12 @@ public sealed class SnapshotImporter : ISnapshotImporter
             }
 
             await SnapshotPublisher.ValidateDatabaseSchemaAsync(stagingPath);
-            DocumentTreeService trees = new(new SqliteConnectionFactory(stagingPath), new SystemClock(),
-                new MarkdigMarkdownEngine());
+            SqliteConnectionFactory stagingFactory = new(stagingPath);
+            DocumentTreeService trees = new(stagingFactory, new SystemClock(), new MarkdigMarkdownEngine());
             Result treeValidation = await trees.ValidateStoredTreesAsync(cancellationToken);
             if (treeValidation.IsFailure)
             {
-                File.Delete(stagingPath);
+                stagingFactory.DeleteDatabaseFiles();
                 return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
                     $"Imported Document Box Tree is invalid: {treeValidation.ErrorMessage}",
                     treeValidation.Conflicts);
@@ -1103,8 +1121,8 @@ public sealed class SnapshotImporter : ISnapshotImporter
         "ocr_candidate_adoptions",
         "search_units",
         "search_index_status",
-        "evidence_ref_records",
-        "evidence_successors",
+        "document_commits",
+        "document_commit_pages",
         "search_profiles",
         "search_rewrite_rules",
         "search_settings",

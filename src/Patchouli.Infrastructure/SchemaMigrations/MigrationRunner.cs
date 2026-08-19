@@ -17,7 +17,9 @@ public sealed class MigrationRunner
         _migrationsDirectory = migrationsDirectory;
     }
 
-    public async Task<IReadOnlyList<AppliedMigration>> RunAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AppliedMigration>> RunAsync(
+        CancellationToken cancellationToken = default,
+        IProgress<MigrationProgress>? progress = null)
     {
         if (!Directory.Exists(_migrationsDirectory))
         {
@@ -39,24 +41,28 @@ public sealed class MigrationRunner
         await EnsureSupportedSchemaEpochAsync(connection);
         await EnsureSchemaMigrationsTableAsync(connection);
 
+        IReadOnlySet<string> appliedIds = await LoadAppliedMigrationIdsAsync(connection);
+        List<MigrationFile> pending = files.Where(file => !appliedIds.Contains(file.Id)).ToList();
         List<AppliedMigration> applied = new();
 
-        foreach (MigrationFile file in files)
+        for (int i = 0; i < pending.Count; i++)
         {
-            int alreadyApplied = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from schema_migrations where id = @Id;",
-                new { file.Id });
+            MigrationFile file = pending[i];
+            string sql = await File.ReadAllTextAsync(file.Path, cancellationToken);
 
-            if (alreadyApplied > 0)
+            await connection.ExecuteAsync("pragma foreign_keys = off;");
+            long foreignKeys = await connection.ExecuteScalarAsync<long>("pragma foreign_keys;");
+            if (foreignKeys != 0)
             {
-                continue;
+                throw new InvalidOperationException(
+                    $"Failed to disable foreign keys before migration '{file.Name}' ({file.Id}); current value: {foreignKeys}.");
             }
 
-            string sql = await File.ReadAllTextAsync(file.Path, cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             try
             {
+                progress?.Report(new MigrationProgress(file.Id, file.Name, i + 1, pending.Count));
                 await connection.ExecuteAsync(sql, transaction: transaction);
                 await connection.ExecuteAsync(
                     """
@@ -80,9 +86,19 @@ public sealed class MigrationRunner
                 await transaction.RollbackAsync(cancellationToken);
                 throw new MigrationFailedException(file.Id, file.Name, file.Path, exception);
             }
+            finally
+            {
+                await connection.ExecuteAsync("pragma foreign_keys = on;");
+            }
         }
 
         return applied;
+    }
+
+    private static async Task<IReadOnlySet<string>> LoadAppliedMigrationIdsAsync(SqliteConnection connection)
+    {
+        IEnumerable<string> ids = await connection.QueryAsync<string>("select id from schema_migrations;");
+        return ids.ToHashSet(StringComparer.Ordinal);
     }
 
     private static async Task EnsureSupportedSchemaEpochAsync(SqliteConnection connection)
@@ -172,6 +188,8 @@ public sealed class UnsupportedLibrarySchemaException : Exception
 }
 
 public sealed record AppliedMigration(string Id, string Name);
+
+public sealed record MigrationProgress(string Id, string Name, int Ordinal, int Total);
 
 public sealed class MigrationFailedException : Exception
 {

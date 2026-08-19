@@ -1,5 +1,4 @@
 using Patchouli.Infrastructure.Database;
-using Microsoft.Data.Sqlite;
 
 namespace Patchouli.Tests;
 
@@ -25,9 +24,7 @@ internal sealed class TemporarySqliteDatabase : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        SqliteConnection.ClearAllPools();
-        GC.Collect();
-        GC.WaitForPendingFinalizers();
+        ConnectionFactory.ClearPools();
 
         if (File.Exists(Path))
         {

@@ -11,7 +11,6 @@ using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Mcp;
@@ -25,57 +24,57 @@ namespace Patchouli.Tests;
 public sealed class McpReadApiConnectionModeTests
 {
     [Fact]
-    public async Task Mcp_read_paths_run_read_only_and_keep_evidence_writes_writer_owned()
+    public async Task Mcp_read_paths_run_read_only_and_do_not_advance_library_revision()
     {
         await using LibraryContext context = await LibraryContext.SeedAsync();
+
+        Result<McpLibraryStateResponse> before = await context.Api.GetCurrentLibraryStateAsync();
+        before.IsSuccess.Should().BeTrue();
 
         IReadOnlyList<McpPageBlock> blocks =
             (await context.Api.GetPageBlocksAsync(new McpPageBlocksRequest(context.PageId))).Value.Blocks;
-        blocks.Should().NotBeEmpty();
-        string[] evidenceRefs = blocks.Select(block => block.EvidenceRef)
-            .Where(refId => !string.IsNullOrWhiteSpace(refId))
-            .Select(refId => refId!)
-            .ToArray();
-        evidenceRefs.Should().NotBeEmpty(
-            "a nominally-read MCP operation may carry the evidence side effect, but that write must still go through the writer-owned evidence service");
-
-        await using SqliteConnection readConnection = context.Database.ConnectionFactory.CreateReadConnection();
-        await readConnection.OpenAsync();
-        int persisted = await readConnection.ExecuteScalarAsync<int>(
-            "select count(1) from evidence_ref_records where evidence_ref_id in @Refs;",
-            new { Refs = evidenceRefs });
-        persisted.Should().Be(evidenceRefs.Length,
-            "the evidence side effect must be committed to the database, not lost on a read-only connection");
-
-        Result<long> committed = await context.Revisions.CommitAsync(LibraryChangeSet.Empty);
-        committed.IsSuccess.Should().BeTrue();
-        Result<long> current = await context.Revisions.GetCurrentRevisionAsync();
-        current.IsSuccess.Should().BeTrue();
-        current.Value.Should().BeGreaterThan(0,
-            "the single-writer revision commit owns writes even after heavy read-only MCP traffic");
-    }
-
-    [Fact]
-    public async Task Search_evidence_resolve_and_csl_reads_work_through_read_only_connections()
-    {
-        await using LibraryContext context = await LibraryContext.SeedAsync();
+        blocks.Should().ContainSingle();
+        blocks.Single().TreeRevisionId.Should().NotBeNull();
+        blocks.Single().BoxId.Should().NotBeNull();
 
         Result<McpPageTextResponse> text =
             await context.Api.GetPageTextAsync(new McpPageTextRequest(context.PageId));
         text.IsSuccess.Should().BeTrue();
-        text.Value.Text.Should().Contain("canonical searchable phrase");
+
+        Result<McpSearchLibraryResponse> search =
+            await context.Api.SearchLibraryAsync(new McpSearchLibraryRequest("canonical"));
+        search.IsSuccess.Should().BeTrue();
+        search.Value.Results.Should().NotBeEmpty();
+
+        Result<McpLibraryStateResponse> after = await context.Api.GetCurrentLibraryStateAsync();
+        after.Value.LibraryRevision.Should().Be(before.Value.LibraryRevision,
+            "read-only MCP operations must not advance the library revision");
+    }
+
+    [Fact]
+    public async Task Versioned_evidence_resolves_through_read_only_connections()
+    {
+        await using LibraryContext context = await LibraryContext.SeedAsync();
 
         McpPageBlock matched = (await context.Api.GetPageBlocksAsync(
             new McpPageBlocksRequest(context.PageId))).Value.Blocks.Single();
-        Result<McpPageTextResponse> pinned = await context.Api.GetPageTextAsync(
-            new McpPageTextRequest(context.PageId, McpReadMode.Pinned, matched.EvidenceRef));
-        pinned.IsSuccess.Should().BeTrue($"error: {pinned.ErrorCode} {pinned.ErrorMessage}");
-        pinned.Value.Text.Should().Contain("canonical searchable phrase");
 
-        Result<McpSearchLibraryResponse> search =
-            await context.Api.SearchLibraryAsync(new McpSearchLibraryRequest("searchable"));
-        search.IsSuccess.Should().BeTrue($"error: {search.ErrorCode} {search.ErrorMessage}");
-        search.Value.Results.Should().NotBeEmpty();
+        Result<EvidencePageText> byRevAndBox = await context.EvidenceReader.GetBoxTextAsync(
+            context.DocumentId, 1, matched.TreeRevisionId, matched.BoxId);
+        byRevAndBox.IsSuccess.Should().BeTrue($"error: {byRevAndBox.ErrorCode} {byRevAndBox.ErrorMessage}");
+        byRevAndBox.Value.Markdown.Should().Contain("canonical searchable phrase");
+        byRevAndBox.Value.TreeRevisionId.Should().Be(matched.TreeRevisionId);
+        byRevAndBox.Value.BoxId.Should().Be(matched.BoxId);
+
+        Result<EvidencePageText> head = await context.EvidenceReader.GetBoxTextAsync(
+            context.DocumentId, 1, boxId: matched.BoxId);
+        head.IsSuccess.Should().BeTrue();
+        head.Value.Markdown.Should().Contain("canonical searchable phrase");
+
+        Result<EvidencePageText> wrongPage = await context.EvidenceReader.GetBoxTextAsync(
+            context.DocumentId, 99, matched.TreeRevisionId, matched.BoxId);
+        wrongPage.IsSuccess.Should().BeFalse();
+        wrongPage.ErrorCode.Should().Be(AppErrorCodes.NotFound);
 
         Result<McpLibraryStateResponse> state = await context.Api.GetCurrentLibraryStateAsync();
         state.IsSuccess.Should().BeTrue();
@@ -84,19 +83,24 @@ public sealed class McpReadApiConnectionModeTests
 
     private sealed class LibraryContext : IAsyncDisposable
     {
-        private LibraryContext(TemporarySqliteDatabase database, McpReadApi api, LibraryRevisionService revisions,
-            PageId pageId)
+        private LibraryContext(TemporarySqliteDatabase database, McpReadApi api,
+            IVersionedEvidenceReader evidenceReader,
+            LibraryRevisionService revisions, PageId pageId, DocumentInstanceId documentId)
         {
             Database = database;
             Api = api;
+            EvidenceReader = evidenceReader;
             Revisions = revisions;
             PageId = pageId;
+            DocumentId = documentId;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public McpReadApi Api { get; }
+        public IVersionedEvidenceReader EvidenceReader { get; }
         public LibraryRevisionService Revisions { get; }
         public PageId PageId { get; }
+        public DocumentInstanceId DocumentId { get; }
 
         public static async Task<LibraryContext> SeedAsync()
         {
@@ -135,18 +139,20 @@ public sealed class McpReadApiConnectionModeTests
             }
 
             DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
-            Result<DocumentTreeRevision> staged = await trees.StagePageAsync(document.Value.DocumentInstanceId,
-                page.Value.PageId,
+            Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
+                document.Value.DocumentInstanceId, page.Value.PageId,
                 [
                     new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
                         new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("canonical searchable phrase"))
-                ]);
-            if (staged.IsFailure)
+                ],
+                DocumentTreeRevisionSource.Import);
+            if (working.IsFailure)
             {
-                throw new InvalidOperationException(staged.ErrorMessage);
+                throw new InvalidOperationException(working.ErrorMessage);
             }
 
-            Result<DocumentTreeRevision> committed = await trees.AdoptStagingRevisionAsync(staged.Value.TreeRevisionId);
+            Result<DocumentTreeRevision> committed =
+                await trees.CommitWorkingRevisionAsync(working.Value.TreeRevisionId);
             if (committed.IsFailure)
             {
                 throw new InvalidOperationException(committed.ErrorMessage);
@@ -166,11 +172,15 @@ public sealed class McpReadApiConnectionModeTests
                 throw new InvalidOperationException(ftsRebuilt.ErrorMessage);
             }
 
-            EvidenceReferenceService evidence = new(database.ConnectionFactory, clock);
+            IMarkdownEngine markdown = new MarkdigMarkdownEngine();
+            IDocumentMarkdownCompiler markdownCompiler = new DocumentMarkdownCompiler(trees, markdown);
+            IVersionedEvidenceReader evidenceReader = new VersionedEvidenceReader(
+                database.ConnectionFactory, libraries, trees, markdownCompiler);
             SqliteSearchService search = new(database.ConnectionFactory);
             LibraryRevisionService revisions = new(database.ConnectionFactory);
-            McpReadApi api = new(database.ConnectionFactory, search, evidence);
-            return new LibraryContext(database, api, revisions, page.Value.PageId);
+            McpReadApi api = new(database.ConnectionFactory, search);
+            return new LibraryContext(database, api, evidenceReader, revisions, page.Value.PageId,
+                document.Value.DocumentInstanceId);
         }
 
         public ValueTask DisposeAsync()

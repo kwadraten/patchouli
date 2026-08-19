@@ -17,7 +17,6 @@ using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.Infrastructure.Csl;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -188,7 +187,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Find_search_texts_returns_evidence_ref_page_uris()
+    public async Task Find_search_texts_returns_versioned_evidence_page_uris()
     {
         McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
             new McpFindRequest("quorum", "patchouli://texts/", null));
@@ -196,7 +195,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         result.Envelope!.Entries.Should().NotBeEmpty();
         McpFindEntry first = Entry(result.Envelope.Entries.First());
         first.Uri.Should().Match($"patchouli://texts/{_library.DocumentA}/page-*");
-        first.Uri.Should().Contain("?evref=");
+        first.Uri.Should().Contain("?rev=");
+        first.Uri.Should().Contain("&box=");
         first.Type.Should().Be("file");
     }
 
@@ -446,10 +446,18 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         ok.Envelope!.Entries.Single().ResourceType.Should().Be("evidence");
         ok.Envelope.Entries.Single().Content.Should().Contain("quorum");
 
-        string evidenceRef = evidenceUri.Split("?evref=", 2)[1];
+        Result<McpUriParseResult> parsed = McpResourceUris.Parse(evidenceUri);
+        parsed.IsSuccess.Should().BeTrue();
+        DocumentTreeRevisionId rev = parsed.Value.TreeRevisionId!.Value;
+        DocumentBoxId box = parsed.Value.BoxId!.Value;
+
         McpCommandResult<McpFetchMeta, McpFetchResult> wrongPage = await _library.Commands.FetchAsync(
-            new McpFetchRequest([McpResourceUris.EvidencePageUri(_library.DocumentA, 99, evidenceRef)], null, null));
+            new McpFetchRequest([McpResourceUris.EvidencePageUri(_library.DocumentA, 99, rev, box)], null, null));
         ErrorCode(wrongPage.Envelope!.Entries.Single().Error).Should().Be((int)McpErrorCode.NotFound);
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> wrongDocument = await _library.Commands.FetchAsync(
+            new McpFetchRequest([McpResourceUris.EvidencePageUri(_library.DocumentB, 1, rev, box)], null, null));
+        ErrorCode(wrongDocument.Envelope!.Entries.Single().Error).Should().Be((int)McpErrorCode.NotFound);
     }
 
     [Fact]
@@ -600,7 +608,9 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         page.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
 
         McpCommandResult<McpPutMeta, McpPutResult> evidence = await _library.Commands.PutAsync(
-            new McpPutRequest("patchouli://texts/" + _library.DocumentA + "/page-1.md?evref=evref:v2:any", "x"));
+            new McpPutRequest(
+                $"patchouli://texts/{_library.DocumentA}/page-1.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001",
+                "x"));
         evidence.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
     }
 
@@ -671,6 +681,14 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             new McpCiteRequest([McpResourceUris.PageUri(_library.DocumentA, 1)], McpResourceUris.StyleUri("apa"),
                 null, false, false));
         page.IsSuccess.Should().BeTrue();
+
+        McpCommandResult<McpFindMeta, object> search = await _library.Commands.FindAsync(
+            new McpFindRequest("quorum", "patchouli://texts/", null));
+        string evidenceUri = Entry(search.Envelope!.Entries.First()).Uri;
+        McpCommandResult<McpCiteMeta, McpCitationResult> evidence = await _library.Commands.CiteAsync(
+            new McpCiteRequest([evidenceUri], McpResourceUris.StyleUri("apa"), null, false, false));
+        evidence.IsSuccess.Should().BeTrue();
+        evidence.Envelope!.Entries.Single().Citation.Should().NotBeNullOrWhiteSpace();
     }
 
     [Fact]
@@ -799,14 +817,15 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             BlockingOperationService blockingOperations = new(db, clock);
             SearchProfileService profiles = new(db, library, clock);
             SqliteSearchService search = new(db, profiles);
-            EvidenceReferenceService evidence = new(db, clock);
             CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations);
             CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
-            McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
+            McpReadApi api = new(db, search, cslStyleStore: cslStore, cslRenderer: cslRenderer);
             McpWriteApi writes = new(items, new BiblatexHelperClient(), cslStore);
             BiblatexImportService biblatex = new(new BiblatexHelperClient(), items,
                 new FileAssetService(db, library, clock), documents);
-            McpCommandService commands = new(api, writes, biblatex);
+            IVersionedEvidenceReader evidenceReader = new VersionedEvidenceReader(
+                db, library, tree, new DocumentMarkdownCompiler(tree, new MarkdigMarkdownEngine()));
+            McpCommandService commands = new(api, writes, biblatex, items, evidenceReader);
 
             Result<CslStyle> installed = await cslStore.InstallStyleAsync(
                 new CslCatalogStyle("apa", "APA 7th", null, "catalog"), ApaStyleXml);
@@ -832,15 +851,15 @@ public sealed class McpCommandContractTests : IAsyncLifetime
                 CoordinateBasis.NormalizedPage, null, null, "benchmark", null);
             Require(page);
 
-            Result<DocumentTreeRevision> staging = await tree.StagePageAsync(
+            Result<DocumentTreeRevision> working = await tree.BeginWorkingRevisionAsync(
                 documentId, page.Value.PageId,
                 [
                     new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
                         new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload(text), null)
                 ],
                 DocumentTreeRevisionSource.Import);
-            Require(staging);
-            Require(await tree.AdoptStagingRevisionAsync(staging.Value.TreeRevisionId));
+            Require(working);
+            Require(await tree.CommitWorkingRevisionAsync(working.Value.TreeRevisionId));
             return page.Value.PageId;
         }
 

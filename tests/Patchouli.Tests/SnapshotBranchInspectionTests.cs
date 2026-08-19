@@ -18,11 +18,16 @@ public sealed class SnapshotBranchInspectionTests
     public async Task OpenBranchForInspection_valid_manifest_returns_branch_info()
     {
         await using Ctx c = await Ctx.Create();
-        byte[] before = await File.ReadAllBytesAsync(c.Db.Path);
         Result<SnapshotBranchInspectionInfo> branch = await c.Open();
+
         branch.Value.IsLibraryMatch.Should().BeTrue();
         File.Exists(branch.Value.StagingDatabasePath).Should().BeTrue();
-        (await File.ReadAllBytesAsync(c.Db.Path)).Should().Equal(before);
+        Path.GetFullPath(branch.Value.StagingDatabasePath).Should().NotBe(Path.GetFullPath(c.Db.Path));
+        (await c.Scalar<string>("select library_id from library_metadata;", new { })).Should()
+            .Be(c.ActiveLibraryId.ToString());
+        (await c.Count("items")).Should().Be(0);
+        (await c.BranchCount(branch.Value, "document_commits")).Should().Be(1);
+        (await c.BranchCount(branch.Value, "document_commit_pages")).Should().Be(1);
     }
 
     [Fact]
@@ -66,6 +71,7 @@ public sealed class SnapshotBranchInspectionTests
         (await c.Count("items")).Should().Be(1);
         (await c.Count("pages")).Should().Be(1);
         (await c.Count("search_units")).Should().Be(1);
+        (await c.Count("document_commits")).Should().Be(1);
         (await c.Status(c.Doc)).Should().Be("stale");
     }
 
@@ -87,6 +93,34 @@ public sealed class SnapshotBranchInspectionTests
     }
 
     [Fact]
+    public async Task Failed_apply_releases_attached_staging_database_before_discard()
+    {
+        await using Ctx c = await Ctx.Create(true);
+        SnapshotBranchInspectionInfo branch = (await c.Open()).Value;
+        await using (SqliteConnection staging = new(new SqliteConnectionStringBuilder
+                     {
+                         DataSource = branch.StagingDatabasePath,
+                         Pooling = false
+                     }.ToString()))
+        {
+            await staging.OpenAsync();
+            await staging.ExecuteAsync(
+                "update library_setting_records set merge_policy = 'invalid_policy' where setting_key = @Key;",
+                new { Key = LibrarySettingKeys.MetadataLookup });
+        }
+
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync(branch, [], [])).Value;
+        Result<BranchImportResult> applied = await c.Service.ApplyImportPlanAsync(
+            plan,
+            true,
+            [LibrarySettingKeys.MetadataLookup]);
+
+        applied.IsFailure.Should().BeTrue();
+        (await c.Service.DiscardBranchAsync(branch)).IsSuccess.Should().BeTrue();
+        File.Exists(branch.StagingDatabasePath).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Conflict_blocks_overwrite_and_branch_actions_do_not_touch_active()
     {
         await using Ctx c = await Ctx.Create();
@@ -101,7 +135,17 @@ public sealed class SnapshotBranchInspectionTests
         string copy = Path.Combine(c.Root, "copy.sqlite");
         (await c.Service.KeepBranchAsSeparateLibraryCopyAsync(b, copy)).IsSuccess.Should().BeTrue();
         File.Exists(copy).Should().BeTrue();
+        SqliteTestCleanup.ReleasePools(b.StagingDatabasePath);
+        File.WriteAllText($"{b.StagingDatabasePath}-wal", "stale wal");
+        File.WriteAllText($"{b.StagingDatabasePath}-shm", "stale shm");
+        File.WriteAllText($"{b.StagingDatabasePath}-journal", "stale journal");
+
         (await c.Service.DiscardBranchAsync(b)).IsSuccess.Should().BeTrue();
+
+        File.Exists(b.StagingDatabasePath).Should().BeFalse();
+        File.Exists($"{b.StagingDatabasePath}-wal").Should().BeFalse();
+        File.Exists($"{b.StagingDatabasePath}-shm").Should().BeFalse();
+        File.Exists($"{b.StagingDatabasePath}-journal").Should().BeFalse();
         File.Exists(c.Db.Path).Should().BeTrue();
     }
 
@@ -151,21 +195,22 @@ public sealed class SnapshotBranchInspectionTests
     }
 
     [Fact]
-    public async Task Apply_imports_evidence_without_local_path()
+    public async Task Apply_imports_committed_revisions_and_document_commits()
     {
         await using Ctx c = await Ctx.Create();
         SnapshotBranchInspectionInfo b = (await c.Open()).Value;
         BranchImportPlan p = (await c.Service.BuildImportPlanAsync(b, [c.Item], [])).Value;
         await c.Service.ApplyImportPlanAsync(p, true);
-        (await c.Count("evidence_ref_records")).Should().Be(1);
-        string json = await c.EvidenceJson();
-        json.Should().NotContain("/tmp").And.NotContain(c.Secret);
+        (await c.Count("document_tree_revisions")).Should().Be(1);
+        (await c.Count("document_boxes")).Should().Be(1);
+        (await c.Count("document_commits")).Should().Be(1);
+        (await c.Count("document_commit_pages")).Should().Be(1);
     }
 
     [Fact]
     public void Agent_prd_documents_branch_safety()
     {
-        string prd = File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md"));
+        string prd = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md"));
         prd.Should().Contain("作为独立分支打开以供检查").And.Contain("v1 不执行自动对象级合并").And.Contain("不得在分支间静默执行最后写入者胜出").And
             .Contain("提供程序凭据");
     }
@@ -313,12 +358,13 @@ public sealed class SnapshotBranchInspectionTests
     private sealed class Ctx : IAsyncDisposable
     {
         private Ctx(TemporarySqliteDatabase db, string root, SnapshotBranchInspectionService service,
-            SnapshotPublishResult pub, ItemId item, DocumentInstanceId doc, string secret)
+            SnapshotPublishResult pub, LibraryId activeLibraryId, ItemId item, DocumentInstanceId doc, string secret)
         {
             Db = db;
             Root = root;
             Service = service;
             Pub = pub;
+            ActiveLibraryId = activeLibraryId;
             Item = item;
             Doc = doc;
             Secret = secret;
@@ -328,6 +374,7 @@ public sealed class SnapshotBranchInspectionTests
         public string Root { get; }
         public SnapshotBranchInspectionService Service { get; }
         public SnapshotPublishResult Pub { get; }
+        public LibraryId ActiveLibraryId { get; }
         public ItemId Item { get; }
         public DocumentInstanceId Doc { get; }
         public string Secret { get; }
@@ -347,19 +394,30 @@ public sealed class SnapshotBranchInspectionTests
             DocumentTreeRevisionId rev = DocumentTreeRevisionId.New();
             DocumentBoxId box = DocumentBoxId.New();
             SearchUnitId unit = SearchUnitId.New();
+            DocumentCommitId commitId = DocumentCommitId.New();
             string now = clock.UtcNow.ToString("O");
             string secret = "branch-secret-123";
             await using (SqliteConnection cn = db.ConnectionFactory.CreateConnection())
             {
                 await cn.OpenAsync();
                 await cn.ExecuteAsync(
-                    "insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) values(@I,@L,'book','Branch Item','[]','[]','[]','{}',@N,@N);insert into item_identifiers(identifier_id,item_id,scheme,value,created_at) values(@X,@I,'DOI','10/test',@N);insert into file_assets(file_asset_id,library_id,original_path,file_name,size_bytes,status,created_at,updated_at) values(@F,@L,'/tmp/never-copy.pdf','never-copy.pdf',0,'missing',@N,@N);insert into document_instances(document_instance_id,item_id,file_asset_id,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,@F,'primary_scan',1,'active',@N,@N);insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,0,0,'normalized_page','test',@N,@N);insert into document_tree_revisions(tree_revision_id,document_instance_id,page_id,source,status,is_current,created_at,committed_at) values(@R,@D,@P,'manual_edit','committed',1,@N,@N);insert into document_boxes(tree_revision_id,box_id,document_instance_id,page_id,box_type,bbox_x,bbox_y,bbox_width,bbox_height,payload_json,suppressed) values(@R,@O,@D,@P,'text',0.1,0.1,0.8,0.1,'{\"markdown\":\"branch text\"}',0);insert into search_units(unit_id,document_instance_id,page_id,box_id,tree_revision_id,resolved_text,bbox_json,box_type,ordinal,status,created_at,updated_at) values(@U,@D,@P,@O,@R,'branch text','{\"x\":0.1,\"y\":0.1,\"width\":0.8,\"height\":0.1}','text',1,'current',@N,@N);insert into evidence_ref_records(evidence_record_id,evidence_ref_id,library_id,document_instance_id,page_id,unit_id,tree_revision_id,box_id,pinned_text,source_title,page_index,status,created_at) values(@E,'evref:v2:test',@L,@D,@P,@U,@R,@O,'branch text','Branch Item',0,'active',@N);",
+                    """
+                    insert into items(item_id,library_id,item_type,title,creators_json,tags_json,collections_json,custom_fields_json,created_at,updated_at) values(@I,@L,'book','Branch Item','[]','[]','[]','{}',@N,@N);
+                    insert into item_identifiers(identifier_id,item_id,scheme,value,created_at) values(@X,@I,'DOI','10/test',@N);
+                    insert into file_assets(file_asset_id,library_id,original_path,file_name,size_bytes,status,created_at,updated_at) values(@F,@L,'/tmp/never-copy.pdf','never-copy.pdf',0,'missing',@N,@N);
+                    insert into document_instances(document_instance_id,item_id,file_asset_id,instance_type,is_primary,status,created_at,updated_at) values(@D,@I,@F,'primary_scan',1,'active',@N,@N);
+                    insert into pages(page_id,document_instance_id,page_index,rotation,coordinate_basis,renderer_basis_version,created_at,updated_at) values(@P,@D,0,0,'normalized_page','test',@N,@N);
+                    insert into document_tree_revisions(tree_revision_id,document_instance_id,page_id,source,status,is_current,created_at,committed_at) values(@R,@D,@P,'manual_edit','committed',1,@N,@N);
+                    insert into document_boxes(tree_revision_id,box_id,document_instance_id,page_id,box_type,bbox_x,bbox_y,bbox_width,bbox_height,payload_json,suppressed) values(@R,@O,@D,@P,'text',0.1,0.1,0.8,0.1,'{"markdown":"branch text"}',0);
+                    insert into search_units(unit_id,document_instance_id,page_id,box_id,tree_revision_id,resolved_text,bbox_json,box_type,ordinal,status,created_at,updated_at) values(@U,@D,@P,@O,@R,'branch text','{"x":0.1,"y":0.1,"width":0.8,"height":0.1}','text',1,'current',@N,@N);
+                    insert into document_commits(commit_id,document_instance_id,parent_commit_id,source,message,created_at) values(@C,@D,null,'manual_edit','branch commit',@N);
+                    insert into document_commit_pages(commit_id,page_id,tree_revision_id) values(@C,@P,@R);
+                    """,
                     new
                     {
                         I = item.ToString(), L = lib.LibraryId.ToString(), N = now, X = IdentifierId.New().ToString(),
                         F = FileAssetId.New().ToString(), D = doc.ToString(), P = page.ToString(), R = rev.ToString(),
-                        O = box.ToString(), U = unit.ToString(), E = EvidenceRefId.New().ToString(),
-                        C = CredentialId.New().ToString(), S = secret
+                        O = box.ToString(), U = unit.ToString(), C = commitId.ToString(), S = secret
                     });
                 if (includeLibrarySetting)
                 {
@@ -380,12 +438,12 @@ public sealed class SnapshotBranchInspectionTests
             {
                 await cn.OpenAsync();
                 await cn.ExecuteAsync(
-                    "delete from evidence_ref_records; delete from items; delete from search_index_status; delete from library_setting_records;");
+                    "delete from document_commit_pages; delete from document_commits; delete from items; delete from search_index_status; delete from library_setting_records;");
             }
 
             return new Ctx(db, root,
-                new SnapshotBranchInspectionService(new SnapshotImporter(), db.ConnectionFactory, libSvc), pub, item,
-                doc, secret);
+                new SnapshotBranchInspectionService(new SnapshotImporter(), db.ConnectionFactory, libSvc), pub,
+                lib.LibraryId, item, doc, secret);
         }
 
         public Task<Result<SnapshotBranchInspectionInfo>> Open()
@@ -400,20 +458,23 @@ public sealed class SnapshotBranchInspectionTests
             return await c.ExecuteScalarAsync<int>($"select count(*) from {t}");
         }
 
+        public async Task<int> BranchCount(SnapshotBranchInspectionInfo branch, string t)
+        {
+            await using SqliteConnection c = new(new SqliteConnectionStringBuilder
+                {
+                    DataSource = branch.StagingDatabasePath, Mode = SqliteOpenMode.ReadOnly, Pooling = false
+                }
+                .ToString());
+            await c.OpenAsync();
+            return await c.ExecuteScalarAsync<int>($"select count(*) from {t}");
+        }
+
         public async Task<string?> Status(DocumentInstanceId d)
         {
             await using SqliteConnection c = Db.ConnectionFactory.CreateConnection();
             await c.OpenAsync();
             return await c.ExecuteScalarAsync<string?>("select status from search_index_status where scope_id=@D",
                 new { D = d.ToString() });
-        }
-
-        public async Task<string> EvidenceJson()
-        {
-            await using SqliteConnection c = Db.ConnectionFactory.CreateConnection();
-            await c.OpenAsync();
-            return await c.ExecuteScalarAsync<string>(
-                "select evidence_ref_id||pinned_text from evidence_ref_records limit 1") ?? "";
         }
 
         public async Task InsertConflictingItem()
@@ -472,6 +533,7 @@ public sealed class SnapshotBranchInspectionTests
 
         public async ValueTask DisposeAsync()
         {
+            SqliteTestCleanup.ReleasePoolsInDirectory(Root);
             await Db.DisposeAsync();
             Directory.Delete(Root, true);
         }

@@ -13,7 +13,7 @@ public enum McpUriKind
     Document,
     Page,
     Style,
-    EvidenceRef
+    Evidence
 }
 
 public sealed record McpUriParseResult(
@@ -22,12 +22,14 @@ public sealed record McpUriParseResult(
     DocumentInstanceId? DocumentId = null,
     int? PageIndex = null,
     string? StyleId = null,
-    string? EvidenceRefId = null);
+    DocumentTreeRevisionId? TreeRevisionId = null,
+    DocumentBoxId? BoxId = null);
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
 /// items/, texts/, and csl-styles/. Evidence is only consumed through a text page
-/// URI's ?evref= query. Legacy documents/, styles/, and evidence/ roots are rejected.
+/// URI's ?rev= and &amp;box= query parameters. Legacy documents/, styles/, and evidence/
+/// roots are rejected, and legacy ?evref= queries are rejected with a clear error.
 /// </summary>
 public static class McpResourceUris
 {
@@ -52,11 +54,30 @@ public static class McpResourceUris
     }
 
     /// <summary>
-    /// Builds the canonical evidence-consumption page URI for a matched EvidenceRef.
+    /// Builds the canonical evidence-consumption page URI for a matched search unit.
+    /// At least one of <paramref name="treeRevisionId"/> or <paramref name="boxId"/> must
+    /// be provided. A box without a revision addresses the box in the current HEAD.
     /// </summary>
-    public static string EvidencePageUri(DocumentInstanceId documentId, int pageIndex, string evidenceRefId)
+    public static string EvidencePageUri(
+        DocumentInstanceId documentId,
+        int pageIndex,
+        DocumentTreeRevisionId? treeRevisionId = null,
+        DocumentBoxId? boxId = null)
     {
-        return $"{Prefix}texts/{documentId}/page-{pageIndex}.md?evref={evidenceRefId}";
+        if (treeRevisionId is null && boxId is null)
+        {
+            return PageUri(documentId, pageIndex);
+        }
+
+        string uri = PageUri(documentId, pageIndex);
+        if (treeRevisionId is not null && boxId is not null)
+        {
+            return $"{uri}?rev={treeRevisionId}&box={boxId}";
+        }
+
+        return treeRevisionId is not null
+            ? $"{uri}?rev={treeRevisionId}"
+            : $"{uri}?box={boxId}";
     }
 
     public static string StyleUri(string styleId)
@@ -135,7 +156,7 @@ public static class McpResourceUris
     private static Result<McpUriParseResult> ParseTextsUri(string uri, string[] segments, string? query)
     {
         // patchouli://texts/ or patchouli://texts/{id}/ or
-        // patchouli://texts/{id}/page-{page-index}.md[?evref={evidence-ref}]
+        // patchouli://texts/{id}/page-{page-index}.md[?rev=<id>[&box=<id>]]
         if (segments.Length == 2 && segments[0] == "texts" && segments[1].Length == 0)
         {
             return query is null
@@ -152,7 +173,7 @@ public static class McpResourceUris
                 : Invalid(uri, "Document URIs do not accept query parameters.");
         }
 
-        // Page URI: texts/{id}/page-{index}.md with an optional ?evref= query.
+        // Page URI: texts/{id}/page-{index}.md with an optional versioned evidence query.
         if (segments.Length == 3 && TryParseGuid(segments[1], out Guid documentIdForPage) &&
             TryParsePageIndex(segments[2], out int pageIndex))
         {
@@ -164,16 +185,18 @@ public static class McpResourceUris
                     PageIndex: pageIndex));
             }
 
-            if (TryParseEvidenceQuery(query, out string? evidenceRefId))
+            if (TryParseVersionedQuery(query, out DocumentTreeRevisionId? treeRevisionId, out DocumentBoxId? boxId))
             {
                 return Result<McpUriParseResult>.Success(new McpUriParseResult(
-                    McpUriKind.EvidenceRef,
+                    McpUriKind.Evidence,
                     DocumentId: new DocumentInstanceId(documentIdForPage),
                     PageIndex: pageIndex,
-                    EvidenceRefId: evidenceRefId));
+                    TreeRevisionId: treeRevisionId,
+                    BoxId: boxId));
             }
 
-            return Invalid(uri, "Page URI queries must use the form ?evref={evidence-ref}.");
+            return Invalid(uri,
+                "Page URI queries must use the form ?rev={tree-revision-id}[&box={box-id}]. Legacy ?evref= is not supported.");
         }
 
         return Invalid(uri, "Text URIs must be patchouli://texts/{document-id}/ or " +
@@ -229,23 +252,62 @@ public static class McpResourceUris
         return indexText.Length > 0 && int.TryParse(indexText, out pageIndex) && pageIndex >= 1;
     }
 
-    private static bool TryParseEvidenceQuery(string query, out string? evidenceRefId)
+    private static bool TryParseVersionedQuery(
+        string query,
+        out DocumentTreeRevisionId? treeRevisionId,
+        out DocumentBoxId? boxId)
     {
-        evidenceRefId = null;
-        const string key = "evref=";
-        if (!query.StartsWith(key, StringComparison.Ordinal))
+        treeRevisionId = null;
+        boxId = null;
+
+        if (string.IsNullOrWhiteSpace(query))
         {
             return false;
         }
 
-        string value = query[key.Length..];
-        if (string.IsNullOrWhiteSpace(value))
+        // Reject legacy evref outright, regardless of other parameters.
+        if (query.Contains("evref=", StringComparison.Ordinal))
         {
             return false;
         }
 
-        evidenceRefId = value;
-        return true;
+        foreach (string part in query.Split('&'))
+        {
+            int separator = part.IndexOf('=');
+            if (separator <= 0 || separator == part.Length - 1)
+            {
+                return false;
+            }
+
+            string key = part[..separator];
+            string value = part[(separator + 1)..];
+
+            switch (key)
+            {
+                case "rev":
+                    if (!TryParseGuid(value, out Guid revGuid))
+                    {
+                        return false;
+                    }
+
+                    treeRevisionId = new DocumentTreeRevisionId(revGuid);
+                    break;
+
+                case "box":
+                    if (!TryParseGuid(value, out Guid boxGuid))
+                    {
+                        return false;
+                    }
+
+                    boxId = new DocumentBoxId(boxGuid);
+                    break;
+
+                default:
+                    return false;
+            }
+        }
+
+        return treeRevisionId is not null || boxId is not null;
     }
 
     private static bool TryParseGuid(string value, out Guid guid)

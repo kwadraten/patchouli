@@ -9,12 +9,10 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Coordinates;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -43,66 +41,65 @@ public sealed class McpSourceValidationTests
         context.FullHashCount.Value.Should().Be(0, "page blocks without bbox must not hash the whole source file");
 
         McpPageBlocksResponse withBbox = (await context.Api.GetPageBlocksAsync(
-            new McpPageBlocksRequest(context.PageId, IncludeBbox: true))).Value;
+            new McpPageBlocksRequest(context.PageId, true))).Value;
         context.FullHashCount.Value.Should().Be(1, "the first coordinate-sensitive access may trigger one full hash");
         withBbox.Warnings.Should().Contain(BBoxWarning.BasisStale);
 
         McpPageBlocksResponse repeatedBbox = (await context.Api.GetPageBlocksAsync(
-            new McpPageBlocksRequest(context.PageId, IncludeBbox: true))).Value;
+            new McpPageBlocksRequest(context.PageId, true))).Value;
         repeatedBbox.Warnings.Should().Contain(BBoxWarning.BasisStale);
         context.FullHashCount.Value.Should().Be(1, "an unchanged source file must reuse the cached full hash");
     }
 
     [Fact]
-    public async Task Concurrent_bbox_reads_share_one_inflight_validation_and_pinned_evidence_does_not_hash()
+    public async Task Concurrent_bbox_reads_share_one_inflight_validation_and_versioned_evidence_does_not_hash()
     {
         await using Context context = await Context.CreateAsync();
 
         Task<Result<McpPageBlocksResponse>>[] requests = Enumerable.Range(0, 6)
-            .Select(_ => context.Api.GetPageBlocksAsync(new McpPageBlocksRequest(context.PageId, IncludeBbox: true)))
+            .Select(_ => context.Api.GetPageBlocksAsync(new McpPageBlocksRequest(context.PageId, true)))
             .ToArray();
         Result<McpPageBlocksResponse>[] results = await Task.WhenAll(requests);
         results.Should().OnlyContain(result => result.IsSuccess);
         context.FullHashCount.Value.Should()
             .Be(1, "concurrent coordinate-sensitive reads share one in-flight validation");
 
-        Result<EvidenceRefRecord> record = await context.Evidence.CreateFromSearchUnitAsync(context.UnitId);
-        record.IsSuccess.Should().BeTrue();
+        McpPageBlock matched = (await context.Api.GetPageBlocksAsync(
+            new McpPageBlocksRequest(context.PageId))).Value.Blocks.Single();
 
         int before = context.FullHashCount.Value;
-        Result<EvidenceResolutionResult> pinned = await context.Evidence.ResolveAsync(record.Value.EvidenceRefId,
-            EvidenceResolutionMode.Pinned);
-        pinned.IsSuccess.Should().BeTrue();
-        context.FullHashCount.Value.Should().Be(before, "pinned evidence resolution must not trigger a full hash");
-
-        Result<EvidenceResolutionResult> compare = await context.Evidence.ResolveAsync(record.Value.EvidenceRefId,
-            EvidenceResolutionMode.Compare);
-        compare.IsSuccess.Should().BeTrue();
-        compare.Value.Warning.Should().Contain(BBoxWarning.BasisStale,
-            "compare evidence requiring source drift must run through the shared validation");
+        Result<EvidencePageText> versioned = await context.EvidenceReader.GetBoxTextAsync(
+            context.DocumentId, 1, matched.TreeRevisionId, matched.BoxId);
+        versioned.IsSuccess.Should().BeTrue();
         context.FullHashCount.Value.Should().Be(before,
-            "repeated current/compare evidence on an unchanged source reuses the cached validation without a new full hash");
+            "versioned evidence resolution must not trigger a full hash");
+
+        Result<EvidencePageText> head = await context.EvidenceReader.GetBoxTextAsync(
+            context.DocumentId, 1, boxId: matched.BoxId);
+        head.IsSuccess.Should().BeTrue();
+        context.FullHashCount.Value.Should().Be(before,
+            "HEAD evidence resolution on an unchanged source reuses the cached validation without a new full hash");
     }
 
     private sealed class Context : IAsyncDisposable
     {
-        private Context(TemporarySqliteDatabase database, PageId pageId, SearchUnitId unitId, McpReadApi api,
-            EvidenceReferenceService evidence, Counter fullHashCount, string sourcePath)
+        private Context(TemporarySqliteDatabase database, PageId pageId, DocumentInstanceId documentId,
+            McpReadApi api, IVersionedEvidenceReader evidenceReader, Counter fullHashCount, string sourcePath)
         {
             Database = database;
             PageId = pageId;
-            UnitId = unitId;
+            DocumentId = documentId;
             Api = api;
-            Evidence = evidence;
+            EvidenceReader = evidenceReader;
             FullHashCount = fullHashCount;
             SourcePath = sourcePath;
         }
 
         public TemporarySqliteDatabase Database { get; }
         public PageId PageId { get; }
-        public SearchUnitId UnitId { get; }
+        public DocumentInstanceId DocumentId { get; }
         public McpReadApi Api { get; }
-        public EvidenceReferenceService Evidence { get; }
+        public IVersionedEvidenceReader EvidenceReader { get; }
         public Counter FullHashCount { get; }
         public string SourcePath { get; }
 
@@ -120,8 +117,26 @@ public sealed class McpSourceValidationTests
             Page page = (await new PageService(database.ConnectionFactory, clock)
                 .CreatePageAsync(document.DocumentInstanceId, 0, "1", null, null, 0,
                     CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
-            DocumentTreeRevision revision = await BoxTreeTestData.CommitTextAsync(database.ConnectionFactory, clock,
-                document.DocumentInstanceId, page.PageId, "source text");
+
+            DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
+            Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
+                document.DocumentInstanceId, page.PageId,
+                [
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("source text"))
+                ],
+                DocumentTreeRevisionSource.Import);
+            if (working.IsFailure)
+            {
+                throw new InvalidOperationException(working.ErrorMessage);
+            }
+
+            Result<DocumentTreeRevision> committed =
+                await trees.CommitWorkingRevisionAsync(working.Value.TreeRevisionId);
+            if (committed.IsFailure)
+            {
+                throw new InvalidOperationException(committed.ErrorMessage);
+            }
 
             Counter fullHashCount = new();
             string sourcePath = Path.Combine(Path.GetTempPath(), $"patchouli-mcp-source-{Guid.NewGuid():N}.txt");
@@ -136,35 +151,16 @@ public sealed class McpSourceValidationTests
                 return await Infrastructure.Hashing.Blake3Hash.ComputeFileAsync(path, ct);
             });
             PageCoordinateService coordinates = new(database.ConnectionFactory, validation);
-            await new SearchUnitBuilder(database.ConnectionFactory, clock, new MarkdigMarkdownEngine())
+            IMarkdownEngine markdown = new MarkdigMarkdownEngine();
+            IDocumentMarkdownCompiler markdownCompiler = new DocumentMarkdownCompiler(trees, markdown);
+            IVersionedEvidenceReader evidenceReader = new VersionedEvidenceReader(
+                database.ConnectionFactory, libraries, trees, markdownCompiler);
+            await new SearchUnitBuilder(database.ConnectionFactory, clock, markdown)
                 .RebuildForDocumentInstanceAsync(document.DocumentInstanceId);
-            SearchUnitId unitId = await CurrentUnitIdAsync(database.ConnectionFactory, document.DocumentInstanceId);
-            EvidenceReferenceService evidence = new(database.ConnectionFactory, clock, coordinates);
             SqliteSearchService search = new(database.ConnectionFactory);
-            McpReadApi api = new(database.ConnectionFactory, search, evidence, coordinates,
-                markdown: new MarkdigMarkdownEngine());
-            return new Context(database, page.PageId, unitId, api, evidence, fullHashCount, sourcePath);
-        }
-
-        private static async Task<SearchUnitId> CurrentUnitIdAsync(SqliteConnectionFactory factory,
-            DocumentInstanceId documentId)
-        {
-            await using SqliteConnection connection = factory.CreateConnection();
-            await connection.OpenAsync();
-            string? unitId = await connection.ExecuteScalarAsync<string?>(
-                """
-                select unit_id from search_units
-                where document_instance_id = @Id and status = 'current'
-                order by ordinal
-                limit 1;
-                """,
-                new { Id = documentId.ToString() });
-            if (string.IsNullOrWhiteSpace(unitId))
-            {
-                throw new InvalidOperationException("Expected a current search unit after rebuild.");
-            }
-
-            return SearchUnitId.Parse(unitId);
+            McpReadApi api = new(database.ConnectionFactory, search, coordinates, markdown: markdown);
+            return new Context(database, page.PageId, document.DocumentInstanceId, api, evidenceReader, fullHashCount,
+                sourcePath);
         }
 
         private static async Task LinkSourceFileAsync(SqliteConnectionFactory factory, LibraryId libraryId,

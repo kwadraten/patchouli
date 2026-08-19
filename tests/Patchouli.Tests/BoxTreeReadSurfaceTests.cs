@@ -5,15 +5,14 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
+using Patchouli.Core.Results;
 using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
@@ -37,7 +36,7 @@ public sealed class BoxTreeReadSurfaceTests
                 CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
         DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
         const string complexTableHtml = "<table><tr><td rowspan=\"2\">Merged</td></tr></table>";
-        DocumentTreeRevision staging = (await trees.StagePageAsync(document.DocumentInstanceId, page.PageId,
+        DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(document.DocumentInstanceId, page.PageId,
         [
             new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
                 new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("canonical searchable phrase")),
@@ -46,8 +45,8 @@ public sealed class BoxTreeReadSurfaceTests
                 Suppressed: true),
             new DocumentBoxSeed(null, null, 2, DocumentBoxType.Table, null, null,
                 new NormalizedBBox(.1, .3, .8, .2), new TableBoxPayload("[Table]", complexTableHtml))
-        ])).Value;
-        DocumentTreeRevision committed = (await trees.AdoptStagingRevisionAsync(staging.TreeRevisionId)).Value;
+        ], DocumentTreeRevisionSource.Import)).Value;
+        DocumentTreeRevision committed = (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
 
         SearchUnitBuilder units = new(database.ConnectionFactory, clock, new MarkdigMarkdownEngine());
         await units.RebuildForDocumentInstanceAsync(document.DocumentInstanceId);
@@ -59,26 +58,33 @@ public sealed class BoxTreeReadSurfaceTests
         SearchMatchedUnit matched = found.Results.Single().MatchedUnits.Single();
         matched.TreeRevisionId.Should().Be(committed.TreeRevisionId);
 
-        EvidenceReferenceService evidence = new(database.ConnectionFactory, clock);
-        EvidenceRefRecord evidenceRecord = (await evidence.CreateFromSearchUnitAsync(matched.UnitId)).Value;
-        evidenceRecord.TreeRevisionId.Should().Be(committed.TreeRevisionId);
-        evidenceRecord.BoxId.Should().Be(matched.BoxId);
-        evidenceRecord.EvidenceRefId.Should().StartWith("evref:v2:");
+        VersionedEvidenceReader evidence = new(
+            database.ConnectionFactory,
+            libraries,
+            trees,
+            new DocumentMarkdownCompiler(trees, new MarkdigMarkdownEngine()));
+        Result<EvidencePageText> evidenceText = await evidence.GetBoxTextAsync(
+            document.DocumentInstanceId,
+            page.PageIndex + 1,
+            committed.TreeRevisionId,
+            matched.BoxId);
+        evidenceText.IsSuccess.Should().BeTrue();
+        evidenceText.Value.Markdown.Should().Contain("canonical searchable phrase");
+        evidenceText.Value.TreeRevisionId.Should().Be(committed.TreeRevisionId);
 
         MarkdigMarkdownEngine markdown = new();
         DocumentMarkdownCompiler compiler = new(trees, markdown);
         CompiledMarkdown desktopMarkdown = (await compiler.CompilePageMarkdownAsync(committed.TreeRevisionId)).Value;
         desktopMarkdown.Markdown.Should().Contain("[Table]").And.NotContain(complexTableHtml);
-        McpReadApi mcp = new(database.ConnectionFactory, search, evidence, markdown: markdown,
-            markdownCompiler: compiler);
+        McpReadApi mcp = new(database.ConnectionFactory, search, markdownCompiler: compiler);
         McpPageTextResponse currentText = (await mcp.GetPageTextAsync(new McpPageTextRequest(page.PageId))).Value;
         currentText.Text.Should().Contain("canonical searchable phrase").And.NotContain("running head")
             .And.Contain(complexTableHtml).And.NotContain("[Table]");
         McpPageTextResponse allText = (await mcp.GetPageTextAsync(
-            new McpPageTextRequest(page.PageId, IncludeSuppressed: true))).Value;
+            new McpPageTextRequest(page.PageId, true))).Value;
         allText.Text.Should().Contain("suppressed running head");
         IReadOnlyList<McpPageBlock> blocks = (await mcp.GetPageBlocksAsync(
-            new McpPageBlocksRequest(page.PageId, IncludeBbox: true))).Value.Blocks;
+            new McpPageBlocksRequest(page.PageId, true))).Value.Blocks;
         blocks.Should().HaveCount(2);
         McpPageBlock matchedBlock = blocks.Single(block => block.BoxId == matched.BoxId);
         matchedBlock.TreeRevisionId.Should().Be(committed.TreeRevisionId);

@@ -37,9 +37,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         {
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
-            IEnumerable<DocumentTreeRevisionRow> revisions = await connection.QueryAsync<DocumentTreeRevisionRow>(
-                SelectRevisionSql + " order by tree_revision_id;");
-            foreach (DocumentTreeRevisionRow revisionRow in revisions)
+
+            // Only committed revisions are externally visible and immutable.
+            // Working revisions are transient and legacy rows are ignored entirely.
+            IEnumerable<DocumentTreeRevisionRow> committedRows = await connection.QueryAsync<DocumentTreeRevisionRow>(
+                SelectRevisionSql + " where status = 'committed' order by tree_revision_id;");
+            foreach (DocumentTreeRevisionRow revisionRow in committedRows)
             {
                 DocumentTreeRevision revision = revisionRow.ToRevision();
                 Result validation = _validator.Validate(
@@ -51,6 +54,35 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 }
             }
 
+            int currentConflictCount = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1) from (
+                    select document_instance_id, page_id
+                    from document_tree_revisions
+                    where is_current = 1
+                    group by document_instance_id, page_id
+                    having count(1) > 1
+                );
+                """);
+            if (currentConflictCount > 0)
+            {
+                return Result.Failure(
+                    AppErrorCodes.ValidationFailed,
+                    "A physical page has multiple current document tree revisions.");
+            }
+
+            int nonCommittedCurrentCount = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1) from document_tree_revisions
+                where is_current = 1 and status <> 'committed';
+                """);
+            if (nonCommittedCurrentCount > 0)
+            {
+                return Result.Failure(
+                    AppErrorCodes.ValidationFailed,
+                    "A non-committed document tree revision is marked as current.");
+            }
+
             return Result.Success();
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -60,9 +92,10 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         }
     }
 
-    public async Task<Result<DocumentTreeRevision>> CreateStagingRevisionAsync(
+    public async Task<Result<DocumentTreeRevision>> BeginWorkingRevisionAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
+        IReadOnlyList<DocumentBoxSeed> boxes,
         string source,
         DocumentTreeRevisionId? parentTreeRevisionId = null,
         CancellationToken cancellationToken = default)
@@ -92,115 +125,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 pageId,
                 parentTreeRevisionId,
                 source.Trim(),
-                DocumentTreeRevisionStatus.Staging,
-                false,
-                null);
-            await InsertRevisionAsync(connection, transaction, revision, null);
-            return Result<DocumentTreeRevision>.Success(revision);
-        }, cancellationToken);
-    }
-
-    public async Task<Result<PageEditSession>> BeginPageEditAsync(
-        DocumentInstanceId documentInstanceId,
-        PageId pageId,
-        CancellationToken cancellationToken = default)
-    {
-        return await InTransactionAsync(async (connection, transaction) =>
-        {
-            Result page = await ValidatePageAsync(connection, transaction, documentInstanceId, pageId);
-            if (page.IsFailure)
-            {
-                return Result<PageEditSession>.Failure(page.ErrorCode!, page.ErrorMessage!);
-            }
-
-            int activeDrafts = await connection.ExecuteScalarAsync<int>(
-                """
-                select count(1) from document_tree_revisions
-                where document_instance_id = @DocumentInstanceId and page_id = @PageId and status = 'draft';
-                """,
-                new { DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString() },
-                transaction);
-            if (activeDrafts > 0)
-            {
-                return Result<PageEditSession>.Failure(
-                    AppErrorCodes.InvalidState,
-                    "This physical page already has an active edit session.");
-            }
-
-            DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
-                connection, transaction, documentInstanceId, pageId);
-            PageEditSessionId sessionId = PageEditSessionId.New();
-            DocumentTreeRevision draft = NewRevision(
-                documentInstanceId,
-                pageId,
-                current is null ? null : DocumentTreeRevisionId.Parse(current.TreeRevisionId),
-                DocumentTreeRevisionSource.ManualEdit,
-                DocumentTreeRevisionStatus.Draft,
-                false,
-                null);
-            await InsertRevisionAsync(connection, transaction, draft, sessionId);
-
-            if (current is not null)
-            {
-                await connection.ExecuteAsync(
-                    """
-                    insert into document_boxes (
-                        tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
-                        next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
-                        bbox_width, bbox_height, payload_json, heading_level, code_language,
-                        confidence, suppressed, continues_from_box_id)
-                    select @DraftRevisionId, box_id, document_instance_id, page_id, parent_box_id,
-                        next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
-                        bbox_width, bbox_height, payload_json, heading_level, code_language,
-                        confidence, suppressed, continues_from_box_id
-                    from document_boxes where tree_revision_id = @CurrentRevisionId;
-                    """,
-                    new
-                    {
-                        DraftRevisionId = draft.TreeRevisionId.ToString(), CurrentRevisionId = current.TreeRevisionId
-                    },
-                    transaction);
-            }
-
-            return Result<PageEditSession>.Success(
-                new PageEditSession(sessionId, draft.TreeRevisionId, documentInstanceId, pageId));
-        }, cancellationToken);
-    }
-
-    public async Task<Result<DocumentTreeRevision>> StagePageAsync(
-        DocumentInstanceId documentInstanceId,
-        PageId pageId,
-        IReadOnlyList<DocumentBoxSeed> boxes,
-        string source = DocumentTreeRevisionSource.Import,
-        DocumentTreeRevisionId? parentTreeRevisionId = null,
-        CancellationToken cancellationToken = default)
-    {
-        if (!DocumentTreeRevisionSource.IsKnown(source))
-        {
-            return Failure<DocumentTreeRevision>("Document tree revision source is invalid.");
-        }
-
-        return await InTransactionAsync(async (connection, transaction) =>
-        {
-            Result page = await ValidatePageAsync(connection, transaction, documentInstanceId, pageId);
-            if (page.IsFailure)
-            {
-                return Result<DocumentTreeRevision>.Failure(page.ErrorCode!, page.ErrorMessage!);
-            }
-
-            Result parent = await ValidateParentRevisionAsync(
-                connection, transaction, documentInstanceId, pageId, parentTreeRevisionId);
-            if (parent.IsFailure)
-            {
-                return Result<DocumentTreeRevision>.Failure(parent.ErrorCode!, parent.ErrorMessage!);
-            }
-
-            DocumentTreeRevision revision = NewRevision(
-                documentInstanceId,
-                pageId,
-                parentTreeRevisionId,
-                source,
-                DocumentTreeRevisionStatus.Staging,
+                DocumentTreeRevisionStatus.Working,
                 false,
                 null);
             IndexedSeed[] indexed = boxes.Select((seed, index) =>
@@ -209,7 +134,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             Dictionary<string, IndexedSeed[]> groups = indexed
                 .GroupBy(value => BoxKey(value.Seed.ParentBoxId))
                 .ToDictionary(group => group.Key, group => group.OrderBy(value => value.Seed.SourceOrder).ToArray());
-            DocumentBox[] staged = indexed.Select(value =>
+            DocumentBox[] working = indexed.Select(value =>
             {
                 DocumentBoxSeed seed = value.Seed;
                 IndexedSeed[] siblings = groups[BoxKey(seed.ParentBoxId)];
@@ -232,8 +157,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                     seed.Suppressed,
                     seed.ContinuesFromBoxId);
             }).ToArray();
-            // Overlaps no longer block staging or adoption; they surface as workspace warnings.
-            Result validation = _validator.Validate(revision, staged);
+            // Overlaps no longer block creation or commit; they surface as workspace warnings.
+            Result validation = _validator.Validate(revision, working);
             if (validation.IsFailure)
             {
                 return Result<DocumentTreeRevision>.Failure(
@@ -241,8 +166,77 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             }
 
             await InsertRevisionAsync(connection, transaction, revision, null);
-            await ReplaceBoxesAsync(connection, transaction, revision.TreeRevisionId, staged);
+            await ReplaceBoxesAsync(connection, transaction, revision.TreeRevisionId, working);
             return Result<DocumentTreeRevision>.Success(revision);
+        }, cancellationToken);
+    }
+
+    public async Task<Result<PageEditSession>> BeginPageEditAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        CancellationToken cancellationToken = default)
+    {
+        return await InTransactionAsync(async (connection, transaction) =>
+        {
+            Result page = await ValidatePageAsync(connection, transaction, documentInstanceId, pageId);
+            if (page.IsFailure)
+            {
+                return Result<PageEditSession>.Failure(page.ErrorCode!, page.ErrorMessage!);
+            }
+
+            int activeEdits = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1) from document_tree_revisions
+                where document_instance_id = @DocumentInstanceId and page_id = @PageId
+                  and status = 'working' and edit_session_id is not null;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString() },
+                transaction);
+            if (activeEdits > 0)
+            {
+                return Result<PageEditSession>.Failure(
+                    AppErrorCodes.InvalidState,
+                    "This physical page already has an active edit session.");
+            }
+
+            DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
+                connection, transaction, documentInstanceId, pageId);
+            PageEditSessionId sessionId = PageEditSessionId.New();
+            DocumentTreeRevision working = NewRevision(
+                documentInstanceId,
+                pageId,
+                current is null ? null : DocumentTreeRevisionId.Parse(current.TreeRevisionId),
+                DocumentTreeRevisionSource.ManualEdit,
+                DocumentTreeRevisionStatus.Working,
+                false,
+                null);
+            await InsertRevisionAsync(connection, transaction, working, sessionId);
+
+            if (current is not null)
+            {
+                await connection.ExecuteAsync(
+                    """
+                    insert into document_boxes (
+                        tree_revision_id, box_id, document_instance_id, page_id, parent_box_id,
+                        next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                        bbox_width, bbox_height, payload_json, heading_level, code_language,
+                        confidence, suppressed, continues_from_box_id)
+                    select @WorkingRevisionId, box_id, document_instance_id, page_id, parent_box_id,
+                        next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
+                        bbox_width, bbox_height, payload_json, heading_level, code_language,
+                        confidence, suppressed, continues_from_box_id
+                    from document_boxes where tree_revision_id = @CurrentRevisionId;
+                    """,
+                    new
+                    {
+                        WorkingRevisionId = working.TreeRevisionId.ToString(),
+                        CurrentRevisionId = current.TreeRevisionId
+                    },
+                    transaction);
+            }
+
+            return Result<PageEditSession>.Success(
+                new PageEditSession(sessionId, working.TreeRevisionId, documentInstanceId, pageId));
         }, cancellationToken);
     }
 
@@ -281,111 +275,269 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         }, cancellationToken);
     }
 
-    public async Task<Result<DocumentTreeRevision>> AdoptStagingRevisionAsync(
-        DocumentTreeRevisionId stagingRevisionId,
+    public Task<Result<DocumentTreeRevision>> CommitWorkingRevisionAsync(
+        DocumentTreeRevisionId workingRevisionId,
+        DocumentCommitId? commitId = null,
         CancellationToken cancellationToken = default)
     {
-        Result<IReadOnlyList<DocumentTreeRevision>> result = await AdoptStagingRevisionsAsync(
-            [stagingRevisionId], cancellationToken);
-        return result.IsSuccess
-            ? Result<DocumentTreeRevision>.Success(result.Value.Single())
-            : Result<DocumentTreeRevision>.Failure(result.ErrorCode!, result.ErrorMessage!, result.Conflicts);
+        return InTransactionAsync(
+            (connection, transaction) => CommitWorkingRevisionInTransactionAsync(
+                connection, transaction, workingRevisionId, commitId),
+            cancellationToken,
+            revision => LibraryChangeSet.Empty with
+            {
+                DocumentInstanceIds = [revision.DocumentInstanceId],
+                PageIds = [revision.PageId]
+            });
     }
 
-    public async Task<Result<IReadOnlyList<DocumentTreeRevision>>> AdoptStagingRevisionsAsync(
-        IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
+    private async Task<Result<DocumentTreeRevision>> CommitWorkingRevisionInTransactionAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentTreeRevisionId workingRevisionId,
+        DocumentCommitId? commitId)
+    {
+        DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, workingRevisionId);
+        if (row is null || row.Status != DocumentTreeRevisionStatus.Working)
+        {
+            return Result<DocumentTreeRevision>.Failure(
+                AppErrorCodes.InvalidState,
+                "Only an existing working document tree revision can be committed.");
+        }
+
+        DocumentTreeRevision working = row.ToRevision();
+        DocumentBox[] boxes = await GetBoxesAsync(connection, transaction, workingRevisionId);
+        Result validation = _validator.Validate(working, boxes);
+        if (validation.IsFailure)
+        {
+            return Result<DocumentTreeRevision>.Failure(
+                validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+        }
+
+        if (commitId is not null)
+        {
+            Result link = await LinkRevisionToCommitAsync(
+                connection, transaction, commitId.Value, working.DocumentInstanceId, working.PageId,
+                working.TreeRevisionId);
+            if (link.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(link.ErrorCode!, link.ErrorMessage!);
+            }
+        }
+
+        DateTimeOffset committedAt = _clock.UtcNow.ToUniversalTime();
+        await ClearCurrentAsync(connection, transaction, working.DocumentInstanceId, working.PageId);
+        await connection.ExecuteAsync(
+            """
+            update document_tree_revisions
+            set status = 'committed', is_current = 1, committed_at = @CommittedAt
+            where tree_revision_id = @RevisionId and status = 'working';
+            """,
+            new { RevisionId = working.TreeRevisionId.ToString(), CommittedAt = FormatUtc(committedAt) },
+            transaction);
+        await MarkSearchStaleAsync(connection, transaction, working.DocumentInstanceId, working.PageId);
+
+        return Result<DocumentTreeRevision>.Success(working with
+        {
+            Status = DocumentTreeRevisionStatus.Committed,
+            IsCurrent = true,
+            CommittedAt = committedAt
+        });
+    }
+
+    public Task<Result<DocumentCommit>> CreateDocumentCommitAsync(
+        DocumentInstanceId documentInstanceId,
+        string source,
+        string? message = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return Task.FromResult(Result<DocumentCommit>.Failure(
+                AppErrorCodes.ValidationFailed, "Document commit source is required."));
+        }
+
+        return InTransactionAsync(
+            (connection, transaction) => CreateDocumentCommitInTransactionAsync(
+                connection, transaction, documentInstanceId, source.Trim(), message),
+            cancellationToken);
+    }
+
+    private async Task<Result<DocumentCommit>> CreateDocumentCommitInTransactionAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentInstanceId documentInstanceId,
+        string source,
+        string? message)
+    {
+        Result document = await ValidateDocumentInstanceAsync(connection, transaction, documentInstanceId);
+        if (document.IsFailure)
+        {
+            return Result<DocumentCommit>.Failure(document.ErrorCode!, document.ErrorMessage!);
+        }
+
+        DocumentCommitId commitId = DocumentCommitId.New();
+        DateTimeOffset createdAt = _clock.UtcNow.ToUniversalTime();
+
+        DocumentCommitRow? latestRow = await connection.QuerySingleOrDefaultAsync<DocumentCommitRow>(
+            """
+            select commit_id, document_instance_id, parent_commit_id, source, message, created_at
+            from document_commits
+            where document_instance_id = @DocumentInstanceId
+            order by created_at desc, commit_id desc
+            limit 1;
+            """,
+            new { DocumentInstanceId = documentInstanceId.ToString() },
+            transaction);
+
+        DocumentCommitId? parentCommitId = latestRow is null
+            ? null
+            : DocumentCommitId.Parse(latestRow.CommitId);
+
+        string? normalizedMessage = string.IsNullOrWhiteSpace(message) ? null : message.Trim();
+
+        await connection.ExecuteAsync(
+            """
+            insert into document_commits (
+                commit_id, document_instance_id, parent_commit_id, source, message, created_at)
+            values (@CommitId, @DocumentInstanceId, @ParentCommitId, @Source, @Message, @CreatedAt);
+            """,
+            new
+            {
+                CommitId = commitId.ToString(),
+                DocumentInstanceId = documentInstanceId.ToString(),
+                ParentCommitId = parentCommitId?.ToString(),
+                Source = source,
+                Message = normalizedMessage,
+                CreatedAt = FormatUtc(createdAt)
+            },
+            transaction);
+
+        return Result<DocumentCommit>.Success(
+            new DocumentCommit(commitId, documentInstanceId, parentCommitId, source, normalizedMessage, createdAt));
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentTreeRevision>>> ListRevisionsAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        CancellationToken cancellationToken = default)
+    {
+        return await WithConnectionAsync(async connection =>
+        {
+            IEnumerable<DocumentTreeRevisionRow> rows = await connection.QueryAsync<DocumentTreeRevisionRow>(
+                SelectRevisionSql +
+                """
+                 where document_instance_id = @DocumentInstanceId
+                  and page_id = @PageId
+                  and status = 'committed'
+                order by committed_at desc, created_at desc;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString() });
+            return Result<IReadOnlyList<DocumentTreeRevision>>.Success(
+                rows.Select(row => row.ToRevision()).ToList());
+        }, cancellationToken);
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentCommitDetail>>> ListDocumentCommitsAsync(
+        DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default)
+    {
+        return await WithConnectionAsync(async connection =>
+        {
+            IEnumerable<DocumentCommitRow> commitRows = await connection.QueryAsync<DocumentCommitRow>(
+                """
+                select commit_id, document_instance_id, parent_commit_id, source, message, created_at
+                from document_commits
+                where document_instance_id = @DocumentInstanceId
+                order by created_at desc, commit_id desc;
+                """,
+                new { DocumentInstanceId = documentInstanceId.ToString() });
+
+            DocumentCommit[] commits = commitRows.Select(row => row.ToCommit(documentInstanceId)).ToArray();
+            if (commits.Length == 0)
+            {
+                return Result<IReadOnlyList<DocumentCommitDetail>>.Success(Array.Empty<DocumentCommitDetail>());
+            }
+
+            IEnumerable<DocumentCommitPageRow> pageRows = await connection.QueryAsync<DocumentCommitPageRow>(
+                """
+                select commit_id, page_id, tree_revision_id
+                from document_commit_pages
+                where commit_id in @CommitIds;
+                """,
+                new { CommitIds = commits.Select(commit => commit.CommitId.ToString()).ToArray() });
+
+            Dictionary<DocumentCommitId, List<DocumentCommitPage>> pagesByCommit = pageRows
+                .Select(row => row.ToPage())
+                .GroupBy(page => page.CommitId)
+                .ToDictionary(group => group.Key, group => group.ToList());
+
+            return Result<IReadOnlyList<DocumentCommitDetail>>.Success(
+                commits.Select(commit => new DocumentCommitDetail(
+                    commit,
+                    pagesByCommit.TryGetValue(commit.CommitId, out List<DocumentCommitPage>? pages)
+                        ? pages
+                        : new List<DocumentCommitPage>())).ToList());
+        }, cancellationToken);
+    }
+
+    public async Task<Result<DocumentTreeRevision>> RevertToRevisionAsync(
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId targetRevisionId,
         CancellationToken cancellationToken = default)
     {
         return await InTransactionAsync(async (connection, transaction) =>
         {
-            List<DocumentTreeRevision> staging = [];
-            HashSet<(DocumentInstanceId DocumentInstanceId, PageId PageId)> pages = [];
-            foreach (DocumentTreeRevisionId stagingRevisionId in stagingRevisionIds)
+            Result page = await ValidatePageAsync(connection, transaction, documentInstanceId, pageId);
+            if (page.IsFailure)
             {
-                DocumentTreeRevisionRow? stagingRow = await GetRevisionRowAsync(
-                    connection, transaction, stagingRevisionId);
-                if (stagingRow is null || stagingRow.Status != DocumentTreeRevisionStatus.Staging)
-                {
-                    return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
-                        AppErrorCodes.InvalidState,
-                        "Only existing staging document tree revisions can be adopted.");
-                }
-
-                DocumentTreeRevision revision = stagingRow.ToRevision();
-                if (!pages.Add((revision.DocumentInstanceId, revision.PageId)))
-                {
-                    return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
-                        AppErrorCodes.InvalidState,
-                        "A physical page may only have one staging revision in an adoption batch.");
-                }
-
-                DocumentBox[] boxes = await GetBoxesAsync(connection, transaction, stagingRevisionId);
-                Result valid = _validator.Validate(revision, boxes);
-                if (valid.IsFailure)
-                {
-                    return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
-                        valid.ErrorCode!, valid.ErrorMessage!, valid.Conflicts);
-                }
-
-                staging.Add(revision);
+                return Result<DocumentTreeRevision>.Failure(page.ErrorCode!, page.ErrorMessage!);
             }
 
-            // Pre-generate the staging -> committed revision mapping, then copy boxes within
-            // SQLite via INSERT ... SELECT so a large staging tree is never read back into
-            // .NET just to re-serialize and insert one row at a time.
-            DateTimeOffset committedAt = _clock.UtcNow.ToUniversalTime();
-            List<DocumentTreeRevision> committedRevisions = [];
-            foreach (DocumentTreeRevision stagingRevision in staging)
+            DocumentTreeRevisionRow? targetRow = await GetRevisionRowAsync(connection, transaction, targetRevisionId);
+            if (targetRow is null ||
+                targetRow.DocumentInstanceId != documentInstanceId.ToString() ||
+                targetRow.PageId != pageId.ToString() ||
+                targetRow.Status != DocumentTreeRevisionStatus.Committed)
             {
-                DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(
-                    connection, transaction, stagingRevision.DocumentInstanceId, stagingRevision.PageId);
-                DocumentTreeRevision committed = NewRevision(
-                    stagingRevision.DocumentInstanceId,
-                    stagingRevision.PageId,
-                    current is null ? null : DocumentTreeRevisionId.Parse(current.TreeRevisionId),
-                    DocumentTreeRevisionSource.OcrAdopted,
-                    DocumentTreeRevisionStatus.Committed,
-                    true,
-                    committedAt);
-
-                await ClearCurrentAsync(connection, transaction, stagingRevision.DocumentInstanceId,
-                    stagingRevision.PageId);
-                await InsertRevisionAsync(connection, transaction, committed, null);
-                await CopyStagingBoxesAsync(
-                    connection, transaction, stagingRevision.TreeRevisionId, committed.TreeRevisionId);
-                committedRevisions.Add(committed);
+                return Result<DocumentTreeRevision>.Failure(
+                    AppErrorCodes.NotFound,
+                    "Target committed revision was not found for the physical page.");
             }
 
-            await connection.ExecuteAsync(
-                """
-                update document_tree_revisions set status = 'discarded'
-                where tree_revision_id in @StagingRevisionIds;
-                """,
-                new { StagingRevisionIds = stagingRevisionIds.Select(id => id.ToString()).ToArray() },
-                transaction);
-            foreach (IGrouping<DocumentInstanceId, (DocumentInstanceId DocumentInstanceId, PageId PageId)> group
-                     in pages.GroupBy(page => page.DocumentInstanceId))
+            DocumentTreeRevisionRow? previousCurrentRow = await GetCurrentRevisionRowAsync(
+                connection, transaction, documentInstanceId, pageId);
+            DocumentTreeRevisionId? previousCurrentId = previousCurrentRow is null
+                ? null
+                : DocumentTreeRevisionId.Parse(previousCurrentRow.TreeRevisionId);
+
+            DocumentTreeRevision revertWorking = NewRevision(
+                documentInstanceId,
+                pageId,
+                previousCurrentId,
+                DocumentTreeRevisionSource.Revert,
+                DocumentTreeRevisionStatus.Working,
+                false,
+                null,
+                targetRevisionId);
+
+            await InsertRevisionAsync(connection, transaction, revertWorking, null);
+            await CopyBoxesAsync(connection, transaction, targetRevisionId, revertWorking.TreeRevisionId);
+
+            Result<DocumentCommit> commitResult = await CreateDocumentCommitInTransactionAsync(
+                connection, transaction, documentInstanceId, DocumentTreeRevisionSource.Revert, null);
+            if (commitResult.IsFailure)
             {
-                await connection.ExecuteAsync(
-                    """
-                    update search_units set status = 'stale', updated_at = @Now
-                    where document_instance_id = @DocumentInstanceId
-                      and page_id in @PageIds and status = 'current';
-                    """,
-                    new
-                    {
-                        DocumentInstanceId = group.Key.ToString(),
-                        PageIds = group.Select(page => page.PageId.ToString()).ToArray(),
-                        Now = FormatUtc(committedAt)
-                    },
-                    transaction);
+                return Result<DocumentTreeRevision>.Failure(commitResult.ErrorCode!, commitResult.ErrorMessage!);
             }
 
-            return Result<IReadOnlyList<DocumentTreeRevision>>.Success(committedRevisions);
-        }, cancellationToken, revisions => LibraryChangeSet.Empty with
+            return await CommitWorkingRevisionInTransactionAsync(
+                connection, transaction, revertWorking.TreeRevisionId, commitResult.Value.CommitId);
+        }, cancellationToken, revision => LibraryChangeSet.Empty with
         {
-            DocumentInstanceIds = revisions.Select(revision => revision.DocumentInstanceId).Distinct().ToArray(),
-            PageIds = revisions.Select(revision => revision.PageId).Distinct().ToArray()
+            DocumentInstanceIds = [revision.DocumentInstanceId],
+            PageIds = [revision.PageId]
         });
     }
 
@@ -401,9 +553,9 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 return Result<DocumentTreeRevision>.Failure(AppErrorCodes.NotFound, "Page edit session was not found.");
             }
 
-            DocumentTreeRevision draft = row.ToRevision();
-            DocumentBox[] boxes = await GetBoxesAsync(connection, transaction, draft.TreeRevisionId);
-            Result validation = _validator.Validate(draft, boxes);
+            DocumentTreeRevision working = row.ToRevision();
+            DocumentBox[] boxes = await GetBoxesAsync(connection, transaction, working.TreeRevisionId);
+            Result validation = _validator.Validate(working, boxes);
             if (validation.IsFailure)
             {
                 return Result<DocumentTreeRevision>.Failure(
@@ -411,17 +563,17 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             }
 
             DateTimeOffset committedAt = _clock.UtcNow.ToUniversalTime();
-            await ClearCurrentAsync(connection, transaction, draft.DocumentInstanceId, draft.PageId);
+            await ClearCurrentAsync(connection, transaction, working.DocumentInstanceId, working.PageId);
             await connection.ExecuteAsync(
                 """
                 update document_tree_revisions
                 set status = 'committed', is_current = 1, committed_at = @CommittedAt, edit_session_id = null
-                where tree_revision_id = @RevisionId and status = 'draft';
+                where tree_revision_id = @RevisionId and status = 'working';
                 """,
-                new { RevisionId = draft.TreeRevisionId.ToString(), CommittedAt = FormatUtc(committedAt) },
+                new { RevisionId = working.TreeRevisionId.ToString(), CommittedAt = FormatUtc(committedAt) },
                 transaction);
-            await MarkSearchStaleAsync(connection, transaction, draft.DocumentInstanceId, draft.PageId);
-            return Result<DocumentTreeRevision>.Success(draft with
+            await MarkSearchStaleAsync(connection, transaction, working.DocumentInstanceId, working.PageId);
+            return Result<DocumentTreeRevision>.Success(working with
             {
                 Status = DocumentTreeRevisionStatus.Committed,
                 IsCurrent = true,
@@ -451,17 +603,10 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 new { RevisionId = row.TreeRevisionId },
                 transaction);
             await connection.ExecuteAsync(
-                """
-                update document_tree_revisions
-                set status = 'discarded', edit_session_id = null
-                where tree_revision_id = @RevisionId;
-                """,
+                "delete from document_tree_revisions where tree_revision_id = @RevisionId;",
                 new { RevisionId = row.TreeRevisionId },
                 transaction);
-            return Result<DocumentTreeRevision>.Success(row.ToRevision() with
-            {
-                Status = DocumentTreeRevisionStatus.Discarded
-            });
+            return Result<DocumentTreeRevision>.Success(row.ToRevision());
         }, cancellationToken);
         return result.IsSuccess
             ? Result.Success()
@@ -473,7 +618,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         InsertLeafCommand command,
         CancellationToken cancellationToken = default)
     {
-        return MutateDraftAsync(sessionId, (revision, boxes) =>
+        return MutateWorkingAsync(sessionId, (revision, boxes) =>
         {
             DocumentBoxId id = command.BoxId ?? DocumentBoxId.New();
             if (boxes.Any(box => box.BoxId == id))
@@ -515,7 +660,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         NormalizedBBox bbox,
         CancellationToken cancellationToken = default)
     {
-        return MutateDraftAsync(sessionId, (revision, boxes) =>
+        return MutateWorkingAsync(sessionId, (revision, boxes) =>
         {
             Result<DocumentBoxId?> next = ResolveInsertion(boxes, null, insertAfterBoxId);
             if (next.IsFailure)
@@ -550,7 +695,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         UpdateLeafCommand command,
         CancellationToken cancellationToken = default)
     {
-        Result<DocumentBox> result = await MutateDraftAsync(sessionId, (_, boxes) =>
+        Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == command.BoxId);
             if (index < 0 || boxes.Any(box => box.ParentBoxId == command.BoxId))
@@ -584,7 +729,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         NormalizedBBox bbox,
         CancellationToken cancellationToken = default)
     {
-        Result<DocumentBox> result = await MutateDraftAsync(sessionId, (_, boxes) =>
+        Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == boxId);
             if (index < 0)
@@ -603,7 +748,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         MoveBoxCommand command,
         CancellationToken cancellationToken = default)
     {
-        Result<DocumentBox> result = await MutateDraftAsync(sessionId, (_, boxes) =>
+        Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == command.BoxId);
             if (index < 0)
@@ -638,7 +783,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         SplitLeafCommand command,
         CancellationToken cancellationToken = default)
     {
-        return MutateDraftAsync(sessionId, (_, boxes) =>
+        return MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == command.BoxId);
             if (index < 0 || boxes.Any(box => box.ParentBoxId == command.BoxId))
@@ -685,7 +830,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         MergeLeavesCommand command,
         CancellationToken cancellationToken = default)
     {
-        return MutateDraftAsync(sessionId, (_, boxes) =>
+        return MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             if (command.BoxIds.Count < 2 || command.BoxIds.Distinct().Count() != command.BoxIds.Count)
             {
@@ -765,7 +910,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         bool suppressed,
         CancellationToken cancellationToken = default)
     {
-        Result<DocumentBox> result = await MutateDraftAsync(sessionId, (_, boxes) =>
+        Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == boxId);
             if (index < 0 || boxes[index].BoxType == DocumentBoxType.LogicalPage)
@@ -784,7 +929,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         DocumentBoxId boxId,
         CancellationToken cancellationToken = default)
     {
-        Result<DocumentBox> result = await MutateDraftAsync(sessionId, (_, boxes) =>
+        Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == boxId);
             if (index < 0 || boxes.Any(box => box.ParentBoxId == boxId))
@@ -807,7 +952,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         LocalOcrCandidate candidate,
         CancellationToken cancellationToken = default)
     {
-        Result<DocumentBox> result = await MutateDraftAsync(sessionId, (_, boxes) =>
+        Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == boxId);
             if (index < 0 || boxes.Any(box => box.ParentBoxId == boxId))
@@ -831,7 +976,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return ToResult(result);
     }
 
-    private async Task<Result<T>> MutateDraftAsync<T>(
+    private async Task<Result<T>> MutateWorkingAsync<T>(
         PageEditSessionId sessionId,
         Func<DocumentTreeRevision, List<DocumentBox>, Mutation<T>> mutate,
         CancellationToken cancellationToken)
@@ -983,7 +1128,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         string source,
         string status,
         bool current,
-        DateTimeOffset? committedAt)
+        DateTimeOffset? committedAt,
+        DocumentTreeRevisionId? revertedFromTreeRevisionId = null)
     {
         return new DocumentTreeRevision(
             DocumentTreeRevisionId.New(),
@@ -994,7 +1140,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             status,
             current,
             _clock.UtcNow.ToUniversalTime(),
-            committedAt);
+            committedAt,
+            revertedFromTreeRevisionId);
     }
 
     private async Task<Result<T>> InTransactionAsync<T>(
@@ -1131,7 +1278,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         PageEditSessionId sessionId)
     {
         return connection.QuerySingleOrDefaultAsync<DocumentTreeRevisionRow>(
-            SelectRevisionSql + " where edit_session_id = @SessionId and status = 'draft';",
+            SelectRevisionSql + " where edit_session_id = @SessionId and status = 'working';",
             new { SessionId = sessionId.ToString() },
             transaction);
     }
@@ -1144,7 +1291,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     {
         return connection.QuerySingleOrDefaultAsync<DocumentTreeRevisionRow>(
             SelectRevisionSql +
-            " where document_instance_id = @DocumentInstanceId and page_id = @PageId and is_current = 1;",
+            """
+             where document_instance_id = @DocumentInstanceId
+              and page_id = @PageId
+              and status = 'committed'
+              and is_current = 1;
+            """,
             new { DocumentInstanceId = documentInstanceId.ToString(), PageId = pageId.ToString() },
             transaction);
     }
@@ -1211,9 +1363,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             """
             insert into document_tree_revisions (
                 tree_revision_id, document_instance_id, page_id, parent_tree_revision_id,
-                source, status, is_current, edit_session_id, created_at, committed_at)
+                source, status, is_current, edit_session_id, created_at, committed_at,
+                reverted_from_tree_revision_id)
             values (@TreeRevisionId, @DocumentInstanceId, @PageId, @ParentTreeRevisionId,
-                @Source, @Status, @IsCurrent, @EditSessionId, @CreatedAt, @CommittedAt);
+                @Source, @Status, @IsCurrent, @EditSessionId, @CreatedAt, @CommittedAt,
+                @RevertedFromTreeRevisionId);
             """,
             new
             {
@@ -1226,7 +1380,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 IsCurrent = revision.IsCurrent ? 1 : 0,
                 EditSessionId = sessionId?.ToString(),
                 CreatedAt = FormatUtc(revision.CreatedAt),
-                CommittedAt = revision.CommittedAt is null ? null : FormatUtc(revision.CommittedAt.Value)
+                CommittedAt = revision.CommittedAt is null ? null : FormatUtc(revision.CommittedAt.Value),
+                RevertedFromTreeRevisionId = revision.RevertedFromTreeRevisionId?.ToString()
             },
             transaction);
     }
@@ -1303,11 +1458,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             transaction);
     }
 
-    private static Task CopyStagingBoxesAsync(
+    private static Task CopyBoxesAsync(
         SqliteConnection connection,
         DbTransaction transaction,
-        DocumentTreeRevisionId stagingRevisionId,
-        DocumentTreeRevisionId committedRevisionId)
+        DocumentTreeRevisionId sourceRevisionId,
+        DocumentTreeRevisionId targetRevisionId)
     {
         return connection.ExecuteAsync(
             """
@@ -1316,18 +1471,81 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
                 confidence, suppressed, continues_from_box_id)
-            select @CommittedRevisionId, box_id, document_instance_id, page_id, parent_box_id,
+            select @TargetRevisionId, box_id, document_instance_id, page_id, parent_box_id,
                 next_sibling_box_id, box_type, sub_type, base_type, bbox_x, bbox_y,
                 bbox_width, bbox_height, payload_json, heading_level, code_language,
                 confidence, suppressed, continues_from_box_id
-            from document_boxes where tree_revision_id = @StagingRevisionId;
+            from document_boxes where tree_revision_id = @SourceRevisionId;
             """,
             new
             {
-                CommittedRevisionId = committedRevisionId.ToString(),
-                StagingRevisionId = stagingRevisionId.ToString()
+                TargetRevisionId = targetRevisionId.ToString(),
+                SourceRevisionId = sourceRevisionId.ToString()
             },
             transaction);
+    }
+
+    private static async Task<Result> LinkRevisionToCommitAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        DocumentCommitId commitId,
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        DocumentTreeRevisionId treeRevisionId)
+    {
+        int commitExists = await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1) from document_commits
+            where commit_id = @CommitId and document_instance_id = @DocumentInstanceId;
+            """,
+            new { CommitId = commitId.ToString(), DocumentInstanceId = documentInstanceId.ToString() },
+            transaction);
+        if (commitExists == 0)
+        {
+            return Result.Failure(AppErrorCodes.NotFound, "Document commit was not found for the document instance.");
+        }
+
+        int existingPage = await connection.ExecuteScalarAsync<int>(
+            """
+            select count(1) from document_commit_pages
+            where commit_id = @CommitId and page_id = @PageId;
+            """,
+            new { CommitId = commitId.ToString(), PageId = pageId.ToString() },
+            transaction);
+        if (existingPage > 0)
+        {
+            return Result.Failure(
+                AppErrorCodes.InvalidState,
+                "The physical page is already linked to this document commit.");
+        }
+
+        await connection.ExecuteAsync(
+            """
+            insert into document_commit_pages (commit_id, page_id, tree_revision_id)
+            values (@CommitId, @PageId, @TreeRevisionId);
+            """,
+            new
+            {
+                CommitId = commitId.ToString(),
+                PageId = pageId.ToString(),
+                TreeRevisionId = treeRevisionId.ToString()
+            },
+            transaction);
+        return Result.Success();
+    }
+
+    private static async Task<Result> ValidateDocumentInstanceAsync(
+        SqliteConnection connection,
+        DbTransaction? transaction,
+        DocumentInstanceId documentInstanceId)
+    {
+        int count = await connection.ExecuteScalarAsync<int>(
+            "select count(1) from document_instances where document_instance_id = @DocumentInstanceId;",
+            new { DocumentInstanceId = documentInstanceId.ToString() },
+            transaction);
+        return count == 1
+            ? Result.Success()
+            : Result.Failure(AppErrorCodes.NotFound, "Document instance was not found.");
     }
 
     private static Task ClearCurrentAsync(
@@ -1375,7 +1593,8 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             status as Status,
             is_current as IsCurrent,
             created_at as CreatedAt,
-            committed_at as CommittedAt
+            committed_at as CommittedAt,
+            reverted_from_tree_revision_id as RevertedFromTreeRevisionId
         from document_tree_revisions
         """;
 
@@ -1512,6 +1731,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         public int IsCurrent { get; set; }
         public string CreatedAt { get; set; } = string.Empty;
         public string? CommittedAt { get; set; }
+        public string? RevertedFromTreeRevisionId { get; set; }
 
         public DocumentTreeRevision ToRevision()
         {
@@ -1524,7 +1744,44 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
                 Status,
                 IsCurrent == 1,
                 DateTimeOffset.Parse(CreatedAt),
-                CommittedAt is null ? null : DateTimeOffset.Parse(CommittedAt));
+                CommittedAt is null ? null : DateTimeOffset.Parse(CommittedAt),
+                RevertedFromTreeRevisionId is null ? null : DocumentTreeRevisionId.Parse(RevertedFromTreeRevisionId));
+        }
+    }
+
+    private sealed class DocumentCommitRow
+    {
+        public string CommitId { get; set; } = string.Empty;
+        public string DocumentInstanceId { get; set; } = string.Empty;
+        public string? ParentCommitId { get; set; }
+        public string Source { get; set; } = string.Empty;
+        public string? Message { get; set; }
+        public string CreatedAt { get; set; } = string.Empty;
+
+        public DocumentCommit ToCommit(DocumentInstanceId documentInstanceId)
+        {
+            return new DocumentCommit(
+                DocumentCommitId.Parse(CommitId),
+                documentInstanceId,
+                ParentCommitId is null ? null : DocumentCommitId.Parse(ParentCommitId),
+                Source,
+                Message,
+                DateTimeOffset.Parse(CreatedAt));
+        }
+    }
+
+    private sealed class DocumentCommitPageRow
+    {
+        public string CommitId { get; set; } = string.Empty;
+        public string PageId { get; set; } = string.Empty;
+        public string TreeRevisionId { get; set; } = string.Empty;
+
+        public DocumentCommitPage ToPage()
+        {
+            return new DocumentCommitPage(
+                DocumentCommitId.Parse(CommitId),
+                Patchouli.Core.Ids.PageId.Parse(PageId),
+                DocumentTreeRevisionId.Parse(TreeRevisionId));
         }
     }
 

@@ -10,10 +10,8 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Operations;
 using Patchouli.Core.Settings;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -69,9 +67,14 @@ public sealed class SnapshotTests
     public async Task PublishSnapshot_does_not_copy_wal_or_shm()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        File.WriteAllText(c.Database.Path + "-wal", "wal");
-        File.WriteAllText(c.Database.Path + "-shm", "shm");
+        await using SqliteConnection walKeeper = c.Database.ConnectionFactory.CreateConnection();
+        await walKeeper.OpenAsync();
+        (await walKeeper.ExecuteScalarAsync<string>("pragma journal_mode=wal;")).Should().Be("wal");
+        File.Exists(c.Database.Path + "-wal").Should().BeTrue();
+        File.Exists(c.Database.Path + "-shm").Should().BeTrue();
+
         await c.PublishAsync();
+
         Directory.EnumerateFiles(c.SyncRoot, "*", SearchOption.AllDirectories).Should()
             .NotContain(p => p.EndsWith("-wal") || p.EndsWith("-shm"));
     }
@@ -304,6 +307,66 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public async Task PublishSnapshot_excludes_working_revisions_and_their_boxes()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        DocumentTreeService trees = new(c.Database.ConnectionFactory, c.Clock, new MarkdigMarkdownEngine());
+        DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
+            c.DocumentInstanceId,
+            c.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("working draft"))
+            ],
+            DocumentTreeRevisionSource.ManualEdit)).Value;
+
+        Result<SnapshotPublishResult> r = await c.PublishAsync();
+        await using SqliteConnection shard = OpenShard(c.SyncRoot, r.Value.Shards.Single());
+        (await shard.ExecuteScalarAsync<int>(
+            "select count(1) from document_tree_revisions where tree_revision_id = @Id;",
+            new { Id = working.TreeRevisionId.ToString() })).Should().Be(0);
+        (await shard.ExecuteScalarAsync<int>(
+            "select count(1) from document_boxes where tree_revision_id = @Id;",
+            new { Id = working.TreeRevisionId.ToString() })).Should().Be(0);
+        (await shard.ExecuteScalarAsync<int>("select count(1) from document_tree_revisions;")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PublishSnapshot_carries_document_commits_and_commit_pages()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        Result<SnapshotPublishResult> r = await c.PublishAsync();
+        await using SqliteConnection shard = OpenShard(c.SyncRoot, r.Value.Shards.Single());
+        (await shard.ExecuteScalarAsync<int>("select count(1) from document_commits;")).Should().Be(1);
+        (await shard.ExecuteScalarAsync<int>("select count(1) from document_commit_pages;")).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task CommitWorkingRevision_promotes_in_place_without_copying_boxes()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        DocumentTreeService trees = new(c.Database.ConnectionFactory, c.Clock, new MarkdigMarkdownEngine());
+        DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
+            c.DocumentInstanceId,
+            c.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("in-place commit sample"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        DocumentBoxId boxId = (await trees.ListBoxesAsync(working.TreeRevisionId)).Value.Single().BoxId;
+        int boxCountBefore = await c.CountBoxesAsync(working.TreeRevisionId);
+
+        DocumentTreeRevision committed = (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
+
+        committed.TreeRevisionId.Should().Be(working.TreeRevisionId);
+        committed.Status.Should().Be(DocumentTreeRevisionStatus.Committed);
+        committed.IsCurrent.Should().BeTrue();
+        (await c.CountBoxesAsync(committed.TreeRevisionId)).Should().Be(boxCountBefore);
+        (await trees.ListBoxesAsync(committed.TreeRevisionId)).Value.Single().BoxId.Should().Be(boxId);
+    }
+
+    [Fact]
     public async Task ValidateSnapshot_succeeds_for_valid_manifest()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
@@ -343,7 +406,7 @@ public sealed class SnapshotTests
     public async Task ImportSnapshotToStaging_does_not_replace_active_runtime_db()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        (int Items, int Units, int Evidence) before = await c.RuntimeCountsAsync();
+        (int Items, int Units) before = await c.RuntimeCountsAsync();
         Result<SnapshotPublishResult> r = await c.PublishAsync();
         await c.ImportAsync(r.Value.ManifestPath);
         (await c.RuntimeCountsAsync()).Should().Be(before);
@@ -386,7 +449,7 @@ public sealed class SnapshotTests
         ImportSnapshotToStaging_validation_failure_records_blocking_operation_and_leaves_runtime_db_unchanged()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        (int Items, int Units, int Evidence) before = await c.RuntimeCountsAsync();
+        (int Items, int Units) before = await c.RuntimeCountsAsync();
         Result<SnapshotPublishResult> r = await c.PublishAsync();
         await File.AppendAllTextAsync(Path.Combine(c.SyncRoot, r.Value.Shards.Single().FileName), "corrupt");
         Result<SnapshotImportResult> imported = await c.Importer.ImportSnapshotToStagingAsync(
@@ -505,17 +568,16 @@ public sealed class SnapshotTests
     }
 
     [Fact]
-    public async Task Imported_staging_db_can_read_item_and_evidence_records()
+    public async Task Imported_staging_db_can_read_item_and_document_commits()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        Result<EvidenceRefRecord> ev = await c.Evidence.CreateFromSearchUnitAsync(c.UnitId);
         Result<SnapshotPublishResult> r = await c.PublishAsync();
         Result<SnapshotImportResult> imported = await c.ImportAsync(r.Value.ManifestPath);
         await using SqliteConnection cn = OpenSqlite(imported.Value.StagingDatabasePath!);
         await cn.OpenAsync();
         (await cn.ExecuteScalarAsync<int>("select count(1) from items;")).Should().Be(1);
-        (await cn.ExecuteScalarAsync<string>("select evidence_ref_id from evidence_ref_records limit 1;")).Should()
-            .Be(ev.Value.EvidenceRefId);
+        (await cn.ExecuteScalarAsync<int>("select count(1) from document_commits;")).Should().Be(1);
+        (await cn.ExecuteScalarAsync<int>("select count(1) from document_commit_pages;")).Should().Be(1);
     }
 
     [Fact]
@@ -563,7 +625,7 @@ public sealed class SnapshotTests
     public async Task Snapshot_publish_does_not_modify_working_runtime_db_except_checkpoint()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
-        (int Items, int Units, int Evidence) before = await c.RuntimeCountsAsync();
+        (int Items, int Units) before = await c.RuntimeCountsAsync();
         await c.PublishAsync();
         (await c.RuntimeCountsAsync()).Should().Be(before);
     }
@@ -967,7 +1029,8 @@ public sealed class SnapshotTests
     private sealed class SnapshotTestContext : IAsyncDisposable
     {
         private SnapshotTestContext(TemporarySqliteDatabase database, string syncRoot, string stagingRoot,
-            LibraryId libraryId, SearchUnitId unitId, IBlockingOperationService blockingOperations)
+            LibraryId libraryId, SearchUnitId unitId, IBlockingOperationService blockingOperations,
+            DocumentInstanceId documentInstanceId, PageId pageId, FixedClock clock)
         {
             Database = database;
             SyncRoot = syncRoot;
@@ -975,10 +1038,11 @@ public sealed class SnapshotTests
             LibraryId = libraryId;
             UnitId = unitId;
             BlockingOperations = blockingOperations;
+            DocumentInstanceId = documentInstanceId;
+            PageId = pageId;
+            Clock = clock;
             Publisher = new SnapshotPublisher(new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z")));
             Importer = new SnapshotImporter(blockingOperations);
-            Evidence = new EvidenceReferenceService(database.ConnectionFactory,
-                new FixedClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z")));
         }
 
         public TemporarySqliteDatabase Database { get; }
@@ -989,7 +1053,9 @@ public sealed class SnapshotTests
         public IBlockingOperationService BlockingOperations { get; }
         public SnapshotPublisher Publisher { get; }
         public SnapshotImporter Importer { get; }
-        public EvidenceReferenceService Evidence { get; }
+        public DocumentInstanceId DocumentInstanceId { get; }
+        public PageId PageId { get; }
+        public FixedClock Clock { get; }
 
         public static async Task<SnapshotTestContext> CreateAsync(string? externalPath = null)
         {
@@ -1021,18 +1087,50 @@ public sealed class SnapshotTests
             Result<Page> page = await new PageService(db.ConnectionFactory, clock).CreatePageAsync(
                 doc.Value.DocumentInstanceId, 0, "1", null, null, 0, CoordinateBasis.NormalizedPage, null, null,
                 "renderer-v1", null);
-            await BoxTreeTestData.CommitTextAsync(db.ConnectionFactory, clock, doc.Value.DocumentInstanceId,
-                page.Value.PageId, "snapshot text");
+            DocumentTreeService treeService = new(db.ConnectionFactory, clock, new MarkdigMarkdownEngine());
+            DocumentTreeRevision working = (await treeService.BeginWorkingRevisionAsync(
+                doc.Value.DocumentInstanceId,
+                page.Value.PageId,
+                [
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("snapshot text"))
+                ],
+                DocumentTreeRevisionSource.Import)).Value;
+            DocumentTreeRevision revision =
+                (await treeService.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
+            DocumentCommitId commitId = DocumentCommitId.New();
+            await using (SqliteConnection cn = db.ConnectionFactory.CreateConnection())
+            {
+                await cn.OpenAsync();
+                await cn.ExecuteAsync(
+                    """
+                    insert into document_commits (commit_id, document_instance_id, parent_commit_id, source, message, created_at)
+                    values (@CommitId, @DocumentId, null, 'manual_edit', 'snapshot commit', @Now);
+                    insert into document_commit_pages (commit_id, page_id, tree_revision_id)
+                    values (@CommitId, @PageId, @RevisionId);
+                    """,
+                    new
+                    {
+                        CommitId = commitId.ToString(),
+                        DocumentId = doc.Value.DocumentInstanceId.ToString(),
+                        PageId = page.Value.PageId.ToString(),
+                        RevisionId = revision.TreeRevisionId.ToString(),
+                        Now = clock.UtcNow.ToString("O")
+                    });
+            }
+
             SearchUnitBuilder builder = new(db.ConnectionFactory, clock);
             SearchIndexRebuilder rebuilder = new(db.ConnectionFactory, clock);
             await builder.RebuildForDocumentInstanceAsync(doc.Value.DocumentInstanceId);
             await rebuilder.RebuildFtsForLibraryAsync();
-            await using SqliteConnection cn = db.ConnectionFactory.CreateConnection();
-            await cn.OpenAsync();
+            await using SqliteConnection cn2 = db.ConnectionFactory.CreateConnection();
+            await cn2.OpenAsync();
             SearchUnitId unit =
-                SearchUnitId.Parse((await cn.ExecuteScalarAsync<string>("select unit_id from search_units limit 1;"))!);
+                SearchUnitId.Parse(
+                    (await cn2.ExecuteScalarAsync<string>("select unit_id from search_units limit 1;"))!);
             BlockingOperationService blockingOperations = new(db.ConnectionFactory, clock);
-            return new SnapshotTestContext(db, TempDir(), TempDir(), lib.Value.LibraryId, unit, blockingOperations);
+            return new SnapshotTestContext(db, TempDir(), TempDir(), lib.Value.LibraryId, unit, blockingOperations,
+                doc.Value.DocumentInstanceId, page.Value.PageId, clock);
         }
 
         public Task<Result<SnapshotPublishResult>> PublishAsync(string? parent = null,
@@ -1065,12 +1163,19 @@ public sealed class SnapshotTests
             return await cn.ExecuteScalarAsync<int>("select count(1) from search_units_fts;");
         }
 
-        public async Task<(int Items, int Units, int Evidence)> RuntimeCountsAsync()
+        public async Task<(int Items, int Units)> RuntimeCountsAsync()
         {
             await using SqliteConnection cn = OpenRuntime();
             return (await cn.ExecuteScalarAsync<int>("select count(1) from items;"),
-                await cn.ExecuteScalarAsync<int>("select count(1) from search_units;"),
-                await cn.ExecuteScalarAsync<int>("select count(1) from evidence_ref_records;"));
+                await cn.ExecuteScalarAsync<int>("select count(1) from search_units;"));
+        }
+
+        public async Task<int> CountBoxesAsync(DocumentTreeRevisionId revisionId)
+        {
+            await using SqliteConnection cn = OpenRuntime();
+            return await cn.ExecuteScalarAsync<int>(
+                "select count(1) from document_boxes where tree_revision_id = @Id;",
+                new { Id = revisionId.ToString() });
         }
 
         public async Task AddSearchUnitCopiesAsync(int count, string text)
@@ -1104,6 +1209,8 @@ public sealed class SnapshotTests
 
         public async ValueTask DisposeAsync()
         {
+            SqliteTestCleanup.ReleasePoolsInDirectory(SyncRoot);
+            SqliteTestCleanup.ReleasePoolsInDirectory(StagingRoot);
             await Database.DisposeAsync();
             if (Directory.Exists(SyncRoot))
             {

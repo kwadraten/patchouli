@@ -76,6 +76,30 @@ public sealed class McpWriteApi : IMcpWriteApi
         ItemId itemId,
         CancellationToken cancellationToken)
     {
+        Result<ItemLifecycleInfo> lifecycle = await _items.GetItemLifecycleAsync(itemId, cancellationToken);
+        if (lifecycle.IsFailure)
+        {
+            return Result<McpPutResponse>.Failure(lifecycle.ErrorCode!, lifecycle.ErrorMessage!);
+        }
+
+        if (lifecycle.Value.State == ItemLifecycleState.Trash)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.ItemInTrash,
+                $"Item {itemId} is in trash (deleted_at: {lifecycle.Value.DeletedAt:O}).");
+        }
+
+        if (lifecycle.Value.State == ItemLifecycleState.Merged)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.ItemMerged,
+                $"Item {itemId} is merged into {lifecycle.Value.MergedIntoItemId}.");
+        }
+
+        if (lifecycle.Value.State == ItemLifecycleState.Purged)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.NotFound,
+                $"Item {itemId} was purged (purged_at: {lifecycle.Value.PurgedAt:O}).");
+        }
+
         Result<ItemMetadata> existing = await _items.GetItemAsync(itemId, cancellationToken);
         if (existing.IsFailure)
         {

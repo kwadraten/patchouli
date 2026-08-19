@@ -13,7 +13,6 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Csl;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
@@ -96,11 +95,15 @@ try
     LibraryRevisionService revisions = new(db);
     SearchProfileService profiles = new(db, library, clock);
     SqliteSearchService search = new(db, profiles);
-    EvidenceReferenceService evidence = new(db, clock);
     ItemService items = new(db, library, clock);
     CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations, revisions: revisions);
     CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
-    McpReadApi api = new(db, search, evidence, cslStyleStore: cslStore, cslRenderer: cslRenderer);
+    MarkdigMarkdownEngine markdown = new();
+    DocumentTreeService trees = new(db, clock, markdown);
+    DocumentMarkdownCompiler markdownCompiler = new(trees, markdown);
+    VersionedEvidenceReader evidenceReader = new(db, library, trees, markdownCompiler);
+    McpReadApi api = new(db, search, cslStyleStore: cslStore, cslRenderer: cslRenderer,
+        markdown: markdown, markdownCompiler: markdownCompiler);
     McpWriteApi writes = new(items, new BiblatexHelperClient(), cslStore);
     BiblatexImportService biblatexImport = new(
         new BiblatexHelperClient(), items, new FileAssetService(db, library, clock),
@@ -112,7 +115,8 @@ try
             McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
     }
 
-    McpProtocolHandler handler = new(api, writes, biblatexImport, db, effectiveSettings, ReportUnexpected);
+    McpProtocolHandler handler = new(api, writes, biblatexImport, items, evidenceReader, db, effectiveSettings,
+        ReportUnexpected);
     await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected);
     Console.Error.WriteLine($"[mcp-server] listening on loopback port {effectiveSettings.Port}");
     await server.RunAsync();
@@ -201,19 +205,19 @@ static async Task CommitFixtureTextAsync(
     SqliteConnectionFactory db, IClock clock, DocumentInstanceId documentId, PageId pageId, string text)
 {
     DocumentTreeService service = new(db, clock, new MarkdigMarkdownEngine());
-    Result<DocumentTreeRevision> staging = await service.StagePageAsync(
+    Result<DocumentTreeRevision> working = await service.BeginWorkingRevisionAsync(
         documentId, pageId,
         [
             new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
                 new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload(text), null)
         ],
         DocumentTreeRevisionSource.Import);
-    if (staging.IsFailure)
+    if (working.IsFailure)
     {
-        throw new InvalidOperationException(staging.ErrorMessage);
+        throw new InvalidOperationException(working.ErrorMessage);
     }
 
-    Result<DocumentTreeRevision> committed = await service.AdoptStagingRevisionAsync(staging.Value.TreeRevisionId);
+    Result<DocumentTreeRevision> committed = await service.CommitWorkingRevisionAsync(working.Value.TreeRevisionId);
     if (committed.IsFailure)
     {
         throw new InvalidOperationException(committed.ErrorMessage);

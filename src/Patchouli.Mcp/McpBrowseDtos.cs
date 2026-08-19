@@ -57,18 +57,6 @@ public sealed record McpBrowseStylePage(
     int DomainTotal = 0,
     int FilteredTotal = 0);
 
-public sealed record McpBrowseEvidenceRow(
-    string EvidenceRefId,
-    string? SourceTitle,
-    string? PageLabel,
-    int PageIndex,
-    string Status,
-    string? PinnedText,
-    DocumentInstanceId DocumentInstanceId,
-    PageId PageId,
-    DateTimeOffset CreatedAt,
-    ItemId? ItemId = null);
-
 public sealed record McpDocumentPageRef(PageId PageId, string? PageLabel, int PageIndex, string Uri);
 
 public sealed record McpDocumentOutlineResponse(

@@ -21,9 +21,10 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
-    public void Sanitizer_preserves_patchouli_resource_uris()
+    public void Sanitizer_preserves_versioned_patchouli_resource_uris()
     {
-        string value = "patchouli://texts/doc/page-1.md?evref=evref:v2:abc";
+        string value =
+            "patchouli://texts/doc/page-1.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001";
         McpOutputSanitizer.Sanitize(value).Should().Be(value);
     }
 
@@ -474,16 +475,19 @@ public sealed class McpServerTransportTests
     {
         string[] names = typeof(IMcpReadApi).GetMethods().Select(x => x.Name).ToArray();
         names.Should().Contain("GetCurrentLibraryStateAsync");
-        names.Should().NotContain(name => name.Contains("Ocr", StringComparison.OrdinalIgnoreCase)
-                                          || name.Contains("Import", StringComparison.OrdinalIgnoreCase)
-                                          || name.Contains("Branch", StringComparison.OrdinalIgnoreCase)
-                                          || name.Contains("Queue", StringComparison.OrdinalIgnoreCase));
+        names.Should().Contain("GetPrimaryDocumentOcrIndexStatusAsync");
+        names.Should().NotContain(name =>
+            !string.Equals(name, "GetPrimaryDocumentOcrIndexStatusAsync", StringComparison.Ordinal) &&
+            (name.Contains("Ocr", StringComparison.OrdinalIgnoreCase) ||
+             name.Contains("Import", StringComparison.OrdinalIgnoreCase) ||
+             name.Contains("Branch", StringComparison.OrdinalIgnoreCase) ||
+             name.Contains("Queue", StringComparison.OrdinalIgnoreCase)));
     }
 
     [Fact]
     public void Agent_prd_documents_http_read_only_mcp_boundaries()
     {
-        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md"));
+        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md"));
         r.Should().Contain("v1/v2 首发 MCP 是只读且纯文本的").And.Contain("MCP 从不触发 OCR 或索引重建").And.Contain("提供程序密钥").And
             .Contain("缓存图像");
     }
@@ -702,12 +706,6 @@ public sealed class McpServerTransportTests
             DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<McpDocumentOutlineResponse>.Failure("fake", "x"));
-        }
-
-        public Task<Result<McpBrowseEvidenceRow>> GetEvidenceRecordAsync(string evidenceRefId,
-            CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(Result<McpBrowseEvidenceRow>.Failure("fake", "x"));
         }
 
         public Task<Result<ItemId>> GetItemIdForDocumentAsync(DocumentInstanceId documentInstanceId,

@@ -107,6 +107,8 @@ public sealed record McpToolError(
             McpErrorCode.NotCitable => "NOT_CITABLE",
             McpErrorCode.DeadlineExceeded => "DEADLINE_EXCEEDED",
             McpErrorCode.Cancelled => "CANCELLED",
+            McpErrorCode.ItemInTrash => "ITEM_IN_TRASH",
+            McpErrorCode.ItemMerged => "ITEM_MERGED",
             _ => "UNKNOWN"
         };
     }
@@ -125,6 +127,8 @@ public sealed record McpToolError(
             McpErrorCode.NotCitable => "The requested resource cannot be cited.",
             McpErrorCode.DeadlineExceeded => "The request exceeded its deadline.",
             McpErrorCode.Cancelled => "The request was cancelled.",
+            McpErrorCode.ItemInTrash => "The requested item is in trash.",
+            McpErrorCode.ItemMerged => "The requested item has been merged into another item.",
             _ => "The request failed."
         };
     }

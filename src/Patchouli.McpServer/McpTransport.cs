@@ -1,10 +1,12 @@
 using System.Text;
 using System.Text.Json;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Core.Documents;
 using Patchouli.Infrastructure.Mcp;
 using Patchouli.Mcp;
 
@@ -68,12 +70,13 @@ public sealed class McpProtocolHandler
     private readonly Func<object, string> _toonEncoder;
 
     public McpProtocolHandler(IMcpReadApi api, IMcpWriteApi writes, IBiblatexImportService biblatex,
-        SqliteConnectionFactory db, McpServerSettings? settings = null,
+        IItemService items, IVersionedEvidenceReader evidenceReader, SqliteConnectionFactory db,
+        McpServerSettings? settings = null,
         Action<Exception, string>? unexpectedException = null,
         Func<object, string>? toonEncoder = null)
     {
         _readApi = api;
-        _commands = new McpCommandService(api, writes, biblatex);
+        _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader);
         _ = db;
         _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
         {
@@ -86,8 +89,8 @@ public sealed class McpProtocolHandler
     public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db,
         McpServerSettings? settings = null, Action<Exception, string>? unexpectedException = null,
         Func<object, string>? toonEncoder = null)
-        : this(api, new UnavailableWriteApi(), new UnavailableBiblatexImportService(), db, settings,
-            unexpectedException, toonEncoder)
+        : this(api, new UnavailableWriteApi(), new UnavailableBiblatexImportService(), new UnavailableItemService(),
+            new UnavailableVersionedEvidenceReader(), db, settings, unexpectedException, toonEncoder)
     {
     }
 
@@ -220,7 +223,7 @@ public sealed class McpProtocolHandler
                 {
                     ["uris"] = ToolSchemaProperty.Array(
                         "Resource URIs: items/<id>.bib, texts/<document-id>/, texts/<document-id>/page-<index>.md, " +
-                        "texts/<document-id>/page-<index>.md?evref=<evidence-ref> or csl-styles/<id>.csl.",
+                        "texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>] or csl-styles/<id>.csl.",
                         ToolSchemaProperty.String("Resource URI.")),
                     ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
                     ["limit_bytes"] = ToolSchemaProperty.Integer(
@@ -245,7 +248,8 @@ public sealed class McpProtocolHandler
                 ["refs"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
-                    ["refs"] = ToolSchemaProperty.Array("Item, document, page, or evidence resource URIs.",
+                    ["refs"] = ToolSchemaProperty.Array(
+                        "Item, document, page, or evidence resource URIs. Evidence URIs use ?rev=<tree-revision-id>[&box=<box-id>].",
                         ToolSchemaProperty.String("Citation-capable resource URI.")),
                     ["style"] = ToolSchemaProperty.String(
                         "Optional CSL style URI; omit to use the configured default style."),
@@ -717,6 +721,113 @@ public sealed class McpProtocolHandler
         }
     }
 
+    private sealed class UnavailableItemService : IItemService
+    {
+        private static Result<T> Unavailable<T>()
+        {
+            return Result<T>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Item service is unavailable in read-only protocol mode.");
+        }
+
+        public Task<Result<ItemMetadata>> CreateItemAsync(CreateItemRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemMetadata>());
+        }
+
+        public Task<Result<ItemMetadata>> CreateItemAsync(string itemType, string title, string? subtitle = null,
+            string? titleShort = null, string? creatorsJson = null, string? date = null,
+            string? publicationTitle = null, string? containerTitleShort = null, string? collectionTitle = null,
+            string? publisher = null, string? place = null, string? edition = null, string? genre = null,
+            string? number = null, string? chapterNumber = null, string? volume = null, string? version = null,
+            string? issue = null, string? pages = null, string? language = null, string? status = null,
+            string? note = null, string? abstractText = null, string? tagsJson = null, string? collectionsJson = null,
+            string? customFieldsJson = null, IReadOnlyList<ItemCreatorInput>? creators = null,
+            IReadOnlyList<ItemDateInput>? dates = null, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemMetadata>());
+        }
+
+        public Task<Result<ItemMetadata>> GetItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemMetadata>());
+        }
+
+        public Task<Result<ItemLifecycleInfo>> GetItemLifecycleAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemLifecycleInfo>());
+        }
+
+        public Task<Result<ItemMetadata>> UpdateItemAsync(ItemId itemId, UpdateItemRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemMetadata>());
+        }
+
+        public Task<Result<ItemMetadata>> ReplaceItemAsync(ItemId itemId, UpdateItemRequest request,
+            IReadOnlyList<ItemIdentifierInput> identifiers, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemMetadata>());
+        }
+
+        public Task<Result> DeleteItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Item service is unavailable in read-only protocol mode."));
+        }
+
+        public Task<Result> DeleteItemsAsync(IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Item service is unavailable in read-only protocol mode."));
+        }
+
+        public Task<Result<ItemMetadata>> RestoreItemAsync(ItemId itemId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemMetadata>());
+        }
+
+        public Task<Result> RestoreItemsAsync(IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Item service is unavailable in read-only protocol mode."));
+        }
+
+        public Task<Result<ItemListPage>> ListItemsAsync(ListItemsRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemListPage>());
+        }
+
+        public Task<Result<ItemListPage>> ListTrashedItemsAsync(int pageSize = 50, string? cursor = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemListPage>());
+        }
+
+        public Task<Result<ItemIdentifier>> AddIdentifierAsync(ItemId itemId, string scheme, string value, string? note,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<ItemIdentifier>());
+        }
+
+        public Task<Result<IReadOnlyList<ItemIdentifier>>> ListIdentifiersAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Unavailable<IReadOnlyList<ItemIdentifier>>());
+        }
+
+        public Task<Result> RemoveIdentifierAsync(ItemId itemId, IdentifierId identifierId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+                "Item service is unavailable in read-only protocol mode."));
+        }
+    }
+
     private sealed class UnavailableBiblatexImportService : IBiblatexImportService
     {
         private static Result<T> Unavailable<T>()
@@ -773,6 +884,20 @@ public sealed class McpProtocolHandler
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Unavailable<string>());
+        }
+    }
+
+    private sealed class UnavailableVersionedEvidenceReader : IVersionedEvidenceReader
+    {
+        public Task<Result<EvidencePageText>> GetBoxTextAsync(
+            DocumentInstanceId documentInstanceId,
+            int pageIndex1Based,
+            DocumentTreeRevisionId? revisionId = null,
+            DocumentBoxId? boxId = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<EvidencePageText>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Versioned evidence reader is unavailable in read-only protocol mode."));
         }
     }
 

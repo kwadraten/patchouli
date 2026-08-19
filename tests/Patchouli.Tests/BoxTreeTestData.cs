@@ -1,3 +1,4 @@
+using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -25,7 +26,7 @@ internal static class BoxTreeTestData
         bool suppressed = false)
     {
         DocumentTreeService service = CreateService(connectionFactory, clock);
-        Result<DocumentTreeRevision> staging = await service.StagePageAsync(
+        Result<DocumentTreeRevision> working = await service.BeginWorkingRevisionAsync(
             documentInstanceId,
             pageId,
             [
@@ -34,16 +35,23 @@ internal static class BoxTreeTestData
                     boxType == DocumentBoxType.Title ? 1 : null, Suppressed: suppressed)
             ],
             DocumentTreeRevisionSource.Import);
-        if (staging.IsFailure)
+        if (working.IsFailure)
         {
-            throw new InvalidOperationException(staging.ErrorMessage);
+            throw new InvalidOperationException(working.ErrorMessage);
         }
 
-        Result<DocumentTreeRevision> committed = await service.AdoptStagingRevisionAsync(staging.Value.TreeRevisionId);
+        IReadOnlyList<DocumentBox> boxesBefore = (await service.ListBoxesAsync(working.Value.TreeRevisionId)).Value;
+
+        Result<DocumentTreeRevision> committed = await service.CommitWorkingRevisionAsync(working.Value.TreeRevisionId);
         if (committed.IsFailure)
         {
             throw new InvalidOperationException(committed.ErrorMessage);
         }
+
+        // In-place commit keeps the same revision id and does not copy boxes.
+        committed.Value.TreeRevisionId.Should().Be(working.Value.TreeRevisionId);
+        IReadOnlyList<DocumentBox> boxesAfter = (await service.ListBoxesAsync(committed.Value.TreeRevisionId)).Value;
+        boxesAfter.Should().HaveCount(boxesBefore.Count);
 
         return committed.Value;
     }

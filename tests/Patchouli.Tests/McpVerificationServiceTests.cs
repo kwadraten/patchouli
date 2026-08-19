@@ -10,7 +10,6 @@ using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Mcp;
@@ -101,12 +100,28 @@ public sealed class McpVerificationServiceTests
             Result<Page> page = await pages.CreatePageAsync(doc.Value.DocumentInstanceId, 0, "1", null, null, 0,
                 CoordinateBasis.NormalizedPage, null, null, "test", null);
 
-            await BoxTreeTestData.CommitTextAsync(db.ConnectionFactory, clock, doc.Value.DocumentInstanceId,
-                page.Value.PageId, "test text");
+            DocumentTreeService trees = BoxTreeTestData.CreateService(db.ConnectionFactory, clock);
+            Result<DocumentTreeRevision> working = await trees.BeginWorkingRevisionAsync(
+                doc.Value.DocumentInstanceId, page.Value.PageId,
+                [
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("test text"))
+                ],
+                DocumentTreeRevisionSource.Import);
+            if (working.IsFailure)
+            {
+                throw new InvalidOperationException(working.ErrorMessage);
+            }
+
+            Result<DocumentTreeRevision> committed =
+                await trees.CommitWorkingRevisionAsync(working.Value.TreeRevisionId);
+            if (committed.IsFailure)
+            {
+                throw new InvalidOperationException(committed.ErrorMessage);
+            }
 
             SqliteSearchService search = new(db.ConnectionFactory);
-            EvidenceReferenceService evidence = new(db.ConnectionFactory, clock);
-            McpReadApi mcp = new(db.ConnectionFactory, search, evidence);
+            McpReadApi mcp = new(db.ConnectionFactory, search);
             McpVerificationService verification = new(db.ConnectionFactory, mcp);
 
             return new VerificationContext(db, verification, doc.Value.DocumentInstanceId, library, clock);

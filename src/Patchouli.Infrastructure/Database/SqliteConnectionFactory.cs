@@ -1,9 +1,15 @@
+using Dapper;
 using Microsoft.Data.Sqlite;
 
 namespace Patchouli.Infrastructure.Database;
 
 public class SqliteConnectionFactory
 {
+    static SqliteConnectionFactory()
+    {
+        DefaultTypeMap.MatchNamesWithUnderscores = true;
+    }
+
     private readonly string _databasePath;
     private readonly string _generalConnectionString;
     private readonly string _readConnectionString;
@@ -23,6 +29,34 @@ public class SqliteConnectionFactory
     }
 
     public string DatabasePath => _databasePath;
+
+    /// <summary>
+    /// Releases pooled connections for this database without affecting pools for other database files.
+    /// Call before a workflow replaces, moves, or deletes this database file.
+    /// </summary>
+    public void ClearPools()
+    {
+        using SqliteConnection general = new(_generalConnectionString);
+        using SqliteConnection read = new(_readConnectionString);
+        SqliteConnection.ClearPool(general);
+        SqliteConnection.ClearPool(read);
+    }
+
+    /// <summary>
+    /// Releases this database's pools and deletes its main file and SQLite sidecars.
+    /// </summary>
+    public void DeleteDatabaseFiles()
+    {
+        ClearPools();
+        foreach (string path in new[]
+                     { _databasePath, $"{_databasePath}-wal", $"{_databasePath}-shm", $"{_databasePath}-journal" })
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
 
     /// <summary>
     /// Acquires the process-wide workflow gate for this database file. Long-running workflows

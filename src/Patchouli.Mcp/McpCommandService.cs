@@ -1,10 +1,11 @@
 using System.Text;
 using System.Text.Json;
+using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Core.Evidence;
+using Patchouli.Core.Documents;
 
 namespace Patchouli.Mcp;
 
@@ -19,12 +20,17 @@ public sealed class McpCommandService
     private readonly IMcpReadApi _read;
     private readonly IMcpWriteApi _write;
     private readonly IBiblatexImportService _biblatex;
+    private readonly IItemService _items;
+    private readonly IVersionedEvidenceReader _evidenceReader;
 
-    public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex)
+    public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
+        IItemService items, IVersionedEvidenceReader evidenceReader)
     {
         _read = read;
         _write = write;
         _biblatex = biblatex;
+        _items = items;
+        _evidenceReader = evidenceReader;
     }
 
     public const int MaxLimit = 50;
@@ -273,7 +279,7 @@ public sealed class McpCommandService
         }
 
         McpUriKind kind = parsed.Value.Kind;
-        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.EvidenceRef)
+        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.bib and csl-styles/*.csl can be replaced.");
@@ -444,7 +450,7 @@ public sealed class McpCommandService
             McpUriKind.Document => await FetchDocumentAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Page => await FetchPageAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Style => await FetchStyleAsync(parsed.Value, range, limitBytes, state, cancellationToken),
-            McpUriKind.EvidenceRef => await FetchEvidenceAsync(parsed.Value, range, limitBytes, state,
+            McpUriKind.Evidence => await FetchEvidenceAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
             _ => FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument,
                 "Scopes cannot be fetched; use find to browse a scope."), limitBytes)
@@ -455,6 +461,40 @@ public sealed class McpCommandService
         McpLibraryStateResponse state, CancellationToken cancellationToken)
     {
         string uri = McpResourceUris.ItemUri(target.ItemId!.Value);
+
+        Result<ItemLifecycleInfo>
+            lifecycle = await _items.GetItemLifecycleAsync(target.ItemId.Value, cancellationToken);
+        if (lifecycle.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(lifecycle.ErrorCode),
+                    lifecycle.ErrorMessage ?? "Item was not found."), limitBytes);
+        }
+
+        if (lifecycle.Value.State == ItemLifecycleState.Trash)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorCode.ItemInTrash,
+                    $"Item {target.ItemId.Value} is in trash (deleted_at: {lifecycle.Value.DeletedAt:O})."),
+                limitBytes);
+        }
+
+        if (lifecycle.Value.State == ItemLifecycleState.Merged)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorCode.ItemMerged,
+                    $"Item {target.ItemId.Value} is merged into {lifecycle.Value.MergedIntoItemId}."),
+                limitBytes);
+        }
+
+        if (lifecycle.Value.State == ItemLifecycleState.Purged)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorCode.NotFound,
+                    $"Item {target.ItemId.Value} was purged (purged_at: {lifecycle.Value.PurgedAt:O})."),
+                limitBytes);
+        }
+
         Result<McpItemMetadataResponse> metadata = await _read.GetItemMetadataAsync(target.ItemId.Value,
             cancellationToken);
         if (metadata.IsFailure)
@@ -550,7 +590,7 @@ public sealed class McpCommandService
         }
 
         Result<McpPageTextResponse> page = await _read.GetPageTextAsync(
-            new McpPageTextRequest(pageRef.PageId, McpReadMode.Current), cancellationToken);
+            new McpPageTextRequest(pageRef.PageId), cancellationToken);
         if (page.IsFailure)
         {
             return FailedFetch(uri,
@@ -590,14 +630,32 @@ public sealed class McpCommandService
     private async Task<McpFetchResult> FetchEvidenceAsync(McpUriParseResult target, string? range, int limitBytes,
         McpLibraryStateResponse state, CancellationToken cancellationToken)
     {
-        string uri = McpResourceUris.EvidencePageUri(target.DocumentId!.Value, target.PageIndex!.Value,
-            target.EvidenceRefId!);
-        Result<McpBrowseEvidenceRow> record = await _read.GetEvidenceRecordAsync(target.EvidenceRefId!,
-            cancellationToken);
-        if (record.IsFailure || !EvidenceBelongsToPage(record, target, state.LibraryId))
+        DocumentInstanceId documentId = target.DocumentId!.Value;
+        int pageIndex = target.PageIndex!.Value;
+        string uri = McpResourceUris.EvidencePageUri(documentId, pageIndex, target.TreeRevisionId, target.BoxId);
+
+        Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(documentId, cancellationToken);
+        if (outline.IsFailure)
         {
-            return FailedFetch(uri, McpToolError.From(McpErrorCode.NotFound,
-                "Evidence record was not found or does not belong to the declared document and page."), limitBytes);
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(outline.ErrorCode),
+                    outline.ErrorMessage ?? outline.ErrorCode ?? "Document was not found."), limitBytes);
+        }
+
+        if (outline.Value.Pages.All(page => page.PageIndex + 1 != pageIndex))
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorCode.NotFound,
+                    $"Page '{pageIndex}' does not exist in document '{documentId}'."), limitBytes);
+        }
+
+        Result<EvidencePageText> evidence = await _evidenceReader.GetBoxTextAsync(
+            documentId, pageIndex, target.TreeRevisionId, target.BoxId, cancellationToken);
+        if (evidence.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(evidence.ErrorCode),
+                    evidence.ErrorMessage ?? "Evidence was not found."), limitBytes);
         }
 
         string? rangeError = ValidateRange(range, "lines");
@@ -606,60 +664,31 @@ public sealed class McpCommandService
             return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
         }
 
-        string text = BuildEvidenceContent(record.Value);
-        string content = ApplyLines(text, range, "lines");
-        Result<ItemId> owner = await _read.GetItemIdForDocumentAsync(record.Value.DocumentInstanceId,
-            cancellationToken);
+        string content = ApplyLines(BuildEvidenceContent(evidence.Value), range, "lines");
+        Result<ItemId> owner = await _read.GetItemIdForDocumentAsync(documentId, cancellationToken);
         string? itemUri = owner.IsSuccess ? McpResourceUris.ItemUri(owner.Value) : null;
         return FitTextEntry(uri, "evidence", itemUri, content, limitBytes, state.LibraryRevision);
     }
 
-    private static bool EvidenceBelongsToPage(Result<McpBrowseEvidenceRow> record, McpUriParseResult target,
-        string libraryId)
-    {
-        if (record.IsFailure)
-        {
-            return false;
-        }
-
-        if (record.Value.DocumentInstanceId != target.DocumentId!.Value)
-        {
-            return false;
-        }
-
-        if (record.Value.PageIndex + 1 != target.PageIndex!.Value)
-        {
-            return false;
-        }
-
-        Result<EvidenceReference> decoded = EvidenceReferenceCodec.Decode(target.EvidenceRefId!);
-        if (decoded.IsFailure)
-        {
-            return false;
-        }
-
-        return string.Equals(decoded.Value.LibraryId.ToString(), libraryId, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string BuildEvidenceContent(McpBrowseEvidenceRow record)
+    private static string BuildEvidenceContent(EvidencePageText evidence)
     {
         StringBuilder builder = new();
-        builder.Append("status: ").Append(record.Status).Append('\n');
-        if (!string.IsNullOrWhiteSpace(record.SourceTitle))
+        if (!string.IsNullOrWhiteSpace(evidence.SourceTitle))
         {
-            builder.Append("source: ").Append(record.SourceTitle).Append('\n');
+            builder.Append("source: ").Append(evidence.SourceTitle).Append('\n');
         }
 
-        if (!string.IsNullOrWhiteSpace(record.PageLabel))
+        if (!string.IsNullOrWhiteSpace(evidence.PageLabel))
         {
-            builder.Append("page: ").Append(record.PageLabel).Append('\n');
+            builder.Append("page: ").Append(evidence.PageLabel).Append('\n');
         }
 
-        if (!string.IsNullOrWhiteSpace(record.PinnedText))
+        if (builder.Length > 0)
         {
-            builder.Append('\n').Append(record.PinnedText);
+            builder.Append('\n');
         }
 
+        builder.Append(evidence.Markdown);
         return builder.ToString();
     }
 
@@ -800,42 +829,33 @@ public sealed class McpCommandService
                 return await _read.GetItemIdForDocumentAsync(reference.DocumentId.Value, cancellationToken);
             }
 
-            case McpUriKind.EvidenceRef:
+            case McpUriKind.Evidence:
             {
-                Result<EvidenceReference> decoded = EvidenceReferenceCodec.Decode(reference.EvidenceRefId!);
-                if (decoded.IsFailure)
+                Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(
+                    reference.DocumentId!.Value, cancellationToken);
+                if (outline.IsFailure)
                 {
-                    return Result<ItemId>.Failure(AppErrorCodes.NotFound,
-                        "Evidence reference is invalid.");
+                    return Result<ItemId>.Failure(outline.ErrorCode!, outline.ErrorMessage!);
                 }
 
-                if (!string.Equals(decoded.Value.LibraryId.ToString(), libraryId,
-                        StringComparison.OrdinalIgnoreCase))
+                if (outline.Value.Pages.All(page => page.PageIndex + 1 != reference.PageIndex!.Value))
                 {
                     return Result<ItemId>.Failure(AppErrorCodes.NotFound,
-                        "Evidence reference belongs to another library.");
+                        $"Page '{reference.PageIndex}' does not belong to document '{reference.DocumentId}'.");
                 }
 
-                Result<McpBrowseEvidenceRow> record = await _read.GetEvidenceRecordAsync(reference.EvidenceRefId!,
+                Result<EvidencePageText> evidence = await _evidenceReader.GetBoxTextAsync(
+                    reference.DocumentId.Value,
+                    reference.PageIndex!.Value,
+                    reference.TreeRevisionId,
+                    reference.BoxId,
                     cancellationToken);
-                if (record.IsFailure)
+                if (evidence.IsFailure)
                 {
-                    return Result<ItemId>.Failure(record.ErrorCode!, record.ErrorMessage!);
+                    return Result<ItemId>.Failure(evidence.ErrorCode!, evidence.ErrorMessage!);
                 }
 
-                if (record.Value.DocumentInstanceId != reference.DocumentId!.Value)
-                {
-                    return Result<ItemId>.Failure(AppErrorCodes.NotFound,
-                        "Evidence does not belong to the declared document.");
-                }
-
-                if (record.Value.PageIndex + 1 != reference.PageIndex!.Value)
-                {
-                    return Result<ItemId>.Failure(AppErrorCodes.NotFound,
-                        "Evidence does not belong to the declared page.");
-                }
-
-                return await _read.GetItemIdForDocumentAsync(record.Value.DocumentInstanceId, cancellationToken);
+                return await _read.GetItemIdForDocumentAsync(reference.DocumentId.Value, cancellationToken);
             }
 
             default:
@@ -941,7 +961,7 @@ public sealed class McpCommandService
             case McpUriKind.TextsScope:
             {
                 McpSearchLibraryRequest searchRequest = new(query, limit,
-                    cursor?.SearchCursor, IncludeEvidenceRefs: true, IncludeRewritePlan: false);
+                    cursor?.SearchCursor, IncludeRewritePlan: false);
                 Result<McpSearchLibraryResponse> search = await _read.SearchLibraryAsync(searchRequest,
                     cancellationToken);
                 if (search.IsFailure)
@@ -973,11 +993,6 @@ public sealed class McpCommandService
 
                     foreach (McpMatchedUnit unit in page.MatchedUnits)
                     {
-                        if (unit.EvidenceRef is null)
-                        {
-                            continue;
-                        }
-
                         if (literal && !unit.Text.Contains(query, StringComparison.OrdinalIgnoreCase))
                         {
                             continue;
@@ -1136,18 +1151,19 @@ public sealed class McpCommandService
                     "file", false, StyleEnabled: style.Value.Enabled);
             }
 
-            case McpUriKind.EvidenceRef:
+            case McpUriKind.Evidence:
             {
-                Result<McpBrowseEvidenceRow> record = await _read.GetEvidenceRecordAsync(target.EvidenceRefId!,
-                    cancellationToken);
-                if (record.IsFailure)
+                DocumentInstanceId documentId = target.DocumentId!.Value;
+                int pageIndex = target.PageIndex!.Value;
+                Result<EvidencePageText> evidence = await _evidenceReader.GetBoxTextAsync(
+                    documentId, pageIndex, target.TreeRevisionId, target.BoxId, cancellationToken);
+                if (evidence.IsFailure)
                 {
                     return null;
                 }
 
-                DocumentInstanceId documentId = record.Value.DocumentInstanceId;
-                int pageIndex = record.Value.PageIndex + 1;
-                string uri = McpResourceUris.EvidencePageUri(documentId, pageIndex, target.EvidenceRefId!);
+                string uri =
+                    McpResourceUris.EvidencePageUri(documentId, pageIndex, target.TreeRevisionId, target.BoxId);
                 Result<ItemId> owner = await _read.GetItemIdForDocumentAsync(documentId, cancellationToken);
                 string? itemUri = owner.IsSuccess ? McpResourceUris.ItemUri(owner.Value) : null;
                 string? itemStatus = null;
@@ -1176,7 +1192,7 @@ public sealed class McpCommandService
                 }
 
                 bool citable = owner.IsSuccess;
-                return new SingletonResource(uri, record.Value.SourceTitle ?? record.Value.EvidenceRefId, "file",
+                return new SingletonResource(uri, evidence.Value.SourceTitle ?? uri, "file",
                     citable, owner.IsSuccess ? owner.Value : null, itemUri,
                     documentId, itemStatus, documentStatus, sourceStatus,
                     OcrIndexStatus: ocrIndexStatus);
@@ -1292,7 +1308,8 @@ public sealed class McpCommandService
         McpTextResourceProjection projection, bool longMode)
     {
         int pageIndex = page.PageIndex + 1;
-        string uri = McpResourceUris.EvidencePageUri(page.DocumentInstanceId, pageIndex, unit.EvidenceRef!);
+        string uri =
+            McpResourceUris.EvidencePageUri(page.DocumentInstanceId, pageIndex, unit.TreeRevisionId, unit.BoxId);
         string title = page.ItemTitle;
         if (!longMode)
         {
@@ -1450,7 +1467,7 @@ public sealed class McpCommandService
         {
             McpUriKind.ItemsScope or McpUriKind.Item =>
                 new[] { "item_type", "item_status", "primary_document_ocr_index_status", "citable" },
-            McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.EvidenceRef =>
+            McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence =>
                 new[] { "item_type", "item_status", "document_status", "source_status", "ocr_index_status", "citable" },
             McpUriKind.StylesScope or McpUriKind.Style => new[] { "style_enabled" },
             _ => null
@@ -1474,7 +1491,7 @@ public sealed class McpCommandService
     private static bool IsFileScope(McpUriKind kind)
     {
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
-            or McpUriKind.EvidenceRef;
+            or McpUriKind.Evidence;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,

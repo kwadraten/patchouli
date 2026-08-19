@@ -94,7 +94,7 @@ internal sealed class DocumentTreeValidator
 
         if (!DocumentBoxType.IsKnown(box.BoxType) && box.BaseType is not ("text" or "image" or "table" or "code"))
         {
-            return Invalid("Unknown document box types require a usable base_type before adoption.");
+            return Invalid("Unknown document box types require a usable base_type before commit.");
         }
 
         if (box.BoxType == DocumentBoxType.LogicalPage)

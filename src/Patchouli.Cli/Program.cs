@@ -125,6 +125,8 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
     Console.Error.WriteLine("  fetch <uri>... [--range <lines:S-E|pages:S-E>] [--limit-bytes <n>]");
+    Console.Error.WriteLine(
+        "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>]");
     Console.Error.WriteLine("  put <uri> --from <path>|--stdin");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
     Console.Error.WriteLine(

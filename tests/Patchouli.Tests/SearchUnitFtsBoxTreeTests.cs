@@ -21,7 +21,7 @@ public sealed class SearchUnitFtsBoxTreeTests
     public async Task Fts_indexes_current_non_suppressed_box_leaves_in_sibling_order()
     {
         await using Context context = await Context.CreateAsync();
-        DocumentTreeRevision staging = (await context.Trees.StagePageAsync(
+        DocumentTreeRevision working = (await context.Trees.BeginWorkingRevisionAsync(
             context.Document.DocumentInstanceId,
             context.Page.PageId,
             [
@@ -32,8 +32,9 @@ public sealed class SearchUnitFtsBoxTreeTests
                     Suppressed: true),
                 new DocumentBoxSeed(null, null, 2, DocumentBoxType.Text, null, null,
                     new NormalizedBBox(.1, .3, .8, .1), new TextBoxPayload("secondunique indexed phrase"))
-            ])).Value;
-        await context.Trees.AdoptStagingRevisionAsync(staging.TreeRevisionId);
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(working.TreeRevisionId);
         await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
         await context.Index.RebuildFtsForDocumentInstanceAsync(context.Document.DocumentInstanceId);
 

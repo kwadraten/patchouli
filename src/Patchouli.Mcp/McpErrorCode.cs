@@ -22,7 +22,9 @@ public enum McpErrorCode
     Unavailable = 8,
     NotCitable = 9,
     DeadlineExceeded = 10,
-    Cancelled = 11
+    Cancelled = 11,
+    ItemInTrash = 12,
+    ItemMerged = 13
 }
 
 /// <summary>Single source of truth mapping domain error codes to the shared numeric codes.</summary>
@@ -36,16 +38,14 @@ public static class McpErrorMappings
             AppErrorCodes.InvalidArgument => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotFound => McpErrorCode.NotFound,
             AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
-            AppErrorCodes.InvalidEvidenceReference or AppErrorCodes.InvalidEvref or
-                AppErrorCodes.UnsupportedEvrefTarget => McpErrorCode.InvalidArgument,
-            AppErrorCodes.EvidenceResourceMismatch or AppErrorCodes.EvidenceLibraryMismatch or
-                AppErrorCodes.LibraryMismatch => McpErrorCode.NotFound,
-            AppErrorCodes.EvidenceUnavailable => McpErrorCode.NotFound,
+            AppErrorCodes.LibraryMismatch => McpErrorCode.NotFound,
             AppErrorCodes.Conflict => McpErrorCode.InvalidArgument,
             AppErrorCodes.NotCitable => McpErrorCode.NotCitable,
             "general_type_not_renderable" => McpErrorCode.NotCitable,
             AppErrorCodes.BiblatexGeneralExportForbidden => McpErrorCode.PermissionDenied,
             AppErrorCodes.UnsupportedOperation => McpErrorCode.Unavailable,
+            AppErrorCodes.ItemInTrash => McpErrorCode.ItemInTrash,
+            AppErrorCodes.ItemMerged => McpErrorCode.ItemMerged,
             AppErrorCodes.DatabaseError or AppErrorCodes.InvalidState or AppErrorCodes.MappingRequired
                 or AppErrorCodes.StaleSettingsRevision => McpErrorCode.Internal,
             _ => McpErrorCode.Internal
@@ -68,6 +68,8 @@ public static class McpErrorMappings
                 AppErrorCodes.BiblatexHelperFailed or AppErrorCodes.BiblatexVerifyFailed or
                 AppErrorCodes.BiblatexMissingTitle or AppErrorCodes.BiblatexEncodingError =>
                 McpErrorCode.InvalidContent,
+            AppErrorCodes.ItemInTrash => McpErrorCode.ItemInTrash,
+            AppErrorCodes.ItemMerged => McpErrorCode.ItemMerged,
             AppErrorCodes.DatabaseError or AppErrorCodes.InvalidState or AppErrorCodes.MappingRequired
                 or AppErrorCodes.StaleSettingsRevision => McpErrorCode.Internal,
             _ => McpErrorCode.Internal

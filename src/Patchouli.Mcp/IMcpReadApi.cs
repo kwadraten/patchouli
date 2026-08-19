@@ -57,9 +57,6 @@ public interface IMcpReadApi
     Task<Result<McpDocumentOutlineResponse>> GetDocumentOutlineAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 
-    Task<Result<McpBrowseEvidenceRow>> GetEvidenceRecordAsync(string evidenceRefId,
-        CancellationToken cancellationToken = default);
-
     /// <summary>
     /// Resolves the item that owns a document instance. Used by the cite command to support
     /// document, page, and evidence references.

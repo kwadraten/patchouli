@@ -7,7 +7,6 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Mcp;
@@ -23,7 +22,6 @@ public sealed class McpReadApi : IMcpReadApi
 {
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ISearchService _searchService;
-    private readonly IEvidenceReferenceService _evidenceService;
     private readonly IPageCoordinateService? _coordinates;
     private readonly ICslStyleStore? _cslStyleStore;
     private readonly ICslRenderer? _cslRenderer;
@@ -35,14 +33,13 @@ public sealed class McpReadApi : IMcpReadApi
     public CompiledMarkdownCacheMetrics CompiledMarkdownCacheMetrics => _compiledMarkdownCache.Metrics;
 
     public McpReadApi(SqliteConnectionFactory connectionFactory, ISearchService searchService,
-        IEvidenceReferenceService evidenceService, IPageCoordinateService? coordinates = null,
+        IPageCoordinateService? coordinates = null,
         ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null,
         IMarkdownEngine? markdown = null, IDocumentMarkdownCompiler? markdownCompiler = null,
         ICompiledMarkdownCache? compiledMarkdownCache = null)
     {
         _connectionFactory = connectionFactory;
         _searchService = searchService;
-        _evidenceService = evidenceService;
         _coordinates = coordinates;
         _cslStyleStore = cslStyleStore;
         _cslRenderer = cslRenderer;
@@ -70,30 +67,14 @@ public sealed class McpReadApi : IMcpReadApi
             return Result<McpSearchLibraryResponse>.Failure(search.ErrorCode!, search.ErrorMessage!);
         }
 
-        List<string> warnings = new();
         List<McpSearchPageResult> pages = new();
         foreach (SearchPageResult page in search.Value.Results)
         {
             List<McpMatchedUnit> units = new();
             foreach (SearchMatchedUnit unit in page.MatchedUnits)
             {
-                string? evidenceRef = null;
-                if (request.IncludeEvidenceRefs)
-                {
-                    Result<EvidenceRefRecord> created =
-                        await _evidenceService.CreateFromSearchUnitAsync(unit.UnitId, cancellationToken);
-                    if (created.IsSuccess)
-                    {
-                        evidenceRef = created.Value.EvidenceRefId;
-                    }
-                    else
-                    {
-                        warnings.Add($"Evidence ref unavailable for unit {unit.UnitId}: {created.ErrorCode}");
-                    }
-                }
-
-                units.Add(new McpMatchedUnit(unit.UnitId, evidenceRef, unit.Text, unit.BoxType, unit.Ordinal,
-                    unit.TreeRevisionId, unit.IsMatch));
+                units.Add(new McpMatchedUnit(unit.UnitId, unit.Text, unit.BoxType, unit.Ordinal,
+                    unit.TreeRevisionId, unit.BoxId, unit.IsMatch));
             }
 
             pages.Add(new McpSearchPageResult(
@@ -113,7 +94,7 @@ public sealed class McpReadApi : IMcpReadApi
             search.Value.EstimatedTotal,
             search.Value.IndexStatus,
             search.Value.AffectedScopesSummary,
-            warnings.Count == 0 ? null : string.Join("; ", warnings),
+            null,
             request.IncludeRewritePlan ? search.Value.RewritePlan : null));
     }
 
@@ -134,7 +115,7 @@ public sealed class McpReadApi : IMcpReadApi
                         note as Note, abstract as Abstract, tags_json as TagsJson,
                         collections_json as CollectionsJson, custom_fields_json as CustomFieldsJson,
                         updated_at as UpdatedAt
-                from items where item_id = @ItemId and deleted_at is null;
+                from items where item_id = @ItemId and deleted_at is null and merged_into_item_id is null;
                 """,
                 new { ItemId = itemId.ToString() });
             if (item is null)
@@ -239,68 +220,12 @@ public sealed class McpReadApi : IMcpReadApi
     public async Task<Result<McpPageTextResponse>> GetPageTextAsync(McpPageTextRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (request.ReadMode is McpReadMode.Pinned or McpReadMode.Compare)
-        {
-            if (string.IsNullOrWhiteSpace(request.EvidenceRef))
-            {
-                return Result<McpPageTextResponse>.Failure(AppErrorCodes.ValidationFailed,
-                    "EvidenceRef is required for pinned or compare page text.");
-            }
-
-            string mode = request.ReadMode == McpReadMode.Pinned
-                ? EvidenceResolutionMode.Pinned
-                : EvidenceResolutionMode.Compare;
-            Result<EvidenceResolutionResult> resolved =
-                await _evidenceService.ResolveAsync(request.EvidenceRef, mode, cancellationToken);
-            if (resolved.IsFailure)
-            {
-                return Result<McpPageTextResponse>.Failure(resolved.ErrorCode!, resolved.ErrorMessage!);
-            }
-
-            string text = request.ReadMode == McpReadMode.Pinned
-                ? resolved.Value.PinnedText ?? ""
-                : $"[Pinned]\n{resolved.Value.PinnedText}\n\n[Current]\n{resolved.Value.CurrentText}";
-            PageMeta? meta = await PageMetaAsync(request.PageId);
-            return Result<McpPageTextResponse>.Success(new McpPageTextResponse(request.PageId,
-                meta is null ? default : DocumentInstanceId.Parse(meta.DocumentInstanceId),
-                meta?.PageLabel, meta?.PageIndex ?? 0, text, request.ReadMode, request.EvidenceRef,
-                Warnings(resolved.Value.Warning)));
-        }
-
-        Result<McpPageTextResponse> page =
-            await CurrentPageTextAsync(request.PageId, request.IncludeSuppressed, cancellationToken);
-        return page;
+        return await CurrentPageTextAsync(request.PageId, request.IncludeSuppressed, cancellationToken);
     }
 
     public async Task<Result<McpPageBlocksResponse>> GetPageBlocksAsync(McpPageBlocksRequest request,
         CancellationToken cancellationToken = default)
     {
-        if (request.ReadMode is McpReadMode.Pinned or McpReadMode.Compare)
-        {
-            if (string.IsNullOrWhiteSpace(request.EvidenceRef))
-            {
-                return Result<McpPageBlocksResponse>.Failure(AppErrorCodes.ValidationFailed,
-                    "EvidenceRef is required for pinned or compare page blocks.");
-            }
-
-            Result<EvidenceResolutionResult> resolved = await _evidenceService.ResolveAsync(request.EvidenceRef,
-                request.ReadMode == McpReadMode.Pinned ? EvidenceResolutionMode.Pinned : EvidenceResolutionMode.Compare,
-                cancellationToken);
-            if (resolved.IsFailure)
-            {
-                return Result<McpPageBlocksResponse>.Failure(resolved.ErrorCode!, resolved.ErrorMessage!);
-            }
-
-            PageMeta? meta = await PageMetaAsync(request.PageId);
-            string text = request.ReadMode == McpReadMode.Pinned
-                ? resolved.Value.PinnedText ?? ""
-                : $"[Pinned]\n{resolved.Value.PinnedText}\n\n[Current]\n{resolved.Value.CurrentText}";
-            return Result<McpPageBlocksResponse>.Success(new McpPageBlocksResponse(request.PageId, meta?.PageLabel,
-                meta?.PageIndex ?? 0,
-                [new McpPageBlock(default, default, "evidence", text, 0, false, request.EvidenceRef, null)],
-                request.ReadMode, Warnings(resolved.Value.Warning)));
-        }
-
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
@@ -328,12 +253,9 @@ public sealed class McpReadApi : IMcpReadApi
                 select b.box_id as BoxId, b.parent_box_id as ParentBoxId,
                        b.next_sibling_box_id as NextSiblingBoxId, b.box_type as BoxType,
                        b.base_type as BaseType, b.payload_json as PayloadJson, b.suppressed as Suppressed,
-                       su.unit_id as SearchUnitId,
                        b.bbox_x as BBoxX, b.bbox_y as BBoxY,
                        b.bbox_width as BBoxWidth, b.bbox_height as BBoxHeight
                 from document_boxes b
-                left join search_units su on su.box_id = b.box_id
-                    and su.tree_revision_id = b.tree_revision_id and su.status = 'current'
                 where b.page_id = @PageId and b.tree_revision_id = @RevisionId
                 ;
                 """,
@@ -342,8 +264,6 @@ public sealed class McpReadApi : IMcpReadApi
                     PageId = request.PageId.ToString(), RevisionId = revisionId
                 })).ToArray();
             DocumentTreeRevisionId treeRevisionId = DocumentTreeRevisionId.Parse(revisionId);
-            Dictionary<DocumentBoxId, DocumentBoxRow> rowsByBoxId =
-                rawRows.ToDictionary(row => DocumentBoxId.Parse(row.BoxId));
             DocumentBox[] boxes = rawRows.Select(row => row.ToBox(
                 DocumentInstanceId.Parse(meta.DocumentInstanceId), request.PageId, treeRevisionId)).ToArray();
             DocumentBox[] projectedBoxes = DocumentBoxProjection.ContentBoxes(boxes)
@@ -360,23 +280,6 @@ public sealed class McpReadApi : IMcpReadApi
             int ordinal = 0;
             foreach (DocumentBox box in projectedBoxes)
             {
-                DocumentBoxRow row = rowsByBoxId[box.BoxId];
-                string? evidenceRef = null;
-                if (!string.IsNullOrWhiteSpace(row.SearchUnitId))
-                {
-                    Result<EvidenceRefRecord> created =
-                        await _evidenceService.CreateFromSearchUnitAsync(SearchUnitId.Parse(row.SearchUnitId),
-                            cancellationToken);
-                    if (created.IsSuccess)
-                    {
-                        evidenceRef = created.Value.EvidenceRefId;
-                    }
-                    else
-                    {
-                        warnings.Add($"Evidence ref unavailable for unit {row.SearchUnitId}: {created.ErrorCode}");
-                    }
-                }
-
                 blocks.Add(new McpPageBlock(
                     box.BoxId,
                     treeRevisionId,
@@ -384,12 +287,11 @@ public sealed class McpReadApi : IMcpReadApi
                     DocumentBoxProjection.PlainText(box, _markdown),
                     ordinal++,
                     box.Suppressed,
-                    evidenceRef,
                     request.IncludeBbox ? box.BBox : null));
             }
 
             return Result<McpPageBlocksResponse>.Success(new McpPageBlocksResponse(request.PageId, meta.PageLabel,
-                meta.PageIndex, blocks, request.ReadMode, warnings));
+                meta.PageIndex, treeRevisionId, blocks, warnings));
         }
         catch (OperationCanceledException)
         {
@@ -422,20 +324,9 @@ public sealed class McpReadApi : IMcpReadApi
         List<McpContextUnit> units = new();
         foreach (SearchMatchedUnit unit in context.Value)
         {
-            string? evidenceRef = null;
-            if (request.IncludeEvidenceRefs)
-            {
-                Result<EvidenceRefRecord> created =
-                    await _evidenceService.CreateFromSearchUnitAsync(unit.UnitId, cancellationToken);
-                if (created.IsSuccess)
-                {
-                    evidenceRef = created.Value.EvidenceRefId;
-                }
-            }
-
-            units.Add(new McpContextUnit(unit.UnitId, evidenceRef, unit.Text,
+            units.Add(new McpContextUnit(unit.UnitId, unit.Text,
                 bboxMap.GetValueOrDefault(unit.UnitId.ToString()), unit.IsMatch, unit.Ordinal, unit.PageId,
-                unit.TreeRevisionId));
+                unit.TreeRevisionId, unit.BoxId));
         }
 
         return Result<McpSearchContextResponse>.Success(new McpSearchContextResponse(units, null));
@@ -544,9 +435,9 @@ public sealed class McpReadApi : IMcpReadApi
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from items where deleted_at is null;");
+                "select count(1) from items where deleted_at is null and merged_into_item_id is null;");
             int filteredTotal = await connection.ExecuteScalarAsync<int>(
-                $"select count(1) from items where deleted_at is null{filter.Sql}",
+                $"select count(1) from items where deleted_at is null and merged_into_item_id is null{filter.Sql}",
                 filter.Parameters);
             Dictionary<string, object> pageParameters = new(filter.Parameters, StringComparer.Ordinal)
             {
@@ -558,7 +449,7 @@ public sealed class McpReadApi : IMcpReadApi
                  select item_id, title, item_type, status, citation_key, updated_at,
                         {PrimaryDocumentOcrIndexStatusExpression("items.item_id")} as primary_document_ocr_index_status
                  from items
-                 where deleted_at is null{filter.Sql}
+                 where deleted_at is null and merged_into_item_id is null{filter.Sql}
                  order by updated_at desc, item_id
                  limit @Limit offset @Skip;
                  """,
@@ -623,16 +514,16 @@ public sealed class McpReadApi : IMcpReadApi
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from items where deleted_at is null;");
+                "select count(1) from items where deleted_at is null and merged_into_item_id is null;");
             int filteredTotal = await connection.ExecuteScalarAsync<int>(
-                $"select count(1) from items where deleted_at is null and {searchPredicate}{filter.Sql}",
+                $"select count(1) from items where deleted_at is null and merged_into_item_id is null and {searchPredicate}{filter.Sql}",
                 searchParameters);
             IReadOnlyList<ItemRow> rows = (await connection.QueryAsync<ItemRow>(
                 $"""
                  select item_id, title, item_type, status, citation_key, updated_at,
                         {PrimaryDocumentOcrIndexStatusExpression("items.item_id")} as primary_document_ocr_index_status
                  from items
-                 where deleted_at is null and {searchPredicate}{filter.Sql}
+                 where deleted_at is null and merged_into_item_id is null and {searchPredicate}{filter.Sql}
                  order by updated_at desc, item_id
                  limit @Limit offset @Skip;
                  """,
@@ -867,45 +758,6 @@ public sealed class McpReadApi : IMcpReadApi
         }
     }
 
-    public async Task<Result<McpBrowseEvidenceRow>> GetEvidenceRecordAsync(string evidenceRefId,
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
-            await connection.OpenAsync(cancellationToken);
-            EvidenceRow? row = await connection.QuerySingleOrDefaultAsync<EvidenceRow>(
-                """
-                select e.evidence_ref_id, e.source_title, e.page_label, e.page_index, e.status,
-                       e.pinned_text, e.document_instance_id, e.page_id, e.created_at,
-                       di.item_id
-                from evidence_ref_records e
-                left join document_instances di on di.document_instance_id = e.document_instance_id
-                where e.evidence_ref_id = @Ref;
-                """,
-                new { Ref = evidenceRefId });
-            if (row is null)
-            {
-                return Result<McpBrowseEvidenceRow>.Failure(AppErrorCodes.NotFound,
-                    "Evidence record was not found.");
-            }
-
-            return Result<McpBrowseEvidenceRow>.Success(new McpBrowseEvidenceRow(
-                row.EvidenceRefId, row.SourceTitle, row.PageLabel, row.PageIndex, row.Status, row.PinnedText,
-                DocumentInstanceId.Parse(row.DocumentInstanceId), PageId.Parse(row.PageId),
-                DateTimeOffset.Parse(row.CreatedAt), ParseOptionalItemId(row.ItemId)));
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
-        {
-            return Result<McpBrowseEvidenceRow>.Failure(AppErrorCodes.DatabaseError,
-                $"Database operation failed: {ex.Message}");
-        }
-    }
-
     public async Task<Result<ItemId>> GetItemIdForDocumentAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
@@ -1015,7 +867,7 @@ public sealed class McpReadApi : IMcpReadApi
                     cancellationToken: cancellationToken)).ToArray();
             return Result<McpPageTextResponse>.Success(new McpPageTextResponse(pageId,
                 DocumentInstanceId.Parse(meta.DocumentInstanceId), meta.PageLabel, meta.PageIndex,
-                compiled.Value.Markdown, McpReadMode.Current, null, warnings, revisionId));
+                compiled.Value.Markdown, treeRevisionId, warnings));
         }
         catch (OperationCanceledException)
         {
@@ -1106,7 +958,6 @@ public sealed class McpReadApi : IMcpReadApi
         public string? BaseType { get; set; }
         public string? PayloadJson { get; set; }
         public int Suppressed { get; set; }
-        public string? SearchUnitId { get; set; }
         public double BBoxX { get; set; }
         public double BBoxY { get; set; }
         public double BBoxWidth { get; set; }
@@ -1483,20 +1334,6 @@ public sealed class McpReadApi : IMcpReadApi
     private sealed class DocumentOwnerRow
     {
         public string? Title { get; set; }
-        public string? ItemId { get; set; }
-    }
-
-    private sealed class EvidenceRow
-    {
-        public string EvidenceRefId { get; set; } = "";
-        public string? SourceTitle { get; set; }
-        public string? PageLabel { get; set; }
-        public int PageIndex { get; set; }
-        public string Status { get; set; } = "";
-        public string? PinnedText { get; set; }
-        public string DocumentInstanceId { get; set; } = "";
-        public string PageId { get; set; } = "";
-        public string CreatedAt { get; set; } = "";
         public string? ItemId { get; set; }
     }
 

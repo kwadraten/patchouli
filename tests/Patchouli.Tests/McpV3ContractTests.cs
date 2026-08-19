@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Corvus.Toon;
 using FluentAssertions;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Results;
 using Patchouli.Mcp;
 using Xunit;
 
@@ -25,8 +26,15 @@ public sealed class McpV3ContractTests
     [InlineData("patchouli://texts/", McpUriKind.TextsScope)]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/", McpUriKind.Document)]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md", McpUriKind.Page)]
-    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?evref=evref:v2:abc",
-        McpUriKind.EvidenceRef)]
+    [InlineData(
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001",
+        McpUriKind.Evidence)]
+    [InlineData(
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?box=30000000-0000-0000-0000-000000000001",
+        McpUriKind.Evidence)]
+    [InlineData(
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001",
+        McpUriKind.Evidence)]
     [InlineData("patchouli://csl-styles/", McpUriKind.StylesScope)]
     [InlineData("patchouli://csl-styles/apa.csl", McpUriKind.Style)]
     public void Resource_uris_parse_the_v3_tree(string uri, McpUriKind expectedKind)
@@ -46,6 +54,9 @@ public sealed class McpV3ContractTests
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-0.md")]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1")]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md?foo=bar")]
+    [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md?evref=evref:v2:any")]
+    [InlineData(
+        "patchouli://texts/10000000-0000-0000-0000-000000000001/page-1.md?rev=20000000-0000-0000-0000-000000000001&evref=evref:v2:any")]
     [InlineData("patchouli://texts/10000000-0000-0000-0000-000000000001/pages/20000000-0000-0000-0000-000000000001.md")]
     [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001")]
     [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.bib/")]
@@ -65,10 +76,45 @@ public sealed class McpV3ContractTests
     }
 
     [Fact]
-    public void Evidence_page_uri_embeds_the_canonical_evref_query()
+    public void Evidence_page_uri_embeds_the_canonical_versioned_query()
     {
-        McpResourceUris.EvidencePageUri(DocumentId, 2, "evref:v2:abc").Should().Be(
-            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?evref=evref:v2:abc");
+        DocumentTreeRevisionId rev = new(Guid.Parse("20000000-0000-0000-0000-000000000001"));
+        DocumentBoxId box = new(Guid.Parse("30000000-0000-0000-0000-000000000001"));
+
+        McpResourceUris.EvidencePageUri(DocumentId, 2, rev, box).Should().Be(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001");
+        McpResourceUris.EvidencePageUri(DocumentId, 2, rev).Should().Be(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?rev=20000000-0000-0000-0000-000000000001");
+        McpResourceUris.EvidencePageUri(DocumentId, 2, boxId: box).Should().Be(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md?box=30000000-0000-0000-0000-000000000001");
+        McpResourceUris.EvidencePageUri(DocumentId, 2).Should().Be(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-2.md");
+    }
+
+    [Fact]
+    public void Versioned_query_parameters_are_parsed_into_result_fields()
+    {
+        DocumentTreeRevisionId rev = new(Guid.Parse("20000000-0000-0000-0000-000000000001"));
+        DocumentBoxId box = new(Guid.Parse("30000000-0000-0000-0000-000000000001"));
+
+        Result<McpUriParseResult> both = McpResourceUris.Parse(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001");
+        both.Value.Kind.Should().Be(McpUriKind.Evidence);
+        both.Value.PageIndex.Should().Be(7);
+        both.Value.TreeRevisionId.Should().Be(rev);
+        both.Value.BoxId.Should().Be(box);
+
+        Result<McpUriParseResult> revOnly = McpResourceUris.Parse(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001");
+        revOnly.Value.Kind.Should().Be(McpUriKind.Evidence);
+        revOnly.Value.TreeRevisionId.Should().Be(rev);
+        revOnly.Value.BoxId.Should().BeNull();
+
+        Result<McpUriParseResult> boxOnly = McpResourceUris.Parse(
+            "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?box=30000000-0000-0000-0000-000000000001");
+        boxOnly.Value.Kind.Should().Be(McpUriKind.Evidence);
+        boxOnly.Value.TreeRevisionId.Should().BeNull();
+        boxOnly.Value.BoxId.Should().Be(box);
     }
 
     [Fact]
@@ -132,6 +178,8 @@ public sealed class McpV3ContractTests
     [InlineData(McpErrorCode.NotCitable, "NOT_CITABLE", 9)]
     [InlineData(McpErrorCode.DeadlineExceeded, "DEADLINE_EXCEEDED", 10)]
     [InlineData(McpErrorCode.Cancelled, "CANCELLED", 11)]
+    [InlineData(McpErrorCode.ItemInTrash, "ITEM_IN_TRASH", 12)]
+    [InlineData(McpErrorCode.ItemMerged, "ITEM_MERGED", 13)]
     public void Error_table_names_match_the_prd(McpErrorCode code, string name, int numeric)
     {
         ((int)code).Should().Be(numeric);

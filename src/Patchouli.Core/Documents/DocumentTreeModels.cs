@@ -12,31 +12,44 @@ public sealed record DocumentTreeRevision(
     string Status,
     bool IsCurrent,
     DateTimeOffset CreatedAt,
-    DateTimeOffset? CommittedAt);
+    DateTimeOffset? CommittedAt,
+    DocumentTreeRevisionId? RevertedFromTreeRevisionId = null);
 
 public static class DocumentTreeRevisionSource
 {
     public const string Import = "import";
     public const string ManualEdit = "manual_edit";
+
+    /// <summary>
+    /// Produced when an OCR result is committed. Kept for legacy data compatibility;
+    /// new OCR commits continue to use this value.
+    /// </summary>
     public const string OcrAdopted = "ocr_adopted";
+
     public const string Migration = "migration";
+    public const string Revert = "revert";
 
     public static bool IsKnown(string value)
     {
-        return value is Import or ManualEdit or OcrAdopted or Migration;
+        return value is Import or ManualEdit or OcrAdopted or Migration or Revert;
     }
 }
 
+/// <summary>
+/// Working-copy and immutable committed revision status model.
+/// Legacy values ('staging', 'draft', 'discarded') may still exist in old user databases,
+/// but they are never read by the application. This helper treats them as "not known"
+/// for writing; read paths filter them out in SQL rather than relying on this record.
+/// The C# record simply carries the raw string value so that legacy rows do not crash reads.
+/// </summary>
 public static class DocumentTreeRevisionStatus
 {
-    public const string Staging = "staging";
-    public const string Draft = "draft";
+    public const string Working = "working";
     public const string Committed = "committed";
-    public const string Discarded = "discarded";
 
     public static bool IsKnown(string value)
     {
-        return value is Staging or Draft or Committed or Discarded;
+        return value is Working or Committed;
     }
 }
 
@@ -191,3 +204,30 @@ public sealed record DocumentBoxSeed(
     double? Confidence = null,
     bool Suppressed = false,
     DocumentBoxId? ContinuesFromBoxId = null);
+
+/// <summary>
+/// A document-wide commit that groups one committed revision per page.
+/// HEAD is the latest commit for the document (highest created_at / commit_id order).
+/// </summary>
+public sealed record DocumentCommit(
+    DocumentCommitId CommitId,
+    DocumentInstanceId DocumentInstanceId,
+    DocumentCommitId? ParentCommitId,
+    string Source,
+    string? Message,
+    DateTimeOffset CreatedAt);
+
+/// <summary>
+/// Links a page revision into a document-wide commit.
+/// </summary>
+public sealed record DocumentCommitPage(
+    DocumentCommitId CommitId,
+    PageId PageId,
+    DocumentTreeRevisionId TreeRevisionId);
+
+/// <summary>
+/// A document commit together with the page-to-revision mappings that belong to it.
+/// </summary>
+public sealed record DocumentCommitDetail(
+    DocumentCommit Commit,
+    IReadOnlyList<DocumentCommitPage> Pages);

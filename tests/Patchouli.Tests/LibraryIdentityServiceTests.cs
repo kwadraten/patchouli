@@ -156,6 +156,7 @@ public sealed class LibraryIdentityServiceTests
 
         try
         {
+            database.ConnectionFactory.ClearPools();
             File.Move(database.Path, movedPath);
             TemporarySqliteDatabaseHandle movedDatabase = new(movedPath);
             LibraryIdentityService movedService = new(
@@ -169,6 +170,7 @@ public sealed class LibraryIdentityServiceTests
         }
         finally
         {
+            SqliteTestCleanup.ReleasePools(movedPath);
             if (File.Exists(movedPath))
             {
                 File.Delete(movedPath);

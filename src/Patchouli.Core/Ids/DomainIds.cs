@@ -228,16 +228,16 @@ public readonly record struct SearchUnitId(Guid Value)
     }
 }
 
-public readonly record struct EvidenceRefId(Guid Value)
+public readonly record struct DocumentCommitId(Guid Value)
 {
-    public static EvidenceRefId New()
+    public static DocumentCommitId New()
     {
-        return new EvidenceRefId(Guid.NewGuid());
+        return new DocumentCommitId(Guid.NewGuid());
     }
 
-    public static EvidenceRefId Parse(string value)
+    public static DocumentCommitId Parse(string value)
     {
-        return new EvidenceRefId(Guid.Parse(value));
+        return new DocumentCommitId(Guid.Parse(value));
     }
 
     public override string ToString()

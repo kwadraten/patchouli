@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text.Json;
 using Dapper;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Ids;
@@ -32,7 +33,6 @@ public sealed record BranchItemSummary(
     int DocumentInstanceCount,
     bool HasOcr,
     bool HasSearchUnits,
-    bool HasEvidenceRefs,
     string? Warning);
 
 public sealed record BranchDocumentInstanceSummary(
@@ -44,7 +44,6 @@ public sealed record BranchDocumentInstanceSummary(
     int PageCount,
     int TreeRevisionCount,
     int SearchUnitCount,
-    int EvidenceRefCount,
     string SourceFileStatus,
     string? Warning);
 
@@ -57,7 +56,6 @@ public sealed record BranchImportPlan(
     int PagesToImport,
     int TreeRevisionsToImport,
     int SearchUnitsToImport,
-    int EvidenceRefsToImport,
     int FileAssetsToImport,
     IReadOnlyList<ConflictDescriptor> Conflicts,
     IReadOnlyList<string> Warnings,
@@ -71,7 +69,12 @@ public sealed record BranchImportPlan(
 
     public IReadOnlyDictionary<string, bool> DocumentPrimaryOverrides { get; init; } =
         new Dictionary<string, bool>(StringComparer.Ordinal);
+
+    public IReadOnlyDictionary<string, ItemBranchStateOverride> ItemStateOverrides { get; init; } =
+        new Dictionary<string, ItemBranchStateOverride>(StringComparer.Ordinal);
 }
+
+public sealed record ItemBranchStateOverride(string? DeletedAt, string? MergedIntoItemId);
 
 public sealed record BranchImportResult(
     bool Applied,
@@ -79,7 +82,6 @@ public sealed record BranchImportResult(
     int ImportedDocuments,
     int ImportedPages,
     int ImportedSearchUnits,
-    int ImportedEvidenceRefs,
     IReadOnlyList<ConflictDescriptor> UnresolvedConflicts,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<DocumentInstanceId> DocumentsRequiringFtsRebuild);
@@ -203,13 +205,12 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                        (select count(*) from document_instances d where d.item_id = i.item_id) DocumentCount,
                        (select count(*)
                           from document_instances d
-                          join document_tree_revisions r on r.document_instance_id = d.document_instance_id and r.is_current = 1
+                          join document_tree_revisions r on r.document_instance_id = d.document_instance_id and r.is_current = 1 and r.status = 'committed'
                           join document_boxes n on n.tree_revision_id = r.tree_revision_id
                          where d.item_id = i.item_id
                            and n.suppressed = 0
                            and n.payload_json is not null) OcrCount,
-                       (select count(*) from search_units s join document_instances d on d.document_instance_id = s.document_instance_id where d.item_id = i.item_id) SearchCount,
-                       (select count(*) from evidence_ref_records e join document_instances d on d.document_instance_id = e.document_instance_id where d.item_id = i.item_id) EvidenceCount
+                       (select count(*) from search_units s join document_instances d on d.document_instance_id = s.document_instance_id where d.item_id = i.item_id) SearchCount
                 from items i
                 order by i.title;
                 """);
@@ -223,7 +224,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 row.DocumentCount,
                 row.OcrCount > 0,
                 row.SearchCount > 0,
-                row.EvidenceCount > 0,
                 null)).ToArray());
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -251,9 +251,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                        d.is_primary IsPrimary,
                        coalesce(f.status, 'unknown') SourceStatus,
                        (select count(*) from pages p where p.document_instance_id = d.document_instance_id) Pages,
-                       (select count(*) from document_tree_revisions r where r.document_instance_id = d.document_instance_id) Revisions,
-                       (select count(*) from search_units s where s.document_instance_id = d.document_instance_id) Units,
-                       (select count(*) from evidence_ref_records e where e.document_instance_id = d.document_instance_id) Evidence
+                       (select count(*) from document_tree_revisions r where r.document_instance_id = d.document_instance_id and r.status = 'committed') Revisions,
+                       (select count(*) from search_units s where s.document_instance_id = d.document_instance_id) Units
                 from document_instances d
                 left join file_assets f on f.file_asset_id = d.file_asset_id
                 where (@ItemId is null or d.item_id = @ItemId)
@@ -271,7 +270,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     row.Pages,
                     row.Revisions,
                     row.Units,
-                    row.Evidence,
                     row.SourceStatus,
                     null)).ToArray());
         }
@@ -331,17 +329,27 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             }
 
             List<ConflictDescriptor> conflicts = new();
+            Dictionary<string, string> itemRemappings = new(StringComparer.Ordinal);
             await using SqliteConnection target = _target.CreateConnection();
             await target.OpenAsync(cancellationToken);
 
             foreach (string item in selectedItems)
             {
                 ItemContent? sourceItem = await source.QuerySingleOrDefaultAsync<ItemContent>(
-                    "select item_id Id, title Title, item_type ItemType from items where item_id = @Id;",
+                    "select item_id Id, title Title, item_type ItemType, deleted_at DeletedAt, merged_into_item_id MergedIntoItemId from items where item_id = @Id;",
                     new { Id = item });
                 ItemContent? targetItem = await target.QuerySingleOrDefaultAsync<ItemContent>(
-                    "select item_id Id, title Title, item_type ItemType from items where item_id = @Id;",
+                    "select item_id Id, title Title, item_type ItemType, deleted_at DeletedAt, merged_into_item_id MergedIntoItemId from items where item_id = @Id;",
                     new { Id = item });
+
+                int purgeRecordCount = await target.ExecuteScalarAsync<int>(
+                    "select count(1) from item_purge_records where item_id = @Id;",
+                    new { Id = item });
+                if (purgeRecordCount > 0)
+                {
+                    itemRemappings[item] = ItemId.New().ToString();
+                    continue;
+                }
 
                 if (sourceItem is not null
                     && targetItem is not null
@@ -355,6 +363,21 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                             sourceItem.ItemType) with
                         {
                             ConflictId = CreateConflictId(branch, ConflictCode.SameIdDifferentContent, item)
+                        });
+                }
+
+                if (sourceItem is not null
+                    && targetItem is not null
+                    && HasItemLevelStatusDifference(sourceItem, targetItem))
+                {
+                    conflicts.Add(ConflictDescriptorMapper.ItemLevelBranchConflict(
+                            ItemId.Parse(item),
+                            targetItem.DeletedAt,
+                            targetItem.MergedIntoItemId,
+                            sourceItem.DeletedAt,
+                            sourceItem.MergedIntoItemId) with
+                        {
+                            ConflictId = CreateConflictId(branch, ConflictCode.ItemLevelBranch, item)
                         });
                 }
             }
@@ -421,17 +444,12 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             int treeRevisionsToImport = documentList.Length == 0
                 ? 0
                 : await source.ExecuteScalarAsync<int>(
-                    "select count(*) from document_tree_revisions where document_instance_id in @Docs;",
+                    "select count(*) from document_tree_revisions where document_instance_id in @Docs and status = 'committed';",
                     new { Docs = documentList });
             int searchUnitsToImport = documentList.Length == 0
                 ? 0
                 : await source.ExecuteScalarAsync<int>(
                     "select count(*) from search_units where document_instance_id in @Docs;",
-                    new { Docs = documentList });
-            int evidenceRefsToImport = documentList.Length == 0
-                ? 0
-                : await source.ExecuteScalarAsync<int>(
-                    "select count(*) from evidence_ref_records where document_instance_id in @Docs;",
                     new { Docs = documentList });
 
             return Result<BranchImportPlan>.Success(new BranchImportPlan(
@@ -443,13 +461,15 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 pagesToImport,
                 treeRevisionsToImport,
                 searchUnitsToImport,
-                evidenceRefsToImport,
                 documentList.Length,
                 conflicts,
                 [
                     "Original files, local FTS cache, render cache, and provider secrets are not imported. Rebuild FTS after import."
                 ],
-                true));
+                true)
+            {
+                ItemIdRemappings = itemRemappings
+            });
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.snapshot-branch-inspection"))
@@ -482,6 +502,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         DocumentInstanceId[] documents = plan.DocumentInstancesToImport.ToArray();
         Dictionary<string, string> itemRemappings = new(plan.ItemIdRemappings, StringComparer.Ordinal);
         Dictionary<string, bool> primaryOverrides = new(plan.DocumentPrimaryOverrides, StringComparer.Ordinal);
+        Dictionary<string, ItemBranchStateOverride> itemStateOverrides =
+            new(plan.ItemStateOverrides, StringComparer.Ordinal);
 
         try
         {
@@ -525,6 +547,33 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
                     break;
 
+                case ConflictCode.ItemLevelBranch:
+                    if (selection.ActionId != "resolve_item_branch")
+                    {
+                        return Result<BranchImportPlan>.Failure("conflict_action_unknown",
+                            "The selected action is not executable for the item-level branch conflict.", [conflict]);
+                    }
+
+                    if (selection.OptionId == "keep_local_item")
+                    {
+                        string[] dependentDocuments = await GetSelectedDocumentsForItemAsync(plan, conflict.ObjectId,
+                            cancellationToken);
+                        items = items.Where(item => item.ToString() != conflict.ObjectId).ToArray();
+                        documents = documents.Where(document => !dependentDocuments.Contains(document.ToString(),
+                            StringComparer.Ordinal)).ToArray();
+                    }
+                    else if (selection.OptionId == "use_incoming_item")
+                    {
+                        itemStateOverrides[conflict.ObjectId] = ReadIncomingItemBranchState(conflict);
+                    }
+                    else
+                    {
+                        return Result<BranchImportPlan>.Failure("conflict_option_unknown",
+                            "The selected option is not offered for the item-level branch conflict.", [conflict]);
+                    }
+
+                    break;
+
                 default:
                     return Result<BranchImportPlan>.Failure("conflict_executor_unavailable",
                         $"No branch-plan executor is registered for {conflict.ConflictCode}.", [conflict]);
@@ -549,7 +598,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 .ToArray(),
             ConflictResolutions = resolutions,
             ItemIdRemappings = itemRemappings,
-            DocumentPrimaryOverrides = primaryOverrides
+            DocumentPrimaryOverrides = primaryOverrides,
+            ItemStateOverrides = itemStateOverrides
         });
     }
 
@@ -611,7 +661,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     treeValidation.Conflicts);
             }
 
-            await using SqliteConnection connection = _target.CreateConnection();
+            await using SqliteConnection connection = _target.CreateAdminConnection();
             await connection.OpenAsync(cancellationToken);
             await connection.ExecuteAsync("attach database @Path as branch;",
                 new { Path = plan.SourceBranch.StagingDatabasePath });
@@ -684,6 +734,24 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                         new { SourceItemId = sourceItemId, TargetItemId = targetItemId, Remapped = remapped ? 1 : 0 },
                         transaction);
                 }
+
+                if (plan.ItemStateOverrides.Count > 0)
+                {
+                    string now = DateTimeOffset.UtcNow.ToString("O");
+                    foreach (string itemId in plan.ItemStateOverrides.Keys)
+                    {
+                        await connection.ExecuteAsync(
+                            """
+                            update items
+                            set deleted_at = (select deleted_at from branch.items where item_id = @ItemId),
+                                merged_into_item_id = (select merged_into_item_id from branch.items where item_id = @ItemId),
+                                updated_at = @Now
+                            where item_id = @ItemId;
+                            """,
+                            new { ItemId = itemId, Now = now },
+                            transaction);
+                    }
+                }
             }
 
             if (documents.Length > 0)
@@ -739,11 +807,18 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                     """
                     insert or ignore into pages select * from branch.pages where document_instance_id in @Docs;
                     insert or ignore into document_tree_revisions
-                    select * from branch.document_tree_revisions where document_instance_id in @Docs;
+                    select * from branch.document_tree_revisions where document_instance_id in @Docs and status = 'committed';
                     insert or ignore into document_boxes
-                    select * from branch.document_boxes where document_instance_id in @Docs;
+                    select b.* from branch.document_boxes b
+                    join branch.document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+                    where b.document_instance_id in @Docs and r.status = 'committed';
                     insert or ignore into search_units select * from branch.search_units where document_instance_id in @Docs;
-                    insert or ignore into evidence_ref_records select * from branch.evidence_ref_records where document_instance_id in @Docs;
+                    insert or ignore into document_commits
+                    select * from branch.document_commits where document_instance_id in @Docs;
+                    insert or ignore into document_commit_pages
+                    select cp.* from branch.document_commit_pages cp
+                    join branch.document_commits c on c.commit_id = cp.commit_id
+                    where c.document_instance_id in @Docs;
                     """,
                     new { Docs = documents },
                     transaction);
@@ -818,24 +893,19 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 : await connection.ExecuteScalarAsync<int>(
                     "select count(*) from branch.search_units where document_instance_id in @Docs;",
                     new { Docs = documents }, transaction);
-            int importedEvidenceRefs = documents.Length == 0
-                ? 0
-                : await connection.ExecuteScalarAsync<int>(
-                    "select count(*) from branch.evidence_ref_records where document_instance_id in @Docs;",
-                    new { Docs = documents }, transaction);
             ConflictDescriptor[] continuingWarnings = plan.Conflicts
                 .Where(conflict => conflict.Severity != ConflictSeverity.Blocking &&
                                    conflict.ResolutionStatus != ConflictResolutionStatus.Resolved)
                 .ToArray();
 
             await transaction.CommitAsync(cancellationToken);
+            await connection.ExecuteAsync("detach database branch;");
             return Result<BranchImportResult>.Success(new BranchImportResult(
                 true,
                 items.Length,
                 documents.Length,
                 importedPages,
                 importedSearchUnits,
-                importedEvidenceRefs,
                 continuingWarnings,
                 plan.Warnings,
                 documents.Select(DocumentInstanceId.Parse).ToArray()));
@@ -854,11 +924,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         _ = cancellationToken;
         try
         {
-            if (File.Exists(branch.StagingDatabasePath))
-            {
-                File.Delete(branch.StagingDatabasePath);
-            }
-
+            new SqliteConnectionFactory(branch.StagingDatabasePath).DeleteDatabaseFiles();
             return Task.FromResult(Result.Success());
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -953,6 +1019,54 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         return Result.Success();
     }
 
+    private static bool HasItemLevelStatusDifference(ItemContent sourceItem, ItemContent targetItem)
+    {
+        bool sourceDeleted = !string.IsNullOrWhiteSpace(sourceItem.DeletedAt);
+        bool targetDeleted = !string.IsNullOrWhiteSpace(targetItem.DeletedAt);
+        bool sourceMerged = !string.IsNullOrWhiteSpace(sourceItem.MergedIntoItemId);
+        bool targetMerged = !string.IsNullOrWhiteSpace(targetItem.MergedIntoItemId);
+
+        if (sourceDeleted != targetDeleted)
+        {
+            return true;
+        }
+
+        if (sourceMerged != targetMerged)
+        {
+            return true;
+        }
+
+        return sourceMerged && targetMerged &&
+               sourceItem.MergedIntoItemId != targetItem.MergedIntoItemId;
+    }
+
+    private static ItemBranchStateOverride ReadIncomingItemBranchState(ConflictDescriptor conflict)
+    {
+        if (string.IsNullOrWhiteSpace(conflict.IncomingSnapshot))
+        {
+            return new ItemBranchStateOverride(null, null);
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(conflict.IncomingSnapshot);
+            JsonElement root = document.RootElement;
+            string? deletedAt = root.TryGetProperty("deleted_at", out JsonElement deletedAtElement) &&
+                                deletedAtElement.ValueKind != JsonValueKind.Null
+                ? deletedAtElement.GetString()
+                : null;
+            string? mergedIntoItemId = root.TryGetProperty("merged_into_item_id", out JsonElement mergedElement) &&
+                                       mergedElement.ValueKind != JsonValueKind.Null
+                ? mergedElement.GetString()
+                : null;
+            return new ItemBranchStateOverride(deletedAt, mergedIntoItemId);
+        }
+        catch (JsonException)
+        {
+            return new ItemBranchStateOverride(null, null);
+        }
+    }
+
     private static string CreateConflictId(SnapshotBranchInspectionInfo branch, string conflictCode, string objectId)
     {
         return $"{branch.BranchId}:{conflictCode}:{objectId}";
@@ -982,6 +1096,7 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 ConflictCode.SameIdDifferentContent => await IsSameItemConflictCurrentAsync(source, target, conflict),
                 ConflictCode.PrimaryDocumentConflict => await IsPrimaryDocumentConflictCurrentAsync(source, target,
                     conflict),
+                ConflictCode.ItemLevelBranch => await IsItemLevelConflictCurrentAsync(source, target, conflict),
                 _ => true
             };
             if (!unchanged)
@@ -1005,12 +1120,12 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             "select item_id Id, title Title, item_type ItemType from items where item_id = @Id;",
             new { Id = conflict.ObjectId });
         return incoming is not null && local is not null &&
-               conflict.LocalSnapshot == System.Text.Json.JsonSerializer.Serialize(new
+               conflict.LocalSnapshot == JsonSerializer.Serialize(new
                {
                    title = local.Title,
                    item_type = local.ItemType
                }) &&
-               conflict.IncomingSnapshot == System.Text.Json.JsonSerializer.Serialize(new
+               conflict.IncomingSnapshot == JsonSerializer.Serialize(new
                {
                    title = incoming.Title,
                    item_type = incoming.ItemType
@@ -1039,16 +1154,79 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
             """,
             new { ItemId = incomingItemId });
         return !string.IsNullOrWhiteSpace(localPrimaryId) &&
-               conflict.LocalSnapshot == System.Text.Json.JsonSerializer.Serialize(new
+               conflict.LocalSnapshot == JsonSerializer.Serialize(new
                {
                    item_id = incomingItemId,
                    primary_document_id = localPrimaryId
                }) &&
-               conflict.IncomingSnapshot == System.Text.Json.JsonSerializer.Serialize(new
+               conflict.IncomingSnapshot == JsonSerializer.Serialize(new
                {
                    item_id = incomingItemId,
                    primary_document_id = conflict.ObjectId
                });
+    }
+
+    private static async Task<bool> IsItemLevelConflictCurrentAsync(
+        SqliteConnection source,
+        SqliteConnection target,
+        ConflictDescriptor conflict)
+    {
+        ItemBranchStateOverride? localState = ReadItemBranchState(conflict.LocalSnapshot);
+        ItemBranchStateOverride? incomingState = ReadItemBranchState(conflict.IncomingSnapshot);
+        if (localState is null || incomingState is null)
+        {
+            return false;
+        }
+
+        ItemContent? currentIncoming = await source.QuerySingleOrDefaultAsync<ItemContent>(
+            "select item_id Id, title Title, item_type ItemType, deleted_at DeletedAt, merged_into_item_id MergedIntoItemId from items where item_id = @Id;",
+            new { Id = conflict.ObjectId });
+        ItemContent? currentLocal = await target.QuerySingleOrDefaultAsync<ItemContent>(
+            "select item_id Id, title Title, item_type ItemType, deleted_at DeletedAt, merged_into_item_id MergedIntoItemId from items where item_id = @Id;",
+            new { Id = conflict.ObjectId });
+        return MatchesItemBranchState(localState, currentLocal) &&
+               MatchesItemBranchState(incomingState, currentIncoming);
+    }
+
+    private static ItemBranchStateOverride? ReadItemBranchState(string? snapshot)
+    {
+        if (string.IsNullOrWhiteSpace(snapshot))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(snapshot);
+            JsonElement root = document.RootElement;
+            string? deletedAt = root.TryGetProperty("deleted_at", out JsonElement deletedAtElement) &&
+                                deletedAtElement.ValueKind != JsonValueKind.Null
+                ? deletedAtElement.GetString()
+                : null;
+            string? mergedIntoItemId = root.TryGetProperty("merged_into_item_id", out JsonElement mergedElement) &&
+                                       mergedElement.ValueKind != JsonValueKind.Null
+                ? mergedElement.GetString()
+                : null;
+            return new ItemBranchStateOverride(deletedAt, mergedIntoItemId);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static bool MatchesItemBranchState(ItemBranchStateOverride state, ItemContent? item)
+    {
+        bool isDeleted = !string.IsNullOrWhiteSpace(state.DeletedAt);
+        bool isMerged = !string.IsNullOrWhiteSpace(state.MergedIntoItemId);
+        bool itemDeleted = !string.IsNullOrWhiteSpace(item?.DeletedAt);
+        bool itemMerged = !string.IsNullOrWhiteSpace(item?.MergedIntoItemId);
+        if (isDeleted != itemDeleted || isMerged != itemMerged)
+        {
+            return false;
+        }
+
+        return !isMerged || state.MergedIntoItemId == item!.MergedIntoItemId;
     }
 
     private static async Task<string[]> GetSelectedDocumentsForItemAsync(
@@ -1088,7 +1266,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         public int DocumentCount { get; set; }
         public int OcrCount { get; set; }
         public int SearchCount { get; set; }
-        public int EvidenceCount { get; set; }
     }
 
     private sealed class DocRow
@@ -1102,7 +1279,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         public int Pages { get; set; }
         public int Revisions { get; set; }
         public int Units { get; set; }
-        public int Evidence { get; set; }
     }
 
     private sealed class ItemContent
@@ -1110,6 +1286,8 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         public string Id { get; set; } = "";
         public string Title { get; set; } = "";
         public string ItemType { get; set; } = "";
+        public string? DeletedAt { get; set; }
+        public string? MergedIntoItemId { get; set; }
     }
 
     private sealed class SettingRecordRow

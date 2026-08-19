@@ -9,7 +9,6 @@ public sealed record McpSearchLibraryRequest(
     int PageSize = 20,
     string? Cursor = null,
     DocumentInstanceId? DocumentInstanceId = null,
-    bool IncludeEvidenceRefs = true,
     SearchProfileId? ProfileId = null,
     string? ProfileAlias = null,
     bool IncludeRewritePlan = true,
@@ -36,11 +35,11 @@ public sealed record McpSearchPageResult(
 
 public sealed record McpMatchedUnit(
     SearchUnitId UnitId,
-    string? EvidenceRef,
     string Text,
     string BoxType,
     int Ordinal,
     DocumentTreeRevisionId TreeRevisionId,
+    DocumentBoxId BoxId,
     bool IsMatch);
 
 public sealed record McpItemIdentifier(string Scheme, string Value, string? Note);
@@ -107,8 +106,6 @@ public sealed record McpDocumentStatusResponse(
 
 public sealed record McpPageTextRequest(
     PageId PageId,
-    string ReadMode = McpReadMode.Current,
-    string? EvidenceRef = null,
     bool IncludeSuppressed = false);
 
 public sealed record McpPageTextResponse(
@@ -117,15 +114,11 @@ public sealed record McpPageTextResponse(
     string? PageLabel,
     int PageIndex,
     string Text,
-    string ReadMode,
-    string? EvidenceRef,
-    IReadOnlyList<string> Warnings,
-    string? Revision = null);
+    DocumentTreeRevisionId TreeRevisionId,
+    IReadOnlyList<string> Warnings);
 
 public sealed record McpPageBlocksRequest(
     PageId PageId,
-    string ReadMode = McpReadMode.Current,
-    string? EvidenceRef = null,
     bool IncludeBbox = false,
     bool IncludeSuppressed = false);
 
@@ -133,8 +126,8 @@ public sealed record McpPageBlocksResponse(
     PageId PageId,
     string? PageLabel,
     int PageIndex,
+    DocumentTreeRevisionId TreeRevisionId,
     IReadOnlyList<McpPageBlock> Blocks,
-    string ReadMode,
     IReadOnlyList<string> Warnings);
 
 public sealed record McpPageBlock(
@@ -144,14 +137,12 @@ public sealed record McpPageBlock(
     string Text,
     int Ordinal,
     bool Suppressed,
-    string? EvidenceRef,
     NormalizedBBox? BBox);
 
 public sealed record McpSearchContextRequest(
     SearchUnitId SearchUnitId,
     int Before = 2,
-    int After = 2,
-    bool IncludeEvidenceRefs = true);
+    int After = 2);
 
 public sealed record McpSearchContextResponse(
     IReadOnlyList<McpContextUnit> Units,
@@ -168,13 +159,13 @@ public sealed record McpLibraryStateResponse(
 
 public sealed record McpContextUnit(
     SearchUnitId UnitId,
-    string? EvidenceRef,
     string Text,
     NormalizedBBox? BBox,
     bool IsMatch,
     int Ordinal,
     PageId PageId,
-    DocumentTreeRevisionId TreeRevisionId);
+    DocumentTreeRevisionId TreeRevisionId,
+    DocumentBoxId BoxId);
 
 public sealed record McpCslStyleSummary(
     string StyleId,
@@ -206,13 +197,6 @@ public sealed record McpRenderBibliographyResponse(
     string RenderedHtml,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<string> Errors);
-
-public static class McpReadMode
-{
-    public const string Current = "current";
-    public const string Pinned = "pinned";
-    public const string Compare = "compare";
-}
 
 public static class McpSourceFileStatus
 {
