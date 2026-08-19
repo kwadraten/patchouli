@@ -6,4 +6,5 @@ public static class OcrEngineIds
     public const string LocalPlaceholder = "local-placeholder";
     public const string MinerU = "mineru";
     public const string MultimodalLlm = "multimodal-llm";
+    public const string NdlKoten = "ndl-koten";
 }

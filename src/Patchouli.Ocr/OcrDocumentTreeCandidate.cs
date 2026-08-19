@@ -42,7 +42,7 @@ public sealed record OcrDocumentTreeCandidate(
             if (!DocumentBoxType.IsKnown(box.BoxType) && box.BaseType is not ("text" or "image" or "table" or "code"))
             {
                 return Result.Failure(AppErrorCodes.ValidationFailed,
-                    "Unknown OCR box types require a usable base_type before adoption.");
+                    "Unknown OCR box types require a usable base_type before commit.");
             }
 
             if (box.Payload is null)
@@ -51,9 +51,9 @@ public sealed record OcrDocumentTreeCandidate(
             }
         }
 
-        return Diagnostics.Any(diagnostic => diagnostic.BlocksAdoption)
+        return Diagnostics.Any(diagnostic => diagnostic.BlocksCommit)
             ? Result.Failure(AppErrorCodes.ValidationFailed,
-                "OCR candidate contains diagnostics that block adoption.")
+                "OCR candidate contains diagnostics that block commit.")
             : Result.Success();
     }
 }
@@ -82,4 +82,4 @@ public sealed record OcrDiagnostic(
     string Message,
     PageId? PageId = null,
     int? SourceOrder = null,
-    bool BlocksAdoption = false);
+    bool BlocksCommit = false);

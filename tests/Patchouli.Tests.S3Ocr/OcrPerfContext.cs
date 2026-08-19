@@ -6,10 +6,8 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
@@ -32,7 +30,6 @@ internal sealed class OcrPerfContext : IAsyncDisposable
         SearchUnitBuilder units,
         OcrRunEngine engine,
         IOcrPresetService presets,
-        IEvidenceReferenceService evidence,
         ISearchIndexRebuilder index,
         ISearchService search)
     {
@@ -44,7 +41,6 @@ internal sealed class OcrPerfContext : IAsyncDisposable
         Units = units;
         Engine = engine;
         Presets = presets;
-        Evidence = evidence;
         Index = index;
         Search = search;
     }
@@ -56,7 +52,6 @@ internal sealed class OcrPerfContext : IAsyncDisposable
     public SearchUnitBuilder Units { get; }
     public OcrRunEngine Engine { get; }
     public IOcrPresetService Presets { get; }
-    public IEvidenceReferenceService Evidence { get; }
     public ISearchIndexRebuilder Index { get; }
     public ISearchService Search { get; }
 
@@ -118,7 +113,6 @@ internal sealed class OcrPerfContext : IAsyncDisposable
             units,
             engine,
             new OcrPresetService(database.ConnectionFactory, libraries, clock),
-            new EvidenceReferenceService(database.ConnectionFactory, clock),
             new SearchIndexRebuilder(database.ConnectionFactory, clock),
             new SqliteSearchService(database.ConnectionFactory));
     }

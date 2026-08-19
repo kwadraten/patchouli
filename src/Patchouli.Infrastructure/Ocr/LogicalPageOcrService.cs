@@ -70,12 +70,12 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
             Result<IReadOnlyList<OcrPageResult>> pageResults = await _ocr.ListPageResultsAsync(
                 run.Value.OcrRunId, cancellationToken);
             DocumentTreeRevisionId? regionRevision = pageResults.IsSuccess
-                ? pageResults.Value.SingleOrDefault(result => result.PageId == pageId)?.StagingTreeRevisionId
+                ? pageResults.Value.SingleOrDefault(result => result.PageId == pageId)?.WorkingTreeRevisionId
                 : null;
             if (regionRevision is null)
             {
                 return Result<LogicalPageOcrResult>.Failure(
-                    AppErrorCodes.InvalidState, "A logical-page OCR region did not produce a staging tree.");
+                    AppErrorCodes.InvalidState, "A logical-page OCR region did not produce a working revision.");
             }
 
             Result<IReadOnlyList<DocumentBox>> regionBoxes = await _trees.ListBoxesAsync(
@@ -94,12 +94,12 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
             }
         }
 
-        Result<DocumentTreeRevision> staged = await _trees.StagePageAsync(
+        Result<DocumentTreeRevision> working = await _trees.BeginWorkingRevisionAsync(
             documentInstanceId, pageId, seeds, DocumentTreeRevisionSource.OcrAdopted,
             current.Value.TreeRevisionId, cancellationToken);
-        return staged.IsFailure
-            ? Result<LogicalPageOcrResult>.Failure(staged.ErrorCode!, staged.ErrorMessage!, staged.Conflicts)
-            : Result<LogicalPageOcrResult>.Success(new LogicalPageOcrResult(staged.Value.TreeRevisionId, runIds));
+        return working.IsFailure
+            ? Result<LogicalPageOcrResult>.Failure(working.ErrorCode!, working.ErrorMessage!, working.Conflicts)
+            : Result<LogicalPageOcrResult>.Success(new LogicalPageOcrResult(working.Value.TreeRevisionId, runIds));
     }
 
     public async Task<Result<LogicalDocumentOcrResult>> RunDocumentAsync(
@@ -132,7 +132,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
                     return Result<LogicalDocumentOcrResult>.Failure(result.ErrorCode!, result.ErrorMessage!);
                 }
 
-                revisions[index] = result.Value.StagingTreeRevisionId;
+                revisions[index] = result.Value.WorkingTreeRevisionId;
                 runIds.AddRange(result.Value.RunIds);
                 index++;
                 continue;
@@ -160,12 +160,12 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
             {
                 DocumentTreeRevisionId? revision = pageResults.IsSuccess
                     ? pageResults.Value.SingleOrDefault(result => result.PageId == pages[groupIndex].PageId)
-                        ?.StagingTreeRevisionId
+                        ?.WorkingTreeRevisionId
                     : null;
                 if (revision is null)
                 {
                     return Result<LogicalDocumentOcrResult>.Failure(
-                        AppErrorCodes.InvalidState, "A physical page did not produce a staging tree.");
+                        AppErrorCodes.InvalidState, "A physical page did not produce a working revision.");
                 }
 
                 revisions[groupIndex] = revision.Value;
@@ -189,7 +189,7 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
             return logical.IsFailure
                 ? Result<PhysicalPageOcrResult>.Failure(logical.ErrorCode!, logical.ErrorMessage!, logical.Conflicts)
                 : Result<PhysicalPageOcrResult>.Success(new PhysicalPageOcrResult(
-                    logical.Value.StagingTreeRevisionId, logical.Value.RegionRunIds, true));
+                    logical.Value.WorkingTreeRevisionId, logical.Value.RegionRunIds, true));
         }
 
         Result<OcrRun> run = await _ocr.RunPresetOnPagesAsync(
@@ -202,11 +202,11 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         Result<IReadOnlyList<OcrPageResult>> pageResults = await _ocr.ListPageResultsAsync(
             run.Value.OcrRunId, cancellationToken);
         DocumentTreeRevisionId? revision = pageResults.IsSuccess
-            ? pageResults.Value.SingleOrDefault(result => result.PageId == page.PageId)?.StagingTreeRevisionId
+            ? pageResults.Value.SingleOrDefault(result => result.PageId == page.PageId)?.WorkingTreeRevisionId
             : null;
         return revision is null
             ? Result<PhysicalPageOcrResult>.Failure(
-                AppErrorCodes.InvalidState, "A physical page did not produce a staging tree.")
+                AppErrorCodes.InvalidState, "A physical page did not produce a working revision.")
             : Result<PhysicalPageOcrResult>.Success(new PhysicalPageOcrResult(revision.Value, [run.Value.OcrRunId],
                 false));
     }

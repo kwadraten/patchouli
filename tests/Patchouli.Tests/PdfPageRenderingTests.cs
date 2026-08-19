@@ -10,10 +10,8 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
-using Patchouli.Core.Evidence;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
-using Patchouli.Infrastructure.Evidence;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Hashing;
 using Patchouli.Infrastructure.Layout;
@@ -25,7 +23,6 @@ using Patchouli.Infrastructure.Search;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Mcp;
 using Patchouli.Ocr;
-using Patchouli.Core.Search;
 
 namespace Patchouli.Tests;
 
@@ -318,13 +315,23 @@ public sealed class PdfPageRenderingTests
     }
 
     [Fact]
-    public async Task Evidence_ref_payload_does_not_include_render_cache_path()
+    public async Task Versioned_evidence_uri_does_not_include_render_cache_path()
     {
         await using Context c = await Context.CreateAsync();
         Result<PageRenderResult> r = await c.RenderAsync();
-        EvidenceReference reference = new(c.LibraryId, c.DocumentInstanceId, c.PageId,
-            DocumentTreeRevisionId.New(), DocumentBoxId.New());
-        EvidenceReferenceCodec.Encode(reference).Value.Should().NotContain(r.Value.CacheImagePath!);
+        DocumentTreeService trees = new(c.Database.ConnectionFactory, c.Clock, new MarkdigMarkdownEngine());
+        DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
+            c.DocumentInstanceId, c.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("rendered evidence"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        DocumentTreeRevision committed = (await trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
+        DocumentBoxId boxId = (await trees.ListBoxesAsync(committed.TreeRevisionId)).Value.Single().BoxId;
+        string uri = McpResourceUris.EvidencePageUri(
+            c.DocumentInstanceId, 1, committed.TreeRevisionId, boxId);
+        uri.Should().NotContain(r.Value.CacheImagePath!);
     }
 
     [Fact]
@@ -407,8 +414,15 @@ public sealed class PdfPageRenderingTests
         first.Value.Status.Should().Be(PageRenderStatus.Rendered);
         int hashesBeforeEdit = fullHashes;
 
-        await BoxTreeTestData.CommitTextAsync(c.Database.ConnectionFactory, c.Clock, c.DocumentInstanceId, c.PageId,
-            "edited box");
+        DocumentTreeService trees = new(c.Database.ConnectionFactory, c.Clock, new MarkdigMarkdownEngine());
+        DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
+            c.DocumentInstanceId, c.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("edited box"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await trees.CommitWorkingRevisionAsync(working.TreeRevisionId);
 
         fullHashes.Should().Be(hashesBeforeEdit,
             "a box edit only touches the document tree and must not hash the source file");
@@ -422,7 +436,7 @@ public sealed class PdfPageRenderingTests
     [Fact]
     public void Agent_prd_keeps_render_cache_out_of_mcp_and_snapshots()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot(".agent", "PRD.md")).Should()
+        File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md")).Should()
             .Contain("MCP never returns cached images or image paths").And.Contain("page_renders");
     }
 
@@ -462,7 +476,14 @@ public sealed class PdfPageRenderingTests
                 "028_expand_item_creator_and_date_roles.sql",
                 "029_index_current_visible_document_box_payload.sql",
                 "030_add_library_revision.sql",
-                "031_add_first_screen_indexes.sql");
+                "031_add_first_screen_indexes.sql",
+                "032_item_lifecycle.sql",
+                "033_unified_working_revisions.sql",
+                "033b_document_tree_revisions_trigger.sql",
+                "034_drop_evidence_refs.sql",
+                "035_document_commits.sql",
+                "036_rename_ocr_page_results_staging.sql",
+                "037_restore_ocr_page_results_run_created_index.sql");
     }
 
     private sealed class Context : IAsyncDisposable
@@ -535,9 +556,9 @@ public sealed class PdfPageRenderingTests
             PageRenderService renderService = new(db.ConnectionFactory, library, resolution, renderer, clock, cache,
                 materializer, sourceValidation, previewRasterByteLimit: previewByteLimit);
             return new Context(db, clock, lib.Value.LibraryId, doc.Value.DocumentInstanceId, page.Value.PageId,
-                asset.Value.FileAssetId, pdf, cache, sync, renderService, renderer, materializer, pages,
-                new McpReadApi(db.ConnectionFactory, new SqliteSearchService(db.ConnectionFactory),
-                    new EvidenceReferenceService(db.ConnectionFactory, clock))) { RootDirectory = dir };
+                    asset.Value.FileAssetId, pdf, cache, sync, renderService, renderer, materializer, pages,
+                    new McpReadApi(db.ConnectionFactory, new SqliteSearchService(db.ConnectionFactory)))
+                { RootDirectory = dir };
         }
 
         public string RootDirectory { get; private set; } = "";

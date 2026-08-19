@@ -21,7 +21,7 @@ namespace Patchouli.Tests;
 public sealed class OcrLifecycleBoxTreeTests
 {
     [Fact]
-    public async Task Document_ocr_stages_each_physical_page_and_explicit_adoption_makes_them_current()
+    public async Task Document_ocr_creates_working_revisions_and_explicit_commit_makes_them_current()
     {
         await using Context context = await Context.CreateAsync();
         OcrPreset preset = (await context.Presets.CreatePresetAsync(
@@ -35,30 +35,51 @@ public sealed class OcrLifecycleBoxTreeTests
         IReadOnlyList<OcrPageResult> results =
             (await context.Coordinator.ListPageResultsAsync(run.Value.OcrRunId)).Value;
         results.Should().HaveCount(2).And.OnlyContain(result =>
-            result.State == OcrPageResultState.Succeeded && result.StagingTreeRevisionId.HasValue);
+            result.State == OcrPageResultState.Succeeded && result.WorkingTreeRevisionId.HasValue);
         foreach (Page page in context.Pages)
         {
             (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, page.PageId)).IsFailure
                 .Should().BeTrue();
         }
 
-        Result<OcrCandidateAdoption> adopted = await context.Coordinator.AdoptCandidateRunAsync(run.Value.OcrRunId);
+        Result<OcrCandidateCommit> commit = await context.Coordinator.CommitCandidateRunAsync(run.Value.OcrRunId);
 
-        adopted.IsSuccess.Should().BeTrue(adopted.ErrorMessage);
-        adopted.Value.AdoptedTreeRevisionIds.Should().HaveCount(2);
+        commit.IsSuccess.Should().BeTrue(commit.ErrorMessage);
+        commit.Value.CommittedTreeRevisionIds.Should().HaveCount(2);
         foreach (Page page in context.Pages)
         {
             DocumentTreeRevision current =
                 (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, page.PageId)).Value;
             current.Status.Should().Be(DocumentTreeRevisionStatus.Committed);
             current.IsCurrent.Should().BeTrue();
-            current.Source.Should().Be(DocumentTreeRevisionSource.OcrAdopted);
-            adopted.Value.AdoptedTreeRevisionIds.Should().Contain(current.TreeRevisionId);
+            current.Source.Should().Be(DocumentTreeRevisionSource.Import);
+            commit.Value.CommittedTreeRevisionIds.Should().Contain(current.TreeRevisionId);
+
+            OcrPageResult pageResult = results.Single(result => result.PageId == page.PageId);
+            pageResult.WorkingTreeRevisionId.Should().Be(current.TreeRevisionId);
         }
     }
 
     [Fact]
-    public async Task Partially_failed_ocr_can_adopt_only_successful_page_candidates()
+    public async Task Local_document_ocr_reports_progress_after_each_physical_page()
+    {
+        await using Context context = await Context.CreateAsync();
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Mock", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+        RecordingProgress<OcrTaskStageProgress> progress = new();
+
+        Result<OcrRun> run = await context.Coordinator.RunPresetOnDocumentAsync(
+            context.Document.DocumentInstanceId, preset.PresetId, progress: progress);
+
+        run.IsSuccess.Should().BeTrue(run.ErrorMessage);
+        progress.Values.Should().Equal(
+            new OcrTaskStageProgress(OcrTaskStage.Recognizing, 0, "pages:0/2"),
+            new OcrTaskStageProgress(OcrTaskStage.Recognizing, 0.5, "pages:1/2"),
+            new OcrTaskStageProgress(OcrTaskStage.Recognizing, 1, "pages:2/2"));
+    }
+
+    [Fact]
+    public async Task Partially_failed_ocr_can_commit_only_successful_page_candidates()
     {
         await using Context context = await Context.CreateAsync();
         OcrPreset preset = (await context.Presets.CreatePresetAsync(
@@ -73,11 +94,11 @@ public sealed class OcrLifecycleBoxTreeTests
         OcrPageResult failed = results.Single(result => result.State == OcrPageResultState.Failed);
 
         run.State.Should().Be(OcrRunState.CompletedWithErrors);
-        (await context.Coordinator.AdoptCandidateRunAsync(run.OcrRunId, [failed.PageId])).IsFailure.Should().BeTrue();
-        Result<OcrCandidateAdoption> adopted =
-            await context.Coordinator.AdoptCandidateRunAsync(run.OcrRunId, [succeeded.PageId]);
+        (await context.Coordinator.CommitCandidateRunAsync(run.OcrRunId, [failed.PageId])).IsFailure.Should().BeTrue();
+        Result<OcrCandidateCommit> commit =
+            await context.Coordinator.CommitCandidateRunAsync(run.OcrRunId, [succeeded.PageId]);
 
-        adopted.IsSuccess.Should().BeTrue(adopted.ErrorMessage);
+        commit.IsSuccess.Should().BeTrue(commit.ErrorMessage);
         (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, succeeded.PageId)).IsSuccess
             .Should().BeTrue();
         (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, failed.PageId)).IsFailure
@@ -85,7 +106,7 @@ public sealed class OcrLifecycleBoxTreeTests
     }
 
     [Fact]
-    public async Task Apply_on_success_adopts_completed_run_through_candidate_adoption()
+    public async Task Apply_on_success_commits_completed_run_through_candidate_commit()
     {
         await using Context context = await Context.CreateAsync();
         OcrPreset preset = (await context.Presets.CreatePresetAsync(
@@ -99,12 +120,12 @@ public sealed class OcrLifecycleBoxTreeTests
         {
             DocumentTreeRevision current =
                 (await context.Trees.GetCurrentRevisionAsync(context.Document.DocumentInstanceId, page.PageId)).Value;
-            current.Source.Should().Be(DocumentTreeRevisionSource.OcrAdopted);
+            current.Source.Should().Be(DocumentTreeRevisionSource.Import);
         }
     }
 
     [Fact]
-    public async Task Source_bbox_is_converted_before_staging()
+    public async Task Source_bbox_is_converted_before_working_revision()
     {
         await using Context context = await Context.CreateAsync(new PixelBBoxEngine(), true);
         OcrPreset preset = (await context.Presets.CreatePresetAsync(
@@ -113,7 +134,7 @@ public sealed class OcrLifecycleBoxTreeTests
         OcrRun run = (await context.Coordinator.RunPresetOnPagesAsync(
             context.Document.DocumentInstanceId, preset.PresetId, [context.Pages[0].PageId])).Value;
         OcrPageResult pageResult = (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Single();
-        DocumentBox box = (await context.Trees.ListBoxesAsync(pageResult.StagingTreeRevisionId!.Value)).Value.Single();
+        DocumentBox box = (await context.Trees.ListBoxesAsync(pageResult.WorkingTreeRevisionId!.Value)).Value.Single();
 
         box.BBox.Should().Be(new NormalizedBBox(.1, .1, .3, .2));
     }
@@ -131,7 +152,7 @@ public sealed class OcrLifecycleBoxTreeTests
         run.State.Should().Be(OcrRunState.Failed);
         (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value.Should()
             .OnlyContain(result => result.State == OcrPageResultState.Failed &&
-                                   result.ErrorMessage!.Contains("staging exploded", StringComparison.Ordinal));
+                                   result.ErrorMessage!.Contains("working exploded", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -172,7 +193,7 @@ public sealed class OcrLifecycleBoxTreeTests
             """
             update ocr_runs set state = 'running' where ocr_run_id = @RunId;
             insert into ocr_page_results (
-                result_id, ocr_run_id, page_id, state, staging_tree_revision_id,
+                result_id, ocr_run_id, page_id, state, working_tree_revision_id,
                 error_code, error_message, created_at, updated_at)
             values (@ResultId, @RunId, @PageId, @State, null, null, null, @Now, @Now);
             """,
@@ -187,7 +208,7 @@ public sealed class OcrLifecycleBoxTreeTests
         await context.ExecuteAsync(
             """
             insert into ocr_page_results (
-                result_id, ocr_run_id, page_id, state, staging_tree_revision_id,
+                result_id, ocr_run_id, page_id, state, working_tree_revision_id,
                 error_code, error_message, created_at, updated_at)
             values (@ResultId, @RunId, @PageId, @State, null, null, null, @Now, @Now);
             """,
@@ -216,7 +237,7 @@ public sealed class OcrLifecycleBoxTreeTests
     }
 
     [Fact]
-    public async Task Region_candidate_is_ephemeral_and_does_not_create_an_ocr_run_or_staging_tree()
+    public async Task Region_candidate_is_ephemeral_and_does_not_create_an_ocr_run_or_working_tree()
     {
         await using Context context = await Context.CreateAsync();
         OcrPreset preset = (await context.Presets.CreatePresetAsync(
@@ -331,16 +352,27 @@ public sealed class OcrLifecycleBoxTreeTests
         }
     }
 
+    private sealed class RecordingProgress<T> : IProgress<T>
+    {
+        public List<T> Values { get; } = [];
+
+        public void Report(T value)
+        {
+            Values.Add(value);
+        }
+    }
+
     private sealed class ThrowingTreeImporter : IOcrDocumentTreeImporter
     {
-        public Task<Result<OcrDocumentTreeImportResult>> StageAsync(OcrDocumentTreeImportRequest request,
+        public Task<Result<OcrDocumentTreeImportResult>> BeginWorkingAsync(OcrDocumentTreeImportRequest request,
             CancellationToken cancellationToken = default)
         {
-            throw new InvalidOperationException("staging exploded");
+            throw new InvalidOperationException("working exploded");
         }
 
-        public Task<Result<IReadOnlyList<DocumentTreeRevisionId>>> AdoptAsync(
-            IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
+        public Task<Result<IReadOnlyList<DocumentTreeRevisionId>>> CommitAsync(
+            IReadOnlyList<DocumentTreeRevisionId> workingRevisionIds,
+            DocumentCommitId? commitId = null,
             CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();

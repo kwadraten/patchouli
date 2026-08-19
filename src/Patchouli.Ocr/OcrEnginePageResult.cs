@@ -3,6 +3,8 @@ using Patchouli.Core.Layout;
 
 namespace Patchouli.Ocr;
 
+public sealed record OcrEngineTextBox(string Text, NormalizedBBox BBox, double? Confidence = null);
+
 public sealed record OcrEnginePageResult(
     PageId PageId,
     bool Succeeded,
@@ -10,4 +12,5 @@ public sealed record OcrEnginePageResult(
     NormalizedBBox? BBox,
     string? ErrorCode,
     string? ErrorMessage,
-    SourceBBox? SourceBBox = null);
+    SourceBBox? SourceBBox = null,
+    IReadOnlyList<OcrEngineTextBox>? TextBoxes = null);

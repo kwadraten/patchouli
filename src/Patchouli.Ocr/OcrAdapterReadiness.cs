@@ -224,7 +224,7 @@ public sealed class MultimodalLlmOcrAdapter : IRealOcrAdapter
     {
         return new OcrEngineCapability(EngineId, DisplayName, false, true, true, false, true, true, false, true, false,
             [OcrInputKinds.PageImage, OcrInputKinds.RegionImage],
-            "Accepts page or region images from a multimodal LLM endpoint and must normalize output into the MinerU-compatible layout pipeline before adoption.");
+            "Accepts page or region images from a multimodal LLM endpoint and must normalize output into the MinerU-compatible layout pipeline before commit.");
     }
 
     public Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion,

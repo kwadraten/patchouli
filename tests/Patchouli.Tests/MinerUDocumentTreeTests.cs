@@ -39,7 +39,7 @@ public sealed class MinerUDocumentTreeTests
 
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Should().ContainSingle().Which.Should().BeEquivalentTo(new
             {
                 BoxType = DocumentBoxType.Footer,
@@ -78,14 +78,14 @@ public sealed class MinerUDocumentTreeTests
             result.Value.BoxesCreated.Should().Be(2);
             result.Value.Warnings.Should().Contain("blank_page_placeholder");
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1]))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1]))).Value;
             boxes.Should().ContainSingle().Which.Should().BeEquivalentTo(new
             {
                 BoxType = DocumentBoxType.LogicalPage,
                 Payload = new TextBoxPayload("Blank page (MinerU returned no content).")
             });
-            (await context.Trees.AdoptStagingRevisionAsync(
-                    DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1])))
+            (await context.Trees.CommitWorkingRevisionAsync(
+                    DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1])))
                 .IsSuccess.Should().BeTrue();
         }
         finally
@@ -116,7 +116,7 @@ public sealed class MinerUDocumentTreeTests
 
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Select(box => new
                 {
                     box.BoxType,
@@ -162,7 +162,7 @@ public sealed class MinerUDocumentTreeTests
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             result.Value.BoxesCreated.Should().Be(3);
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Should().Contain(box => box.BoxType == DocumentBoxType.Title && box.HeadingLevel == 2);
             boxes.Should().Contain(box => box.BoxType == DocumentBoxType.Header && box.Suppressed);
             boxes.Single(box => box.BoxType == DocumentBoxType.Table).Payload.Should().BeOfType<TableBoxPayload>()
@@ -211,7 +211,7 @@ public sealed class MinerUDocumentTreeTests
                     zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
             result.Value.Warnings.Should().Contain("table_not_representable_as_gfm");
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Single().Payload.Should().Be(new TableBoxPayload(
                 "[Table]", "<table><tr><td rowspan=\"2\">Merged</td></tr></table>"));
         }
@@ -240,10 +240,10 @@ public sealed class MinerUDocumentTreeTests
                     zip, context.DocumentId.ToString(), context.LibraryId.ToString()));
 
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
-            result.Value.StagingTreeRevisionIds.Should().HaveCount(2);
-            (await context.Trees.ListBoxesAsync(DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[0])))
+            result.Value.WorkingTreeRevisionIds.Should().HaveCount(2);
+            (await context.Trees.ListBoxesAsync(DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[0])))
                 .Value.Single().Payload.Should().Be(new TextBoxPayload("First physical page"));
-            (await context.Trees.ListBoxesAsync(DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1])))
+            (await context.Trees.ListBoxesAsync(DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1])))
                 .Value.Single().Payload.Should().Be(new TextBoxPayload("Second physical page"));
         }
         finally
@@ -274,7 +274,7 @@ public sealed class MinerUDocumentTreeTests
 
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Select(box => ((TextBoxPayload)box.Payload!).Markdown).Should().BeEquivalentTo([
                 "First OCR paragraph.\n\nSecond OCR paragraph with a forced\nline break.",
                 "1. William S. Lewis and Naojiro Murakami, eds.",
@@ -312,14 +312,14 @@ public sealed class MinerUDocumentTreeTests
             result.Value.BoxesCreated.Should().Be(1);
             result.Value.Warnings.Should().Contain("image_embedded_text_merged");
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             DocumentBox image = boxes.Should().ContainSingle().Which;
             image.BoxType.Should().Be(DocumentBoxType.Image);
             image.Payload.Should().Be(new MediaBoxPayload(
                 null,
                 "天保三年遭難\n寶順九衆組員之墓\n乙舌、久舌、岩松等十四人"));
-            (await context.Trees.AdoptStagingRevisionAsync(
-                    DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single())))
+            (await context.Trees.CommitWorkingRevisionAsync(
+                    DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single())))
                 .IsSuccess.Should().BeTrue();
         }
         finally
@@ -356,23 +356,23 @@ public sealed class MinerUDocumentTreeTests
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             result.Value.Warnings.Should().Contain("paragraph_continuation_linked");
             DocumentBox head = (await context.Trees.ListBoxesAsync(
-                    DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[0]))).Value
+                    DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[0]))).Value
                 .Single(box => box.BoxType == DocumentBoxType.Text);
             IReadOnlyList<DocumentBox> pageTwo = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds[1]))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds[1]))).Value;
             DocumentBox continuation = pageTwo.Single(box =>
                 box.Payload is TextBoxPayload text && string.IsNullOrWhiteSpace(text.Markdown));
             continuation.ContinuesFromBoxId.Should().Be(head.BoxId);
 
-            foreach (string revisionId in result.Value.StagingTreeRevisionIds)
+            foreach (string revisionId in result.Value.WorkingTreeRevisionIds)
             {
-                (await context.Trees.AdoptStagingRevisionAsync(DocumentTreeRevisionId.Parse(revisionId)))
+                (await context.Trees.CommitWorkingRevisionAsync(DocumentTreeRevisionId.Parse(revisionId)))
                     .IsSuccess.Should().BeTrue();
             }
 
-            DocumentBox adoptedContinuation = (await context.Trees.ListBoxesAsync(
+            DocumentBox committedContinuation = (await context.Trees.ListBoxesAsync(
                 continuation.TreeRevisionId)).Value.Single(box => box.BoxId == continuation.BoxId);
-            adoptedContinuation.ContinuesFromBoxId.Should().Be(head.BoxId);
+            committedContinuation.ContinuesFromBoxId.Should().Be(head.BoxId);
         }
         finally
         {
@@ -405,7 +405,7 @@ public sealed class MinerUDocumentTreeTests
 
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             DocumentBox head = boxes.Single(box =>
                 box.Payload is TextBoxPayload text && text.Markdown == "Column bottom text.");
             DocumentBox[] continuations = boxes
@@ -444,7 +444,7 @@ public sealed class MinerUDocumentTreeTests
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             result.Value.Warnings.Should().NotContain("paragraph_continuation_linked");
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Should().OnlyContain(box => box.ContinuesFromBoxId == null);
         }
         finally
@@ -459,8 +459,8 @@ public sealed class MinerUDocumentTreeTests
         await using Context context = await Context.CreateAsync();
         string zip = CreateZip("_content_list_v2.json", """
                                                         [[
-                                                          {"type":"list","content":{"list_type":"reference_list","list_items":[{"item_type":"text","item_content":[{"type":"text","content":"ff. 202v-203r 1615.2.2\n→[東京大学史料編纂所 1996]"}]}]},"bbox":[100,100,800,200]},
-                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Title uses <Carta de confirmação> brackets."}]},"bbox":[100,220,800,280]}
+                                                          {"type":"list","content":{"list_type":"reference_list","list_items":[{"item_type":"text","item_content":[{"type":"text","content":"ff. 202v-203r 1615.2.2\n→[東京大学史料編纂所 1996]"}]}]},"bbox":[0,0,1000,200]},
+                                                          {"type":"paragraph","content":{"paragraph_content":[{"type":"text","content":"Title uses <Carta de confirmação> brackets."}]},"bbox":[0,300,1000,500]}
                                                         ]]
                                                         """);
         try
@@ -473,7 +473,7 @@ public sealed class MinerUDocumentTreeTests
 
             result.IsSuccess.Should().BeTrue(result.ErrorMessage);
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                DocumentTreeRevisionId.Parse(result.Value.StagingTreeRevisionIds.Single()))).Value;
+                DocumentTreeRevisionId.Parse(result.Value.WorkingTreeRevisionIds.Single()))).Value;
             boxes.Should().HaveCount(2);
             boxes[0].BoxType.Should().Be(DocumentBoxType.List);
             boxes[0].Payload.Should().Be(new ListBoxPayload(

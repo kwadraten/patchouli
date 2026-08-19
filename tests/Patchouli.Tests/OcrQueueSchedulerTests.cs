@@ -71,6 +71,25 @@ public sealed class OcrQueueSchedulerTests
     }
 
     [Fact]
+    public async Task Deferred_library_id_resolution_does_not_hold_queue_gate()
+    {
+        TaskCompletionSource<Result<LibraryId>> resolution =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        OcrQueueScheduler scheduler = new(
+            _ => resolution.Task,
+            new FixedClock(DateTimeOffset.UtcNow), new FakeExecutor(),
+            loopInterval: TimeSpan.FromMilliseconds(5));
+
+        Task<Result<OcrQueueTask>> enqueue = scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        Task clearFinished = Task.Run(scheduler.ClearFinishedTasks);
+
+        await clearFinished.WaitAsync(TimeSpan.FromSeconds(2));
+        resolution.SetResult(Result<LibraryId>.Success(LibraryId.New()));
+        (await enqueue).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task RunOneTick_starts_highest_priority_and_marks_success()
     {
         OcrQueueScheduler scheduler = Create(out FakeExecutor executor);
@@ -147,6 +166,51 @@ public sealed class OcrQueueSchedulerTests
     }
 
     [Fact]
+    public async Task Manual_retry_creates_queued_copy_with_original_request_fields()
+    {
+        FakeExecutor executor = new()
+            { Result = new OcrQueueExecutionResult(false, false, "missing_executable", "install") };
+        OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
+        OcrQueueTaskRequest request = new(DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()],
+            OcrQueueTaskKind.Region, "engine", OcrAdapterKind.LocalLibrary, "provider", OcrQueuePriority.Maintenance,
+            "image.png", 300, 5, new NormalizedBBox(0.1, 0.2, 0.3, 0.4), false);
+        Result<OcrQueueTask> original = await scheduler.EnqueueAsync(request);
+        await scheduler.RunOneSchedulingTickAsync();
+        await scheduler.WaitForIdleAsync();
+        (await scheduler.GetTaskAsync(original.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Blocked);
+
+        Result<OcrQueueTask> retried = await scheduler.RetryTaskAsync(original.Value.TaskId);
+
+        retried.IsSuccess.Should().BeTrue(retried.ErrorMessage);
+        retried.Value.TaskId.Should().NotBe(original.Value.TaskId);
+        retried.Value.State.Should().Be(OcrQueueTaskState.Queued);
+        retried.Value.Priority.Should().Be(OcrQueuePriority.BackgroundRetry);
+        retried.Value.RetryOfTaskId.Should().Be(original.Value.TaskId);
+        retried.Value.DocumentInstanceId.Should().Be(original.Value.DocumentInstanceId);
+        retried.Value.PresetId.Should().Be(original.Value.PresetId);
+        retried.Value.PageIds.Should().Equal(original.Value.PageIds);
+        retried.Value.TaskKind.Should().Be(original.Value.TaskKind);
+        retried.Value.EngineId.Should().Be(original.Value.EngineId);
+        retried.Value.AdapterKind.Should().Be(original.Value.AdapterKind);
+        retried.Value.ProviderId.Should().Be(original.Value.ProviderId);
+        retried.Value.ImagePath.Should().Be(original.Value.ImagePath);
+        retried.Value.Dpi.Should().Be(original.Value.Dpi);
+        retried.Value.RegionBBox.Should().Be(original.Value.RegionBBox);
+        retried.Value.CommitOnCompletion.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Manual_retry_rejects_nonterminal_and_missing_tasks()
+    {
+        OcrQueueScheduler scheduler = Create(out _);
+        Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+            [PageId.New()], OcrQueuePriority.UserStartedDocument);
+
+        (await scheduler.RetryTaskAsync(queued.Value.TaskId)).ErrorCode.Should().Be(AppErrorCodes.InvalidState);
+        (await scheduler.RetryTaskAsync(OcrQueueTaskId.New())).ErrorCode.Should().Be(AppErrorCodes.NotFound);
+    }
+
+    [Fact]
     public async Task Cancel_queued_task_and_preset_pause_behave_explicitly()
     {
         OcrQueueScheduler scheduler = Create(out _);
@@ -157,6 +221,62 @@ public sealed class OcrQueueSchedulerTests
         (await scheduler.GetTaskAsync(task.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Cancelled);
         await scheduler.RunOneSchedulingTickAsync();
         (await scheduler.GetTaskAsync(task.Value.TaskId)).Value.State.Should().Be(OcrQueueTaskState.Cancelled);
+    }
+
+    [Fact]
+    public async Task Cancel_terminal_tasks_returns_invalid_state_without_mutating_them()
+    {
+        FakeExecutor executor = new();
+        OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
+
+        Result<OcrQueueTask> succeeded = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await scheduler.WaitForIdleAsync();
+
+        executor.Result = new OcrQueueExecutionResult(false, false, "local_ocr_process_failed", "failed");
+        Result<OcrQueueTask> failed = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(), OcrPresetId.New(),
+            [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await scheduler.WaitForIdleAsync();
+
+        executor.Result = new OcrQueueExecutionResult(false, false, "missing_executable", "blocked");
+        Result<OcrQueueTask> blocked = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(),
+            [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await scheduler.WaitForIdleAsync();
+
+        Result<OcrQueueTask> cancelled = await scheduler.EnqueueMockPagesAsync(DocumentInstanceId.New(),
+            OcrPresetId.New(),
+            [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        (await scheduler.CancelTaskAsync(cancelled.Value.TaskId)).IsSuccess.Should().BeTrue();
+
+        foreach (OcrQueueTaskId taskId in new[]
+                     { succeeded.Value.TaskId, failed.Value.TaskId, blocked.Value.TaskId, cancelled.Value.TaskId })
+        {
+            OcrQueueTask before = (await scheduler.GetTaskAsync(taskId)).Value;
+            Result result = await scheduler.CancelTaskAsync(taskId);
+            OcrQueueTask after = (await scheduler.GetTaskAsync(taskId)).Value;
+
+            result.ErrorCode.Should().Be(AppErrorCodes.InvalidState);
+            after.Should().Be(before);
+        }
+    }
+
+    [Fact]
+    public async Task Snapshot_reads_observe_cancellation_tokens()
+    {
+        OcrQueueScheduler scheduler = Create(out _);
+        using CancellationTokenSource cancellation = new();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            scheduler.GetTaskAsync(OcrQueueTaskId.New(), cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            scheduler.ListTasksAsync(new OcrQueueTaskFilter(), cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            scheduler.GetQueueStatusAsync(cancellation.Token));
     }
 
     [Fact]
@@ -485,7 +605,7 @@ public sealed class OcrQueueSchedulerTests
 
     private sealed class RecordingCoordinator : IOcrRunEngine
     {
-        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted
         {
             add { }
             remove { }
@@ -555,10 +675,10 @@ public sealed class OcrQueueSchedulerTests
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId r,
+        public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId r,
             IReadOnlyList<PageId>? pages = null, CancellationToken c = default)
         {
-            return Task.FromResult(Result<OcrCandidateAdoption>.Failure("not_found", "test"));
+            return Task.FromResult(Result<OcrCandidateCommit>.Failure("not_found", "test"));
         }
 
         public Task<Result<OcrRun>> GetRunAsync(OcrRunId r, CancellationToken c = default)
@@ -598,7 +718,7 @@ public sealed class OcrQueueSchedulerTests
 
     private sealed class PageFailureCoordinator : IOcrRunEngine
     {
-        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted
         {
             add { }
             remove { }
@@ -678,10 +798,10 @@ public sealed class OcrQueueSchedulerTests
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId r, IReadOnlyList<PageId>? p = null,
+        public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId r, IReadOnlyList<PageId>? p = null,
             CancellationToken c = default)
         {
-            return Task.FromResult(Result<OcrCandidateAdoption>.Failure("not_found", "test"));
+            return Task.FromResult(Result<OcrCandidateCommit>.Failure("not_found", "test"));
         }
 
         public Task<Result<OcrRun>> GetRunAsync(OcrRunId r, CancellationToken c = default)

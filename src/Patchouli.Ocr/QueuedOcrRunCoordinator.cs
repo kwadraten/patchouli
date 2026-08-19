@@ -17,13 +17,13 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
     {
         Queue = queue;
         _engine = engine;
-        _engine.AdoptionCommitted += (_, args) => AdoptionCommitted?.Invoke(this, args);
+        _engine.CommitCompleted += (_, args) => CommitCompleted?.Invoke(this, args);
     }
 
     public IOcrQueueScheduler Queue { get; }
 
     /// <inheritdoc />
-    public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted;
+    public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted;
 
     public async Task<Result<OcrQueueTask>> QueueDocumentOcrAsync(
         DocumentInstanceId documentInstanceId,
@@ -173,10 +173,10 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
         return _engine.HideOcrRunAsync(runId, cancellationToken);
     }
 
-    public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId,
+    public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId runId,
         IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
     {
-        return _engine.AdoptCandidateRunAsync(runId, selectedPages, cancellationToken);
+        return _engine.CommitCandidateRunAsync(runId, selectedPages, cancellationToken);
     }
 
     public Task<Result<OcrRun>> GetRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)

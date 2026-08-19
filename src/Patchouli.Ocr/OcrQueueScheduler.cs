@@ -131,7 +131,7 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
     {
         return EnqueueAsync(
             new OcrQueueTaskRequest(d, p, [page], OcrQueueTaskKind.Region, engineId, adapterKind, providerId,
-                priority, RegionBBox: regionBBox, AdoptOnCompletion: false), c);
+                priority, RegionBBox: regionBBox, CommitOnCompletion: false), c);
     }
 
     public Task StartAsync(CancellationToken c = default)
@@ -215,28 +215,28 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                 "OCR queue task requires pages, kind, engine, and adapter kind.");
         }
 
+        Result<LibraryId>? resolvedLibraryId = null;
+        if (_libraryId is null)
+        {
+            resolvedLibraryId = await _libraryIdResolver(c);
+            if (resolvedLibraryId.IsFailure)
+            {
+                return Result<OcrQueueTask>.Failure(resolvedLibraryId.ErrorCode!, resolvedLibraryId.ErrorMessage!);
+            }
+        }
+
         OcrQueueTask task;
         await _gate.WaitAsync(c);
         try
         {
-            if (_libraryId is null)
-            {
-                Result<LibraryId> libraryId = await _libraryIdResolver(c);
-                if (libraryId.IsFailure)
-                {
-                    return Result<OcrQueueTask>.Failure(libraryId.ErrorCode!, libraryId.ErrorMessage!);
-                }
-
-                _libraryId = libraryId.Value;
-            }
-
+            _libraryId ??= resolvedLibraryId!.Value;
             DateTimeOffset now = _clock.UtcNow;
             task = new OcrQueueTask(OcrQueueTaskId.New(), _libraryId.Value, request.DocumentInstanceId,
                 request.PresetId,
                 request.PageIds, request.TaskKind, request.EngineId, request.AdapterKind, request.ProviderId,
                 request.Priority, now, now, OcrQueueTaskState.Queued, 0, Math.Max(1, request.MaxAttempts), null, null,
                 null, null, request.ImagePath, request.Dpi, RegionBBox: request.RegionBBox,
-                AdoptOnCompletion: request.AdoptOnCompletion);
+                CommitOnCompletion: request.CommitOnCompletion);
             _tasks[task.TaskId] = task;
         }
         finally
@@ -487,6 +487,12 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
                 return Result.Failure(AppErrorCodes.NotFound, "Queue task was not found.");
             }
 
+            if (task.State is OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
+                or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked)
+            {
+                return Result.Failure(AppErrorCodes.InvalidState, "Terminal OCR tasks cannot be cancelled.");
+            }
+
             if (_running.TryGetValue(id, out CancellationTokenSource? cts))
             {
                 cts.Cancel();
@@ -495,13 +501,9 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
             {
                 updated = task with { State = OcrQueueTaskState.Cancelled, UpdatedAt = _clock.UtcNow };
                 _tasks[id] = updated;
-                if (task.State is not (OcrQueueTaskState.Succeeded or OcrQueueTaskState.Failed
-                    or OcrQueueTaskState.Cancelled or OcrQueueTaskState.Blocked))
+                lock (_progressLock)
                 {
-                    lock (_progressLock)
-                    {
-                        _finishedAt[id] = updated.UpdatedAt;
-                    }
+                    _finishedAt[id] = updated.UpdatedAt;
                 }
             }
         }
@@ -518,37 +520,110 @@ public sealed class OcrQueueScheduler : IOcrQueueScheduler
         return Result.Success();
     }
 
-    public Task<Result<OcrQueueTask>> GetTaskAsync(OcrQueueTaskId id, CancellationToken c = default)
+    public async Task<Result<OcrQueueTask>> RetryTaskAsync(OcrQueueTaskId id, CancellationToken c = default)
     {
-        return Task.FromResult(_tasks.TryGetValue(id, out OcrQueueTask? t)
-            ? Result<OcrQueueTask>.Success(t)
-            : Result<OcrQueueTask>.Failure(AppErrorCodes.NotFound, "Queue task was not found."));
-    }
-
-    public Task<Result<IReadOnlyList<OcrQueueTask>>> ListTasksAsync(OcrQueueTaskFilter f, CancellationToken c = default)
-    {
-        return Task.FromResult(Result<IReadOnlyList<OcrQueueTask>>.Success(_tasks.Values.Where(t =>
-                (f.State is null || t.State == f.State) && (f.EngineId is null || t.EngineId == f.EngineId) &&
-                (f.ProviderId is null || t.ProviderId == f.ProviderId) &&
-                (f.IncludeCompleted ||
-                 t.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused))
-            .OrderByDescending(Score).ToArray()));
-    }
-
-    public Task<Result<OcrQueueStatus>> GetQueueStatusAsync(CancellationToken c = default)
-    {
-        int Count(string state)
+        OcrQueueTask retry;
+        await _gate.WaitAsync(c);
+        try
         {
-            return _tasks.Values.Count(t => t.State == state);
+            if (!_tasks.TryGetValue(id, out OcrQueueTask? task))
+            {
+                return Result<OcrQueueTask>.Failure(AppErrorCodes.NotFound, "Queue task was not found.");
+            }
+
+            if (task.State is not (OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked))
+            {
+                return Result<OcrQueueTask>.Failure(AppErrorCodes.InvalidState,
+                    "Only failed or blocked OCR tasks can be retried.");
+            }
+
+            DateTimeOffset now = _clock.UtcNow;
+            retry = task with
+            {
+                TaskId = OcrQueueTaskId.New(),
+                Priority = OcrQueuePriority.BackgroundRetry,
+                CreatedAt = now,
+                UpdatedAt = now,
+                State = OcrQueueTaskState.Queued,
+                AttemptCount = 0,
+                RetryOfTaskId = task.TaskId,
+                LastErrorCode = null,
+                LastErrorMessage = null,
+                ScheduledAfter = null,
+                RunId = null,
+                CompletedPageCount = 0,
+                FailedPageCount = 0
+            };
+            _tasks[retry.TaskId] = retry;
+        }
+        finally
+        {
+            _gate.Release();
         }
 
-        OcrQueueTask[] running = _tasks.Values.Where(t => t.State == OcrQueueTaskState.Running).ToArray();
-        return Task.FromResult(Result<OcrQueueStatus>.Success(new OcrQueueStatus(_loopTask is { IsCompleted: false },
-            Count(OcrQueueTaskState.Queued), Count(OcrQueueTaskState.Running), Count(OcrQueueTaskState.Succeeded),
-            Count(OcrQueueTaskState.Failed), Count(OcrQueueTaskState.Cancelled), Count(OcrQueueTaskState.Blocked),
-            _pauses.ToArray(), _limits, running.GroupBy(t => t.EngineId).ToDictionary(g => g.Key, g => g.Count()),
-            running.Where(t => t.ProviderId is not null).GroupBy(t => t.ProviderId!)
-                .ToDictionary(g => g.Key, g => g.Count()))));
+        OnChanged(retry, OcrQueueChangeKind.Enqueued);
+        return Result<OcrQueueTask>.Success(retry);
+    }
+
+    public async Task<Result<OcrQueueTask>> GetTaskAsync(OcrQueueTaskId id, CancellationToken c = default)
+    {
+        await _gate.WaitAsync(c).ConfigureAwait(false);
+        try
+        {
+            return _tasks.TryGetValue(id, out OcrQueueTask? task)
+                ? Result<OcrQueueTask>.Success(task)
+                : Result<OcrQueueTask>.Failure(AppErrorCodes.NotFound, "Queue task was not found.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<OcrQueueTask>>> ListTasksAsync(OcrQueueTaskFilter f,
+        CancellationToken c = default)
+    {
+        await _gate.WaitAsync(c).ConfigureAwait(false);
+        try
+        {
+            OcrQueueTask[] tasks = _tasks.Values.Where(t =>
+                    (f.State is null || t.State == f.State) && (f.EngineId is null || t.EngineId == f.EngineId) &&
+                    (f.ProviderId is null || t.ProviderId == f.ProviderId) &&
+                    (f.IncludeCompleted ||
+                     t.State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused))
+                .OrderByDescending(Score)
+                .ToArray();
+            return Result<IReadOnlyList<OcrQueueTask>>.Success(tasks);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<Result<OcrQueueStatus>> GetQueueStatusAsync(CancellationToken c = default)
+    {
+        await _gate.WaitAsync(c).ConfigureAwait(false);
+        try
+        {
+            int Count(string state)
+            {
+                return _tasks.Values.Count(t => t.State == state);
+            }
+
+            OcrQueueTask[] running = _tasks.Values.Where(t => t.State == OcrQueueTaskState.Running).ToArray();
+            OcrQueueStatus status = new(_loopTask is { IsCompleted: false }, Count(OcrQueueTaskState.Queued),
+                Count(OcrQueueTaskState.Running), Count(OcrQueueTaskState.Succeeded), Count(OcrQueueTaskState.Failed),
+                Count(OcrQueueTaskState.Cancelled), Count(OcrQueueTaskState.Blocked), _pauses.ToArray(), _limits,
+                running.GroupBy(t => t.EngineId).ToDictionary(g => g.Key, g => g.Count()),
+                running.Where(t => t.ProviderId is not null).GroupBy(t => t.ProviderId!)
+                    .ToDictionary(g => g.Key, g => g.Count()));
+            return Result<OcrQueueStatus>.Success(status);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public OcrTaskProgressReport? GetTaskProgress(OcrQueueTaskId taskId)

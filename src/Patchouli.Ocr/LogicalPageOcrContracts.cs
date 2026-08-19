@@ -7,7 +7,7 @@ namespace Patchouli.Ocr;
 public sealed record LogicalPageOcrTarget(DocumentBoxId LogicalPageBoxId, NormalizedBBox BBox);
 
 public sealed record LogicalPageOcrResult(
-    DocumentTreeRevisionId StagingTreeRevisionId,
+    DocumentTreeRevisionId WorkingTreeRevisionId,
     IReadOnlyList<OcrRunId> RegionRunIds);
 
 public sealed record LogicalDocumentOcrPagePlan(
@@ -15,11 +15,11 @@ public sealed record LogicalDocumentOcrPagePlan(
     IReadOnlyList<LogicalPageOcrTarget> LogicalPageTargets);
 
 public sealed record LogicalDocumentOcrResult(
-    IReadOnlyList<DocumentTreeRevisionId> StagingTreeRevisionIds,
+    IReadOnlyList<DocumentTreeRevisionId> WorkingTreeRevisionIds,
     IReadOnlyList<OcrRunId> RunIds);
 
 public sealed record PhysicalPageOcrResult(
-    DocumentTreeRevisionId StagingTreeRevisionId,
+    DocumentTreeRevisionId WorkingTreeRevisionId,
     IReadOnlyList<OcrRunId> RunIds,
     bool UsedLogicalPages);
 

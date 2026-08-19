@@ -7,7 +7,7 @@ public sealed record OcrPageResult(
     OcrRunId OcrRunId,
     PageId PageId,
     string State,
-    DocumentTreeRevisionId? StagingTreeRevisionId,
+    DocumentTreeRevisionId? WorkingTreeRevisionId,
     string? ErrorCode,
     string? ErrorMessage,
     DateTimeOffset CreatedAt,

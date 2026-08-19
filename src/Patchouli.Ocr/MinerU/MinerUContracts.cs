@@ -38,7 +38,7 @@ public sealed record MinerUImportRequest(
 public sealed record MinerUImportResult(
     bool Success,
     string? ErrorMessage,
-    IReadOnlyList<string> StagingTreeRevisionIds,
+    IReadOnlyList<string> WorkingTreeRevisionIds,
     int BoxesCreated,
     IReadOnlyList<string> Warnings);
 

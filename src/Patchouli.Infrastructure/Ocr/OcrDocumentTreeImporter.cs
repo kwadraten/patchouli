@@ -22,7 +22,7 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
     {
     }
 
-    public async Task<Result<OcrDocumentTreeImportResult>> StageAsync(
+    public async Task<Result<OcrDocumentTreeImportResult>> BeginWorkingAsync(
         OcrDocumentTreeImportRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -101,20 +101,20 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
                 box.Confidence,
                 box.Suppressed,
                 box.ContinuesFromBoxId)));
-            Result<DocumentTreeRevision> staged = await _trees.StagePageAsync(
+            Result<DocumentTreeRevision> working = await _trees.BeginWorkingRevisionAsync(
                 request.DocumentInstanceId,
                 page.PageId,
                 seeds,
                 request.RevisionSource,
                 parentRevisionId,
                 cancellationToken);
-            if (staged.IsFailure)
+            if (working.IsFailure)
             {
                 return Result<OcrDocumentTreeImportResult>.Failure(
-                    staged.ErrorCode!, staged.ErrorMessage!, staged.Conflicts);
+                    working.ErrorCode!, working.ErrorMessage!, working.Conflicts);
             }
 
-            revisions.Add(staged.Value.TreeRevisionId);
+            revisions.Add(working.Value.TreeRevisionId);
             count += page.Boxes.Count;
         }
 
@@ -124,20 +124,26 @@ public sealed class OcrDocumentTreeImporter : IOcrDocumentTreeImporter
             request.Candidate.Diagnostics));
     }
 
-    public async Task<Result<IReadOnlyList<DocumentTreeRevisionId>>> AdoptAsync(
-        IReadOnlyList<DocumentTreeRevisionId> stagingRevisionIds,
+    public async Task<Result<IReadOnlyList<DocumentTreeRevisionId>>> CommitAsync(
+        IReadOnlyList<DocumentTreeRevisionId> workingRevisionIds,
+        DocumentCommitId? commitId = null,
         CancellationToken cancellationToken = default)
     {
-        Result<IReadOnlyList<DocumentTreeRevision>> adopted = await _trees.AdoptStagingRevisionsAsync(
-            stagingRevisionIds, cancellationToken);
-        if (adopted.IsFailure)
+        List<DocumentTreeRevisionId> committed = [];
+        foreach (DocumentTreeRevisionId revisionId in workingRevisionIds)
         {
-            return Result<IReadOnlyList<DocumentTreeRevisionId>>.Failure(
-                adopted.ErrorCode!, adopted.ErrorMessage!, adopted.Conflicts);
+            Result<DocumentTreeRevision> result = await _trees.CommitWorkingRevisionAsync(
+                revisionId, commitId, cancellationToken);
+            if (result.IsFailure)
+            {
+                return Result<IReadOnlyList<DocumentTreeRevisionId>>.Failure(
+                    result.ErrorCode!, result.ErrorMessage!, result.Conflicts);
+            }
+
+            committed.Add(result.Value.TreeRevisionId);
         }
 
-        return Result<IReadOnlyList<DocumentTreeRevisionId>>.Success(
-            adopted.Value.Select(revision => revision.TreeRevisionId).ToArray());
+        return Result<IReadOnlyList<DocumentTreeRevisionId>>.Success(committed);
     }
 
     private static IEnumerable<DocumentBox> Order(IReadOnlyList<DocumentBox> siblings)

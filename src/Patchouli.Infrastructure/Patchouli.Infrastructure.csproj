@@ -9,6 +9,8 @@
     <PackageReference Include="Dapper" />
     <PackageReference Include="Fsharp.Citeproc" />
     <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" />
+    <PackageReference Include="SkiaSharp" />
     <PackageReference Include="Markdig" />
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
         <_Parameter1>Patchouli.Tests</_Parameter1>

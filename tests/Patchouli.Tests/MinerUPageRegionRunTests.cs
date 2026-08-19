@@ -24,7 +24,7 @@ namespace Patchouli.Tests;
 public sealed class MinerUPageRegionRunTests
 {
     [Fact]
-    public async Task Pages_run_uploads_only_the_requested_pages_and_stages_no_orphan_trees()
+    public async Task Pages_run_uploads_only_the_requested_pages_and_creates_no_orphan_working_trees()
     {
         await using Context context = await Context.CreateAsync(3);
         Page[] requested = [context.Pages[0], context.Pages[2]];
@@ -46,13 +46,13 @@ public sealed class MinerUPageRegionRunTests
         IReadOnlyList<OcrPageResult> results = (await context.Engine.ListPageResultsAsync(run.Value.OcrRunId)).Value;
         results.Should().HaveCount(2);
         results.Should().OnlyContain(result =>
-            result.State == OcrPageResultState.Succeeded && result.StagingTreeRevisionId != null);
+            result.State == OcrPageResultState.Succeeded && result.WorkingTreeRevisionId != null);
         results.Select(result => result.PageId).Should().BeEquivalentTo(requested.Select(page => page.PageId));
         (await context.CountAsync("select count(1) from document_tree_revisions;")).Should().Be(2);
         foreach (OcrPageResult result in results)
         {
             IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-                result.StagingTreeRevisionId!.Value)).Value;
+                result.WorkingTreeRevisionId!.Value)).Value;
             boxes.Should().ContainSingle().Which.Payload.Should().Be(new TextBoxPayload("ocr page 0"));
         }
     }
@@ -78,7 +78,7 @@ public sealed class MinerUPageRegionRunTests
         OcrPageResult result = (await context.Engine.ListPageResultsAsync(run.Value.OcrRunId)).Value.Single();
         result.State.Should().Be(OcrPageResultState.Succeeded);
         IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(
-            result.StagingTreeRevisionId!.Value)).Value;
+            result.WorkingTreeRevisionId!.Value)).Value;
         boxes.Should().HaveCount(2);
         DocumentBox center = boxes.Single(box => ((TextBoxPayload)box.Payload!).Markdown == "center block");
         center.BBox.X.Should().BeApproximately(0.5, 1e-9);
@@ -99,7 +99,7 @@ public sealed class MinerUPageRegionRunTests
         context.MinerUClient.ContentListJson = """
                                                [{"type":"text","page_idx":0,"text":"region text","bbox":[100,100,200,200]}]
                                                """;
-        DocumentTreeRevision staged = (await context.Trees.StagePageAsync(
+        DocumentTreeRevision working = (await context.Trees.BeginWorkingRevisionAsync(
             context.Document.DocumentInstanceId,
             context.Pages[0].PageId,
             [
@@ -109,7 +109,7 @@ public sealed class MinerUPageRegionRunTests
                     new NormalizedBBox(0.5, 0, 0.5, 1), null)
             ],
             DocumentTreeRevisionSource.Import)).Value;
-        DocumentTreeRevision committed = (await context.Trees.AdoptStagingRevisionAsync(staged.TreeRevisionId)).Value;
+        DocumentTreeRevision committed = (await context.Trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
         IReadOnlyList<DocumentBox> roots = (await context.Trees.ListBoxesAsync(committed.TreeRevisionId)).Value;
         roots.Should().HaveCount(2);
         LogicalPageOcrService service = new(new DirectOcrRunCoordinator(context.Engine), context.Trees);
@@ -145,16 +145,16 @@ public sealed class MinerUPageRegionRunTests
             .EndsWith(".pdf", StringComparison.OrdinalIgnoreCase).Should().BeTrue();
         context.MinerUClient.UploadedPdfPageCounts.Should().Equal(3);
         result.Value.RunIds.Should().HaveCount(1);
-        result.Value.StagingTreeRevisionIds.Should().HaveCount(3);
-        result.Value.StagingTreeRevisionIds.Should().OnlyHaveUniqueItems();
+        result.Value.WorkingTreeRevisionIds.Should().HaveCount(3);
+        result.Value.WorkingTreeRevisionIds.Should().OnlyHaveUniqueItems();
 
         IReadOnlyList<OcrPageResult> pageResults =
             (await context.Engine.ListPageResultsAsync(result.Value.RunIds[0])).Value;
         foreach ((LogicalDocumentOcrPagePlan plan, DocumentTreeRevisionId revision) in
-                 plans.Zip(result.Value.StagingTreeRevisionIds))
+                 plans.Zip(result.Value.WorkingTreeRevisionIds))
         {
             pageResults.Single(pageResult => pageResult.PageId == plan.PageId)
-                .StagingTreeRevisionId.Should().Be(revision);
+                .WorkingTreeRevisionId.Should().Be(revision);
         }
     }
 
@@ -163,7 +163,7 @@ public sealed class MinerUPageRegionRunTests
     {
         await using Context context = await Context.CreateAsync(4);
         Page targetedPage = context.Pages[2];
-        DocumentTreeRevision staged = (await context.Trees.StagePageAsync(
+        DocumentTreeRevision working = (await context.Trees.BeginWorkingRevisionAsync(
             context.Document.DocumentInstanceId,
             targetedPage.PageId,
             [
@@ -172,7 +172,7 @@ public sealed class MinerUPageRegionRunTests
             ],
             DocumentTreeRevisionSource.Import)).Value;
         DocumentTreeRevision committed =
-            (await context.Trees.AdoptStagingRevisionAsync(staged.TreeRevisionId)).Value;
+            (await context.Trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).Value;
         DocumentBox root = (await context.Trees.ListBoxesAsync(committed.TreeRevisionId)).Value.Single();
         LogicalPageOcrService service = new(new DirectOcrRunCoordinator(context.Engine), context.Trees);
         LogicalDocumentOcrPagePlan[] plans = context.Pages
@@ -191,8 +191,8 @@ public sealed class MinerUPageRegionRunTests
             request.FileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase)).Should().Be(1);
         context.MinerUClient.UploadedPdfPageCounts.Should().Equal(2, 1);
         result.Value.RunIds.Should().HaveCount(3);
-        result.Value.StagingTreeRevisionIds.Should().HaveCount(4);
-        result.Value.StagingTreeRevisionIds.Should().OnlyHaveUniqueItems();
+        result.Value.WorkingTreeRevisionIds.Should().HaveCount(4);
+        result.Value.WorkingTreeRevisionIds.Should().OnlyHaveUniqueItems();
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public sealed class MinerUPageRegionRunTests
         candidate.Boxes[0].BBox.X.Should().BeApproximately(0.5, 1e-9);
         candidate.Boxes[0].BBox.Y.Should().BeApproximately(0.5, 1e-9);
         diagnostics.Should().Contain(diagnostic =>
-            diagnostic.Code == "bbox_missing_skipped" && !diagnostic.BlocksAdoption);
+            diagnostic.Code == "bbox_missing_skipped" && !diagnostic.BlocksCommit);
     }
 
     [Fact]
@@ -509,7 +509,7 @@ public sealed class MinerUPageRegionRunTests
 
     private sealed class DirectOcrRunCoordinator : IOcrRunCoordinator
     {
-        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted
         {
             add { }
             remove { }
@@ -589,10 +589,10 @@ public sealed class MinerUPageRegionRunTests
             return _engine.HideOcrRunAsync(runId, cancellationToken);
         }
 
-        public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId runId,
+        public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId runId,
             IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
         {
-            return _engine.AdoptCandidateRunAsync(runId, selectedPages, cancellationToken);
+            return _engine.CommitCandidateRunAsync(runId, selectedPages, cancellationToken);
         }
 
         public Task<Result<OcrRun>> GetRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)

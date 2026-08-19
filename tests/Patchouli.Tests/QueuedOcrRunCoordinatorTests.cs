@@ -87,7 +87,7 @@ public sealed class QueuedOcrRunCoordinatorTests
         task.TaskKind.Should().Be(OcrQueueTaskKind.Region);
         task.Priority.Should().Be(OcrQueuePriority.InteractiveCurrentPage);
         task.RegionBBox.Should().Be(region);
-        task.AdoptOnCompletion.Should().BeFalse();
+        task.CommitOnCompletion.Should().BeFalse();
     }
 
     [Fact]
@@ -226,7 +226,7 @@ public sealed class QueuedOcrRunCoordinatorTests
         (await facade.UnsetCurrentOcrAsync(engine.Run.DocumentInstanceId)).IsSuccess.Should().BeTrue();
         (await facade.GetRunAsync(runId)).IsSuccess.Should().BeTrue();
         (await facade.ListPageResultsAsync(runId)).IsSuccess.Should().BeTrue();
-        (await facade.AdoptCandidateRunAsync(runId)).IsSuccess.Should().BeTrue();
+        (await facade.CommitCandidateRunAsync(runId)).IsSuccess.Should().BeTrue();
 
         engine.Calls.Should().Contain(
             ["cancel_run", "hide_run", "unset_current", "get_run", "list_results", "adopt"]);
@@ -260,7 +260,7 @@ public sealed class QueuedOcrRunCoordinatorTests
 
     private sealed class FakeEngine : IOcrRunEngine
     {
-        public event EventHandler<OcrAdoptionCommittedEventArgs>? AdoptionCommitted
+        public event EventHandler<OcrCommitCompletedEventArgs>? CommitCompleted
         {
             add { }
             remove { }
@@ -367,12 +367,12 @@ public sealed class QueuedOcrRunCoordinatorTests
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result<OcrCandidateAdoption>> AdoptCandidateRunAsync(OcrRunId r,
+        public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId r,
             IReadOnlyList<PageId>? pages = null, CancellationToken c = default)
         {
             Calls.Add("adopt");
-            return Task.FromResult(Result<OcrCandidateAdoption>.Success(
-                new OcrCandidateAdoption(OcrCandidateAdoptionId.New(), r, Run.DocumentInstanceId, [], "[]",
+            return Task.FromResult(Result<OcrCandidateCommit>.Success(
+                new OcrCandidateCommit(OcrCandidateAdoptionId.New(), r, Run.DocumentInstanceId, [], "[]",
                     DateTimeOffset.UtcNow)));
         }
 

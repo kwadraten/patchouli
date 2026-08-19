@@ -62,6 +62,7 @@ public static class OcrQueueChangeKind
 public static class OcrTaskStage
 {
     public const string Preparing = "preparing";
+    public const string Recognizing = "recognizing";
     public const string Uploading = "uploading";
     public const string WaitingCloud = "waiting_cloud";
     public const string Downloading = "downloading";
@@ -94,7 +95,7 @@ public sealed record OcrQueueTask(
     int CompletedPageCount = 0,
     int FailedPageCount = 0,
     NormalizedBBox? RegionBBox = null,
-    bool AdoptOnCompletion = true);
+    bool CommitOnCompletion = true);
 
 public sealed record OcrQueueTaskRequest(
     DocumentInstanceId DocumentInstanceId,
@@ -109,7 +110,7 @@ public sealed record OcrQueueTaskRequest(
     int? Dpi = null,
     int MaxAttempts = 3,
     NormalizedBBox? RegionBBox = null,
-    bool AdoptOnCompletion = true);
+    bool CommitOnCompletion = true);
 
 public sealed record OcrQueueLimits(
     int GlobalMaxConcurrent,
@@ -203,6 +204,7 @@ public interface IOcrQueueScheduler
     Task<Result> PauseAsync(string scope, string? target = null, CancellationToken c = default);
     Task<Result> ResumeAsync(string scope, string? target = null, CancellationToken c = default);
     Task<Result> CancelTaskAsync(OcrQueueTaskId id, CancellationToken c = default);
+    Task<Result<OcrQueueTask>> RetryTaskAsync(OcrQueueTaskId id, CancellationToken c = default);
     Task<Result<OcrQueueTask>> GetTaskAsync(OcrQueueTaskId id, CancellationToken c = default);
     Task<Result<IReadOnlyList<OcrQueueTask>>> ListTasksAsync(OcrQueueTaskFilter filter, CancellationToken c = default);
     Task<Result<OcrQueueStatus>> GetQueueStatusAsync(CancellationToken c = default);

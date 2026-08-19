@@ -67,7 +67,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
                     : $"{candidateValidation.ErrorMessage} Diagnostics: {details}");
         }
 
-        Result<OcrDocumentTreeImportResult> imported = await _treeImporter.StageAsync(
+        Result<OcrDocumentTreeImportResult> imported = await _treeImporter.BeginWorkingAsync(
             new OcrDocumentTreeImportRequest(documentInstanceId, candidate),
             cancellationToken);
         if (imported.IsFailure)
@@ -78,7 +78,7 @@ public sealed class MinerUResultImporter : IMinerUResultImporter
         return Result<MinerUImportResult>.Success(new MinerUImportResult(
             true,
             null,
-            imported.Value.StagingRevisionIds.Select(id => id.ToString()).ToArray(),
+            imported.Value.WorkingRevisionIds.Select(id => id.ToString()).ToArray(),
             imported.Value.BoxesCreated,
             imported.Value.Diagnostics.Select(diagnostic => diagnostic.Code).ToArray()));
     }

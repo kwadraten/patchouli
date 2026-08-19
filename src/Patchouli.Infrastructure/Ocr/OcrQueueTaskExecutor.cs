@@ -77,14 +77,14 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                     failed.ErrorMessage ?? "One or more OCR pages failed.", run.Value.OcrRunId, completed, failedCount);
             }
 
-            if (task.AdoptOnCompletion)
+            if (task.CommitOnCompletion)
             {
-                Result<OcrCandidateAdoption> adoption = await _engine.AdoptCandidateRunAsync(
+                Result<OcrCandidateCommit> commit = await _engine.CommitCandidateRunAsync(
                     run.Value.OcrRunId, cancellationToken: cancellationToken);
-                if (adoption.IsFailure)
+                if (commit.IsFailure)
                 {
-                    return new OcrQueueExecutionResult(false, false, adoption.ErrorCode,
-                        adoption.ErrorMessage ?? "OCR candidate adoption requires attention.",
+                    return new OcrQueueExecutionResult(false, false, commit.ErrorCode,
+                        commit.ErrorMessage ?? "OCR candidate commit requires attention.",
                         run.Value.OcrRunId, completed, failedCount);
                 }
 
