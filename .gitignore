@@ -15,5 +15,6 @@ tools/**/target/
 artifacts/
 .codegraph/
 .mcp.json
+.pi/
 artifacts/
 **/TestResults/
