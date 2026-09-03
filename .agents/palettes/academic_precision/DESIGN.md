@@ -114,7 +114,7 @@ The emotional response should be one of "effortless organization" and "intellect
 
 ## Colors
 
-The color system is derived from a sophisticated Violet Radix palette. 
+The color system is derived from a sophisticated Violet Radix palette.
 
 - **Primary (#6E56CF):** Used for primary actions, active states, and high-level navigation markers.
 - **Secondary (#7C66DC):** A slightly lighter shade used for hover states and secondary interactive elements.
@@ -151,7 +151,7 @@ Hierarchy is achieved through **Tonal Layers** rather than heavy shadows.
 
 ## Shapes
 
-The shape language is **Soft (Level 1)**. 
+The shape language is **Soft (Level 1)**.
 
 - **Elements:** Buttons, input fields, and tags use a 4px (0.25rem) corner radius. This provides a modern touch without appearing overly "bubbly" or consumer-grade.
 - **Containers:** Internal panels and cards maintain sharp or slightly softened corners (4px) to preserve the structural integrity of the grid.

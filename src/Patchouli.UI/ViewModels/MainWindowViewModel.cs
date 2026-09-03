@@ -29,6 +29,7 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Core.Search;
+using Patchouli.UI.Themes;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -445,6 +446,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 StatusIsError = true;
             }
         }
+
+        ThemePaletteApplier.Apply(_settings.Ui.PaletteId);
 
         _runtimeDatabasePath = _settings.Runtime.RememberLastDatabase
             ? _settings.Runtime.RuntimeDatabasePath
@@ -1941,6 +1944,22 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         Settings.OcrProviderSettings.LoadPersistedToken(await GetPersistedMinerUTokenAsync());
         Report("OCR 引擎选择已保存。");
+        return true;
+    }
+
+    /// <summary>Persists the selected UI palette and applies it to the live theme brushes.</summary>
+    public bool SaveAppearancePalette(string paletteId)
+    {
+        string resolved = UiColorPalettes.ResolveId(paletteId);
+        SettingsSaveResult saved = UpdateAppOptions(_settings with { Ui = _settings.Ui with { PaletteId = resolved } });
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存外观配色设置。");
+            return false;
+        }
+
+        ThemePaletteApplier.Apply(resolved);
+        Report("外观配色已保存。");
         return true;
     }
 

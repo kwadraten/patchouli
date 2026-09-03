@@ -10,6 +10,7 @@ using Patchouli.Core.Mcp;
 using Patchouli.Core.Settings;
 using System.Security;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Themes;
 
 namespace Patchouli.UI;
 
@@ -345,7 +346,8 @@ public sealed record UiPreferences(
     Dictionary<string, double> LibraryGridColumnWidths,
     Dictionary<string, int> LibraryGridColumnOrder,
     bool ShowLibraryLeftSidebar = true,
-    bool ShowLibraryRightSidebar = true)
+    bool ShowLibraryRightSidebar = true,
+    string PaletteId = UiColorPalettes.DefaultPaletteId)
 {
     public static UiPreferences Default()
     {
@@ -538,7 +540,8 @@ public sealed record PatchouliAppSettings(
                     ReadStringDoubleDict(ui, "LibraryGridColumnWidths", defaults.Ui.LibraryGridColumnWidths),
                     ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder),
                     ReadBool(ui, "ShowLibraryLeftSidebar", defaults.Ui.ShowLibraryLeftSidebar),
-                    ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar)))
+                    ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar),
+                    ReadString(ui, "PaletteId", defaults.Ui.PaletteId)))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -701,7 +704,8 @@ public sealed record PatchouliAppSettings(
                 Ui.LibraryGridColumnWidths,
                 Ui.LibraryGridColumnOrder,
                 Ui.ShowLibraryLeftSidebar,
-                Ui.ShowLibraryRightSidebar
+                Ui.ShowLibraryRightSidebar,
+                Ui.PaletteId
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {

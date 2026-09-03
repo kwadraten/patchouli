@@ -51,6 +51,54 @@
         <TransitioningContentControl Content="{Binding ActiveCategory.Content}" Margin="32">
           <TransitioningContentControl.DataTemplates>
 
+            <!-- Appearance Settings -->
+            <DataTemplate DataType="settings:AppearanceSettingsViewModel">
+              <StackPanel Spacing="20" MaxWidth="720">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="外观与显示" FontSize="24" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                </StackPanel>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
+                    <TextBlock Text="配色方案" Classes="CardTitle" />
+                    <TextBlock Text="选择界面配色，除默认方案外均取自 Radix Colors 色阶。" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                    <ComboBox ItemsSource="{Binding Palettes}" SelectedItem="{Binding SelectedPalette}"
+                              MinWidth="280" HorizontalAlignment="Left">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate DataType="settings:PaletteOption">
+                          <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Border Width="14" Height="14" CornerRadius="7" VerticalAlignment="Center"
+                                    Background="{Binding AccentBrush}"
+                                    BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" />
+                            <TextBlock Text="{Binding DisplayName}" FontSize="13" VerticalAlignment="Center" />
+                          </StackPanel>
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                      <Border Width="40" Height="24" CornerRadius="4"
+                              Background="{Binding SelectedPalette.SurfaceBrush}"
+                              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                              ToolTip.Tip="背景" />
+                      <Border Width="40" Height="24" CornerRadius="4"
+                              Background="{Binding SelectedPalette.TertiaryBrush}"
+                              BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
+                              ToolTip.Tip="强调底色" />
+                      <Border Width="40" Height="24" CornerRadius="4"
+                              Background="{Binding SelectedPalette.AccentBrush}"
+                              ToolTip.Tip="主色" />
+                      <Border Width="40" Height="24" CornerRadius="4" Background="{Binding SelectedPalette.TextBrush}"
+                              ToolTip.Tip="正文文字" />
+                    </StackPanel>
+                    <TextBlock Text="以上修改需要点击顶部「保存设置」后生效。" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </DataTemplate>
+
             <!-- Library Settings -->
             <DataTemplate DataType="settings:LibrarySettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">

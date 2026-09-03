@@ -28,6 +28,8 @@
   <SolidColorBrush x:Key="OnSurfaceVariantBrush" Color="{StaticResource OnSurfaceVariantColor}" />
   <SolidColorBrush x:Key="PrimaryBrush" Color="{StaticResource PrimaryColor}" />
   <SolidColorBrush x:Key="PrimaryContainerBrush" Color="{StaticResource PrimaryContainerColor}" />
+  <!-- Text/icons on Primary backgrounds; reuses the palette's light inverse tone. -->
+  <SolidColorBrush x:Key="OnPrimaryBrush" Color="{StaticResource InverseOnSurfaceColor}" />
   <SolidColorBrush x:Key="TertiaryBrush" Color="{StaticResource TertiaryColor}" />
   <SolidColorBrush x:Key="InverseSurfaceBrush" Color="{StaticResource InverseSurfaceColor}" />
   <SolidColorBrush x:Key="InverseOnSurfaceBrush" Color="{StaticResource InverseOnSurfaceColor}" />

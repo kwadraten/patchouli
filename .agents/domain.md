@@ -17,6 +17,7 @@ Before exploring, read these when they exist:
 - `.agents/CONTEXT.md` for project domain language and glossary.
 - `.agents/adr/` for architectural decision records relevant to the area being changed.
 - `.agents/PRD.md` when product intent, scope, or roadmap context matters.
+- `.agents/palettes/` for the selectable UI color palettes (one `DESIGN.md` per palette).
 
 If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do not suggest creating them upfront unless the current task is explicitly about domain modeling, architecture documentation, or recording a decision.
 

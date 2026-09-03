@@ -17,6 +17,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
+        AppearanceSettings = new AppearanceSettingsViewModel(main);
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
@@ -26,8 +27,8 @@ public sealed class SettingsViewModel : ViewModelBase
 
         foreach (ISettingsSection section in new ISettingsSection[]
                  {
-                     LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings, MetadataLookupSettings,
-                     LocalFileManagement
+                     AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
+                     MetadataLookupSettings, LocalFileManagement
                  })
         {
             ((INotifyPropertyChanged)section).PropertyChanged += SectionPropertyChanged;
@@ -40,7 +41,8 @@ public sealed class SettingsViewModel : ViewModelBase
             new("MCP 服务与安全", "Server", McpSettings),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
             new("元数据来源", "Search", MetadataLookupSettings),
-            new("本地文件", "FolderOpen", LocalFileManagement)
+            new("本地文件", "FolderOpen", LocalFileManagement),
+            new("外观与显示", "Palette", AppearanceSettings)
         };
 
         ActiveCategory = Categories.First();
@@ -50,6 +52,7 @@ public sealed class SettingsViewModel : ViewModelBase
         DiscardCommand = new AsyncCommand(DiscardAllSectionsAsync);
     }
 
+    public AppearanceSettingsViewModel AppearanceSettings { get; }
     public LibrarySettingsViewModel LibrarySettings { get; }
     public McpSettingsViewModel McpSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
