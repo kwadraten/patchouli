@@ -32,9 +32,58 @@ internal static class Program
             eventArgs.Handled = false;
         };
 
+        DesktopInstanceCoordinator coordinator;
         try
         {
-            BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            coordinator = new DesktopInstanceCoordinator();
+        }
+        catch (Exception exception)
+        {
+            sink.Report(exception, "instance-election", "mutex-initialization");
+            return 1;
+        }
+
+        if (!coordinator.IsPrimary)
+        {
+            try
+            {
+                bool notified = coordinator.NotifyPrimaryAsync().GetAwaiter().GetResult();
+                if (notified)
+                {
+                    return 0;
+                }
+
+                sink.Report(
+                    new InvalidOperationException("Failed to activate primary UI instance within retry timeout."),
+                    "instance-election",
+                    "notify-primary");
+                return 1;
+            }
+            catch (Exception exception)
+            {
+                sink.Report(exception, "instance-election", "notify-primary");
+                return 1;
+            }
+            finally
+            {
+                coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+        }
+
+        try
+        {
+            coordinator.StartListener();
+        }
+        catch (Exception exception)
+        {
+            sink.Report(exception, "instance-election", "start-listener");
+            coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            return 1;
+        }
+
+        try
+        {
+            BuildAvaloniaApp(coordinator).StartWithClassicDesktopLifetime(args);
             return 0;
         }
         catch (Exception exception)
@@ -42,11 +91,20 @@ internal static class Program
             sink.Report(exception, "process-main", "desktop-lifetime");
             return 1;
         }
+        finally
+        {
+            coordinator.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        }
     }
 
     public static AppBuilder BuildAvaloniaApp()
     {
-        return AppBuilder.Configure<App>()
+        return BuildAvaloniaApp(null);
+    }
+
+    internal static AppBuilder BuildAvaloniaApp(IDesktopInstanceCoordinator? coordinator)
+    {
+        return AppBuilder.Configure(() => new App { Coordinator = coordinator })
             .UsePlatformDetect()
             .LogToTrace();
     }

@@ -1,0 +1,25 @@
+name: Desktop instance coordinator tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-matrix:
+    name: Desktop instance tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: Run single instance and control channel tests
+        run: dotnet test tests/Patchouli.Tests/Patchouli.Tests.csproj --filter "FullyQualifiedName~DesktopInstanceCoordinator|FullyQualifiedName~DesktopInstanceActivation"
