@@ -1,6 +1,6 @@
 <ResourceDictionary xmlns="https://github.com/avaloniaui"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-  <!-- Academic Precision Color Palette (Radix Violet Base) -->
+  <!-- Radix Violet Color Palette (default) -->
   <Color x:Key="SurfaceColor">#FBF9F8</Color>
   <Color x:Key="SurfaceContainerLowColor">#F5F3F3</Color>
   <Color x:Key="SurfaceContainerColor">#EFEDED</Color>
@@ -11,7 +11,9 @@
   <Color x:Key="PrimaryColor">#553BB5</Color>
   <Color x:Key="PrimaryContainerColor">#6E56CF</Color>
   <Color x:Key="TertiaryColor">#EFE8FF</Color>
-  <Color x:Key="InverseSurfaceColor">#303031</Color>
+  <!-- List/grid selection tint: accent step 5, mid-light — dark text stays readable. -->
+  <Color x:Key="SelectionColor">#D4CAFE</Color>
+  <Color x:Key="InverseSurfaceColor">#2F265F</Color>
   <Color x:Key="InverseOnSurfaceColor">#F2F0F0</Color>
   <Color x:Key="OutlineVariantColor">#CAC4D5</Color>
   <Color x:Key="ErrorColor">#BA1A1A</Color>
@@ -31,6 +33,7 @@
   <!-- Text/icons on Primary backgrounds; reuses the palette's light inverse tone. -->
   <SolidColorBrush x:Key="OnPrimaryBrush" Color="{StaticResource InverseOnSurfaceColor}" />
   <SolidColorBrush x:Key="TertiaryBrush" Color="{StaticResource TertiaryColor}" />
+  <SolidColorBrush x:Key="SelectionBrush" Color="{StaticResource SelectionColor}" />
   <SolidColorBrush x:Key="InverseSurfaceBrush" Color="{StaticResource InverseSurfaceColor}" />
   <SolidColorBrush x:Key="InverseOnSurfaceBrush" Color="{StaticResource InverseOnSurfaceColor}" />
   <SolidColorBrush x:Key="OutlineVariantBrush" Color="{StaticResource OutlineVariantColor}" />

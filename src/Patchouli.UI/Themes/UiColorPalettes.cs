@@ -3,20 +3,20 @@ namespace Patchouli.UI.Themes;
 /// <summary>A selectable UI color palette: semantic color key (e.g. "SurfaceColor") → hex value.</summary>
 public sealed record UiColorPalette(string Id, string DisplayName, IReadOnlyDictionary<string, string> Colors);
 
-/// <summary>Built-in UI palettes. The default mirrors Themes/AcademicPrecision.axaml; the rest are
+/// <summary>Built-in UI palettes. The default mirrors Themes/RadixViolet.axaml; the rest are
 /// composed from Radix Colors scales (see UiColorPalettes.Generated.cs and .agents/palettes/).</summary>
 public static partial class UiColorPalettes
 {
-    public const string DefaultPaletteId = "academic-precision";
+    public const string DefaultPaletteId = "radix-violet";
 
-    // Neutral tokens that stay constant across palettes.
-    private const string InverseSurfaceHex = "#303031";
+    // Neutral tokens that stay constant across palettes. InverseSurface (the dark status bar)
+    // is palette-derived instead: the accent scale's deepest step.
     private const string InverseOnSurfaceHex = "#F2F0F0";
     private const string ErrorHex = "#BA1A1A";
     private const string ErrorContainerHex = "#FFDAD6";
 
     // Semantic keys every palette must provide. Mirrored onto the brushes in
-    // AcademicPrecision.axaml by ThemePaletteApplier ("XxxColor" → "XxxBrush").
+    // RadixViolet.axaml by ThemePaletteApplier ("XxxColor" → "XxxBrush").
     public static readonly IReadOnlyList<string> SemanticColorKeys =
     [
         "SurfaceColor",
@@ -30,6 +30,7 @@ public static partial class UiColorPalettes
         "PrimaryContainerColor",
         "OnPrimaryColor",
         "TertiaryColor",
+        "SelectionColor",
         "InverseSurfaceColor",
         "InverseOnSurfaceColor",
         "OutlineVariantColor",
@@ -60,7 +61,7 @@ public static partial class UiColorPalettes
 
     private static UiColorPalette[] BuildAll()
     {
-        List<UiColorPalette> palettes = [AcademicPrecision];
+        List<UiColorPalette> palettes = [RadixViolet];
         foreach ((string id, string name, string gray, string accent, bool darkOnPrimary) in RadixPalettes)
         {
             palettes.Add(new UiColorPalette(id, name,
@@ -71,7 +72,9 @@ public static partial class UiColorPalettes
     }
 
     // Radix step semantics: gray 1-5 are background tiers, 6 is a subtle border, 11/12 are text;
-    // accent 3 is a soft tint, 9 is the solid action color, 11 is the accent text color.
+    // accent 3 is a soft tint, 5 is the list-selection tint (mid-light, keeps dark text readable),
+    // 9 is the solid action color, 11 is the accent text color, and 12 is the deep accent used
+    // for the dark status bar.
     private static IReadOnlyDictionary<string, string> FromRadixSteps(string[] gray, string[] accent,
         bool darkOnPrimary)
     {
@@ -88,7 +91,8 @@ public static partial class UiColorPalettes
             ["PrimaryContainerColor"] = accent[8],
             ["OnPrimaryColor"] = darkOnPrimary ? gray[11] : InverseOnSurfaceHex,
             ["TertiaryColor"] = accent[2],
-            ["InverseSurfaceColor"] = InverseSurfaceHex,
+            ["SelectionColor"] = accent[4],
+            ["InverseSurfaceColor"] = accent[11],
             ["InverseOnSurfaceColor"] = InverseOnSurfaceHex,
             ["OutlineVariantColor"] = gray[5],
             ["ErrorColor"] = ErrorHex,
@@ -96,10 +100,11 @@ public static partial class UiColorPalettes
         };
     }
 
-    // The original Stitch "Academic Precision" palette, kept byte-identical to the shipped default.
-    private static readonly UiColorPalette AcademicPrecision = new(
+    // The default palette: the original hand-tuned violet design, kept byte-identical to the shipped
+    // default except InverseSurface, which uses the Radix violet scale's deepest step (dark status bar).
+    private static readonly UiColorPalette RadixViolet = new(
         DefaultPaletteId,
-        "Academic Precision（默认）",
+        "Radix Violet",
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["SurfaceColor"] = "#FBF9F8",
@@ -113,7 +118,8 @@ public static partial class UiColorPalettes
             ["PrimaryContainerColor"] = "#6E56CF",
             ["OnPrimaryColor"] = InverseOnSurfaceHex,
             ["TertiaryColor"] = "#EFE8FF",
-            ["InverseSurfaceColor"] = InverseSurfaceHex,
+            ["SelectionColor"] = "#D4CAFE",
+            ["InverseSurfaceColor"] = "#2F265F",
             ["InverseOnSurfaceColor"] = InverseOnSurfaceHex,
             ["OutlineVariantColor"] = "#CAC4D5",
             ["ErrorColor"] = ErrorHex,

@@ -10,7 +10,7 @@
       <Setter Property="BorderThickness" Value="0" />
     </Style>
     <Style Selector="Border.step.active">
-      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+      <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
       <Setter Property="BorderThickness" Value="3,0,0,0" />
     </Style>

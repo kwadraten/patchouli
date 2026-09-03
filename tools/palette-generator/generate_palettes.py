@@ -51,6 +51,10 @@ GRAY_PAIRING = {
 # Bright scales whose solid steps (9/10) need dark foreground text.
 DARK_ON_PRIMARY = {"sky", "mint", "lime", "yellow", "amber"}
 
+# The default palette (UiColorPalettes.cs) is the hand-tuned violet scheme and owns the
+# "radix-violet" id, so violet is excluded from the generated selectable list.
+DEFAULT_SCALE = "violet"
+
 STEP_USE_CASES = [
     (1, "App background"),
     (2, "Subtle background"),
@@ -196,6 +200,8 @@ def write_csharp(package_dir: Path) -> None:
         "        [",
     ]
     for scale in SCALES:
+        if scale == DEFAULT_SCALE:
+            continue
         palette_id = f"radix-{scale}"
         dark = "true" if scale in DARK_ON_PRIMARY else "false"
         lines.append(

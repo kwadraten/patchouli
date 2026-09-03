@@ -1,0 +1,13 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- Selected/hovered DataGrid rows use palette tones, matching the sidebar selection.
+       The frozen DataGrid theme paints rows via Rectangle#BackgroundRectangle in the row
+       template; these application styles take precedence over its ControlTheme styles. -->
+  <Style Selector="DataGridRow:pointerover /template/ Rectangle#BackgroundRectangle">
+    <Setter Property="Fill" Value="{DynamicResource SurfaceContainerHighBrush}" />
+  </Style>
+  <Style Selector="DataGridRow:selected /template/ Rectangle#BackgroundRectangle">
+    <Setter Property="Fill" Value="{DynamicResource SelectionBrush}" />
+  </Style>
+</Styles>

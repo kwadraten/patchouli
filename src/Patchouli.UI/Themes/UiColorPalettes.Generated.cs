@@ -61,7 +61,6 @@ public static partial class UiColorPalettes
             ("radix-pink", "Radix Pink", "mauve", "pink", false),
             ("radix-plum", "Radix Plum", "mauve", "plum", false),
             ("radix-purple", "Radix Purple", "mauve", "purple", false),
-            ("radix-violet", "Radix Violet", "mauve", "violet", false),
             ("radix-iris", "Radix Iris", "slate", "iris", false),
             ("radix-indigo", "Radix Indigo", "slate", "indigo", false),
             ("radix-blue", "Radix Blue", "slate", "blue", false),

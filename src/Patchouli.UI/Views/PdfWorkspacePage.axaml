@@ -78,7 +78,7 @@
       <Setter Property="Padding" Value="8,5" />
     </Style>
     <Style Selector="Border.TreeRow.selected">
-      <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+      <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
     </Style>
     <Style Selector="Border.TreeRow.suppressed">

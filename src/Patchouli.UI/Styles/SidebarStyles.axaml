@@ -27,7 +27,7 @@
   </Style>
   <Style Selector="ListBox.SidebarListBox ListBoxItem:selected Border.ItemBorder">
     <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
-    <Setter Property="Background" Value="{DynamicResource TertiaryBrush}" />
+    <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
   </Style>
   <Style Selector="ListBox.SidebarListBox ListBoxItem TextBlock.ItemText">
     <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
