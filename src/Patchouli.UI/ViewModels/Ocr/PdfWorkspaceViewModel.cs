@@ -27,6 +27,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private int _heightPixels;
     private int _renderGeneration;
     private bool _isEditMode;
+    private bool _isHistoryTabActive;
     private bool _isSidebarOpen;
     private PdfWorkspaceTool _activeTool = PdfWorkspaceTool.Select;
     private PdfBBoxViewModel? _selectedBox;
@@ -126,6 +127,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         RunCurrentPageOcrCommand = new AsyncCommand(RunCurrentPageOcrAsync);
         RunDocumentOcrCommand = new AsyncCommand(RunDocumentOcrAsync);
         CopyMarkdownCommand = new AsyncCommand(CopyMarkdownAsync);
+        ShowContentTabCommand = new RelayCommand(_ => IsHistoryTabActive = false);
+        ShowHistoryTabCommand = new RelayCommand(_ => IsHistoryTabActive = true);
         MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
         ConfirmMergeCommand = new AsyncCommand(ConfirmMergeAsync);
         CancelMergeCommand = new AsyncCommand(() =>
@@ -246,6 +249,25 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             Raise();
         }
     }
+
+    /// <summary>True when the view-mode sidebar shows the version-history tab instead of the page preview.</summary>
+    public bool IsHistoryTabActive
+    {
+        get => _isHistoryTabActive;
+        private set
+        {
+            if (_isHistoryTabActive == value)
+            {
+                return;
+            }
+
+            _isHistoryTabActive = value;
+            Raise();
+            Raise(nameof(SidebarTabTitle));
+        }
+    }
+
+    public string SidebarTabTitle => IsHistoryTabActive ? "版本历史" : "页面内容";
 
     public bool IsViewingHistoricalRevision
     {
@@ -700,6 +722,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand RunCurrentPageOcrCommand { get; }
     public AsyncCommand RunDocumentOcrCommand { get; }
     public AsyncCommand CopyMarkdownCommand { get; }
+    public RelayCommand ShowContentTabCommand { get; }
+    public RelayCommand ShowHistoryTabCommand { get; }
     public AsyncCommand MergeSelectedCommand { get; }
     public AsyncCommand ConfirmMergeCommand { get; }
     public AsyncCommand CancelMergeCommand { get; }
@@ -2700,9 +2724,23 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        foreach (DocumentTreeRevision revision in revisions.Value)
+        List<PageRevisionViewModel> rows = revisions.Value
+            .Select(revision => new PageRevisionViewModel(revision, ViewPageRevisionAsync, RevertPageRevisionAsync))
+            .ToList();
+        HistoryRowMetadata.Apply(
+            rows,
+            row => row.RevisionId.ToString(),
+            row => row.RevertedFromRevisionId,
+            (row, isNewest, isOldest, revertOffset) =>
+            {
+                row.IsNewest = isNewest;
+                row.IsOldest = isOldest;
+                row.RevertRowOffset = revertOffset;
+            });
+
+        foreach (PageRevisionViewModel row in rows)
         {
-            PageRevisions.Add(new PageRevisionViewModel(revision, ViewPageRevisionAsync, RevertPageRevisionAsync));
+            PageRevisions.Add(row);
         }
 
         Raise(nameof(HasPageRevisions));

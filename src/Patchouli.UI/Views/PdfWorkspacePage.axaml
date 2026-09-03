@@ -478,7 +478,7 @@
 
       <!-- Right: Sidebar Viewer/Editor -->
       <Border Grid.Column="2" Background="{DynamicResource SurfaceBrush}" IsVisible="{Binding IsSidebarOpen}">
-        <Grid RowDefinitions="Auto,Auto,Auto,*">
+        <Grid RowDefinitions="Auto,Auto,*">
           <!-- Split wizard -->
           <Border Classes="WizardCard" Grid.RowSpan="3" IsVisible="{Binding IsSplitPending}">
             <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="8">
@@ -515,37 +515,29 @@
             </StackPanel>
           </Border>
 
-          <Border Grid.Row="2" Classes="WizardCard" IsVisible="{Binding !IsEditMode}">
-            <StackPanel Spacing="8">
-              <TextBlock Text="页面版本历史" FontWeight="SemiBold" FontSize="14" />
-              <TextBlock Text="没有已提交的历史版本。" FontSize="12"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" IsVisible="{Binding !HasPageRevisions}" />
-              <ScrollViewer MaxHeight="160" IsVisible="{Binding HasPageRevisions}">
-                <ItemsControl ItemsSource="{Binding PageRevisions}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate DataType="vm:PageRevisionViewModel">
-                      <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" Margin="0,0,0,6">
-                        <TextBlock Text="{Binding DisplayText}" FontSize="12"
-                                   Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap"
-                                   VerticalAlignment="Center" />
-                        <Button Grid.Column="1" Content="查看" Command="{Binding ViewCommand}" FontSize="11" />
-                        <Button Grid.Column="2" Content="恢复此版本" Command="{Binding RevertCommand}" FontSize="11"
-                                Classes="Danger" />
-                      </Grid>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
-              </ScrollViewer>
-            </StackPanel>
-          </Border>
-
-          <Grid Grid.Row="3" IsVisible="{Binding !IsSplitPending}">
-            <!-- View mode: read-only Markdown preview -->
+          <Grid Grid.Row="2" IsVisible="{Binding !IsSplitPending}">
+            <!-- View mode: tabbed sidebar — page content (read-only Markdown preview) or version history -->
             <Grid RowDefinitions="Auto,*" IsVisible="{Binding !IsEditMode}">
               <Border Classes="SidebarHeader">
-                <Grid ColumnDefinitions="*,Auto">
-                  <TextBlock Text="页面预览" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
-                  <Button Grid.Column="1" Command="{Binding CopyMarkdownCommand}" Background="Transparent"
+                <Grid ColumnDefinitions="Auto,*" Height="32">
+                  <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding SidebarTabTitle}" FontSize="16" FontWeight="SemiBold"
+                               VerticalAlignment="Center" />
+                    <Button Background="Transparent" BorderThickness="0" Padding="4" VerticalAlignment="Center"
+                            ToolTip.Tip="切换侧栏视图">
+                      <Button.Flyout>
+                        <MenuFlyout>
+                          <MenuItem Header="页面内容" Command="{Binding ShowContentTabCommand}" />
+                          <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
+                        </MenuFlyout>
+                      </Button.Flyout>
+                      <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
+                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+                    </Button>
+                  </StackPanel>
+                  <Button Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
+                          Command="{Binding CopyMarkdownCommand}"
+                          Background="Transparent" IsVisible="{Binding !IsHistoryTabActive}"
                           ToolTip.Tip="复制当前页面的规范 Markdown">
                     <StackPanel Orientation="Horizontal" Spacing="4">
                       <lucide:Lucide Icon="Copy" Width="14" Height="14"
@@ -556,39 +548,102 @@
                 </Grid>
               </Border>
               <Grid Grid.Row="1">
-                <ScrollViewer x:Name="PreviewScrollViewer">
-                  <ItemsControl x:Name="PreviewItems" ItemsSource="{Binding PreviewBlocks}" Margin="16">
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate x:DataType="vm:MarkdownPreviewBlockViewModel">
-                        <Button Classes="PreviewBlock" Classes.selected="{Binding IsSelected}"
-                                Command="{Binding SelectCommand}" HorizontalContentAlignment="Stretch"
-                                Padding="8" Margin="0,0,0,4">
-                          <StackPanel Spacing="4">
-                            <Border IsVisible="{Binding IsMedia}" Padding="12" CornerRadius="4"
-                                    Background="{DynamicResource SurfaceContainerHighestBrush}">
-                              <StackPanel Spacing="4" HorizontalAlignment="Center">
-                                <lucide:Lucide Icon="SquareDashed" Width="24" Height="24"
-                                               StrokeBrush="{DynamicResource PrimaryBrush}" />
-                                <TextBlock Text="{Binding MediaLabel}" HorizontalAlignment="Center"
-                                           FontWeight="SemiBold" />
-                                <TextBlock Text="{Binding Markdown}" TextWrapping="Wrap"
-                                           HorizontalAlignment="Center" TextAlignment="Center"
-                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                <!-- Tab: page content -->
+                <Grid IsVisible="{Binding !IsHistoryTabActive}">
+                  <ScrollViewer x:Name="PreviewScrollViewer">
+                    <ItemsControl x:Name="PreviewItems" ItemsSource="{Binding PreviewBlocks}" Margin="16">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:MarkdownPreviewBlockViewModel">
+                          <Button Classes="PreviewBlock" Classes.selected="{Binding IsSelected}"
+                                  Command="{Binding SelectCommand}" HorizontalContentAlignment="Stretch"
+                                  Padding="8" Margin="0,0,0,4">
+                            <StackPanel Spacing="4">
+                              <Border IsVisible="{Binding IsMedia}" Padding="12" CornerRadius="4"
+                                      Background="{DynamicResource SurfaceContainerHighestBrush}">
+                                <StackPanel Spacing="4" HorizontalAlignment="Center">
+                                  <lucide:Lucide Icon="SquareDashed" Width="24" Height="24"
+                                                 StrokeBrush="{DynamicResource PrimaryBrush}" />
+                                  <TextBlock Text="{Binding MediaLabel}" HorizontalAlignment="Center"
+                                             FontWeight="SemiBold" />
+                                  <TextBlock Text="{Binding Markdown}" TextWrapping="Wrap"
+                                             HorizontalAlignment="Center" TextAlignment="Center"
+                                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                </StackPanel>
+                              </Border>
+                              <controls:MarkdownTextBlock Markdown="{Binding Markdown}" Block="{Binding Block}"
+                                                          TextWrapping="Wrap"
+                                                          Classes.previewHeading="{Binding IsHeading}"
+                                                          IsVisible="{Binding !IsMedia}" />
+                            </StackPanel>
+                          </Button>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </ScrollViewer>
+                  <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
+                             IsVisible="{Binding HasNoPreviewBlocks}" />
+                </Grid>
+
+                <!-- Tab: version history (graph | commit | description | date) -->
+                <ScrollViewer IsVisible="{Binding IsHistoryTabActive}" Margin="16,8">
+                  <StackPanel>
+                    <TextBlock Text="没有已提交的历史版本。" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding !HasPageRevisions}" />
+                    <StackPanel IsVisible="{Binding HasPageRevisions}">
+                      <Grid ColumnDefinitions="26,64,*,100" ColumnSpacing="8" Height="24">
+                        <TextBlock Grid.Column="1" Text="提交" Classes="HistoryHeaderText" />
+                        <TextBlock Grid.Column="2" Text="说明" Classes="HistoryHeaderText" />
+                        <TextBlock Grid.Column="3" Text="日期" Classes="HistoryHeaderText" />
+                      </Grid>
+                      <Border Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="0,0,0,2" />
+                      <ItemsControl ItemsSource="{Binding PageRevisions}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate DataType="vm:PageRevisionViewModel">
+                            <Grid ColumnDefinitions="26,64,*,100" ColumnSpacing="8" Height="30"
+                                  Classes="HistoryRow">
+                              <Grid.ContextMenu>
+                                <ContextMenu x:DataType="vm:PageRevisionViewModel">
+                                  <MenuItem Header="查看此版本" Command="{Binding ViewCommand}" />
+                                  <MenuItem Header="恢复此版本" Command="{Binding RevertCommand}" />
+                                </ContextMenu>
+                              </Grid.ContextMenu>
+                              <Canvas Width="26" ClipToBounds="False">
+                                <Rectangle Width="2" Height="15" Canvas.Left="11" Canvas.Top="0"
+                                           Fill="{DynamicResource OutlineVariantBrush}"
+                                           IsVisible="{Binding !IsNewest}" />
+                                <Rectangle Width="2" Height="15" Canvas.Left="11" Canvas.Top="15"
+                                           Fill="{DynamicResource OutlineVariantBrush}"
+                                           IsVisible="{Binding !IsOldest}" />
+                                <Path Stroke="#D97706" StrokeThickness="2" Data="{Binding RevertLinkGeometry}"
+                                      IsVisible="{Binding HasRevertLink}" />
+                                <Ellipse Width="10" Height="10" Canvas.Left="7" Canvas.Top="10"
+                                         Fill="{Binding Source, Converter={StaticResource VersionSourceConverter}, ConverterParameter=Brush}" />
+                              </Canvas>
+                              <TextBlock Grid.Column="1" Text="{Binding ShortId}" Classes="HistoryHash" />
+                              <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6"
+                                          VerticalAlignment="Center">
+                                <Border Classes="HistoryBadge"
+                                        Background="{Binding Source, Converter={StaticResource VersionSourceConverter}, ConverterParameter=Brush}">
+                                  <TextBlock
+                                    Text="{Binding Source, Converter={StaticResource VersionSourceConverter}, ConverterParameter=Label}" />
+                                </Border>
+                                <Border Classes="HistoryBadge" Background="{DynamicResource PrimaryBrush}"
+                                        IsVisible="{Binding IsCurrent}">
+                                  <TextBlock Text="当前" />
+                                </Border>
+                                <TextBlock Text="{Binding NoteText}" Classes="HistoryText" />
                               </StackPanel>
-                            </Border>
-                            <controls:MarkdownTextBlock Markdown="{Binding Markdown}" Block="{Binding Block}"
-                                                        TextWrapping="Wrap"
-                                                        Classes.previewHeading="{Binding IsHeading}"
-                                                        IsVisible="{Binding !IsMedia}" />
-                          </StackPanel>
-                        </Button>
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
+                              <TextBlock Grid.Column="3" Text="{Binding DateText}" Classes="HistoryText"
+                                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                            </Grid>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </StackPanel>
                 </ScrollViewer>
-                <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
-                           Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
-                           IsVisible="{Binding HasNoPreviewBlocks}" />
               </Grid>
             </Grid>
 

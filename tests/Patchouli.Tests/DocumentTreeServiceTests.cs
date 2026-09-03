@@ -594,6 +594,75 @@ public sealed class DocumentTreeServiceTests
             .Which.TreeRevisionId.Should().Be(working.Value.TreeRevisionId);
     }
 
+    [Fact]
+    public async Task CommitPageEditAsync_creates_chained_document_commits_for_the_saved_page()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession firstEdit = (await context.Trees.BeginPageEditAsync(
+            context.DocumentId, context.PageId)).Value;
+        (await context.Editor.DrawAndInsertLeafAsync(
+                firstEdit.SessionId,
+                new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("First"))))
+            .IsSuccess.Should().BeTrue();
+
+        DocumentTreeRevision first = (await context.Trees.CommitPageEditAsync(firstEdit.SessionId)).Value;
+        context.Clock.UtcNow = context.Clock.UtcNow.AddMinutes(1);
+        PageEditSession secondEdit = (await context.Trees.BeginPageEditAsync(
+            context.DocumentId, context.PageId)).Value;
+        DocumentTreeRevision second = (await context.Trees.CommitPageEditAsync(secondEdit.SessionId)).Value;
+
+        Result<IReadOnlyList<DocumentCommitDetail>> result =
+            await context.Trees.ListDocumentCommitsAsync(context.DocumentId);
+
+        result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+        result.Value.Should().HaveCount(2);
+        result.Value[0].Commit.Source.Should().Be(DocumentTreeRevisionSource.ManualEdit);
+        result.Value[0].Commit.Message.Should().BeNull();
+        result.Value[0].Commit.ParentCommitId.Should().Be(result.Value[1].Commit.CommitId);
+        result.Value[0].Pages.Should().ContainSingle()
+            .Which.TreeRevisionId.Should().Be(second.TreeRevisionId);
+        result.Value[1].Pages.Should().ContainSingle()
+            .Which.TreeRevisionId.Should().Be(first.TreeRevisionId);
+        first.TreeRevisionId.Should().Be(firstEdit.DraftRevisionId);
+        second.TreeRevisionId.Should().Be(secondEdit.DraftRevisionId);
+    }
+
+    [Fact]
+    public async Task CommitPageEditAsync_does_not_create_a_document_commit_when_validation_fails()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox box = (await context.Editor.DrawAndInsertLeafAsync(
+            edit.SessionId,
+            new InsertLeafCommand(null, null, DocumentBoxType.Text, null, null,
+                new NormalizedBBox(0.1, 0.1, 0.8, 0.1), new TextBoxPayload("Invalidated")))).Value;
+        (await context.Editor.DrawAndInsertLeafAsync(
+                edit.SessionId,
+                new InsertLeafCommand(null, box.BoxId, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0.1, 0.3, 0.8, 0.1), new TextBoxPayload("Unreachable"))))
+            .IsSuccess.Should().BeTrue();
+        await using (SqliteConnection connection = context.DatabaseConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "update document_boxes set next_sibling_box_id = null where tree_revision_id = @RevisionId and box_id = @BoxId;",
+                new { RevisionId = edit.DraftRevisionId.ToString(), BoxId = box.BoxId.ToString() });
+        }
+
+        Result<DocumentTreeRevision> result = await context.Trees.CommitPageEditAsync(edit.SessionId);
+
+        result.IsFailure.Should().BeTrue();
+        await using SqliteConnection verification = context.DatabaseConnectionFactory.CreateConnection();
+        await verification.OpenAsync();
+        (await verification.ExecuteScalarAsync<int>("select count(1) from document_commits;")).Should().Be(0);
+        (await verification.ExecuteScalarAsync<int>("select count(1) from document_commit_pages;")).Should().Be(0);
+        string? status = await verification.ExecuteScalarAsync<string>(
+            "select status from document_tree_revisions where tree_revision_id = @RevisionId;",
+            new { RevisionId = edit.DraftRevisionId.ToString() });
+        status.Should().Be(DocumentTreeRevisionStatus.Working);
+    }
+
     [Theory]
     [InlineData("staging")]
     [InlineData("draft")]

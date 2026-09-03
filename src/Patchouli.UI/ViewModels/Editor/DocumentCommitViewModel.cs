@@ -1,3 +1,4 @@
+using Avalonia.Media;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -27,6 +28,10 @@ public sealed class DocumentCommitPageViewModel
 
 public sealed class DocumentCommitViewModel
 {
+    // Height of a history-table row; the revert connector geometry assumes every row
+    // renders at exactly this height so the curve lands on the target row's node.
+    private const double RowHeight = 30;
+
     public DocumentCommitViewModel(
         DocumentCommitDetail detail,
         IReadOnlyList<Page> pages,
@@ -37,6 +42,9 @@ public sealed class DocumentCommitViewModel
         Message = detail.Commit.Message;
         CreatedAt = detail.Commit.CreatedAt;
         PageCount = detail.Pages.Count;
+        RevertedFromRevisionId = detail.Pages
+            .FirstOrDefault(page => page.RevertedFromTreeRevisionId is not null)
+            ?.RevertedFromTreeRevisionId?.ToString();
         Pages = detail.Pages
             .Select(page =>
             {
@@ -56,19 +64,36 @@ public sealed class DocumentCommitViewModel
     public string? Message { get; }
     public DateTimeOffset CreatedAt { get; }
     public int PageCount { get; }
+    public string? RevertedFromRevisionId { get; }
     public IReadOnlyList<DocumentCommitPageViewModel> Pages { get; }
 
-    public string DisplayText
-    {
-        get
-        {
-            string text = $"{CreatedAt:yyyy-MM-dd HH:mm} · 来源：{Source} · {PageCount} 页";
-            if (!string.IsNullOrWhiteSpace(Message))
-            {
-                text += $" · {Message}";
-            }
+    /// <summary>True for the commit that represents the current document state (the newest).</summary>
+    public bool IsCurrent { get; set; }
 
-            return text;
-        }
+    /// <summary>True for the topmost (newest) row; the graph draws no line segment above it.</summary>
+    public bool IsNewest { get; set; }
+
+    /// <summary>True for the bottommost (oldest) row; the graph draws no line segment below it.</summary>
+    public bool IsOldest { get; set; }
+
+    /// <summary>Number of rows between this revert row and the row it restored, if both are listed.</summary>
+    public int? RevertRowOffset { get; set; }
+
+    public string ShortId => CommitId.ToString()[..8];
+
+    public string DateText => $"{CreatedAt:yyyy-MM-dd HH:mm}";
+
+    public string DescriptionText =>
+        !string.IsNullOrWhiteSpace(Message) ? Message : $"{PageCount} 页";
+
+    public bool HasRevertLink => RevertRowOffset is > 0;
+
+    public Geometry? RevertLinkGeometry => RevertRowOffset is > 0 ? BuildRevertLink(RevertRowOffset.Value) : null;
+
+    private static Geometry BuildRevertLink(int rowOffset)
+    {
+        // Curve from this row's node (12, 15) down to the restored row's node, hugging the left edge.
+        double endY = 15 + RowHeight * rowOffset;
+        return StreamGeometry.Parse(FormattableString.Invariant($"M 12,15 C 2,15 2,{endY} 12,{endY}"));
     }
 }

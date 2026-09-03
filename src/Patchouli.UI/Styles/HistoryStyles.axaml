@@ -1,0 +1,47 @@
+<Styles xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+  <!-- Version-history table rows (git-log style: graph | commit | author | description | date) -->
+  <Style Selector="Grid.HistoryRow">
+    <Setter Property="Background" Value="Transparent" />
+  </Style>
+  <Style Selector="Grid.HistoryRow:pointerover">
+    <Setter Property="Background" Value="{DynamicResource SurfaceContainerHighBrush}" />
+  </Style>
+
+  <!-- Column header labels -->
+  <Style Selector="TextBlock.HistoryHeaderText">
+    <Setter Property="FontSize" Value="11" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <!-- Short commit hash -->
+  <Style Selector="TextBlock.HistoryHash">
+    <Setter Property="FontFamily" Value="Cascadia Mono, Consolas, monospace" />
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+
+  <!-- Description-cell text -->
+  <Style Selector="TextBlock.HistoryText">
+    <Setter Property="FontSize" Value="12" />
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+  </Style>
+
+  <!-- Colored source/current badges, like branch chips in a git log -->
+  <Style Selector="Border.HistoryBadge">
+    <Setter Property="CornerRadius" Value="4" />
+    <Setter Property="Padding" Value="6,1" />
+    <Setter Property="VerticalAlignment" Value="Center" />
+  </Style>
+  <Style Selector="Border.HistoryBadge > TextBlock">
+    <Setter Property="FontSize" Value="11" />
+    <Setter Property="Foreground" Value="White" />
+  </Style>
+
+</Styles>

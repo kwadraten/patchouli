@@ -330,29 +330,67 @@
                          Foreground="{DynamicResource OnSurfaceVariantBrush}"
                          IsVisible="{Binding !HasDocumentCommits}" />
               <ScrollViewer MaxHeight="360" IsVisible="{Binding HasDocumentCommits}">
-                <ItemsControl ItemsSource="{Binding DocumentCommits}">
-                  <ItemsControl.ItemTemplate>
-                    <DataTemplate DataType="editor:DocumentCommitViewModel">
-                      <StackPanel Spacing="6" Margin="0,0,0,12">
-                        <TextBlock Text="{Binding DisplayText}" FontSize="13"
-                                   Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-                        <ItemsControl ItemsSource="{Binding Pages}">
-                          <ItemsControl.ItemTemplate>
-                            <DataTemplate DataType="editor:DocumentCommitPageViewModel">
-                              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Margin="8,0,0,4">
-                                <TextBlock Text="{Binding PageLabel}" FontSize="12"
-                                           VerticalAlignment="Center"
-                                           Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                                <Button Grid.Column="1" Content="恢复此页" Command="{Binding RevertCommand}"
-                                        FontSize="11" Classes="Danger" />
-                              </Grid>
-                            </DataTemplate>
-                          </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                      </StackPanel>
-                    </DataTemplate>
-                  </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                <StackPanel>
+                  <!-- Header: graph | commit | description | date -->
+                  <Grid ColumnDefinitions="30,70,*,110" ColumnSpacing="8" Height="24">
+                    <TextBlock Grid.Column="1" Text="提交" Classes="HistoryHeaderText" />
+                    <TextBlock Grid.Column="2" Text="说明" Classes="HistoryHeaderText" />
+                    <TextBlock Grid.Column="3" Text="日期" Classes="HistoryHeaderText" />
+                  </Grid>
+                  <Border Height="1" Background="{DynamicResource OutlineVariantBrush}" Margin="0,0,0,2" />
+                  <ItemsControl ItemsSource="{Binding DocumentCommits}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate DataType="editor:DocumentCommitViewModel">
+                        <Grid ColumnDefinitions="30,70,*,110" ColumnSpacing="8" Height="30" Classes="HistoryRow">
+                          <Grid.ContextMenu>
+                            <ContextMenu x:DataType="editor:DocumentCommitViewModel" x:CompileBindings="False">
+                              <MenuItem Header="恢复此提交中的页面" ItemsSource="{Binding Pages}">
+                                <MenuItem.ItemTemplate>
+                                  <DataTemplate x:DataType="editor:DocumentCommitPageViewModel">
+                                    <TextBlock Text="{Binding PageLabel}" />
+                                  </DataTemplate>
+                                </MenuItem.ItemTemplate>
+                                <MenuItem.Styles>
+                                  <Style Selector="MenuItem MenuItem">
+                                    <Setter Property="Command" Value="{Binding RevertCommand}" />
+                                  </Style>
+                                </MenuItem.Styles>
+                              </MenuItem>
+                            </ContextMenu>
+                          </Grid.ContextMenu>
+                          <Canvas Width="30" ClipToBounds="False">
+                            <Rectangle Width="2" Height="15" Canvas.Left="11" Canvas.Top="0"
+                                       Fill="{DynamicResource OutlineVariantBrush}"
+                                       IsVisible="{Binding !IsNewest}" />
+                            <Rectangle Width="2" Height="15" Canvas.Left="11" Canvas.Top="15"
+                                       Fill="{DynamicResource OutlineVariantBrush}"
+                                       IsVisible="{Binding !IsOldest}" />
+                            <Path Stroke="#D97706" StrokeThickness="2" Data="{Binding RevertLinkGeometry}"
+                                  IsVisible="{Binding HasRevertLink}" />
+                            <Ellipse Width="10" Height="10" Canvas.Left="7" Canvas.Top="10"
+                                     Fill="{Binding Source, Converter={StaticResource VersionSourceConverter}, ConverterParameter=Brush}" />
+                          </Canvas>
+                          <TextBlock Grid.Column="1" Text="{Binding ShortId}" Classes="HistoryHash" />
+                          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6"
+                                      VerticalAlignment="Center">
+                            <Border Classes="HistoryBadge"
+                                    Background="{Binding Source, Converter={StaticResource VersionSourceConverter}, ConverterParameter=Brush}">
+                              <TextBlock
+                                Text="{Binding Source, Converter={StaticResource VersionSourceConverter}, ConverterParameter=Label}" />
+                            </Border>
+                            <Border Classes="HistoryBadge" Background="{DynamicResource PrimaryBrush}"
+                                    IsVisible="{Binding IsCurrent}">
+                              <TextBlock Text="当前" />
+                            </Border>
+                            <TextBlock Text="{Binding DescriptionText}" Classes="HistoryText" />
+                          </StackPanel>
+                          <TextBlock Grid.Column="3" Text="{Binding DateText}" Classes="HistoryText"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
               </ScrollViewer>
             </StackPanel>
           </Border>

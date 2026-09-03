@@ -1853,9 +1853,39 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentInstanceId);
         IReadOnlyList<Page> pageList = pages.IsSuccess ? pages.Value : Array.Empty<Page>();
 
-        foreach (DocumentCommitDetail detail in commits.Value)
+        IReadOnlyList<DocumentCommitDetail> details = commits.Value;
+        List<DocumentCommitViewModel> rows = details
+            .Select(detail => new DocumentCommitViewModel(detail, pageList, RevertCommitPageAsync))
+            .ToList();
+
+        // Map every contained page revision to its commit row so revert commits can link
+        // back to the row that holds the revision they restored.
+        Dictionary<string, int> commitIndexByRevision = new();
+        for (int i = 0; i < details.Count; i++)
         {
-            DocumentCommits.Add(new DocumentCommitViewModel(detail, pageList, RevertCommitPageAsync));
+            foreach (DocumentCommitPage page in details[i].Pages)
+            {
+                commitIndexByRevision[page.TreeRevisionId.ToString()] = i;
+            }
+        }
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            rows[i].IsNewest = i == 0;
+            rows[i].IsOldest = i == rows.Count - 1;
+            rows[i].IsCurrent = i == 0;
+            // The list is newest-first, so a revert target (an older commit) sits further down.
+            if (rows[i].RevertedFromRevisionId is { } target
+                && commitIndexByRevision.TryGetValue(target, out int targetIndex)
+                && targetIndex > i)
+            {
+                rows[i].RevertRowOffset = targetIndex - i;
+            }
+        }
+
+        foreach (DocumentCommitViewModel row in rows)
+        {
+            DocumentCommits.Add(row);
         }
 
         Raise(nameof(HasDocumentCommits));

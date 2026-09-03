@@ -8,6 +8,7 @@
     <StyleInclude Source="avares://Patchouli.UI/Styles/FormStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/CardStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/SidebarStyles.axaml" />
+    <StyleInclude Source="avares://Patchouli.UI/Styles/HistoryStyles.axaml" />
     <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
   </Application.Styles>
   <Application.Resources>
@@ -18,6 +19,7 @@
       </ResourceDictionary.MergedDictionaries>
       <converters:ItemTypeDisplayConverter x:Key="ItemTypeDisplayConverter" />
       <converters:BoolChoiceConverter x:Key="BoolChoiceConverter" />
+      <converters:VersionSourceConverter x:Key="VersionSourceConverter" />
     </ResourceDictionary>
   </Application.Resources>
 </Application>

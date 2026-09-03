@@ -461,9 +461,11 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
             IEnumerable<DocumentCommitPageRow> pageRows = await connection.QueryAsync<DocumentCommitPageRow>(
                 """
-                select commit_id, page_id, tree_revision_id
-                from document_commit_pages
-                where commit_id in @CommitIds;
+                select p.commit_id, p.page_id, p.tree_revision_id,
+                       r.reverted_from_tree_revision_id as RevertedFromTreeRevisionId
+                from document_commit_pages p
+                left join document_tree_revisions r on r.tree_revision_id = p.tree_revision_id
+                where p.commit_id in @CommitIds;
                 """,
                 new { CommitIds = commits.Select(commit => commit.CommitId.ToString()).ToArray() });
 
@@ -560,6 +562,29 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             {
                 return Result<DocumentTreeRevision>.Failure(
                     validation.ErrorCode!, validation.ErrorMessage!, validation.Conflicts);
+            }
+
+            Result<DocumentCommit> commit = await CreateDocumentCommitInTransactionAsync(
+                connection,
+                transaction,
+                working.DocumentInstanceId,
+                DocumentTreeRevisionSource.ManualEdit,
+                null);
+            if (commit.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(commit.ErrorCode!, commit.ErrorMessage!);
+            }
+
+            Result link = await LinkRevisionToCommitAsync(
+                connection,
+                transaction,
+                commit.Value.CommitId,
+                working.DocumentInstanceId,
+                working.PageId,
+                working.TreeRevisionId);
+            if (link.IsFailure)
+            {
+                return Result<DocumentTreeRevision>.Failure(link.ErrorCode!, link.ErrorMessage!);
             }
 
             DateTimeOffset committedAt = _clock.UtcNow.ToUniversalTime();
@@ -1775,13 +1800,15 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         public string CommitId { get; set; } = string.Empty;
         public string PageId { get; set; } = string.Empty;
         public string TreeRevisionId { get; set; } = string.Empty;
+        public string? RevertedFromTreeRevisionId { get; set; }
 
         public DocumentCommitPage ToPage()
         {
             return new DocumentCommitPage(
                 DocumentCommitId.Parse(CommitId),
                 Patchouli.Core.Ids.PageId.Parse(PageId),
-                DocumentTreeRevisionId.Parse(TreeRevisionId));
+                DocumentTreeRevisionId.Parse(TreeRevisionId),
+                RevertedFromTreeRevisionId is null ? null : DocumentTreeRevisionId.Parse(RevertedFromTreeRevisionId));
         }
     }
 

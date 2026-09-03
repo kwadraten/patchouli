@@ -219,11 +219,14 @@ public sealed record DocumentCommit(
 
 /// <summary>
 /// Links a page revision into a document-wide commit.
+/// <paramref name="RevertedFromTreeRevisionId"/> is set when the page revision was
+/// produced by a revert, pointing at the revision it restored.
 /// </summary>
 public sealed record DocumentCommitPage(
     DocumentCommitId CommitId,
     PageId PageId,
-    DocumentTreeRevisionId TreeRevisionId);
+    DocumentTreeRevisionId TreeRevisionId,
+    DocumentTreeRevisionId? RevertedFromTreeRevisionId = null);
 
 /// <summary>
 /// A document commit together with the page-to-revision mappings that belong to it.
