@@ -511,8 +511,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                     string epochs = exception.SchemaVersions.Count == 0
                         ? "未知"
                         : string.Join("、", exception.SchemaVersions.Order());
-                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.1 支持的数据库 schema epoch（{epochs}）。" +
-                                "0.3.1 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.2 支持的数据库 schema epoch（{epochs}）。" +
+                                "0.3.2 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                     return;
                 }
 
