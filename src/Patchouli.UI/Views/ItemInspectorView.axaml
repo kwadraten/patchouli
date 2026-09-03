@@ -4,58 +4,108 @@
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:ItemInspectorViewModel">
   <ScrollViewer>
-    <StackPanel Spacing="8">
-      <ItemsControl ItemsSource="{Binding Tags}" Margin="0,4">
+    <StackPanel Spacing="12">
+      <ItemsControl ItemsSource="{Binding Sections}">
         <ItemsControl.ItemsPanel>
           <ItemsPanelTemplate>
-            <WrapPanel />
+            <StackPanel Spacing="12" />
           </ItemsPanelTemplate>
         </ItemsControl.ItemsPanel>
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:InspectorTagViewModel">
-            <Border Background="{DynamicResource TertiaryContainerBrush}" CornerRadius="12"
-                    Padding="10,4" BorderThickness="0" Margin="0,0,6,6">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <TextBlock Text="{Binding Name}" FontSize="12"
-                           Foreground="{DynamicResource OnTertiaryContainerBrush}" VerticalAlignment="Center" />
-                <Button Content="×" Padding="0" FontSize="12" Width="16" Height="16"
-                        Foreground="{DynamicResource OnTertiaryContainerBrush}"
-                        Background="Transparent"
-                        Command="{Binding RemoveCommand}" />
-              </StackPanel>
+        <ItemsControl.DataTemplates>
+
+          <!-- Field group card: gray header bar + bordered two-column label/value rows -->
+          <DataTemplate DataType="vm:InspectorGroupViewModel">
+            <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
+                    Background="{DynamicResource SurfaceContainerLowestBrush}">
+              <Grid RowDefinitions="Auto,*">
+                <Border Background="{DynamicResource SurfaceContainerHighBrush}" Padding="12,8"
+                        CornerRadius="3,3,0,0"
+                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
+                  <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                </Border>
+                <ItemsControl Grid.Row="1" ItemsSource="{Binding Fields}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:InspectorFieldViewModel">
+                      <Grid ColumnDefinitions="110,*">
+                        <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,1"
+                                Background="{DynamicResource SurfaceContainerLowBrush}" Padding="12,8">
+                          <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center"
+                                     Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                     TextTrimming="CharacterEllipsis" />
+                        </Border>
+                        <Border Grid.Column="1" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                                BorderThickness="0,0,0,1" Padding="12,8">
+                          <TextBlock Text="{Binding Value}" FontSize="12" VerticalAlignment="Center"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+                        </Border>
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </Grid>
             </Border>
           </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-      <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding HasContent}">
-        <TextBox Grid.Column="0" Text="{Binding NewTagName, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="新标签"
-                 FontSize="12" />
-        <Button Grid.Column="1" Content="添加" Command="{Binding AddTagCommand}" Margin="8,0,0,0" />
-      </Grid>
-      <ItemsControl ItemsSource="{Binding Groups}" Margin="0,8">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:InspectorGroupViewModel">
-            <Expander Header="{Binding Title}" IsExpanded="True" Margin="0,0,0,8"
-                      Background="{DynamicResource SurfaceContainerLowestBrush}"
-                      BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1"
-                      CornerRadius="4">
-              <ItemsControl ItemsSource="{Binding Fields}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="vm:InspectorFieldViewModel">
-                    <Grid ColumnDefinitions="90,*" ColumnSpacing="8" Margin="0,4">
-                      <TextBlock Grid.Column="0" Text="{Binding Label}" FontSize="11"
-                                 Foreground="{DynamicResource OnSurfaceVariantBrush}"
-                                 VerticalAlignment="Top" TextTrimming="CharacterEllipsis" />
-                      <TextBlock Grid.Column="1" Text="{Binding Value}" FontSize="12"
-                                 Foreground="{DynamicResource OnSurfaceBrush}"
-                                 TextWrapping="Wrap" VerticalAlignment="Top" />
-                    </Grid>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </Expander>
+
+          <!-- Tags card: chips + a round add button in the header that toggles the input row -->
+          <DataTemplate DataType="vm:InspectorTagsSectionViewModel">
+            <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
+                    Background="{DynamicResource SurfaceContainerLowestBrush}">
+              <Grid RowDefinitions="Auto,*">
+                <Border Background="{DynamicResource SurfaceContainerHighBrush}" Padding="12,6"
+                        CornerRadius="3,3,0,0"
+                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
+                  <Grid ColumnDefinitions="*,Auto">
+                    <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                               Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Width="20" Height="20" Padding="0" CornerRadius="10"
+                            HorizontalAlignment="Right" VerticalAlignment="Center"
+                            Background="{DynamicResource PrimaryBrush}"
+                            Command="{Binding ToggleTagEditorCommand}" ToolTip.Tip="添加标签">
+                      <TextBlock Text="+" FontSize="13" FontWeight="SemiBold"
+                                 Foreground="{DynamicResource OnPrimaryBrush}"
+                                 HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Button>
+                  </Grid>
+                </Border>
+                <StackPanel Grid.Row="1" Margin="12,10" Spacing="8">
+                  <TextBlock Text="无标签" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             HorizontalAlignment="Center" Margin="0,4"
+                             IsVisible="{Binding HasNoTags}" />
+                  <ItemsControl ItemsSource="{Binding Tags}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:InspectorTagViewModel">
+                        <Border Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12"
+                                Padding="10,4" BorderThickness="0" Margin="0,0,6,6">
+                          <StackPanel Orientation="Horizontal" Spacing="6">
+                            <TextBlock Text="{Binding Name}" FontSize="12"
+                                       Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
+                            <Button Content="×" Padding="0" FontSize="12" Width="16" Height="16"
+                                    Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                                    Background="Transparent"
+                                    Command="{Binding RemoveCommand}" />
+                          </StackPanel>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding IsTagEditorOpen}">
+                    <TextBox Grid.Column="0" Text="{Binding NewTagName, UpdateSourceTrigger=PropertyChanged}"
+                             PlaceholderText="新标签" FontSize="12" />
+                    <Button Grid.Column="1" Content="添加" Command="{Binding AddTagCommand}" Margin="8,0,0,0" />
+                  </Grid>
+                </StackPanel>
+              </Grid>
+            </Border>
           </DataTemplate>
-        </ItemsControl.ItemTemplate>
+
+        </ItemsControl.DataTemplates>
       </ItemsControl>
     </StackPanel>
   </ScrollViewer>

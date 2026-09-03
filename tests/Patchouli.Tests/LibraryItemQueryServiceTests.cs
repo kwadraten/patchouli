@@ -190,6 +190,34 @@ public sealed class LibraryItemQueryServiceTests
         }
     }
 
+    [Fact]
+    public async Task CountUntaggedItems_counts_active_items_without_tags_only()
+    {
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> untagged = await context.Items.CreateItemAsync("book", "Untagged");
+        untagged.IsSuccess.Should().BeTrue(untagged.ErrorMessage);
+        Result<ItemMetadata> tagged = await context.Items.CreateItemAsync("book", "Tagged");
+        tagged.IsSuccess.Should().BeTrue(tagged.ErrorMessage);
+        Result<ItemMetadata> trashedUntagged = await context.Items.CreateItemAsync("book", "Trashed Untagged");
+        trashedUntagged.IsSuccess.Should().BeTrue(trashedUntagged.ErrorMessage);
+        await using (Microsoft.Data.Sqlite.SqliteConnection connection =
+                     context.Database.ConnectionFactory.CreateConnection())
+        {
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                "update items set tags_json = '[\"x\"]' where item_id = @ItemId;",
+                new { ItemId = tagged.Value.ItemId.ToString() });
+        }
+
+        Result deleteResult = await context.Items.DeleteItemAsync(trashedUntagged.Value.ItemId);
+        deleteResult.IsSuccess.Should().BeTrue(deleteResult.ErrorMessage);
+
+        Result<int> count = await context.Query.CountUntaggedItemsAsync();
+
+        count.IsSuccess.Should().BeTrue(count.ErrorMessage);
+        count.Value.Should().Be(1);
+    }
+
     private static async Task<TestContext> CreateContextAsync()
     {
         TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();

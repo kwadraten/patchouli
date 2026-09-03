@@ -1125,7 +1125,8 @@ public sealed class UiViewModelTests : IDisposable
         mainXaml.Should().Contain("ShowLibraryRightSidebarPreference");
         mainXaml.Should().NotContain("切换详情面板");
         mainXaml.Should().NotContain("显示左侧边栏");
-        libraryXaml.Split("未选择题录").Length.Should().Be(2);
+        libraryXaml.Split("请选择题录").Length.Should().Be(2);
+        libraryXaml.Should().NotContain("未选择题录");
         libraryXaml.Should().Contain("RescanFileSearchRootsCommand");
         libraryXaml.Should().Contain("重新扫描");
         libraryXaml.Should().NotContain("重新搜索");

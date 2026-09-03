@@ -213,6 +213,8 @@ public sealed partial class LibraryPage : UserControl
 
     private TagListItemViewModel? _dragTag;
     private PointerPressedEventArgs? _dragTagStartArgs;
+    private Point _dragTagStartPoint;
+    private const double TagDragStartThreshold = 4;
 
     private void OnTagPointerPressed(object? sender, PointerPressedEventArgs e)
     {
@@ -223,6 +225,7 @@ public sealed partial class LibraryPage : UserControl
 
         _dragTag = tag;
         _dragTagStartArgs = e;
+        _dragTagStartPoint = e.GetPosition(this);
     }
 
     private async void OnTagPointerMoved(object? sender, PointerEventArgs e)
@@ -245,6 +248,13 @@ public sealed partial class LibraryPage : UserControl
         {
             _dragTag = null;
             _dragTagStartArgs = null;
+            return;
+        }
+
+        Point current = e.GetPosition(this);
+        if (Math.Abs(current.X - _dragTagStartPoint.X) < TagDragStartThreshold &&
+            Math.Abs(current.Y - _dragTagStartPoint.Y) < TagDragStartThreshold)
+        {
             return;
         }
 

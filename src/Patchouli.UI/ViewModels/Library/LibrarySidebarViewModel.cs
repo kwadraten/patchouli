@@ -145,7 +145,10 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
         IReadOnlyList<string> pinnedTags,
         CancellationToken cancellationToken = default)
     {
-        Result<IReadOnlyList<TagInfo>> tagsResult = await tagService.ListTagsAsync(cancellationToken);
+        // Microsoft.Data.Sqlite executes synchronously under the async facade, so run the
+        // queries on a thread-pool thread to keep the UI responsive.
+        Result<IReadOnlyList<TagInfo>> tagsResult =
+            await Task.Run(() => tagService.ListTagsAsync(cancellationToken), cancellationToken);
         if (tagsResult.IsFailure || tagsResult.Value is null)
         {
             return;
@@ -165,7 +168,8 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             nextTags.Add(CreateTagItem(tag.Name, tag.Count, pinnedSet.Contains(tag.Name)));
         }
 
-        int noTagCount = await CountUntaggedItemsAsync(queryService, cancellationToken);
+        int noTagCount = await Task.Run(() => CountUntaggedItemsAsync(queryService, cancellationToken),
+            cancellationToken);
         TagListItemViewModel noTagItem = CreateNoTagItem(noTagCount);
         noTagItem.IsSelected = noTagWasSelected;
 
@@ -176,6 +180,23 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             {
                 item.IsSelected = true;
             }
+        }
+
+        // The selection list must reference the new instances: the old ones are discarded with
+        // the previous Tags collection, and reference equality would otherwise make every
+        // subsequent toggle re-add instead of remove.
+        _selectedTags.Clear();
+        foreach (TagListItemViewModel item in nextTags)
+        {
+            if (item.IsSelected)
+            {
+                _selectedTags.Add(item);
+            }
+        }
+
+        if (noTagItem.IsSelected)
+        {
+            _selectedTags.Add(noTagItem);
         }
 
         List<TagListItemViewModel> sorted = SortTags(nextTags, pinnedTags);
@@ -332,14 +353,8 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
         ILibraryItemQueryService queryService,
         CancellationToken cancellationToken)
     {
-        Result<IReadOnlyList<LibraryItemRow>> result =
-            await queryService.ListRowsAsync(cancellationToken: cancellationToken);
-        if (result.IsFailure || result.Value is null)
-        {
-            return 0;
-        }
-
-        return result.Value.Count(row => row.Tags is null || row.Tags.Count == 0);
+        Result<int> result = await queryService.CountUntaggedItemsAsync(cancellationToken);
+        return result.IsFailure ? 0 : result.Value;
     }
 
     private static List<TagListItemViewModel> SortTags(
@@ -352,6 +367,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
         return tags
             .OrderByDescending(item => pinnedIndex.TryGetValue(item.Name, out int index) ? -index : int.MinValue)
+            .ThenByDescending(item => item.Count)
             .ThenBy(item => item.Name, StringComparer.Ordinal)
             .ToList();
     }

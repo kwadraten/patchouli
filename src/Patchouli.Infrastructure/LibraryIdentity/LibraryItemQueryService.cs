@@ -113,6 +113,36 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         return Result<LibraryItemPage>.Success(new LibraryItemPage(rows, nextCursor, hasMore));
     }
 
+    public async Task<Result<int>> CountUntaggedItemsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            int count = await connection.ExecuteScalarAsync<int>(
+                """
+                select count(1)
+                from items i
+                where i.deleted_at is null
+                  and i.merged_into_item_id is null
+                  and (i.tags_json is null
+                       or not json_valid(i.tags_json)
+                       or json_array_length(i.tags_json) = 0);
+                """);
+            return Result<int>.Success(count);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.library-item-query"))
+        {
+            return Result<int>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
+        }
+    }
+
     public async Task<Result<IReadOnlyList<ItemId>>> GetItemIdsByDocumentInstanceIdsAsync(
         IReadOnlyCollection<DocumentInstanceId> documentInstanceIds,
         CancellationToken cancellationToken = default)

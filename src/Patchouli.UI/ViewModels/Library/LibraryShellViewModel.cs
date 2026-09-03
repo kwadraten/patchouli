@@ -35,7 +35,12 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise(nameof(CanModifyLibraryItems));
             await RefreshItemsAsync();
         };
-        Sidebar.TagSelectionChanged += async (_, _) => await RefreshItemsAsync();
+        Sidebar.TagSelectionChanged += (_, _) =>
+        {
+            // The badge toggles instantly; coalesce rapid tag clicks into a single reload.
+            int version = ++_tagRefreshVersion;
+            RefreshAfterTagDebounceAsync(version).Observe("library-shell-tag-refresh", $"v{version}");
+        };
         Sidebar.PinToggled += async (_, tag) => await ToggleTagPinAsync(tag);
         Sidebar.RemoveRequested += async (_, tag) => await RemoveTagAsync(tag);
         Sidebar.RenameRequested += async (_, tag) => await RenameTagAsync(tag);
@@ -77,6 +82,19 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
     }
 
+    private int _tagRefreshVersion;
+
+    private async Task RefreshAfterTagDebounceAsync(int version)
+    {
+        await Task.Delay(200);
+        if (version != _tagRefreshVersion)
+        {
+            return;
+        }
+
+        await RefreshItemsAsync();
+    }
+
     private void OnLibraryChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs eventArgs)
     {
         if (_observedLibraryRevisions is null || !ReferenceEquals(sender, _observedLibraryRevisions))
@@ -113,9 +131,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public string LibraryName { get; set; } = "我的书库";
     public LibrarySidebarViewModel Sidebar { get; }
     public ItemInspectorViewModel Inspector { get; }
-    public ObservableCollection<string> RecentItems { get; } = new();
-    public ObservableCollection<string> RecentDocuments { get; } = new();
-    public ObservableCollection<LibraryItemViewModel> Items { get; } = new();
+    public ObservableCollection<string> RecentItems { get; private set; } = new();
+    public ObservableCollection<string> RecentDocuments { get; private set; } = new();
+    public ObservableCollection<LibraryItemViewModel> Items { get; private set; } = new();
     public ObservableCollection<LibraryItemViewModel> SelectedItems { get; } = new();
     public string StatusText => _main.Status;
     public string MinerUToken { get; set; } = "";
@@ -152,7 +170,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
             _selectedItem = value;
             Raise();
             Raise(nameof(InspectorTitle));
-            Raise(nameof(InspectorSubtitle));
             Raise(nameof(InspectorStatus));
             Raise(nameof(InspectorPath));
             Raise(nameof(HasSelectedItem));
@@ -182,10 +199,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public bool ShowLibraryList => !IsReadingMode;
     public bool ShowPdfWorkspace => IsReadingMode;
     public string InspectorTitle => SelectedItem?.Title ?? "";
-
-    public string InspectorSubtitle => SelectedItem is null
-        ? ""
-        : $"{CslItemTypeDisplayNames.For(SelectedItem.ItemType)} / {SelectedItem.FileName}";
 
     public string InspectorStatus => SelectedItem?.OcrStatus ?? "未选择文档";
     public string InspectorPath => SelectedItem?.SourcePath ?? "";
@@ -401,7 +414,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
         string? primaryItemId = SelectedItem?.ItemId;
         HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
         AppServices services = await _main.ServicesAsync();
-        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        // Microsoft.Data.Sqlite executes synchronously under the async facade, so the database
+        // reads run on a thread-pool thread to keep scope switching responsive.
+        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
         if (library.IsSuccess && LibraryName != library.Value.DisplayName)
         {
             LibraryName = library.Value.DisplayName;
@@ -413,62 +428,56 @@ public sealed class LibraryShellViewModel : ViewModelBase
         IReadOnlyList<string>? requiredTags = null;
         if (!isTrashScope)
         {
-            IReadOnlyList<string> pinnedTags = await LoadPinnedTagsAsync(services);
+            IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services));
             await Sidebar.LoadTagsAsync(services.Tags, services.LibraryItems, pinnedTags);
             Sidebar.ApplyPinnedOrder(pinnedTags);
             requiredTags = Sidebar.GetSelectedTagNames();
         }
 
-        Result<IReadOnlyList<LibraryItemRow>> rowsResult = isTrashScope
-            ? await services.LibraryItems.ListTrashedRowsAsync()
-            : await services.LibraryItems.ListRowsAsync(requiredTags);
-        if (rowsResult.IsFailure)
-        {
-            throw new InvalidOperationException(rowsResult.ErrorMessage);
-        }
+        bool noTagSelected = !isTrashScope && Sidebar.IsNoTagSelected;
 
-        if (!isTrashScope && Sidebar.IsNoTagSelected)
-        {
-            rowsResult = Result<IReadOnlyList<LibraryItemRow>>.Success(
-                rowsResult.Value.Where(row => row.Tags is null || row.Tags.Count == 0).ToArray());
-        }
-
-        List<LibraryItemViewModel> refreshedItems = new();
-        List<string> refreshedRecentItems = new();
-        List<string> refreshedRecentDocuments = new();
-        foreach (LibraryItemRow row in rowsResult.Value)
-        {
-            refreshedItems.Add(CreateItemViewModel(row));
-            if (!isTrashScope)
+        // The row-to-view-model mapping is pure CPU work proportional to library size; run it
+        // together with the query on a thread-pool thread, then swap the collections in one
+        // reset notification each instead of per-item add notifications.
+        (List<LibraryItemViewModel> Items, List<string> RecentItems, List<string> RecentDocuments) refreshed =
+            await Task.Run(async () =>
             {
-                refreshedRecentItems.Add(row.Title);
-                if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
+                Result<IReadOnlyList<LibraryItemRow>> rowsResult = isTrashScope
+                    ? await services.LibraryItems.ListTrashedRowsAsync()
+                    : await services.LibraryItems.ListRowsAsync(requiredTags);
+                if (rowsResult.IsFailure)
                 {
-                    refreshedRecentDocuments.Add(row.LinkedFileName);
+                    throw new InvalidOperationException(rowsResult.ErrorMessage);
                 }
-            }
-        }
 
-        Items.Clear();
-        foreach (LibraryItemViewModel item in refreshedItems)
-        {
-            Items.Add(item);
-        }
+                IEnumerable<LibraryItemRow> rows = rowsResult.Value;
+                if (noTagSelected)
+                {
+                    rows = rows.Where(row => row.Tags is null || row.Tags.Count == 0);
+                }
 
-        RecentItems.Clear();
-        RecentDocuments.Clear();
-        if (!isTrashScope)
-        {
-            foreach (string item in refreshedRecentItems)
-            {
-                RecentItems.Add(item);
-            }
+                List<LibraryItemViewModel> items = new();
+                List<string> recentItems = new();
+                List<string> recentDocuments = new();
+                foreach (LibraryItemRow row in rows)
+                {
+                    items.Add(CreateItemViewModel(row));
+                    if (!isTrashScope)
+                    {
+                        recentItems.Add(row.Title);
+                        if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
+                        {
+                            recentDocuments.Add(row.LinkedFileName);
+                        }
+                    }
+                }
 
-            foreach (string document in refreshedRecentDocuments)
-            {
-                RecentDocuments.Add(document);
-            }
-        }
+                return (items, recentItems, recentDocuments);
+            });
+
+        Items = new ObservableCollection<LibraryItemViewModel>(refreshed.Items);
+        RecentItems = new ObservableCollection<string>(refreshed.RecentItems);
+        RecentDocuments = new ObservableCollection<string>(refreshed.RecentDocuments);
 
         SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
         SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
@@ -477,7 +486,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(RecentDocuments));
         Raise(nameof(SelectedItem));
         Raise(nameof(InspectorTitle));
-        Raise(nameof(InspectorSubtitle));
         Raise(nameof(InspectorStatus));
         Raise(nameof(InspectorPath));
         Raise(nameof(HasSelectedItem));
@@ -966,7 +974,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (selectedChanged)
         {
             Raise(nameof(InspectorTitle));
-            Raise(nameof(InspectorSubtitle));
             Raise(nameof(InspectorStatus));
             Raise(nameof(InspectorPath));
         }

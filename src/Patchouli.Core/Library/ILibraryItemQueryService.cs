@@ -22,6 +22,9 @@ public interface ILibraryItemQueryService
     Task<Result<IReadOnlyList<LibraryItemRow>>> ListTrashedRowsAsync(
         CancellationToken cancellationToken = default);
 
+    Task<Result<int>> CountUntaggedItemsAsync(
+        CancellationToken cancellationToken = default);
+
     Task<Result<LibraryItemPage>> ListTrashedRowsAsync(
         int limit,
         LibraryItemCursor? after,

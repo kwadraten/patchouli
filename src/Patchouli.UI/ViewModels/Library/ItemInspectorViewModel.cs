@@ -18,6 +18,8 @@ public sealed class ItemInspectorViewModel : ViewModelBase
     private readonly Func<Task<IItemTagService>> _tagServiceFactory;
     private readonly Func<Task<ICslItemTypeProfileService>> _profileServiceFactory;
     private ItemId? _currentItemId;
+    private bool _isTagEditorOpen;
+    private int _loadVersion;
 
     public ItemInspectorViewModel(
         Func<Task<IItemService>> itemServiceFactory,
@@ -29,7 +31,9 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         _profileServiceFactory = profileServiceFactory;
         Groups = new ObservableCollection<InspectorGroupViewModel>();
         Tags = new ObservableCollection<InspectorTagViewModel>();
+        Sections = new ObservableCollection<object>();
         AddTagCommand = new AsyncCommand(AddTagAsync);
+        ToggleTagEditorCommand = new RelayCommand(_ => IsTagEditorOpen = !IsTagEditorOpen);
     }
 
     public string Title { get; private set; } = "";
@@ -38,8 +42,29 @@ public sealed class ItemInspectorViewModel : ViewModelBase
     public bool HasContent => !IsEmpty;
     public ObservableCollection<InspectorGroupViewModel> Groups { get; }
     public ObservableCollection<InspectorTagViewModel> Tags { get; }
+
+    /// <summary>Display-ordered inspector cards: 基本信息, the tags section, then the remaining field groups.</summary>
+    public ObservableCollection<object> Sections { get; }
+
     public string NewTagName { get; set; } = "";
+
+    public bool IsTagEditorOpen
+    {
+        get => _isTagEditorOpen;
+        private set
+        {
+            if (_isTagEditorOpen == value)
+            {
+                return;
+            }
+
+            _isTagEditorOpen = value;
+            Raise();
+        }
+    }
+
     public AsyncCommand AddTagCommand { get; }
+    public RelayCommand ToggleTagEditorCommand { get; }
 
     private async Task AddTagAsync()
     {
@@ -85,6 +110,9 @@ public sealed class ItemInspectorViewModel : ViewModelBase
     /// </summary>
     public async Task LoadAsync(ItemId? itemId)
     {
+        // Supersede any earlier load still in flight: a slow fetch that completes after a
+        // newer LoadAsync must not repopulate the inspector with stale content.
+        int version = ++_loadVersion;
         if (itemId is null)
         {
             Clear();
@@ -93,15 +121,22 @@ public sealed class ItemInspectorViewModel : ViewModelBase
 
         try
         {
-            IItemService itemService = await _itemServiceFactory();
-            Result<ItemMetadata> result = await itemService.GetItemAsync(itemId.Value);
+            // Microsoft.Data.Sqlite executes synchronously under the async facade; keep the
+            // reads off the UI thread so selection changes do not stall the library page.
+            IItemService itemService = await Task.Run(_itemServiceFactory);
+            Result<ItemMetadata> result = await Task.Run(() => itemService.GetItemAsync(itemId.Value));
+            if (version != _loadVersion)
+            {
+                return;
+            }
+
             if (result.IsFailure || result.Value is null)
             {
                 Clear();
                 return;
             }
 
-            await ProjectAsync(result.Value);
+            await ProjectAsync(result.Value, version);
         }
         catch (OperationCanceledException)
         {
@@ -114,17 +149,21 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         Title = "";
         Subtitle = "";
         IsEmpty = true;
+        IsTagEditorOpen = false;
         Groups.Clear();
         Tags.Clear();
+        Sections.Clear();
         _currentItemId = null;
         Raise(nameof(Title));
         Raise(nameof(Subtitle));
         Raise(nameof(IsEmpty));
         Raise(nameof(HasContent));
         Raise(nameof(Tags));
+        Raise(nameof(IsTagEditorOpen));
+        Raise(nameof(Sections));
     }
 
-    private async Task ProjectAsync(ItemMetadata metadata)
+    private async Task ProjectAsync(ItemMetadata metadata, int version)
     {
         Title = metadata.Title;
         Subtitle = metadata.ItemType;
@@ -138,9 +177,14 @@ public sealed class ItemInspectorViewModel : ViewModelBase
             Tags.Add(new InspectorTagViewModel(tag, RemoveTagAsync));
         }
 
-        ICslItemTypeProfileService profileService = await _profileServiceFactory();
+        ICslItemTypeProfileService profileService = await Task.Run(_profileServiceFactory);
         Result<CslItemTypeProfile> profileResult =
-            await profileService.GetProfileAsync(metadata.ItemType);
+            await Task.Run(() => profileService.GetProfileAsync(metadata.ItemType));
+        if (version != _loadVersion)
+        {
+            return;
+        }
+
         IReadOnlyDictionary<string, string> fieldLabels = profileResult.IsSuccess
             ? profileResult.Value.FieldLabels
             : EmptyFieldLabels;
@@ -154,23 +198,17 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         AddIfPresent(basic.Fields, "年份", metadata.Date);
         AddIfPresent(basic.Fields, "语言", metadata.Language);
         AddIfPresent(basic.Fields, "状态", metadata.Status);
+        AddIfPresent(basic.Fields, LabelFor(fieldLabels, "container-title", "期刊/出处"), metadata.PublicationTitle);
+        AddIfPresent(basic.Fields, LabelFor(fieldLabels, "publisher", "出版社/机构"), metadata.Publisher);
+        AddIfPresent(basic.Fields, "会议名", metadata.CollectionTitle);
+        AddIfPresent(basic.Fields, "版本", metadata.Edition);
+        AddIfPresent(basic.Fields, "卷", metadata.Volume);
+        AddIfPresent(basic.Fields, "期", metadata.Issue);
+        AddIfPresent(basic.Fields, "页码", metadata.Pages);
+        AddIfPresent(basic.Fields, "出版地", metadata.Place);
         if (basic.Fields.Count > 0)
         {
             Groups.Add(basic);
-        }
-
-        InspectorGroupViewModel provenance = new("出处与出版");
-        AddIfPresent(provenance.Fields, LabelFor(fieldLabels, "container-title", "期刊/出处"), metadata.PublicationTitle);
-        AddIfPresent(provenance.Fields, LabelFor(fieldLabels, "publisher", "出版社/机构"), metadata.Publisher);
-        AddIfPresent(provenance.Fields, "会议名", metadata.CollectionTitle);
-        AddIfPresent(provenance.Fields, "版本", metadata.Edition);
-        AddIfPresent(provenance.Fields, "卷", metadata.Volume);
-        AddIfPresent(provenance.Fields, "期", metadata.Issue);
-        AddIfPresent(provenance.Fields, "页码", metadata.Pages);
-        AddIfPresent(provenance.Fields, "出版地", metadata.Place);
-        if (provenance.Fields.Count > 0)
-        {
-            Groups.Add(provenance);
         }
 
         if (metadata.Identifiers.Count > 0)
@@ -204,6 +242,21 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         Raise(nameof(Subtitle));
         Raise(nameof(IsEmpty));
         Raise(nameof(Groups));
+
+        // Card order in the view: 基本信息 first, then the tags section, then the remaining groups.
+        Sections.Clear();
+        if (Groups.Count > 0)
+        {
+            Sections.Add(Groups[0]);
+        }
+
+        Sections.Add(new InspectorTagsSectionViewModel(this));
+        foreach (InspectorGroupViewModel group in Groups.Skip(1))
+        {
+            Sections.Add(group);
+        }
+
+        Raise(nameof(Sections));
     }
 
     private static string LabelFor(IReadOnlyDictionary<string, string> fieldLabels, string fieldKey, string fallback)
@@ -270,6 +323,43 @@ public sealed class ItemInspectorViewModel : ViewModelBase
             return Array.Empty<string>();
         }
     }
+}
+
+/// <summary>
+/// The tags card in the inspector's section flow; exposes the parent's tag state to its data template
+/// and forwards the parent's change notifications for the bound properties.
+/// </summary>
+public sealed class InspectorTagsSectionViewModel : ViewModelBase
+{
+    private readonly ItemInspectorViewModel _parent;
+
+    public InspectorTagsSectionViewModel(ItemInspectorViewModel parent)
+    {
+        _parent = parent;
+        _parent.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(ItemInspectorViewModel.IsTagEditorOpen)
+                or nameof(ItemInspectorViewModel.NewTagName))
+            {
+                Raise(args.PropertyName);
+            }
+        };
+        _parent.Tags.CollectionChanged += (_, _) => Raise(nameof(HasNoTags));
+    }
+
+    public string Title => "标签";
+    public ObservableCollection<InspectorTagViewModel> Tags => _parent.Tags;
+    public bool HasNoTags => Tags.Count == 0;
+
+    public string NewTagName
+    {
+        get => _parent.NewTagName;
+        set => _parent.NewTagName = value;
+    }
+
+    public bool IsTagEditorOpen => _parent.IsTagEditorOpen;
+    public AsyncCommand AddTagCommand => _parent.AddTagCommand;
+    public RelayCommand ToggleTagEditorCommand => _parent.ToggleTagEditorCommand;
 }
 
 /// <summary>

@@ -33,11 +33,24 @@ public sealed class TagSidebarViewModelTests
         FakeQueryService queryService = new([]);
         await sidebar.LoadTagsAsync(tagService, queryService, []);
 
-        sidebar.ToggleTagSelection(sidebar.Tags[0]);
-        sidebar.ToggleTagSelection(sidebar.Tags[1]);
+        sidebar.ToggleTagSelection(sidebar.Tags.Single(tag => tag.Name == "alpha"));
+        sidebar.ToggleTagSelection(sidebar.Tags.Single(tag => tag.Name == "beta"));
 
         sidebar.GetSelectedTagNames().Should().Equal("alpha", "beta");
         sidebar.IsNoTagSelected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task LoadTagsAsync_sorts_unpinned_tags_by_count_descending()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        FakeTagService tagService = new([new TagInfo("beta", 1), new TagInfo("gamma", 5), new TagInfo("alpha", 3)]);
+        FakeQueryService queryService = new([]);
+
+        await sidebar.LoadTagsAsync(tagService, queryService, []);
+
+        sidebar.Tags.Select(tag => tag.Name).Should().Equal("gamma", "alpha", "beta", "");
+        sidebar.Tags.Last().IsNoTagEntry.Should().BeTrue();
     }
 
     [Fact]
@@ -55,6 +68,43 @@ public sealed class TagSidebarViewModelTests
         sidebar.GetSelectedTagNames().Should().BeEmpty();
         sidebar.IsNoTagSelected.Should().BeTrue();
         sidebar.Tags[0].IsSelected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ToggleTagSelection_after_reload_deselects_using_new_instances()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        FakeTagService tagService = new([new TagInfo("alpha", 1)]);
+        FakeQueryService queryService = new([]);
+        await sidebar.LoadTagsAsync(tagService, queryService, []);
+
+        sidebar.ToggleTagSelection(sidebar.Tags[0]);
+        // A refresh rebuilds the tag items; the selection must follow the new instances.
+        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        sidebar.Tags[0].IsSelected.Should().BeTrue();
+
+        sidebar.ToggleTagSelection(sidebar.Tags[0]);
+
+        sidebar.GetSelectedTagNames().Should().BeEmpty();
+        sidebar.Tags[0].IsSelected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ToggleTagSelection_no_tag_toggles_off_after_reload()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        FakeTagService tagService = new([]);
+        FakeQueryService queryService = new([]);
+        await sidebar.LoadTagsAsync(tagService, queryService, []);
+
+        sidebar.ToggleTagSelection(sidebar.Tags.Last());
+        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        sidebar.IsNoTagSelected.Should().BeTrue();
+
+        sidebar.ToggleTagSelection(sidebar.Tags.Last());
+
+        sidebar.IsNoTagSelected.Should().BeFalse();
+        sidebar.Tags.Last().IsSelected.Should().BeFalse();
     }
 
     [Fact]
@@ -214,6 +264,12 @@ public sealed class TagSidebarViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<IReadOnlyList<LibraryItemRow>>.Success(_rows));
+        }
+
+        public Task<Result<int>> CountUntaggedItemsAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<int>.Success(
+                _rows.Count(row => row.Tags is null || row.Tags.Count == 0)));
         }
 
         public Task<Result<LibraryItemPage>> ListTrashedRowsAsync(

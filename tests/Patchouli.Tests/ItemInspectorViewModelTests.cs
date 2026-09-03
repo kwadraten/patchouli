@@ -24,7 +24,6 @@ public sealed class ItemInspectorViewModelTests
 
         inspector.IsEmpty.Should().BeFalse();
         inspector.Groups.Should().Contain(group => group.Title == "基本信息");
-        inspector.Groups.Should().Contain(group => group.Title == "出处与出版");
         inspector.Groups.Should().Contain(group => group.Title == "标识符");
         inspector.Groups.Should().Contain(group => group.Title == "其他");
         inspector.Groups.SelectMany(group => group.Fields).Should().Contain(field =>
@@ -127,7 +126,7 @@ public sealed class ItemInspectorViewModelTests
 
         await inspector.LoadAsync(itemId);
 
-        inspector.Groups.Single(group => group.Title == "出处与出版").Fields
+        inspector.Groups.Single(group => group.Title == "基本信息").Fields
             .Should().Contain(field => field.Label == "期刊名" && field.Value == "Nature")
             .And.Contain(field => field.Label == "出版机构" && field.Value == "Springer");
     }

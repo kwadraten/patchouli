@@ -42,15 +42,44 @@
   <Style Selector="ListBox.SidebarListBox ListBoxItem:selected lucide|Lucide.ItemIcon">
     <Setter Property="StrokeBrush" Value="{DynamicResource PrimaryBrush}" />
   </Style>
+  <!-- Library sidebar tags rendered as compact badges; .selected marks active tag filters. -->
   <Style Selector="Border.TagItemBorder">
-    <Setter Property="Padding" Value="12,6" />
+    <Setter Property="Padding" Value="8,3" />
+    <Setter Property="Margin" Value="0,0,6,6" />
     <Setter Property="CornerRadius" Value="4" />
-    <Setter Property="BorderBrush" Value="Transparent" />
+    <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
     <Setter Property="BorderThickness" Value="1" />
     <Setter Property="Background" Value="Transparent" />
     <Setter Property="Cursor" Value="Hand" />
   </Style>
   <Style Selector="Border.TagItemBorder:pointerover">
-    <Setter Property="Background" Value="{DynamicResource SurfaceVariantBrush}" />
+    <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder.selected">
+    <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder.selected:pointerover">
+    <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource PrimaryContainerBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder TextBlock.ItemText">
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder.selected TextBlock.ItemText">
+    <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
+    <Setter Property="FontWeight" Value="SemiBold" />
+  </Style>
+  <Style Selector="Border.TagItemBorder TextBlock.ItemCount">
+    <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder.selected TextBlock.ItemCount">
+    <Setter Property="Foreground" Value="{DynamicResource InverseOnSurfaceBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder lucide|Lucide.ItemIcon">
+    <Setter Property="StrokeBrush" Value="{DynamicResource OnSurfaceVariantBrush}" />
+  </Style>
+  <Style Selector="Border.TagItemBorder.selected lucide|Lucide.ItemIcon">
+    <Setter Property="StrokeBrush" Value="{DynamicResource InverseOnSurfaceBrush}" />
   </Style>
 </Styles>

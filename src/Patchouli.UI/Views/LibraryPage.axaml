@@ -134,32 +134,33 @@
                     </ItemsControl.Styles>
                     <ItemsControl.ItemsPanel>
                       <ItemsPanelTemplate>
-                        <StackPanel Spacing="2" />
+                        <WrapPanel />
                       </ItemsPanelTemplate>
                     </ItemsControl.ItemsPanel>
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="vm:TagListItemViewModel">
                         <Border Classes="TagItemBorder"
-                                Background="{Binding IsSelected, Converter={StaticResource BoolChoiceConverter}, ConverterParameter='PrimaryContainerBrush|Transparent'}"
+                                Classes.selected="{Binding IsSelected}"
                                 PointerPressed="OnTagPointerPressed"
                                 PointerMoved="OnTagPointerMoved"
                                 PointerReleased="OnTagPointerReleased"
                                 DragDrop.DragOver="OnTagDragOver"
                                 DragDrop.Drop="OnTagDrop">
-                          <Grid ColumnDefinitions="*,Auto">
-                            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="6">
-                              <lucide:Lucide Classes="ItemIcon" Icon="Pin" Width="12" Height="12"
-                                             IsVisible="{Binding IsPinned}" />
-                              <TextBlock Classes="ItemText" Text="{Binding DisplayText}" FontSize="12" />
-                            </StackPanel>
-                            <TextBlock Grid.Column="1" Classes="ItemText" Text="{Binding CountText}" FontSize="11"
-                                       Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                          </Grid>
+                          <StackPanel Orientation="Horizontal" Spacing="4">
+                            <lucide:Lucide Classes="ItemIcon" Icon="Pin" Width="11" Height="11"
+                                           IsVisible="{Binding IsPinned}" />
+                            <TextBlock Classes="ItemText" Text="{Binding DisplayText}" FontSize="12"
+                                       MaxWidth="140" TextTrimming="CharacterEllipsis"
+                                       ToolTip.Tip="{Binding DisplayText}" />
+                            <TextBlock Classes="ItemCount" Text="{Binding CountText}" FontSize="11"
+                                       IsVisible="{Binding HasCount}" />
+                          </StackPanel>
                           <Border.ContextMenu>
                             <ContextMenu>
                               <MenuItem
                                 Header="{Binding IsPinned, Converter={StaticResource BoolChoiceConverter}, ConverterParameter='取消置顶|置顶'}"
-                                Command="{Binding TogglePinCommand}" />
+                                Command="{Binding TogglePinCommand}"
+                                IsEnabled="{Binding CanPin}" />
                               <MenuItem Header="重命名" Command="{Binding RenameCommand}" />
                               <MenuItem Header="合并到…" Command="{Binding MergeIntoCommand}" />
                               <MenuItem Header="移除" Command="{Binding RemoveCommand}" />
@@ -274,26 +275,24 @@
         </Border>
 
         <Border Grid.Row="1" Background="{DynamicResource SurfaceContainerLowBrush}">
-          <ScrollViewer>
-            <StackPanel Margin="18" Spacing="14">
-              <!-- Book Title -->
-              <TextBlock Text="{Binding InspectorTitle}" FontSize="18" FontWeight="SemiBold"
-                         Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
-              <TextBlock Text="{Binding InspectorSubtitle}" FontSize="12"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+          <Grid>
+            <!-- Empty state: a single centered hint, nothing else -->
+            <TextBlock Text="请选择题录" FontSize="14"
+                       Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       IsVisible="{Binding NoSelectedItem}" />
 
-              <!-- Empty state -->
-              <StackPanel IsVisible="{Binding NoSelectedItem}" Spacing="6" Margin="0,20">
-                <TextBlock Text="未选择题录" FontSize="14" FontWeight="SemiBold"
-                           Foreground="{DynamicResource OnSurfaceBrush}" />
-                <TextBlock Text="选择一个已导入题录以查看 OCR/索引状态。" FontSize="13"
-                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+            <ScrollViewer IsVisible="{Binding HasSelectedItem}">
+              <StackPanel Margin="18" Spacing="14">
+                <!-- Book Title -->
+                <TextBlock Text="{Binding InspectorTitle}" FontSize="18" FontWeight="SemiBold"
+                           Foreground="{DynamicResource OnSurfaceBrush}" TextWrapping="Wrap" />
+
+                <!-- Inspector -->
+                <views:ItemInspectorView DataContext="{Binding Inspector}" />
               </StackPanel>
-
-              <!-- Inspector -->
-              <views:ItemInspectorView DataContext="{Binding Inspector}" IsVisible="{Binding HasContent}" />
-            </StackPanel>
-          </ScrollViewer>
+            </ScrollViewer>
+          </Grid>
         </Border>
       </Grid>
     </Border>

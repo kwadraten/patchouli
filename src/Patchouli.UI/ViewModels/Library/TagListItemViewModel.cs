@@ -63,6 +63,10 @@ public sealed class TagListItemViewModel : ViewModelBase
 
     public string DisplayText => IsNoTagEntry ? "无标签" : Name;
     public string CountText => Count > 0 ? Count.ToString() : "";
+    public bool HasCount => Count > 0;
+
+    /// <summary>"无标签" is a fixed filter entry, not a real tag, so pinning is not offered.</summary>
+    public bool CanPin => !IsNoTagEntry;
 
     public AsyncCommand TogglePinCommand { get; }
     public AsyncCommand RemoveCommand { get; }
