@@ -93,6 +93,8 @@ public sealed class McpServerTransportTests
             .And.Contain("listChanged")
             .And.Contain("structured Library tools")
             .And.Contain("instructions");
+        response.Should().Contain("TOON").And.Contain("format=json")
+            .And.Contain("A clean success response has no message field");
     }
 
     [Fact]
@@ -207,6 +209,60 @@ public sealed class McpServerTransportTests
         envelope.RootElement.TryGetProperty("entries", out _).Should().BeTrue();
         envelope.RootElement.TryGetProperty("revision", out _).Should().BeFalse();
         envelope.RootElement.TryGetProperty("data", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("toon")]
+    [InlineData("json")]
+    public async Task Http_cli_preserves_requested_encoding_for_success_and_errors(string? format)
+    {
+        int port = GetFreeTcpPort();
+        FakeApi api = new();
+        McpServerSettings settings = new(port, "127.0.0.1", false, [], false, null,
+            [new McpToolOverride("patchouli.put", false, "Disabled for test")], DateTimeOffset.UtcNow);
+        await using McpHttpServer server = new(
+            new McpProtocolHandler(api,
+                new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")), settings),
+            settings);
+        await server.StartAsync();
+        Cli.McpHttpClient client = new(server.Endpoint, null);
+        await client.InitializeAsync();
+
+        Dictionary<string, object?> arguments = new();
+        if (format is not null)
+        {
+            arguments["format"] = format;
+        }
+
+        Cli.CliToolResponse success = await client.CallToolAsync("patchouli.find", arguments);
+        AssertEncoding(success, false, 0);
+        arguments["limit"] = "invalid";
+        AssertEncoding(await client.CallToolAsync("patchouli.find", arguments), true, 2);
+        arguments.Remove("limit");
+        AssertEncoding(await client.CallToolAsync("patchouli.put", arguments), true, 8);
+        api.ThrowOnLibraryState = true;
+        AssertEncoding(await client.CallToolAsync("patchouli.find", arguments), true, 1);
+
+        void AssertEncoding(Cli.CliToolResponse response, bool isError, int exitCode)
+        {
+            response.IsError.Should().Be(isError);
+            response.ExitCode.Should().Be(exitCode);
+            if (format == "json")
+            {
+                response.Text.Should().StartWith("{");
+            }
+            else
+            {
+                response.Text.Should().StartWith("meta:").And.NotContain("\r");
+            }
+
+            using JsonDocument envelope = JsonDocument.Parse(format == "json"
+                ? response.Text
+                : McpToonCodec.DecodeToJson(response.Text));
+            envelope.RootElement.GetProperty("meta").GetProperty("library_revision").GetString().Should().Be("lib:1");
+            envelope.RootElement.TryGetProperty("message", out _).Should().Be(isError);
+        }
     }
 
     [Fact]
@@ -496,7 +552,9 @@ public sealed class McpServerTransportTests
     public void Standalone_mcp_program_wires_csl_services()
     {
         string source = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.McpServer", "Program.cs"));
-        source.Should().Contain("CslStyleStore").And.Contain("CslRenderer").And.Contain("CslItemMapper")
+        // CSL services (CslStyleStore/CslRenderer/CslItemMapper) are composed inside HostServices;
+        // the standalone server must build HostServices and run it through McpServerHost.
+        source.Should().Contain("HostServices").And.Contain("McpServerHost")
             .And.NotContain("ShellSidecarHost");
     }
 
@@ -511,7 +569,7 @@ public sealed class McpServerTransportTests
         using JsonDocument json = JsonDocument.Parse(response);
         string text = json.RootElement.GetProperty("result").GetProperty("content")[0]
             .GetProperty("text").GetString()!;
-        return JsonDocument.Parse(text);
+        return JsonDocument.Parse(text.StartsWith('{') ? text : McpToonCodec.DecodeToJson(text));
     }
 
     private static bool ToolIsError(string response)
