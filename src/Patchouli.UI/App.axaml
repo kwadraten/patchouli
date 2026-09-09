@@ -9,7 +9,7 @@
     <StyleInclude Source="avares://Patchouli.UI/Styles/CardStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/SidebarStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/HistoryStyles.axaml" />
-    <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.xaml" />
+    <StyleInclude Source="avares://Avalonia.Controls.DataGrid/Themes/Fluent.v2.xaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/DataGridStyles.axaml" />
   </Application.Styles>
   <Application.Resources>
