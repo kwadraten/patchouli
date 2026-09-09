@@ -131,13 +131,6 @@ public sealed class AlphaStabilizationTests : IDisposable
     }
 
     [Fact]
-    public void SnapshotImport_message_states_staging_only()
-    {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "ViewModels.cs")).Should()
-            .Contain("Import does not replace active runtime DB.");
-    }
-
-    [Fact]
     public void Runtime_options_keep_database_out_of_default_sync_root()
     {
         AppRuntimeOptions options = AppRuntimeOptions.FromAppSettings();

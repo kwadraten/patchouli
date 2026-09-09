@@ -20,9 +20,3 @@ public abstract record OcrUploadSource
 
     public sealed record RegionImage(string ImagePath, OcrImageContext Context) : OcrUploadSource;
 }
-
-public enum OcrParseShape
-{
-    StructuredTree,
-    PlainText
-}
