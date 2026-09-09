@@ -5,6 +5,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Core.Search;
+using Patchouli.Infrastructure.LibraryIdentity;
 
 namespace Patchouli.Infrastructure.Search;
 
@@ -77,8 +78,23 @@ public sealed class SqliteSearchService : ISearchService
             int offset = DecodeCursor(request.Cursor);
             IReadOnlyList<string> queries = plan?.ExpandedQueries ?? [request.Query];
             string match = string.Join(" OR ", queries.Select(BuildFtsQuery).Distinct(StringComparer.Ordinal));
+            (string filterSql, Dictionary<string, object?> filterParameters) =
+                LibraryItemQueryService.BuildFilterSql(request.ItemFilters ?? Array.Empty<BibliographicSearchFilter>(),
+                    "ItemFilter");
+            DynamicParameters pageParameters = new();
+            pageParameters.Add("Match", match);
+            pageParameters.Add("Status", SearchUnitStatus.Current);
+            pageParameters.Add("DocumentInstanceId", request.DocumentInstanceId?.ToString());
+            pageParameters.Add("IncludeDeprecated", request.IncludeDeprecatedInstances ? 1 : 0);
+            pageParameters.Add("Limit", pageSize + 1);
+            pageParameters.Add("Offset", offset);
+            foreach (KeyValuePair<string, object?> pair in filterParameters)
+            {
+                pageParameters.Add(pair.Key, pair.Value);
+            }
+
             PageHitRow[] pageRows = (await connection.QueryAsync<PageHitRow>(
-                """
+                $"""
                 with matched_pages as (
                     select su.page_id as PageId, min(p.page_index) as PageIndex, count(*) as MatchCount
                     from search_units_fts f
@@ -92,6 +108,7 @@ public sealed class SqliteSearchService : ISearchService
                       and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
                       and i.deleted_at is null
                       and i.merged_into_item_id is null
+                      {filterSql}
                     group by su.page_id
                 )
                 select PageId, PageIndex, MatchCount
@@ -99,15 +116,7 @@ public sealed class SqliteSearchService : ISearchService
                 order by PageIndex, PageId
                 limit @Limit offset @Offset;
                 """,
-                new
-                {
-                    Match = match,
-                    Status = SearchUnitStatus.Current,
-                    DocumentInstanceId = request.DocumentInstanceId?.ToString(),
-                    IncludeDeprecated = request.IncludeDeprecatedInstances ? 1 : 0,
-                    Limit = pageSize + 1,
-                    Offset = offset
-                })).ToArray();
+                pageParameters)).ToArray();
 
             PageHitRow[] selectedPages = pageRows.Take(pageSize).ToArray();
             List<SearchPageResult> results = new();

@@ -50,7 +50,8 @@ public sealed record SearchRequest(
     SearchProfileId? ProfileId = null,
     string? ProfileAlias = null,
     bool PreviewRewriteOnly = false,
-    bool IncludeRewritePlan = true);
+    bool IncludeRewritePlan = true,
+    IReadOnlyList<BibliographicSearchFilter>? ItemFilters = null);
 
 public sealed record SearchPageResult(
     ItemId ItemId,

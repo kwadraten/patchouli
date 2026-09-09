@@ -147,19 +147,50 @@
             <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
           </MenuItem>
         </Menu>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <TextBox Width="260" Height="24" FontSize="12" CornerRadius="4" BorderThickness="1"
-                   BorderBrush="{DynamicResource OutlineVariantBrush}" PlaceholderText="搜索文献库或输入 patchouli:// URI..."
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="0" VerticalAlignment="Center">
+          <StackPanel.Styles>
+            <Style Selector="ComboBox#SearchModeCombo">
+              <Setter Property="BorderThickness" Value="0" />
+              <Setter Property="Background" Value="Transparent" />
+              <Setter Property="CornerRadius" Value="0" />
+              <Setter Property="Padding" Value="6,0" />
+            </Style>
+            <Style Selector="ComboBox#SearchModeCombo /template/ Border#Background">
+              <Setter Property="BorderThickness" Value="0" />
+            </Style>
+          </StackPanel.Styles>
+          <ComboBox x:Name="SearchModeCombo" Width="100" Height="24" FontSize="12" VerticalContentAlignment="Center"
+                    ItemsSource="{Binding SearchEvidence.ModeOptions}"
+                    SelectedItem="{Binding SearchEvidence.SelectedMode}"
+                    ToolTip.Tip="{Binding SearchEvidence.SelectedMode.Hint}">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="local:SearchModeOption">
+                <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <Border BorderThickness="0,0,1,0" BorderBrush="{DynamicResource OutlineVariantBrush}"
+                  Height="24" VerticalAlignment="Center" />
+          <TextBox Width="220" Height="24" FontSize="12" CornerRadius="0" BorderThickness="0"
+                   Background="Transparent"
+                   PlaceholderText="搜索文献库或输入 patchouli:// URI..."
                    IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}"
-                   VerticalContentAlignment="Center">
+                   VerticalContentAlignment="Center" KeyDown="OnToolbarSearchKeyDown">
             <TextBox.InnerLeftContent>
               <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
                              Margin="6,0,0,0" VerticalAlignment="Center" />
             </TextBox.InnerLeftContent>
           </TextBox>
-          <Button Content="搜索" Command="{Binding RunToolbarSearchCommand}" Height="24"
-                  Background="{DynamicResource PrimaryContainerBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
-                  Padding="8,0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" />
+          <Button Command="{Binding RunToolbarSearchCommand}" Height="24" Width="28"
+                  ToolTip.Tip="搜索" Background="Transparent" BorderThickness="0" Padding="0"
+                  HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
+            <lucide:Lucide Icon="Search" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+          </Button>
+          <Button Command="{Binding OpenAdvancedSearchCommand}" Height="24" Width="28"
+                  ToolTip.Tip="高级搜索" Background="Transparent" BorderThickness="0" Padding="0"
+                  HorizontalContentAlignment="Center" VerticalContentAlignment="Center">
+            <lucide:Lucide Icon="Filter" Width="13" Height="13" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+          </Button>
         </StackPanel>
       </Grid>
     </Border>

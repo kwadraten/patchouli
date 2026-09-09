@@ -1,5 +1,8 @@
+using System.Reflection;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
+using Avalonia.VisualTree;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
 
@@ -7,9 +10,148 @@ namespace Patchouli.UI.Views;
 
 public sealed partial class SearchResultsPage : UserControl
 {
+    // ProDataGrid 12.1 internal writer for its per-slot details-visibility table; used to repair
+    // stale slot entries left behind by recycled rows (see ApplyDetailsVisibility).
+    private static readonly MethodInfo? s_detailsTableWriter = typeof(DataGrid).GetMethod(
+        "OnRowDetailsVisibilityPropertyChanged",
+        BindingFlags.Instance | BindingFlags.NonPublic);
+
+    private SearchEvidenceViewModel? _search;
+
+    static SearchResultsPage()
+    {
+        // ProDataGrid keeps the old DataContext on recycled row containers and retargets rows to
+        // new items without raising LoadingRow, so per-row event bookkeeping goes stale.
+        // DataContext assignment is the one transition that always fires first; converging the
+        // row on its own item here self-heals both recycling and in-place retargeting.
+        DataContextProperty.Changed.AddClassHandler<DataGridRow>((row, _) =>
+            ApplyDetailsVisibility(row));
+    }
+
     public SearchResultsPage()
     {
         InitializeComponent();
+    }
+
+    private void OnBibliographicGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        ApplyColumnLayout(BibliographicGrid);
+    }
+
+    private void OnFullTextGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        ApplyColumnLayout(FullTextGrid);
+        if (DataContext is SearchEvidenceViewModel search && !ReferenceEquals(_search, search))
+        {
+            if (_search is not null)
+            {
+                _search.HitExpansionChanged -= OnHitExpansionChanged;
+                _search.AllHitsExpansionChanged -= OnAllHitsExpansionChanged;
+            }
+
+            _search = search;
+            _search.HitExpansionChanged += OnHitExpansionChanged;
+            _search.AllHitsExpansionChanged += OnAllHitsExpansionChanged;
+        }
+    }
+
+    // Row details visibility is driven imperatively from the view model: ProDataGrid applies
+    // AreDetailsVisible internally with suppressed callbacks and keeps a per-slot visibility
+    // table that survives row recycling, so style bindings get shadowed and stale slot entries
+    // resurrect expansion state for recycled rows.
+    private void OnHitExpansionChanged(SearchHitItemViewModel hit)
+    {
+        ApplyAllRealizedRows();
+    }
+
+    private void OnAllHitsExpansionChanged(bool expanded)
+    {
+        if (!expanded)
+        {
+            // Collapsing must also clear per-slot table entries of unrealized slots: imperative
+            // row writes only cover realized rows and stale entries would resurrect on scrolling.
+            // Flipping the mode rewrites the table for every slot through the grid's own path.
+            FullTextGrid.RowDetailsVisibilityMode = DataGridRowDetailsVisibilityMode.VisibleWhenSelected;
+            FullTextGrid.RowDetailsVisibilityMode = DataGridRowDetailsVisibilityMode.Collapsed;
+        }
+
+        ApplyAllRealizedRows();
+    }
+
+    private void ApplyAllRealizedRows()
+    {
+        // Parked recycled rows keep a stale DataContext but are hidden; only visible rows hold a
+        // slot index that is safe to converge.
+        foreach (DataGridRow row in FullTextGrid.GetVisualDescendants().OfType<DataGridRow>())
+        {
+            if (row.IsVisible)
+            {
+                ApplyDetailsVisibility(row);
+            }
+        }
+    }
+
+    private static void ApplyDetailsVisibility(DataGridRow row)
+    {
+        if (row.OwningGrid is null || row.Index < 0 ||
+            row.DataContext is not SearchHitItemViewModel hit)
+        {
+            return;
+        }
+
+        if (row.AreDetailsVisible != hit.IsExpanded)
+        {
+            row.AreDetailsVisible = hit.IsExpanded;
+        }
+        else
+        {
+            // A same-value write is a no-op and would leave a stale per-slot table entry behind;
+            // sync the table directly so the grid cannot resurrect it after row preparation.
+            SyncDetailsTableEntry(row.OwningGrid, row.Index, hit.IsExpanded);
+        }
+    }
+
+    private static void SyncDetailsTableEntry(DataGrid grid, int rowIndex, bool isVisible)
+    {
+        try
+        {
+            s_detailsTableWriter?.Invoke(grid, new object[] { rowIndex, isVisible });
+        }
+        catch (TargetInvocationException)
+        {
+            // Degrades to a rare phantom expansion after recycling; never break row preparation.
+        }
+    }
+
+    private void ApplyColumnLayout(DataGrid grid)
+    {
+        if (DataContext is not SearchEvidenceViewModel search)
+        {
+            return;
+        }
+
+        foreach (DataGridColumn? column in grid.Columns)
+        {
+            if (column is null || ColumnKey(column) is not { } key)
+            {
+                continue;
+            }
+
+            if (search.TryGetColumnWidth(key, out double width) && width > 0)
+            {
+                column.Width = new DataGridLength(width);
+            }
+
+            if (search.TryGetColumnOrder(key, out int order) && order >= 0 && order < grid.Columns.Count)
+            {
+                column.DisplayIndex = order;
+            }
+        }
+    }
+
+    private static string? ColumnKey(DataGridColumn column)
+    {
+        return column.Tag as string;
     }
 
     private async void OnCopySearchUnitEvidenceUriClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
@@ -21,7 +163,7 @@ public sealed partial class SearchResultsPage : UserControl
 
     private async Task CopySearchUnitEvidenceUriAsync(object? sender)
     {
-        if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
+        if (ResolveUnit(sender) is not { } unit ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
         {
             return;
@@ -39,7 +181,7 @@ public sealed partial class SearchResultsPage : UserControl
 
     private async Task CopySearchUnitEvidenceMarkdownAsync(object? sender)
     {
-        if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
+        if (ResolveUnit(sender) is not { } unit ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
         {
             return;
@@ -57,7 +199,7 @@ public sealed partial class SearchResultsPage : UserControl
 
     private async Task ExportSearchUnitEvidenceMarkdownAsync(object? sender)
     {
-        if (sender is not Control { DataContext: SearchMatchedUnitViewModel unit } ||
+        if (ResolveUnit(sender) is not { } unit ||
             TopLevel.GetTopLevel(this)?.DataContext is not MainWindowViewModel main)
         {
             return;
@@ -87,5 +229,20 @@ public sealed partial class SearchResultsPage : UserControl
         {
             await main.ExportEvidenceMarkdownToFileAsync(versionedUri, path);
         }
+    }
+
+    private static SearchMatchedUnitViewModel? ResolveUnit(object? sender)
+    {
+        if (sender is not Control control)
+        {
+            return null;
+        }
+
+        return control.DataContext switch
+        {
+            SearchMatchedUnitViewModel unit => unit,
+            SearchHitSnippetViewModel snippet => snippet.Unit,
+            _ => null
+        };
     }
 }

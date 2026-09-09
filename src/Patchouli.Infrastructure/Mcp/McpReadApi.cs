@@ -1222,6 +1222,10 @@ public sealed class McpReadApi : IMcpReadApi
                     clauses.Add("item_type = @ItemType");
                     parameters["ItemType"] = clause.Value;
                     break;
+                case "item_id":
+                    clauses.Add("item_id = @ItemId");
+                    parameters["ItemId"] = clause.Value;
+                    break;
                 case "item_status":
                     clauses.Add("item_status = @ItemStatus");
                     parameters["ItemStatus"] = clause.Value;

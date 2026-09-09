@@ -45,29 +45,3 @@ public sealed class SearchMatchedUnitViewModel
 
     public bool HasVersionedUri => true;
 }
-
-public sealed class SearchPageResultViewModel
-{
-    public SearchPageResultViewModel(string itemTitle, string documentInstanceId, string pageId, string? pageLabel,
-        int pageIndex, string indexStatus, bool matchedUnitsHasMore,
-        IEnumerable<SearchMatchedUnitViewModel> matchedUnits)
-    {
-        ItemTitle = itemTitle;
-        DocumentInstanceId = documentInstanceId;
-        PageId = pageId;
-        PageLabel = string.IsNullOrWhiteSpace(pageLabel) ? $"第 {pageIndex + 1} 页" : pageLabel;
-        PageIndex = pageIndex;
-        IndexStatus = indexStatus;
-        MatchedUnitsHasMore = matchedUnitsHasMore;
-        MatchedUnits = matchedUnits.ToArray();
-    }
-
-    public string ItemTitle { get; }
-    public string DocumentInstanceId { get; }
-    public string PageId { get; }
-    public string PageLabel { get; }
-    public int PageIndex { get; }
-    public string IndexStatus { get; }
-    public bool MatchedUnitsHasMore { get; }
-    public IReadOnlyList<SearchMatchedUnitViewModel> MatchedUnits { get; }
-}

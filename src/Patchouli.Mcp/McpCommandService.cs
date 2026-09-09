@@ -1345,6 +1345,15 @@ public sealed class McpCommandService
                     break;
                 }
 
+                case "item_id":
+                    if (itemId is null ||
+                        !string.Equals(itemId.Value.ToString(), clause.Value, StringComparison.Ordinal))
+                    {
+                        return false;
+                    }
+
+                    break;
+
                 case "item_type":
                 case "item_status":
                     if (itemId is null)
@@ -1468,7 +1477,11 @@ public sealed class McpCommandService
             McpUriKind.ItemsScope or McpUriKind.Item =>
                 new[] { "item_type", "item_status", "primary_document_ocr_index_status", "citable" },
             McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence =>
-                new[] { "item_type", "item_status", "document_status", "source_status", "ocr_index_status", "citable" },
+                new[]
+                {
+                    "item_id", "item_type", "item_status", "document_status", "source_status", "ocr_index_status",
+                    "citable"
+                },
             McpUriKind.StylesScope or McpUriKind.Style => new[] { "style_enabled" },
             _ => null
         };

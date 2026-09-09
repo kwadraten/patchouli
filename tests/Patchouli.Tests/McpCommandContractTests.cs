@@ -313,6 +313,33 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Find_texts_scope_filters_by_item_id()
+    {
+        McpWhereClause match = new("item_id", _library.BookA.ToString());
+        McpCommandResult<McpFindMeta, object> hits = await _library.Commands.FindAsync(
+            new McpFindRequest("quorum", "patchouli://texts/", [match]));
+        hits.IsSuccess.Should().BeTrue($"error: {hits.Error?.Code} {hits.Error?.Detail}");
+        hits.Envelope!.Entries.Should().NotBeEmpty();
+
+        McpWhereClause other = new("item_id", _library.BookB.ToString());
+        McpCommandResult<McpFindMeta, object> miss = await _library.Commands.FindAsync(
+            new McpFindRequest("quorum", "patchouli://texts/", [other]));
+        miss.IsSuccess.Should().BeTrue();
+        miss.Envelope!.Entries.Should().BeEmpty();
+
+        McpCommandResult<McpFindMeta, object> browse = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://texts/", [match]));
+        browse.IsSuccess.Should().BeTrue();
+        browse.Envelope!.Entries.Select(Entry).Should()
+            .OnlyContain(entry => entry.Uri == McpResourceUris.DocumentUri(_library.DocumentA));
+
+        McpCommandResult<McpFindMeta, object> singleton = await _library.Commands.FindAsync(
+            new McpFindRequest(null, McpResourceUris.DocumentUri(_library.DocumentA), [other]));
+        singleton.IsSuccess.Should().BeTrue();
+        singleton.Envelope!.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Find_cursor_paginates_and_warns_result_set_may_have_changed()
     {
         McpCommandResult<McpFindMeta, object> first = await _library.Commands.FindAsync(
@@ -583,6 +610,20 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         string content = after.Envelope!.Entries.Single().Content!;
         RegexKey(content).Should().Be(expectedKey);
         content.Should().Contain("Updated by agent").And.NotContain(agentSuppliedKey);
+    }
+
+    [Fact]
+    public async Task Put_incomplete_unpublished_returns_warning_and_preserves_literal_pages()
+    {
+        string uri = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.Commands.PutAsync(new McpPutRequest(uri,
+            "@unpublished{k,title={Draft},author={Doe, Jane},pages={S1--S9}}"));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+        put.Envelope!.Message!.Warnings.Should().Contain(warning => warning.StartsWith("BIBLATEX_MISSING_FIELDS:"));
+        put.Envelope.Message.Warnings.Should().Contain(warning => warning.StartsWith("BIBLATEX_LITERAL_FIELDS:"));
+        Result<McpItemMetadataResponse> item = await _library.Api.GetItemMetadataAsync(_library.BookA);
+        item.Value.Note.Should().BeNull();
+        item.Value.Pages.Should().Be("S1–S9");
     }
 
     [Fact]

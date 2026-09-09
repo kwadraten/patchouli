@@ -1,5 +1,6 @@
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
 
 namespace Patchouli.Core.Library;
 
@@ -36,5 +37,12 @@ public interface ILibraryItemQueryService
 
     Task<Result<DocumentNavigationRow?>> GetDocumentNavigationAsync(
         DocumentInstanceId documentInstanceId,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<LibraryItemRow>>> SearchRowsAsync(
+        BibliographicItemSearch search,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<BibliographicSearchFilterOptions>> GetSearchFilterOptionsAsync(
         CancellationToken cancellationToken = default);
 }

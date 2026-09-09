@@ -195,18 +195,9 @@ public sealed partial class LibraryPage : UserControl
 
     private static string? ColumnKey(DataGridColumn column)
     {
-        return column.Header?.ToString() switch
-        {
-            "题录类型" => "ItemType",
-            "年份" => "Year",
-            "作者" => "Author",
-            "标题" => "Title",
-            "来源" => "Source",
-            "OCR/索引状态" => "Status",
-            "页数" => "Pages",
-            "关联文件" => "File",
-            _ => null
-        };
+        // Stable per-column keys are set via Tag in LibraryPage.axaml; they back the
+        // persisted UiPreferences width/order entries and must not change over time.
+        return column.Tag as string;
     }
 
     // ---------- Tag interactions ----------

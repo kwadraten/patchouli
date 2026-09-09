@@ -409,7 +409,7 @@ DETAILED RESULTS (--long)
 |---|---|---|---|---|
 | `patchouli://` | 仅发现三个根目录；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
 | `patchouli://items/` | 浏览题录资源 | 题名、作者、identifier 元数据搜索 | 相同字段的直接字面匹配 | `item_type`、`item_status`、`primary_document_ocr_index_status`、`citable` |
-| `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个命中 SearchUnit 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
+| `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个命中 SearchUnit 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_id`、`item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
 | `patchouli://csl-styles/` | 浏览 CSL style 资源 | style id、display name 搜索 | 相同字段的直接字面匹配 | `style_enabled` |
 | 已知 file URI | 当作单资源 scope 返回该 entry，并返回 `FILE_URI_SINGLETON_SCOPE` | 仅在该资源的矩阵内搜索字段上匹配，并返回同一 warning | 相同的单资源直接字面匹配 | 使用其所属 scope 的 filter 键 |
 
@@ -920,29 +920,37 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 
 ## 8. V3-T8：搜索功能强化
 
-**状态**：从原 V3-T5 拆分；方案评估中。
+**状态**：已实现。
 
-本任务只承载搜索入口和搜索交互的强化，元数据筛选与全文搜索是两个可明确切换的桌面模式。它不改变 SearchUnit、FTS 索引、证据或 MCP 表面，也不把向量化、混合搜索或语义搜索纳入 v3 范围。
+本任务只承载搜索入口和搜索交互的强化，元数据筛选与全文搜索是两个可明确切换的桌面模式。它不改变 SearchUnit、FTS 索引、证据或 MCP 表面，也不把向量化、混合搜索或语义搜索纳入 v3 范围。验收后修订：高级筛选行同时作用于全文搜索（经 `SearchRequest.ItemFilters` 下推到 FTS 查询），MCP texts scope 的 where 键新增 `item_id`；除此之外上述边界不变。
 
 ### 8.1 搜索模式与交互
 
-- 在顶部搜索框旁加入快捷下拉菜单，可切换两种模式：
-  - **元数据筛选**：在书库题录元数据范围内筛选。
+- 顶部搜索框旁是模式下拉框，可切换两种模式，当前模式以文字显示并附提示：
+  - **元数据筛选**：在书库题录元数据范围内筛选（题名/作者/标识符包含匹配 + 结构化筛选）。
   - **全文搜索**：现有的全文检索行为。
-- 无论处于哪种模式，搜索框都必须继续解析 `patchouli://` URI 并导航到对应资源；URI 解析路径不因模式切换而失效。
-- 搜索由回车键触发，不再依赖或要求用户点击“搜索”按钮；按钮仍可保留作为备选触发方式，但回车是主交互路径。
-- 模式切换是纯 UI 状态；两种模式复用既有搜索服务与搜索配置文件，不改变 SearchUnit、FTS 索引、证据或 MCP 表面。
-- 切换模式时必须保持当前输入文本，不得清空用户已输入内容；空查询行为按模式各自定义。
-- 下拉菜单必须有明确的当前模式标识和可访问性提示，不得依赖仅靠图标无法区分的控件。
+- 无论处于哪种模式，搜索框都继续解析 `patchouli://` URI 并导航到对应资源；URI 解析路径不因模式切换而失效。
+- 搜索由回车键触发（搜索框 KeyDown → 与“搜索”按钮同一命令路径）；按钮保留作为备选触发方式。
+- 模式切换是纯 UI 状态；切换保持当前输入文本与高级筛选行不清空；两种模式复用既有搜索服务与搜索配置文件，不改变 SearchUnit、FTS 索引、证据或 MCP 表面。
+- 空查询行为按模式各自定义：全文模式提示输入搜索词；题录模式在无查询且无有效筛选行时提示“请输入搜索词或添加筛选条件”，有筛选行时按筛选执行。
 
-### 8.2 V3-T8 验收
+### 8.2 高级筛选与结果展示
+
+- 搜索框旁漏斗按钮打开“搜索结果”页并展开高级筛选表单（不自动执行搜索）；结果页上的“高级搜索 ▾/▴”按钮同样可展开/收起。
+- 高级筛选第一行默认为不可删除的“关键词”行（即搜索词，与顶部搜索框双向同步），其余为动态行（添加/删除），多行按 AND 组合；筛选键与 MCP items scope 对齐：`item_type`、`item_status`、`primary_document_ocr_index_status`、`citable`，外加题名/作者/标识符包含匹配；枚举下拉列出库中实际存在的值。标签筛选不在本任务范围。
+- 筛选行同时作用于两种模式：题录模式走 `SearchRowsAsync`，全文模式作为 `SearchRequest.ItemFilters` 在 FTS 命中页查询上按 AND 过滤。
+- 题录模式：结果以平铺 DataGrid 展示，列与书库页一致，列可见性/列宽/列顺序读取同一 `UiPreferences` 书库网格设置（只读跟随）。
+- 全文模式：结果按题录分组为层级树（ProDataGrid `HierarchicalModel`），顶层行为命中题录（同书库列），子行为匹配片段：片段换行归一为单行、命中词加粗、按字符窗口（CJK 双宽）居中截断；子行提供“跳转”按钮，经既有 `patchouli://texts/...?rev=&box=` 导航路径打开 PDF 工作台并高亮证据框；证据 URI 复制 / Markdown 复制与导出、索引重建、索引 stale/partial/unavailable 状态展示（ADR 0008）保持可用。
+- 题录检索为新的批量投影查询（`LibraryItemQueryService.SearchRowsAsync`），排除回收站与已合并题录，无 N+1。
+
+### 8.3 V3-T8 验收
 
 | 编号 | 标准 |
 |---|---|
-| V3-T8-AC1 | 搜索框下拉菜单可在元数据筛选与全文搜索间切换；当前模式有明确文字和可访问性提示 |
+| V3-T8-AC1 | 搜索框旁下拉菜单可在元数据筛选与全文搜索间切换；当前模式以文字显示并附提示，不依赖纯图标 |
 | V3-T8-AC2 | 两种模式均能解析 `patchouli://` URI 并导航；URI 解析路径不因模式切换而失效 |
-| V3-T8-AC3 | 回车键触发搜索；切换模式不清空输入文本，空查询按模式返回明确结果 |
-| V3-T8-AC4 | 模式切换不改变 SearchUnit、FTS 索引、证据或 MCP 表面；复用既有搜索服务与搜索配置文件 |
+| V3-T8-AC3 | 回车键触发搜索（与搜索按钮同一路径）；切换模式不清空输入文本与筛选行；空查询按模式返回明确提示或按筛选执行 |
+| V3-T8-AC4 | 模式切换不改变 SearchUnit、FTS 索引、证据或 MCP 表面；复用既有搜索服务与搜索配置文件；题录检索排除回收站与已合并题录且无 N+1 |
 
 ## 9. V3-T6：版本控制、证据引用及其 UI 表示
 

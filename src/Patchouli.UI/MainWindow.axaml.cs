@@ -33,6 +33,17 @@ public sealed partial class MainWindow : Window
         _viewModel.StartMcpServerInBackground();
     }
 
+    private void OnToolbarSearchKeyDown(object? sender, Avalonia.Input.KeyEventArgs e)
+    {
+        if (e.Key != Avalonia.Input.Key.Enter)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _viewModel.RunToolbarSearchCommand.Execute(null);
+    }
+
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         try

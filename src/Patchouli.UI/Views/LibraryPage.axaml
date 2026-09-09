@@ -225,26 +225,26 @@
         </DataGrid.ContextMenu>
         <DataGrid.Columns>
           <!-- Item Type -->
-          <DataGridTextColumn Header="题录类型"
+          <DataGridTextColumn Header="题录类型" Tag="ItemType"
                               Binding="{Binding ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"
                               IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
 
           <!-- Year -->
-          <DataGridTextColumn Header="年份" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}" Width="60" />
+          <DataGridTextColumn Header="年份" Tag="Year" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}" Width="60" />
 
           <!-- Author -->
-          <DataGridTextColumn Header="作者" Binding="{Binding Authors}" IsVisible="{Binding ShowAuthorColumn}"
+          <DataGridTextColumn Header="作者" Tag="Author" Binding="{Binding Authors}" IsVisible="{Binding ShowAuthorColumn}"
                               Width="120" />
 
           <!-- Title -->
-          <DataGridTextColumn Header="标题" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}" Width="*" />
+          <DataGridTextColumn Header="标题" Tag="Title" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}" Width="*" />
 
           <!-- Source -->
-          <DataGridTextColumn Header="来源" Binding="{Binding SourceText}" IsVisible="{Binding ShowSourceColumn}"
+          <DataGridTextColumn Header="来源" Tag="Source" Binding="{Binding SourceText}" IsVisible="{Binding ShowSourceColumn}"
                               Width="150" />
 
           <!-- Status -->
-          <DataGridTemplateColumn Header="OCR/索引状态" IsVisible="{Binding ShowStatusColumn}" Width="120">
+          <DataGridTemplateColumn Header="OCR/索引状态" Tag="Status" IsVisible="{Binding ShowStatusColumn}" Width="120">
             <DataGridTemplateColumn.CellTemplate>
               <DataTemplate>
                 <TextBlock Text="{Binding OcrIndexStateLabel}" ToolTip.Tip="{Binding OcrIndexStateDetail}"
@@ -254,11 +254,11 @@
           </DataGridTemplateColumn>
 
           <!-- Pages -->
-          <DataGridTextColumn Header="页数" Binding="{Binding PageCountDisplay}" IsVisible="{Binding ShowPagesColumn}"
+          <DataGridTextColumn Header="页数" Tag="Pages" Binding="{Binding PageCountDisplay}" IsVisible="{Binding ShowPagesColumn}"
                               Width="80" />
 
           <!-- File -->
-          <DataGridTextColumn Header="关联文件" Binding="{Binding SourcePath}" IsVisible="{Binding ShowFileColumn}"
+          <DataGridTextColumn Header="关联文件" Tag="File" Binding="{Binding SourcePath}" IsVisible="{Binding ShowFileColumn}"
                               Width="150" />
         </DataGrid.Columns>
       </DataGrid>

@@ -51,6 +51,54 @@ public sealed class SearchUnitFtsBoxTreeTests
         nearby.Last().IsMatch.Should().BeTrue();
     }
 
+    [Fact]
+    public async Task Item_filters_narrow_full_text_search_to_matching_items()
+    {
+        await using Context context = await Context.CreateAsync();
+        DocumentTreeRevision first = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId,
+            context.Page.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("sharedtoken alpha phrase"), null)
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(first.TreeRevisionId);
+        DocumentTreeRevision second = (await context.Trees.BeginWorkingRevisionAsync(
+            context.SecondDocument.DocumentInstanceId,
+            context.SecondPage.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("sharedtoken beta phrase"), null)
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(second.TreeRevisionId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.SecondDocument.DocumentInstanceId);
+        await context.Index.RebuildFtsForLibraryAsync();
+
+        SearchResultPage unfiltered = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken"))).Value;
+        unfiltered.Results.Should().HaveCount(2);
+
+        SearchResultPage byTitle = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken")
+        {
+            ItemFilters = [new BibliographicSearchFilter(BibliographicSearchFilterKeys.Title, "second")]
+        })).Value;
+        byTitle.Results.Should().ContainSingle().Which.ItemTitle.Should().Be("Second work");
+
+        SearchResultPage byType = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken")
+        {
+            ItemFilters = [new BibliographicSearchFilter(BibliographicSearchFilterKeys.ItemType, "document")]
+        })).Value;
+        byType.Results.Should().HaveCount(2);
+
+        SearchResultPage noMatch = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken")
+        {
+            ItemFilters = [new BibliographicSearchFilter(BibliographicSearchFilterKeys.Title, "absent")]
+        })).Value;
+        noMatch.Results.Should().BeEmpty();
+    }
+
     private sealed class Context : IAsyncDisposable
     {
         private readonly TemporarySqliteDatabase _database;
@@ -59,6 +107,8 @@ public sealed class SearchUnitFtsBoxTreeTests
             TemporarySqliteDatabase database,
             DocumentInstance document,
             Page page,
+            DocumentInstance secondDocument,
+            Page secondPage,
             IDocumentTreeService trees,
             ISearchUnitBuilder units,
             ISearchIndexRebuilder index,
@@ -67,6 +117,8 @@ public sealed class SearchUnitFtsBoxTreeTests
             _database = database;
             Document = document;
             Page = page;
+            SecondDocument = secondDocument;
+            SecondPage = secondPage;
             Trees = trees;
             Units = units;
             Index = index;
@@ -75,6 +127,8 @@ public sealed class SearchUnitFtsBoxTreeTests
 
         public DocumentInstance Document { get; }
         public Page Page { get; }
+        public DocumentInstance SecondDocument { get; }
+        public Page SecondPage { get; }
         public IDocumentTreeService Trees { get; }
         public ISearchUnitBuilder Units { get; }
         public ISearchIndexRebuilder Index { get; }
@@ -87,13 +141,18 @@ public sealed class SearchUnitFtsBoxTreeTests
             await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
             LibraryIdentityService libraries = new(database.ConnectionFactory, clock);
             await libraries.CreateLibraryAsync("Search units");
-            ItemMetadata item = (await new ItemService(database.ConnectionFactory, libraries, clock)
-                .CreateItemAsync("document", "Search units")).Value;
+            ItemService items = new(database.ConnectionFactory, libraries, clock);
+            ItemMetadata item = (await items.CreateItemAsync("document", "Search units")).Value;
+            ItemMetadata secondItem = (await items.CreateItemAsync("document", "Second work")).Value;
             DocumentInstance document = (await new DocumentInstanceService(database.ConnectionFactory, clock)
                 .AttachDocumentInstanceAsync(item.ItemId, null, DocumentInstanceType.PrimaryScan)).Value;
-            Page page = (await new Infrastructure.Layout.PageService(database.ConnectionFactory, clock)
-                .CreatePageAsync(document.DocumentInstanceId, 0, "1", null, null, 0,
-                    CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
+            DocumentInstance secondDocument = (await new DocumentInstanceService(database.ConnectionFactory, clock)
+                .AttachDocumentInstanceAsync(secondItem.ItemId, null, DocumentInstanceType.PrimaryScan)).Value;
+            Infrastructure.Layout.PageService pages = new(database.ConnectionFactory, clock);
+            Page page = (await pages.CreatePageAsync(document.DocumentInstanceId, 0, "1", null, null, 0,
+                CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
+            Page secondPage = (await pages.CreatePageAsync(secondDocument.DocumentInstanceId, 0, "1", null, null, 0,
+                CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
             IDocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
             ISearchUnitBuilder units = new SearchUnitBuilder(database.ConnectionFactory, clock,
                 new MarkdigMarkdownEngine());
@@ -101,6 +160,8 @@ public sealed class SearchUnitFtsBoxTreeTests
                 database,
                 document,
                 page,
+                secondDocument,
+                secondPage,
                 trees,
                 units,
                 new SearchIndexRebuilder(database.ConnectionFactory, clock),
