@@ -14,6 +14,7 @@ using Patchouli.Infrastructure.Documents;
 using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Performance;
 
@@ -154,7 +155,7 @@ public static class UiPerfProbe
 
     /// <summary>
     /// Measures the time from the interactive framework to the first library rows visible in the
-    /// shell. This is the real cold-open path: <see cref="AppServices.CreateAsync"/> (migrations,
+    /// shell. This is the real cold-open path: <see cref="HostServices.CreateAsync"/> (migrations,
     /// OCR reconciliation, queue start) plus the first rows query projected into the shell.
     /// </summary>
     private static async Task<(double Ms, int RowCount)> MeasureFirstRowsAsync(
@@ -303,7 +304,7 @@ public static class UiPerfProbe
 
         try
         {
-            AppServices services = await viewModel.ServicesAsync();
+            HostServices services = await viewModel.ServicesAsync();
             await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StopAsync();
         }
         catch

@@ -45,23 +45,31 @@ using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
-using Patchouli.UI.Diagnostics;
+using Patchouli.Host.Caching;
+using Patchouli.UI;
 
-namespace Patchouli.UI;
+namespace Patchouli.Host.Composition;
 
-public sealed class AppServices
+public sealed class HostServices
 {
+    private static readonly Action<Exception, string, string?> FallbackUnexpectedExceptionReporter =
+        static (exception, boundary, operation) =>
+            System.Diagnostics.Trace.WriteLine(
+                $"Patchouli unexpected error at {boundary}/{operation}: {exception}");
+
     private readonly OcrRunEngine _ocrEngine;
+    private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
 
-    private IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>
+    private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
 
-    private AppServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
-        IAppLogger? logger = null)
+    private HostServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
+        IAppLogger logger, Action<Exception, string, string?>? reportUnexpectedException = null)
     {
+        _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         RuntimeDatabasePath = runtimeDatabasePath;
         Settings = settings;
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
@@ -76,6 +84,9 @@ public sealed class AppServices
         LibraryItems = new LibraryItemQueryService(ConnectionFactory);
         Items = new ItemService(ConnectionFactory, Library, Clock, LibraryRevisions);
         Tags = new ItemTagService(ConnectionFactory, LibraryRevisions);
+        LibraryItemCache = new LibraryItemCache(LibraryItems, Tags);
+        LibraryRevisionMonitor = new LibraryRevisionMonitor(LibraryRevisions, LibraryItemCache,
+            reportUnexpectedException: _reportUnexpectedException);
         MergeItems = new ItemMergeService(ConnectionFactory, Clock, Library, LibraryRevisions);
         DuplicateItemDetection = new DuplicateItemDetectionService(ConnectionFactory, Library);
         _cslCatalogHttpClient = new HttpClient();
@@ -175,7 +186,7 @@ public sealed class AppServices
             Clock,
             ocrQueueExecutor,
             loopErrorLogger: exception =>
-                UnexpectedExceptions.Sink.Report(exception, "ocr-scheduler", "scheduler-loop"));
+                _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"));
         Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
@@ -217,6 +228,8 @@ public sealed class AppServices
     public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
     public IItemTagService Tags { get; }
+    public LibraryItemCache LibraryItemCache { get; }
+    public LibraryRevisionMonitor LibraryRevisionMonitor { get; }
     public IItemMergeService MergeItems { get; }
     public IDuplicateItemDetectionService DuplicateItemDetection { get; }
     public IItemPurgeService PurgeItems { get; }
@@ -354,11 +367,11 @@ public sealed class AppServices
         FileSearchRootAccess.UpdateExclusionPatterns(settings.ExclusionPatterns);
     }
 
-    private static IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>
+    private static IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         ToMetadataLookupPreferences(MetadataLookupAppSettings settings)
     {
         return settings.Sources.Select((source, index) =>
-            new Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference(source.SourceId, source.Enabled,
+            new Core.Bibliography.MetadataLookup.MetadataSourcePreference(source.SourceId, source.Enabled,
                 index)).ToArray();
     }
 
@@ -389,73 +402,84 @@ public sealed class AppServices
         });
     }
 
-    public static async Task<AppServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
-        string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null)
+    public static async Task<HostServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
+        string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null,
+        IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
+        IProgress<StartupStage>? startupProgress = null)
     {
+        Action<Exception, string, string?> reportUnexpected =
+            reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
         settingsPath ??= PatchouliAppSettings.ResolvePath();
         settings ??= PatchouliAppSettings.Load(settingsPath);
+        startupProgress?.Report(StartupStage.ValidatingPaths);
         AppPathGuard.ValidateDatabasePath(path, settings.Runtime.DefaultSyncRoot);
         AppPathGuard.ValidateMutablePath(settings.Runtime.LogDirectory);
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        SimpleFileLogger logger = new(settings.Runtime.LogDirectory);
+        IAppLogger startupLogger = logger ?? new SimpleFileLogger(settings.Runtime.LogDirectory);
         try
         {
-            await logger.LogAsync("startup", $"Opening runtime database {path}");
+            await startupLogger.LogAsync("startup", $"Opening runtime database {path}");
         }
         catch (Exception exception)
         {
-            UnexpectedExceptions.Sink.Report(exception, "operation-log", "startup");
+            reportUnexpected(exception, "operation-log", "startup");
         }
 
-        AppServices services = new(path, settings, settingsPath, logger);
+        startupProgress?.Report(StartupStage.ComposingServices);
+        HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected);
 
         // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
         // onto the thread pool so the UI thread stays responsive while the loading page is shown.
         await Task.Run(async () =>
         {
+            startupProgress?.Report(StartupStage.ApplyingMigrations);
             await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
             if (services.FileResolution is FileResolutionService fileResolution)
             {
+                startupProgress?.Report(StartupStage.AdoptingRootBindings);
                 Result adopted = await fileResolution.AdoptLegacyDeviceRootBindingsAsync();
                 if (adopted.IsFailure)
                 {
                     try
                     {
-                        await logger.LogAsync("migration",
+                        await startupLogger.LogAsync("migration",
                             adopted.ErrorMessage ?? "Legacy root binding migration failed.");
                     }
                     catch (Exception exception)
                     {
-                        UnexpectedExceptions.Sink.Report(exception, "operation-log", "legacy-root-binding-migration");
+                        reportUnexpected(exception, "operation-log", "legacy-root-binding-migration");
                     }
                 }
             }
 
+            startupProgress?.Report(StartupStage.ReconcilingOcrRuns);
             Result ocrReconcile = await services._ocrEngine.ReconcileInterruptedRunsAsync();
             if (ocrReconcile.IsFailure)
             {
                 try
                 {
-                    await logger.LogAsync("ocr-reconcile",
+                    await startupLogger.LogAsync("ocr-reconcile",
                         ocrReconcile.ErrorMessage ?? "OCR startup reconciliation failed.");
                 }
                 catch (Exception exception)
                 {
-                    UnexpectedExceptions.Sink.Report(exception, "operation-log", "ocr-reconcile");
+                    reportUnexpected(exception, "operation-log", "ocr-reconcile");
                 }
             }
         });
 
+        startupProgress?.Report(StartupStage.StartingOcrQueue);
         await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
 
+        startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
         await services.ApplySyncedMetadataLookupAsync(settings);
         try
         {
-            await logger.LogAsync("migration", "Pending migrations completed.");
+            await startupLogger.LogAsync("migration", "Pending migrations completed.");
         }
         catch (Exception exception)
         {
-            UnexpectedExceptions.Sink.Report(exception, "operation-log", "migration");
+            reportUnexpected(exception, "operation-log", "migration");
         }
 
         return services;

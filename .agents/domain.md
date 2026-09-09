@@ -47,3 +47,35 @@ If the concept is not in the glossary yet, treat that as a signal: either avoid 
 ## Flag ADR conflicts
 
 If output contradicts an existing ADR under `.agents/adr/`, surface it explicitly rather than silently overriding it.
+
+## Runtime host layer
+
+`src/Patchouli.Host` is the shared runtime composition layer used by both the desktop UI
+(`Patchouli.UI`) and the standalone MCP server (`Patchouli.McpServer`). Its responsibilities:
+
+- **Composition root** — `Composition/HostServices` constructs and wires every domain service
+  (identity, revisions, items, tags, files, OCR, snapshots, MCP APIs) over one
+  `SqliteConnectionFactory`, runs migrations, and exposes the service fleet to consumers. Both
+  hosts build it; nothing else should hand-wire domain services.
+- **File watching** — `Watching/FileSearchRootWatcherService` owns the `FileSystemWatcher` fleet
+  for configured FileSearchRoots plus the debounced rescan/import pipeline.
+- **MCP lifecycle** — `Mcp/McpServerHost` owns MCP settings validation, listener start/stop/restart,
+  and shutdown, surfacing status and failures through events (`McpHttpServer` and
+  `McpProtocolHandler` live here).
+- **Import orchestration** — `Import/LibraryImportOrchestrator` sequences multi-step import
+  workflows without UI coupling.
+- **Item cache and revision monitor** — `Caching/LibraryItemCache` is the in-memory first-screen
+  read snapshot (tag filtering, untagged queries, sidebar tag counts);
+  `Caching/LibraryRevisionMonitor` keeps it current.
+
+Rule: runtime logic belongs in `Patchouli.Host`, not in ViewModels. ViewModels subscribe to the
+host's services and marshal events to the UI dispatcher; they never own watchers, timers, server
+lifecycles, or cache invalidation.
+
+Cross-process consistency: the desktop UI and the standalone MCP server share one SQLite database
+and remain coherent through the persistent `library_metadata.library_revision` counter.
+In-process commits publish via `ILibraryRevisionService.ChangeCommitted`; the revision monitor
+polls `GetCurrentRevisionAsync` (default every 2 s, interval is injectable) to catch writes from
+the other process. Any detected change triggers a full cache reload; polling-detected changes
+additionally raise `ExternalChangeDetected` so the UI can tell cross-process edits apart from its
+own commits.

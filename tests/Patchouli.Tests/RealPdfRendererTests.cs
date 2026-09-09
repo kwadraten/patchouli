@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Patchouli.Ocr;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -135,7 +136,8 @@ public sealed class RealPdfRendererTests
     [Fact]
     public void Production_services_wire_pdfium_pdf_renderer()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "AppServices.cs")).Should()
+        File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.Host", "Composition",
+                "HostServices.cs")).Should()
             .Contain("PdfiumPdfPageRenderer");
     }
 

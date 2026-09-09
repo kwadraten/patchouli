@@ -3,6 +3,7 @@ using Avalonia.Threading;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Ocr;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -293,7 +294,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
         }
 
         Result<OcrQueueStatus> status = await queue.GetQueueStatusAsync();
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<IOcrQueueRowService> rowService = await services.GetOcrQueueRowsAsync();
         Result<IReadOnlyList<OcrQueueRow>> rows = rowService.IsSuccess
             ? await rowService.Value.ListRowsAsync(true)

@@ -12,16 +12,13 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
-using Patchouli.Infrastructure.Csl;
-using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.LibraryIdentity;
-using Patchouli.Infrastructure.Bibliography.Biblatex;
-using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
-using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
+using Patchouli.Host.Composition;
+using Patchouli.Host.Mcp;
 
 if (args.Contains("--help"))
 {
@@ -60,66 +57,49 @@ UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
 
 try
 {
-    Console.Error.WriteLine("[mcp-server] starting database initialization");
-    SqliteConnectionFactory db = new(options.Value.DatabasePath);
-    SystemClock clock = new();
-    BlockingOperationService blockingOperations = new(db, clock);
-    await new MigrationRunner(db, Path.Combine(AppContext.BaseDirectory, "migrations")).RunAsync();
-    Console.Error.WriteLine("[mcp-server] database initialization complete");
-    string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Patchouli", "settings.json");
-    McpServerSettingsService settingsService = new(settingsPath, clock, blockingOperations);
-    Result<McpServerSettings> loadedSettings = await settingsService.GetSettingsAsync();
-    if (loadedSettings.IsFailure)
-    {
-        Console.Error.WriteLine(
-            McpOutputSanitizer.Sanitize(loadedSettings.ErrorMessage ?? "Failed to load MCP settings."));
-        return;
-    }
-
-    McpServerSettings effectiveSettings = loadedSettings.Value;
-    if (options.Value.PortWasExplicitlySet)
-    {
-        effectiveSettings = effectiveSettings with { Port = options.Value.Port };
-    }
-
-    Result settingsValidation = await settingsService.ValidateSettingsAsync(effectiveSettings);
-    if (settingsValidation.IsFailure)
-    {
-        Console.Error.WriteLine(
-            McpOutputSanitizer.Sanitize(settingsValidation.ErrorMessage ?? "Invalid MCP settings."));
-        return;
-    }
-
-    LibraryIdentityService library = new(db, clock);
-    LibraryRevisionService revisions = new(db);
-    SearchProfileService profiles = new(db, library, clock);
-    SqliteSearchService search = new(db, profiles);
-    ItemService items = new(db, library, clock);
-    CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations, revisions: revisions);
-    CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
-    MarkdigMarkdownEngine markdown = new();
-    DocumentTreeService trees = new(db, clock, markdown);
-    DocumentMarkdownCompiler markdownCompiler = new(trees, markdown);
-    VersionedEvidenceReader evidenceReader = new(db, library, trees, markdownCompiler);
-    McpReadApi api = new(db, search, cslStyleStore: cslStore, cslRenderer: cslRenderer,
-        markdown: markdown, markdownCompiler: markdownCompiler);
-    McpWriteApi writes = new(items, new BiblatexHelperClient(), cslStore);
-    BiblatexImportService biblatexImport = new(
-        new BiblatexHelperClient(), items, new FileAssetService(db, library, clock),
-        new DocumentInstanceService(db, clock));
-
     static void ReportUnexpected(Exception exception, string operation)
     {
         Console.Error.WriteLine(
             McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
     }
 
-    McpProtocolHandler handler = new(api, writes, biblatexImport, items, evidenceReader, db, effectiveSettings,
-        ReportUnexpected);
-    await using McpHttpServer server = new(handler, effectiveSettings, ReportUnexpected);
+    Console.Error.WriteLine("[mcp-server] starting database initialization");
+    string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "Patchouli", "settings.json");
+    HostServices services = await HostServices.CreateAsync(
+        options.Value.DatabasePath,
+        settingsPath: settingsPath,
+        reportUnexpectedException: (exception, boundary, operation) =>
+            ReportUnexpected(exception, operation is null ? boundary : $"{boundary}/{operation}"));
+    Console.Error.WriteLine("[mcp-server] database initialization complete");
+
+    McpServerSettings effectiveSettings = services.Settings.Mcp;
+    if (options.Value.PortWasExplicitlySet)
+    {
+        effectiveSettings = effectiveSettings with { Port = options.Value.Port };
+    }
+
+    await using McpServerHost host = new(services, (exception, boundary, operation) =>
+        ReportUnexpected(exception, operation is null ? boundary : $"{boundary}/{operation}"));
+    host.StatusChanged += (_, args) =>
+    {
+        if (args.Status == McpServerHostStatus.Error)
+        {
+            Console.Error.WriteLine(McpOutputSanitizer.Sanitize(args.Detail));
+        }
+    };
+    bool unexpectedFailure = false;
+    host.ExceptionReported += (_, _) => unexpectedFailure = true;
+
+    await host.StartAsync(effectiveSettings);
+    if (!host.IsRunning)
+    {
+        Environment.ExitCode = unexpectedFailure ? 1 : 0;
+        return;
+    }
+
     Console.Error.WriteLine($"[mcp-server] listening on loopback port {effectiveSettings.Port}");
-    await server.RunAsync();
+    await host.WaitForShutdownAsync();
     Console.Error.WriteLine("[mcp-server] server stopped");
 }
 catch (Exception ex)

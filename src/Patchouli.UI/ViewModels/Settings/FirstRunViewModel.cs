@@ -1,7 +1,8 @@
-﻿using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels;
 using System.Collections.ObjectModel;
 using Patchouli.Core.Import;
 using Patchouli.Core.Files;
+using Patchouli.Host.Import;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.UI.Services;
 
@@ -11,7 +12,8 @@ public sealed class FirstRunViewModel : ViewModelBase
 {
     private FirstRunWorkflow? _workflow;
     private PdfDiscoveryService? _discovery;
-    private readonly Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>>? _openDatabase;
+    private LibraryImportOrchestrator? _orchestrator;
+    private readonly Func<string, Task<LibraryImportOrchestrator?>>? _openDatabase;
     private readonly IModalOperationRunner? _modalOperations;
     public Action<string>? OnError { get; set; }
     public Action<string>? OnProgress { get; set; }
@@ -63,7 +65,7 @@ public sealed class FirstRunViewModel : ViewModelBase
     }
 
     public FirstRunViewModel(
-        Func<string, Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>> openDatabase,
+        Func<string, Task<LibraryImportOrchestrator?>> openDatabase,
         IModalOperationRunner? modalOperations = null,
         Func<Task>? complete = null)
     {
@@ -281,9 +283,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         Raise(nameof(IsBusy));
         try
         {
-            (FirstRunWorkflow Workflow, PdfDiscoveryService Discovery) opened = await _openDatabase(DatabasePath);
-            _workflow = opened.Workflow;
-            _discovery = opened.Discovery;
+            _orchestrator = await _openDatabase(DatabasePath);
             State = _existingDatabaseSetup is null
                 ? new FirstRunWorkflowState(FirstRunStep.Library, "数据库已就绪。请创建资料库身份。", null, null, null, null, null,
                     null, false)
@@ -310,7 +310,9 @@ public sealed class FirstRunViewModel : ViewModelBase
             return;
         }
 
-        if (_workflow is null)
+        LibraryImportOrchestrator? orchestrator = _orchestrator;
+        FirstRunWorkflow? workflow = _workflow;
+        if (orchestrator is null && workflow is null)
         {
             SetWorkflowMissingError();
             return;
@@ -320,7 +322,9 @@ public sealed class FirstRunViewModel : ViewModelBase
         Raise(nameof(IsBusy));
         try
         {
-            State = await _workflow.CreateLibraryAsync(LibraryName);
+            State = orchestrator is not null
+                ? await orchestrator.CreateFirstRunLibraryAsync(LibraryName)
+                : await workflow!.CreateLibraryAsync(LibraryName);
         }
         finally
         {
@@ -338,7 +342,9 @@ public sealed class FirstRunViewModel : ViewModelBase
             return;
         }
 
-        if (_workflow is null || _discovery is null)
+        LibraryImportOrchestrator? orchestrator = _orchestrator;
+        FirstRunWorkflow? workflow = _workflow;
+        if (orchestrator is null && workflow is null)
         {
             SetWorkflowMissingError();
             return;
@@ -353,18 +359,38 @@ public sealed class FirstRunViewModel : ViewModelBase
         Raise(nameof(IsBusy));
         try
         {
-            FirstRunImportResult result = _modalOperations is null
-                ? await _workflow.ScanAndImportAsync(SelectedScanRoot, _state.CreatedLibraryId)
-                : await _modalOperations.RunAsync(
-                    new ModalOperationOptions(
-                        "初次扫描与导入",
-                        "正在扫描所选目录并导入 PDF 题录。",
-                        true),
-                    context => _workflow.ScanAndImportAsync(
-                        SelectedScanRoot,
-                        _state.CreatedLibraryId,
-                        context.CancellationToken,
-                        context.Report));
+            FirstRunImportResult result;
+            if (orchestrator is not null)
+            {
+                result = _modalOperations is null
+                    ? await orchestrator.ScanDirectoryAndImportAsync(SelectedScanRoot, _state.CreatedLibraryId)
+                    : await _modalOperations.RunAsync(
+                        new ModalOperationOptions(
+                            "初次扫描与导入",
+                            "正在扫描所选目录并导入 PDF 题录。",
+                            true),
+                        context => orchestrator.ScanDirectoryAndImportAsync(
+                            SelectedScanRoot,
+                            _state.CreatedLibraryId,
+                            context.CancellationToken,
+                            context.Report));
+            }
+            else
+            {
+                result = _modalOperations is null
+                    ? await workflow!.ScanAndImportAsync(SelectedScanRoot, _state.CreatedLibraryId)
+                    : await _modalOperations.RunAsync(
+                        new ModalOperationOptions(
+                            "初次扫描与导入",
+                            "正在扫描所选目录并导入 PDF 题录。",
+                            true),
+                        context => workflow!.ScanAndImportAsync(
+                            SelectedScanRoot,
+                            _state.CreatedLibraryId,
+                            context.CancellationToken,
+                            context.Report));
+            }
+
             State = result.State;
             PdfCandidates.Clear();
             foreach (PdfCandidate c in result.ScanResult.Candidates)
@@ -407,7 +433,9 @@ public sealed class FirstRunViewModel : ViewModelBase
             return;
         }
 
-        if (_workflow is null)
+        LibraryImportOrchestrator? orchestrator = _orchestrator;
+        FirstRunWorkflow? workflow = _workflow;
+        if (orchestrator is null && workflow is null)
         {
             SetWorkflowMissingError();
             return;
@@ -418,14 +446,28 @@ public sealed class FirstRunViewModel : ViewModelBase
         try
         {
             PdfImportRequest request = new(SelectedPdf.Path, ItemTitle, ItemAuthors, null);
-            State = _modalOperations is null
-                ? await _workflow.ImportPdfAsync(request)
-                : await _modalOperations.RunAsync(
-                    new ModalOperationOptions(
-                        "导入 PDF 题录",
-                        "正在读取 PDF 并创建题录。",
-                        true),
-                    context => _workflow.ImportPdfAsync(request, context.CancellationToken));
+            if (orchestrator is not null)
+            {
+                State = _modalOperations is null
+                    ? await orchestrator.ImportFirstRunPdfAsync(request)
+                    : await _modalOperations.RunAsync(
+                        new ModalOperationOptions(
+                            "导入 PDF 题录",
+                            "正在读取 PDF 并创建题录。",
+                            true),
+                        context => orchestrator.ImportFirstRunPdfAsync(request, context.CancellationToken));
+            }
+            else
+            {
+                State = _modalOperations is null
+                    ? await workflow!.ImportPdfAsync(request)
+                    : await _modalOperations.RunAsync(
+                        new ModalOperationOptions(
+                            "导入 PDF 题录",
+                            "正在读取 PDF 并创建题录。",
+                            true),
+                        context => workflow!.ImportPdfAsync(request, context.CancellationToken));
+            }
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {

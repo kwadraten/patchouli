@@ -11,6 +11,7 @@ using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Settings;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -185,7 +186,7 @@ public sealed class MetadataLookupSettingsTests
             };
             initial.Save(settingsPath).IsSuccess.Should().BeTrue();
             MainWindowViewModel main = new(settingsPath: settingsPath);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             (await services.Library.CreateLibraryAsync("Synced metadata")).IsSuccess.Should().BeTrue();
             SyncSettingsViewModel sync = main.Settings.SyncSettings;
             await sync.LoadAsync();
@@ -370,8 +371,8 @@ public sealed class MetadataLookupSettingsTests
             };
             settings.Save(settingsPath).IsSuccess.Should().BeTrue();
 
-            AppServices services = await AppServices.CreateAsync(database.Path, settings, settingsPath);
-            FieldInfo field = typeof(AppServices).GetField("_metadataLookupPreferences",
+            HostServices services = await HostServices.CreateAsync(database.Path, settings, settingsPath);
+            FieldInfo field = typeof(HostServices).GetField("_metadataLookupPreferences",
                 BindingFlags.Instance | BindingFlags.NonPublic)!;
             IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference> preferences =
                 (IReadOnlyList<Patchouli.Core.Bibliography.MetadataLookup.MetadataSourcePreference>)field.GetValue(

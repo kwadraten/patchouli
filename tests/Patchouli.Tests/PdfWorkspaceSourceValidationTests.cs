@@ -6,6 +6,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -164,7 +165,7 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
         File.Copy(TestFixtures.RealThreePagePdf, pdf);
         await vm.OpenDatabaseCommand.ExecuteAsync();
         await vm.Library.CreateCommand.ExecuteAsync();
-        AppServices services = await vm.ServicesAsync();
+        HostServices services = await vm.ServicesAsync();
         PdfImportResult imported =
             await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Source validation item", null, 3));
         imported.Success.Should().BeTrue(imported.ErrorMessage);

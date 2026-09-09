@@ -41,8 +41,8 @@ report:
   setup is not included in headless, so absolute budgets are enforced only on the designated
   runner, see below).
 - **First library rows cold/hot** — time from the interactive framework to the first library rows
-  projected into the shell, through the real cold-open path (`AppServices.CreateAsync` migrations +
-  OCR reconciliation + queue start, then the first-rows query).
+  projected into the shell, through the real cold-open path (`HostServices.CreateAsync` in
+  Patchouli.Host: migrations + OCR reconciliation + queue start, then the first-rows query).
 - **100 ms heartbeat max-gap during box adoption** — a 100 ms heartbeat is posted to the UI
   dispatcher while the fixture's full box count is staged + adopted through `DocumentTreeService`
   on background workers; the max observed tick gap is the AC3 responsiveness signal. The counting

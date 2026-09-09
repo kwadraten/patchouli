@@ -13,6 +13,8 @@ using Patchouli.Core.Bibliography.MetadataLookup;
 using Patchouli.Core.Library;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host.Composition;
+using Patchouli.Host.Import;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -83,6 +85,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     }
 
     private int _tagRefreshVersion;
+    private int _tagReconcileVersion;
 
     private async Task RefreshAfterTagDebounceAsync(int version)
     {
@@ -413,7 +416,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     {
         string? primaryItemId = SelectedItem?.ItemId;
         HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         // Microsoft.Data.Sqlite executes synchronously under the async facade, so the database
         // reads run on a thread-pool thread to keep scope switching responsive.
         Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
@@ -429,7 +432,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (!isTrashScope)
         {
             IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services));
-            await Sidebar.LoadTagsAsync(services.Tags, services.LibraryItems, pinnedTags);
+            await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags);
             Sidebar.ApplyPinnedOrder(pinnedTags);
             requiredTags = Sidebar.GetSelectedTagNames();
         }
@@ -438,22 +441,37 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
         // The row-to-view-model mapping is pure CPU work proportional to library size; run it
         // together with the query on a thread-pool thread, then swap the collections in one
-        // reset notification each instead of per-item add notifications.
+        // reset notification each instead of per-item add notifications. Non-trash scopes read
+        // the in-memory LibraryItemCache snapshot; the trash scope still queries SQLite directly.
         (List<LibraryItemViewModel> Items, List<string> RecentItems, List<string> RecentDocuments) refreshed =
             await Task.Run(async () =>
             {
-                Result<IReadOnlyList<LibraryItemRow>> rowsResult = isTrashScope
-                    ? await services.LibraryItems.ListTrashedRowsAsync()
-                    : await services.LibraryItems.ListRowsAsync(requiredTags);
-                if (rowsResult.IsFailure)
+                IReadOnlyList<LibraryItemRow> rows;
+                if (isTrashScope)
                 {
-                    throw new InvalidOperationException(rowsResult.ErrorMessage);
-                }
+                    Result<IReadOnlyList<LibraryItemRow>> rowsResult =
+                        await services.LibraryItems.ListTrashedRowsAsync();
+                    if (rowsResult.IsFailure)
+                    {
+                        throw new InvalidOperationException(rowsResult.ErrorMessage);
+                    }
 
-                IEnumerable<LibraryItemRow> rows = rowsResult.Value;
-                if (noTagSelected)
+                    rows = rowsResult.Value;
+                }
+                else
                 {
-                    rows = rows.Where(row => row.Tags is null || row.Tags.Count == 0);
+                    // Reload the snapshot so a full refresh always reflects the latest committed
+                    // state (same cost as the previous direct ListRowsAsync query); the cache
+                    // still gives LoadTagsAsync and the tag queries a consistent in-memory view.
+                    Result refreshResult = await services.LibraryItemCache.RefreshAsync();
+                    if (refreshResult.IsFailure)
+                    {
+                        throw new InvalidOperationException(refreshResult.ErrorMessage);
+                    }
+
+                    rows = noTagSelected
+                        ? services.LibraryItemCache.QueryUntagged()
+                        : services.LibraryItemCache.QueryByTags(requiredTags);
                 }
 
                 List<LibraryItemViewModel> items = new();
@@ -492,7 +510,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(NoSelectedItem));
     }
 
-    private async Task<IReadOnlyList<string>> LoadPinnedTagsAsync(AppServices services)
+    private async Task<IReadOnlyList<string>> LoadPinnedTagsAsync(HostServices services)
     {
         Result<PinnedTagsAppSettings?> result =
             await services.LibrarySettingCoordinator.ReadAsync<PinnedTagsAppSettings>(
@@ -507,7 +525,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private async Task SavePinnedTagsAsync(IReadOnlyList<string> pinnedTags)
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsFailure)
         {
@@ -524,7 +542,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private async Task ToggleTagPinAsync(TagListItemViewModel tag)
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         IReadOnlyList<string> pinnedTags = await LoadPinnedTagsAsync(services);
         List<string> next = new(pinnedTags);
         if (tag.IsPinned)
@@ -564,7 +582,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result deleteResult = await services.Tags.RemoveTagAsync(tag.Name);
         if (!deleteResult.IsSuccess)
         {
@@ -611,7 +629,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             }
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result result = await services.Tags.RenameTagAsync(tag.Name, newName);
         if (!result.IsSuccess)
         {
@@ -653,7 +671,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result result = await services.Tags.MergeTagsAsync(tag.Name, targetName);
         if (!result.IsSuccess)
         {
@@ -677,7 +695,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = items.Select(item => ItemId.Parse(item.ItemId)).ToArray();
         Result result = await services.Tags.AddTagsToItemsAsync(itemIds, [normalized]);
         if (!result.IsSuccess)
@@ -704,7 +722,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         ItemId sourceId = ItemId.Parse(source.ItemId);
         ItemId targetId = ItemId.Parse(target.ItemId);
 
@@ -761,7 +779,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = items.Select(item => ItemId.Parse(item.ItemId)).ToArray();
         Result clearResult = await services.Tags.SetTagsAsync(itemIds, Array.Empty<string>());
         if (!clearResult.IsSuccess)
@@ -794,7 +812,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result mergeResult = await services.Tags.MergeTagsAsync(normalizedSource, normalizedTarget);
         if (!mergeResult.IsSuccess)
         {
@@ -807,7 +825,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
     /// </summary>
     public async Task DetectDuplicatesAsync()
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         IReadOnlyList<DuplicateItemPair> pairs = await services.DuplicateItemDetection.FindDuplicatesAsync();
 
         if (pairs.Count == 0)
@@ -846,7 +864,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
     }
 
-    private async Task<bool> ProcessDuplicatePairAsync(AppServices services, DuplicateItemPair pair)
+    private async Task<bool> ProcessDuplicatePairAsync(HostServices services, DuplicateItemPair pair)
     {
         ItemId sourceId = pair.ItemIdA == pair.DefaultTargetItemId ? pair.ItemIdB : pair.ItemIdA;
         ItemId targetId = pair.DefaultTargetItemId;
@@ -902,7 +920,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<LibraryItemRow>> rowsResult =
             await Task.Run(() => services.LibraryItems.GetRowsByIdsAsync(itemIds));
         if (rowsResult.IsFailure)
@@ -927,6 +945,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
 
         bool selectedChanged = false;
+        bool selectedItemRemoved = false;
         string? selectedItemId = SelectedItem?.ItemId;
         foreach (LibraryItemRow row in rows)
         {
@@ -965,10 +984,32 @@ public sealed class LibraryShellViewModel : ViewModelBase
                     string.Equals(selectedItemId, Items[index].ItemId, StringComparison.OrdinalIgnoreCase))
                 {
                     selectedChanged = true;
+                    selectedItemRemoved = true;
                 }
 
                 Items.RemoveAt(index);
             }
+        }
+
+        if (selectedItemRemoved && SelectedItem is not null)
+        {
+            // The selected row was deleted or merged away: drop it from the batch selection and
+            // clear the inspector instead of reloading it for an id that no longer resolves.
+            if (SelectedItems.Remove(SelectedItem))
+            {
+                Raise(nameof(SelectedItemCount));
+                Raise(nameof(HasBatchSelection));
+                Raise(nameof(IsSingleSelectionOrNone));
+                Raise(nameof(CanMergeSelectedItems));
+            }
+
+            SelectedItem = null;
+        }
+        else if (SelectedItem is not null &&
+                 removedItemIds is not null &&
+                 removedItemIds.Any(id => string.Equals(id.ToString(), SelectedItem.ItemId, StringComparison.Ordinal)))
+        {
+            _ = Inspector.LoadAsync(ParseItemIdOrNull(SelectedItem.ItemId));
         }
 
         if (selectedChanged)
@@ -976,13 +1017,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise(nameof(InspectorTitle));
             Raise(nameof(InspectorStatus));
             Raise(nameof(InspectorPath));
-        }
-
-        if (SelectedItem is not null &&
-            removedItemIds is not null &&
-            removedItemIds.Any(id => string.Equals(id.ToString(), SelectedItem.ItemId, StringComparison.Ordinal)))
-        {
-            _ = Inspector.LoadAsync(ParseItemIdOrNull(SelectedItem.ItemId));
         }
     }
 
@@ -994,6 +1028,10 @@ public sealed class LibraryShellViewModel : ViewModelBase
     {
         await ApplyChangeSetAsync(changeSet.ItemIds);
         await ApplyDocumentChangeSetAsync(changeSet.DocumentInstanceIds);
+        if (changeSet.ItemIds.Count > 0 || changeSet.DocumentInstanceIds.Count > 0)
+        {
+            await ReconcileTagsAfterCommittedChangeAsync();
+        }
     }
 
     /// <summary>
@@ -1008,13 +1046,117 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<ItemId>> itemIds = await Task.Run(() =>
             services.LibraryItems.GetItemIdsByDocumentInstanceIdsAsync(documentInstanceIds));
         if (itemIds.IsSuccess)
         {
             await ApplyChangeSetAsync(itemIds.Value);
         }
+    }
+
+    /// <summary>
+    /// Reloads the sidebar tag list after a committed changeset and re-evaluates the active tag
+    /// filter so the grid follows tag edits published by write services (add/remove/rename/merge).
+    /// Pin state and selection survive the reload; a selected tag that no longer exists is dropped
+    /// by <see cref="LibrarySidebarViewModel.LoadTagsAsync"/>, and the filter re-run then reflects
+    /// the surviving selection. A version guard discards stale runs when commits arrive faster
+    /// than the reload completes, mirroring the inspector's load guard.
+    /// </summary>
+    private async Task ReconcileTagsAfterCommittedChangeAsync()
+    {
+        if (Sidebar.SelectedScope == LibrarySidebarScope.Trash)
+        {
+            // The trash path routes through RefreshItemsAsync, which already reloads tags.
+            return;
+        }
+
+        int version = ++_tagReconcileVersion;
+        HostServices services = await _main.ServicesAsync();
+        // The commit is already visible in SQLite; refresh the in-memory snapshot here as well
+        // (the revision monitor refreshes it independently) so tag counts and the tag filter
+        // query observe this commit regardless of event-handler ordering.
+        Result refreshResult = await Task.Run(() => services.LibraryItemCache.RefreshAsync());
+        if (refreshResult.IsFailure || version != _tagReconcileVersion)
+        {
+            return;
+        }
+
+        IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services));
+        if (version != _tagReconcileVersion)
+        {
+            return;
+        }
+
+        bool filterWasActive = Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0;
+        await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags);
+        Sidebar.ApplyPinnedOrder(pinnedTags);
+        if (version != _tagReconcileVersion)
+        {
+            return;
+        }
+
+        // Re-run the filter whenever it was or still is active: item tag membership may have
+        // changed even though the sidebar selection did not.
+        if (filterWasActive || Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0)
+        {
+            await ApplyTagFilterMembershipAsync();
+        }
+    }
+
+    /// <summary>
+    /// Re-runs the active tag filter against the refreshed cache snapshot and patches the grid
+    /// collection in place: rows that stopped matching are removed, rows that started matching
+    /// are inserted in created_at order, and the current grid selection is preserved for items
+    /// that survived the re-filter (the selected item is cleared when it no longer matches).
+    /// </summary>
+    private async Task ApplyTagFilterMembershipAsync()
+    {
+        int version = _tagReconcileVersion;
+        bool noTagSelected = Sidebar.IsNoTagSelected;
+        IReadOnlyList<string> requiredTags = Sidebar.GetSelectedTagNames();
+        HostServices services = await _main.ServicesAsync();
+        IReadOnlyList<LibraryItemRow> matching = await Task.Run(() =>
+            noTagSelected
+                ? services.LibraryItemCache.QueryUntagged()
+                : services.LibraryItemCache.QueryByTags(requiredTags));
+        if (version != _tagReconcileVersion)
+        {
+            return;
+        }
+
+        await DispatcherTasks.RunAsync(() =>
+        {
+            HashSet<string> matchingIds = matching.Select(row => row.ItemId.ToString())
+                .ToHashSet(StringComparer.Ordinal);
+            string? primaryItemId = SelectedItem?.ItemId;
+            HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId)
+                .ToHashSet(StringComparer.Ordinal);
+
+            for (int index = Items.Count - 1; index >= 0; index--)
+            {
+                if (!matchingIds.Contains(Items[index].ItemId))
+                {
+                    Items.RemoveAt(index);
+                }
+            }
+
+            HashSet<string> presentIds = Items.Select(item => item.ItemId)
+                .ToHashSet(StringComparer.Ordinal);
+            foreach (LibraryItemRow row in matching)
+            {
+                if (presentIds.Add(row.ItemId.ToString()))
+                {
+                    InsertItemByCreatedAt(CreateItemViewModel(row));
+                }
+            }
+
+            SelectedItem = primaryItemId is null
+                ? null
+                : Items.FirstOrDefault(item => item.ItemId == primaryItemId);
+            SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
+            return Task.CompletedTask;
+        });
     }
 
     private LibraryItemViewModel CreateItemViewModel(LibraryItemRow row)
@@ -1060,7 +1202,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     public async Task<LibraryItemViewModel?> ResolveDocumentItemAsync(string documentInstanceId)
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<DocumentNavigationRow?> result =
             await services.LibraryItems.GetDocumentNavigationAsync(DocumentInstanceId.Parse(documentInstanceId));
         if (result.IsFailure || result.Value is null)
@@ -1155,88 +1297,69 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Raise(nameof(InspectorStatus));
         try
         {
-            AppServices services = await _main.ServicesAsync();
             string documentEngine = _main.AppOptions.OcrEngines.EngineFor(OcrScope.Document);
-            IRealOcrAdapter? adapter = services.OcrAdapters.GetAdapter(documentEngine);
-            if (adapter is null)
+            LibraryImportOrchestrator orchestrator = await _main.ImportOrchestratorAsync();
+            OcrEnqueueItem[] enqueueItems = items
+                .Select(item => new OcrEnqueueItem(item.Title, item.DocumentInstanceId, item.SourcePath))
+                .ToArray();
+            Result<OcrEnqueueSummary> result =
+                await orchestrator.EnqueueOcrForItemsAsync(
+                    enqueueItems,
+                    documentEngine,
+                    priority,
+                    MinerUToken,
+                    CancellationToken.None);
+            if (result.IsFailure)
             {
-                _main.ReportError($"未注册 OCR 引擎：{documentEngine}");
-                return;
-            }
-
-            if (RequiresMinerUToken(documentEngine, adapter.GetCapability()))
-            {
-                string token = await ResolveMinerUTokenAsync();
-                if (string.IsNullOrWhiteSpace(token))
+                if (result.ErrorCode == LibraryImportOrchestrator.MinerUTokenRequiredErrorCode)
                 {
                     await _main.OpenSettingsAsync("mineru", "运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
                     _main.Report("运行 OCR 前需要 MinerU API token。请先在设置中完成配置。");
                     return;
                 }
-            }
 
-            OcrPresetId presetId;
-            try
-            {
-                presetId = await EnsurePresetForEngineAsync(services, documentEngine);
-            }
-            catch (Exception exception)
-            {
-                _main.ReportError($"OCR preset 不可用：{exception.Message}");
+                _main.ReportError(result.ErrorMessage ?? "未知错误");
                 return;
             }
 
-            int succeeded = 0;
-            int failed = 0;
-            int skipped = 0;
+            OcrEnqueueSummary summary = result.Value;
             foreach (LibraryItemViewModel item in items)
             {
-                if (string.IsNullOrWhiteSpace(item.DocumentInstanceId) || string.IsNullOrWhiteSpace(item.SourcePath))
+                OcrEnqueueFailure? failure = summary.Failures.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Title, item.Title, StringComparison.Ordinal));
+                if (failure is not null)
                 {
-                    skipped++;
+                    _main.ReportError($"{item.Title} OCR 入队失败：{failure.Message}");
+                }
+                else if (string.IsNullOrWhiteSpace(item.DocumentInstanceId) ||
+                         string.IsNullOrWhiteSpace(item.SourcePath))
+                {
                     item.ApplyPrimaryDocumentOcrIndexState(
                         PrimaryDocumentOcrIndexState.Resolve(false, null, null, false, false));
-                    continue;
-                }
-
-                DocumentInstanceId documentInstanceId;
-                try
-                {
-                    documentInstanceId = DocumentInstanceId.Parse(item.DocumentInstanceId);
-                }
-                catch (FormatException)
-                {
-                    failed++;
-                    _main.ReportError($"{item.Title} OCR 入队失败：文档标识无效。");
-                    continue;
-                }
-
-                Result<OcrQueueTask> queued = await QueueOcrForItemAsync(
-                    services, documentInstanceId, presetId, priority);
-                if (queued.IsSuccess)
-                {
-                    succeeded++;
-                    item.ApplyPrimaryDocumentOcrIndexState(
-                        PrimaryDocumentOcrIndexState.Resolve(true, "running", null, false, false));
                 }
                 else
                 {
-                    failed++;
-                    _main.ReportError($"{item.Title} OCR 入队失败：{queued.ErrorMessage ?? "未知错误"}");
+                    item.ApplyPrimaryDocumentOcrIndexState(
+                        PrimaryDocumentOcrIndexState.Resolve(true, "running", null, false, false));
                 }
             }
 
-            string summary = $"{operation}：成功入队 {succeeded}，失败 {failed}，无可用文档源 {skipped}。";
-            if (failed > 0)
+            string text = $"{operation}：成功入队 {summary.Succeeded}，失败 {summary.Failed}，无可用文档源 {summary.Skipped}。";
+            if (summary.Failed > 0)
             {
-                _main.ReportError(summary);
+                _main.ReportError(text);
             }
             else
             {
-                _main.Report(summary);
+                _main.Report(text);
             }
 
             Raise(nameof(InspectorStatus));
+            if (summary.Queue is not null)
+            {
+                _main.OcrQueue.ObserveQueue(summary.Queue);
+            }
+
             await _main.OcrQueue.RefreshAsync();
         }
         finally
@@ -1245,11 +1368,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise(nameof(IsBusy));
             Raise(nameof(InspectorStatus));
         }
-    }
-
-    internal static bool RequiresMinerUToken(string engineId, OcrEngineCapability capability)
-    {
-        return engineId == OcrEngineIds.MinerU && capability.RequiresCredential;
     }
 
     private async Task LookupMetadataBatchAsync()
@@ -1327,47 +1445,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         return Task.CompletedTask;
     }
 
-    private async Task<Result<OcrQueueTask>> QueueOcrForItemAsync(AppServices services,
-        DocumentInstanceId documentInstanceId, OcrPresetId presetId, string priority)
-    {
-        Result<IReadOnlyList<Patchouli.Core.Layout.Page>> pages =
-            await services.Pages.ListPagesAsync(documentInstanceId);
-        if (pages.IsFailure)
-        {
-            return Result<OcrQueueTask>.Failure(pages.ErrorCode!, pages.ErrorMessage!);
-        }
-
-        PageId[] pageIds = pages.Value.Select(static page => page.PageId).ToArray();
-
-        if (pageIds.Length == 0)
-        {
-            return Result<OcrQueueTask>.Failure(AppErrorCodes.ValidationFailed,
-                "Document instance has no pages to OCR.");
-        }
-
-        Result<OcrPresetVersion> version = await services.OcrPresets.GetCurrentVersionAsync(presetId);
-        if (version.IsFailure)
-        {
-            return Result<OcrQueueTask>.Failure(version.ErrorCode!, version.ErrorMessage!);
-        }
-
-        Result<IOcrQueueScheduler> queue = await services.GetOcrQueueAsync();
-        if (queue.IsFailure)
-        {
-            return Result<OcrQueueTask>.Failure(queue.ErrorCode!, queue.ErrorMessage!);
-        }
-
-        _main.OcrQueue.ObserveQueue(queue.Value);
-
-        string adapterKind = version.Value.EngineId == OcrEngineIds.MinerU
-            ? OcrAdapterKind.CloudApi
-            : OcrAdapterKind.LocalLibrary;
-        string? providerId = version.Value.EngineId == OcrEngineIds.MinerU ? ProviderIds.MinerU : null;
-        return await services.Ocr.QueueDocumentOcrAsync(documentInstanceId, presetId, pageIds, version.Value.EngineId,
-            adapterKind,
-            providerId, priority);
-    }
-
     public void ApplyOcrQueueRunningState(OcrQueueTask task)
     {
         LibraryItemViewModel? item = Items.FirstOrDefault(candidate =>
@@ -1397,92 +1474,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
             .Observe("library-shell-ocr", "refresh-terminal-ocr-state");
     }
 
-    private async Task<string> ResolveMinerUTokenAsync()
-    {
-        if (!string.IsNullOrWhiteSpace(MinerUToken))
-        {
-            return MinerUToken.Trim();
-        }
-
-        if (!_main.HasOpenRuntimeDatabase)
-        {
-            return "";
-        }
-
-        string persisted = await _main.GetPersistedMinerUTokenAsync();
-        MinerUToken = persisted;
-        NotifyMinerUTokenChanged();
-        return persisted;
-    }
-
-    internal static async Task<OcrPresetId> EnsureMinerUPresetAsync(AppServices services)
-    {
-        Result<OcrPreset?> existing = await services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.MinerU);
-        if (existing.IsFailure)
-        {
-            throw new InvalidOperationException(existing.ErrorMessage);
-        }
-
-        if (existing.Value is not null)
-        {
-            return existing.Value.PresetId;
-        }
-
-        Result<OcrPreset> created = await services.OcrPresets.CreatePresetAsync(
-            "MinerU OCR",
-            "MinerU document OCR preset",
-            OcrEngineIds.MinerU,
-            OcrModelIds.MinerUDefault,
-            null,
-            """{"isOcr":true,"enableTable":true,"enableFormula":true}""",
-            true);
-        if (created.IsFailure)
-        {
-            throw new InvalidOperationException(created.ErrorMessage);
-        }
-
-        return created.Value.PresetId;
-    }
-
-    internal static async Task<OcrPresetId> EnsureNdlKotenPresetAsync(AppServices services)
-    {
-        Result<OcrPreset?> existing = await services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.NdlKoten);
-        if (existing.IsFailure)
-        {
-            throw new InvalidOperationException(existing.ErrorMessage);
-        }
-
-        if (existing.Value is not null)
-        {
-            return existing.Value.PresetId;
-        }
-
-        Result<OcrPreset> created = await services.OcrPresets.CreatePresetAsync(
-            "NDL Koten OCR Lite",
-            "Local classical Japanese OCR preset",
-            OcrEngineIds.NdlKoten,
-            OcrModelIds.NdlKotenDefault,
-            services.OcrStorage.NdlKotenModelsDirectory,
-            "{}",
-            true);
-        if (created.IsFailure)
-        {
-            throw new InvalidOperationException(created.ErrorMessage);
-        }
-
-        return created.Value.PresetId;
-    }
-
-    internal static async Task<OcrPresetId> EnsurePresetForEngineAsync(AppServices services, string engineId)
-    {
-        return engineId switch
-        {
-            OcrEngineIds.MinerU => await EnsureMinerUPresetAsync(services),
-            OcrEngineIds.NdlKoten => await EnsureNdlKotenPresetAsync(services),
-            _ => throw new InvalidOperationException($"未实现默认 OCR preset 的引擎：{engineId}")
-        };
-    }
-
     public Task EditMetadataForItemAsync(LibraryItemViewModel item)
     {
         SelectedItem = item;
@@ -1501,7 +1492,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
         Result result = await services.Items.DeleteItemsAsync(itemIds);
         if (!result.IsSuccess)
@@ -1517,7 +1508,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         List<ItemPurgeDependencyReport> reports = new();
         List<string> reportFailures = new();
         foreach (LibraryItemViewModel item in SelectedItems.ToArray())
@@ -1573,7 +1564,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
         Result result = await services.Items.RestoreItemsAsync(itemIds);
         if (!result.IsSuccess)
@@ -1582,7 +1573,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
     }
 
-    private static void ScheduleFileAssetGc(AppServices services)
+    private static void ScheduleFileAssetGc(HostServices services)
     {
 #pragma warning disable CS4014
         Task.Run(async () =>
@@ -1658,13 +1649,13 @@ internal sealed record MetadataLookupProgressInfo(int Completed, int Total, int 
 
 internal static class MetadataLookupUiBridge
 {
-    public static bool CanLookup(AppServices services, string scheme)
+    public static bool CanLookup(HostServices services, string scheme)
     {
         return services.MetadataLookup.CanLookup(scheme);
     }
 
     public static async Task<MetadataLookupOutcome> LookupAsync(
-        AppServices services,
+        HostServices services,
         ItemId itemId,
         ItemIdentifier identifier,
         CancellationToken cancellationToken)
@@ -1677,7 +1668,7 @@ internal static class MetadataLookupUiBridge
     }
 
     public static async Task<MetadataLookupOutcome> LookupBatchAsync(
-        AppServices services,
+        HostServices services,
         IReadOnlyList<ItemId> itemIds,
         Action<MetadataLookupProgressInfo> onProgress,
         CancellationToken cancellationToken)

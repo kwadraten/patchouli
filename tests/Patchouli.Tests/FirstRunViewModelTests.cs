@@ -4,6 +4,7 @@ using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
+using Patchouli.Host.Import;
 using Patchouli.Core.Import;
 using Patchouli.Core.Library;
 using Patchouli.Core.Operations;
@@ -62,8 +63,7 @@ public sealed class FirstRunViewModelTests
         FirstRunViewModel viewModel = new(path =>
         {
             openedPath = path;
-            return Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
-                new PdfDiscoveryService()));
+            return Task.FromResult<LibraryImportOrchestrator?>(null);
         })
         {
             DatabasePath = @"C:\temp\runtime.sqlite"
@@ -81,8 +81,7 @@ public sealed class FirstRunViewModelTests
     public async Task CreateLibrary_without_open_database_stays_recoverable()
     {
         FirstRunViewModel viewModel = new(_ =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
-                new PdfDiscoveryService())));
+            Task.FromResult<LibraryImportOrchestrator?>(null));
 
         await viewModel.CreateLibraryCommand.ExecuteAsync();
 
@@ -102,8 +101,7 @@ public sealed class FirstRunViewModelTests
         FirstRunViewModel viewModel = new(path =>
         {
             openedPath = path;
-            return Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
-                new PdfDiscoveryService()));
+            return Task.FromResult<LibraryImportOrchestrator?>(null);
         })
         {
             DatabasePath = database.Path,
@@ -143,8 +141,7 @@ public sealed class FirstRunViewModelTests
         await new OcrPresetService(database.ConnectionFactory, library, clock).CreatePresetAsync("MinerU", null,
             OcrEngineIds.MinerU, OcrModelIds.MinerUDefault, null, "{}", true);
         FirstRunViewModel viewModel = new(path =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
-                new PdfDiscoveryService())))
+            Task.FromResult<LibraryImportOrchestrator?>(null))
         {
             DatabasePath = database.Path,
             IsImportMode = true
@@ -274,8 +271,7 @@ public sealed class FirstRunViewModelTests
     public async Task FinishSetupCommand_requires_token()
     {
         FirstRunViewModel viewModel = new(_ =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
-                new PdfDiscoveryService())));
+            Task.FromResult<LibraryImportOrchestrator?>(null));
         SetState(viewModel, new FirstRunWorkflowState(
             FirstRunStep.MinerUConfig,
             "Configure MinerU OCR.",
@@ -298,8 +294,7 @@ public sealed class FirstRunViewModelTests
     public async Task FinishSetupCommand_completes_after_token()
     {
         FirstRunViewModel viewModel = new(_ =>
-            Task.FromResult<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>((null!,
-                new PdfDiscoveryService())))
+            Task.FromResult<LibraryImportOrchestrator?>(null))
         {
             MinerUToken = "token"
         };

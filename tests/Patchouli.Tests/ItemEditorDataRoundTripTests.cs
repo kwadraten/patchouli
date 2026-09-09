@@ -9,6 +9,7 @@ using Patchouli.Infrastructure.Csl;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Editor;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -25,7 +26,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
 
             CreateItemRequest request = BiblatexMappedItemMerge.ToCreateRequest(CreateImportedBook()) with
             {
@@ -91,7 +92,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
 
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("webpage", "Projection test"));
@@ -149,7 +150,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
 
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("manuscript", "Projection test")
@@ -216,7 +217,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
 
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("classic", "Core field test"));
@@ -255,7 +256,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
             await main.OpenDatabaseCommand.ExecuteAsync();
             await main.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
 
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("motion_picture", "Role options test"));

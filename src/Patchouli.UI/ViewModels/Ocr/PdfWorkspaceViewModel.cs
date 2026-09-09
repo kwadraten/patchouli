@@ -13,6 +13,7 @@ using Patchouli.Core.Results;
 using Patchouli.UI.Services;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -958,17 +959,16 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task<OcrPresetId?> ResolveOcrPresetIdAsync(OcrScope scope)
     {
-        try
+        string engineId = _main.AppOptions.OcrEngines.EngineFor(scope);
+        Result<OcrPresetId> preset =
+            await (await _main.ImportOrchestratorAsync()).EnsurePresetForEngineAsync(engineId);
+        if (preset.IsFailure)
         {
-            AppServices services = await _main.ServicesAsync();
-            string engineId = _main.AppOptions.OcrEngines.EngineFor(scope);
-            return await LibraryShellViewModel.EnsurePresetForEngineAsync(services, engineId);
-        }
-        catch (Exception exception)
-        {
-            Status = $"OCR preset 不可用：{exception.Message}";
+            Status = $"OCR preset 不可用：{preset.ErrorMessage}";
             return null;
         }
+
+        return preset.Value;
     }
 
     private async Task RunOcrModalAsync(string title, string initialStatus, Func<Task<Result>> operation)
@@ -1214,7 +1214,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         await RunOcrModalAsync("逻辑页 OCR", "正在按逻辑页识别本页...", async () =>
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Result<LogicalPageOcrResult> result = await services.LogicalPageOcr.RunAsync(
                 DocumentInstanceId.Parse(Item.DocumentInstanceId), presetId.Value,
                 _currentPageId.Value, OrderSiblings(logicalPages)
@@ -1244,7 +1244,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(documentId);
         if (pages.IsFailure)
@@ -1310,7 +1310,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         await RunOcrModalAsync("本页 OCR", "正在识别当前物理页...", async () =>
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
             Result<LogicalDocumentOcrPagePlan> plan = await CreatePageOcrPlanAsync(
                 services, documentId, _currentPageId.Value);
@@ -1336,7 +1336,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     }
 
     private static async Task<Result<LogicalDocumentOcrPagePlan>> CreatePageOcrPlanAsync(
-        AppServices services,
+        HostServices services,
         DocumentInstanceId documentId,
         PageId pageId)
     {
@@ -2042,7 +2042,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 }
             }
 
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
             FileAssetId? fileAssetId = await ResolveFileAssetIdAsync(services, documentInstanceId);
             if (fileAssetId is null)
@@ -2181,7 +2181,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     // only warms the shared preview raster cache (bounded LRU), never mutates the current
     // page, and failures are swallowed so a prefetch can never change the current page's
     // success state. Fast navigation cancels the previous prefetch window.
-    private void SchedulePrefetchAsync(AppServices services, DocumentInstanceId documentInstanceId,
+    private void SchedulePrefetchAsync(HostServices services, DocumentInstanceId documentInstanceId,
         FileAssetId? fileAssetId)
     {
         _prefetchCancellation?.Cancel();
@@ -2195,7 +2195,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _ = PrefetchWindowAsync(services, documentInstanceId, fileAssetId, targets, token);
     }
 
-    private async Task PrefetchWindowAsync(AppServices services, DocumentInstanceId documentInstanceId,
+    private async Task PrefetchWindowAsync(HostServices services, DocumentInstanceId documentInstanceId,
         FileAssetId? fileAssetId, IReadOnlyList<int> pageIndexes, CancellationToken cancellationToken)
     {
         try
@@ -2212,7 +2212,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    private async Task PrefetchPageAsync(AppServices services, DocumentInstanceId documentInstanceId,
+    private async Task PrefetchPageAsync(HostServices services, DocumentInstanceId documentInstanceId,
         FileAssetId? fileAssetId, int pageIndex, CancellationToken cancellationToken)
     {
         try
@@ -2255,7 +2255,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             .ToArray();
     }
 
-    private async Task<FileAssetId?> ResolveFileAssetIdAsync(AppServices services,
+    private async Task<FileAssetId?> ResolveFileAssetIdAsync(HostServices services,
         DocumentInstanceId documentInstanceId)
     {
         if (!string.IsNullOrWhiteSpace(Item.FileAssetId))
@@ -2385,7 +2385,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         if (unresolved.Count > 0 && !string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
             for (int pageIndex = Math.Min(_pageIndex - 1, _pages.Count - 1);
                  pageIndex >= 0 && unresolved.Count > 0;
@@ -2471,7 +2471,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         if (_currentPageId is { } pageId)
         {
             IReadOnlyList<DocumentBox> boxes = _loadedBoxes;
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Result<IReadOnlyList<DocumentBoxOverlap>> overlaps = await services.Overlaps.GetOrCreateAsync(
                 revisionId,
                 pageId,
@@ -2554,7 +2554,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId)
     {
         PreviewBlocks.Clear();
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
             revisionId, false);
         if (compiled.IsFailure)
@@ -2642,7 +2642,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         DocumentInstanceId docId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         if (_currentPageId is null)
         {
@@ -2673,7 +2673,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<DocumentTreeRevision> res = await services.DocumentTrees.CommitPageEditAsync(_editSessionId.Value);
         if (res.IsSuccess)
         {
@@ -2713,7 +2713,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         await ReloadAsync();
     }
 
-    private async Task LoadPageRevisionsAsync(AppServices services, DocumentInstanceId documentInstanceId,
+    private async Task LoadPageRevisionsAsync(HostServices services, DocumentInstanceId documentInstanceId,
         PageId pageId)
     {
         PageRevisions.Clear();
@@ -2794,7 +2794,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
         Result<DocumentTreeRevision> result = await services.DocumentTrees.RevertToRevisionAsync(
             documentInstanceId, _currentPageId.Value, revision.RevisionId);

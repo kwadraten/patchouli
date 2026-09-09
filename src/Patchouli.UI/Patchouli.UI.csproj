@@ -23,12 +23,13 @@
     <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.McpServer\Patchouli.McpServer.csproj" />
+    <ProjectReference Include="..\Patchouli.Host\Patchouli.Host.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
-    <PackageReference Include="Avalonia.Controls.DataGrid" />
+    <PackageReference Include="ProDataGrid" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />

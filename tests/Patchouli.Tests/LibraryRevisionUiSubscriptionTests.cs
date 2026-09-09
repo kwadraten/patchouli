@@ -5,6 +5,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -30,7 +31,7 @@ public sealed class LibraryRevisionUiSubscriptionTests : IDisposable
             {
                 await viewModel.OpenDatabaseCommand.ExecuteAsync();
                 await viewModel.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await viewModel.ServicesAsync();
+                HostServices services = await viewModel.ServicesAsync();
                 LibraryChangeSet? observedChange = null;
                 services.LibraryRevisions.ChangeCommitted += (_, eventArgs) => observedChange = eventArgs.ChangeSet;
                 Result<ItemMetadata> created = await services.Items.CreateItemAsync("book", "Before revision");

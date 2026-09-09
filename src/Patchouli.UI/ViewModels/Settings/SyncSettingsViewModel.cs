@@ -8,6 +8,7 @@ using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Settings;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -318,7 +319,7 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
             return Result<LibraryId>.Success(_libraryId.Value);
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync(cancellationToken);
         if (library.IsFailure)
         {

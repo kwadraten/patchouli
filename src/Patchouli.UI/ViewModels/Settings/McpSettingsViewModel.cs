@@ -6,6 +6,7 @@ using System.Collections.ObjectModel;
 using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Patchouli.Core.Results;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -263,7 +264,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private async Task AddCliToPathAsync()
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result result = services.CliPath.AddToPath();
         RefreshCliStatus(services);
         if (result.IsFailure)
@@ -278,7 +279,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
     private async Task RemoveCliFromPathAsync()
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result result = services.CliPath.RemoveFromPath();
         RefreshCliStatus(services);
         if (result.IsFailure)
@@ -291,7 +292,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         SetStatus("patchouli-cli 已从 PATH 移除。");
     }
 
-    private void RefreshCliStatus(AppServices services)
+    private void RefreshCliStatus(HostServices services)
     {
         _cliInstallation = services.CliPath.GetInstallation();
         Raise(nameof(CliStatusText));
@@ -310,8 +311,12 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        await _main.StopMcpServerAsync("应用新设置");
-        await _main.StartMcpServerAsync();
+        await _main.RestartMcpServerAsync("应用新设置");
+        if (!_main.McpServerRunning)
+        {
+            throw new InvalidOperationException("MCP Server 未能启动。请检查状态栏中的错误详情。");
+        }
+
         RequiresReload = false;
     }
 

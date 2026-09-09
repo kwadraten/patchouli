@@ -30,6 +30,11 @@ using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Core.Search;
 using Patchouli.UI.Themes;
+using Patchouli.Host.Composition;
+using Patchouli.Host.Caching;
+using Patchouli.Host.Import;
+using Patchouli.Host.Mcp;
+using Patchouli.Host.Watching;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -43,26 +48,23 @@ using Services;
 
 public sealed class MainWindowViewModel : ViewModelBase
 {
-    private AppServices? _services;
+    private static readonly Action<Exception, string, string?> ReportUnexpectedException =
+        static (exception, boundary, operation) =>
+            UnexpectedExceptions.Sink.Report(exception, boundary, operation);
+
+    private HostServices? _services;
     private ILibraryRevisionService? _observedLibraryRevisions;
-    private McpHttpServer? _mcpServer;
-    private Task? _backgroundMcpStartTask;
-    private long? _mcpRunningSettingsRevision;
+    private McpServerHost? _mcpHost;
+    private FileSearchRootWatcherService? _fileSearchRootWatcher;
+    private LibraryImportOrchestrator? _importOrchestrator;
+    private LibraryRevisionMonitor? _libraryRevisionMonitor;
+    private RescanCompletionCapture? _activeRescanCapture;
+    private bool _externalLibraryChangePending;
     private readonly bool _autoStartMcpServer;
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
     private string _runtimeDatabasePath;
     private int _libraryGeneration;
-
-    private readonly Dictionary<string, FileSystemWatcher> _fileSearchRootWatchers =
-        new(StringComparer.OrdinalIgnoreCase);
-
-    private readonly object _fileSearchRootWatchSync = new();
-    private readonly SemaphoreSlim _fileSearchRootRescanGate = new(1, 1);
-    private CancellationTokenSource? _fileSearchRootWatchDebounce;
-    private Task? _fileSearchRootWatchDebounceTask;
-    private long _fileSearchRootWatchGeneration;
-    private bool _fileSearchRootWatchersActive;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -99,8 +101,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     public bool StatusIsError { get; set; }
     public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}/mcp";
     public string McpStatusText { get; private set; } = "MCP: 未启动";
-    public bool McpServerRunning => _mcpServer?.IsRunning == true;
-    public long? McpRunningSettingsRevision => _mcpRunningSettingsRevision;
+    public bool McpServerRunning => _mcpHost?.IsRunning == true;
+    public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
     public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
     public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
 
@@ -248,6 +250,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand ShowLibraryCommand { get; }
     public AsyncCommand ShowReadingCommand { get; }
     public AsyncCommand RunToolbarSearchCommand { get; }
+    public AsyncCommand OpenAdvancedSearchCommand { get; }
     public AsyncCommand OpenSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
@@ -311,7 +314,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
         }
 
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsFailure)
         {
@@ -345,7 +348,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         bool enabled,
         SyncAppSettings? syncOverride = null)
     {
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsFailure)
         {
@@ -497,13 +500,15 @@ public sealed class MainWindowViewModel : ViewModelBase
             }
 
             await BeginLibrarySwitchAsync("正在切换运行数据库。");
-            await ResetFileSearchRootWatchersAsync();
             await RunWithStartupLoadingAsync(async () =>
             {
-                AppServices services;
+                HostServices services;
                 try
                 {
-                    services = await AppServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath);
+                    services = await HostServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath,
+                        CreateMigrationProgress(),
+                        reportUnexpectedException: ReportUnexpectedException,
+                        startupProgress: CreateStartupStageProgress());
                     SetServices(services);
                 }
                 catch (UnsupportedLibrarySchemaException exception)
@@ -516,10 +521,13 @@ public sealed class MainWindowViewModel : ViewModelBase
                     return;
                 }
 
+                StartupLoadingStatus = "正在同步元数据查找设置…";
                 await RefreshSyncedMetadataLookupAsync(services);
                 await Settings.ReloadCleanSectionsAsync();
                 PersistRuntimeDatabasePathIfEnabled();
+                StartupLoadingStatus = "正在恢复 MinerU 凭据…";
                 await LoadPersistedMinerUTokenAsync();
+                StartupLoadingStatus = "正在刷新文件搜索路径…";
                 await RefreshSidebarPathsAsync();
                 Status = $"数据库已就绪：{RuntimeDatabasePath}";
                 Raise(nameof(Status));
@@ -527,6 +535,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 Raise(nameof(StatusBarVersion));
                 if (_autoStartMcpServer)
                 {
+                    StartupLoadingStatus = "正在启动 MCP 服务器…";
                     await StartMcpServerAsync(services);
                 }
             });
@@ -539,6 +548,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         ShowLibraryCommand = new AsyncCommand(ShowLibraryAsync);
         ShowReadingCommand = new AsyncCommand(ShowReadingAsync);
         RunToolbarSearchCommand = new AsyncCommand(RunToolbarSearchAsync);
+        OpenAdvancedSearchCommand = new AsyncCommand(OpenAdvancedSearchAsync);
         OpenSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mineru"));
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
@@ -661,7 +671,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    public async Task<AppServices> ServicesAsync(bool startMcpServer = true)
+    public async Task<HostServices> ServicesAsync(bool startMcpServer = true)
     {
         if (_services is not null)
         {
@@ -679,21 +689,27 @@ public sealed class MainWindowViewModel : ViewModelBase
         StartupLoadingStatus = "正在启动…";
         try
         {
-            AppServices services = await AppServices.CreateAsync(
+            HostServices services = await HostServices.CreateAsync(
                 RuntimeDatabasePath,
                 _settings,
                 SettingsFilePath,
-                new Progress<MigrationProgress>(p =>
-                    StartupLoadingStatus = $"正在应用数据库迁移 ({p.Ordinal}/{p.Total})：{p.Name}"));
+                CreateMigrationProgress(),
+                reportUnexpectedException: ReportUnexpectedException,
+                startupProgress: CreateStartupStageProgress());
             SetServices(services);
+            StartupLoadingStatus = "正在同步元数据查找设置…";
             await RefreshSyncedMetadataLookupAsync(services);
+            StartupLoadingStatus = "正在恢复 MinerU 凭据…";
             await LoadPersistedMinerUTokenAsync();
+            StartupLoadingStatus = "正在刷新文件搜索路径…";
             await RefreshSidebarPathsAsync();
             if (startMcpServer && _autoStartMcpServer)
             {
+                StartupLoadingStatus = "正在启动 MCP 服务器…";
                 await StartMcpServerAsync(services);
             }
 
+            StartupLoadingStatus = "正在加载资料库内容…";
             Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
             if (library.IsFailure)
             {
@@ -710,6 +726,32 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
+    private Progress<MigrationProgress> CreateMigrationProgress()
+    {
+        return new Progress<MigrationProgress>(p =>
+            StartupLoadingStatus = $"正在应用数据库迁移 ({p.Ordinal}/{p.Total})：{p.Name}");
+    }
+
+    private Progress<StartupStage> CreateStartupStageProgress()
+    {
+        return new Progress<StartupStage>(stage => StartupLoadingStatus = DescribeStartupStage(stage));
+    }
+
+    private static string DescribeStartupStage(StartupStage stage)
+    {
+        return stage switch
+        {
+            StartupStage.ValidatingPaths => "正在校验并准备存储路径…",
+            StartupStage.ComposingServices => "正在初始化服务组件…",
+            StartupStage.ApplyingMigrations => "正在检查数据库迁移…",
+            StartupStage.AdoptingRootBindings => "正在对账文件搜索根目录绑定…",
+            StartupStage.ReconcilingOcrRuns => "正在对账中断的 OCR 任务…",
+            StartupStage.StartingOcrQueue => "正在启动 OCR 处理队列…",
+            StartupStage.ApplyingSyncedSettings => "正在应用同步的元数据设置…",
+            _ => "正在启动…"
+        };
+    }
+
     private async Task RunWithStartupLoadingAsync(Func<Task> action)
     {
         IsStartupLoadingVisible = true;
@@ -724,7 +766,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    private void SetServices(AppServices services)
+    private void SetServices(HostServices services)
     {
         if (ReferenceEquals(_services, services))
         {
@@ -735,9 +777,81 @@ public sealed class MainWindowViewModel : ViewModelBase
         DetachLibraryChangeNotifications();
         _services = services;
         EnsureLibraryChangeNotifications(services);
+        AttachHostServices(services);
     }
 
-    private void EnsureLibraryChangeNotifications(AppServices services)
+    /// <summary>
+    /// Creates the per-services host wrappers (MCP server host, file-search-root watcher fleet,
+    /// import orchestrator) and starts the cross-process library revision monitor. Called every
+    /// time a new <see cref="HostServices"/> instance is installed.
+    /// </summary>
+    private void AttachHostServices(HostServices services)
+    {
+        _mcpHost = new McpServerHost(services, ReportUnexpectedException);
+        _mcpHost.StatusChanged += OnMcpHostStatusChanged;
+        _mcpHost.ConnectionCountsChanged += OnMcpHostConnectionCountsChanged;
+
+        _fileSearchRootWatcher = new FileSearchRootWatcherService(services, Logger);
+        _fileSearchRootWatcher.RescanCompleted += OnFileSearchRootRescanCompleted;
+        _fileSearchRootWatcher.RescanFailed += OnFileSearchRootRescanFailed;
+        _fileSearchRootWatcher.SearchRootAvailabilityChanged += OnSearchRootAvailabilityChanged;
+
+        _importOrchestrator = new LibraryImportOrchestrator(
+            services,
+            new DialogImportConflictPrompt(this),
+            new DialogBiblatexImportPrompt(this));
+
+        _libraryRevisionMonitor = services.LibraryRevisionMonitor;
+        _libraryRevisionMonitor.ExternalChangeDetected += OnLibraryExternalChangeDetected;
+        _libraryRevisionMonitor.CacheRefreshed += OnLibraryCacheRefreshed;
+        _libraryRevisionMonitor.Start();
+    }
+
+    /// <summary>Tears down the host wrappers created by <see cref="AttachHostServices"/>.</summary>
+    private void DetachHostServices()
+    {
+        if (_mcpHost is not null)
+        {
+            _mcpHost.StatusChanged -= OnMcpHostStatusChanged;
+            _mcpHost.ConnectionCountsChanged -= OnMcpHostConnectionCountsChanged;
+            _mcpHost.DisposeAsync().AsTask().Observe("host-services", "dispose-mcp-host");
+            _mcpHost = null;
+        }
+
+        if (_fileSearchRootWatcher is not null)
+        {
+            _fileSearchRootWatcher.RescanCompleted -= OnFileSearchRootRescanCompleted;
+            _fileSearchRootWatcher.RescanFailed -= OnFileSearchRootRescanFailed;
+            _fileSearchRootWatcher.SearchRootAvailabilityChanged -= OnSearchRootAvailabilityChanged;
+            _fileSearchRootWatcher.DisposeAsync().AsTask().Observe("host-services", "dispose-root-watcher");
+            _fileSearchRootWatcher = null;
+        }
+
+        if (_libraryRevisionMonitor is not null)
+        {
+            _libraryRevisionMonitor.ExternalChangeDetected -= OnLibraryExternalChangeDetected;
+            _libraryRevisionMonitor.CacheRefreshed -= OnLibraryCacheRefreshed;
+            _libraryRevisionMonitor.Dispose();
+            _libraryRevisionMonitor = null;
+        }
+
+        _importOrchestrator = null;
+        _externalLibraryChangePending = false;
+    }
+
+    private void StopLibraryRevisionMonitor()
+    {
+        _libraryRevisionMonitor?.Stop();
+    }
+
+    internal async Task<LibraryImportOrchestrator> ImportOrchestratorAsync()
+    {
+        await ServicesAsync();
+        return _importOrchestrator ??
+               throw new InvalidOperationException("The import orchestrator is not available.");
+    }
+
+    private void EnsureLibraryChangeNotifications(HostServices services)
     {
         if (_observedLibraryRevisions is not null &&
             !ReferenceEquals(_observedLibraryRevisions, services.LibraryRevisions))
@@ -801,6 +915,44 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
+    /// <summary>
+    /// The monitor raises <see cref="LibraryRevisionMonitor.ExternalChangeDetected"/> on a poll
+    /// thread right before <see cref="LibraryRevisionMonitor.CacheRefreshed"/>; the flag pairs
+    /// them so in-process commits (which also raise CacheRefreshed) do not trigger a full refresh.
+    /// </summary>
+    private void OnLibraryExternalChangeDetected(object? sender, EventArgs e)
+    {
+        if (!ReferenceEquals(sender, _libraryRevisionMonitor))
+        {
+            return;
+        }
+
+        Volatile.Write(ref _externalLibraryChangePending, true);
+    }
+
+    private void OnLibraryCacheRefreshed(object? sender, EventArgs e)
+    {
+        if (!ReferenceEquals(sender, _libraryRevisionMonitor) ||
+            !Volatile.Read(ref _externalLibraryChangePending))
+        {
+            return;
+        }
+
+        Volatile.Write(ref _externalLibraryChangePending, false);
+        DispatcherTasks.RunAsync(RefreshItemsAfterExternalLibraryChangeAsync)
+            .Observe("library-revision-monitor", "external-refresh");
+    }
+
+    private async Task RefreshItemsAfterExternalLibraryChangeAsync()
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        await Shell.RefreshItemsAsync();
+    }
+
     public void StartMcpServerInBackground()
     {
         if (!_autoStartMcpServer)
@@ -808,19 +960,13 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        if (_backgroundMcpStartTask is { IsCompleted: false })
-        {
-            return;
-        }
-
-        _backgroundMcpStartTask = StartMcpServerInBackgroundAsync();
-        _backgroundMcpStartTask.Observe("application-initialization", "start-mcp-server");
+        StartMcpServerInBackgroundAsync().Observe("application-initialization", "start-mcp-server");
     }
 
     private async Task StartMcpServerInBackgroundAsync()
     {
-        AppServices services = await ServicesAsync(false);
-        await Task.Run(() => StartMcpServerAsync(services));
+        _ = await ServicesAsync(false);
+        _mcpHost?.StartInBackground();
     }
 
     public async Task RefreshSyncedMetadataLookupAsync()
@@ -828,7 +974,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         await RefreshSyncedMetadataLookupAsync(await ServicesAsync());
     }
 
-    private async Task RefreshSyncedMetadataLookupAsync(AppServices services)
+    private async Task RefreshSyncedMetadataLookupAsync(HostServices services)
     {
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsFailure ||
@@ -853,7 +999,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         IConflictActionExecutor? executor = null,
         CancellationToken cancellationToken = default)
     {
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         ConflictResolutionCoordinator coordinator = new(Dialogs, services.ConflictActions);
         return await coordinator.ResolveAsync(conflict, executor, cancellationToken);
     }
@@ -864,7 +1010,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         try
         {
-            AppServices services = await ServicesAsync();
+            HostServices services = await ServicesAsync();
             Result<IReadOnlyList<FileSearchRoot>> roots = await services.FileResolution.ListSearchRootsAsync();
             if (roots.IsSuccess)
             {
@@ -907,340 +1053,153 @@ public sealed class MainWindowViewModel : ViewModelBase
         bool showBlockingDialog = false,
         CancellationToken cancellationToken = default,
         Action<int?, int?, string, string?>? progress = null,
-        string trigger = "manual")
+        string trigger = FileSearchRootWatcherService.ManualTrigger)
     {
-        await _fileSearchRootRescanGate.WaitAsync(cancellationToken);
+        await ServicesAsync();
+        FileSearchRootWatcherService watcher = _fileSearchRootWatcher ??
+                                               throw new InvalidOperationException("文件搜索根监视服务不可用。");
+        // The service raises its completion events synchronously on the rescan thread before
+        // returning. Capture them for this call so the UI follow-up is awaited by the caller
+        // (manual rescans); watcher-triggered rescans with no direct caller are marshaled to the
+        // UI thread by the event handlers instead.
+        RescanCompletionCapture capture = new();
+        _activeRescanCapture = capture;
         try
         {
-            AppServices services = await ServicesAsync();
             Result<FileSearchRootRescanSummary> result;
-            try
+            if (showBlockingDialog)
             {
-                if (showBlockingDialog)
-                {
-                    result = await ModalOperations.RunAsync(
-                        new ModalOperationOptions(
-                            "文件重新扫描",
-                            "正在扫描文件搜索根并导入新发现的 PDF。",
-                            true),
-                        context => RescanFileSearchRootsCoreAsync(services, completionMessage,
-                            context.CancellationToken, context.Report, trigger),
-                        cancellationToken);
-                }
-                else
-                {
-                    result = await Task.Run(
-                        () => RescanFileSearchRootsCoreAsync(services, completionMessage, cancellationToken, progress,
-                            trigger),
-                        cancellationToken);
-                }
+                result = await ModalOperations.RunAsync(
+                    new ModalOperationOptions(
+                        "文件重新扫描",
+                        "正在扫描文件搜索根并导入新发现的 PDF。",
+                        true),
+                    context => watcher.RescanFileSearchRootsAsync(
+                        completionMessage,
+                        context.CancellationToken,
+                        context.Report,
+                        trigger),
+                    cancellationToken);
+            }
+            else
+            {
+                result = await watcher.RescanFileSearchRootsAsync(completionMessage, cancellationToken, progress,
+                    trigger);
+            }
 
-                await ApplyFileSearchRootRescanResultAsync(result, completionMessage);
-                return result;
-            }
-            catch (OperationCanceledException exception) when (
-                cancellationToken.IsCancellationRequested || exception.CancellationToken.IsCancellationRequested)
+            if (capture.Failed is { } failed)
             {
-                Report("文件重新扫描已取消。");
-                throw;
+                ReportError(failed.Message);
             }
+            else if (capture.Completed is { } completed)
+            {
+                await ApplyFileSearchRootRescanResultAsync(completed);
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException exception) when (
+            cancellationToken.IsCancellationRequested || exception.CancellationToken.IsCancellationRequested)
+        {
+            Report("文件重新扫描已取消。");
+            throw;
         }
         finally
         {
-            _fileSearchRootRescanGate.Release();
+            if (ReferenceEquals(_activeRescanCapture, capture))
+            {
+                _activeRescanCapture = null;
+            }
         }
     }
 
-    private async Task<Result<FileSearchRootRescanSummary>> RescanFileSearchRootsCoreAsync(
-        AppServices services,
-        string completionMessage,
-        CancellationToken cancellationToken,
-        Action<int?, int?, string, string?>? progress,
-        string trigger)
+    private sealed class RescanCompletionCapture
     {
-        BlockingOperationId? operationId = null;
-        try
-        {
-            Result<IReadOnlyList<FileSearchRoot>> roots =
-                await services.FileResolution.ListSearchRootsAsync(cancellationToken);
-            if (roots.IsFailure)
-            {
-                return Result<FileSearchRootRescanSummary>.Failure(roots.ErrorCode!, roots.ErrorMessage!);
-            }
-
-            await LogOperationAsync("file-scan",
-                $"Rescan started (trigger={trigger}): {roots.Value.Count} file search root(s).");
-
-            Result<BlockingOperation> started = await services.BlockingOperations.StartAsync(
-                BlockingOperationTypes.FileSearchRootScan,
-                BlockingOperationScopeTypes.FileSearchRoot,
-                "all",
-                true,
-                "正在重新扫描文件搜索根。",
-                0,
-                roots.Value.Count,
-                ["等待扫描完成", "检查离线文件搜索根"],
-                cancellationToken);
-            if (started.IsSuccess)
-            {
-                operationId = started.Value.OperationId;
-            }
-
-            HashSet<string> knownPaths = await LoadKnownFilePathsAsync(services, cancellationToken);
-            int processedRoots = 0;
-            int scanned = 0;
-            int imported = 0;
-            int skipped = 0;
-            int failed = 0;
-            int partialRoots = 0;
-            int unavailableRoots = 0;
-            int skippedDirectories = 0;
-            int skippedFiles = 0;
-            progress?.Invoke(0, roots.Value.Count, "正在扫描文件搜索根。", $"已找到 {roots.Value.Count} 个文件搜索根。");
-
-            foreach (FileSearchRoot root in roots.Value)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                progress?.Invoke(processedRoots, roots.Value.Count, $"正在扫描：{root.RootPath}", null);
-                Result<ResolvedFileSearchRoot> reopened =
-                    await services.FileSearchRootAccess.ReopenAsync(root, cancellationToken);
-                if (reopened.IsFailure)
-                {
-                    unavailableRoots++;
-                    await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, false, cancellationToken);
-                    processedRoots++;
-                    progress?.Invoke(processedRoots, roots.Value.Count, "文件搜索根不可用，已跳过。",
-                        reopened.ErrorMessage ?? root.RootPath);
-                    continue;
-                }
-
-                using IDisposable? resolvedRoot = reopened.Value.AccessLease;
-                FileSearchRootScanResult scan =
-                    await services.FileSearchRootAccess.ScanPdfAsync(reopened.Value, cancellationToken);
-                await LogOperationAsync("file-scan",
-                    $"Root scan finished (trigger={trigger}): {root.RootPath} status={scan.ScanStatus}, " +
-                    $"candidates={scan.Candidates.Count}, skippedDirectories={scan.SkippedDirectories.Count}, " +
-                    $"skippedFiles={scan.SkippedFiles.Count}.");
-                foreach (FileSearchRootIssue issue in scan.SkippedDirectories.Concat(scan.SkippedFiles))
-                {
-                    await LogOperationAsync("file-scan",
-                        $"Skipped (trigger={trigger}): [{issue.Code}] {issue.Path} - {issue.Reason}");
-                }
-
-                bool available = scan.ScanStatus == FileSearchRootScanStatuses.Complete &&
-                                 scan.RootStatus == FileSearchRootStatuses.Available;
-                await services.FileResolution.SetSearchRootAvailabilityAsync(root.RootId, available, cancellationToken);
-                if (scan.ScanStatus == FileSearchRootScanStatuses.Partial)
-                {
-                    partialRoots++;
-                }
-
-                if (scan.ScanStatus == FileSearchRootScanStatuses.Failed)
-                {
-                    unavailableRoots++;
-                }
-
-                skippedDirectories += scan.SkippedDirectories.Count;
-                skippedFiles += scan.SkippedFiles.Count;
-                if (operationId is not null)
-                {
-                    foreach (IGrouping<string, FileSearchRootExcludedEntry> group in scan.ExcludedEntries.GroupBy(
-                                 entry => entry.Rule, StringComparer.Ordinal))
-                    {
-                        await services.BlockingOperations.AddLogEntryAsync(operationId.Value, "info",
-                            $"Excluded {group.Count()} path(s) by scan rule.", group.Key,
-                            BlockingOperationScopeTypes.FileSearchRoot, root.RootId.ToString(), cancellationToken);
-                    }
-                }
-
-                if (scan.ScanStatus is FileSearchRootScanStatuses.Failed or FileSearchRootScanStatuses.Cancelled)
-                {
-                    processedRoots++;
-                    progress?.Invoke(processedRoots, roots.Value.Count,
-                        $"文件搜索根扫描未完成：{scan.ScanStatus}", root.RootPath);
-                    continue;
-                }
-
-                // A partial scan (e.g. a directory timed out) still
-                // imports the candidates that were discovered; the next rescan picks up the rest.
-                if (scan.ScanStatus == FileSearchRootScanStatuses.Partial)
-                {
-                    progress?.Invoke(processedRoots, roots.Value.Count,
-                        "文件搜索根扫描不完整，仍导入已发现的 PDF。", root.RootPath);
-                }
-
-                scanned += scan.Candidates.Count;
-                // Local-ready first, then hydrated cloud files, then placeholders. The last tier
-                // is hydrated only after all immediately readable files have been imported.
-                List<PdfCandidate> importQueue = FileLocalityClassifier
-                    .OrderForImport(scan.Candidates, static c => c.Readiness, static c => c.FileName)
-                    .ToList();
-                int importIndex = 0;
-                foreach (PdfCandidate candidate in importQueue)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    importIndex++;
-                    string normalizedPath = Path.GetFullPath(candidate.Path);
-                    if (knownPaths.Contains(normalizedPath))
-                    {
-                        skipped++;
-                        continue;
-                    }
-
-                    FileLocalityAssessment locality = services.FileSearchRootAccess.Assess(normalizedPath);
-                    if (locality.Readiness == FileLocalityReadiness.CloudUnready)
-                    {
-                        progress?.Invoke(processedRoots, roots.Value.Count,
-                            $"正在下载云端文件：{candidate.FileName}", $"下载 → {normalizedPath}");
-                        await LogOperationAsync("file-scan",
-                            $"Hydrating cloud file (trigger={trigger}): {normalizedPath}");
-                        Result materialized =
-                            await services.FileSearchRootAccess.EnsureAvailableAsync(normalizedPath,
-                                cancellationToken);
-                        locality = services.FileSearchRootAccess.Assess(normalizedPath);
-                        if (materialized.IsFailure)
-                        {
-                            failed++;
-                            string error = materialized.ErrorMessage ?? locality.Reason ?? "云端文件下载未完成。";
-                            progress?.Invoke(processedRoots, roots.Value.Count,
-                                $"云端文件下载失败：{candidate.FileName}", error);
-                            await LogOperationAsync("file-scan",
-                                $"Cloud hydration failed (trigger={trigger}): {normalizedPath} - {error}");
-                            continue;
-                        }
-                    }
-
-                    string tier = locality.Readiness == FileLocalityReadiness.LocalReady ? "local" : "cloud";
-                    progress?.Invoke(processedRoots, roots.Value.Count,
-                        $"正在导入 ({importIndex}/{importQueue.Count}, {tier})：{candidate.FileName}",
-                        $"导入 ({importIndex}/{importQueue.Count}) → {normalizedPath}");
-                    await LogOperationAsync("file-scan",
-                        $"Importing (trigger={trigger}, {importIndex}/{importQueue.Count}, tier={tier}): {normalizedPath}");
-
-                    PdfImportResult importedPdf =
-                        await services.PdfImport.ImportPdfAsync(new PdfImportRequest(normalizedPath, null, null, null),
-                            cancellationToken);
-                    if (importedPdf.Success)
-                    {
-                        imported++;
-                        knownPaths.Add(normalizedPath);
-                        progress?.Invoke(processedRoots, roots.Value.Count, $"已导入：{candidate.FileName}",
-                            $"导入完成 → {normalizedPath}");
-                    }
-                    else
-                    {
-                        failed++;
-                        progress?.Invoke(processedRoots, roots.Value.Count, $"导入失败：{candidate.FileName}",
-                            importedPdf.ErrorMessage);
-                        await LogOperationAsync("file-scan",
-                            $"Import failed (trigger={trigger}): {normalizedPath} - {importedPdf.ErrorMessage}");
-                    }
-                }
-
-                processedRoots++;
-                if (operationId is not null)
-                {
-                    await services.BlockingOperations.UpdateProgressAsync(
-                        operationId.Value,
-                        processedRoots,
-                        progressLabel: $"已处理 {processedRoots}/{roots.Value.Count} 个文件搜索根，已扫描 {scanned} 个 PDF。",
-                        cancellationToken: cancellationToken);
-                }
-
-                progress?.Invoke(processedRoots, roots.Value.Count, $"已处理 {processedRoots}/{roots.Value.Count} 个文件搜索根。",
-                    null);
-            }
-
-            FileSearchRootRescanSummary summary = new(scanned, imported, skipped, failed, partialRoots,
-                unavailableRoots, skippedDirectories, skippedFiles);
-            string message = BuildFileSearchRootRescanMessage(summary, completionMessage);
-            progress?.Invoke(roots.Value.Count, roots.Value.Count, "文件重新扫描完成。", message);
-            await LogOperationAsync("file-scan",
-                $"Rescan finished (trigger={trigger}): scanned={scanned}, imported={imported}, " +
-                $"known={skipped}, failed={failed}, partialRoots={partialRoots}, " +
-                $"unavailableRoots={unavailableRoots}.");
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.CompleteAsync(operationId.Value, message, Array.Empty<string>(),
-                    cancellationToken);
-            }
-
-            return Result<FileSearchRootRescanSummary>.Success(summary);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            await LogOperationAsync("file-scan", $"Rescan cancelled (trigger={trigger}).");
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.CancelAsync(
-                    operationId.Value,
-                    "文件重新扫描已取消。",
-                    ["可稍后重新扫描"],
-                    CancellationToken.None);
-            }
-
-            throw;
-        }
-        catch (Exception ex)
-        {
-            await LogOperationAsync("file-scan", $"Rescan failed (trigger={trigger}): {ex.Message}");
-            string message = $"文件重新扫描失败：{ex.Message}";
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message,
-                    "文件重新扫描失败。", ["检查文件搜索根权限", "重新扫描"], CancellationToken.None);
-            }
-
-            return Result<FileSearchRootRescanSummary>.Failure(AppErrorCodes.InvalidState, message);
-        }
+        public FileSearchRootRescanCompleted? Completed { get; set; }
+        public FileSearchRootRescanFailed? Failed { get; set; }
     }
 
-    private async Task ApplyFileSearchRootRescanResultAsync(
-        Result<FileSearchRootRescanSummary> result,
-        string completionMessage)
+    private void OnFileSearchRootRescanCompleted(object? sender, FileSearchRootRescanCompleted completed)
     {
-        if (result.IsFailure)
+        if (!ReferenceEquals(sender, _fileSearchRootWatcher))
         {
-            ReportError(result.ErrorMessage ?? "文件重新扫描失败。");
             return;
         }
 
+        if (_activeRescanCapture is { } capture)
+        {
+            capture.Completed = completed;
+            return;
+        }
+
+        DispatcherTasks.RunAsync(() => ApplyFileSearchRootRescanResultAsync(completed))
+            .Observe("file-search-root-rescan", "completed");
+    }
+
+    private async Task ApplyFileSearchRootRescanResultAsync(FileSearchRootRescanCompleted completed)
+    {
         await RefreshSidebarPathsAsync();
         await Shell.RefreshItemsAsync();
-        string message = BuildFileSearchRootRescanMessage(result.Value, completionMessage);
-        if (result.Value.HasWarnings)
+        if (completed.Summary.HasWarnings)
         {
-            ReportError(message);
+            ReportError(completed.Message);
         }
         else
         {
-            Report(message);
+            Report(completed.Message);
         }
     }
 
-    private static string BuildFileSearchRootRescanMessage(
-        FileSearchRootRescanSummary summary,
-        string completionMessage)
+    private void OnFileSearchRootRescanFailed(object? sender, FileSearchRootRescanFailed failed)
     {
-        return
-            $"{completionMessage} 扫描 {summary.ScannedPdfCount} 个 PDF，新增 {summary.ImportedPdfCount} 个，已存在 {summary.SkippedKnownPdfCount} 个，失败 {summary.FailedPdfCount} 个；部分扫描 {summary.PartialRootCount} 个，不可用 {summary.UnavailableRootCount} 个，跳过目录 {summary.SkippedDirectoryCount} 个、文件 {summary.SkippedFileCount} 个。";
-    }
-
-    private static async Task<HashSet<string>> LoadKnownFilePathsAsync(AppServices services,
-        CancellationToken cancellationToken)
-    {
-        Result<IReadOnlyList<string>> paths = await services.Files.ListOriginalPathsAsync(cancellationToken);
-        if (paths.IsFailure)
+        if (!ReferenceEquals(sender, _fileSearchRootWatcher))
         {
-            throw new InvalidOperationException(paths.ErrorMessage);
+            return;
         }
 
-        return paths.Value.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (_activeRescanCapture is { } capture)
+        {
+            capture.Failed = failed;
+            return;
+        }
+
+        DispatcherTasks.RunAsync(() =>
+            {
+                ReportError(failed.Message);
+                return Task.CompletedTask;
+            })
+            .Observe("file-search-root-rescan", "failed");
+    }
+
+    private void OnSearchRootAvailabilityChanged(object? sender, SearchRootAvailabilityChanged change)
+    {
+        if (!ReferenceEquals(sender, _fileSearchRootWatcher))
+        {
+            return;
+        }
+
+        DispatcherTasks.RunAsync(() =>
+            {
+                for (int index = 0; index < FileSearchRoots.Count; index++)
+                {
+                    if (!string.Equals(FileSearchRoots[index].RootPath, change.RootPath,
+                            StringComparison.OrdinalIgnoreCase) ||
+                        FileSearchRoots[index].IsAvailable == change.IsAvailable)
+                    {
+                        continue;
+                    }
+
+                    FileSearchRoots[index] = FileSearchRoots[index] with { IsAvailable = change.IsAvailable };
+                }
+
+                return Task.CompletedTask;
+            })
+            .Observe("file-search-root-rescan", "availability-changed");
     }
 
     private async Task RebuildSearchIndexAsync()
     {
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         try
         {
             await ModalOperations.RunAsync(
@@ -1303,169 +1262,28 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private void RefreshFileSearchRootWatchers(IReadOnlyList<FileSearchRoot> roots)
     {
-        long watcherGeneration;
-        lock (_fileSearchRootWatchSync)
-        {
-            _fileSearchRootWatchersActive = true;
-            watcherGeneration = _fileSearchRootWatchGeneration;
-        }
-
-        HashSet<string> wanted = roots.Where(root => root.IsAvailable && Directory.Exists(root.RootPath))
-            .Select(root => Path.GetFullPath(root.RootPath)).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (string path in _fileSearchRootWatchers.Keys.Where(path => !wanted.Contains(path)).ToArray())
-        {
-            _fileSearchRootWatchers[path].Dispose();
-            _fileSearchRootWatchers.Remove(path);
-        }
-
-        foreach (string path in wanted)
-        {
-            if (_fileSearchRootWatchers.ContainsKey(path))
-            {
-                continue;
-            }
-
-            try
-            {
-                FileSystemWatcher watcher = new(path)
-                {
-                    IncludeSubdirectories = true,
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite |
-                                   NotifyFilters.Size,
-                    Filter = "*.pdf",
-                    EnableRaisingEvents = true
-                };
-                FileSystemEventHandler changed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"{e.ChangeType}: {e.FullPath}", watcherGeneration);
-                RenamedEventHandler renamed = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Renamed: {e.OldFullPath} -> {e.FullPath}", watcherGeneration);
-                ErrorEventHandler error = (_, e) =>
-                    ScheduleFileSearchRootRescan($"Error: {e.GetException()?.Message ?? "unknown"}", watcherGeneration);
-                watcher.Created += changed;
-                watcher.Changed += changed;
-                watcher.Deleted += changed;
-                watcher.Renamed += renamed;
-                watcher.Error += error;
-                _fileSearchRootWatchers[path] = watcher;
-            }
-            catch (Exception exception)
-            {
-                UnexpectedExceptions.Sink.Report(exception, "file-watcher", "create-watcher");
-            }
-        }
-    }
-
-    private void ScheduleFileSearchRootRescan(string changeDescription, long watcherGeneration)
-    {
-        try
-        {
-            CancellationTokenSource current = new();
-            CancellationTokenSource? previous;
-            Task? previousTask;
-            Task currentTask;
-            lock (_fileSearchRootWatchSync)
-            {
-                if (!_fileSearchRootWatchersActive || watcherGeneration != _fileSearchRootWatchGeneration)
-                {
-                    current.Dispose();
-                    return;
-                }
-
-                previous = _fileSearchRootWatchDebounce;
-                previousTask = _fileSearchRootWatchDebounceTask;
-                currentTask = DebounceFileSearchRootRescanAsync(current.Token);
-                _fileSearchRootWatchDebounce = current;
-                _fileSearchRootWatchDebounceTask = currentTask;
-            }
-
-            _ = LogOperationAsync("file-watcher", $"Change detected: {changeDescription}; rescan scheduled.");
-            previous?.Cancel();
-            if (previous is not null)
-            {
-                if (previousTask is null)
-                {
-                    previous.Dispose();
-                }
-                else
-                {
-                    DisposeCancellationSourceAfterTask(previous, previousTask);
-                }
-            }
-
-            currentTask.Observe("file-watcher", "debounced-rescan", current.Token);
-        }
-        catch (Exception exception)
-        {
-            UnexpectedExceptions.Sink.Report(exception, "file-watcher", "schedule-rescan");
-        }
-    }
-
-    private static void DisposeCancellationSourceAfterTask(CancellationTokenSource source, Task task)
-    {
-        _ = task.ContinueWith(
-            static (_, state) => ((CancellationTokenSource)state!).Dispose(),
-            source,
-            CancellationToken.None,
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-    }
-
-    private async Task DebounceFileSearchRootRescanAsync(CancellationToken cancellationToken)
-    {
-        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-        await DispatcherTasks.RunAsync(() =>
-            RescanFileSearchRootsAsync("文件变化后自动重新扫描完成。", cancellationToken: cancellationToken,
-                trigger: "file-watcher"));
-    }
-
-    private async Task ResetFileSearchRootWatchersAsync()
-    {
-        CancellationTokenSource? debounce;
-        Task? debounceTask;
-        lock (_fileSearchRootWatchSync)
-        {
-            _fileSearchRootWatchersActive = false;
-            _fileSearchRootWatchGeneration++;
-            debounce = _fileSearchRootWatchDebounce;
-            debounceTask = _fileSearchRootWatchDebounceTask;
-            _fileSearchRootWatchDebounce = null;
-            _fileSearchRootWatchDebounceTask = null;
-        }
-
-        debounce?.Cancel();
-        foreach (FileSystemWatcher watcher in _fileSearchRootWatchers.Values)
-        {
-            watcher.Dispose();
-        }
-
-        _fileSearchRootWatchers.Clear();
-        try
-        {
-            if (debounceTask is not null)
-            {
-                await debounceTask;
-            }
-        }
-        catch (OperationCanceledException) when (debounce?.IsCancellationRequested == true)
-        {
-            // Expected when a database switch or application shutdown cancels a pending watcher rescan.
-        }
-        finally
-        {
-            debounce?.Dispose();
-        }
+        _fileSearchRootWatcher?.RefreshWatchers(roots);
     }
 
     public async Task ShutdownAsync()
     {
-        await ResetFileSearchRootWatchersAsync();
+        await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
         await StopMcpServerAsync();
+        StopLibraryRevisionMonitor();
+    }
+
+    private async Task StopFileSearchRootWatchersAsync()
+    {
+        if (_fileSearchRootWatcher is not null)
+        {
+            await _fileSearchRootWatcher.StopAsync();
+        }
     }
 
     public async Task StartMcpServerAsync()
     {
-        AppServices services = await ServicesAsync();
+        await ServicesAsync();
         await ModalOperations.RunAsync(
             new ModalOperationOptions(
                 "启动 MCP Server",
@@ -1473,8 +1291,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 false),
             async context =>
             {
-                await StartMcpServerAsync(services);
-                if (_mcpServer?.IsRunning != true)
+                await StartMcpServerAsync(_services!);
+                if (_mcpHost?.IsRunning != true)
                 {
                     throw new InvalidOperationException("MCP Server 未能启动。请检查状态栏中的错误详情。");
                 }
@@ -1485,35 +1303,27 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task StopMcpServerAsync(string detail = "MCP HTTP 服务已停止。")
     {
-        Task? backgroundStart = _backgroundMcpStartTask;
-        _backgroundMcpStartTask = null;
-        if (backgroundStart is not null)
+        if (_mcpHost is not null)
         {
-            try
-            {
-                await backgroundStart;
-            }
-            catch (Exception exception)
-            {
-                UnexpectedExceptions.Sink.Report(exception, "mcp-server", "await-background-start");
-            }
+            await _mcpHost.StopAsync(detail);
+            return;
         }
 
-        await StopMcpServerCoreAsync(detail);
+        SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
     }
 
-    private async Task StopMcpServerCoreAsync(string detail)
+    /// <summary>
+    /// Restarts the MCP server from the currently persisted settings (settings-apply flow).
+    /// </summary>
+    public async Task RestartMcpServerAsync(string detail = "应用新设置")
     {
-        if (_mcpServer is not null)
+        await ServicesAsync();
+        if (_mcpHost is null)
         {
-            _mcpServer.ConnectionCountsChanged -= OnMcpConnectionCountsChanged;
-            await _mcpServer.DisposeAsync();
-            _mcpServer = null;
+            return;
         }
 
-        _mcpRunningSettingsRevision = null;
-        Raise(nameof(McpRunningSettingsRevision));
-        SetMcpStatus("MCP: 未启动", detail, Brushes.Gray);
+        await _mcpHost.RestartAsync(detail);
     }
 
     /// <summary>
@@ -1523,115 +1333,58 @@ public sealed class MainWindowViewModel : ViewModelBase
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
         await StopMcpServerAsync(detail);
+        await StopFileSearchRootWatchersAsync();
+        StopLibraryRevisionMonitor();
         DetachLibraryChangeNotifications();
+        DetachHostServices();
         _services = null;
         Interlocked.Increment(ref _libraryGeneration);
         Settings.NotifyLibraryContextChanged();
         Raise(nameof(HasOpenRuntimeDatabase));
     }
 
-    private async Task StartMcpServerAsync(AppServices services)
+    private Task StartMcpServerAsync(HostServices services)
     {
-        if (_mcpServer?.IsRunning == true)
+        if (_mcpHost is null)
         {
-            SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
+            throw new InvalidOperationException("MCP Server 主机不可用。");
+        }
+
+        return _mcpHost.StartAsync();
+    }
+
+    private void OnMcpHostStatusChanged(object? sender, McpServerHostStatusChangedEventArgs change)
+    {
+        if (!ReferenceEquals(sender, _mcpHost))
+        {
             return;
         }
 
-        BlockingOperationId? operationId = null;
-        Result<BlockingOperation> started = await services.BlockingOperations.StartAsync(
-            BlockingOperationTypes.McpStartValidation,
-            BlockingOperationScopeTypes.McpServerSettings,
-            "default",
-            progressLabel: "正在验证 MCP 设置并启动 listener。",
-            nextActions: ["检查 MCP bind、端口和鉴权 token"],
-            cancellationToken: CancellationToken.None);
-        if (started.IsSuccess)
+        (string text, IBrush brush) = change.Status switch
         {
-            operationId = started.Value.OperationId;
-        }
+            McpServerHostStatus.Running => ("MCP: 运行中", Brushes.LimeGreen),
+            McpServerHostStatus.Starting => ("MCP: 启动中", Brushes.Goldenrod),
+            McpServerHostStatus.Error => ("MCP: 错误", Brushes.IndianRed),
+            _ => ("MCP: 未启动", Brushes.Gray)
+        };
 
-        await StopMcpServerCoreAsync("MCP HTTP 服务正在启动。");
-        Result<McpServerSettings> settingsResult = await services.McpSettings.GetSettingsAsync();
-        if (settingsResult.IsFailure)
+        SetMcpStatus(text, change.Detail, brush);
+
+        if (change.Status == McpServerHostStatus.Running && _mcpHost is { } host)
         {
-            string message = McpOutputSanitizer.Sanitize(settingsResult.ErrorMessage ?? "无法读取 MCP 设置。");
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.FailAsync(operationId.Value, settingsResult.ErrorCode!, message,
-                    cancellationToken: CancellationToken.None);
-            }
-
-            SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
-            return;
-        }
-
-        McpServerSettings serverSettings = settingsResult.Value;
-        Result validation = await services.McpSettings.ValidateSettingsAsync(serverSettings);
-        if (validation.IsFailure)
-        {
-            string message = McpOutputSanitizer.Sanitize(validation.ErrorMessage ?? "MCP 设置无效。");
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.FailAsync(operationId.Value, validation.ErrorCode!, message,
-                    cancellationToken: CancellationToken.None);
-            }
-
-            SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
-            return;
-        }
-
-        SetMcpStatus("MCP: 启动中", $"正在监听 http://{serverSettings.BindAddress}:{serverSettings.Port}/mcp",
-            Brushes.Goldenrod);
-
-        void ReportMcpException(Exception exception, string operation)
-        {
-            UnexpectedExceptions.Sink.Report(exception, "mcp-server", operation);
-        }
-
-        McpProtocolHandler handler = new(services.Mcp, services.McpWrites, services.BiblatexImport,
-            services.Items, services.VersionedEvidenceReader, services.ConnectionFactory, serverSettings,
-            ReportMcpException);
-        McpHttpServer server = new(handler, serverSettings, ReportMcpException);
-        server.ConnectionCountsChanged += OnMcpConnectionCountsChanged;
-        try
-        {
-            await server.StartAsync();
-            _mcpServer = server;
-            _mcpRunningSettingsRevision = serverSettings.Revision;
+            SetMcpEndpoint(host.Endpoint);
             Raise(nameof(McpRunningSettingsRevision));
-            await SetMcpEndpointAsync(server.Endpoint);
-            SetMcpStatus("MCP: 运行中", BuildMcpConnectionDetail(), Brushes.LimeGreen);
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.CompleteAsync(operationId.Value, "MCP HTTP listener 已启动。",
-                    cancellationToken: CancellationToken.None);
-            }
-
-            await LogOperationAsync("mcp_http_start", $"MCP HTTP server listening on {server.Endpoint}");
+            LogOperationAsync("mcp_http_start", $"MCP HTTP server listening on {host.Endpoint}")
+                .Observe("mcp-server", "log-start");
         }
-        catch (Exception ex)
+        else if (change.Status == McpServerHostStatus.Error)
         {
-            UnexpectedExceptions.Sink.Report(ex, "mcp-server", "start-listener");
-            server.ConnectionCountsChanged -= OnMcpConnectionCountsChanged;
-            try
-            {
-                await server.DisposeAsync();
-            }
-            catch (Exception disposeException)
-            {
-                UnexpectedExceptions.Sink.Report(disposeException, "mcp-server", "dispose-after-start-failure");
-            }
-
-            string message = McpOutputSanitizer.Sanitize(ex.Message);
-            if (operationId is not null)
-            {
-                await services.BlockingOperations.FailAsync(operationId.Value, AppErrorCodes.InvalidState, message,
-                    "MCP HTTP listener 启动失败。", ["检查端口占用", "检查 bind 和鉴权设置"], CancellationToken.None);
-            }
-
-            SetMcpStatus("MCP: 错误", message, Brushes.IndianRed);
-            await LogOperationAsync("mcp_http_start_failed", message);
+            LogOperationAsync("mcp_http_start_failed", change.Detail)
+                .Observe("mcp-server", "log-start-failed");
+        }
+        else if (change.Status == McpServerHostStatus.Stopped)
+        {
+            Raise(nameof(McpRunningSettingsRevision));
         }
     }
 
@@ -1658,7 +1411,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    private Task SetMcpEndpointAsync(string endpoint)
+    private void SetMcpEndpoint(string endpoint)
     {
         void Update()
         {
@@ -1669,10 +1422,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
         {
             Update();
-            return Task.CompletedTask;
         }
-
-        return Avalonia.Threading.Dispatcher.UIThread.InvokeAsync(Update).GetTask();
+        else
+        {
+            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
+        }
     }
 
     private static bool HasDesktopMainWindow()
@@ -1683,21 +1437,21 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private string BuildMcpConnectionDetail()
     {
-        long active = _mcpServer?.ActiveConnectionCount ?? 0;
-        long total = _mcpServer?.TotalConnectionCount ?? 0;
+        long active = _mcpHost?.Server?.ActiveConnectionCount ?? 0;
+        long total = _mcpHost?.Server?.TotalConnectionCount ?? 0;
         return $"连接数: {active} / {total}";
     }
 
-    private void OnMcpConnectionCountsChanged(object? sender, EventArgs e)
+    private void OnMcpHostConnectionCountsChanged(object? sender, EventArgs e)
     {
-        if (!ReferenceEquals(sender, _mcpServer))
+        if (!ReferenceEquals(sender, _mcpHost))
         {
             return;
         }
 
         void Update()
         {
-            if (!ReferenceEquals(sender, _mcpServer) || _mcpServer?.IsRunning != true)
+            if (!ReferenceEquals(sender, _mcpHost) || _mcpHost?.IsRunning != true)
             {
                 return;
             }
@@ -1766,13 +1520,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         };
     }
 
-    private async Task<(FirstRunWorkflow Workflow, PdfDiscoveryService Discovery)>
-        OpenFirstRunDatabaseAsync(string path)
+    private async Task<LibraryImportOrchestrator?> OpenFirstRunDatabaseAsync(string path)
     {
         RuntimeDatabasePath = path;
         await OpenDatabaseCommand.ExecuteAsync();
-        AppServices services = await ServicesAsync();
-        return (services.FirstRunWorkflow, services.PdfDiscovery);
+        return _importOrchestrator;
     }
 
     private async Task CompleteFirstRunAsync()
@@ -1792,7 +1544,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
         if (!string.IsNullOrWhiteSpace(FirstRun.ScanRoot))
         {
-            AppServices services = await ServicesAsync();
+            HostServices services = await ServicesAsync();
             if (FirstRun.SelectedScanRoot is null)
             {
                 ReportError("文件搜索根必须通过系统文件夹选择器选择。");
@@ -1818,7 +1570,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<string> GetPersistedMinerUTokenAsync()
     {
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<string> secret = await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU);
         return secret.IsSuccess ? secret.Value : "";
     }
@@ -1830,7 +1582,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return false;
         }
 
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<ProviderCredentialMetadata> saved =
             await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
                 token.Trim());
@@ -1915,7 +1667,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task<bool> SaveOcrEngineSettingsAsync(OcrEnginesAppSettings engines)
     {
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         IReadOnlyList<string> availableEngineIds = services.OcrAdapters.ListCapabilities()
             .Select(capability => capability.EngineId)
             .ToList();
@@ -1976,7 +1728,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return true;
         }
 
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result removed = await services.Credentials.RemoveAsync(ProviderIds.MinerU);
         if (removed.IsFailure)
         {
@@ -2198,6 +1950,25 @@ public sealed class MainWindowViewModel : ViewModelBase
         await SearchEvidence.SearchCommand.ExecuteAsync();
     }
 
+    private async Task OpenAdvancedSearchAsync()
+    {
+        await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search", true,
+            () => SearchEvidence);
+        await SearchEvidence.OpenAdvancedSearchCommand.ExecuteAsync();
+    }
+
+    public async Task NavigateToSearchHitAsync(string versionedUri)
+    {
+        PatchouliNavigationParseResult parsed = PatchouliUriNavigationParser.ParseInput(versionedUri);
+        if (!parsed.IsSuccess || parsed.Target is null)
+        {
+            ReportError(parsed.ErrorMessage ?? "无法解析证据 URI。");
+            return;
+        }
+
+        await NavigateToPatchouliUriAsync(parsed.Target);
+    }
+
     private async Task NavigateToPatchouliUriAsync(PatchouliNavigationTarget target)
     {
         switch (target.Kind)
@@ -2237,7 +2008,7 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task NavigateToTextUriAsync(PatchouliNavigationTarget target)
     {
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         await Shell.RefreshItemsAsync();
         LibraryItemViewModel? item = await Shell.ResolveDocumentItemAsync(target.ResourceId);
         if (item is null)
@@ -2403,126 +2174,33 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public async Task ImportBiblatexTextIntoEditorAsync(string text, string? bibFileDirectory, ItemId? targetItemId)
     {
-        AppServices services = await ServicesAsync();
-        Result<IReadOnlyList<BiblatexEntryDto>> parsed = await services.BiblatexImport.ParseTextAsync(text);
-        if (parsed.IsFailure)
+        LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
+        Result<BiblatexImportApplyResult?> result =
+            await orchestrator.ImportBiblatexTextAsync(text, bibFileDirectory, targetItemId, CancellationToken.None);
+        if (result.IsFailure)
         {
-            Report($"BibLaTeX 解析失败：{parsed.ErrorCode} {parsed.ErrorMessage}");
+            Report($"BibLaTeX 导入失败：{result.ErrorCode} {result.ErrorMessage}");
             return;
         }
 
-        Result<IReadOnlyList<BiblatexMappedItem>> mapped = BiblatexImportPlanner.MapVisibleEntries(parsed.Value);
-        if (mapped.IsFailure)
+        if (result.Value is null)
         {
-            Report($"BibLaTeX 映射失败：{mapped.ErrorCode} {mapped.ErrorMessage}");
+            Report("已取消 BibLaTeX 导入。");
             return;
         }
 
-        if (mapped.Value.Count == 0)
-        {
-            Report("没有可导入的 BibLaTeX 条目（@xdata 不会创建题录）。");
-            return;
-        }
-
-        BiblatexMappedItem source = mapped.Value[0];
-        if (mapped.Value.Count > 1)
-        {
-            BiblatexImportPreviewDialogViewModel preview = new(
-                mapped.Value,
-                true,
-                "源文件包含多条可见条目。请选择一条导入当前题录；批量导入请使用菜单「从 BibLaTeX 批量导入」。");
-            BiblatexImportPreviewResult? confirmed =
-                await Dialogs.ShowDialogAsync<BiblatexImportPreviewResult>(preview);
-            if (confirmed is not { Confirmed: true } || string.IsNullOrWhiteSpace(confirmed.SelectedEntryKey))
-            {
-                return;
-            }
-
-            source = mapped.Value.Single(item =>
-                string.Equals(item.SourceEntryKey, confirmed.SelectedEntryKey, StringComparison.Ordinal));
-        }
-
-        BiblatexEntryDto entry = parsed.Value.First(candidate =>
-            string.Equals(candidate.Key, source.SourceEntryKey, StringComparison.Ordinal) && !candidate.IsXdata);
-        Result<BiblatexSingleImportPreview> plan =
-            await services.BiblatexImport.PreviewSingleAsync(entry, targetItemId);
-        if (plan.IsFailure)
-        {
-            Report($"BibLaTeX 预览失败：{plan.ErrorCode} {plan.ErrorMessage}");
-            return;
-        }
-
-        IReadOnlyDictionary<string, string>? fieldChoices = null;
-        if (plan.Value.FieldConflictDescriptor is { } conflict)
-        {
-            fieldChoices = await ResolveBiblatexFieldChoicesAsync(conflict);
-            if (fieldChoices is null)
-            {
-                Report("已取消 BibLaTeX 导入。");
-                return;
-            }
-        }
-
-        Result<BiblatexImportApplyResult> applied = await services.BiblatexImport.ApplySingleAsync(
-            plan.Value.Source,
-            targetItemId,
-            fieldChoices,
-            bibFileDirectory);
-        if (applied.IsFailure)
-        {
-            Report($"BibLaTeX 导入失败：{applied.ErrorCode} {applied.ErrorMessage}");
-            return;
-        }
-
-        Report(applied.Value.StatusMessage);
-        await Shell.ApplyChangeSetAsync(applied.Value.CreatedItemIds.Concat(applied.Value.UpdatedItemIds)
+        BiblatexImportApplyResult applied = result.Value;
+        Report(applied.StatusMessage);
+        await Shell.ApplyChangeSetAsync(applied.CreatedItemIds.Concat(applied.UpdatedItemIds)
             .Select(ItemId.Parse).ToArray());
         if (targetItemId is { } existingItemId)
         {
             await EditItemByIdAsync(existingItemId.ToString());
         }
-        else if (applied.Value.CreatedItemIds is [string createdId, ..])
+        else if (applied.CreatedItemIds is [string createdId, ..])
         {
             await EditItemByIdAsync(createdId);
         }
-    }
-
-    private async Task<IReadOnlyDictionary<string, string>?> ResolveBiblatexFieldChoicesAsync(
-        ConflictDescriptor conflict)
-    {
-        ConflictResolutionDialogViewModel dialog = new(conflict);
-        ConflictDialogResult? choice = await Dialogs.ShowDialogAsync<ConflictDialogResult>(dialog);
-        if (choice is null ||
-            string.Equals(choice.ActionId, "leave_unresolved", StringComparison.Ordinal) ||
-            choice.Choices is null)
-        {
-            return null;
-        }
-
-        Result<ConflictExecutionResult> executed =
-            await (await ServicesAsync()).ConflictActions.ExecuteAsync(
-                conflict,
-                new ConflictActionSelection(choice.ActionId, choice.OptionId, choice.Choices));
-        return executed.IsSuccess ? choice.Choices : null;
-    }
-
-    private async Task<IReadOnlyDictionary<string, string>?> ResolveBiblatexLinkChoicesAsync(
-        ConflictDescriptor conflict)
-    {
-        ConflictResolutionDialogViewModel dialog = new(conflict);
-        ConflictDialogResult? choice = await Dialogs.ShowDialogAsync<ConflictDialogResult>(dialog);
-        if (choice is null ||
-            string.Equals(choice.ActionId, "leave_unresolved", StringComparison.Ordinal) ||
-            choice.Choices is null)
-        {
-            return null;
-        }
-
-        Result<ConflictExecutionResult> executed =
-            await (await ServicesAsync()).ConflictActions.ExecuteAsync(
-                conflict,
-                new ConflictActionSelection(choice.ActionId, choice.OptionId, choice.Choices));
-        return executed.IsSuccess ? choice.Choices : null;
     }
 
     private async Task ImportBiblatexBatchAsync()
@@ -2533,58 +2211,23 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await ServicesAsync();
-        Result<IReadOnlyList<BiblatexEntryDto>> parsed = await services.BiblatexImport.ParseFileAsync(path);
-        if (parsed.IsFailure)
+        LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
+        Result<BiblatexImportApplyResult?> result =
+            await orchestrator.ImportBiblatexFileAsync(path, CancellationToken.None);
+        if (result.IsFailure)
         {
-            Report($"BibLaTeX 解析失败：{parsed.ErrorCode} {parsed.ErrorMessage}");
+            Report($"BibLaTeX 批量导入失败：{result.ErrorCode} {result.ErrorMessage}");
             return;
         }
 
-        Result<BiblatexBatchImportPreview> preview = await services.BiblatexImport.PreviewBatchAsync(parsed.Value);
-        if (preview.IsFailure)
+        if (result.Value is null)
         {
-            Report($"BibLaTeX 批量预览失败：{preview.ErrorCode} {preview.ErrorMessage}");
+            Report("已取消 BibLaTeX 批量导入。");
             return;
         }
 
-        IReadOnlyDictionary<string, string>? linkChoices = null;
-        if (preview.Value.Plan.LinkConflictDescriptor is { } conflict)
-        {
-            linkChoices = await ResolveBiblatexLinkChoicesAsync(conflict);
-            if (linkChoices is null)
-            {
-                Report("已取消 BibLaTeX 批量导入。");
-                return;
-            }
-        }
-        else
-        {
-            BiblatexImportPreviewDialogViewModel confirm = new(
-                preview.Value.Plan.Groups.Select(static group => group.Source).ToArray(),
-                false,
-                $"将静默新建 {preview.Value.Plan.Groups.Count} 条题录（无关联候选）。");
-            BiblatexImportPreviewResult? ok =
-                await Dialogs.ShowDialogAsync<BiblatexImportPreviewResult>(confirm);
-            if (ok is not { Confirmed: true })
-            {
-                return;
-            }
-        }
-
-        string? directory = Path.GetDirectoryName(path);
-        Result<BiblatexImportApplyResult> applied = await services.BiblatexImport.ApplyBatchAsync(
-            preview.Value.Plan,
-            linkChoices,
-            directory);
-        if (applied.IsFailure)
-        {
-            Report($"BibLaTeX 批量导入失败：{applied.ErrorCode} {applied.ErrorMessage}");
-            return;
-        }
-
-        Report(applied.Value.StatusMessage);
-        await Shell.ApplyChangeSetAsync(applied.Value.CreatedItemIds.Concat(applied.Value.UpdatedItemIds)
+        Report(result.Value.StatusMessage);
+        await Shell.ApplyChangeSetAsync(result.Value.CreatedItemIds.Concat(result.Value.UpdatedItemIds)
             .Select(ItemId.Parse).ToArray());
     }
 
@@ -2597,7 +2240,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<string> text = await services.BiblatexImport.ExportItemsAsync(ids);
         if (text.IsFailure)
         {
@@ -2628,7 +2271,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<string> text = await services.BiblatexImport.ExportItemsAsync(ids);
         if (text.IsFailure)
         {
@@ -2771,7 +2414,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await ServicesAsync();
+        HostServices services = await ServicesAsync();
         Result<EvidencePageText> markdown = await services.VersionedEvidenceReader.GetBoxTextAsync(
             DocumentInstanceId.Parse(target.ResourceId),
             (target.PageIndex ?? 0) + 1,
@@ -2816,18 +2459,4 @@ public sealed class MainWindowViewModel : ViewModelBase
             ? fullPath
             : fullPath + Path.DirectorySeparatorChar;
     }
-}
-
-public sealed record FileSearchRootRescanSummary(
-    int ScannedPdfCount,
-    int ImportedPdfCount,
-    int SkippedKnownPdfCount,
-    int FailedPdfCount,
-    int PartialRootCount = 0,
-    int UnavailableRootCount = 0,
-    int SkippedDirectoryCount = 0,
-    int SkippedFileCount = 0)
-{
-    public bool HasWarnings => FailedPdfCount > 0 || PartialRootCount > 0 || UnavailableRootCount > 0 ||
-                               SkippedDirectoryCount > 0 || SkippedFileCount > 0;
 }

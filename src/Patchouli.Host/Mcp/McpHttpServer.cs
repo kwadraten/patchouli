@@ -22,6 +22,9 @@ public sealed class McpHttpServer : IAsyncDisposable
     /// <summary>Hard upper limit for max_mcp_request_bytes (4 MiB).</summary>
     public const long HardMaxRequestBytes = 4 * 1024 * 1024;
 
+    /// <summary>Loopback port used when the caller does not specify one; mirrors McpServerOptions.DefaultPort.</summary>
+    public const int DefaultPort = 4536;
+
     private readonly McpProtocolHandler _handler;
     private readonly McpServerSettings _settings;
     private readonly Action<Exception, string>? _unexpectedException;
@@ -31,7 +34,7 @@ public sealed class McpHttpServer : IAsyncDisposable
     private long _totalConnectionCount;
     private WebApplication? _app;
 
-    public McpHttpServer(McpProtocolHandler handler, int port = McpServerOptions.DefaultPort,
+    public McpHttpServer(McpProtocolHandler handler, int port = DefaultPort,
         Action<Exception, string>? unexpectedException = null,
         long maxRequestBytes = DefaultMaxRequestBytes)
         : this(handler, new McpServerSettings(port, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow),

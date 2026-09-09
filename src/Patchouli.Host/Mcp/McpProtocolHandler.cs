@@ -12,55 +12,6 @@ using Patchouli.Mcp;
 
 namespace Patchouli.McpServer;
 
-public sealed record McpServerOptions(string DatabasePath, int Port, bool PortWasExplicitlySet = false)
-{
-    public const int DefaultPort = 4536;
-
-    public static McpServerOptionsParseResult Parse(string[] args)
-    {
-        int dbIndex = Array.IndexOf(args, "--db");
-        if (dbIndex < 0 || dbIndex == args.Length - 1 || string.IsNullOrWhiteSpace(args[dbIndex + 1]))
-        {
-            return McpServerOptionsParseResult.Failure("Missing --db.");
-        }
-
-        int port = DefaultPort;
-        int portIndex = Array.IndexOf(args, "--port");
-        if (portIndex >= 0)
-        {
-            if (portIndex == args.Length - 1 || !int.TryParse(args[portIndex + 1], out port) || port is < 1 or > 65535)
-            {
-                return McpServerOptionsParseResult.Failure("Invalid --port.");
-            }
-        }
-
-        return McpServerOptionsParseResult.Success(new McpServerOptions(args[dbIndex + 1], port, portIndex >= 0));
-    }
-}
-
-public sealed class McpServerOptionsParseResult
-{
-    private McpServerOptionsParseResult(McpServerOptions? value, string? error)
-    {
-        Value = value!;
-        Error = error;
-    }
-
-    public bool IsFailure => Error is not null;
-    public McpServerOptions Value { get; }
-    public string? Error { get; }
-
-    public static McpServerOptionsParseResult Success(McpServerOptions value)
-    {
-        return new McpServerOptionsParseResult(value, null);
-    }
-
-    public static McpServerOptionsParseResult Failure(string error)
-    {
-        return new McpServerOptionsParseResult(null, error);
-    }
-}
-
 public sealed class McpProtocolHandler
 {
     private readonly IMcpReadApi _readApi;
@@ -83,7 +34,7 @@ public sealed class McpProtocolHandler
             AuthRequired = false
         };
         _unexpectedException = unexpectedException;
-        _toonEncoder = toonEncoder ?? (static value => JsonSerializer.Serialize(value));
+        _toonEncoder = toonEncoder ?? McpCommandService.DefaultToonEncoder;
     }
 
     public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db,
@@ -177,7 +128,9 @@ public sealed class McpProtocolHandler
             serverInfo = new { name = Core.BuildInfo.AppName, version = Core.BuildInfo.Version },
             capabilities = new { tools = new { listChanged = true } },
             instructions =
-                "Patchouli exposes structured Library tools. Use only the tool surface enabled for this server."
+                "Patchouli exposes structured Library tools. Use only the tool surface enabled for this server. " +
+                "Tool text defaults to TOON; format=json selects the equivalent JSON envelope. " +
+                "A clean success response has no message field; message is only present for warnings or errors."
         };
     }
 
@@ -265,6 +218,7 @@ public sealed class McpProtocolHandler
     private async Task<object> CallAsync(JsonElement parameters, CancellationToken ct)
     {
         string name = "";
+        string format = "toon";
         try
         {
             if (parameters.ValueKind != JsonValueKind.Object)
@@ -279,15 +233,16 @@ public sealed class McpProtocolHandler
             }
 
             name = nameElement.GetString()!;
+            JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
+            format = ResponseFormat(a);
             if (!IsToolEnabled(name))
             {
                 string? disabledReason = ToolDisabledReason(name);
                 McpToolError error = McpToolError.From(McpErrorCode.Unavailable,
                     $"disabled: {disabledReason ?? "This MCP tool is disabled."}");
-                return await ToolErrorAsync(name, error, ct);
+                return await ToolErrorAsync(name, error, ct, format);
             }
 
-            JsonElement a = parameters.TryGetProperty("arguments", out JsonElement args) ? args : default;
             if (a.ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Object))
             {
                 throw new McpArgumentException("arguments must be an object.");
@@ -304,7 +259,7 @@ public sealed class McpProtocolHandler
         }
         catch (McpArgumentException ex)
         {
-            return await ToolErrorAsync(name, McpToolError.From(McpErrorCode.InvalidArgument, ex.Message), ct);
+            return await ToolErrorAsync(name, McpToolError.From(McpErrorCode.InvalidArgument, ex.Message), ct, format);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -314,7 +269,8 @@ public sealed class McpProtocolHandler
         {
             string correlationId = Guid.NewGuid().ToString("N");
             ReportUnexpected(ex);
-            return await ToolErrorAsync(name, McpToolError.From(McpErrorCode.Internal, null, correlationId), ct);
+            return await ToolErrorAsync(name, McpToolError.From(McpErrorCode.Internal, null, correlationId), ct,
+                format);
         }
     }
 
@@ -538,16 +494,22 @@ public sealed class McpProtocolHandler
             envelope = McpErrorEnvelope.Build(toolName, result.Error!, revision);
         }
 
-        string text = string.Equals(format, "json", StringComparison.Ordinal)
-            ? JsonSerializer.Serialize(envelope)
-            : _toonEncoder(envelope);
+        string text = RenderText(envelope, format);
         return ToolData(text, result.Error is not null);
     }
 
-    private async Task<object> ToolErrorAsync(string toolName, McpToolError error, CancellationToken ct)
+    private string RenderText(object envelope, string format)
+    {
+        return string.Equals(format, "json", StringComparison.Ordinal)
+            ? JsonSerializer.Serialize(envelope)
+            : _toonEncoder(envelope);
+    }
+
+    private async Task<object> ToolErrorAsync(string toolName, McpToolError error, CancellationToken ct,
+        string format = "toon")
     {
         string revision = await CurrentLibraryRevisionAsync(ct);
-        string text = JsonSerializer.Serialize(McpErrorEnvelope.Build(toolName, error, revision));
+        string text = RenderText(McpErrorEnvelope.Build(toolName, error, revision), format);
         return ToolData(text, true);
     }
 

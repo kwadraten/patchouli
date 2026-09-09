@@ -4,6 +4,7 @@ using Patchouli.Core;
 using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -263,7 +264,7 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
-    public async Task AppServices_default_settings_register_product_ocr_adapters()
+    public async Task HostServices_default_settings_register_product_ocr_adapters()
     {
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-appservices-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -276,8 +277,8 @@ public sealed class AlphaPackagingTests
                 DefaultStagingRoot = Path.Combine(root, "staging"), LogDirectory = Path.Combine(root, "logs"),
                 UseMockOcrOnly = false
             };
-            AppServices services =
-                await AppServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime });
+            HostServices services =
+                await HostServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime });
             services.OcrAdapters.ListCapabilities().Select(x => x.EngineId).Should()
                 .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten);
         }

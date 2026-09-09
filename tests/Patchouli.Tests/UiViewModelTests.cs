@@ -24,6 +24,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
+using Patchouli.Host.Watching;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
@@ -39,6 +40,7 @@ using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Editor;
 using Patchouli.UI.ViewModels.Settings;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -303,7 +305,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult imported =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "URI navigation", null, 3));
             imported.Success.Should().BeTrue(imported.ErrorMessage);
@@ -695,7 +697,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(clipboard), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             Result<ItemMetadata> item = await services.Items.CreateItemAsync("book", "UI Evidence Item");
             Result<DocumentInstance> document =
                 await services.Documents.AttachDocumentInstanceAsync(item.Value.ItemId, null,
@@ -1310,7 +1312,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
             await services.Files.RegisterFileAsync(pdf);
             List<string?> shellPropertyChanges = [];
@@ -1351,7 +1353,7 @@ public sealed class UiViewModelTests : IDisposable
             vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
 
             Task<Result<FileSearchRootRescanSummary>> firstScan = vm.RescanFileSearchRootsAsync();
@@ -1393,7 +1395,7 @@ public sealed class UiViewModelTests : IDisposable
             vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard(), logger), database);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             await services.FileResolution.AddSearchRootAsync(SelectedRoot(root));
 
             Result<FileSearchRootRescanSummary> result = await vm.RescanFileSearchRootsAsync();
@@ -1542,7 +1544,7 @@ public sealed class UiViewModelTests : IDisposable
             CreateMainWindow(new FakeClipboard(), autoStartMcpServer: true, mcpPort: port), path);
         try
         {
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             Result<McpServerSettings> settings = await services.McpSettings.GetSettingsAsync();
             settings.IsSuccess.Should().BeTrue();
             await vm.StopMcpServerAsync();
@@ -1843,7 +1845,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult import =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Queued OCR Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
@@ -1897,7 +1899,7 @@ public sealed class UiViewModelTests : IDisposable
                 MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await vm.ServicesAsync();
+                HostServices services = await vm.ServicesAsync();
                 PdfImportResult import =
                     await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Failed queue item", null, 1));
                 await vm.Shell.RefreshItemsAsync();
@@ -1961,7 +1963,7 @@ public sealed class UiViewModelTests : IDisposable
                 MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await vm.ServicesAsync();
+                HostServices services = await vm.ServicesAsync();
                 PdfImportResult import =
                     await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Affected Item", null, 1));
                 import.Success.Should().BeTrue(import.ErrorMessage);
@@ -2044,7 +2046,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult import =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Shell Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
@@ -2128,7 +2130,7 @@ public sealed class UiViewModelTests : IDisposable
                 { RuntimeDatabasePath = path };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             Result<ProviderCredentialMetadata> saved =
                 await services.Credentials.SaveAsync(ProviderIds.MinerU, "MinerU API token",
                     "provider-token");
@@ -2197,7 +2199,7 @@ public sealed class UiViewModelTests : IDisposable
 
             await vm.Settings.SaveCommand.ExecuteAsync();
 
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
                 .Be("saved-token");
             PatchouliAppSettings.Load(settingsPath).Credentials.Providers.Should()
@@ -2372,7 +2374,7 @@ public sealed class UiViewModelTests : IDisposable
 
             vm.IsLibraryVisible.Should().BeTrue();
             vm.Shell.Items.Should().ContainSingle();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             File.ReadAllText(settingsPath).Should().Contain("token");
 
             byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
@@ -2438,7 +2440,7 @@ public sealed class UiViewModelTests : IDisposable
                 { RuntimeDatabasePath = databasePath };
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult imported =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdfPath, "Split PDF", null, 3));
             imported.Success.Should().BeTrue(imported.ErrorMessage);
@@ -2503,7 +2505,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult import =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Editable Item", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
@@ -2552,7 +2554,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(new CreateItemRequest(
                 "book",
                 "Creator removal",
@@ -2619,7 +2621,7 @@ public sealed class UiViewModelTests : IDisposable
                     vm.RuntimeDatabasePath = path;
                     await vm.OpenDatabaseCommand.ExecuteAsync();
                     await vm.Library.CreateCommand.ExecuteAsync();
-                    AppServices services = await vm.ServicesAsync();
+                    HostServices services = await vm.ServicesAsync();
                     PdfImportResult import =
                         await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "General Item", null, 1));
                     import.Success.Should().BeTrue(import.ErrorMessage);
@@ -2790,7 +2792,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult firstImport =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(firstPdf, "短标题", null, 1));
             firstImport.Success.Should().BeTrue();
@@ -2852,7 +2854,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult import =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Closable Tab", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
@@ -2893,7 +2895,7 @@ public sealed class UiViewModelTests : IDisposable
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             PdfImportResult import =
                 await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
@@ -2954,7 +2956,7 @@ public sealed class UiViewModelTests : IDisposable
                 MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await vm.ServicesAsync();
+                HostServices services = await vm.ServicesAsync();
                 PdfImportResult import =
                     await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
                 import.Success.Should().BeTrue(import.ErrorMessage);
@@ -3129,7 +3131,7 @@ public sealed class UiViewModelTests : IDisposable
 
             (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
 
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).IsFailure.Should()
                 .BeTrue();
             vm.Shell.MinerUToken.Should().Be("");
@@ -3167,7 +3169,7 @@ public sealed class UiViewModelTests : IDisposable
 
             (await vm.RemoveMinerUCredentialAsync()).Should().BeTrue();
 
-            AppServices services = await vm.ServicesAsync();
+            HostServices services = await vm.ServicesAsync();
             (await services.Credentials.GetActiveSecretForProviderAsync(ProviderIds.MinerU)).Value.Should()
                 .Be("token-to-keep");
             vm.Shell.MinerUToken.Should().Be("token-to-keep");

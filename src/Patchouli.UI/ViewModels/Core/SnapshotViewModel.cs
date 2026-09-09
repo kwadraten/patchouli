@@ -3,6 +3,7 @@ using Patchouli.Core.Conflicts;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.UI.Services;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -474,7 +475,7 @@ public sealed class SnapshotViewModel : ViewModelBase
 
         while (FindNextExecutableContentConflict() is { } conflict)
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             SnapshotContentConflictActionExecutor executor = new(services.SnapshotSync, _contentPlan,
                 conflict.ConflictCode);
             Result<ConflictResolutionResult> resolution = await _main.ResolveConflictAsync(conflict, executor);

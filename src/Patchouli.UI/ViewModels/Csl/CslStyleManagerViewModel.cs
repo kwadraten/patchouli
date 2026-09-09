@@ -2,6 +2,7 @@
 using Patchouli.Core.Csl;
 using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Csl;
 
@@ -106,7 +107,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private async Task LoadInstalledStylesAsync()
     {
         StatusText = "正在加载已安装样式...";
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
 
         Result<CslSettings> settingsResult = await services.CslStore.GetSettingsAsync();
         if (settingsResult.IsSuccess)
@@ -134,7 +135,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     private async Task LoadCatalogSourcesAsync()
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         _loadingCatalogSources = true;
         try
         {
@@ -158,7 +159,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private async Task RefreshAsync()
     {
         StatusText = $"正在刷新远程索引：{SelectedCatalogSource.DisplayName}...";
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<CslCatalogStyle>> refreshResult = await services.CslCatalog.RefreshAsync();
         if (refreshResult.IsFailure)
         {
@@ -173,7 +174,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
     private async Task SearchAsync()
     {
         StatusText = $"正在搜索远程样式：{SelectedCatalogSource.DisplayName}...";
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<CslCatalogStyle>> searchResult =
             await services.CslCatalog.SearchAsync(string.IsNullOrWhiteSpace(SearchQuery) ? null : SearchQuery);
 
@@ -196,7 +197,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     private async Task ChangeCatalogSourceAsync(CslCatalogSourceViewModel source)
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result result = services.CslCatalog.SetSource(source.SourceId);
         if (result.IsFailure)
         {
@@ -224,7 +225,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
             client.DefaultRequestHeaders.UserAgent.ParseAdd(
                 $"{Patchouli.Core.BuildInfo.AppName}/{Patchouli.Core.BuildInfo.Version}");
             string xml = await client.GetStringAsync(catalogStyle.SourceUrl);
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Result<CslStyle> result = await services.CslStore.InstallStyleAsync(catalogStyle, xml);
 
             if (result.IsSuccess)
@@ -252,7 +253,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     internal async Task SetDefaultStyleAsync(string styleId)
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<CslSettings> result = await services.CslStore.SaveSettingsAsync(styleId, _locale);
         if (result.IsSuccess)
         {
@@ -279,7 +280,7 @@ public sealed class CslStyleManagerViewModel : ViewModelBase
 
     internal async Task RemoveStyleAsync(string styleId)
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result result = await services.CslStore.RemoveStyleAsync(styleId);
         if (result.IsSuccess)
         {

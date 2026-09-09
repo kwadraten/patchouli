@@ -8,6 +8,8 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Infrastructure.Files;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host.Composition;
+using Patchouli.Host.Watching;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -46,7 +48,7 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<FileSearchRoot>> roots = await services.FileResolution.ListSearchRootsAsync();
         if (roots.IsFailure)
         {
@@ -201,7 +203,7 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
         SetStatus("正在登记并扫描文件搜索根...");
         try
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             SelectedFileSearchRoot selectedRoot = SelectedFileSearchRoot;
             // Registration traverses the whole directory tree (on macOS via native filesystem
             // calls); keep it off the UI thread.
@@ -257,7 +259,7 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result deleted = await services.FileResolution.DeleteSearchRootAsync(rootId);
         if (deleted.IsFailure)
         {

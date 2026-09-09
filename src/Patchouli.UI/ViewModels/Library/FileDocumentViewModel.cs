@@ -19,6 +19,7 @@ using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Ocr;
 using Patchouli.Core.Search;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -79,7 +80,7 @@ public sealed class FileDocumentViewModel : ViewModelBase
 
     private async Task ResolveAsync()
     {
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         FileAssetId fileAssetId = Patchouli.Core.Ids.FileAssetId.Parse(FileAssetId);
         Result<FileResolutionResult> result =
             await services.FileResolution.ResolveFileAsync(fileAssetId, ResolveFilePurpose.MaintenanceScan);

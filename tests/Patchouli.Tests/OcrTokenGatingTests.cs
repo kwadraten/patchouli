@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Patchouli.Host.Import;
 using Patchouli.Ocr;
 using Patchouli.UI.ViewModels;
 
@@ -13,8 +14,8 @@ public sealed class OcrTokenGatingTests
             false, true, false, [], "");
         OcrEngineCapability local = credentialed with { EngineId = OcrEngineIds.NdlKoten, RequiresCredential = false };
 
-        LibraryShellViewModel.RequiresMinerUToken(OcrEngineIds.MinerU, credentialed).Should().BeTrue();
-        LibraryShellViewModel.RequiresMinerUToken(OcrEngineIds.NdlKoten, local).Should().BeFalse();
-        LibraryShellViewModel.RequiresMinerUToken(OcrEngineIds.NdlKoten, credentialed).Should().BeFalse();
+        LibraryImportOrchestrator.RequiresMinerUToken(OcrEngineIds.MinerU, credentialed).Should().BeTrue();
+        LibraryImportOrchestrator.RequiresMinerUToken(OcrEngineIds.NdlKoten, local).Should().BeFalse();
+        LibraryImportOrchestrator.RequiresMinerUToken(OcrEngineIds.NdlKoten, credentialed).Should().BeFalse();
     }
 }

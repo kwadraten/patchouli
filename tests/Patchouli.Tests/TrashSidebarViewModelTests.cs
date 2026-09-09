@@ -8,6 +8,7 @@ using Core.Library;
 using Core.Results;
 using UI;
 using UI.ViewModels;
+using Host.Composition;
 
 [Collection("Avalonia")]
 public sealed class TrashSidebarViewModelTests : IDisposable
@@ -31,7 +32,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
             {
                 await viewModel.OpenDatabaseCommand.ExecuteAsync();
                 await viewModel.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await viewModel.ServicesAsync();
+                HostServices services = await viewModel.ServicesAsync();
                 Result<ItemMetadata> active = await services.Items.CreateItemAsync("book", "Active Item");
                 active.IsSuccess.Should().BeTrue(active.ErrorMessage);
                 Result<ItemMetadata> trashed = await services.Items.CreateItemAsync("book", "Trashed Item");
@@ -98,7 +99,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
             {
                 await viewModel.OpenDatabaseCommand.ExecuteAsync();
                 await viewModel.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await viewModel.ServicesAsync();
+                HostServices services = await viewModel.ServicesAsync();
                 Result<ItemMetadata> created = await services.Items.CreateItemAsync("book", "Delete Me");
                 created.IsSuccess.Should().BeTrue(created.ErrorMessage);
 
@@ -134,7 +135,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
             {
                 await viewModel.OpenDatabaseCommand.ExecuteAsync();
                 await viewModel.Library.CreateCommand.ExecuteAsync();
-                AppServices services = await viewModel.ServicesAsync();
+                HostServices services = await viewModel.ServicesAsync();
                 Result<ItemMetadata> created = await services.Items.CreateItemAsync("book", "Restore Me");
                 created.IsSuccess.Should().BeTrue(created.ErrorMessage);
                 Result deleteResult = await services.Items.DeleteItemAsync(created.Value.ItemId);

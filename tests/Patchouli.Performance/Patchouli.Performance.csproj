@@ -8,6 +8,7 @@
     <ProjectReference Include="..\..\src\Patchouli.Core\Patchouli.Core.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Mcp\Patchouli.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Host\Patchouli.Host.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.UI\Patchouli.UI.csproj" />
   </ItemGroup>
   <ItemGroup>

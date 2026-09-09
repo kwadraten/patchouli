@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.NdlKoten;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -63,7 +64,7 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
         try
         {
             Locations.Clear();
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             OcrStorageLocations storage = services.OcrStorage;
 
             Locations.Add(new ManagedLocationViewModel(
@@ -143,7 +144,7 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
         SetStatus("正在下载 NDL Koten 模型…");
         try
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Progress<double> progress = new(value => DownloadProgress = value);
             Result result = await services.NdlKotenModelDownload.DownloadAllAsync(progress);
             if (result.IsFailure)

@@ -5,6 +5,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
 using Patchouli.UI;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -23,7 +24,7 @@ public sealed class BiblatexImportApplyTests
         string db = Path.Combine(root, "runtime.sqlite");
         try
         {
-            AppServices services = await AppServices.CreateAsync(db, PatchouliAppSettings.Default() with
+            HostServices services = await HostServices.CreateAsync(db, PatchouliAppSettings.Default() with
             {
                 Runtime = PatchouliAppSettings.Default().Runtime with
                 {
@@ -94,7 +95,7 @@ public sealed class BiblatexImportApplyTests
         string db = Path.Combine(root, "runtime.sqlite");
         try
         {
-            AppServices services = await AppServices.CreateAsync(db, PatchouliAppSettings.Default() with
+            HostServices services = await HostServices.CreateAsync(db, PatchouliAppSettings.Default() with
             {
                 Runtime = PatchouliAppSettings.Default().Runtime with
                 {

@@ -3,6 +3,8 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
+using Patchouli.Host.Caching;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.Tests;
@@ -16,7 +18,7 @@ public sealed class TagSidebarViewModelTests
         FakeTagService tagService = new([new TagInfo("beta", 2), new TagInfo("alpha", 1)]);
         FakeQueryService queryService = new([]);
 
-        await sidebar.LoadTagsAsync(tagService, queryService, ["alpha"]);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), ["alpha"]);
 
         sidebar.Tags.Should().HaveCount(3);
         sidebar.Tags[0].Name.Should().Be("alpha");
@@ -31,7 +33,7 @@ public sealed class TagSidebarViewModelTests
         LibrarySidebarViewModel sidebar = new();
         FakeTagService tagService = new([new TagInfo("alpha", 1), new TagInfo("beta", 2)]);
         FakeQueryService queryService = new([]);
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
 
         sidebar.ToggleTagSelection(sidebar.Tags.Single(tag => tag.Name == "alpha"));
         sidebar.ToggleTagSelection(sidebar.Tags.Single(tag => tag.Name == "beta"));
@@ -47,7 +49,7 @@ public sealed class TagSidebarViewModelTests
         FakeTagService tagService = new([new TagInfo("beta", 1), new TagInfo("gamma", 5), new TagInfo("alpha", 3)]);
         FakeQueryService queryService = new([]);
 
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
 
         sidebar.Tags.Select(tag => tag.Name).Should().Equal("gamma", "alpha", "beta", "");
         sidebar.Tags.Last().IsNoTagEntry.Should().BeTrue();
@@ -59,7 +61,7 @@ public sealed class TagSidebarViewModelTests
         LibrarySidebarViewModel sidebar = new();
         FakeTagService tagService = new([new TagInfo("alpha", 1)]);
         FakeQueryService queryService = new([]);
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
         TagListItemViewModel noTag = sidebar.Tags.Last();
 
         sidebar.ToggleTagSelection(sidebar.Tags[0]);
@@ -76,11 +78,11 @@ public sealed class TagSidebarViewModelTests
         LibrarySidebarViewModel sidebar = new();
         FakeTagService tagService = new([new TagInfo("alpha", 1)]);
         FakeQueryService queryService = new([]);
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
 
         sidebar.ToggleTagSelection(sidebar.Tags[0]);
         // A refresh rebuilds the tag items; the selection must follow the new instances.
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
         sidebar.Tags[0].IsSelected.Should().BeTrue();
 
         sidebar.ToggleTagSelection(sidebar.Tags[0]);
@@ -95,10 +97,10 @@ public sealed class TagSidebarViewModelTests
         LibrarySidebarViewModel sidebar = new();
         FakeTagService tagService = new([]);
         FakeQueryService queryService = new([]);
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
 
         sidebar.ToggleTagSelection(sidebar.Tags.Last());
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
         sidebar.IsNoTagSelected.Should().BeTrue();
 
         sidebar.ToggleTagSelection(sidebar.Tags.Last());
@@ -113,7 +115,7 @@ public sealed class TagSidebarViewModelTests
         LibrarySidebarViewModel sidebar = new();
         FakeTagService tagService = new([new TagInfo("alpha", 1), new TagInfo("beta", 2)]);
         FakeQueryService queryService = new([]);
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
 
         sidebar.ApplyPinnedOrder(["beta"]);
 
@@ -132,7 +134,7 @@ public sealed class TagSidebarViewModelTests
         LibraryItemRow untagged = CreateRow("untagged", []);
         FakeQueryService queryService = new([tagged, untagged]);
 
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
 
         sidebar.Tags.Last().IsNoTagEntry.Should().BeTrue();
         sidebar.Tags.Last().Count.Should().Be(1);
@@ -144,7 +146,7 @@ public sealed class TagSidebarViewModelTests
         LibrarySidebarViewModel sidebar = new();
         FakeTagService tagService = new([new TagInfo("alpha", 1)]);
         FakeQueryService queryService = new([]);
-        await sidebar.LoadTagsAsync(tagService, queryService, []);
+        await sidebar.LoadTagsAsync(new LibraryItemCache(queryService, tagService), []);
         bool fired = false;
         sidebar.TagSelectionChanged += (_, _) => fired = true;
 
@@ -293,6 +295,20 @@ public sealed class TagSidebarViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<DocumentNavigationRow?>.Success(null));
+        }
+
+        public Task<Result<IReadOnlyList<LibraryItemRow>>> SearchRowsAsync(
+            BibliographicItemSearch search,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<LibraryItemRow>>.Success(_rows));
+        }
+
+        public Task<Result<BibliographicSearchFilterOptions>> GetSearchFilterOptionsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<BibliographicSearchFilterOptions>.Success(
+                new BibliographicSearchFilterOptions([], [], [])));
         }
     }
 }

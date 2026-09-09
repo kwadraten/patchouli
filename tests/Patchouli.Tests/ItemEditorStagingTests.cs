@@ -7,6 +7,7 @@ using Patchouli.Core.Results;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Editor;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.Tests;
 
@@ -22,7 +23,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             await main.CreateItemMenuCommand.ExecuteAsync();
             Result<IReadOnlyList<CslItemTypeProfile>> profiles =
                 await services.ItemTypeProfiles.ListProfilesAsync();
@@ -46,7 +47,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("book", "Staging add"));
             created.IsSuccess.Should().BeTrue(created.ErrorMessage);
@@ -89,7 +90,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("book", "Staging remove")
                 {
@@ -131,7 +132,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         {
             await File.WriteAllTextAsync(file, "staged registration");
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("book", "Staging file"));
             created.IsSuccess.Should().BeTrue(created.ErrorMessage);
@@ -170,7 +171,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         {
             await File.WriteAllTextAsync(file, "new item staged registration");
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             await main.CreateItemMenuCommand.ExecuteAsync();
             main.ItemEditor.Title = "New item with file";
 
@@ -203,7 +204,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("book", "Staging file removal"));
             created.IsSuccess.Should().BeTrue(created.ErrorMessage);
@@ -244,7 +245,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("book", "Staging failure")
                 {
@@ -275,7 +276,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("webpage", "URL fetch"));
             created.IsSuccess.Should().BeTrue(created.ErrorMessage);
@@ -317,7 +318,7 @@ public sealed class ItemEditorStagingTests : IDisposable
         try
         {
             MainWindowViewModel main = await OpenMainAsync(path);
-            AppServices services = await main.ServicesAsync();
+            HostServices services = await main.ServicesAsync();
             Result<ItemMetadata> created = await services.Items.CreateItemAsync(
                 new CreateItemRequest("webpage", "URL miss"));
             created.IsSuccess.Should().BeTrue(created.ErrorMessage);

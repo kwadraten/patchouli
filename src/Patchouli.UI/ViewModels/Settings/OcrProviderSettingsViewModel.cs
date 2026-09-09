@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Patchouli.Ocr;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -167,7 +168,7 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     {
         try
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             IReadOnlyList<OcrEngineCapability> capabilities = services.OcrAdapters.ListCapabilities();
             AvailableEngines.Clear();
             foreach (OcrEngineCapability capability in capabilities)

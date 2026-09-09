@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.Core.Search;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -81,7 +82,7 @@ public sealed class SearchProfileViewModel : ViewModelBase
     {
         try
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Result<SearchRewritePlan> r = await services.QueryRewriter.BuildRewritePlanAsync(Query,
                 new SearchRewriteOptions(LibraryId.New(),
                     string.IsNullOrWhiteSpace(ProfileId) ? null : SearchProfileId.Parse(ProfileId), PreviewOnly: true));

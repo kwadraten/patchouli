@@ -1,7 +1,7 @@
 using System.Collections.ObjectModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Library;
-using Patchouli.Core.Results;
+using Patchouli.Host.Caching;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -136,25 +136,18 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
     public event EventHandler<TagListItemViewModel>? MergeIntoRequested;
 
     /// <summary>
-    /// Loads the tag list from the given services and rebuilds the sidebar entries. Preserves the
-    /// current selection when the same tags are still present.
+    /// Rebuilds the sidebar entries from the library item cache's tag-count snapshot, preserving
+    /// the current selection when the same tags are still present. The caller ensures the cache
+    /// is loaded via <see cref="LibraryItemCache.EnsureLoadedAsync"/> before reading.
     /// </summary>
     public async Task LoadTagsAsync(
-        IItemTagService tagService,
-        ILibraryItemQueryService queryService,
+        LibraryItemCache cache,
         IReadOnlyList<string> pinnedTags,
         CancellationToken cancellationToken = default)
     {
-        // Microsoft.Data.Sqlite executes synchronously under the async facade, so run the
-        // queries on a thread-pool thread to keep the UI responsive.
-        Result<IReadOnlyList<TagInfo>> tagsResult =
-            await Task.Run(() => tagService.ListTagsAsync(cancellationToken), cancellationToken);
-        if (tagsResult.IsFailure || tagsResult.Value is null)
-        {
-            return;
-        }
-
-        IReadOnlyList<TagInfo> tags = tagsResult.Value;
+        await cache.EnsureLoadedAsync(cancellationToken);
+        TagCountsSnapshot counts = cache.GetTagCounts();
+        IReadOnlyList<TagInfo> tags = counts.Tags;
         HashSet<string> pinnedSet = new(pinnedTags, StringComparer.Ordinal);
         HashSet<string> previouslySelected = _selectedTags
             .Where(item => !item.IsNoTagEntry)
@@ -168,9 +161,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             nextTags.Add(CreateTagItem(tag.Name, tag.Count, pinnedSet.Contains(tag.Name)));
         }
 
-        int noTagCount = await Task.Run(() => CountUntaggedItemsAsync(queryService, cancellationToken),
-            cancellationToken);
-        TagListItemViewModel noTagItem = CreateNoTagItem(noTagCount);
+        TagListItemViewModel noTagItem = CreateNoTagItem(counts.UntaggedCount);
         noTagItem.IsSelected = noTagWasSelected;
 
         // Preserve selected state on ordinary tags.
@@ -347,14 +338,6 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             MergeIntoRequested?.Invoke(this, tag);
             return Task.CompletedTask;
         };
-    }
-
-    private static async Task<int> CountUntaggedItemsAsync(
-        ILibraryItemQueryService queryService,
-        CancellationToken cancellationToken)
-    {
-        Result<int> result = await queryService.CountUntaggedItemsAsync(cancellationToken);
-        return result.IsFailure ? 0 : result.Value;
     }
 
     private static List<TagListItemViewModel> SortTags(
