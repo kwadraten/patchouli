@@ -158,6 +158,12 @@ public sealed class BiblatexImportService : IBiblatexImportService
                     cancellationToken);
             }
         }
+        catch (JsonException)
+        {
+            await CompensateDeletesAsync(created, CancellationToken.None);
+            return Result<BiblatexImportApplyResult>.Failure(AppErrorCodes.ValidationFailed,
+                "Existing custom fields contain invalid JSON and cannot be merged. Repair the local metadata before importing.");
+        }
         catch (Exception)
         {
             await CompensateDeletesAsync(created, CancellationToken.None);
@@ -168,7 +174,7 @@ public sealed class BiblatexImportService : IBiblatexImportService
             created,
             updated,
             CollapseSkips(skips),
-            BuildStatusMessage(created.Count, updated.Count, skips)));
+            BuildStatusMessage(created.Count, updated.Count, skips) + FormatWarnings(source.Warnings)));
     }
 
     public async Task<Result<BiblatexBatchImportPreview>> PreviewBatchAsync(
@@ -279,6 +285,12 @@ public sealed class BiblatexImportService : IBiblatexImportService
                     cancellationToken);
             }
         }
+        catch (JsonException)
+        {
+            await CompensateDeletesAsync(created, CancellationToken.None);
+            return Result<BiblatexImportApplyResult>.Failure(AppErrorCodes.ValidationFailed,
+                "Existing custom fields contain invalid JSON and cannot be merged. Repair the local metadata before importing.");
+        }
         catch (Exception)
         {
             await CompensateDeletesAsync(created, CancellationToken.None);
@@ -289,7 +301,8 @@ public sealed class BiblatexImportService : IBiblatexImportService
             created,
             updated,
             CollapseSkips(skips),
-            BuildStatusMessage(created.Count, updated.Count, skips)));
+            BuildStatusMessage(created.Count, updated.Count, skips) +
+            FormatWarnings(plan.Groups.SelectMany(group => group.Source.Warnings))));
     }
 
     public async Task<Result<string>> ExportItemsAsync(
@@ -636,6 +649,12 @@ public sealed class BiblatexImportService : IBiblatexImportService
             .GroupBy(static skip => skip.Reason, StringComparer.Ordinal)
             .Select(static group => new BiblatexFileSkip(group.Key, group.Sum(static skip => skip.Count)))
             .ToArray();
+    }
+
+    private static string FormatWarnings(IEnumerable<string> warnings)
+    {
+        string[] messages = warnings.ToArray();
+        return messages.Length == 0 ? string.Empty : " 警告：" + string.Join("；", messages);
     }
 
     private static string BuildStatusMessage(int created, int updated, IReadOnlyList<BiblatexFileSkip> skips)

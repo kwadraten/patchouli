@@ -136,7 +136,18 @@ public static class BiblatexMappedItemMerge
                 new ItemIdentifierInput(identifier.Scheme, identifier.Value, identifier.Note)).ToArray();
 
         string? customFields = local.CustomFieldsJson;
-        if (!string.IsNullOrWhiteSpace(incoming.OriginalBiblatexEntryType))
+        if (incoming.CustomFields is not null && incoming.CustomFields.Count > 0)
+        {
+            Dictionary<string, string> selected = incoming.CustomFields
+                .Where(pair => Adopt(BiblatexFieldConflictAnalyzer.CustomFieldKey(pair.Key)))
+                .ToDictionary(static pair => pair.Key, static pair => pair.Value, StringComparer.Ordinal);
+            if (selected.Count > 0)
+            {
+                customFields = MergeCustomFields(customFields, selected);
+            }
+        }
+
+        if (Adopt("item_type") && !string.IsNullOrWhiteSpace(incoming.OriginalBiblatexEntryType))
         {
             customFields = MergeOriginalType(customFields, incoming.OriginalBiblatexEntryType);
         }
@@ -191,45 +202,52 @@ public static class BiblatexMappedItemMerge
         return local;
     }
 
-    private static string? BuildCustomFields(BiblatexMappedItem source)
+    public static string? BuildCustomFields(BiblatexMappedItem source)
     {
-        if (string.IsNullOrWhiteSpace(source.OriginalBiblatexEntryType))
+        Dictionary<string, string> map = new(StringComparer.Ordinal);
+        if (!string.IsNullOrWhiteSpace(source.OriginalBiblatexEntryType))
         {
-            return null;
+            map["original_biblatex_entry_type"] = source.OriginalBiblatexEntryType;
         }
 
-        return JsonSerializer.Serialize(new Dictionary<string, string>
+        if (source.CustomFields is not null)
         {
-            ["original_biblatex_entry_type"] = source.OriginalBiblatexEntryType
-        });
+            foreach ((string key, string value) in source.CustomFields)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    map[key] = value.Trim();
+                }
+            }
+        }
+
+        return map.Count > 0 ? JsonSerializer.Serialize(map) : null;
+    }
+
+    private static string MergeCustomFields(string? existingJson, IReadOnlyDictionary<string, string> incoming)
+    {
+        // Reject malformed local data rather than discard it while applying an import.
+        Dictionary<string, JsonElement> map = string.IsNullOrWhiteSpace(existingJson)
+            ? new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+            : JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(existingJson)
+              ?? throw new JsonException("Existing custom fields must be a JSON object.");
+        foreach ((string key, string value) in incoming)
+        {
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                map[key] = JsonSerializer.SerializeToElement(value.Trim());
+            }
+        }
+
+        return JsonSerializer.Serialize(map);
     }
 
     private static string MergeOriginalType(string? existingJson, string originalType)
     {
-        Dictionary<string, JsonElement> map = new(StringComparer.Ordinal);
-        if (!string.IsNullOrWhiteSpace(existingJson))
+        return MergeCustomFields(existingJson, new Dictionary<string, string>
         {
-            try
-            {
-                Dictionary<string, JsonElement>? parsed =
-                    JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(existingJson);
-                if (parsed is not null)
-                {
-                    foreach ((string key, JsonElement value) in parsed)
-                    {
-                        map[key] = value;
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // Replace unreadable custom fields with the retained entry type marker.
-            }
-        }
-
-        map["original_biblatex_entry_type"] =
-            JsonSerializer.SerializeToElement(originalType);
-        return JsonSerializer.Serialize(map);
+            ["original_biblatex_entry_type"] = originalType
+        });
     }
 
     private static IReadOnlyList<string> ParseTags(string tagsJson)

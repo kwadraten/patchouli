@@ -131,6 +131,75 @@ public sealed class ItemInspectorViewModelTests
             .And.Contain(field => field.Label == "出版机构" && field.Value == "Springer");
     }
 
+    [Fact]
+    public async Task Manuscript_archival_fields_callnumber_and_extended_fields_projected()
+    {
+        ItemId itemId = ItemId.New();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        ItemMetadata metadata = new(
+            itemId,
+            LibraryId.New(),
+            "manuscript",
+            "key1",
+            "Ancient Manuscript",
+            null,
+            null,
+            "[]",
+            [],
+            "1450",
+            [],
+            [new ItemIdentifier(IdentifierId.New(), itemId, BuiltInIdentifierSchemes.CallNumber, "MS 42", null, now)],
+            null,
+            null,
+            null,
+            null,
+            "London", // Should be suppressed for manuscript
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "[]",
+            "[]",
+            System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["archive"] = "British Library",
+                ["archive_location"] = "Cotton Claudius B.iv",
+                ["archive-place"] = "London",
+                ["howpublished"] = "Manuscript folio"
+            }),
+            now,
+            now);
+
+        FakeItemService itemService = new(metadata);
+        FakeProfileService profileService = new();
+        ItemInspectorViewModel inspector = new(
+            () => Task.FromResult<IItemService>(itemService),
+            () => Task.FromResult<IItemTagService>(new FakeTagService()),
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+
+        await inspector.LoadAsync(itemId);
+
+        InspectorGroupViewModel basic = inspector.Groups.Single(g => g.Title == "基本信息");
+        basic.Fields.Should().Contain(f => f.Label == "档案馆" && f.Value == "British Library");
+        basic.Fields.Should().Contain(f => f.Label == "馆藏位置" && f.Value == "Cotton Claudius B.iv");
+        basic.Fields.Should().Contain(f => f.Label == "档案所在地" && f.Value == "London");
+        basic.Fields.Should().NotContain(f => f.Label == "出版地");
+
+        InspectorGroupViewModel identifiers = inspector.Groups.Single(g => g.Title == "标识符");
+        identifiers.Fields.Should().Contain(f => f.Label == "档案号" && f.Value == "MS 42");
+
+        InspectorGroupViewModel extended = inspector.Groups.Single(g => g.Title == "扩展信息");
+        extended.Fields.Should().Contain(f => f.Label == "出版方式" && f.Value == "Manuscript folio");
+    }
+
     private static ItemMetadata CreateBookMetadata(ItemId itemId)
     {
         LibraryId libraryId = LibraryId.New();

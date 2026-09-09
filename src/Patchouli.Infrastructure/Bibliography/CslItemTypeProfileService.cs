@@ -190,7 +190,7 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     ["title", "author"],
                     ["issued", "medium", "dimensions", "archive", "archive_location", "publisher"],
                     [],
-                    identifierSchemes: [BuiltInIdentifierSchemes.URL]),
+                    identifierSchemes: [BuiltInIdentifierSchemes.CallNumber, BuiltInIdentifierSchemes.URL]),
                 Create(
                     "hearing",
                     "Official hearings.",
@@ -295,13 +295,16 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     ["title"],
                     ["authority", "jurisdiction", "number", "issued", "submitted", "status", "references"],
                     [],
+                    [ItemCreatorRoles.Author, ItemCreatorRoles.Holder],
                     dateRoles: [ItemDateRoles.Issued, ItemDateRoles.Submitted],
                     identifierSchemes: [BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber],
                     fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
                     {
                         ["call-number"] = "专利号",
                         ["number"] = "专利号",
-                        ["publisher"] = "专利局/机构"
+                        ["publisher"] = "专利局/机构",
+                        ["author"] = "发明人",
+                        ["holder"] = "持有人"
                     }),
                 Create(
                     "performance",
@@ -334,7 +337,11 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     [],
                     [ItemCreatorRoles.Author, ItemCreatorRoles.Recipient],
                     [ItemDateRoles.Issued, ItemDateRoles.Accessed],
-                    [BuiltInIdentifierSchemes.URL]),
+                    [BuiltInIdentifierSchemes.CallNumber, BuiltInIdentifierSchemes.URL],
+                    fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
+                    {
+                        ["call-number"] = "档案号"
+                    }),
                 Create(
                     "post",
                     "Forum and social-media posts.",
@@ -434,10 +441,11 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     ["title", "author"],
                     ["issued", "genre", "publisher", "archive"],
                     [],
-                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.URL],
+                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber],
                     fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
                     {
-                        ["publisher"] = "授予机构"
+                        ["publisher"] = "授予机构",
+                        ["call-number"] = "索书号"
                     }),
                 Create(
                     "treaty",

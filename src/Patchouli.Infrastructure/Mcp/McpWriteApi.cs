@@ -170,7 +170,7 @@ public sealed class McpWriteApi : IMcpWriteApi
             AbstractText: mapped.Value.AbstractText,
             TagsJson: JsonSerializer.Serialize(mapped.Value.Tags),
             CollectionsJson: existing.Value.CollectionsJson,
-            CustomFieldsJson: existing.Value.CustomFieldsJson,
+            CustomFieldsJson: BiblatexMappedItemMerge.BuildCustomFields(mapped.Value) ?? "{}",
             Creators: mapped.Value.Creators,
             Dates: mapped.Value.Dates);
 
@@ -182,7 +182,8 @@ public sealed class McpWriteApi : IMcpWriteApi
         }
 
         return Result<McpPutResponse>.Success(new McpPutResponse(
-            request.Uri, "item_bib", true, ContentBytes(request.Content), warnings));
+            request.Uri, "item_bib", true, ContentBytes(request.Content),
+            warnings.Concat(mapped.Value.Warnings).ToArray()));
     }
 
     private static int ContentBytes(string content)

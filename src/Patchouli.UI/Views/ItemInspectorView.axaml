@@ -1,6 +1,7 @@
 <UserControl x:Class="Patchouli.UI.Views.ItemInspectorView"
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:ItemInspectorViewModel">
   <ScrollViewer>
@@ -62,9 +63,8 @@
                             HorizontalAlignment="Right" VerticalAlignment="Center"
                             Background="{DynamicResource PrimaryBrush}"
                             Command="{Binding ToggleTagEditorCommand}" ToolTip.Tip="添加标签">
-                      <TextBlock Text="+" FontSize="13" FontWeight="SemiBold"
-                                 Foreground="{DynamicResource OnPrimaryBrush}"
-                                 HorizontalAlignment="Center" VerticalAlignment="Center" />
+                      <lucide:Lucide Icon="Plus" Width="11" Height="11"
+                                     StrokeBrush="{DynamicResource OnPrimaryBrush}" />
                     </Button>
                   </Grid>
                 </Border>

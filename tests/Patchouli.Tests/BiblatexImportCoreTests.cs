@@ -378,6 +378,390 @@ public sealed class BiblatexImportCoreTests
             .Should().Equal("title", "publisher");
     }
 
+    [Fact]
+    public void Archival_fields_and_callnumber_mapped_properly()
+    {
+        BiblatexEntryDto entry = new(
+            "ms1",
+            "unpublished",
+            false,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = "Archival Letter",
+                ["archive"] = "British Library",
+                ["archive_location"] = "Box 4, Folder 2",
+                ["archive-place"] = "London",
+                ["callnumber"] = "Add MS 12345"
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>(),
+            new Dictionary<string, BiblatexDateDto>(),
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> result = BiblatexFieldMapper.MapVisibleEntry(entry);
+        result.IsSuccess.Should().BeTrue();
+        BiblatexMappedItem item = result.Value;
+
+        item.ItemType.Should().Be("manuscript");
+        item.Place.Should().BeNull();
+        item.Identifiers.Should()
+            .ContainSingle(i => i.Scheme == BuiltInIdentifierSchemes.CallNumber && i.Value == "Add MS 12345");
+        item.CustomFields.Should().NotBeNull();
+        item.CustomFields!["archive"].Should().Be("British Library");
+        item.CustomFields["archive_location"].Should().Be("Box 4, Folder 2");
+        item.CustomFields["archive-place"].Should().Be("London");
+    }
+
+    [Fact]
+    public void Archival_mla_style_library_location_and_number_mapped_to_archive_and_callnumber()
+    {
+        BiblatexEntryDto entry = new(
+            "ms2",
+            "unpublished",
+            false,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = "Bodleian Manuscript",
+                ["library"] = "Bodleian Library",
+                ["location"] = "Oxford",
+                ["number"] = "MS. Bodl. 34"
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>(),
+            new Dictionary<string, BiblatexDateDto>(),
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> result = BiblatexFieldMapper.MapVisibleEntry(entry);
+        result.IsSuccess.Should().BeTrue();
+        BiblatexMappedItem item = result.Value;
+
+        item.ItemType.Should().Be("manuscript");
+        item.Place.Should().BeNull();
+        item.Number.Should().BeNull();
+        item.Identifiers.Should()
+            .ContainSingle(i => i.Scheme == BuiltInIdentifierSchemes.CallNumber && i.Value == "MS. Bodl. 34");
+        item.CustomFields.Should().NotBeNull();
+        item.CustomFields!["archive"].Should().Be("Bodleian Library");
+        item.CustomFields["archive-place"].Should().Be("Oxford");
+    }
+
+    [Fact]
+    public void Export_preserves_custom_fields_callnumber_and_container_title()
+    {
+        ItemId itemId = ItemId.New();
+        ItemMetadata metadata = new(
+            itemId,
+            LibraryId.New(),
+            "manuscript",
+            "key1",
+            "Test MS",
+            null,
+            null,
+            "[]",
+            [],
+            null,
+            [],
+            [new ItemIdentifier(IdentifierId.New(), itemId, "call_number", "Add MS 999", null, DateTimeOffset.UtcNow)],
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "[]",
+            "[]",
+            System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                ["archive"] = "British Library",
+                ["archive_location"] = "Shelf 1",
+                ["archive-place"] = "London"
+            }),
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+
+        Result<BiblatexWriteEntryDto> exportResult = BiblatexExportMapper.MapItem(metadata);
+        exportResult.IsSuccess.Should().BeTrue();
+        BiblatexWriteEntryDto dto = exportResult.Value;
+
+        dto.Fields["callnumber"].Should().Be("Add MS 999");
+        dto.Fields["archive"].Should().Be("British Library");
+        dto.Fields["archive_location"].Should().Be("Shelf 1");
+        dto.Fields["archive-place"].Should().Be("London");
+    }
+
+    [Fact]
+    public void Article_eid_and_number_roundtrip_correctly()
+    {
+        BiblatexEntryDto entry = new(
+            "art1",
+            "article",
+            false,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = "Nature Article",
+                ["journaltitle"] = "Nature",
+                ["eid"] = "e12345",
+                ["number"] = "4"
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>(),
+            new Dictionary<string, BiblatexDateDto>(),
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> mapped = BiblatexFieldMapper.MapVisibleEntry(entry);
+        mapped.IsSuccess.Should().BeTrue();
+        mapped.Value.Number.Should().Be("e12345");
+        mapped.Value.Issue.Should().Be("4");
+
+        ItemMetadata item = SampleItem("Nature Article", "article-journal", "Springer") with
+        {
+            Number = mapped.Value.Number,
+            Issue = mapped.Value.Issue,
+            PublicationTitle = mapped.Value.PublicationTitle
+        };
+
+        Result<BiblatexWriteEntryDto> exportResult = BiblatexExportMapper.MapItem(item);
+        exportResult.IsSuccess.Should().BeTrue();
+        exportResult.Value.Fields["eid"].Should().Be("e12345");
+        exportResult.Value.Fields["number"].Should().Be("4");
+        exportResult.Value.Fields["journaltitle"].Should().Be("Nature");
+    }
+
+    [Fact]
+    public void Conference_event_fields_and_structured_eventdate_mapped_and_exported()
+    {
+        BiblatexDateDto eventDate = new(
+            [2026],
+            [[2026, 7, 12], [2026, 7, 18]],
+            null,
+            false);
+
+        BiblatexEntryDto entry = new(
+            "conf1",
+            "inproceedings",
+            false,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = "Conference Paper",
+                ["booktitle"] = "ICML Proceedings",
+                ["eventtitle"] = "ICML 2026",
+                ["venue"] = "Vienna"
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>(),
+            new Dictionary<string, BiblatexDateDto>
+            {
+                ["eventdate"] = eventDate
+            },
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> mapped = BiblatexFieldMapper.MapVisibleEntry(entry);
+        mapped.IsSuccess.Should().BeTrue();
+        mapped.Value.CustomFields.Should().NotBeNull();
+        mapped.Value.CustomFields!["event-title"].Should().Be("ICML 2026");
+        mapped.Value.CustomFields["event-place"].Should().Be("Vienna");
+        mapped.Value.Dates.Should().ContainSingle(d => d.Role == ItemDateRoles.EventDate);
+
+        CreateItemRequest createReq = BiblatexMappedItemMerge.ToCreateRequest(mapped.Value);
+        createReq.CustomFieldsJson.Should().Contain("ICML 2026");
+        createReq.CustomFieldsJson.Should().Contain("Vienna");
+    }
+
+    [Fact]
+    public void Note_and_addendum_combined_when_both_present()
+    {
+        BiblatexEntryDto entry = new(
+            "note1",
+            "article",
+            false,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = "Article With Notes",
+                ["note"] = "Primary note.",
+                ["addendum"] = "Supplementary addendum."
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>(),
+            new Dictionary<string, BiblatexDateDto>(),
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> mapped = BiblatexFieldMapper.MapVisibleEntry(entry);
+        mapped.IsSuccess.Should().BeTrue();
+        mapped.Value.Note.Should().Be("Primary note.\n\nSupplementary addendum.");
+    }
+
+    [Fact]
+    public void Extended_person_roles_mapped_and_exported()
+    {
+        BiblatexEntryDto entry = new(
+            "movie1",
+            "misc",
+            false,
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["title"] = "Film Title"
+            },
+            new Dictionary<string, IReadOnlyList<BiblatexPersonDto>>
+            {
+                ["director"] = [new BiblatexPersonDto("Nolan", "Christopher")],
+                ["composer"] = [new BiblatexPersonDto("Zimmer", "Hans")],
+                ["holder"] = [new BiblatexPersonDto("Acme Corp", null)]
+            },
+            new Dictionary<string, BiblatexDateDto>(),
+            [],
+            null,
+            true,
+            new BiblatexVerifyDto([], [], []));
+
+        Result<BiblatexMappedItem> mapped = BiblatexFieldMapper.MapVisibleEntry(entry);
+        mapped.IsSuccess.Should().BeTrue();
+        mapped.Value.Creators.Should().Contain(c => c.Role == ItemCreatorRoles.Director && c.Family == "Nolan");
+        mapped.Value.Creators.Should().Contain(c => c.Role == ItemCreatorRoles.Composer && c.Family == "Zimmer");
+        mapped.Value.Creators.Should().Contain(c => c.Role == ItemCreatorRoles.Holder && c.Family == "Acme Corp");
+
+        CreateItemRequest createReq = BiblatexMappedItemMerge.ToCreateRequest(mapped.Value);
+        createReq.Creators.Should().NotBeNull();
+        createReq.Creators!.Should().Contain(c => c.Role == ItemCreatorRoles.Holder);
+
+        ItemId itemId = ItemId.New();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        ItemMetadata item = new(
+            itemId,
+            LibraryId.New(),
+            "motion_picture",
+            "movie1",
+            "Film Title",
+            null,
+            null,
+            "[]",
+            [
+                new ItemCreator(Guid.NewGuid().ToString(), itemId, ItemCreatorRoles.Director, "Nolan", "Christopher",
+                    null, null, null, 0, now),
+                new ItemCreator(Guid.NewGuid().ToString(), itemId, ItemCreatorRoles.Composer, "Zimmer", "Hans", null,
+                    null, null, 1, now),
+                new ItemCreator(Guid.NewGuid().ToString(), itemId, ItemCreatorRoles.Holder, "Acme Corp", null, null,
+                    null, null, 2, now)
+            ],
+            null,
+            [],
+            [],
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            "[]",
+            "[]",
+            "{}",
+            now,
+            now);
+
+        Result<BiblatexWriteEntryDto> exportResult = BiblatexExportMapper.MapItem(item);
+        exportResult.IsSuccess.Should().BeTrue();
+        exportResult.Value.Persons.Should().ContainKey("director");
+        exportResult.Value.Persons["director"][0].Family.Should().Be("Nolan");
+        exportResult.Value.Persons.Should().ContainKey("composer");
+        exportResult.Value.Persons["composer"][0].Family.Should().Be("Zimmer");
+        exportResult.Value.Persons.Should().ContainKey("holder");
+        exportResult.Value.Persons["holder"][0].Family.Should().Be("Acme Corp");
+    }
+
+    [Fact]
+    public void Container_title_export_rules_applied()
+    {
+        // 1. Chapter writes booktitle
+        ItemMetadata chapter = SampleItem("A Chapter", "chapter", "Publisher") with
+        {
+            PublicationTitle = "The Book Title"
+        };
+        Result<BiblatexWriteEntryDto> chapterExport = BiblatexExportMapper.MapItem(chapter);
+        chapterExport.IsSuccess.Should().BeTrue();
+        chapterExport.Value.Fields.Should().ContainKey("booktitle");
+        chapterExport.Value.Fields["booktitle"].Should().Be("The Book Title");
+
+        // 2. Article-journal writes journaltitle and shortjournal
+        ItemMetadata article = SampleItem("An Article", "article-journal", "Publisher") with
+        {
+            PublicationTitle = "Journal of Science",
+            ContainerTitleShort = "J. Sci."
+        };
+        Result<BiblatexWriteEntryDto> articleExport = BiblatexExportMapper.MapItem(article);
+        articleExport.IsSuccess.Should().BeTrue();
+        articleExport.Value.Fields.Should().ContainKey("journaltitle");
+        articleExport.Value.Fields["journaltitle"].Should().Be("Journal of Science");
+        articleExport.Value.Fields.Should().ContainKey("shortjournal");
+        articleExport.Value.Fields["shortjournal"].Should().Be("J. Sci.");
+
+        // 3. Other type (e.g. book or manuscript) with PublicationTitle writes maintitle
+        ItemMetadata book = SampleItem("A Book", "book", "Publisher") with
+        {
+            PublicationTitle = "Collected Works of Author"
+        };
+        Result<BiblatexWriteEntryDto> bookExport = BiblatexExportMapper.MapItem(book);
+        bookExport.IsSuccess.Should().BeTrue();
+        bookExport.Value.Fields.Should().ContainKey("maintitle");
+        bookExport.Value.Fields["maintitle"].Should().Be("Collected Works of Author");
+    }
+
+    [Fact]
+    public void Date_range_and_circa_export_serialized_correctly()
+    {
+        ItemId itemId = ItemId.New();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        ItemDate rangeDate = new(
+            Guid.NewGuid().ToString(),
+            itemId,
+            ItemDateRoles.Issued,
+            "[[1914, 7, 28], [1918, 11, 11]]",
+            true, // circa
+            null,
+            null,
+            now);
+
+        ItemMetadata item = SampleItem("WWI History", "book", "Publisher") with
+        {
+            Dates = [rangeDate]
+        };
+
+        Result<BiblatexWriteEntryDto> exportResult = BiblatexExportMapper.MapItem(item);
+        exportResult.IsSuccess.Should().BeTrue();
+        exportResult.Value.Fields.Should().ContainKey("date");
+        exportResult.Value.Fields["date"].Should().Be("1914-07-28~/1918-11-11~");
+    }
+
     private static BiblatexMappedItem SampleMapped(
         string title,
         IReadOnlyList<string> authorKeys,

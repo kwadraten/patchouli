@@ -99,7 +99,11 @@ public sealed record BiblatexMappedItem(
     IReadOnlyList<string> Tags,
     string? FilePath,
     string SourceEntryKey,
-    string SourceEntryType);
+    string SourceEntryType,
+    IReadOnlyDictionary<string, string>? CustomFields = null)
+{
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
 
 public sealed record BiblatexMatchCandidate(
     string ItemId,

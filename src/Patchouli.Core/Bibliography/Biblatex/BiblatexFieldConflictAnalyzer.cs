@@ -5,6 +5,11 @@ namespace Patchouli.Core.Bibliography.Biblatex;
 
 public static class BiblatexFieldConflictAnalyzer
 {
+    public static string CustomFieldKey(string key)
+    {
+        return "custom:" + key;
+    }
+
     public static IReadOnlyList<BiblatexFieldConflict> FindConflicts(
         ItemMetadata local,
         BiblatexMappedItem incoming)
@@ -33,6 +38,18 @@ public static class BiblatexFieldConflictAnalyzer
         AddScalar(conflicts, "status", "状态", local.Status, incoming.Status);
         AddScalar(conflicts, "note", "附注", local.Note, incoming.Note);
         AddScalar(conflicts, "abstract", "摘要", local.Abstract, incoming.AbstractText);
+
+        if (incoming.CustomFields is not null)
+        {
+            Dictionary<string, JsonElement> localFields = ParseCustomFields(local.CustomFieldsJson);
+            foreach ((string key, string value) in incoming.CustomFields)
+            {
+                string? localValue = localFields.TryGetValue(key, out JsonElement element)
+                    ? element.ValueKind == JsonValueKind.String ? element.GetString() : element.GetRawText()
+                    : null;
+                AddScalar(conflicts, CustomFieldKey(key), $"扩展字段 {key}", localValue, value);
+            }
+        }
 
         if (incoming.Creators.Count > 0)
         {
@@ -78,6 +95,19 @@ public static class BiblatexFieldConflictAnalyzer
         }
 
         return conflicts;
+    }
+
+    private static Dictionary<string, JsonElement> ParseCustomFields(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json) ??
+                   new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        }
+        catch (JsonException)
+        {
+            return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        }
     }
 
     public static IReadOnlyList<string> MergeTags(IEnumerable<string> local, IEnumerable<string> incoming)

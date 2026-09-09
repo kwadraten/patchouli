@@ -4,6 +4,7 @@ using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Editor;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -205,7 +206,42 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         AddIfPresent(basic.Fields, "卷", metadata.Volume);
         AddIfPresent(basic.Fields, "期", metadata.Issue);
         AddIfPresent(basic.Fields, "页码", metadata.Pages);
-        AddIfPresent(basic.Fields, "出版地", metadata.Place);
+        if (metadata.ItemType is not "manuscript" and not "collection")
+        {
+            AddIfPresent(basic.Fields, "出版地", metadata.Place);
+        }
+
+        Dictionary<string, string> customFields = ParseCustomFields(metadata.CustomFieldsJson);
+        if (customFields.TryGetValue("archive", out string? archive))
+        {
+            AddIfPresent(basic.Fields, LabelFor(fieldLabels, "archive", "档案馆"), archive);
+        }
+
+        if (customFields.TryGetValue("archive_location", out string? archiveLoc))
+        {
+            AddIfPresent(basic.Fields, LabelFor(fieldLabels, "archive_location", "馆藏位置"), archiveLoc);
+        }
+
+        if (customFields.TryGetValue("archive-place", out string? archivePlace))
+        {
+            AddIfPresent(basic.Fields, LabelFor(fieldLabels, "archive-place", "档案所在地"), archivePlace);
+        }
+
+        if (customFields.TryGetValue("archive_collection", out string? archiveCol))
+        {
+            AddIfPresent(basic.Fields, LabelFor(fieldLabels, "archive_collection", "档案集合"), archiveCol);
+        }
+
+        if (customFields.TryGetValue("event-title", out string? eventTitle))
+        {
+            AddIfPresent(basic.Fields, LabelFor(fieldLabels, "event-title", "会议名称"), eventTitle);
+        }
+
+        if (customFields.TryGetValue("event-place", out string? eventPlace))
+        {
+            AddIfPresent(basic.Fields, LabelFor(fieldLabels, "event-place", "会议地点"), eventPlace);
+        }
+
         if (basic.Fields.Count > 0)
         {
             Groups.Add(basic);
@@ -217,10 +253,55 @@ public sealed class ItemInspectorViewModel : ViewModelBase
             foreach (ItemIdentifier identifier in metadata.Identifiers.OrderBy(static i => i.Scheme,
                          StringComparer.Ordinal))
             {
-                identifiers.Fields.Add(Field(identifier.Scheme.ToUpperInvariant(), identifier.Value));
+                string schemeLabel;
+                if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.CallNumber,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    schemeLabel = fieldLabels.TryGetValue("call-number", out string? customCallNum)
+                        ? customCallNum
+                        : metadata.ItemType is "manuscript" or "collection"
+                            ? "档案号"
+                            : "索书号";
+                }
+                else if (string.Equals(identifier.Scheme, BuiltInIdentifierSchemes.ArXiv,
+                             StringComparison.OrdinalIgnoreCase))
+                {
+                    schemeLabel = "arXiv";
+                }
+                else
+                {
+                    schemeLabel = identifier.Scheme.ToUpperInvariant();
+                }
+
+                identifiers.Fields.Add(Field(schemeLabel, identifier.Value));
             }
 
             Groups.Add(identifiers);
+        }
+
+        InspectorGroupViewModel extended = new("扩展信息");
+        HashSet<string> basicCustomKeys = new(StringComparer.Ordinal)
+        {
+            "archive", "archive_location", "archive-place", "archive_collection", "event-title", "event-place"
+        };
+        foreach ((string key, string value) in customFields.OrderBy(static kvp => kvp.Key, StringComparer.Ordinal))
+        {
+            if (basicCustomKeys.Contains(key))
+            {
+                continue;
+            }
+
+            ExtraCslVariableOption? option = ExtraCslVariableCatalog.Find(key);
+            string label = fieldLabels.TryGetValue(key, out string? customLabel)
+                ? customLabel
+                : option?.Label ?? (key == "original_biblatex_entry_type" ? "原始 BibLaTeX 类型" : key);
+            bool wrap = option?.IsMultiline ?? false;
+            AddIfPresent(extended.Fields, label, value, wrap);
+        }
+
+        if (extended.Fields.Count > 0)
+        {
+            Groups.Add(extended);
         }
 
         InspectorGroupViewModel other = new("其他");
@@ -322,6 +403,39 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         {
             return Array.Empty<string>();
         }
+    }
+
+    private static Dictionary<string, string> ParseCustomFields(string? json)
+    {
+        Dictionary<string, string> result = new(StringComparer.Ordinal);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return result;
+        }
+
+        try
+        {
+            using JsonDocument doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
+                {
+                    string val = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString() ?? ""
+                        : prop.Value.ToString();
+                    if (!string.IsNullOrWhiteSpace(val))
+                    {
+                        result[prop.Name] = val.Trim();
+                    }
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return result;
+        }
+
+        return result;
     }
 }
 

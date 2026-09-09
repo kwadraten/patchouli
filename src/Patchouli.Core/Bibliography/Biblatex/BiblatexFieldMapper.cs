@@ -12,11 +12,6 @@ public static class BiblatexFieldMapper
 {
     public static Result<BiblatexMappedItem> MapVisibleEntry(BiblatexEntryDto entry)
     {
-        if (!entry.VerifyOk)
-        {
-            return VerificationFailure(entry);
-        }
-
         return MapEntry(entry, null);
     }
 
@@ -30,11 +25,6 @@ public static class BiblatexFieldMapper
     {
         if (!string.Equals(entry.EntryType, "misc", StringComparison.OrdinalIgnoreCase))
         {
-            if (!entry.VerifyOk)
-            {
-                return VerificationFailure(entry);
-            }
-
             Result<BiblatexMappedItem> refined = MapEntry(entry, null);
             if (refined.IsFailure)
             {
@@ -49,16 +39,6 @@ public static class BiblatexFieldMapper
             }
 
             return refined;
-        }
-
-        bool onlyMissingAuthor = entry.Verify.Missing.Count > 0 &&
-                                 entry.Verify.Superfluous.Count == 0 &&
-                                 entry.Verify.Malformed.Count == 0 &&
-                                 entry.Verify.Missing.All(field =>
-                                     string.Equals(field, "author", StringComparison.OrdinalIgnoreCase));
-        if (!entry.VerifyOk && !onlyMissingAuthor)
-        {
-            return VerificationFailure(entry);
         }
 
         return MapEntry(entry, "general");
@@ -81,6 +61,30 @@ public static class BiblatexFieldMapper
                 $"BibLaTeX entry '{entry.Key}' is missing title. Correct the source entry before importing.");
         }
 
+        BiblatexMalformedDto? blocking = entry.Verify.Malformed.FirstOrDefault(diagnostic =>
+            !IsPreservedTextField(diagnostic.Field));
+        if (blocking is not null)
+        {
+            return Result<BiblatexMappedItem>.Failure(AppErrorCodes.BiblatexVerifyFailed,
+                $"BibLaTeX entry '{entry.Key}' failed verify(): malformed field '{blocking.Field}': {blocking.Message}");
+        }
+
+        // A present name list that failed parsing cannot safely be treated as absent.
+        foreach (string role in new[] { "author", "editor" })
+        {
+            if (entry.Verify.Missing.Contains(role, StringComparer.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(Field(entry, role)) && !entry.Persons.ContainsKey(role))
+            {
+                return VerificationFailure(entry);
+            }
+        }
+
+        if (!entry.VerifyOk && entry.Verify.Missing.Count == 0 &&
+            entry.Verify.Superfluous.Count == 0 && entry.Verify.Malformed.Count == 0)
+        {
+            return VerificationFailure(entry);
+        }
+
         string? originalType = null;
         string itemType;
         if (forcedItemType is not null)
@@ -94,14 +98,14 @@ public static class BiblatexFieldMapper
 
         IReadOnlyList<ItemCreatorInput> creators = MapCreators(entry);
         IReadOnlyList<ItemDateInput> dates = MapDates(entry);
-        IReadOnlyList<ItemIdentifierInput> identifiers = MapIdentifiers(entry);
+        IReadOnlyList<ItemIdentifierInput> identifiers = MapIdentifiers(entry, itemType);
         IReadOnlyList<string> tags = TagNormalizer.NormalizeMany(entry.Keywords);
 
         string? publicationTitle = MapPublicationTitle(entry, itemType);
         string? publisher = MapPublisher(entry, itemType);
         string? number = MapNumber(entry, itemType);
         string? issue = MapIssue(entry, itemType);
-        string? note = FirstNonEmpty(Field(entry, "note"), Field(entry, "addendum"));
+        string? note = MapNote(entry);
         string? language = FirstNonEmpty(Field(entry, "language"), Field(entry, "langid"));
 
         return Result<BiblatexMappedItem>.Success(new BiblatexMappedItem(
@@ -117,7 +121,7 @@ public static class BiblatexFieldMapper
             NullIfEmpty(Field(entry, "shortjournal")),
             NullIfEmpty(Field(entry, "series")),
             publisher,
-            FirstNonEmpty(Field(entry, "location"), Field(entry, "address")),
+            MapPlace(entry, itemType),
             NullIfEmpty(Field(entry, "edition")),
             NullIfEmpty(Field(entry, "type")),
             number,
@@ -133,7 +137,41 @@ public static class BiblatexFieldMapper
             tags,
             NullIfEmpty(entry.File),
             entry.Key,
-            entry.EntryType));
+            entry.EntryType,
+            MapCustomFields(entry, itemType))
+        {
+            Warnings = BuildWarnings(entry)
+        });
+    }
+
+    private static bool IsPreservedTextField(string field)
+    {
+        return field.ToLowerInvariant() is "pages" or "volume" or "edition";
+    }
+
+    private static IReadOnlyList<string> BuildWarnings(BiblatexEntryDto entry)
+    {
+        // Only host-owned text and counts cross the MCP boundary, never source content.
+        List<string> warnings = [];
+        if (entry.Verify.Missing.Count > 0)
+        {
+            warnings.Add(
+                $"BIBLATEX_MISSING_FIELDS: {entry.Verify.Missing.Count} recommended fields are missing; incomplete metadata was accepted.");
+        }
+
+        if (entry.Verify.Superfluous.Count > 0)
+        {
+            warnings.Add(
+                $"BIBLATEX_SUPERFLUOUS_FIELDS: {entry.Verify.Superfluous.Count} fields conflict with entry-type recommendations; supported fields were retained.");
+        }
+
+        if (entry.Verify.Malformed.Count > 0)
+        {
+            warnings.Add(
+                $"BIBLATEX_LITERAL_FIELDS: {entry.Verify.Malformed.Count} fields could not be parsed numerically and were retained as text.");
+        }
+
+        return warnings;
     }
 
     private static Result<BiblatexMappedItem> VerificationFailure(BiblatexEntryDto entry)
@@ -277,7 +315,16 @@ public static class BiblatexFieldMapper
         ("editorb", ItemCreatorRoles.Editor),
         ("editorc", ItemCreatorRoles.Editor),
         ("translator", ItemCreatorRoles.Translator),
-        ("bookauthor", ItemCreatorRoles.ContainerAuthor)
+        ("bookauthor", ItemCreatorRoles.ContainerAuthor),
+        ("holder", ItemCreatorRoles.Holder),
+        ("scriptwriter", ItemCreatorRoles.ScriptWriter),
+        ("script-writer", ItemCreatorRoles.ScriptWriter),
+        ("writer", ItemCreatorRoles.ScriptWriter),
+        ("originalauthor", ItemCreatorRoles.OriginalAuthor),
+        ("origauthor", ItemCreatorRoles.OriginalAuthor),
+        ("original-author", ItemCreatorRoles.OriginalAuthor),
+        ("reviewedauthor", ItemCreatorRoles.ReviewedAuthor),
+        ("reviewed-author", ItemCreatorRoles.ReviewedAuthor)
     ];
 
     private static IReadOnlyList<ItemCreatorInput> MapCreators(BiblatexEntryDto entry)
@@ -393,13 +440,37 @@ public static class BiblatexFieldMapper
         return true;
     }
 
-    private static IReadOnlyList<ItemIdentifierInput> MapIdentifiers(BiblatexEntryDto entry)
+    private static IReadOnlyList<ItemIdentifierInput> MapIdentifiers(BiblatexEntryDto entry, string itemType)
     {
         List<ItemIdentifierInput> identifiers = [];
         AddIdentifier(identifiers, BuiltInIdentifierSchemes.DOI, Field(entry, "doi"));
         AddIdentifier(identifiers, BuiltInIdentifierSchemes.ISBN, Field(entry, "isbn"));
         AddIdentifier(identifiers, BuiltInIdentifierSchemes.ISSN, Field(entry, "issn"));
         AddIdentifier(identifiers, BuiltInIdentifierSchemes.URL, Field(entry, "url"));
+
+        string? callNumber = FirstNonEmpty(
+            Field(entry, "callnumber"),
+            Field(entry, "call-number"),
+            Field(entry, "call_number"));
+        if (callNumber is null && itemType is "manuscript" or "collection")
+        {
+            callNumber = Field(entry, "number");
+        }
+
+        AddIdentifier(identifiers, BuiltInIdentifierSchemes.CallNumber, callNumber);
+
+        string? eprint = Field(entry, "eprint");
+        if (!string.IsNullOrWhiteSpace(eprint))
+        {
+            string? eprintType = Field(entry, "eprinttype");
+            if (string.Equals(eprintType, "arxiv", StringComparison.OrdinalIgnoreCase) ||
+                (string.IsNullOrWhiteSpace(eprintType) &&
+                 (eprint.StartsWith("arXiv:", StringComparison.OrdinalIgnoreCase) || char.IsDigit(eprint.Trim()[0]))))
+            {
+                AddIdentifier(identifiers, BuiltInIdentifierSchemes.ArXiv, eprint);
+            }
+        }
+
         return identifiers;
     }
 
@@ -454,6 +525,11 @@ public static class BiblatexFieldMapper
 
     private static string? MapNumber(BiblatexEntryDto entry, string itemType)
     {
+        if (itemType is "manuscript" or "collection")
+        {
+            return null;
+        }
+
         if (itemType is "patent" or "report")
         {
             return NullIfEmpty(Field(entry, "number"));
@@ -475,6 +551,257 @@ public static class BiblatexFieldMapper
         }
 
         return NullIfEmpty(Field(entry, "issue"));
+    }
+
+    private static string? MapPlace(BiblatexEntryDto entry, string itemType)
+    {
+        if (itemType is "manuscript" or "collection")
+        {
+            return null;
+        }
+
+        return FirstNonEmpty(Field(entry, "location"), Field(entry, "address"));
+    }
+
+    private static string? MapNote(BiblatexEntryDto entry)
+    {
+        string? note = NullIfEmpty(Field(entry, "note"));
+        string? addendum = NullIfEmpty(Field(entry, "addendum"));
+        if (note is not null && addendum is not null)
+        {
+            if (string.Equals(note, addendum, StringComparison.Ordinal))
+            {
+                return note;
+            }
+
+            return $"{note}\n\n{addendum}";
+        }
+
+        return note ?? addendum;
+    }
+
+    private static IReadOnlyDictionary<string, string> MapCustomFields(BiblatexEntryDto entry, string itemType)
+    {
+        Dictionary<string, string> custom = new(StringComparer.Ordinal);
+
+        // Archive fields
+        string? archive = FirstNonEmpty(Field(entry, "archive"), Field(entry, "library"));
+        if (archive is not null)
+        {
+            custom["archive"] = archive;
+        }
+
+        string? archiveLocation = FirstNonEmpty(
+            Field(entry, "archive_location"),
+            Field(entry, "archivelocation"),
+            Field(entry, "archive-location"));
+        if (archiveLocation is not null)
+        {
+            custom["archive_location"] = archiveLocation;
+        }
+
+        string? archivePlace = FirstNonEmpty(
+            Field(entry, "archive-place"),
+            Field(entry, "archiveplace"),
+            Field(entry, "archive_place"));
+        if (archivePlace is null && itemType is "manuscript" or "collection")
+        {
+            archivePlace = FirstNonEmpty(Field(entry, "location"), Field(entry, "address"));
+        }
+
+        if (archivePlace is not null)
+        {
+            custom["archive-place"] = archivePlace;
+        }
+
+        string? archiveCollection = FirstNonEmpty(
+            Field(entry, "archive_collection"),
+            Field(entry, "archivecollection"),
+            Field(entry, "archive-collection"));
+        if (archiveCollection is not null)
+        {
+            custom["archive_collection"] = archiveCollection;
+        }
+
+        // Conference / event
+        string? eventTitle = FirstNonEmpty(Field(entry, "eventtitle"), Field(entry, "event-title"));
+        if (eventTitle is not null)
+        {
+            custom["event-title"] = eventTitle;
+        }
+
+        string? eventPlace =
+            FirstNonEmpty(Field(entry, "venue"), Field(entry, "eventplace"), Field(entry, "event-place"));
+        if (eventPlace is not null)
+        {
+            custom["event-place"] = eventPlace;
+        }
+
+        // Books / volumes / pages
+        string? numVolumes = FirstNonEmpty(Field(entry, "volumes"), Field(entry, "number-of-volumes"));
+        if (numVolumes is not null)
+        {
+            custom["number-of-volumes"] = numVolumes;
+        }
+
+        string? numPages = FirstNonEmpty(Field(entry, "pagetotal"), Field(entry, "numpages"),
+            Field(entry, "number-of-pages"));
+        if (numPages is not null)
+        {
+            custom["number-of-pages"] = numPages;
+        }
+
+        string? origTitle = FirstNonEmpty(Field(entry, "origtitle"), Field(entry, "original-title"));
+        if (origTitle is not null)
+        {
+            custom["original-title"] = origTitle;
+        }
+
+        string? origPublisher = FirstNonEmpty(Field(entry, "origpublisher"), Field(entry, "original-publisher"));
+        if (origPublisher is not null)
+        {
+            custom["original-publisher"] = origPublisher;
+        }
+
+        string? origPlace = FirstNonEmpty(Field(entry, "origlocation"), Field(entry, "origplace"),
+            Field(entry, "original-publisher-place"));
+        if (origPlace is not null)
+        {
+            custom["original-publisher-place"] = origPlace;
+        }
+
+        // Dataset / Software / Media
+        string? license = FirstNonEmpty(Field(entry, "license"), Field(entry, "rights"));
+        if (license is not null)
+        {
+            custom["license"] = license;
+        }
+
+        string? medium = FirstNonEmpty(Field(entry, "medium"), Field(entry, "howpublished"));
+        if (medium is not null)
+        {
+            custom["medium"] = medium;
+        }
+
+        string? dimensions = NullIfEmpty(Field(entry, "dimensions"));
+        if (dimensions is not null)
+        {
+            custom["dimensions"] = dimensions;
+        }
+
+        string? scale = NullIfEmpty(Field(entry, "scale"));
+        if (scale is not null)
+        {
+            custom["scale"] = scale;
+        }
+
+        // Legal / Patent / Standard
+        string? authority = NullIfEmpty(Field(entry, "authority"));
+        if (authority is not null)
+        {
+            custom["authority"] = authority;
+        }
+
+        string? jurisdiction = NullIfEmpty(Field(entry, "jurisdiction"));
+        if (jurisdiction is not null)
+        {
+            custom["jurisdiction"] = jurisdiction;
+        }
+
+        string? division = NullIfEmpty(Field(entry, "division"));
+        if (division is not null)
+        {
+            custom["division"] = division;
+        }
+
+        string? section = NullIfEmpty(Field(entry, "section"));
+        if (section is not null)
+        {
+            custom["section"] = section;
+        }
+
+        string? references = NullIfEmpty(Field(entry, "references"));
+        if (references is not null)
+        {
+            custom["references"] = references;
+        }
+
+        // Reviews
+        string? reviewedTitle = FirstNonEmpty(Field(entry, "reviewed-title"), Field(entry, "reviewedtitle"));
+        if (reviewedTitle is null && itemType is "review" or "review-book")
+        {
+            reviewedTitle = origTitle;
+        }
+
+        if (reviewedTitle is not null)
+        {
+            custom["reviewed-title"] = reviewedTitle;
+        }
+
+        string? reviewedGenre = FirstNonEmpty(Field(entry, "reviewed-genre"), Field(entry, "reviewedgenre"));
+        if (reviewedGenre is not null)
+        {
+            custom["reviewed-genre"] = reviewedGenre;
+        }
+
+        // Eprint
+        string? eprint = NullIfEmpty(Field(entry, "eprint"));
+        if (eprint is not null)
+        {
+            custom["eprint"] = eprint;
+        }
+
+        string? eprintType = NullIfEmpty(Field(entry, "eprinttype"));
+        if (eprintType is not null)
+        {
+            custom["eprinttype"] = eprintType;
+        }
+
+        string? eprintClass = NullIfEmpty(Field(entry, "eprintclass"));
+        if (eprintClass is not null)
+        {
+            custom["eprintclass"] = eprintClass;
+        }
+
+        // General / Misc
+        string? howPublished = NullIfEmpty(Field(entry, "howpublished"));
+        if (howPublished is not null && !custom.ContainsKey("howpublished"))
+        {
+            custom["howpublished"] = howPublished;
+        }
+
+        // Fallback for unmapped fields: retain any fields from entry.Fields not handled above or by standard mappings.
+        HashSet<string> consumed = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "title", "subtitle", "shorttitle", "edition", "volume", "version", "pages", "note", "addendum",
+            "abstract", "series", "chapter", "pubstate", "language", "langid", "type", "journaltitle", "journal",
+            "maintitle", "booktitle", "shortjournal", "publisher", "organization", "institution", "school",
+            "number", "issue", "eid", "location", "address", "doi", "isbn", "issn", "url", "callnumber",
+            "call-number", "call_number", "date", "year", "month", "day", "urldate", "origdate", "eventdate",
+            "submitted", "author", "editor", "editora", "editorb", "editorc", "translator", "bookauthor",
+            "director", "producer", "composer", "performer", "interviewer", "recipient", "scriptwriter",
+            "script-writer", "writer", "originalauthor", "origauthor", "original-author", "organizer", "reviewedauthor",
+            "reviewed-author", "holder", "keywords", "file", "crossref", "xdata", "entrysubtype",
+            "archive", "library", "archive_location", "archivelocation", "archive-location", "archive-place",
+            "archiveplace", "archive_place", "archive_collection", "archivecollection", "archive-collection",
+            "eventtitle", "event-title", "venue", "eventplace", "event-place", "volumes", "number-of-volumes",
+            "pagetotal", "numpages", "number-of-pages", "origtitle", "original-title", "origpublisher",
+            "original-publisher", "origlocation", "origplace", "original-publisher-place", "license", "rights",
+            "medium", "howpublished", "dimensions", "scale", "authority", "jurisdiction", "division", "section",
+            "references", "reviewedtitle", "reviewed-title", "reviewedgenre", "reviewed-genre", "eprint",
+            "eprinttype", "eprintclass"
+        };
+
+        foreach ((string rawKey, string rawValue) in entry.Fields)
+        {
+            string key = rawKey.Trim().ToLowerInvariant();
+            if (!consumed.Contains(key) && !string.IsNullOrWhiteSpace(rawValue) && !custom.ContainsKey(key))
+            {
+                custom[key] = rawValue.Trim();
+            }
+        }
+
+        return custom;
     }
 
     private static IEnumerable<int> ExtractYears(ItemDateInput date)

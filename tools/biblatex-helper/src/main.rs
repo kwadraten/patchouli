@@ -68,10 +68,7 @@ fn parse_bibliography(text: &str) -> Response {
         }
     };
 
-    let entries = bibliography
-        .iter()
-        .map(entry_to_dto)
-        .collect::<Vec<_>>();
+    let entries = bibliography.iter().map(entry_to_dto).collect::<Vec<_>>();
 
     Response {
         ok: true,
@@ -85,7 +82,16 @@ fn write_bibliography(entries: &[WriteEntryDto]) -> Response {
     let mut parts = Vec::with_capacity(entries.len());
     for entry in entries {
         match build_entry(entry) {
-            Ok(built) => parts.push(built.to_biblatex_string()),
+            Ok(built) => {
+                let mut text = built.to_biblatex_string();
+                // The upstream writer downgrades extension types to misc.
+                if let EntryType::Unknown(name) = &built.entry_type {
+                    if let Some(header_end) = text.find('{') {
+                        text.replace_range(1..header_end, name);
+                    }
+                }
+                parts.push(text);
+            }
             Err(message) => return Response::error("write_failed", message),
         }
     }
@@ -107,7 +113,10 @@ fn entry_to_dto(entry: &Entry) -> EntryDto {
 
     EntryDto {
         key: entry.key.clone(),
-        entry_type: entry.entry_type.to_string().to_ascii_lowercase(),
+        entry_type: match &entry.entry_type {
+            EntryType::Unknown(name) => name.to_ascii_lowercase(),
+            known => known.to_string().to_ascii_lowercase(),
+        },
         is_xdata: matches!(entry.entry_type, EntryType::XData),
         fields,
         persons: collect_persons(entry),
@@ -123,7 +132,11 @@ fn entry_to_dto(entry: &Entry) -> EntryDto {
         },
         verify_ok: report.is_ok(),
         verify: VerifyDto {
-            missing: report.missing.iter().map(|value| (*value).to_string()).collect(),
+            missing: report
+                .missing
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
             superfluous: report
                 .superfluous
                 .iter()
@@ -147,13 +160,36 @@ fn collect_persons(entry: &Entry) -> BTreeMap<String, Vec<PersonDto>> {
     push_persons(&mut map, "translator", entry.translator());
     push_persons(&mut map, "bookauthor", entry.book_author());
 
-    if let Ok(editors) = entry.editors() {
-        let mut people = Vec::new();
-        for (group, _) in editors {
-            people.extend(group.into_iter().map(person_to_dto));
-        }
-        if !people.is_empty() {
-            map.insert("editor".to_string(), people);
+    // Keep each source group separate; editors() already combines editor/a/b/c.
+    push_persons(&mut map, "editor", entry.get_as::<Vec<Person>>("editor"));
+
+    const ADDITIONAL_ROLES: &[&str] = &[
+        "director",
+        "producer",
+        "composer",
+        "performer",
+        "interviewer",
+        "recipient",
+        "script-writer",
+        "scriptwriter",
+        "writer",
+        "original-author",
+        "originalauthor",
+        "origauthor",
+        "organizer",
+        "reviewed-author",
+        "reviewedauthor",
+        "holder",
+        "annotator",
+        "commentator",
+        "editora",
+        "editorb",
+        "editorc",
+    ];
+
+    for &role in ADDITIONAL_ROLES {
+        if !map.contains_key(role) && entry.fields.contains_key(role) {
+            push_persons(&mut map, role, entry.get_as::<Vec<Person>>(role));
         }
     }
 
@@ -198,6 +234,13 @@ fn collect_dates(entry: &Entry) -> BTreeMap<String, DateDto> {
     push_date(&mut map, "date", entry.date());
     push_date(&mut map, "urldate", entry.url_date());
     push_date(&mut map, "origdate", entry.orig_date());
+    if entry.fields.contains_key("eventdate") {
+        push_date(
+            &mut map,
+            "eventdate",
+            entry.get_as::<PermissiveType<Date>>("eventdate"),
+        );
+    }
     map
 }
 
@@ -279,17 +322,17 @@ fn build_entry(dto: &WriteEntryDto) -> Result<Entry, String> {
         entry.set(key, chunks_from_text(value));
     }
 
-    if let Some(people) = dto.persons.get("author") {
-        entry.set_author(people.iter().map(person_from_dto).collect());
-    }
-    if let Some(people) = dto.persons.get("editor") {
-        entry.set_as("editor", &people.iter().map(person_from_dto).collect::<Vec<_>>());
-    }
-    if let Some(people) = dto.persons.get("translator") {
-        entry.set_translator(people.iter().map(person_from_dto).collect());
-    }
-    if let Some(people) = dto.persons.get("bookauthor") {
-        entry.set_book_author(people.iter().map(person_from_dto).collect());
+    for (role, people) in &dto.persons {
+        let list: Vec<Person> = people.iter().map(person_from_dto).collect();
+        if list.is_empty() {
+            continue;
+        }
+        match role.as_str() {
+            "author" => entry.set_author(list),
+            "translator" => entry.set_translator(list),
+            "bookauthor" => entry.set_book_author(list),
+            other => entry.set_as(other, &list),
+        }
     }
 
     if !dto.keywords.is_empty() {
@@ -301,7 +344,11 @@ fn build_entry(dto: &WriteEntryDto) -> Result<Entry, String> {
 }
 
 fn person_from_dto(person: &PersonDto) -> Person {
-    if let Some(literal) = person.literal.as_ref().filter(|value| !value.trim().is_empty()) {
+    if let Some(literal) = person
+        .literal
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         return Person {
             name: literal.clone(),
             given_name: String::new(),
@@ -446,4 +493,51 @@ struct WriteEntryDto {
     persons: BTreeMap<String, Vec<PersonDto>>,
     #[serde(default)]
     keywords: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_groups_are_collected_once() {
+        let response = parse_bibliography(
+            "@book{k,title={T},editor={Doe, Jane},editora={Smith, John},editorb={Lee, Ann},editorc={Li, Bo}}",
+        );
+        let entries = response.entries.unwrap();
+        let people = &entries[0].persons;
+        for role in ["editor", "editora", "editorb", "editorc"] {
+            assert_eq!(people[role].len(), 1);
+        }
+        assert_eq!(people.values().map(Vec::len).sum::<usize>(), 4);
+    }
+
+    #[test]
+    fn extension_types_survive_parse_write_parse() {
+        for kind in ["movie", "artwork", "unpublish", "custom-type"] {
+            let parsed = parse_bibliography(&format!("@{kind}{{k,title={{T}}}}"));
+            assert_eq!(parsed.entries.unwrap()[0].entry_type, kind);
+            let written = write_bibliography(&[WriteEntryDto {
+                key: "k".into(),
+                entry_type: kind.into(),
+                fields: BTreeMap::from([("title".into(), "T".into())]),
+                persons: BTreeMap::new(),
+                keywords: Vec::new(),
+            }]);
+            let text = written.text.unwrap();
+            assert_eq!(
+                parse_bibliography(&text).entries.unwrap()[0].entry_type,
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_original_author_is_a_person_list() {
+        let parsed = parse_bibliography("@software{k,title={T},origauthor={Doe, Jane}}");
+        let entries = parsed.entries.unwrap();
+        let person = &entries[0].persons["origauthor"][0];
+        assert_eq!(person.family.as_deref(), Some("Doe"));
+        assert_eq!(person.given.as_deref(), Some("Jane"));
+    }
 }

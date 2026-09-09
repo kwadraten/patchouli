@@ -19,6 +19,7 @@ public static class ItemCreatorRoles
     public const string OriginalAuthor = "original-author";
     public const string Organizer = "organizer";
     public const string ReviewedAuthor = "reviewed-author";
+    public const string Holder = "holder";
 
     public static readonly IReadOnlySet<string> Supported = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -36,7 +37,8 @@ public static class ItemCreatorRoles
         ScriptWriter,
         OriginalAuthor,
         Organizer,
-        ReviewedAuthor
+        ReviewedAuthor,
+        Holder
     };
 
     /// <summary>Chinese display labels for every supported role; feeds UI dropdowns and dialogs.</summary>
@@ -57,7 +59,8 @@ public static class ItemCreatorRoles
             [ScriptWriter] = "编剧",
             [OriginalAuthor] = "原作者",
             [Organizer] = "组织者",
-            [ReviewedAuthor] = "被评作者"
+            [ReviewedAuthor] = "被评作者",
+            [Holder] = "持有人"
         };
 
     public static string DisplayLabelFor(string role)

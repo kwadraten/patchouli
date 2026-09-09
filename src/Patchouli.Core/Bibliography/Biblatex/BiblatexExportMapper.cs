@@ -30,20 +30,38 @@ public static class BiblatexExportMapper
         Set(fields, "language", item.Language);
         Set(fields, "type", item.Genre);
 
-        if (item.ItemType is "article-journal")
+        if (item.ItemType is "article-journal" or "article" or "article-magazine" or "article-newspaper")
         {
             Set(fields, "journaltitle", item.PublicationTitle);
             Set(fields, "shortjournal", item.ContainerTitleShort);
-            Set(fields, "number", item.Issue ?? item.Number);
+            Set(fields, "eid", item.Number);
+            Set(fields, "number", item.Issue);
         }
-        else if (item.ItemType is "chapter" or "paper-conference")
+        else if (item.ItemType is "periodical")
+        {
+            Set(fields, "journaltitle", item.PublicationTitle);
+            Set(fields, "shortjournal", item.ContainerTitleShort);
+            Set(fields, "number", item.Number);
+            Set(fields, "issue", item.Issue);
+        }
+        else if (item.ItemType is "chapter" or "paper-conference" or "entry" or "entry-dictionary"
+                 or "entry-encyclopedia")
         {
             Set(fields, "booktitle", item.PublicationTitle);
             Set(fields, "number", item.Number ?? item.Issue);
         }
         else
         {
+            if (!string.IsNullOrWhiteSpace(item.PublicationTitle))
+            {
+                Set(fields, "maintitle", item.PublicationTitle);
+            }
+
             Set(fields, "number", item.Number);
+            if (!fields.ContainsKey("issue"))
+            {
+                Set(fields, "issue", item.Issue);
+            }
         }
 
         if (item.ItemType is "thesis" or "report")
@@ -60,6 +78,129 @@ public static class BiblatexExportMapper
         }
 
         Set(fields, "location", item.Place);
+
+        if (!string.IsNullOrWhiteSpace(item.CustomFieldsJson))
+        {
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(item.CustomFieldsJson);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    return Result<BiblatexWriteEntryDto>.Failure(
+                        AppErrorCodes.ValidationFailed,
+                        "Item custom fields must be a JSON object and cannot be exported without losing data.");
+                }
+
+                foreach (JsonProperty prop in doc.RootElement.EnumerateObject())
+                {
+                    string val = prop.Value.ValueKind == JsonValueKind.String
+                        ? prop.Value.GetString() ?? ""
+                        : prop.Value.ToString();
+                    if (string.IsNullOrWhiteSpace(val))
+                    {
+                        continue;
+                    }
+
+                    switch (prop.Name.ToLowerInvariant())
+                    {
+                        case "archive":
+                            Set(fields, "archive", val);
+                            break;
+                        case "archive_location":
+                            Set(fields, "archive_location", val);
+                            break;
+                        case "archive-place":
+                            Set(fields, "archive-place", val);
+                            if (!fields.ContainsKey("location") && item.ItemType is "manuscript" or "collection")
+                            {
+                                Set(fields, "location", val);
+                            }
+
+                            break;
+                        case "archive_collection":
+                            Set(fields, "archive_collection", val);
+                            break;
+                        case "event-title":
+                            Set(fields, "eventtitle", val);
+                            break;
+                        case "event-place":
+                            Set(fields, "venue", val);
+                            break;
+                        case "number-of-volumes":
+                            Set(fields, "volumes", val);
+                            break;
+                        case "number-of-pages":
+                            Set(fields, "pagetotal", val);
+                            break;
+                        case "original-title":
+                            Set(fields, "origtitle", val);
+                            break;
+                        case "original-publisher":
+                            Set(fields, "origpublisher", val);
+                            break;
+                        case "original-publisher-place":
+                            Set(fields, "origlocation", val);
+                            break;
+                        case "license":
+                            Set(fields, "license", val);
+                            break;
+                        case "medium":
+                            Set(fields, "medium", val);
+                            break;
+                        case "dimensions":
+                            Set(fields, "dimensions", val);
+                            break;
+                        case "scale":
+                            Set(fields, "scale", val);
+                            break;
+                        case "authority":
+                            Set(fields, "authority", val);
+                            break;
+                        case "jurisdiction":
+                            Set(fields, "jurisdiction", val);
+                            break;
+                        case "division":
+                            Set(fields, "division", val);
+                            break;
+                        case "section":
+                            Set(fields, "section", val);
+                            break;
+                        case "references":
+                            Set(fields, "references", val);
+                            break;
+                        case "reviewed-title":
+                            Set(fields, "reviewed-title", val);
+                            break;
+                        case "reviewed-genre":
+                            Set(fields, "reviewed-genre", val);
+                            break;
+                        case "eprint":
+                            Set(fields, "eprint", val);
+                            break;
+                        case "eprinttype":
+                            Set(fields, "eprinttype", val);
+                            break;
+                        case "eprintclass":
+                            Set(fields, "eprintclass", val);
+                            break;
+                        case "howpublished":
+                            Set(fields, "howpublished", val);
+                            break;
+                        case "original_biblatex_entry_type":
+                            break;
+                        default:
+                            Set(fields, prop.Name, val);
+                            break;
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                return Result<BiblatexWriteEntryDto>.Failure(
+                    AppErrorCodes.ValidationFailed,
+                    "Item custom fields contain invalid JSON and cannot be exported without losing data.");
+            }
+        }
 
         foreach (ItemIdentifier identifier in item.Identifiers)
         {
@@ -84,6 +225,17 @@ public static class BiblatexExportMapper
                 case BuiltInIdentifierSchemes.URL:
                     Set(fields, "url", value);
                     break;
+                case BuiltInIdentifierSchemes.CallNumber:
+                    Set(fields, "callnumber", value);
+                    break;
+                case BuiltInIdentifierSchemes.ArXiv:
+                    Set(fields, "eprint", value);
+                    if (!fields.ContainsKey("eprinttype"))
+                    {
+                        Set(fields, "eprinttype", "arxiv");
+                    }
+
+                    break;
             }
         }
 
@@ -92,11 +244,13 @@ public static class BiblatexExportMapper
         AddPersons(persons, "editor", item.Creators, ItemCreatorRoles.Editor);
         AddPersons(persons, "translator", item.Creators, ItemCreatorRoles.Translator);
         AddPersons(persons, "bookauthor", item.Creators, ItemCreatorRoles.ContainerAuthor);
+        AddPersons(persons, "origauthor", item.Creators, ItemCreatorRoles.OriginalAuthor);
         // The remaining roles have no canonical BibLaTeX name field; they are written under
         // their CSL role key so a Patchouli round trip does not lose them.
         foreach (string role in ItemCreatorRoles.Supported
                      .Where(role => role is not (ItemCreatorRoles.Author or ItemCreatorRoles.Editor
-                         or ItemCreatorRoles.Translator or ItemCreatorRoles.ContainerAuthor))
+                         or ItemCreatorRoles.Translator or ItemCreatorRoles.ContainerAuthor
+                         or ItemCreatorRoles.OriginalAuthor))
                      .OrderBy(static role => role, StringComparer.Ordinal))
         {
             AddPersons(persons, role, item.Creators, role);
@@ -188,25 +342,55 @@ public static class BiblatexExportMapper
                 return null;
             }
 
-            JsonElement first = document.RootElement[0];
-            if (first.ValueKind != JsonValueKind.Array || first.GetArrayLength() == 0)
+            int count = document.RootElement.GetArrayLength();
+            if (count == 1)
             {
-                return null;
+                string? single = FormatDatePart(document.RootElement[0]);
+                if (single is null)
+                {
+                    return null;
+                }
+
+                return date.Circa ? $"{single}~" : single;
             }
 
-            int[] parts = first.EnumerateArray().Select(static part => part.GetInt32()).ToArray();
-            return parts.Length switch
+            if (count >= 2)
             {
-                1 => parts[0].ToString(),
-                2 => $"{parts[0]:D4}-{parts[1]:D2}",
-                >= 3 => $"{parts[0]:D4}-{parts[1]:D2}-{parts[2]:D2}",
-                _ => null
-            };
+                string? start = FormatDatePart(document.RootElement[0]);
+                string? end = FormatDatePart(document.RootElement[1]);
+                if (start is null && end is null)
+                {
+                    return null;
+                }
+
+                string startStr = start is not null && date.Circa ? $"{start}~" : start ?? "";
+                string endStr = end is not null && date.Circa ? $"{end}~" : end ?? "";
+                return $"{startStr}/{endStr}";
+            }
+
+            return null;
         }
         catch (JsonException)
         {
             return null;
         }
+    }
+
+    private static string? FormatDatePart(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Array || element.GetArrayLength() == 0)
+        {
+            return null;
+        }
+
+        int[] parts = element.EnumerateArray().Select(static part => part.GetInt32()).ToArray();
+        return parts.Length switch
+        {
+            1 => parts[0].ToString(System.Globalization.CultureInfo.InvariantCulture),
+            2 => $"{parts[0]:D4}-{parts[1]:D2}",
+            >= 3 => $"{parts[0]:D4}-{parts[1]:D2}-{parts[2]:D2}",
+            _ => null
+        };
     }
 
     private static IReadOnlyList<string> ParseTags(string tagsJson)

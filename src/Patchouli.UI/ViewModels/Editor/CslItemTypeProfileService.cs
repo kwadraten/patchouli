@@ -144,10 +144,13 @@ public static class CslItemTypeProfileService
             BuiltInIdentifierSchemes.ISBN => "ISBN",
             BuiltInIdentifierSchemes.ISSN => "ISSN",
             BuiltInIdentifierSchemes.URL => "链接",
+            BuiltInIdentifierSchemes.ArXiv => "arXiv",
             BuiltInIdentifierSchemes.CallNumber => profile is not null &&
                                                    profile.FieldLabels.TryGetValue("call-number", out string? label)
                 ? label
-                : "索书号",
+                : profile?.ItemType is "manuscript" or "collection"
+                    ? "档案号"
+                    : "索书号",
             _ => scheme
         };
     }

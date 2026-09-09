@@ -12,6 +12,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Editor;
 
@@ -470,7 +471,15 @@ public static class ExtraCslVariableCatalog
         new("number-of-volumes", "卷数", false),
         new("references", "参考文献", true),
         new("reviewed-title", "被评作品标题", false),
-        new("reviewed-genre", "被评作品体裁", false)
+        new("reviewed-genre", "被评作品体裁", false),
+        new("number-of-pages", "总页数", false),
+        new("original-title", "原题名", false),
+        new("original-publisher", "原出版社", false),
+        new("original-publisher-place", "原出版地", false),
+        new("howpublished", "出版方式", false),
+        new("eprint", "预印本编号", false),
+        new("eprinttype", "预印本平台", false),
+        new("eprintclass", "预印本分类", false)
     ];
 
     public static ExtraCslVariableOption? Find(string key)
@@ -567,7 +576,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private bool _isSaving;
 
     /// <summary>Test seam over <see cref="MetadataLookupUiBridge" />; production code never overrides it.</summary>
-    internal Func<AppServices, ItemId, ItemIdentifier, CancellationToken, Task<MetadataLookupOutcome>> LookupRunner =
+    internal Func<HostServices, ItemId, ItemIdentifier, CancellationToken, Task<MetadataLookupOutcome>> LookupRunner =
         MetadataLookupUiBridge.LookupAsync;
 
     public ItemEditorViewModel(MainWindowViewModel main)
@@ -910,7 +919,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
                _pendingPrimaryDocumentId is not null;
     }
 
-    private static async Task<string?> TryGetMergedIntoAsync(AppServices services, ItemId itemId)
+    private static async Task<string?> TryGetMergedIntoAsync(HostServices services, ItemId itemId)
     {
         try
         {
@@ -1119,7 +1128,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public async Task LoadAsync(string itemId)
     {
         await EnsureAvailableItemTypesAsync();
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         ItemId parsed = ItemId.Parse(itemId);
         Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
         if (item.IsFailure)
@@ -1293,7 +1302,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
 
         ItemFieldDescriptor? creatorField = GetCreatorField();
         List<ItemCreatorInput> creators = creatorField?.Creators
@@ -1545,7 +1554,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Identifiers.Clear();
         if (_itemId is not null)
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Result<IReadOnlyList<ItemIdentifier>> identifiers =
                 await services.Items.ListIdentifiersAsync(_itemId.Value);
             if (identifiers.IsSuccess)
@@ -1680,7 +1689,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result applied = await ApplyProjectionIdentifierAsync(
             services,
             extracted.Scheme,
@@ -1740,7 +1749,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         LinkedFiles.Clear();
         if (_itemId is not null)
         {
-            AppServices services = await _main.ServicesAsync();
+            HostServices services = await _main.ServicesAsync();
             Result<IReadOnlyList<DocumentInstance>> documents =
                 await services.Documents.ListDocumentInstancesForItemAsync(_itemId.Value);
             if (documents.IsFailure)
@@ -1838,7 +1847,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         DocumentInstanceId documentInstanceId = SelectedHistoryDocument.DocumentInstanceId;
         Result<IReadOnlyList<DocumentCommitDetail>> commits =
             await services.DocumentTrees.ListDocumentCommitsAsync(documentInstanceId);
@@ -1909,7 +1918,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        AppServices services = await _main.ServicesAsync();
+        HostServices services = await _main.ServicesAsync();
         Result<DocumentTreeRevision> result = await services.DocumentTrees.RevertToRevisionAsync(
             SelectedHistoryDocument.DocumentInstanceId,
             page.PageId,
@@ -2334,7 +2343,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
     }
 
-    private async Task<IReadOnlyList<string>> ApplyStagedProjectionIdentifiersAsync(AppServices services)
+    private async Task<IReadOnlyList<string>> ApplyStagedProjectionIdentifiersAsync(HostServices services)
     {
         if (_itemId is null || _projectionStaged.Count == 0)
         {
@@ -2360,7 +2369,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     /// <summary>Upserts one scheme's projection: removes persisted rows that differ from the
     /// staged value and adds the staged value when missing.</summary>
-    private async Task<Result> ApplyProjectionIdentifierAsync(AppServices services, string scheme,
+    private async Task<Result> ApplyProjectionIdentifierAsync(HostServices services, string scheme,
         ItemIdentifierInput? staged)
     {
         if (_itemId is null)
@@ -2414,7 +2423,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     /// <summary>Applies the staged identifier removals/additions, file registrations and the staged
     /// primary-document switch, in order, right after the item itself has been saved.</summary>
-    private async Task<IReadOnlyList<string>> ApplyStagedIdentifierAndFileOpsAsync(AppServices services)
+    private async Task<IReadOnlyList<string>> ApplyStagedIdentifierAndFileOpsAsync(HostServices services)
     {
         if (_itemId is null)
         {
