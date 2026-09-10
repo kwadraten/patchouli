@@ -65,7 +65,7 @@ public sealed class DesktopInstanceActivationTests
     public async Task Real_coordinator_secondary_notification_marshals_to_ui_thread_and_restores_window()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
 
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.IsPrimary.Should().BeTrue();
@@ -156,6 +156,10 @@ public sealed class DesktopInstanceActivationTests
             return true;
         }, CancellationToken.None);
     }
+
+    // macOS caps Unix domain socket paths at 104 chars; the temp directory alone
+    // takes ~50 and .NET prepends "CoreFxPipe_", so test pipe names stay short.
+    private static string NewPipeName() => $"pt.{Guid.NewGuid():N}"[..19];
 
     private sealed class FakeCoordinator : IDesktopInstanceCoordinator
     {

@@ -78,7 +78,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Secondary_activation_with_matching_ack_fires_primary_instance_exactly_once()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.IsPrimary.Should().BeTrue();
         primary.StartListener();
@@ -114,7 +114,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Pre_window_request_retained_and_consumed_exactly_once()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -144,7 +144,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Idle_listener_disposal_produces_zero_diagnostics()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         List<string> diagnostics = new();
 
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(
@@ -162,7 +162,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Listener_initialization_failure_surfaced_synchronously_and_leaves_no_leaks()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
 
         using NamedPipeServerStream occupyingServer = new(
             pipeName,
@@ -187,7 +187,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Listener_factory_failure_surfaced_synchronously()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
 
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(
             mutexName,
@@ -209,7 +209,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Listener_factory_returning_null_throws_synchronously()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
 
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(
             mutexName,
@@ -230,7 +230,7 @@ public sealed class DesktopInstanceCoordinatorTests
     [Fact]
     public async Task Secondary_notification_with_no_listener_fails_gracefully_within_timeout()
     {
-        string pipeName = $"net.patchouli.test.pipe.none.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName("none");
         DesktopInstanceCoordinator secondary = new(new DesktopInstanceCoordinatorOptions(
             PipeName: pipeName,
             SecondaryRetryTimeout: TimeSpan.FromMilliseconds(150)));
@@ -249,7 +249,7 @@ public sealed class DesktopInstanceCoordinatorTests
     [Fact]
     public async Task Secondary_notification_cancellation_handled_cleanly()
     {
-        string pipeName = $"net.patchouli.test.pipe.none.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName("none");
         DesktopInstanceCoordinator secondary = new(new DesktopInstanceCoordinatorOptions(
             PipeName: pipeName,
             SecondaryRetryTimeout: TimeSpan.FromSeconds(5)));
@@ -271,7 +271,7 @@ public sealed class DesktopInstanceCoordinatorTests
     [Fact]
     public async Task Secondary_notification_midflight_cancellation_returns_false()
     {
-        string pipeName = $"net.patchouli.test.pipe.none.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName("none");
         DesktopInstanceCoordinator secondary = new(new DesktopInstanceCoordinatorOptions(
             PipeName: pipeName,
             SecondaryRetryTimeout: TimeSpan.FromSeconds(5)));
@@ -294,7 +294,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_invalid_protocol_version()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -327,7 +327,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_unknown_command()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -360,7 +360,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_extra_unmapped_fields()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -395,7 +395,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_invalid_request_id()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -433,7 +433,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_oversized_payload()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -460,7 +460,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_invalid_length_prefix()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -486,7 +486,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_rejects_malformed_json()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -513,7 +513,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Control_listener_client_disconnect_before_sending_handled_cleanly()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.StartListener();
 
@@ -552,7 +552,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Secondary_retries_and_succeeds_when_primary_listener_starts_slightly_later()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
         DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary.IsPrimary.Should().BeTrue();
 
@@ -585,7 +585,7 @@ public sealed class DesktopInstanceCoordinatorTests
     [Fact]
     public async Task Secondary_fails_closed_when_server_returns_mismatched_or_invalid_ack()
     {
-        string pipeName = $"net.patchouli.test.pipe.fake.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName("fake");
 
         Task serverTask = Task.Run(async () =>
         {
@@ -636,7 +636,7 @@ public sealed class DesktopInstanceCoordinatorTests
     public async Task Disposal_cancels_listener_and_releases_handles_without_leak()
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
-        string pipeName = $"net.patchouli.test.pipe.{Guid.NewGuid():N}";
+        string pipeName = NewPipeName();
 
         DesktopInstanceCoordinator primary1 = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
         primary1.IsPrimary.Should().BeTrue();
@@ -653,6 +653,14 @@ public sealed class DesktopInstanceCoordinatorTests
         {
             await primary2.DisposeAsync();
         }
+    }
+
+    // macOS caps Unix domain socket paths at 104 chars; the temp directory alone
+    // takes ~50 and .NET prepends "CoreFxPipe_", so test pipe names stay short.
+    private static string NewPipeName(string? marker = null)
+    {
+        string guid = Guid.NewGuid().ToString("N")[..16];
+        return marker is null ? $"pt.{guid}" : $"pt.{marker}.{guid}";
     }
 
     private static async Task SendRawPacketAsync(string pipeName, byte[] lengthPrefix, byte[] payload)
