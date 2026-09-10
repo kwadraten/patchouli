@@ -211,8 +211,11 @@ public sealed class PdfBBoxViewModel : ViewModelBase
             _isSelected = value;
             Raise();
             Raise(nameof(ShowHandles));
+            Raise(nameof(ZIndex));
         }
     }
+
+    public int ZIndex => IsSelected ? 1 : 0;
 
     public bool ShowHandles => IsSelected && Workspace.IsEditMode;
 

@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -40,8 +41,25 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnBBoxContextRequested(object? sender, ContextRequestedEventArgs e)
     {
-        if (_workspace is not { IsEditMode: true })
+        e.Handled = true;
+        if (_workspace is { IsEditMode: true } && sender is Control { DataContext: PdfBBoxViewModel box } control &&
+            FlyoutBase.GetAttachedFlyout(this) is MenuFlyout menu)
         {
+            if (!box.IsSelected)
+            {
+                _workspace.SelectBox(box, false);
+            }
+
+            menu.ShowAt(control);
+        }
+    }
+
+    private void OnWorkspaceKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Delete && _workspace is { IsEditMode: true } &&
+            e.Source is not TextBox && (e.Source as Visual)?.FindAncestorOfType<TextBox>() is null)
+        {
+            _workspace.DeleteSelectedCommand.Execute(null);
             e.Handled = true;
         }
     }
@@ -73,6 +91,7 @@ public sealed partial class PdfWorkspacePage : UserControl
             return;
         }
 
+        Focus();
         bool additive = !properties.IsRightButtonPressed && e.KeyModifiers.HasFlag(KeyModifiers.Control);
         bool wasSelected = bbox.IsSelected;
         if (!properties.IsRightButtonPressed || !wasSelected)
@@ -180,10 +199,17 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnCanvasPointerPressed(object? sender, PointerPressedEventArgs e)
     {
-        if (DataContext is PdfWorkspaceViewModel pdf && sender is Control control)
+        if (DataContext is PdfWorkspaceViewModel pdf && sender is Control control &&
+            e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
         {
+            Focus();
             Point p = e.GetPosition(control);
             pdf.OnPointerPressed(p.X, p.Y);
+            if (pdf.IsDrawing)
+            {
+                e.Pointer.Capture(control);
+                e.Handled = true;
+            }
         }
     }
 
@@ -201,12 +227,17 @@ public sealed partial class PdfWorkspacePage : UserControl
         if (DataContext is PdfWorkspaceViewModel pdf)
         {
             pdf.OnPointerReleased(e.KeyModifiers.HasFlag(KeyModifiers.Control));
+            e.Pointer.Capture(null);
         }
     }
 
     private void OnCanvasBackgroundPressed(object? sender, PointerPressedEventArgs e)
     {
-        _workspace?.ClearSelection();
+        if (sender is Control control && e.GetCurrentPoint(control).Properties.IsLeftButtonPressed)
+        {
+            Focus();
+            _workspace?.ClearSelection();
+        }
     }
 
     private void OnScrollPointerPressed(object? sender, PointerPressedEventArgs e)

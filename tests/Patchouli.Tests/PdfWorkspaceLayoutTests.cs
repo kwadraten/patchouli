@@ -69,7 +69,7 @@ public sealed class PdfWorkspaceLayoutTests
             .And.Contain("MoveSelectedDownCommand")
             .And.Contain("IndentSelectedCommand")
             .And.Contain("OutdentSelectedCommand")
-            .And.Contain("DeleteCommand")
+            .And.Contain("DeleteSelectedCommand")
             .And.Contain("ToggleSuppressedCommand")
             .And.Contain("TreeBoxes")
             .And.Contain("OnTreeExpandToggle")

@@ -1,7 +1,14 @@
 using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
+using Avalonia.Input;
+using Avalonia.VisualTree;
+using Patchouli.UI.Views;
 using Avalonia.Headless;
 using FluentAssertions;
 using Patchouli.Core.Files;
+using Patchouli.Core.Documents;
+using Patchouli.Core.Layout;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.UI;
@@ -23,6 +30,89 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public void Dispose()
     {
         _settings.Dispose();
+    }
+
+    [Fact]
+    public async Task Marquee_and_control_selection_delete_boxes_and_parent_subtrees_from_draft()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = CreateMainWindow(CreateDatabasePath("ui-pdf-selection"));
+            await OpenImportedItemAsync(main, CreatePdfPath());
+            LibraryItemViewModel item = main.Shell.Items.Single();
+            await main.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)main.ActiveTab!.Content!;
+            await workspace.EnterEditModeCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+            PageEditSessionId edit = workspace.EditSessionId!.Value;
+            DocumentBox parent = (await services.DocumentTreeEditor.InsertLogicalPageAsync(
+                edit, null, new NormalizedBBox(0, 0, 1, 1))).Value;
+            DocumentBox first = (await services.DocumentTreeEditor.DrawAndInsertLeafAsync(edit,
+                new InsertLeafCommand(parent.BoxId, null, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .2, .2), new TextBoxPayload("First")))).Value;
+            DocumentBox second = (await services.DocumentTreeEditor.DrawAndInsertLeafAsync(edit,
+                new InsertLeafCommand(parent.BoxId, first.BoxId, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.5, .1, .2, .2), new TextBoxPayload("Second")))).Value;
+            await workspace.RefreshBoxesAsync();
+
+            await workspace.SaveAndExitCommand.ExecuteAsync();
+            PdfWorkspacePage page = new() { DataContext = workspace };
+            Window window = new() { Content = page, Width = 1280, Height = 900 };
+            window.Show();
+            MenuFlyout menu = (MenuFlyout)FlyoutBase.GetAttachedFlyout(page)!;
+
+            void RightClickFirstBox()
+            {
+                window.Measure(new Size(1280, 900));
+                window.Arrange(new Rect(0, 0, 1280, 900));
+                Border border = page.GetVisualDescendants().OfType<Border>().Single(control =>
+                    control.Classes.Contains("BBox") &&
+                    control.DataContext is PdfBBoxViewModel box && box.BoxId == first.BoxId);
+                Point position =
+                    border.TranslatePoint(new Point(border.Bounds.Width / 2, border.Bounds.Height / 2), window)!.Value;
+                window.MouseDown(position, MouseButton.Right, RawInputModifiers.None);
+                window.MouseUp(position, MouseButton.Right, RawInputModifiers.None);
+            }
+
+            RightClickFirstBox();
+            menu.IsOpen.Should().BeFalse();
+            await workspace.EnterEditModeCommand.ExecuteAsync();
+            edit = workspace.EditSessionId!.Value;
+            RightClickFirstBox();
+            menu.IsOpen.Should().BeTrue();
+            menu.Items.OfType<MenuItem>().Single(entry => Equals(entry.Header, "删除"))
+                .Command.Should().BeSameAs(workspace.DeleteSelectedCommand);
+            menu.Hide();
+            window.Close();
+
+            await workspace.MarqueeToolCommand.ExecuteAsync();
+            workspace.OnPointerPressed(.05 * workspace.ActualWidthPixels, .05 * workspace.ActualHeightPixels);
+            workspace.OnPointerMoved(.75 * workspace.ActualWidthPixels, .35 * workspace.ActualHeightPixels);
+            workspace.OnPointerReleased(false);
+            workspace.SelectedBoxes.Select(box => box.BoxId).Should().BeEquivalentTo([first.BoxId, second.BoxId]);
+            workspace.IsSelectToolActive.Should().BeTrue();
+            PdfBBoxViewModel parentView = workspace.BoundingBoxes.Single(box => box.BoxId == parent.BoxId);
+            workspace.SelectedBoxes.Should().OnlyContain(box => box.ZIndex > parentView.ZIndex);
+            PdfBBoxViewModel firstView = workspace.SelectedBoxes.Single(box => box.BoxId == first.BoxId);
+            workspace.SelectBox(firstView, true);
+            workspace.SelectedBoxes.Should().ContainSingle().Which.BoxId.Should().Be(second.BoxId);
+            workspace.SelectBox(firstView, true);
+            await workspace.DeleteSelectedCommand.ExecuteAsync();
+            workspace.BoundingBoxes.Should().ContainSingle().Which.BoxId.Should().Be(parent.BoxId);
+
+            DocumentBox child = (await services.DocumentTreeEditor.DrawAndInsertLeafAsync(edit,
+                new InsertLeafCommand(parent.BoxId, null, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .2, .2), new TextBoxPayload("Child")))).Value;
+            await workspace.RefreshBoxesAsync();
+            workspace.SelectBox(workspace.BoundingBoxes.Single(box => box.BoxId == parent.BoxId), false);
+            workspace.SelectBox(workspace.BoundingBoxes.Single(box => box.BoxId == child.BoxId), true);
+            await workspace.DeleteSelectedCommand.ExecuteAsync();
+            workspace.BoundingBoxes.Should().BeEmpty();
+            workspace.Status.Should().NotContain("失败");
+            await workspace.CancelEditModeCommand.ExecuteAsync();
+            await ReleaseDocumentSessionAsync(main, item);
+        }, CancellationToken.None);
     }
 
     [Fact]

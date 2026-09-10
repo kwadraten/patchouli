@@ -4,7 +4,7 @@
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:controls="using:Patchouli.UI.Controls"
              xmlns:vm="using:Patchouli.UI.ViewModels"
-             x:DataType="vm:PdfWorkspaceViewModel">
+             x:DataType="vm:PdfWorkspaceViewModel" Focusable="True" KeyDown="OnWorkspaceKeyDown">
   <UserControl.Resources>
     <!-- Shared context menu for canvas boxes and the edit-mode box tree.
          DataContext is the PdfBBoxViewModel of the control the flyout is attached to. -->
@@ -23,9 +23,12 @@
       <MenuItem Header="移入为上方兄弟的子级" Command="{Binding Workspace.IndentSelectedCommand}" />
       <MenuItem Header="移出到上一级" Command="{Binding Workspace.OutdentSelectedCommand}" />
       <MenuItem Header="从文档流排除/纳入" Command="{Binding Workspace.ToggleSuppressedCommand}" />
-      <MenuItem Header="删除" Command="{Binding DeleteCommand}" />
+      <MenuItem Header="删除" Command="{Binding Workspace.DeleteSelectedCommand}" />
     </MenuFlyout>
   </UserControl.Resources>
+  <FlyoutBase.AttachedFlyout>
+    <StaticResource ResourceKey="BBoxContextMenu" />
+  </FlyoutBase.AttachedFlyout>
   <UserControl.Styles>
     <Style Selector="Button.ToolbarButton">
       <Setter Property="Background" Value="Transparent" />
@@ -260,6 +263,7 @@
                       <ControlTheme TargetType="ContentPresenter" x:DataType="vm:PdfBBoxViewModel">
                         <Setter Property="Canvas.Left" Value="{Binding Left}" />
                         <Setter Property="Canvas.Top" Value="{Binding Top}" />
+                        <Setter Property="ZIndex" Value="{Binding ZIndex}" />
                       </ControlTheme>
                     </ItemsControl.ItemContainerTheme>
                     <ItemsControl.ItemsPanel>
@@ -278,7 +282,6 @@
                                 Width="{Binding Width}"
                                 Height="{Binding Height}"
                                 Cursor="Hand"
-                                ContextFlyout="{StaticResource BBoxContextMenu}"
                                 PointerPressed="OnBBoxPointerPressed"
                                 PointerMoved="OnBBoxPointerMoved"
                                 PointerReleased="OnBBoxPointerReleased"
@@ -663,10 +666,9 @@
                                 Classes.overlapWarning="{Binding HasOverlapWarning}"
                                 Classes.continuation="{Binding IsContinuation}"
                                 Margin="{Binding TreeMargin}"
-                                ContextFlyout="{StaticResource BBoxContextMenu}"
                                 PointerPressed="OnTreeNodePointerPressed"
                                 PointerMoved="OnTreeNodePointerMoved"
-                                PointerReleased="OnTreeNodePointerReleased">
+                                PointerReleased="OnTreeNodePointerReleased" ContextRequested="OnBBoxContextRequested">
                           <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="8">
                             <Border Width="16" VerticalAlignment="Center">
                               <Button IsVisible="{Binding HasChildren}" Background="Transparent"

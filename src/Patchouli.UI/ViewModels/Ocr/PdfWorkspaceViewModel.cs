@@ -782,6 +782,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             if (ActiveTool == PdfWorkspaceTool.MarqueeSelect)
             {
                 ApplyMarqueeSelection(additive);
+                SetActiveTool(PdfWorkspaceTool.Select);
             }
             else
             {
@@ -808,6 +809,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         double width = SelectionWidth / _widthPixels;
         double height = SelectionHeight / _heightPixels;
         List<PdfBBoxViewModel> hits = BoundingBoxes.Where(box =>
+            (!box.IsLogicalPage ||
+             (box.NormalizedX >= x && box.NormalizedY >= y &&
+              box.NormalizedX + box.NormalizedWidth <= x + width &&
+              box.NormalizedY + box.NormalizedHeight <= y + height)) &&
             box.NormalizedX < x + width && box.NormalizedX + box.NormalizedWidth > x &&
             box.NormalizedY < y + height && box.NormalizedY + box.NormalizedHeight > y).ToList();
         if (additive)
@@ -1457,21 +1462,34 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task DeleteSelectedAsync()
     {
-        PdfBBoxViewModel[] targets = SelectedBoxes.Count > 0
-            ? SelectedBoxes.ToArray()
-            : SelectedBox is { } single
-                ? [single]
-                : [];
+        if (!IsEditMode || _editSessionId is not { } sessionId)
+        {
+            return;
+        }
+
+        HashSet<DocumentBoxId> selectedIds = SelectedBoxes.Select(box => box.BoxId).ToHashSet();
+        PdfBBoxViewModel[] targets = SelectedBoxes
+            .Where(box => box.ParentBoxId is not { } parent || !selectedIds.Contains(parent)).ToArray();
         if (targets.Length == 0)
         {
             Status = "请先选择要删除的边界框。";
             return;
         }
 
+        IDocumentTreeEditor editor = (await _main.ServicesAsync()).DocumentTreeEditor;
         foreach (PdfBBoxViewModel target in targets)
         {
-            await target.DeleteCommand.ExecuteAsync();
+            Result result = await editor.DeleteBoxAsync(sessionId, target.BoxId);
+            if (result.IsFailure)
+            {
+                await RefreshBoxesAsync();
+                Status = $"删除边界框失败：{result.ErrorMessage}";
+                return;
+            }
         }
+
+        await RefreshBoxesAsync();
+        Status = "选中边界框及其子级已从页面草稿删除；提交后才会生成新版本。";
     }
 
     private async Task ToggleSelectedSuppressedAsync()
