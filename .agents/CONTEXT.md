@@ -22,14 +22,14 @@ Mutable application state uses platform application-data locations rather than a
 OCR output and manual edits produce a working revision. Only the committed current DocumentTreeRevision of each physical page feeds default search, evidence resolution, and MCP reads. Failed or cancelled working revisions are deleted; only `OcrRun.status=failed` remains as audit.
 
 **OCR interchange schema**:
-MinerU remains the preferred OCR provider, but its JSON is an import format rather than the database schema. Every provider produces a short-lived `OcrDocumentTreeCandidate`; the shared importer validates and stages page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. An irregular table retains only its raw HTML source as diagnostic payload alongside the canonical `[Table]` placeholder.
+MinerU remains the preferred OCR provider, but its JSON is an import format rather than the database schema. Every provider produces a short-lived `OcrDocumentTreeCandidate`; the shared importer validates and creates working page-local `DocumentTreeRevision`/`DocumentBox` records. Provider JSON, table-cell records, reading-order integers, and Markdown ASTs are not canonical storage. An irregular table retains only its raw HTML source as diagnostic payload alongside the canonical `[Table]` placeholder. A physical page on which the engine succeeded but returned no text is likewise not a failure: the importer creates a `DocumentBoxType.LogicalPage` placeholder (payload `Blank page (OCR returned no content).`, diagnostic `blank_page_placeholder`), the page result counts as `Succeeded`, and the run can complete and commit normally.
 
 **Search and evidence**:
 SearchUnits are persisted derived text units generated one per non-suppressed leaf DocumentBox in sibling-pointer order. SearchUnit metadata is synced; the local FTS index is a rebuildable local cache. Evidence identity is part of the versioned URI `patchouli://texts/{document-instance-id}/page-{page-index}.md?rev={tree_revision_id}&box={box_id}`; a URI with `rev` reads that immutable revision, and a URI without `rev` reads HEAD.
 
 **MCP surface**:
 The virtual Library filesystem is resolved on demand through bounded runtime-host domain RPCs. One desktop or headless .NET host is the only authority for a Library database, cursors, revisions, projections and writes. The desktop host includes the UI and local MCP HTTP endpoint; `patchouli-cli` is a thin local client of that endpoint and auto-starts the same binary headlessly when no host exists. There is never a direct-SQL CLI path or second domain implementation. Directory paging, traversal and batch limits, command/output limits, and bounded rebuildable compiled-page caches constrain reads.
-MCP is **text-only** and the selected production surface is the structured `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` contract from ADR `0024`. MCP never edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. MCP 无法读取提供程序密钥. **Limited writes** of whole item bibliography projections and CSL styles are deliberate v3 product decisions under ADR `0023`: `put` is an atomic complete-resource replacement with no base-revision precondition, and remains unavailable until that contract is implemented. The Bashkit virtual shell implementation has been removed from `main`; it exists only on the `feature/mcp-ab-benchmark` branch as historical benchmark evidence and is not the production MCP path. Unrelated metadata mutation remains out of scope.
+MCP is **text-only** and the selected production surface is the structured `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` contract from ADR `0024`. MCP never edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. MCP 无法读取提供程序密钥. **Limited writes** of whole item bibliography projections and CSL styles are deliberate v3 product decisions under ADR `0023`: `put` is an atomic complete-resource replacement with no base-revision precondition, and is implemented behind the configured tool/write policy. The Bashkit virtual shell implementation has been removed from `main`; it exists only on the `feature/mcp-ab-benchmark` branch as historical benchmark evidence and is not the production MCP path. Unrelated metadata mutation remains out of scope.
 
 
 **Snapshot branches**:
@@ -134,3 +134,27 @@ _Avoid_: Provider config, secret in shard
 
 **MCP surface**:
 The text-only external surface for library exploration, evidence retrieval, citation rendering, and—when enabled—limited whole-resource writes of item bibliography and CSL styles (ADR `0023`). Production uses `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` under ADR `0024`, served by the one desktop or headless runtime host for the Library. CLI is a local MCP client of that host; remote/local agent clients use the same service. It never exposes local paths, provider secrets, images, file URLs, or OCR/index actions. The Bashkit shell has been removed from `main` (historical evidence remains on the `feature/mcp-ab-benchmark` branch) and is not a production tool. .NET remains the sole domain authority for Library data.
+
+
+## Library Lifecycle And Search UI
+
+**Item Lifecycle**: Active, Trash (回收站), Merged (合并重定向墓碑), and Purged (永久删除，仅保留 purge record). Trash and Merged retain Item rows; Purged does not. These are lifecycle states, separate from the user-editable bibliographic `item_status`. See [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md) for merge, purge, snapshot remapping, tags and GC.
+
+**Bibliographic Search / 元数据筛选**: title/creator/identifier matching plus structured Item filters through `LibraryItemQueryService.SearchRowsAsync`. Results exclude trash/merged Items and use the library's columns and persisted grid preferences.
+
+**Full-text Search / 全文搜索**: SearchUnit/FTS search grouped by Item, with child snippets and navigation through versioned evidence URIs. Snippets normalize line breaks, emphasize matches and truncate around matches with CJK display width considered. Index readiness remains a derived capability, not an Item/Document/FileAsset status.
+
+**Advanced Search / 高级搜索**: one fixed keyword row plus removable filter rows combined with AND. Structured keys align with MCP Item filters (`item_type`, `item_status`, `primary_document_ocr_index_status`, `citable`), with title/creator/identifier contains filters. Both search modes apply these rows; full-text search pushes them down as `SearchRequest.ItemFilters`. The MCP texts scope also accepts `item_id`; this does not change evidence identity or add semantic search. Sidebar tag filtering is a separate library interaction.
+
+Switching modes keeps input and filter rows. Enter and the search button use the same command; both modes recognize `patchouli://` navigation. Empty full-text input prompts for terms; bibliographic search accepts filters alone, otherwise prompts for terms or filters. Opening the advanced-filter form does not itself run a search. Copy/export evidence and Markdown, explicit UI index rebuild, and stale/partial/unavailable indicators remain available.
+
+## Desktop View And Dialog Vocabulary
+
+- **Library / 书库**: the ProDataGrid Item list, tag sidebar and selected-Item inspector. Source fields are type-aware; column visibility, width, order and sorting use persisted UI preferences. Search grids follow the library column settings.
+- **Trash / 回收站**: a library section with restore/permanent-purge actions; tag navigation and content-edit/OCR entry points are hidden.
+- **PDF Workspace / PDF 工作台**: page navigation, raster, Box Tree, text preview and page revision history. Document commit history is also available from the Item editor's file-management area. History restoration creates a new commit, never rolls HEAD backward.
+- **ConfirmDialog**: shared confirmation window; danger mode is used for destructive local-file/tag operations.
+- **ItemMergePreviewDialog**: explicit target and field-conflict selection before merging Items.
+- **PurgeConfirmDialog**: blocking permanent-delete confirmation with expandable dependency details.
+
+These names identify existing UI surfaces, not new persisted domain entities. More elaborate annotation storage and Markdown preview component selection remain PRD V3-T2 work.

@@ -8,7 +8,7 @@ This supersedes ADR `0007` and amends ADR `0015`: the staging-before-adoption co
 
 **Consequences**
 
-- `DocumentTreeRevisionStatus` is `working` or `committed`. Only `status='committed' AND is_current=1` feeds search, evidence resolution, and MCP reads.
+- `DocumentTreeRevisionStatus` is `working` or `committed`. Default search and unversioned MCP/evidence reads use `status='committed' AND is_current=1`. An explicit URI `rev` may read the named historical committed revision under ADR `0028`; working revisions are never public.
 - OCR and manual edits share the same working-revision path. A failed or cancelled working revision is deleted; the only failure audit is `OcrRun.status=failed`.
 - Commit is in place: `tree_revision_id` and its `DocumentBox` IDs stay stable across promotion. Revert is a new commit that copies the target revision's content, sets `source='revert'` and `reverted_from_tree_revision_id`, and points the page's current pointer forward. History is append-only and the current pointer never moves backward.
 - A new `DocumentCommit` entity groups page revisions into document-wide commits: `document_commits(commit_id, document_instance_id, parent_commit_id, source, message, created_at)` and `document_commit_pages(commit_id, page_id, tree_revision_id)`. HEAD is the latest commit. `LibraryRevision` remains a whole-library change counter and is not a per-document history mechanism.
