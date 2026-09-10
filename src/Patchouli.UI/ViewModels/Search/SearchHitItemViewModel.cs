@@ -45,6 +45,7 @@ public sealed class SearchHitItemViewModel : ViewModelBase
     public IReadOnlyList<SearchHitSnippetViewModel> Snippets { get; }
     public bool HasSnippets => Snippets.Count > 0;
     public double DetailsHeight => Math.Min(Snippets.Count * 28 + 10, 360);
+    public double DetailsContainerHeight => DetailsHeight + 10;
     public RelayCommand ToggleExpandedCommand { get; }
 
     public bool IsExpanded

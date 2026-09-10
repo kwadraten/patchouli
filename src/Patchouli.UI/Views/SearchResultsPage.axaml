@@ -164,7 +164,11 @@
                   Background="{DynamicResource SurfaceContainerLowestBrush}">
           <DataGrid.RowDetailsTemplate>
             <DataTemplate x:DataType="vm:SearchHitItemViewModel">
-              <Border Background="{DynamicResource SurfaceContainerLowBrush}" Padding="28,4,8,6">
+              <!-- ProDataGrid reconciles auto-sized details against arranged bounds during row
+                   recycling. Give the root a fixed height (viewport plus padding) so mixed-height
+                   expanded rows cannot feed stale arranged heights back into layout. -->
+              <Border Background="{DynamicResource SurfaceContainerLowBrush}" Padding="28,4,8,6"
+                      Height="{Binding DetailsContainerHeight}">
                 <ScrollViewer Height="{Binding DetailsHeight}" VerticalScrollBarVisibility="Auto">
                   <ItemsControl ItemsSource="{Binding Snippets}">
                     <ItemsControl.ItemTemplate>

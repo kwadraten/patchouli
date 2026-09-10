@@ -133,6 +133,55 @@ public class SearchResultsPageDetailsTests : IDisposable
         }, CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData(1280, 800)]
+    [InlineData(900, 600)]
+    [InlineData(1280, 400)]
+    public async Task Consecutive_manual_expansions_keep_layout_stable(int width, int height)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(() =>
+        {
+            MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path);
+            Window window = new()
+            {
+                Width = width,
+                Height = height,
+                Content = new SearchResultsPage { DataContext = vm.SearchEvidence }
+            };
+            window.Show();
+            try
+            {
+                List<SearchHitItemViewModel> hits = Enumerable.Range(0, 40)
+                    .Select(i => CreateHit(i, new[] { 1, 3, 8, 12, 30 }[i % 5])).ToList();
+                foreach (SearchHitItemViewModel hit in hits)
+                {
+                    vm.SearchEvidence.FullTextResults.Add(hit);
+                }
+
+                PumpLayout(window);
+                for (int cycle = 0; cycle < 2; cycle++)
+                {
+                    foreach (SearchHitItemViewModel hit in hits)
+                    {
+                        ScrollToItem(window, hit);
+                        hit.ToggleExpandedCommand.Execute(null);
+                        AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                        Dispatcher.UIThread.RunJobs();
+                        RealizedRows(window).Where(row => row.IsVisible).Should().NotBeEmpty()
+                            .And.OnlyContain(row => RowMatchesViewModel(row));
+                    }
+                }
+            }
+            finally
+            {
+                window.Close();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
     [Fact]
     public void ProDataGrid_details_table_writer_contract_exists()
     {
@@ -176,8 +225,13 @@ public class SearchResultsPageDetailsTests : IDisposable
 
     private static SearchHitItemViewModel CreateHit(int index)
     {
+        return CreateHit(index, 12);
+    }
+
+    private static SearchHitItemViewModel CreateHit(int index, int snippetCount)
+    {
         List<SearchHitSnippetViewModel> snippets = new();
-        for (int i = 0; i < 12; i++)
+        for (int i = 0; i < snippetCount; i++)
         {
             SearchMatchedUnitViewModel unit = new(
                 $"unit-{index}-{i}",
