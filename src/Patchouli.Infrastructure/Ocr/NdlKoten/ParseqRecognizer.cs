@@ -15,6 +15,7 @@ public sealed class ParseqRecognizer : IDisposable
         SessionOptions options = new();
         options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_DISABLE_ALL;
         options.AppendExecutionProvider_CPU(0);
+        options.IntraOpNumThreads = 1;
         _session = new InferenceSession(modelPath, options);
     }
 
@@ -29,16 +30,19 @@ public sealed class ParseqRecognizer : IDisposable
 
         DenseTensor<float> output = (DenseTensor<float>)outputs.First().AsTensor<float>();
         int length = output.Dimensions[1];
+        int classes = output.Dimensions[2];
+        ReadOnlySpan<float> logits = output.Buffer.Span;
         Span<int> predictions = length <= 256
             ? stackalloc int[length]
             : new int[length];
         for (int t = 0; t < length; t++)
         {
+            ReadOnlySpan<float> step = logits.Slice(t * classes, classes);
             int bestIndex = 0;
-            float bestValue = output[0, t, 0];
-            for (int c = 1; c < output.Dimensions[2]; c++)
+            float bestValue = step[0];
+            for (int c = 1; c < classes; c++)
             {
-                float value = output[0, t, c];
+                float value = step[c];
                 if (value > bestValue)
                 {
                     bestValue = value;

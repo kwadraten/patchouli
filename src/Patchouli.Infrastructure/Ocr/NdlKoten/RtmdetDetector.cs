@@ -20,7 +20,7 @@ public sealed class RtmdetDetector : IDisposable
         _session = new InferenceSession(modelPath, options);
     }
 
-    public float ConfidenceThreshold { get; init; } = 0.1f;
+    public float ConfidenceThreshold { get; init; } = 0.3f;
 
     public IReadOnlyList<LineDetection> Detect(SKBitmap image)
     {

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using SkiaSharp;
 
 namespace Patchouli.Infrastructure.Ocr.NdlKoten;
@@ -32,19 +33,93 @@ public sealed class NdlKotenOcrPipeline : IDisposable
 
     public NdlKotenPageResult Run(SKBitmap image)
     {
-        IReadOnlyList<LineDetection> detections = _detector.Detect(image);
+        IReadOnlyList<LineDetection> detections = FilterDetections(_detector.Detect(image));
         IReadOnlyList<LineDetection> ordered = OrderDetections(detections);
-        List<NdlKotenLine> lines = new();
-        foreach (LineDetection detection in ordered)
+
+        SKBitmap[] crops = new SKBitmap[ordered.Count];
+        string[] texts = new string[ordered.Count];
+        try
         {
-            Box box = detection.Box;
-            bool isVertical = box.Y1 - box.Y0 > box.X1 - box.X0;
-            using SKBitmap crop = Crop(image, box);
-            string text = _recognizer.Read(crop);
-            lines.Add(new NdlKotenLine(text, box, isVertical, detection.Confidence));
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                crops[i] = Crop(image, ordered[i].Box);
+            }
+
+            try
+            {
+                Parallel.For(0, ordered.Count,
+                    new ParallelOptions { MaxDegreeOfParallelism = Math.Min(8, Environment.ProcessorCount) },
+                    i => texts[i] = _recognizer.Read(crops[i]));
+            }
+            catch (AggregateException exception) when (exception.InnerException is not null)
+            {
+                // Parallel.For wraps worker failures in AggregateException; surface the
+                // original recognition failure so callers keep the pre-parallel behavior.
+                ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
+            }
+
+            List<NdlKotenLine> lines = new(ordered.Count);
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                LineDetection detection = ordered[i];
+                Box box = detection.Box;
+                bool isVertical = box.Y1 - box.Y0 > box.X1 - box.X0;
+                lines.Add(new NdlKotenLine(texts[i], box, isVertical, detection.Confidence));
+            }
+
+            return new NdlKotenPageResult(lines, string.Join("\n", lines.Select(static l => l.Text)));
+        }
+        finally
+        {
+            foreach (SKBitmap crop in crops)
+            {
+                crop?.Dispose();
+            }
+        }
+    }
+
+    internal static IReadOnlyList<LineDetection> FilterDetections(IReadOnlyList<LineDetection> detections)
+    {
+        bool[] kept = new bool[detections.Count];
+        List<int> keptIndices = new();
+        foreach (int index in Enumerable.Range(0, detections.Count)
+                     .OrderByDescending(i => detections[i].Confidence))
+        {
+            Box box = detections[index].Box;
+            if (box.X1 - box.X0 < 5 || box.Y1 - box.Y0 < 5)
+            {
+                continue;
+            }
+
+            bool duplicate =
+                keptIndices.Any(keptIndex => IntersectionOverUnion(detections[keptIndex].Box, box) >= 0.7f);
+            if (duplicate)
+            {
+                continue;
+            }
+
+            kept[index] = true;
+            keptIndices.Add(index);
         }
 
-        return new NdlKotenPageResult(lines, string.Join("\n", lines.Select(static l => l.Text)));
+        return Enumerable.Range(0, detections.Count)
+            .Where(i => kept[i])
+            .Select(i => detections[i])
+            .ToArray();
+    }
+
+    private static float IntersectionOverUnion(Box a, Box b)
+    {
+        int x0 = Math.Max(a.X0, b.X0);
+        int y0 = Math.Max(a.Y0, b.Y0);
+        int x1 = Math.Min(a.X1, b.X1);
+        int y1 = Math.Min(a.Y1, b.Y1);
+        int intersectionWidth = Math.Max(0, x1 - x0);
+        int intersectionHeight = Math.Max(0, y1 - y0);
+        float intersection = intersectionWidth * intersectionHeight;
+        float areaA = (float)(a.X1 - a.X0) * (a.Y1 - a.Y0);
+        float areaB = (float)(b.X1 - b.X0) * (b.Y1 - b.Y0);
+        return intersection / (areaA + areaB - intersection);
     }
 
     internal static IReadOnlyList<LineDetection> OrderDetections(IReadOnlyList<LineDetection> detections)
