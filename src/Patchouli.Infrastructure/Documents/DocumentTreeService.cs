@@ -957,15 +957,19 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         Result<DocumentBox> result = await MutateWorkingAsync(sessionId, (_, boxes) =>
         {
             int index = boxes.FindIndex(box => box.BoxId == boxId);
-            if (index < 0 || boxes.Any(box => box.ParentBoxId == boxId))
+            if (index < 0)
             {
-                return Mutation<DocumentBox>.Failure("Only an existing box without children can be deleted.");
+                return Mutation<DocumentBox>.Failure("Only an existing box can be deleted.");
             }
 
             DocumentBox deleted = boxes[index];
             Unlink(boxes, deleted);
-            RepointContinuation(boxes, [boxId], null);
-            boxes.RemoveAt(index);
+            // Only logical pages can own children; remove their entire subtree in this mutation.
+            HashSet<DocumentBoxId> deletedIds = boxes
+                .Where(box => box.BoxId == boxId || box.ParentBoxId == boxId)
+                .Select(box => box.BoxId).ToHashSet();
+            RepointContinuation(boxes, deletedIds, null);
+            boxes.RemoveAll(box => deletedIds.Contains(box.BoxId));
             return Mutation<DocumentBox>.Success(deleted);
         }, cancellationToken);
         return ToResult(result);

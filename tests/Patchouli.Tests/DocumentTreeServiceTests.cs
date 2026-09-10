@@ -14,6 +14,42 @@ namespace Patchouli.Tests;
 public sealed class DocumentTreeServiceTests
 {
     [Fact]
+    public async Task Deleting_logical_page_removes_children_and_preserves_sibling_order_and_committed_revision()
+    {
+        await using Context context = await Context.CreateAsync();
+        DocumentBoxId before = DocumentBoxId.New();
+        DocumentBoxId parent = DocumentBoxId.New();
+        DocumentBoxId child = DocumentBoxId.New();
+        DocumentBoxId after = DocumentBoxId.New();
+        DocumentBoxId continuation = DocumentBoxId.New();
+        DocumentTreeRevision working = (await context.Trees.BeginWorkingRevisionAsync(
+            context.DocumentId, context.PageId,
+            [
+                new DocumentBoxSeed(before, null, 0, DocumentBoxType.LogicalPage, null, null,
+                    new NormalizedBBox(0, 0, 1, .1), null),
+                new DocumentBoxSeed(parent, null, 1, DocumentBoxType.LogicalPage, null, null,
+                    new NormalizedBBox(0, .1, 1, .5), null),
+                new DocumentBoxSeed(child, parent, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.05, .2, .9, .1), new TextBoxPayload("Child")),
+                new DocumentBoxSeed(after, null, 2, DocumentBoxType.LogicalPage, null, null,
+                    new NormalizedBBox(0, .6, 1, .4), null),
+                new DocumentBoxSeed(continuation, after, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.05, .8, .9, .1), new TextBoxPayload(""), ContinuesFromBoxId: child)
+            ], DocumentTreeRevisionSource.Import)).Value;
+        (await context.Trees.CommitWorkingRevisionAsync(working.TreeRevisionId)).IsSuccess.Should().BeTrue();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+
+        (await context.Editor.DeleteBoxAsync(edit.SessionId, parent)).IsSuccess.Should().BeTrue();
+
+        IReadOnlyList<DocumentBox> boxes = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+        boxes.Select(box => box.BoxId).Should().BeEquivalentTo([before, after, continuation]);
+        boxes.Single(box => box.BoxId == before).NextSiblingBoxId.Should().Be(after);
+        boxes.Single(box => box.BoxId == continuation).ContinuesFromBoxId.Should().BeNull();
+        (await context.Trees.ListBoxesAsync(working.TreeRevisionId)).Value.Should().HaveCount(5);
+        (await context.Trees.CommitPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Page_edit_creates_a_working_revision_and_commit_keeps_its_id()
     {
         await using Context context = await Context.CreateAsync();
