@@ -16,7 +16,8 @@ Before exploring, read these when they exist:
 
 - `.agents/CONTEXT.md` for project domain language and glossary.
 - `.agents/adr/` for architectural decision records relevant to the area being changed.
-- `.agents/PRD.md` when product intent, scope, or roadmap context matters.
+- `.agents/PRD.md` for the completed baseline and remaining product scope.
+- `.agents/mcp-protocol.md` for MCP/CLI parameters, response schemas and regression obligations.
 - `.agents/palettes/` for the selectable UI color palettes (one `DESIGN.md` per palette).
 
 If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do not suggest creating them upfront unless the current task is explicitly about domain modeling, architecture documentation, or recording a decision.
@@ -29,6 +30,7 @@ If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do
 ├── .agents/
 │   ├── CONTEXT.md
 │   ├── PRD.md
+│   ├── mcp-protocol.md
 │   ├── domain.md
 │   ├── issue-tracker.md
 │   ├── triage-labels.md
@@ -79,3 +81,10 @@ polls `GetCurrentRevisionAsync` (default every 2 s, interval is injectable) to c
 the other process. Any detected change triggers a full cache reload; polling-detected changes
 additionally raise `ExternalChangeDetected` so the UI can tell cross-process edits apart from its
 own commits.
+
+
+## Document ownership and implementation gaps
+
+Keep completed feature summaries at the top of PRD; retain open scope and acceptance budgets below. Durable vocabulary and UI semantics belong in CONTEXT, protocol details in mcp-protocol, architectural choices in ADR, and performance reproduction instructions in perf. Link to the owning document instead of repeating completed acceptance tables.
+
+The shared composition layer and current cross-process revision monitor described above are implemented behavior. They do **not** complete ADR `0024`'s one-host-per-Library target: automatic CLI discovery/headless launch/desktop takeover remains PRD V3-T1 work. Polling plus full cache reload also falls short of V3-T7's subscription-driven incremental refresh target. Keep these gaps explicit until implemented; do not interpret this description as superseding either decision.

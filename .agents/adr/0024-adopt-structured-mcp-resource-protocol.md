@@ -2,6 +2,10 @@
 
 Status: accepted (2026-07-31); amended 2026-08-01; supersedes ADR `0022` for production MCP
 
+## Current contract and superseding decisions
+
+The normative parameter/response specification formerly in PRD §3.4 now lives in [mcp-protocol.md](../mcp-protocol.md). ADR `0028` supersedes historical `?evref=`/EvidenceRef consumption mentioned below with `?rev=&box=` versioned page URIs; ADR `0027` defines working/committed history. The four tools and HTTP CLI are implemented, including limited `put`. Automatic headless launch, per-Library host ownership and desktop takeover remain PRD V3-T1 work; sharing `Patchouli.Host` alone does not fulfill them.
+
 ## Context
 
 Patchouli compared the Bashkit virtual shell (A) with structured protocol B
