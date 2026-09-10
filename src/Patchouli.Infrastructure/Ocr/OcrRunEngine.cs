@@ -655,7 +655,7 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 await UpdatePageResultAsync(run.OcrRunId, page.PageId, OcrPageResultState.Processing, null, null, null);
                 Result<OcrEnginePageResult> output = await RunEngineAsync(
                     page, version.Value, region, imagePath, cancellationToken);
-                if (output.IsFailure || !output.Value.Succeeded || string.IsNullOrWhiteSpace(output.Value.Text))
+                if (output.IsFailure || !output.Value.Succeeded)
                 {
                     failures++;
                     await UpdatePageResultAsync(
@@ -672,7 +672,49 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 }
 
                 OcrDocumentTreeCandidate candidate;
-                if (output.Value.TextBoxes is { Count: > 0 } textBoxes)
+                if (string.IsNullOrWhiteSpace(output.Value.Text) &&
+                    output.Value.TextBoxes is not { Count: > 0 })
+                {
+                    if (region is not null)
+                    {
+                        failures++;
+                        await UpdatePageResultAsync(
+                            run.OcrRunId,
+                            page.PageId,
+                            OcrPageResultState.Failed,
+                            null,
+                            output.ErrorCode ??
+                            (output.IsSuccess ? output.Value.ErrorCode : null) ?? AppErrorCodes.InvalidState,
+                            output.ErrorMessage ?? (output.IsSuccess ? output.Value.ErrorMessage : null) ??
+                            "OCR returned no text.");
+                        ReportPageProgress(progress, ++processedPages, pages.Count);
+                        continue;
+                    }
+
+                    candidate = new OcrDocumentTreeCandidate(
+                        [
+                            new OcrPageCandidate(page.PageId, page.PageIndex,
+                            [
+                                new OcrBoxCandidate(
+                                    DocumentBoxType.LogicalPage,
+                                    null,
+                                    null,
+                                    0,
+                                    new TextBoxPayload("Blank page (OCR returned no content)."),
+                                    new NormalizedBBox(0, 0, 1, 1),
+                                    null,
+                                    null,
+                                    false)
+                            ])
+                        ],
+                        [
+                            new OcrDiagnostic(
+                                "blank_page_placeholder",
+                                "OCR engine returned no content for this physical page; a logical-page placeholder was created.",
+                                page.PageId)
+                        ]);
+                }
+                else if (output.Value.TextBoxes is { Count: > 0 } textBoxes)
                 {
                     List<OcrBoxCandidate> boxCandidates = new();
                     for (int i = 0; i < textBoxes.Count; i++)

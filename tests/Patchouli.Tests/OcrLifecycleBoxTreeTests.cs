@@ -106,6 +106,33 @@ public sealed class OcrLifecycleBoxTreeTests
     }
 
     [Fact]
+    public async Task Blank_page_with_no_ocr_content_is_imported_as_logical_page_placeholder()
+    {
+        await using Context context = await Context.CreateAsync(new BlankPageEngine());
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Blank mock", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", false)).Value;
+
+        OcrRun run = (await context.Coordinator.RunPresetOnDocumentAsync(
+            context.Document.DocumentInstanceId, preset.PresetId)).Value;
+        IReadOnlyList<OcrPageResult> results =
+            (await context.Coordinator.ListPageResultsAsync(run.OcrRunId)).Value;
+
+        run.State.Should().Be(OcrRunState.Completed);
+        results.Should().OnlyContain(result => result.State == OcrPageResultState.Succeeded);
+        foreach (Page page in context.Pages)
+        {
+            OcrPageResult pageResult = results.Single(result => result.PageId == page.PageId);
+            DocumentBox box =
+                (await context.Trees.ListBoxesAsync(pageResult.WorkingTreeRevisionId!.Value)).Value.Single();
+            box.Should().BeEquivalentTo(new
+            {
+                BoxType = DocumentBoxType.LogicalPage,
+                Payload = new TextBoxPayload("Blank page (OCR returned no content).")
+            });
+        }
+    }
+
+    [Fact]
     public async Task Apply_on_success_commits_completed_run_through_candidate_commit()
     {
         await using Context context = await Context.CreateAsync();
@@ -336,6 +363,17 @@ public sealed class OcrLifecycleBoxTreeTests
         public ValueTask DisposeAsync()
         {
             return _database.DisposeAsync();
+        }
+    }
+
+    private sealed class BlankPageEngine : IOcrEngine
+    {
+        public string EngineId => OcrEngineIds.Mock;
+
+        public Task<OcrEnginePageResult> RunPageAsync(Page page, OcrPresetVersion presetVersion,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new OcrEnginePageResult(page.PageId, true, "", null, null, null));
         }
     }
 
