@@ -28,6 +28,8 @@
   <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <MacOSFsHelperArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">arm64</MacOSFsHelperArchitecture>
     <MacOSFsHelperArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-x64'">x86_64</MacOSFsHelperArchitecture>
+    <MacOSFsHelperArchitecture Condition="'$(MacOSFsHelperArchitecture)' == '' and '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">arm64</MacOSFsHelperArchitecture>
+    <MacOSFsHelperArchitecture Condition="'$(MacOSFsHelperArchitecture)' == ''">x86_64</MacOSFsHelperArchitecture>
   </PropertyGroup>
 
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
