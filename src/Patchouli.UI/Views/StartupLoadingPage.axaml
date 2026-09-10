@@ -21,12 +21,6 @@
                    Height="4"
                    Background="{DynamicResource SurfaceContainerHighestBrush}"
                    Foreground="{DynamicResource PrimaryBrush}" />
-
-      <TextBlock Text="升级后首次打开大型资料库可能需要较长时间。"
-                 FontSize="12"
-                 HorizontalAlignment="Center"
-                 TextWrapping="Wrap"
-                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
     </StackPanel>
   </Grid>
 </UserControl>
