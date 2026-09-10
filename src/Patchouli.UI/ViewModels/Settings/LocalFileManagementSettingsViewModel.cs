@@ -131,7 +131,7 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
         ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
             new ConfirmDialogViewModel(
                 "下载 NDL Koten 模型",
-                $"将从 GitHub 下载约 {FormatBytes(NdlKotenModelFiles.Files.Sum(static f => f.ExpectedBytes))} 的模型与配置文件到：\n{location.Path}\n\n{NdlKotenModelFiles.Attribution}",
+                $"将从 GitHub 下载约 {FormatBytes(NdlKotenModelFiles.Files.Sum(static f => f.ExpectedBytes))} 的模型与配置文件到：\n{location.Path}",
                 "下载",
                 confirmDanger: false));
         if (choice != ConfirmDialogResult.Confirm)

@@ -516,16 +516,6 @@
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
-
-                <Border Background="{DynamicResource SecondaryContainerBrush}" CornerRadius="4" Padding="12">
-                  <StackPanel Spacing="4">
-                    <TextBlock Text="许可说明" FontSize="12" FontWeight="SemiBold" />
-                    <TextBlock
-                      Text="NDL Koten OCR Lite 模型与配置文件来自 NDL Lab（https://github.com/ndl-lab/ndlkotenocr-lite），使用 CC-BY-4.0 许可证。"
-                      FontSize="11" TextWrapping="Wrap"
-                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                  </StackPanel>
-                </Border>
               </StackPanel>
             </DataTemplate>
 

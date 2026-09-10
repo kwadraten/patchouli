@@ -77,6 +77,8 @@ public class AboutViewModel : ViewModelBase
             new("Corvus.Toon.SystemTextJson", "Apache-2.0", "https://github.com/corvus-dotnet/Corvus.JsonSchema",
                 openUrlCommand),
             new("typst/biblatex", "MIT / Apache-2.0", "https://github.com/typst/biblatex",
+                openUrlCommand),
+            new("NDL Koten OCR Lite", "CC-BY-4.0", "https://github.com/ndl-lab/ndlkotenocr-lite",
                 openUrlCommand)
         };
     }
