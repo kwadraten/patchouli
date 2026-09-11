@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
              xmlns:controls="using:Patchouli.UI.Controls"
+             xmlns:are="clr-namespace:AvaloniaRichEditor.Controls;assembly=AvaloniaRichEditor"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:PdfWorkspaceViewModel" Focusable="True" KeyDown="OnWorkspaceKeyDown">
   <UserControl.Resources>
@@ -129,7 +130,7 @@
   <Grid RowDefinitions="44,*">
     <!-- Toolbar -->
     <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="12,0"
-            Background="{DynamicResource SurfaceContainerLowBrush}">
+            Background="{DynamicResource SurfaceContainerLowBrush}" IsVisible="{Binding !IsBookReadingMode}">
       <Grid ColumnDefinitions="Auto,*,Auto">
         <StackPanel Orientation="Horizontal" Spacing="8">
           <!-- Page navigation -->
@@ -182,6 +183,13 @@
 
         <!-- Edit Mode Controls -->
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+          <Button Command="{Binding EnterBookReadingCommand}" ToolTip.Tip="全书阅读模式" Background="Transparent">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <lucide:Lucide Icon="BookOpen" Width="14" Height="14"
+                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Text="阅读模式" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+            </StackPanel>
+          </Button>
           <Button IsVisible="{Binding IsEditMode}" ToolTip.Tip="{Binding OcrPresetStatusText}">
             <StackPanel Orientation="Horizontal" Spacing="4">
               <lucide:Lucide Icon="ScanText" Width="14" Height="14" />
@@ -213,7 +221,7 @@
     </Border>
 
     <!-- Split View -->
-    <Grid Grid.Row="1">
+    <Grid Grid.Row="1" IsVisible="{Binding !IsBookReadingMode}">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*" />
         <ColumnDefinition Width="Auto" />
@@ -691,6 +699,52 @@
         </Grid>
       </Border>
 
+    </Grid>
+
+    <!-- Whole-book reading surface: overlays the toolbar and split rows while reading mode is on. -->
+    <Grid Grid.RowSpan="2" RowDefinitions="44,*" IsVisible="{Binding IsBookReadingMode}">
+      <!-- Reading toolbar -->
+      <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="12,0"
+              Background="{DynamicResource SurfaceContainerLowBrush}">
+        <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
+          <ComboBox x:Name="BookReadingFontComboBox"
+                    ItemsSource="{Binding BookReadingFontFamilies}"
+                    SelectedItem="{Binding BookReadingFontFamily, Mode=TwoWay}"
+                    MinWidth="180" MaxWidth="220" Height="28"
+                    ToolTip.Tip="阅读字体（系统默认 = 使用界面默认字体）" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="12,0" VerticalAlignment="Center">
+            <Button Classes="ToolbarButton" Command="{Binding BookReadingDecreaseFontSizeCommand}" ToolTip.Tip="缩小字号">
+              <TextBlock Text="-" FontSize="16" FontWeight="Bold"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+            </Button>
+            <TextBlock Text="{Binding BookReadingFontSizeText}" FontSize="13"
+                       Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center"
+                       MinWidth="44" TextAlignment="Center" />
+            <Button Classes="ToolbarButton" Command="{Binding BookReadingIncreaseFontSizeCommand}" ToolTip.Tip="放大字号">
+              <TextBlock Text="+" FontSize="16" FontWeight="Bold"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+            </Button>
+          </StackPanel>
+          <TextBlock Grid.Column="2" Text="{Binding BookReadingProgressText}" FontSize="12"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center"
+                     Margin="12,0" />
+          <Button Grid.Column="4" Command="{Binding ExitBookReadingCommand}"
+                  Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
+                  ToolTip.Tip="退出阅读模式，返回 PDF 查看模式">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <lucide:Lucide Icon="X" Width="14" Height="14" />
+              <TextBlock Text="退出" FontSize="12" />
+            </StackPanel>
+          </Button>
+        </Grid>
+      </Border>
+
+      <!-- Reading area: a read-only RichEditor streamed page by page inside a vertical scroller. -->
+      <ScrollViewer x:Name="BookReadingScroller" Grid.Row="1"
+                    HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                    Background="{DynamicResource SurfaceBrush}">
+        <are:RichEditor x:Name="BookReadingEditor" IsReadOnly="True" Margin="24,16" />
+      </ScrollViewer>
     </Grid>
   </Grid>
 </UserControl>

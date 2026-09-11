@@ -1,10 +1,15 @@
+using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using AvaloniaRichEditor.Documents;
+using AvaloniaRichEditor.Formatters;
 using Patchouli.Core.Ids;
+using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.Views;
@@ -29,7 +34,13 @@ public sealed partial class PdfWorkspacePage : UserControl
     private bool _dropAbove;
     private bool _isPanning;
     private Point _panStart;
+
     private Vector _panStartOffset;
+
+    // Whole-book reading mode: counts blocks already front-inserted above the start page so
+    // each prepended page batch is inserted right after the previous one (preserving page order
+    // instead of reversing it by always inserting at index 0).
+    private int _prependedBlockCount;
 
     public PdfWorkspacePage()
     {
@@ -68,7 +79,20 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
+        if (_workspace is not null)
+        {
+            _workspace.BookReadingStarted -= OnBookReadingStarted;
+            _workspace.BookReadingPageReady -= OnBookReadingPageReady;
+            _workspace.PropertyChanged -= OnBookReadingPropertyChanged;
+        }
+
         _workspace = DataContext as PdfWorkspaceViewModel;
+        if (_workspace is not null)
+        {
+            _workspace.BookReadingStarted += OnBookReadingStarted;
+            _workspace.BookReadingPageReady += OnBookReadingPageReady;
+            _workspace.PropertyChanged += OnBookReadingPropertyChanged;
+        }
     }
 
     private void OnReadingBlockClicked(object? sender, DocumentBoxId? boxId)
@@ -506,5 +530,123 @@ public sealed partial class PdfWorkspacePage : UserControl
         {
             textBox.SelectAll();
         }
+    }
+
+    private void OnBookReadingStarted()
+    {
+        _prependedBlockCount = 0;
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        BookReadingEditor.LoadHtml(string.Empty);
+        ApplyBookReadingFontFamily();
+        ApplyBookReadingFontSize();
+        BookReadingScroller.Offset = Vector.Zero;
+        BookReadingEditor.InvalidateMeasure();
+    }
+
+    private void OnBookReadingPageReady(BookReadingPage page)
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        FlowDocument? document = BookReadingEditor.Document;
+        if (document is null)
+        {
+            BookReadingEditor.LoadHtml(string.Empty);
+            document = BookReadingEditor.Document;
+        }
+
+        if (document is null)
+        {
+            return;
+        }
+
+        FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(page.Html);
+        // Stamp the current reading size on the incoming page so pages arriving after a
+        // mid-stream font-size change match the rest of the document.
+        ReadingFontCatalog.ApplyFontSize(parsed, _workspace.BookReadingFontSize);
+
+        if (!page.IsPrepend)
+        {
+            // Pages after the start page: append at the bottom in arrival order.
+            document.Blocks.AddRange(parsed.Blocks);
+            BookReadingEditor.InvalidateMeasure();
+            return;
+        }
+
+        // Earlier pages: front-insert preserving page order. Insert this page's blocks right
+        // after the blocks already front-inserted (which sit above the start page). Always
+        // inserting at index 0 would reverse the earlier pages, so the view tracks how many
+        // blocks it has prepended and inserts each batch right after them.
+        double heightBefore = BookReadingEditor.DesiredSize.Height;
+        double offsetBefore = BookReadingScroller.Offset.Y;
+        int insertAt = _prependedBlockCount;
+        foreach (Block block in parsed.Blocks)
+        {
+            document.Blocks.Insert(insertAt, block);
+            insertAt++;
+        }
+
+        _prependedBlockCount = insertAt;
+        BookReadingEditor.InvalidateMeasure();
+        BookReadingEditor.UpdateLayout();
+
+        // Keep the reading position stable: the inserted blocks sit above the viewport, so push
+        // the scroll offset down by the amount the editor just grew.
+        double delta = BookReadingEditor.DesiredSize.Height - heightBefore;
+        if (delta > 0)
+        {
+            BookReadingScroller.Offset = new Vector(0, offsetBefore + delta);
+        }
+    }
+
+    private void OnBookReadingPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        switch (e.PropertyName)
+        {
+            case nameof(PdfWorkspaceViewModel.BookReadingFontSize):
+                ApplyBookReadingFontSize();
+                break;
+            case nameof(PdfWorkspaceViewModel.BookReadingFontFamily):
+                ApplyBookReadingFontFamily();
+                break;
+        }
+    }
+
+    private void ApplyBookReadingFontSize()
+    {
+        if (_workspace is null || BookReadingEditor.Document is not { } document)
+        {
+            return;
+        }
+
+        ReadingFontCatalog.ApplyFontSize(document, _workspace.BookReadingFontSize);
+        BookReadingEditor.InvalidateMeasure();
+    }
+
+    private void ApplyBookReadingFontFamily()
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        string family = _workspace.BookReadingFontFamily;
+        BookReadingEditor.DefaultFontFamily =
+            string.IsNullOrWhiteSpace(family) ||
+            string.Equals(family, PdfWorkspaceViewModel.SystemDefaultReadingFontLabel, StringComparison.Ordinal)
+                ? FontFamily.Default
+                : new FontFamily(family);
+        BookReadingEditor.InvalidateMeasure();
     }
 }

@@ -14,6 +14,7 @@ using Patchouli.Core.Results;
 using Patchouli.UI.Services;
 using Patchouli.UI;
 using Patchouli.UI.Controls;
+using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.Host.Composition;
 
@@ -69,6 +70,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private string? _sourceWarning;
     private DocumentTreeRevisionId? _liveCurrentRevisionId;
     private bool _isViewingHistoricalRevision;
+
+    private bool _isBookReadingMode;
+    private CancellationTokenSource? _bookReadingCancellation;
+    private double _bookReadingFontSize;
+    private string _bookReadingFontFamily;
+    private string _bookReadingProgressText = string.Empty;
+    private IReadOnlyList<string>? _bookReadingFontFamilies;
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
@@ -150,6 +158,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         ToggleSuppressedCommand = new AsyncCommand(ToggleSelectedSuppressedAsync);
         BoundingBoxes.CollectionChanged += (_, _) => Raise(nameof(HasNoBoundingBoxes));
         PreviewBlocks.CollectionChanged += (_, _) => Raise(nameof(HasNoPreviewBlocks));
+
+        EnterBookReadingCommand = new AsyncCommand(EnterBookReadingAsync);
+        ExitBookReadingCommand = new RelayCommand(_ => ExitBookReading());
+        BookReadingDecreaseFontSizeCommand = new RelayCommand(_ => AdjustBookReadingFontSize(-1));
+        BookReadingIncreaseFontSizeCommand = new RelayCommand(_ => AdjustBookReadingFontSize(1));
+        _bookReadingFontSize = ReadingFontCatalog.ClampSize(_main.AppOptions.Ui.ReadingFontSize);
+        _bookReadingFontFamily = FamilyToDisplay(_main.AppOptions.Ui.ReadingFontFamily);
     }
 
     public Bitmap? Image { get; private set; }
@@ -2911,6 +2926,274 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         Raise(nameof(PageTotalText));
         Raise(nameof(ActualWidthPixels));
         Raise(nameof(ActualHeightPixels));
+    }
+
+    // ── Whole-book reading mode (B1) ─────────────────────────────────────────────
+    // The PDF workspace's secondary "read the whole book" surface. Entering swaps the
+    // toolbar+canvas+sidebar layout for a single streaming read-only RichEditor that renders
+    // the document's committed page content from the page the user was viewing, prepending the
+    // earlier pages above the viewport so the reading flow stays anchored. Font family and size
+    // are tuned live and persisted through MainWindowViewModel.SaveReadingFont.
+
+    public const string SystemDefaultReadingFontLabel = "系统默认";
+
+    /// <summary>Raised once when reading mode is entered, before any page arrives, so the view
+    /// can reset the editor, apply the current font and zero the scroll offset.</summary>
+    public event Action? BookReadingStarted;
+
+    /// <summary>Raised on the UI thread for each streamed page, in reading order. The view
+    /// appends non-prepended pages and front-inserts (with scroll compensation) the prepended
+    /// ones, preserving page order by tracking how many blocks it has already prepended.</summary>
+    public event Action<BookReadingPage>? BookReadingPageReady;
+
+    /// <summary>Test seam: when set, the workspace builds the reading stream from this factory
+    /// instead of constructing a real <see cref="BookReadingStream"/> from HostServices. The
+    /// substituted stream ignores the services argument, so a unit test can drive page ordering
+    /// and progress text without opening a real database.</summary>
+    internal Func<HostServices, IBookReadingStream>? BookReadingStreamFactory { get; set; }
+
+    public AsyncCommand EnterBookReadingCommand { get; }
+    public RelayCommand ExitBookReadingCommand { get; }
+    public RelayCommand BookReadingDecreaseFontSizeCommand { get; }
+    public RelayCommand BookReadingIncreaseFontSizeCommand { get; }
+
+    public bool IsBookReadingMode
+    {
+        get => _isBookReadingMode;
+        private set
+        {
+            if (_isBookReadingMode == value)
+            {
+                return;
+            }
+
+            _isBookReadingMode = value;
+            Raise();
+        }
+    }
+
+    public string BookReadingProgressText
+    {
+        get => _bookReadingProgressText;
+        private set
+        {
+            if (string.Equals(_bookReadingProgressText, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _bookReadingProgressText = value;
+            Raise();
+        }
+    }
+
+    /// <summary>Live reading font size in points, clamped to [10, 28]. Setting it persists
+    /// immediately through <see cref="MainWindowViewModel.SaveReadingFont"/> so the choice
+    /// survives a restart, and raises so the view re-stamps the editor runs.</summary>
+    public double BookReadingFontSize
+    {
+        get => _bookReadingFontSize;
+        set
+        {
+            double clamped = ReadingFontCatalog.ClampSize(value);
+            if (Math.Abs(_bookReadingFontSize - clamped) < double.Epsilon)
+            {
+                return;
+            }
+
+            _bookReadingFontSize = clamped;
+            _main.SaveReadingFont(DisplayToPersistedFontFamily(_bookReadingFontFamily), clamped);
+            Raise();
+            Raise(nameof(BookReadingFontSizeText));
+        }
+    }
+
+    public string BookReadingFontSizeText => $"{Math.Round(_bookReadingFontSize):0}pt";
+
+    /// <summary>Display label of the selected reading font family. The first entry of
+    /// <see cref="BookReadingFontFamilies"/> is <see cref="SystemDefaultReadingFontLabel"/>
+    /// and maps to the persisted empty string. Setting it persists immediately.</summary>
+    public string BookReadingFontFamily
+    {
+        get => _bookReadingFontFamily;
+        set
+        {
+            string normalized = (value ?? string.Empty).Trim();
+            if (string.Equals(_bookReadingFontFamily, normalized, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _bookReadingFontFamily = normalized;
+            _main.SaveReadingFont(DisplayToPersistedFontFamily(normalized), _bookReadingFontSize);
+            Raise();
+        }
+    }
+
+    /// <summary>Picker source for the reading font family: the system-default label first, then
+    /// the host's installed font family names de-duplicated and sorted. Built lazily on first
+    /// access so the view model constructor never touches the Avalonia font manager.</summary>
+    public IReadOnlyList<string> BookReadingFontFamilies
+    {
+        get
+        {
+            _bookReadingFontFamilies ??= BuildBookReadingFontFamilies();
+            return _bookReadingFontFamilies;
+        }
+    }
+
+    private async Task EnterBookReadingAsync()
+    {
+        if (IsBookReadingMode)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            Status = "该题录没有可阅读的文档实例。";
+            return;
+        }
+
+        _bookReadingCancellation?.Cancel();
+        _bookReadingCancellation?.Dispose();
+        CancellationTokenSource cancellation = new();
+        _bookReadingCancellation = cancellation;
+        CancellationToken token = cancellation.Token;
+
+        IsBookReadingMode = true;
+        BookReadingProgressText = "正在准备阅读视图...";
+        BookReadingStarted?.Invoke();
+
+        try
+        {
+            IBookReadingStream stream;
+            if (BookReadingStreamFactory is { } factory)
+            {
+                // Test seam: the substituted stream ignores the services argument, so a unit test
+                // can drive page ordering without opening a real database.
+                stream = factory(null!);
+            }
+            else
+            {
+                HostServices services = await _main.ServicesAsync();
+                stream = new BookReadingStream(services);
+            }
+
+            await StreamBookReadingAsync(stream, DocumentInstanceId.Parse(Item.DocumentInstanceId),
+                _pageIndex, token);
+        }
+        catch (OperationCanceledException)
+        {
+            // Exiting reading mode cancels the in-flight stream; progress is already cleared.
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            BookReadingProgressText = string.Empty;
+            Status = $"阅读模式加载失败：{exception.Message}";
+            _main.ReportError($"阅读模式加载失败：{exception.Message}");
+        }
+        finally
+        {
+            if (ReferenceEquals(_bookReadingCancellation, cancellation))
+            {
+                _bookReadingCancellation?.Dispose();
+                _bookReadingCancellation = null;
+            }
+        }
+    }
+
+    private async Task StreamBookReadingAsync(
+        IBookReadingStream stream, DocumentInstanceId documentInstanceId, int startPageIndex, CancellationToken token)
+    {
+        int delivered = 0;
+        int pageCount = 0;
+        try
+        {
+            await foreach (BookReadingPage page in stream.StreamPagesAsync(documentInstanceId, startPageIndex, token)
+                               .ConfigureAwait(true))
+            {
+                token.ThrowIfCancellationRequested();
+                pageCount = page.PageCount;
+                delivered++;
+                int deliveredCount = delivered;
+                int totalPages = pageCount;
+                BookReadingPage current = page;
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    BookReadingProgressText = totalPages > 0
+                        ? $"已加载 {deliveredCount}/{totalPages} 页"
+                        : "正在加载...";
+                    BookReadingPageReady?.Invoke(current);
+                });
+            }
+
+            int finalPageCount = pageCount;
+            await Dispatcher.UIThread.InvokeAsync(() =>
+                BookReadingProgressText = finalPageCount > 0
+                    ? string.Empty
+                    : "该文档没有可阅读的页面。");
+        }
+        catch (OperationCanceledException)
+        {
+            // Leaving reading mode cancels the stream; progress is cleared by ExitBookReading.
+        }
+    }
+
+    private void ExitBookReading()
+    {
+        _bookReadingCancellation?.Cancel();
+        _bookReadingCancellation?.Dispose();
+        _bookReadingCancellation = null;
+        BookReadingProgressText = string.Empty;
+        IsBookReadingMode = false;
+    }
+
+    private void AdjustBookReadingFontSize(double delta)
+    {
+        // Round to the nearest point first so repeated clicks from a fractional size seeded from
+        // settings step in whole points and stay clamped to the supported range.
+        BookReadingFontSize = Math.Round(BookReadingFontSize) + delta;
+    }
+
+    private static IReadOnlyList<string> BuildBookReadingFontFamilies()
+    {
+        List<string> names = [SystemDefaultReadingFontLabel];
+        try
+        {
+            List<string> systemFonts = FontManager.Current.SystemFonts
+                .Select(static font => font.Name)
+                .Where(static name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(static name => name, StringComparer.Ordinal)
+                .ToList();
+            names.AddRange(systemFonts);
+        }
+        catch (InvalidOperationException)
+        {
+            // Headless or uninitialized platforms expose no font manager; the system-default
+            // entry stays as the only choice until the UI host initializes Avalonia.
+        }
+
+        return names.AsReadOnly();
+    }
+
+    // The persisted form uses the empty string for the system default; the view binds the combo
+    // box to the localized label, so the two helpers below cross-map at the read/write boundaries.
+    private static string FamilyToDisplay(string? persisted)
+    {
+        return string.IsNullOrWhiteSpace(persisted) ? SystemDefaultReadingFontLabel : persisted!.Trim();
+    }
+
+    private static string DisplayToPersistedFontFamily(string? display)
+    {
+        if (string.IsNullOrWhiteSpace(display) ||
+            string.Equals(display, SystemDefaultReadingFontLabel, StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        return display.Trim();
     }
 
     // Reading-view media previews come from file assets: MediaBoxPayload.AssetId is expected to be a
