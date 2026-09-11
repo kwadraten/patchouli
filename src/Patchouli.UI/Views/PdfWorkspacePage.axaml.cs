@@ -4,6 +4,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using Patchouli.Core.Ids;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.Views;
@@ -34,6 +35,7 @@ public sealed partial class PdfWorkspacePage : UserControl
     {
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
+        ReadingView.BlockClicked += OnReadingBlockClicked;
         // Tunnel so Ctrl+wheel is handled (and swallowed) before ScrollViewer's own bubble-phase scrolling.
         PdfScrollViewer.AddHandler(PointerWheelChangedEvent, OnScrollPointerWheelChanged,
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
@@ -67,6 +69,11 @@ public sealed partial class PdfWorkspacePage : UserControl
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
         _workspace = DataContext as PdfWorkspaceViewModel;
+    }
+
+    private void OnReadingBlockClicked(object? sender, DocumentBoxId? boxId)
+    {
+        _workspace?.SelectReadingBlock(boxId);
     }
 
     private void OnBBoxPointerPressed(object? sender, PointerPressedEventArgs e)

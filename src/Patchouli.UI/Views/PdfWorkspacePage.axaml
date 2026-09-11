@@ -59,20 +59,6 @@
       <Setter Property="Opacity" Value="0.35" />
       <Setter Property="Background" Value="#22000000" />
     </Style>
-    <Style Selector="TextBlock.previewHeading">
-      <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="FontSize" Value="16" />
-    </Style>
-    <Style Selector="Button.PreviewBlock">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="BorderBrush" Value="Transparent" />
-      <Setter Property="CornerRadius" Value="4" />
-    </Style>
-    <Style Selector="Button.PreviewBlock.selected">
-      <Setter Property="Background" Value="{DynamicResource SecondaryContainerBrush}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource SecondaryBrush}" />
-    </Style>
     <Style Selector="Border.TreeRow">
       <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowestBrush}" />
       <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
@@ -554,34 +540,12 @@
                 <!-- Tab: page content -->
                 <Grid IsVisible="{Binding !IsHistoryTabActive}">
                   <ScrollViewer x:Name="PreviewScrollViewer">
-                    <ItemsControl x:Name="PreviewItems" ItemsSource="{Binding PreviewBlocks}" Margin="16">
-                      <ItemsControl.ItemTemplate>
-                        <DataTemplate x:DataType="vm:MarkdownPreviewBlockViewModel">
-                          <Button Classes="PreviewBlock" Classes.selected="{Binding IsSelected}"
-                                  Command="{Binding SelectCommand}" HorizontalContentAlignment="Stretch"
-                                  Padding="8" Margin="0,0,0,4">
-                            <StackPanel Spacing="4">
-                              <Border IsVisible="{Binding IsMedia}" Padding="12" CornerRadius="4"
-                                      Background="{DynamicResource SurfaceContainerHighestBrush}">
-                                <StackPanel Spacing="4" HorizontalAlignment="Center">
-                                  <lucide:Lucide Icon="SquareDashed" Width="24" Height="24"
-                                                 StrokeBrush="{DynamicResource PrimaryBrush}" />
-                                  <TextBlock Text="{Binding MediaLabel}" HorizontalAlignment="Center"
-                                             FontWeight="SemiBold" />
-                                  <TextBlock Text="{Binding Markdown}" TextWrapping="Wrap"
-                                             HorizontalAlignment="Center" TextAlignment="Center"
-                                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                                </StackPanel>
-                              </Border>
-                              <controls:MarkdownTextBlock Markdown="{Binding Markdown}" Block="{Binding Block}"
-                                                          TextWrapping="Wrap"
-                                                          Classes.previewHeading="{Binding IsHeading}"
-                                                          IsVisible="{Binding !IsMedia}" />
-                            </StackPanel>
-                          </Button>
-                        </DataTemplate>
-                      </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                    <controls:DocumentReadingView x:Name="ReadingView"
+                                                  Scene="{Binding ReadingScene}"
+                                                  SelectedBoxId="{Binding ReadingSelectedBoxId}"
+                                                  MediaLoader="{Binding ReadingMediaLoader}"
+                                                  SelectionAccentBrush="{DynamicResource PrimaryBrush}"
+                                                  Margin="16" />
                   </ScrollViewer>
                   <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"

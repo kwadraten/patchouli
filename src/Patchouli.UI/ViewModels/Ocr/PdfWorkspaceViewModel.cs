@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -12,6 +13,7 @@ using System.Linq;
 using Patchouli.Core.Results;
 using Patchouli.UI.Services;
 using Patchouli.UI;
+using Patchouli.UI.Controls;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.Host.Composition;
 
@@ -59,6 +61,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private DocumentBoxId? _localOcrTargetBoxId;
     private string _localOcrSourceText = string.Empty;
     private DocumentBoxId? _previewSelectedBoxId;
+    private DocumentReadingScene? _readingScene;
+    private DocumentBoxId? _readingSelectedBoxId;
     private DocumentBox[] _pendingMergeBoxes = [];
     private string _mergeText = string.Empty;
     private string _sourceValidationState = SourceValidationStatus.Unverified;
@@ -70,6 +74,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     {
         _main = main;
         Item = item;
+        ReadingMediaLoader = new FileAssetMediaImageLoader(main);
         PreviousPageCommand = new AsyncCommand(PreviousPageAsync);
         NextPageCommand = new AsyncCommand(NextPageAsync);
         ReloadCommand = new AsyncCommand(ReloadAsync);
@@ -581,6 +586,42 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public bool HasNoBoundingBoxes => BoundingBoxes.Count == 0;
     public bool HasPageRevisions => PageRevisions.Count > 0;
     public bool HasNoPreviewBlocks => PreviewBlocks.Count == 0;
+
+    // Render-ready snapshot of the page content; the sidebar's reading view draws this instead of
+    // the per-block MarkdownPreviewBlockViewModel list.
+    public DocumentReadingScene? ReadingScene
+    {
+        get => _readingScene;
+        private set
+        {
+            if (ReferenceEquals(_readingScene, value))
+            {
+                return;
+            }
+
+            _readingScene = value;
+            Raise();
+        }
+    }
+
+    public DocumentBoxId? ReadingSelectedBoxId
+    {
+        get => _readingSelectedBoxId;
+        private set
+        {
+            if (_readingSelectedBoxId == value)
+            {
+                return;
+            }
+
+            _readingSelectedBoxId = value;
+            Raise();
+        }
+    }
+
+    // Resolves the reading view's media block asset ids to decoded images (see the loader type).
+    public IMediaImageLoader ReadingMediaLoader { get; }
+
     public bool HasOverlapWarnings => OverlapMarkers.Count > 0;
     public bool HasContinuationLinks => ContinuationLinks.Count > 0;
     public bool HasCrossPageContinuationMarkers => CrossPageContinuationMarkers.Count > 0;
@@ -696,6 +737,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             block.IsSelected = block.BoxId == _previewSelectedBoxId;
         }
 
+        ReadingSelectedBoxId = _previewSelectedBoxId;
         Raise(nameof(SelectedBox));
     }
 
@@ -1926,6 +1968,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _crossPageContinuationSources.Clear();
         _pages = [];
         PreviewBlocks.Clear();
+        ReadingScene = null;
         SelectedBox = null;
         _currentRevisionId = null;
         _draftRevisionId = null;
@@ -2113,6 +2156,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
             BoundingBoxes.Clear();
             PreviewBlocks.Clear();
+            ReadingScene = null;
             SelectedBox = null;
             if (_isEditMode && _draftRevisionId != null)
             {
@@ -2583,6 +2627,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId)
     {
         PreviewBlocks.Clear();
+        ReadingScene = null;
         HostServices services = await _main.ServicesAsync();
         Result<CompiledMarkdown> compiled = await services.DocumentMarkdown.CompilePageMarkdownAsync(
             revisionId, false);
@@ -2611,6 +2656,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
             PreviewBlocks[^1].IsSelected = boxId == _previewSelectedBoxId;
         }
+
+        ReadingScene = DocumentReadingSceneBuilder.Build(model, compiled.Value.SourceMap, _loadedBoxes);
     }
 
     private async Task CopyMarkdownAsync()
@@ -2654,6 +2701,20 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         if (boxId is not null)
         {
             SelectedBox = BoundingBoxes.FirstOrDefault(box => box.BoxId == boxId.Value);
+        }
+    }
+
+    // Click in the sidebar reading view: reuse the preview-block selection path so box selection,
+    // canvas highlighting and the reading view stay in sync. A null BoxId means "empty space".
+    internal void SelectReadingBlock(DocumentBoxId? boxId)
+    {
+        if (boxId is null)
+        {
+            ClearSelection();
+        }
+        else
+        {
+            SelectPreviewBox(boxId);
         }
     }
 
@@ -2791,6 +2852,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         BoundingBoxes.Clear();
         PreviewBlocks.Clear();
+        ReadingScene = null;
         SelectedBox = null;
         IsViewingHistoricalRevision = true;
         _currentRevisionId = revision.RevisionId;
@@ -2849,5 +2911,49 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         Raise(nameof(PageTotalText));
         Raise(nameof(ActualWidthPixels));
         Raise(nameof(ActualHeightPixels));
+    }
+
+    // Reading-view media previews come from file assets: MediaBoxPayload.AssetId is expected to be a
+    // FileAssetId, which resolves to the asset's original path. The file is decoded to a modest width
+    // off the UI thread because the sidebar scales it down anyway. Any asset id that is not a file
+    // asset id, or whose file is missing or not a decodable image, yields no preview and the reading
+    // view keeps its placeholder card.
+    private sealed class FileAssetMediaImageLoader(MainWindowViewModel main) : IMediaImageLoader
+    {
+        private const int PreviewDecodeWidth = 800;
+
+        public async Task<IImage?> LoadAsync(string assetId, CancellationToken cancellationToken)
+        {
+            if (!Guid.TryParse(assetId, out Guid parsed))
+            {
+                return null;
+            }
+
+            HostServices services = await main.ServicesAsync();
+            Result<FileAsset> asset = await services.Files.GetFileAssetAsync(
+                new FileAssetId(parsed), cancellationToken);
+            if (asset.IsFailure || !File.Exists(asset.Value.OriginalPath))
+            {
+                return null;
+            }
+
+            string path = asset.Value.OriginalPath;
+            try
+            {
+                return await Task.Run(
+                    () =>
+                    {
+                        using FileStream stream = File.OpenRead(path);
+                        return (IImage?)Bitmap.DecodeToWidth(
+                            stream, PreviewDecodeWidth, BitmapInterpolationMode.HighQuality);
+                    },
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // A file asset that is not a decodable image simply has no preview.
+                return null;
+            }
+        }
     }
 }

@@ -168,7 +168,9 @@ public sealed class PdfWorkspaceLayoutTests
             "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
 
         xaml.Should().NotContain("<TextBlock Text=\"{Binding Kind}\"");
-        xaml.Should().Contain("<controls:MarkdownTextBlock Markdown=\"{Binding Markdown}\" Block=\"{Binding Block}\"");
+        xaml.Should().Contain("<controls:DocumentReadingView");
+        xaml.Should().Contain("Scene=\"{Binding ReadingScene}\"");
+        xaml.Should().Contain("SelectedBoxId=\"{Binding ReadingSelectedBoxId}\"");
         xaml.Should().Contain("Text=\"复制 Markdown\"");
         xaml.Should().Contain("Command=\"{Binding CopyMarkdownCommand}\"");
         xaml.Should().Contain("Classes.selected=\"{Binding IsSelected}\"");
@@ -176,6 +178,7 @@ public sealed class PdfWorkspaceLayoutTests
         xaml.Should().Contain("x:Name=\"PreviewScrollViewer\"");
         viewModel.Should().Contain("_previewSelectedBoxId = _selectedBox?.BoxId")
             .And.Contain("block.IsSelected = block.BoxId == _previewSelectedBoxId")
+            .And.Contain("ReadingScene = DocumentReadingSceneBuilder.Build(")
             .And.Contain("RunCurrentPageOcrCommand")
             .And.Contain("CopyMarkdownCommand")
             .And.Contain("LocalOcrSourceText")
@@ -215,16 +218,20 @@ public sealed class PdfWorkspaceLayoutTests
     }
 
     [Fact]
-    public void PdfWorkspace_preview_selected_style_is_not_overridden_by_a_local_background()
+    public void PdfWorkspace_preview_selection_is_drawn_by_the_reading_view_not_local_styles()
     {
         string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
-        int start = xaml.IndexOf("<Button Classes=\"PreviewBlock\"", StringComparison.Ordinal);
+        string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
+            "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
+
+        int start = xaml.IndexOf("<controls:DocumentReadingView", StringComparison.Ordinal);
 
         start.Should().BeGreaterThanOrEqualTo(0);
-        string previewButton = xaml[start..xaml.IndexOf('>', start)];
-        previewButton.Should().NotContain("Background=");
-        xaml.Should().Contain("<Style Selector=\"Button.PreviewBlock.selected\">");
-        xaml.Should().Contain("<Setter Property=\"BorderBrush\" Value=\"{DynamicResource SecondaryBrush}\" />");
+        string readingView = xaml[start..xaml.IndexOf("/>", start)];
+        readingView.Should().NotContain("Background=");
+        xaml.Should().NotContain("Button Classes=\"PreviewBlock\"");
+        xaml.Should().NotContain("Button.PreviewBlock");
+        viewModel.Should().Contain("ReadingSelectedBoxId = _previewSelectedBoxId");
     }
 }
