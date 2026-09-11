@@ -514,7 +514,11 @@ public sealed class DesktopInstanceCoordinatorTests
     {
         string mutexName = $"net.patchouli.test.mutex.{Guid.NewGuid():N}";
         string pipeName = NewPipeName();
-        DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
+        List<string> listenerErrors = new();
+        DesktopInstanceCoordinator primary = new(new DesktopInstanceCoordinatorOptions(
+            mutexName,
+            pipeName,
+            LogDiagnostic: (message, exception) => listenerErrors.Add($"{message}: {exception?.Message}")));
         primary.StartListener();
 
         int activationCount = 0;
@@ -528,12 +532,23 @@ public sealed class DesktopInstanceCoordinatorTests
                 await client.ConnectAsync(1000);
             }
 
-            await Task.Delay(50);
-
             DesktopInstanceCoordinator secondary = new(new DesktopInstanceCoordinatorOptions(mutexName, pipeName));
             try
             {
-                bool success = await secondary.NotifyPrimaryAsync();
+                // Wait for the primary to cycle back to accepting instead of sleeping for a
+                // fixed interval. NotifyPrimaryAsync retries internally, and a fresh call
+                // tolerates a listener that is momentarily between connections; the deadline
+                // is deliberately generous. A listener diagnostic means the control loop
+                // terminated instead of recovering from the disconnect.
+                using CancellationTokenSource deadline = new(TimeSpan.FromSeconds(10));
+                bool success = false;
+                while (!success && !deadline.IsCancellationRequested && listenerErrors.Count == 0)
+                {
+                    success = await secondary.NotifyPrimaryAsync(deadline.Token);
+                }
+
+                listenerErrors.Should().BeEmpty(
+                    "the control listener must survive a client that disconnects before sending a request");
                 success.Should().BeTrue();
                 activationCount.Should().Be(1);
             }

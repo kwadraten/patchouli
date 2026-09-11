@@ -39,6 +39,8 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
     public const int ProtocolVersion = 1;
     public const string CommandActivateUi = "activate_ui";
 
+    private static readonly TimeSpan ServerStreamRecreateDelay = TimeSpan.FromMilliseconds(100);
+
     private readonly DesktopInstanceCoordinatorOptions _options;
     private readonly object _lock = new();
     private Mutex? _mutex;
@@ -315,15 +317,32 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
         return Interlocked.Exchange(ref _pendingActivation, 0) == 1;
     }
 
-    private async Task RunListenerLoopAsync(NamedPipeServerStream serverStream, CancellationToken cancellationToken)
+    private async Task RunListenerLoopAsync(NamedPipeServerStream initialServerStream,
+        CancellationToken cancellationToken)
     {
-        await using (serverStream.ConfigureAwait(false))
+        // The pipe instance is rotated for every connection. Reusing one instance after
+        // the peer closed first leaves it in a "Pipe is broken" state, and the previous
+        // implementation then terminated the whole listener on the next
+        // WaitForConnectionAsync, permanently disabling single-instance activation.
+        NamedPipeServerStream? serverStream = initialServerStream;
+        try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
+                if (serverStream is null)
+                {
+                    serverStream = await TryCreateServerStreamAsync(cancellationToken).ConfigureAwait(false);
+                    if (serverStream is null)
+                    {
+                        continue;
+                    }
+                }
+
+                bool connected;
                 try
                 {
                     await serverStream.WaitForConnectionAsync(cancellationToken).ConfigureAwait(false);
+                    connected = true;
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -336,50 +355,73 @@ internal sealed class DesktopInstanceCoordinator : IDesktopInstanceCoordinator
                         break;
                     }
 
+                    // A transient pipe failure must drop the instance and keep listening
+                    // instead of terminating the listener for the process lifetime.
                     LogSanitizedDiagnostic("Control listener failed waiting for connection", ex);
-                    break;
+                    connected = false;
                 }
 
-                bool shouldTerminate = false;
-                try
+                if (connected)
                 {
-                    await HandleConnectionAsync(serverStream, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    LogSanitizedDiagnostic("Control listener encountered an error handling connection", ex);
-                }
-                finally
-                {
-                    if (serverStream.IsConnected)
+                    try
                     {
-                        try
-                        {
-                            serverStream.Disconnect();
-                        }
-                        catch (Exception disconnectEx)
-                        {
-                            if (!cancellationToken.IsCancellationRequested)
-                            {
-                                LogSanitizedDiagnostic("Control listener failed disconnecting client connection",
-                                    disconnectEx);
-                            }
-
-                            shouldTerminate = true;
-                        }
+                        await HandleConnectionAsync(serverStream, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        LogSanitizedDiagnostic("Control listener encountered an error handling connection", ex);
                     }
                 }
 
-                if (shouldTerminate)
-                {
-                    break;
-                }
+                await serverStream.DisposeAsync().ConfigureAwait(false);
+                serverStream = null;
             }
         }
+        finally
+        {
+            if (serverStream is not null)
+            {
+                await serverStream.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task<NamedPipeServerStream?> TryCreateServerStreamAsync(CancellationToken cancellationToken)
+    {
+        NamedPipeServerStream stream;
+        try
+        {
+            stream = CreateServerStream();
+            if (stream is null)
+            {
+                throw new InvalidOperationException("Server stream factory returned null.");
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return null;
+            }
+
+            LogSanitizedDiagnostic("Control listener failed creating a server stream", ex);
+            try
+            {
+                await Task.Delay(ServerStreamRecreateDelay, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        return stream;
     }
 
     private async Task HandleConnectionAsync(NamedPipeServerStream stream, CancellationToken cancellationToken)
