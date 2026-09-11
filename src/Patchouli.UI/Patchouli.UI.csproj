@@ -29,6 +29,7 @@
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="AvaloniaRichEditor" />
     <PackageReference Include="ProDataGrid" />
   </ItemGroup>
   <ItemGroup>

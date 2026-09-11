@@ -347,8 +347,12 @@ public sealed record UiPreferences(
     Dictionary<string, int> LibraryGridColumnOrder,
     bool ShowLibraryLeftSidebar = true,
     bool ShowLibraryRightSidebar = true,
-    string PaletteId = UiColorPalettes.DefaultPaletteId)
+    string PaletteId = UiColorPalettes.DefaultPaletteId,
+    string ReadingFontFamily = "",
+    double ReadingFontSize = 14)
 {
+    public const double DefaultReadingFontSize = 14;
+
     public static UiPreferences Default()
     {
         return new UiPreferences(new Dictionary<string, bool>(), new Dictionary<string, double>(),
@@ -541,7 +545,9 @@ public sealed record PatchouliAppSettings(
                     ReadStringIntDict(ui, "LibraryGridColumnOrder", defaults.Ui.LibraryGridColumnOrder),
                     ReadBool(ui, "ShowLibraryLeftSidebar", defaults.Ui.ShowLibraryLeftSidebar),
                     ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar),
-                    ReadString(ui, "PaletteId", defaults.Ui.PaletteId)))
+                    ReadString(ui, "PaletteId", defaults.Ui.PaletteId),
+                    ReadString(ui, "ReadingFontFamily", defaults.Ui.ReadingFontFamily),
+                    ReadDouble(ui, "ReadingFontSize", defaults.Ui.ReadingFontSize)))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -705,7 +711,9 @@ public sealed record PatchouliAppSettings(
                 Ui.LibraryGridColumnOrder,
                 Ui.ShowLibraryLeftSidebar,
                 Ui.ShowLibraryRightSidebar,
-                Ui.PaletteId
+                Ui.PaletteId,
+                Ui.ReadingFontFamily,
+                Ui.ReadingFontSize
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -1009,6 +1017,19 @@ public sealed record PatchouliAppSettings(
 
         return element.TryGetProperty(name, out JsonElement value) && value.TryGetInt64(out long parsed)
             ? parsed
+            : fallback;
+    }
+
+    private static double ReadDouble(JsonElement? section, string name, double fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return element.TryGetProperty(name, out JsonElement value) &&
+               value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out double result)
+            ? result
             : fallback;
     }
 

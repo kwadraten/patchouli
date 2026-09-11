@@ -11,6 +11,7 @@
     <PackageVersion Include="FluentAssertions" Version="8.8.0" />
     <PackageVersion Include="Fsharp.Citeproc" Version="1.1.0" />
     <PackageVersion Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+    <PackageVersion Include="AvaloniaRichEditor" Version="1.2.1" />
     <PackageVersion Include="ProDataGrid" Version="12.1.0.4" />
     <PackageVersion Include="Blake3" Version="2.2.1" />
     <PackageVersion Include="Corvus.Toon.SystemTextJson" Version="5.2.10" />
