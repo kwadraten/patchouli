@@ -114,7 +114,7 @@ public sealed class FirstRunViewModelTests
         viewModel.HasError.Should().BeFalse();
         viewModel.CurrentStep.Should().Be(FirstRunStep.Scan);
         viewModel.ProgressText.Should().Contain("跳过资料库身份步骤");
-        viewModel.ProgressText.Should().Contain("缺少 file_search_roots");
+        viewModel.ProgressText.Should().Contain("缺少 file_search_root_definitions");
         viewModel.ProgressText.Should().Contain("缺少 ocr_presets");
     }
 
@@ -130,11 +130,11 @@ public sealed class FirstRunViewModelTests
         {
             await connection.OpenAsync();
             await connection.ExecuteAsync(
-                "insert into file_search_roots (root_id, library_id, root_path, is_available, created_at, updated_at) values (@Id, @LibraryId, @Path, 1, @Now, @Now);",
+                "insert into file_search_root_definitions (root_id, library_id, display_name, purpose, is_enabled, created_at, updated_at) values (@Id, @LibraryId, @Id, 'file_resolution', 1, @Now, @Now);",
                 new
                 {
                     Id = Guid.NewGuid().ToString("D"), LibraryId = created.Value.LibraryId.ToString(),
-                    Path = Path.GetTempPath(), Now = clock.UtcNow.ToString("O")
+                    Now = clock.UtcNow.ToString("O")
                 });
         }
 

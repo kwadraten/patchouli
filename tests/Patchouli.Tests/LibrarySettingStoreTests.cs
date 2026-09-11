@@ -9,7 +9,7 @@ namespace Patchouli.Tests;
 public sealed class LibrarySettingStoreTests
 {
     [Fact]
-    public async Task Opted_in_setting_round_trips_as_a_library_record_and_device_override_wins_effective_value()
+    public async Task Opted_in_setting_round_trips_as_a_library_record()
     {
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
@@ -22,10 +22,6 @@ public sealed class LibrarySettingStoreTests
         Result<SettingRecord?> loaded = await store.GetAsync("metadata_lookup");
 
         loaded.Value.Should().Be(record);
-        new SettingsResolver().Resolve(loaded.Value,
-                new DeviceOverride("metadata_lookup", "{\"sources\":[\"local\"]}", 2))
-            .Should().Be(new EffectiveSetting("metadata_lookup", "{\"sources\":[\"local\"]}",
-                "device_override", 2));
     }
 
     [Fact]

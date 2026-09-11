@@ -16,10 +16,6 @@ public sealed record SettingRecord(
     string UpdatedByDeviceId,
     string MergePolicy);
 
-public sealed record DeviceOverride(string SettingKey, string Value, long Revision);
-
-public sealed record EffectiveSetting(string SettingKey, string Value, string Source, long Revision);
-
 public static class SettingsMergePolicies
 {
     public const string ScalarReplace = "scalar_replace";

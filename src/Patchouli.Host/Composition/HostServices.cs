@@ -79,7 +79,6 @@ public sealed class HostServices
         BlockingOperations = new BlockingOperationService(ConnectionFactory, Clock);
         MigrationRunner = new MigrationRunner(ConnectionFactory, Path.Combine(AppContext.BaseDirectory, "migrations"));
         Library = new LibraryIdentityService(ConnectionFactory, Clock);
-        LibraryPreferences = new LibraryPreferencesService(ConnectionFactory, Library, Clock);
         LibraryRevisions = new LibraryRevisionService(ConnectionFactory);
         LibraryItems = new LibraryItemQueryService(ConnectionFactory);
         Items = new ItemService(ConnectionFactory, Library, Clock, LibraryRevisions);
@@ -224,7 +223,6 @@ public sealed class HostServices
     public MigrationRunner MigrationRunner { get; }
     public ILibraryIdentityService Library { get; }
     public ILibraryRevisionService LibraryRevisions { get; }
-    public ILibraryPreferencesService LibraryPreferences { get; }
     public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
     public IItemTagService Tags { get; }
