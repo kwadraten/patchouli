@@ -2,22 +2,6 @@ using Patchouli.Core.Ids;
 
 namespace Patchouli.Core.Search;
 
-public sealed record SearchUnit(
-    SearchUnitId UnitId,
-    DocumentInstanceId DocumentInstanceId,
-    PageId PageId,
-    DocumentBoxId BoxId,
-    DocumentTreeRevisionId TreeRevisionId,
-    string ResolvedText,
-    string BBoxJson,
-    string BoxType,
-    int Ordinal,
-    string Status,
-    SearchUnitId? SupersedesUnitId,
-    SearchUnitId? SupersededByUnitId,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset UpdatedAt);
-
 public static class SearchIndexScopeType
 {
     public const string Library = "library";
