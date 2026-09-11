@@ -1801,6 +1801,25 @@ public sealed class MainWindowViewModel : ViewModelBase
         return true;
     }
 
+    /// <summary>Persists the reading-mode font family and size. An empty family selects the
+    /// system default font; the size is clamped to the supported [10, 28] range. Like the
+    /// palette, the choice only takes effect through the header 保存设置 action.</summary>
+    public bool SaveReadingFont(string fontFamily, double fontSize)
+    {
+        string family = (fontFamily ?? string.Empty).Trim();
+        double size = Math.Clamp(fontSize, 10, 28);
+        SettingsSaveResult saved = UpdateAppOptions(
+            _settings with { Ui = _settings.Ui with { ReadingFontFamily = family, ReadingFontSize = size } });
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存阅读字体设置。");
+            return false;
+        }
+
+        Report("阅读字体设置已保存。");
+        return true;
+    }
+
     public async Task<bool> RemoveMinerUCredentialAsync()
     {
         ConfirmDialogResult? choice = await Dialogs.ShowDialogAsync<ConfirmDialogResult>(

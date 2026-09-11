@@ -96,6 +96,22 @@
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
+                    <TextBlock Text="阅读模式字体" Classes="CardTitle" />
+                    <TextBlock Text="全书阅读模式的正文字体与字号，保存后立即生效。" FontSize="12"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                    <ComboBox ItemsSource="{Binding ReadingFontFamilies}"
+                              SelectedItem="{Binding SelectedReadingFontFamily}"
+                              MinWidth="280" HorizontalAlignment="Left" />
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <TextBlock Text="字号" VerticalAlignment="Center" />
+                      <NumericUpDown Value="{Binding ReadingFontSize}" Minimum="10" Maximum="28"
+                                     Increment="1" Width="100" />
+                    </StackPanel>
+                  </StackPanel>
+                </Border>
               </StackPanel>
             </DataTemplate>
 
