@@ -94,6 +94,10 @@ An optional `logical_page` root used only when one scanned physical Page contain
 **Compiled Markdown**:
 The deterministic, ephemeral Markdown projection of a DocumentTreeRevision. The central Markdig pipeline produces validation, plain text, and native-preview nodes; AST and UI SourceMap are never persisted or synced.
 
+**Book Reading Mode**:
+A full-tab reading surface inside the PDF workspace tab, entered from the toolbar's 阅读模式 button and left via 退出. A read-only AvaloniaRichEditor renders the whole DocumentInstance as a page-by-page HTML stream (`IBookReadingStream`): pages at or after the currently viewed page arrive first, then earlier pages are front-inserted with scroll-offset compensation. Its font family and size are device-local `UiPreferences` (`ReadingFontFamily`/`ReadingFontSize`), adjustable from the reading toolbar and the 外观与显示 settings section. It is text-only reading: no box-level traceability, no editing.
+_Avoid_: replacing the library-shell IsReadingMode concept (a different, page-level mode)
+
 **OCR Preset**:
 A user-facing reusable OCR/HTR configuration. Presets are selected manually and are distinct from Search Profiles.
 _Avoid_: OCR Profile
