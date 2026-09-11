@@ -30,14 +30,13 @@ public static class ExistingDatabaseSetupInspector
             throw new InvalidOperationException("缺少 library_metadata 资料库身份数据。");
         }
 
-        bool hasSearchRoots = await CountRowsIfTableExistsAsync(connection, "file_search_root_definitions") > 0 ||
-                              await CountRowsIfTableExistsAsync(connection, "file_search_roots") > 0;
+        bool hasSearchRoots = await CountRowsIfTableExistsAsync(connection, "file_search_root_definitions") > 0;
         bool hasOcrPresets = await CountRowsIfTableExistsAsync(connection, "ocr_presets") > 0;
 
         List<string> skipped = [$"已检测到资料库「{library.DisplayName}」，跳过资料库身份步骤"];
         if (hasSearchRoots)
         {
-            skipped.Add("已检测到 file_search_roots，跳过文件搜索根配置步骤");
+            skipped.Add("已检测到 file_search_root_definitions，跳过文件搜索根配置步骤");
         }
 
         if (hasOcrPresets)
@@ -48,7 +47,7 @@ public static class ExistingDatabaseSetupInspector
         List<string> missing = [];
         if (!hasSearchRoots)
         {
-            missing.Add("缺少 file_search_roots，请在向导中选择 PDF 扫描目录");
+            missing.Add("缺少 file_search_root_definitions，请在向导中选择 PDF 扫描目录");
         }
 
         if (!hasOcrPresets)

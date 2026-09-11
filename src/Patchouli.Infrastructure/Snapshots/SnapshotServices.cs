@@ -189,20 +189,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         }
 
         if (await connection.ExecuteScalarAsync<int>(
-                "select count(1) from sqlite_master where name = 'file_search_roots';") > 0)
-        {
-            int hasAuthorizationPayload = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from pragma_table_info('file_search_roots') where name = 'authorization_payload';");
-            if (hasAuthorizationPayload > 0)
-            {
-                await connection.ExecuteAsync(
-                    "update file_search_roots set authorization_payload = null, authorization_payload_version = null, authorization_updated_at = null;");
-            }
-
-            await connection.ExecuteAsync("delete from file_search_roots;");
-        }
-
-        if (await connection.ExecuteScalarAsync<int>(
                 "select count(1) from sqlite_master where name = 'file_search_root_bindings';") > 0)
         {
             await connection.ExecuteAsync("delete from file_search_root_bindings;");

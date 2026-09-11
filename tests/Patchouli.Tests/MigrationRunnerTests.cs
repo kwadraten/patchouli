@@ -114,7 +114,7 @@ public sealed class MigrationRunnerTests
         await using SqliteConnection connection = database.ConnectionFactory.CreateConnection();
         await connection.OpenAsync();
         string[] columns = (await connection.QueryAsync<string>(
-            "select name from pragma_table_info('file_search_roots');")).ToArray();
+            "select name from pragma_table_info('file_search_root_bindings');")).ToArray();
 
         columns.Should().Contain([
             "authorization_kind",
