@@ -5,6 +5,10 @@ namespace Patchouli.Infrastructure.Ocr.NdlKoten;
 
 public sealed class NdlKotenOcrPipeline : IDisposable
 {
+    // The official ocr.py recognizes line crops with a
+    // ThreadPoolExecutor(max_workers=4); keep the same worker cap for parity.
+    internal const int RecognitionWorkerCount = 4;
+
     private readonly RtmdetDetector _detector;
     private readonly ParseqRecognizer _recognizer;
 
@@ -48,7 +52,10 @@ public sealed class NdlKotenOcrPipeline : IDisposable
             try
             {
                 Parallel.For(0, ordered.Count,
-                    new ParallelOptions { MaxDegreeOfParallelism = Math.Min(8, Environment.ProcessorCount) },
+                    new ParallelOptions
+                    {
+                        MaxDegreeOfParallelism = Math.Min(RecognitionWorkerCount, Environment.ProcessorCount)
+                    },
                     i => texts[i] = _recognizer.Read(crops[i]));
             }
             catch (AggregateException exception) when (exception.InnerException is not null)

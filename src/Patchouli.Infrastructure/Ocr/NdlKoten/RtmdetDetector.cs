@@ -20,7 +20,14 @@ public sealed class RtmdetDetector : IDisposable
         _session = new InferenceSession(modelPath, options);
     }
 
-    public float ConfidenceThreshold { get; init; } = 0.3f;
+    public float ConfidenceThreshold { get; init; } = DefaultConfidenceThreshold;
+
+    /// <summary>
+    /// Official rtmdet.py detects text lines at <c>conf_thresold=0.3</c> and keeps
+    /// scores strictly greater than it. Patchouli applies the same low-confidence
+    /// drop at detection time and again in <see cref="NdlKotenOcrPipeline.FilterDetections" />.
+    /// </summary>
+    internal const float DefaultConfidenceThreshold = 0.3f;
 
     public IReadOnlyList<LineDetection> Detect(SKBitmap image)
     {
@@ -117,11 +124,12 @@ public sealed class RtmdetDetector : IDisposable
         // The official rtmdet.py postprocess ignores the model's label output and
         // reports every detection above the threshold as class 1 ("line_main").
         // The exported model emits labels=0 ("text_block") for all boxes, so the
-        // port must not filter on the label.
+        // port must not filter on the label. The official comparison is strict
+        // (scores > conf_threshold), so a score exactly on the threshold is dropped.
         List<LineDetection> detections = new();
         foreach (RtmdetRawDetection raw in rawDetections)
         {
-            if (raw.Score < confidenceThreshold)
+            if (raw.Score <= confidenceThreshold)
             {
                 continue;
             }

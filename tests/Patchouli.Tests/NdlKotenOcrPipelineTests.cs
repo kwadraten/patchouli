@@ -6,6 +6,13 @@ namespace Patchouli.Tests;
 public sealed class NdlKotenOcrPipelineTests
 {
     [Fact]
+    public void Recognition_worker_cap_matches_the_official_four_worker_thread_pool()
+    {
+        // The reference ocr.py recognizes crops via ThreadPoolExecutor(max_workers=4).
+        NdlKotenOcrPipeline.RecognitionWorkerCount.Should().Be(4);
+    }
+
+    [Fact]
     public void FilterDetections_drops_boxes_narrower_or_shorter_than_five_pixels()
     {
         LineDetection[] detections =
