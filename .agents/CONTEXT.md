@@ -113,7 +113,7 @@ A persisted derived text unit generated from one non-suppressed leaf DocumentBox
 _Avoid_: FTS row, snippet
 
 **SearchProfile**:
-A search-time bundle of rewrite rules, aliases, and recall behavior. It is unrelated to OCR Presets.
+A search-time bundle of rewrite rules, aliases, and recall behavior. Rewriting is gated per library by the `search_settings.rewrite_enabled` flag (default enabled): disabling it skips plan building in full-text search, while an explicitly requested preview still works. `simplified_traditional` rewrite rules use an OpenCC configuration name (for example `s2t`) as their pattern and expand Simplified↔Traditional, Taiwan, Hong Kong, and Japanese variants; `bidirectional` also adds the reverse configuration's conversion. It is unrelated to OCR Presets.
 _Avoid_: OCR Profile, OCR Preset
 
 **Versioned Evidence URI**:

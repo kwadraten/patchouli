@@ -44,15 +44,20 @@ public sealed class SqliteSearchService : ISearchService
                     return Result<SearchResultPage>.Failure(AppErrorCodes.NotFound, "Current library was not found.");
                 }
 
-                Result<SearchRewritePlan> planResult = await _rewriter.BuildRewritePlanAsync(request.Query,
-                    new SearchRewriteOptions(LibraryId.Parse(libraryText), request.ProfileId, null,
-                        request.ProfileAlias, request.PreviewRewriteOnly), cancellationToken);
-                if (planResult.IsFailure)
+                LibraryId rewriteLibraryId = LibraryId.Parse(libraryText);
+                if (await _rewriter.IsRewriteEnabledAsync(rewriteLibraryId, cancellationToken))
                 {
-                    return Result<SearchResultPage>.Failure(planResult.ErrorCode!, planResult.ErrorMessage!);
+                    Result<SearchRewritePlan> planResult = await _rewriter.BuildRewritePlanAsync(request.Query,
+                        new SearchRewriteOptions(rewriteLibraryId, request.ProfileId, null,
+                            request.ProfileAlias, request.PreviewRewriteOnly), cancellationToken);
+                    if (planResult.IsFailure)
+                    {
+                        return Result<SearchResultPage>.Failure(planResult.ErrorCode!, planResult.ErrorMessage!);
+                    }
+
+                    plan = planResult.Value;
                 }
 
-                plan = planResult.Value;
                 if (request.PreviewRewriteOnly)
                 {
                     return Result<SearchResultPage>.Success(new SearchResultPage(Array.Empty<SearchPageResult>(), null,
@@ -95,27 +100,27 @@ public sealed class SqliteSearchService : ISearchService
 
             PageHitRow[] pageRows = (await connection.QueryAsync<PageHitRow>(
                 $"""
-                with matched_pages as (
-                    select su.page_id as PageId, min(p.page_index) as PageIndex, count(*) as MatchCount
-                    from search_units_fts f
-                    join search_units su on su.unit_id = f.unit_id
-                    join pages p on p.page_id = su.page_id
-                    join document_instances di on di.document_instance_id = su.document_instance_id
-                    join items i on i.item_id = di.item_id
-                    where search_units_fts match @Match
-                      and su.status = @Status
-                      and (@DocumentInstanceId is null or su.document_instance_id = @DocumentInstanceId)
-                      and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
-                      and i.deleted_at is null
-                      and i.merged_into_item_id is null
-                      {filterSql}
-                    group by su.page_id
-                )
-                select PageId, PageIndex, MatchCount
-                from matched_pages
-                order by PageIndex, PageId
-                limit @Limit offset @Offset;
-                """,
+                 with matched_pages as (
+                     select su.page_id as PageId, min(p.page_index) as PageIndex, count(*) as MatchCount
+                     from search_units_fts f
+                     join search_units su on su.unit_id = f.unit_id
+                     join pages p on p.page_id = su.page_id
+                     join document_instances di on di.document_instance_id = su.document_instance_id
+                     join items i on i.item_id = di.item_id
+                     where search_units_fts match @Match
+                       and su.status = @Status
+                       and (@DocumentInstanceId is null or su.document_instance_id = @DocumentInstanceId)
+                       and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
+                       and i.deleted_at is null
+                       and i.merged_into_item_id is null
+                       {filterSql}
+                     group by su.page_id
+                 )
+                 select PageId, PageIndex, MatchCount
+                 from matched_pages
+                 order by PageIndex, PageId
+                 limit @Limit offset @Offset;
+                 """,
                 pageParameters)).ToArray();
 
             PageHitRow[] selectedPages = pageRows.Take(pageSize).ToArray();

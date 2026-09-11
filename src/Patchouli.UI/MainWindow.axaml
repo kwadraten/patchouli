@@ -134,6 +134,11 @@
                       IsVisible="{Binding Shell.CanModifyLibraryItems}" />
           </MenuItem>
           <MenuItem Header="搜索">
+            <MenuItem Header="启用查询重写" ToggleType="CheckBox"
+                      IsChecked="{Binding QueryRewriteEnabled, Mode=TwoWay}"
+                      IsEnabled="{Binding HasOpenRuntimeDatabase}" />
+            <MenuItem Header="搜索重写设置…" Command="{Binding OpenSearchRewriteSettingsCommand}" />
+            <Separator />
             <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
           </MenuItem>
           <MenuItem Header="MCP">

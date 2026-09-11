@@ -65,6 +65,8 @@ public sealed class MainWindowViewModel : ViewModelBase
     private readonly string? _settingsPath;
     private string _runtimeDatabasePath;
     private int _libraryGeneration;
+    private bool _queryRewriteEnabled;
+    private bool _queryRewriteEnabledPersisted = true;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -216,6 +218,26 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     public bool IsLibraryLeftSidebarVisible => ShowLibraryLeftSidebarPreference && ShowSidebar;
     public bool IsLibraryRightSidebarVisible => ShowLibraryRightSidebarPreference && IsInspectorVisible;
+
+    /// <summary>
+    /// Per-library query-rewrite switch bound to the 搜索 menu checkbox. The setter fires a persist
+    /// request; <see cref="ApplyQueryRewriteEnabled"/> is the non-persisting path used while loading
+    /// per-library state and when reverting a failed persist.
+    /// </summary>
+    public bool QueryRewriteEnabled
+    {
+        get => _queryRewriteEnabled;
+        set
+        {
+            if (_queryRewriteEnabled == value)
+            {
+                return;
+            }
+
+            _ = SetQueryRewriteEnabledAsync(value);
+        }
+    }
+
     public bool ShowSelectedDocumentTab => Layout.HasPdfWorkspaceTab;
     public bool ShowSettingsTab => Layout.HasSettingsTab;
     public bool ShowItemEditorTab => Layout.HasItemEditorTab;
@@ -241,7 +263,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     public FileDocumentViewModel FileDocument { get; }
     public OcrQueueViewModel OcrQueue { get; }
     public SearchEvidenceViewModel SearchEvidence { get; }
-    public SearchProfileViewModel SearchProfiles { get; }
     public McpPreviewViewModel McpPreview { get; }
     public SnapshotViewModel Snapshot { get; }
     public AboutViewModel About { get; }
@@ -252,6 +273,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public AsyncCommand RunToolbarSearchCommand { get; }
     public AsyncCommand OpenAdvancedSearchCommand { get; }
     public AsyncCommand OpenSettingsCommand { get; }
+    public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
     public AsyncCommand ActivateSettingsTabCommand { get; }
@@ -472,7 +494,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         FileDocument = new FileDocumentViewModel(this);
         OcrQueue = new OcrQueueViewModel(this);
         SearchEvidence = new SearchEvidenceViewModel(this);
-        SearchProfiles = new SearchProfileViewModel(this);
         McpPreview = new McpPreviewViewModel(this);
         Snapshot = new SnapshotViewModel(this);
         Snapshot.PropertyChanged += (_, e) =>
@@ -524,6 +545,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 StartupLoadingStatus = "正在同步元数据查找设置…";
                 await RefreshSyncedMetadataLookupAsync(services);
                 await Settings.ReloadCleanSectionsAsync();
+                await RefreshQueryRewriteEnabledAsync(services);
                 PersistRuntimeDatabasePathIfEnabled();
                 StartupLoadingStatus = "正在恢复 MinerU 凭据…";
                 await LoadPersistedMinerUTokenAsync();
@@ -550,6 +572,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         RunToolbarSearchCommand = new AsyncCommand(RunToolbarSearchAsync);
         OpenAdvancedSearchCommand = new AsyncCommand(OpenAdvancedSearchAsync);
         OpenSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mineru"));
+        OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
         ActivateSettingsTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.Settings));
@@ -701,6 +724,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             await RefreshSyncedMetadataLookupAsync(services);
             StartupLoadingStatus = "正在恢复 MinerU 凭据…";
             await LoadPersistedMinerUTokenAsync();
+            StartupLoadingStatus = "正在加载查询重写设置…";
+            await RefreshQueryRewriteEnabledAsync(services);
             StartupLoadingStatus = "正在刷新文件搜索路径…";
             await RefreshSidebarPathsAsync();
             if (startMcpServer && _autoStartMcpServer)
@@ -778,6 +803,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         _services = services;
         EnsureLibraryChangeNotifications(services);
         AttachHostServices(services);
+        Raise(nameof(HasOpenRuntimeDatabase));
     }
 
     /// <summary>
@@ -992,6 +1018,63 @@ public sealed class MainWindowViewModel : ViewModelBase
         _settings = _settings with { MetadataLookup = synced.Value };
         services.UpdateMetadataLookupPreferences(synced.Value);
         Settings.MetadataLookupSettings.ReloadFromEffectiveSettingsIfClean(synced.Value);
+    }
+
+    /// <summary>Loads the per-library 搜索重写 switch without persisting it back to the service.</summary>
+    public async Task RefreshQueryRewriteEnabledAsync()
+    {
+        if (_services is null)
+        {
+            return;
+        }
+
+        await RefreshQueryRewriteEnabledAsync(_services);
+    }
+
+    private async Task RefreshQueryRewriteEnabledAsync(HostServices services)
+    {
+        Result<SearchProfileSettings> settings = await services.SearchProfiles.GetSearchSettingsAsync();
+        if (settings.IsFailure)
+        {
+            ApplyQueryRewriteEnabled(false);
+            return;
+        }
+
+        _queryRewriteEnabledPersisted = settings.Value.RewriteEnabled;
+        ApplyQueryRewriteEnabled(settings.Value.RewriteEnabled);
+    }
+
+    internal async Task SetQueryRewriteEnabledAsync(bool enabled)
+    {
+        HostServices? services = _services;
+        if (services is null)
+        {
+            ApplyQueryRewriteEnabled(enabled);
+            return;
+        }
+
+        ApplyQueryRewriteEnabled(enabled);
+        Result saved = await services.SearchProfiles.SetRewriteEnabledAsync(enabled);
+        if (saved.IsFailure)
+        {
+            ApplyQueryRewriteEnabled(_queryRewriteEnabledPersisted);
+            ReportError($"查询重写设置保存失败：{saved.ErrorCode} {saved.ErrorMessage}");
+            return;
+        }
+
+        _queryRewriteEnabledPersisted = enabled;
+        Report(enabled ? "已启用查询重写。" : "已停用查询重写。");
+    }
+
+    private void ApplyQueryRewriteEnabled(bool enabled)
+    {
+        if (_queryRewriteEnabled == enabled)
+        {
+            return;
+        }
+
+        _queryRewriteEnabled = enabled;
+        Raise(nameof(QueryRewriteEnabled));
     }
 
     public async Task<Result<ConflictResolutionResult>> ResolveConflictAsync(
@@ -1339,6 +1422,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         DetachHostServices();
         _services = null;
         Interlocked.Increment(ref _libraryGeneration);
+        _queryRewriteEnabledPersisted = false;
+        ApplyQueryRewriteEnabled(false);
         Settings.NotifyLibraryContextChanged();
         Raise(nameof(HasOpenRuntimeDatabase));
     }
@@ -1509,6 +1594,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         Raise(nameof(IsInspectorVisible));
         Raise(nameof(LibraryTabTitle));
         await Shell.RefreshItemsAsync();
+        await RefreshQueryRewriteEnabledAsync();
     }
 
     private FirstRunViewModel CreateFirstRunViewModel()
@@ -1872,13 +1958,24 @@ public sealed class MainWindowViewModel : ViewModelBase
     public async Task OpenSettingsAsync(string section, string? statusMessage = null)
     {
         await ActivateTabAsync(WorkspaceTabKind.Settings, "Settings", "设置", "Menu", true, () => Settings);
-        string icon = section.Equals("mcp", StringComparison.OrdinalIgnoreCase) ? "Server" :
-            section.Equals("csl", StringComparison.OrdinalIgnoreCase) ? "Quote" :
-            section.Equals("library", StringComparison.OrdinalIgnoreCase) ? "Database" : "ScanText";
+        string icon = section.ToLowerInvariant() switch
+        {
+            "mcp" => "Server",
+            "csl" => "Quote",
+            "library" => "Database",
+            "search_rewrite" => "Filter",
+            _ => "ScanText"
+        };
         Settings.ActiveCategory = Settings.Categories.Single(c => c.IconName == icon);
         await Settings.WaitForActiveSectionLoadAsync();
 
         RaiseShellSelectionChanged();
+    }
+
+    private async Task OpenSearchRewriteSettingsAsync()
+    {
+        await OpenSettingsAsync("search_rewrite");
+        await Settings.SearchRewriteSettings.LoadAsync();
     }
 
     public async Task OpenAboutAsync()

@@ -16,6 +16,7 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly ILibraryIdentityService _library;
     private readonly IClock _clock;
+    private readonly IOpenccConverter _opencc;
 
     static SearchProfileService()
     {
@@ -23,11 +24,12 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
     }
 
     public SearchProfileService(SqliteConnectionFactory connectionFactory, ILibraryIdentityService library,
-        IClock clock)
+        IClock clock, IOpenccConverter opencc)
     {
         _connectionFactory = connectionFactory;
         _library = library;
         _clock = clock;
+        _opencc = opencc;
     }
 
     public async Task<Result<SearchProfile>> CreateProfileAsync(string name, string? description,
@@ -187,6 +189,126 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile"))
         {
             return Result.Failure(AppErrorCodes.DatabaseError, ex.Message);
+        }
+    }
+
+    public async Task<Result<SearchProfileSettings>> GetSearchSettingsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        Result<LibraryId> library = await CurrentLibraryAsync(cancellationToken);
+        if (library.IsFailure)
+        {
+            return Result<SearchProfileSettings>.Failure(library.ErrorCode!, library.ErrorMessage!);
+        }
+
+        try
+        {
+            await using SqliteConnection c = _connectionFactory.CreateConnection();
+            await c.OpenAsync(cancellationToken);
+            SettingsRow? row = await QuerySettingsAsync(c, library.Value);
+            if (row is null)
+            {
+                await UpsertSettingsAsync(c, library.Value, null, null);
+                row = await QuerySettingsAsync(c, library.Value);
+            }
+
+            return row is null
+                ? Result<SearchProfileSettings>.Failure(AppErrorCodes.DatabaseError,
+                    "Search settings could not be created.")
+                : Result<SearchProfileSettings>.Success(row.ToSettings());
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile"))
+        {
+            return Result<SearchProfileSettings>.Failure(AppErrorCodes.DatabaseError, ex.Message);
+        }
+    }
+
+    public async Task<Result> SetRewriteEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        Result<LibraryId> library = await CurrentLibraryAsync(cancellationToken);
+        if (library.IsFailure)
+        {
+            return Result.Failure(library.ErrorCode!, library.ErrorMessage!);
+        }
+
+        try
+        {
+            await using SqliteConnection c = _connectionFactory.CreateConnection();
+            await c.OpenAsync(cancellationToken);
+            await UpsertSettingsAsync(c, library.Value, null, null);
+            await c.ExecuteAsync(
+                "update search_settings set rewrite_enabled=@Enabled,updated_at=@Now where library_id=@Library;",
+                new
+                {
+                    Library = library.Value.ToString(), Enabled = enabled ? 1 : 0,
+                    Now = _clock.UtcNow.ToString("O")
+                });
+            return Result.Success();
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile"))
+        {
+            return Result.Failure(AppErrorCodes.DatabaseError, ex.Message);
+        }
+    }
+
+    public async Task<Result<SearchRewriteRule>> UpdateRewriteRuleAsync(SearchRewriteRuleId ruleId, string ruleType,
+        string pattern, string replacement, string direction, int priority, string? note,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(ruleType) || string.IsNullOrWhiteSpace(pattern) ||
+            string.IsNullOrWhiteSpace(replacement) || string.IsNullOrWhiteSpace(direction))
+        {
+            return Result<SearchRewriteRule>.Failure(AppErrorCodes.ValidationFailed,
+                "Rule type, pattern, replacement, and direction are required.");
+        }
+
+        Result<SearchRewriteRule> existing = await FindRuleAsync(ruleId, cancellationToken);
+        if (existing.IsFailure)
+        {
+            return existing;
+        }
+
+        try
+        {
+            await using SqliteConnection c = _connectionFactory.CreateConnection();
+            await c.OpenAsync(cancellationToken);
+            await c.ExecuteAsync(
+                "update search_rewrite_rules set rule_type=@Type,pattern=@Pattern,replacement=@Replacement,direction=@Direction,priority=@Priority,note=@Note,updated_at=@Now where rule_id=@Id;",
+                new
+                {
+                    Id = ruleId.ToString(), Type = ruleType, Pattern = pattern, Replacement = replacement,
+                    Direction = direction, Priority = priority, Note = note, Now = _clock.UtcNow.ToString("O")
+                });
+            return Result<SearchRewriteRule>.Success(existing.Value with
+            {
+                RuleType = ruleType, Pattern = pattern, Replacement = replacement, Direction = direction,
+                Priority = priority, Note = note, UpdatedAt = _clock.UtcNow
+            });
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile"))
+        {
+            return Result<SearchRewriteRule>.Failure(AppErrorCodes.DatabaseError, ex.Message);
+        }
+    }
+
+    public async Task<bool> IsRewriteEnabledAsync(LibraryId libraryId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection c = _connectionFactory.CreateConnection();
+            await c.OpenAsync(cancellationToken);
+            int? enabled = await c.ExecuteScalarAsync<int?>(
+                "select rewrite_enabled from search_settings where library_id=@Library;",
+                new { Library = libraryId.ToString() });
+            return enabled is null || enabled.Value != 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.search-profile"))
+        {
+            return true;
         }
     }
 
@@ -417,8 +539,20 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
             profile.Value.Name, expansions, applied.Distinct().ToArray(), warnings, options.PreviewOnly));
     }
 
-    private static IEnumerable<string> ApplyRule(string term, SearchRewriteRule rule)
+    private IEnumerable<string> ApplyRule(string term, SearchRewriteRule rule)
     {
+        if (rule.RuleType == SearchRuleType.SimplifiedTraditional)
+        {
+            yield return _opencc.Convert(rule.Pattern, term);
+            if (rule.Direction == SearchRewriteDirection.Bidirectional &&
+                OpenccConfigs.TryGetReverse(rule.Pattern, out string reverse))
+            {
+                yield return _opencc.Convert(reverse, term);
+            }
+
+            yield break;
+        }
+
         if (rule.RuleType == SearchRuleType.Regex)
         {
             if (Regex.IsMatch(term, rule.Pattern))
@@ -509,6 +643,12 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
             : Result<LibraryId>.Failure(result.ErrorCode!, result.ErrorMessage!);
     }
 
+    private static Task<SettingsRow?> QuerySettingsAsync(SqliteConnection c, LibraryId library)
+    {
+        return c.QuerySingleOrDefaultAsync<SettingsRow>("select * from search_settings where library_id=@Library;",
+            new { Library = library.ToString() });
+    }
+
     private async Task UpsertSettingsAsync(SqliteConnection c, LibraryId library,
         SearchProfileId? defaultId, SearchProfileId? lastId, DbTransaction? tx = null)
     {
@@ -536,6 +676,26 @@ public sealed class SearchProfileService : ISearchProfileService, IQueryRewriter
             return new SearchProfile(SearchProfileId.Parse(ProfileId), Patchouli.Core.Ids.LibraryId.Parse(LibraryId),
                 Name,
                 Description, IsSystem != 0, IsDefault != 0, Archived != 0, DateTimeOffset.Parse(CreatedAt),
+                DateTimeOffset.Parse(UpdatedAt));
+        }
+    }
+
+    private sealed class SettingsRow
+    {
+        public string LibraryId { get; set; } = "";
+        public string? DefaultProfileId { get; set; }
+        public string? LastUsedProfileId { get; set; }
+        public int PreviewBeforeExecute { get; set; }
+        public int RewriteEnabled { get; set; }
+        public string CreatedAt { get; set; } = "";
+        public string UpdatedAt { get; set; } = "";
+
+        public SearchProfileSettings ToSettings()
+        {
+            return new SearchProfileSettings(Patchouli.Core.Ids.LibraryId.Parse(LibraryId),
+                DefaultProfileId is null ? null : SearchProfileId.Parse(DefaultProfileId),
+                LastUsedProfileId is null ? null : SearchProfileId.Parse(LastUsedProfileId),
+                PreviewBeforeExecute != 0, RewriteEnabled != 0, DateTimeOffset.Parse(CreatedAt),
                 DateTimeOffset.Parse(UpdatedAt));
         }
     }

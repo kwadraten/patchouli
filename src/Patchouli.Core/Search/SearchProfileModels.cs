@@ -53,6 +53,7 @@ public sealed record SearchProfileSettings(
     SearchProfileId? DefaultProfileId,
     SearchProfileId? LastUsedProfileId,
     bool PreviewBeforeExecute,
+    bool RewriteEnabled,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
@@ -92,6 +93,13 @@ public interface ISearchProfileService
     Task<Result<SearchProfile>> GetDefaultProfileAsync(CancellationToken cancellationToken = default);
     Task<Result> SetLastUsedProfileAsync(SearchProfileId profileId, CancellationToken cancellationToken = default);
 
+    Task<Result<SearchProfileSettings>> GetSearchSettingsAsync(CancellationToken cancellationToken = default);
+    Task<Result> SetRewriteEnabledAsync(bool enabled, CancellationToken cancellationToken = default);
+
+    Task<Result<SearchRewriteRule>> UpdateRewriteRuleAsync(SearchRewriteRuleId ruleId, string ruleType,
+        string pattern, string replacement, string direction, int priority, string? note,
+        CancellationToken cancellationToken = default);
+
     Task<Result<SearchProfile>> GetEffectiveProfileAsync(SearchProfileId? explicitProfileId, string? alias,
         SearchProfileId? selectedProfileId, CancellationToken cancellationToken = default);
 
@@ -115,4 +123,6 @@ public interface IQueryRewriter
 {
     Task<Result<SearchRewritePlan>> BuildRewritePlanAsync(string query, SearchRewriteOptions options,
         CancellationToken cancellationToken = default);
+
+    Task<bool> IsRewriteEnabledAsync(LibraryId libraryId, CancellationToken cancellationToken = default);
 }

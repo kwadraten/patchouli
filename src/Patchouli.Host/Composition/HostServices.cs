@@ -171,7 +171,7 @@ public sealed class HostServices
         SearchUnits = searchUnitBuilder;
         SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock);
         OcrDocumentTreeImporter ocrTreeImporter = new(DocumentTrees);
-        SearchProfileService searchProfiles = new(ConnectionFactory, Library, Clock);
+        SearchProfileService searchProfiles = new(ConnectionFactory, Library, Clock, new OpenccTextConverter());
         SearchProfiles = searchProfiles;
         QueryRewriter = searchProfiles;
         Search = new SqliteSearchService(ConnectionFactory, searchProfiles);

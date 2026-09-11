@@ -563,6 +563,152 @@
               </StackPanel>
             </DataTemplate>
 
+            <!-- Search Rewrite Settings -->
+            <DataTemplate DataType="settings:SearchRewriteSettingsViewModel">
+              <StackPanel Spacing="20" MaxWidth="1040">
+                <StackPanel Spacing="6">
+                  <TextBlock Text="搜索重写" FontSize="24" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                  <TextBlock
+                    Text="为当前资料库维护查询重写规则；「全局」规则对所有搜索配置生效，其余规则仅在对应配置下生效。表格内容和启用复选框都由顶部「保存设置」提交；「预览」按需构建重写计划，不受「启用查询重写」开关影响。"
+                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="12">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Classes="CardTitle" Text="重写规则" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        <Button Content="添加规则" Command="{Binding AddRuleCommand}" />
+                      </StackPanel>
+                    </Grid>
+
+                    <Grid Grid.IsSharedSizeScope="True">
+                      <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                      </Grid.RowDefinitions>
+
+                      <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1"
+                              Padding="0,0,0,6" Margin="0,4,0,0">
+                        <Grid ColumnSpacing="8">
+                          <Grid.ColumnDefinitions>
+                            <ColumnDefinition SharedSizeGroup="RewriteEnabled" Width="Auto" />
+                            <ColumnDefinition SharedSizeGroup="RewriteType" Width="1.1*" />
+                            <ColumnDefinition SharedSizeGroup="RewritePattern" Width="1.3*" />
+                            <ColumnDefinition SharedSizeGroup="RewriteReplacement" Width="1.3*" />
+                            <ColumnDefinition SharedSizeGroup="RewriteDirection" Width="0.8*" />
+                            <ColumnDefinition SharedSizeGroup="RewritePriority" Width="Auto" />
+                            <ColumnDefinition SharedSizeGroup="RewriteScope" Width="1*" />
+                            <ColumnDefinition SharedSizeGroup="RewriteNote" Width="1.1*" />
+                            <ColumnDefinition SharedSizeGroup="RewriteDelete" Width="Auto" />
+                          </Grid.ColumnDefinitions>
+                          <TextBlock Text="启用" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="1" Text="类型" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="2" Text="匹配 / OpenCC 配置" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="3" Text="替换" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="4" Text="方向" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="5" Text="优先级" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="6" Text="归属" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                          <TextBlock Grid.Column="7" Text="备注" FontSize="11" FontWeight="SemiBold"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" />
+                        </Grid>
+                      </Border>
+
+                      <ItemsControl Grid.Row="1" ItemsSource="{Binding Rules}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate DataType="settings:SearchRewriteRuleRowViewModel">
+                            <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1"
+                                    Padding="0,6">
+                              <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                  <ColumnDefinition SharedSizeGroup="RewriteEnabled" Width="Auto" />
+                                  <ColumnDefinition SharedSizeGroup="RewriteType" Width="1.1*" />
+                                  <ColumnDefinition SharedSizeGroup="RewritePattern" Width="1.3*" />
+                                  <ColumnDefinition SharedSizeGroup="RewriteReplacement" Width="1.3*" />
+                                  <ColumnDefinition SharedSizeGroup="RewriteDirection" Width="0.8*" />
+                                  <ColumnDefinition SharedSizeGroup="RewritePriority" Width="Auto" />
+                                  <ColumnDefinition SharedSizeGroup="RewriteScope" Width="1*" />
+                                  <ColumnDefinition SharedSizeGroup="RewriteNote" Width="1.1*" />
+                                  <ColumnDefinition SharedSizeGroup="RewriteDelete" Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <CheckBox Grid.Column="0" IsChecked="{Binding Enabled}" VerticalAlignment="Center"
+                                          ToolTip.Tip="启用状态会随「保存设置」提交" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding RuleTypeOptions}"
+                                          SelectedItem="{Binding SelectedRuleType}"
+                                          DisplayMemberBinding="{Binding Label}" />
+                                <Grid Grid.Column="2">
+                                  <TextBox Text="{Binding Pattern}" PlaceholderText="匹配内容"
+                                           IsVisible="{Binding IsStandardRule}" />
+                                  <ComboBox ItemsSource="{Binding OpenccOptions}"
+                                            SelectedItem="{Binding Pattern}" IsVisible="{Binding IsOpenccRule}"
+                                            ToolTip.Tip="OpenCC 配置名，例如 s2t" />
+                                </Grid>
+                                <Grid Grid.Column="3">
+                                  <TextBox Text="{Binding Replacement}" PlaceholderText="替换或展开内容"
+                                           IsVisible="{Binding IsStandardRule}" />
+                                  <TextBlock Text="简繁转换不使用替换值" FontSize="11" VerticalAlignment="Center"
+                                             IsVisible="{Binding IsOpenccRule}"
+                                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                                </Grid>
+                                <ComboBox Grid.Column="4" ItemsSource="{Binding DirectionOptions}"
+                                          SelectedItem="{Binding SelectedDirection}"
+                                          DisplayMemberBinding="{Binding Label}" />
+                                <NumericUpDown Grid.Column="5" Value="{Binding Priority}" Width="110"
+                                               Minimum="-1000" Maximum="1000" ShowButtonSpinner="False" />
+                                <ComboBox Grid.Column="6" ItemsSource="{Binding ScopeOptions}"
+                                          SelectedItem="{Binding SelectedScope}"
+                                          DisplayMemberBinding="{Binding Label}" />
+                                <TextBox Grid.Column="7" Text="{Binding Note}" PlaceholderText="备注" />
+                                <Button Grid.Column="8" Content="删除" Command="{Binding DeleteCommand}"
+                                        Classes="Danger" Padding="10,4" />
+                              </Grid>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </Grid>
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
+                    <TextBlock Classes="CardTitle" Text="预览" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                      <TextBox Text="{Binding PreviewQuery}" PlaceholderText="示例查询，例如 臺灣史" />
+                      <Button Grid.Column="1" Content="预览" Command="{Binding PreviewCommand}" />
+                    </Grid>
+                    <TextBlock Text="{Binding PreviewSummary}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <ItemsControl ItemsSource="{Binding PreviewExpandedQueries}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding}" FontSize="12" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <ItemsControl ItemsSource="{Binding PreviewWarnings}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding}" FontSize="12" TextWrapping="Wrap"
+                                     Foreground="{DynamicResource ErrorBrush}" />
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </DataTemplate>
+
           </TransitioningContentControl.DataTemplates>
         </TransitioningContentControl>
       </ScrollViewer>

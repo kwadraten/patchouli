@@ -234,7 +234,7 @@ public sealed class McpItemLifecycleErrorTests : IAsyncLifetime
                 new CslCatalogStyle("apa", "APA 7th", null, "catalog"), ApaStyleXml);
             Require(installed);
 
-            SearchProfileService profiles = new(db, library, clock);
+            SearchProfileService profiles = new(db, library, clock, new OpenccTextConverter());
             SqliteSearchService search = new(db, profiles);
             CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());
             McpReadApi api = new(db, search, cslStyleStore: cslStore, cslRenderer: cslRenderer);

@@ -856,7 +856,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             Require(await new SearchIndexRebuilder(db, clock).RebuildFtsForLibraryAsync());
 
             BlockingOperationService blockingOperations = new(db, clock);
-            SearchProfileService profiles = new(db, library, clock);
+            SearchProfileService profiles = new(db, library, clock, new OpenccTextConverter());
             SqliteSearchService search = new(db, profiles);
             CslStyleStore cslStore = new(db, clock, blockingOperations: blockingOperations);
             CslRenderer cslRenderer = new(items, cslStore, new CslItemMapper());

@@ -61,7 +61,7 @@ public static class PerformanceRunner
 
             IClock clock = new FixedClock(new DateTimeOffset(2026, 8, 2, 0, 0, 0, TimeSpan.Zero));
             LibraryIdentityService libraryService = new(database, clock);
-            SearchProfileService profiles = new(database, libraryService, clock);
+            SearchProfileService profiles = new(database, libraryService, clock, new OpenccTextConverter());
             SqliteSearchService search = new(database, profiles);
             McpReadApi api = new(database, search);
             DocumentTreeService tree = new(database, clock, new MarkdigMarkdownEngine());

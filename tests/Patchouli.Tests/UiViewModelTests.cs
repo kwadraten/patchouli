@@ -26,6 +26,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
 using Patchouli.Host.Watching;
 using Patchouli.Core.Results;
+using Patchouli.Core.Search;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Infrastructure.Bibliography.Biblatex;
@@ -343,11 +344,11 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Settings_page_uses_seven_groups_and_keeps_csl_about_outside()
+    public void Settings_page_uses_eight_groups_and_keeps_csl_about_outside()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源", "本地文件", "外观与显示");
+            "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源", "搜索重写", "本地文件", "外观与显示");
         vm.Settings.Categories.Select(category => category.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
@@ -2008,22 +2009,223 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task SearchProfileViewModel_creates_rule_and_previews_plan()
+    public void Search_menu_exposes_rewrite_toggle_and_settings_deep_link()
     {
-        string path = _settings.CreateDatabasePath("ui-profile");
+        string xaml = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "MainWindow.axaml"));
+
+        xaml.Should().Contain("Header=\"启用查询重写\"");
+        xaml.Should().Contain("IsChecked=\"{Binding QueryRewriteEnabled, Mode=TwoWay}\"");
+        xaml.Should().Contain("Command=\"{Binding OpenSearchRewriteSettingsCommand}\"");
+        xaml.Should().Contain("Header=\"重建 FTS 索引\"");
+    }
+
+    [Fact]
+    public async Task Query_rewrite_menu_toggle_loads_and_persists_through_the_service()
+    {
+        string path = _settings.CreateDatabasePath("ui-rewrite-toggle");
+        try
+        {
+            MainWindowViewModel first = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await first.OpenDatabaseCommand.ExecuteAsync();
+            await first.Library.CreateCommand.ExecuteAsync();
+            Result rewriteOff = await (await first.ServicesAsync()).SearchProfiles.SetRewriteEnabledAsync(false);
+            rewriteOff.IsSuccess.Should().BeTrue(rewriteOff.ErrorMessage);
+
+            MainWindowViewModel reloaded = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await reloaded.OpenDatabaseCommand.ExecuteAsync();
+            reloaded.QueryRewriteEnabled.Should().BeFalse();
+
+            await reloaded.SetQueryRewriteEnabledAsync(true);
+            reloaded.QueryRewriteEnabled.Should().BeTrue();
+            (await (await reloaded.ServicesAsync()).SearchProfiles.GetSearchSettingsAsync()).Value.RewriteEnabled
+                .Should().BeTrue();
+
+            await reloaded.SetQueryRewriteEnabledAsync(false);
+            reloaded.QueryRewriteEnabled.Should().BeFalse();
+            (await (await reloaded.ServicesAsync()).SearchProfiles.GetSearchSettingsAsync()).Value.RewriteEnabled
+                .Should().BeFalse();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Query_rewrite_toggle_reverts_and_reports_when_persist_fails()
+    {
+        string path = _settings.CreateDatabasePath("ui-rewrite-revert");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            vm.QueryRewriteEnabled.Should().BeFalse();
+
+            await vm.SetQueryRewriteEnabledAsync(true);
+
+            vm.QueryRewriteEnabled.Should().BeFalse();
+            vm.StatusIsError.Should().BeTrue();
+            vm.Status.Should().Contain("查询重写设置保存失败");
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Search_rewrite_settings_is_registered_and_deep_linkable()
+    {
+        string path = _settings.CreateDatabasePath("ui-rewrite-registration");
         try
         {
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            vm.SearchProfiles.Name = "UI variants";
-            await vm.SearchProfiles.CreateProfileCommand.ExecuteAsync();
-            vm.SearchProfiles.Pattern = "臺灣";
-            vm.SearchProfiles.Replacement = "台湾";
-            await vm.SearchProfiles.AddRuleCommand.ExecuteAsync();
-            vm.SearchProfiles.Query = "臺灣";
-            await vm.SearchProfiles.PreviewCommand.ExecuteAsync();
-            vm.SearchProfiles.Output.Should().Contain("台湾").And.Contain("OriginalQuery");
+
+            NavCategoryViewModel category = vm.Settings.Categories
+                .Single(c => ReferenceEquals(c.Content, vm.Settings.SearchRewriteSettings));
+            category.Title.Should().Be("搜索重写");
+            category.IconName.Should().Be("Filter");
+
+            await vm.OpenSearchRewriteSettingsCommand.ExecuteAsync();
+
+            vm.Settings.ActiveCategory.Should().BeSameAs(category);
+            vm.ShowSettingsTab.Should().BeTrue();
+            vm.Settings.SearchRewriteSettings.Status.Should().Be("已加载");
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Search_rewrite_settings_tracks_dirty_save_and_discard()
+    {
+        string path = _settings.CreateDatabasePath("ui-rewrite-dirty");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            SearchRewriteSettingsViewModel section = vm.Settings.SearchRewriteSettings;
+            await section.LoadAsync();
+            section.Rules.Should().BeEmpty();
+            section.IsDirty.Should().BeFalse();
+
+            section.AddRuleCommand.Execute(null);
+            section.Rules.Should().ContainSingle();
+            section.IsDirty.Should().BeTrue();
+            section.SaveState.Should().Be(SettingsSaveState.Dirty);
+
+            SearchRewriteRuleRowViewModel row = section.Rules[0];
+            row.SelectedScope.Label.Should().Be("全局");
+            row.SelectedRuleType.Value.Should().Be(SearchRuleType.Literal);
+            row.Enabled.Should().BeTrue();
+            row.SelectedRuleType = section.RuleTypeOptions.Single(o => o.Value == SearchRuleType.Synonym);
+            row.Pattern = "臺灣";
+            row.Replacement = "台湾";
+            row.Note = "ui";
+
+            await section.SaveAsync();
+
+            section.IsDirty.Should().BeFalse();
+            section.SaveState.Should().Be(SettingsSaveState.Saved);
+            section.Rules.Should().ContainSingle();
+            section.Rules[0].Pattern.Should().Be("臺灣");
+            section.Rules[0].Replacement.Should().Be("台湾");
+            section.Rules[0].SelectedRuleType.Value.Should().Be(SearchRuleType.Synonym);
+            section.Rules[0].Enabled.Should().BeTrue();
+
+            HostServices services = await vm.ServicesAsync();
+            Result<IReadOnlyList<SearchRewriteRule>> stored =
+                await services.SearchProfiles.ListRulesAsync(null, true);
+            stored.Value.Should().ContainSingle(rule =>
+                rule.Pattern == "臺灣" && rule.Replacement == "台湾" && rule.RuleType == SearchRuleType.Synonym);
+
+            // The enabled checkbox is dirty-tracked, so toggling it alone keeps the section dirty until save.
+            section.Rules[0].Enabled = false;
+            section.IsDirty.Should().BeTrue();
+            await section.SaveAsync();
+            (await services.SearchProfiles.ListRulesAsync(null, true)).Value.Should().ContainSingle()
+                .Which.Enabled.Should().BeFalse();
+
+            // Discard restores the last persisted state.
+            section.Rules[0].Replacement = "臺灣";
+            section.IsDirty.Should().BeTrue();
+            await section.DiscardAsync();
+            section.IsDirty.Should().BeFalse();
+            section.Rules[0].Replacement.Should().Be("台湾");
+
+            // Deleting a row commits on save and removes the rule from the library.
+            section.Rules[0].DeleteCommand.Execute(null);
+            section.Rules.Should().BeEmpty();
+            section.IsDirty.Should().BeTrue();
+            await section.SaveAsync();
+
+            section.IsDirty.Should().BeFalse();
+            (await services.SearchProfiles.ListRulesAsync(null, true)).Value.Should().BeEmpty();
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Search_rewrite_settings_commits_opencc_rule_and_previews_plan()
+    {
+        string path = _settings.CreateDatabasePath("ui-rewrite-opencc");
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            SearchRewriteSettingsViewModel section = vm.Settings.SearchRewriteSettings;
+            await section.LoadAsync();
+
+            section.AddRuleCommand.Execute(null);
+            SearchRewriteRuleRowViewModel row = section.Rules[0];
+            row.SelectedRuleType = section.RuleTypeOptions.Single(o => o.Value == SearchRuleType.SimplifiedTraditional);
+            row.IsOpenccRule.Should().BeTrue();
+            row.Pattern.Should().Be(OpenccConfigs.S2T);
+            row.Priority = 10;
+
+            await section.SaveAsync();
+
+            section.SaveState.Should().Be(SettingsSaveState.Saved);
+            section.Rules.Should().ContainSingle();
+            section.Rules[0].IsOpenccRule.Should().BeTrue();
+            section.Rules[0].Pattern.Should().Be(OpenccConfigs.S2T);
+
+            HostServices services = await vm.ServicesAsync();
+            Result<IReadOnlyList<SearchRewriteRule>> stored =
+                await services.SearchProfiles.ListRulesAsync(null, true);
+            stored.Value.Should().ContainSingle(rule =>
+                rule.RuleType == SearchRuleType.SimplifiedTraditional && rule.Pattern == OpenccConfigs.S2T);
+
+            section.PreviewQuery = "台湾史";
+            await section.PreviewCommand.ExecuteAsync();
+            section.PreviewIsError.Should().BeFalse(section.PreviewSummary);
+            section.PreviewExpandedQueries.Should().Contain("臺灣史");
+            section.PreviewSummary.Should().Contain("原查询：台湾史");
         }
         finally
         {

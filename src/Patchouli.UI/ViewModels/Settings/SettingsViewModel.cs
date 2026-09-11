@@ -22,13 +22,14 @@ public sealed class SettingsViewModel : ViewModelBase
         McpSettings = new McpSettingsViewModel(main);
         OcrProviderSettings = new OcrProviderSettingsViewModel(main);
         MetadataLookupSettings = new MetadataLookupSettingsViewModel(main);
+        SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
 
         foreach (ISettingsSection section in new ISettingsSection[]
                  {
                      AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
-                     MetadataLookupSettings, LocalFileManagement
+                     MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement
                  })
         {
             ((INotifyPropertyChanged)section).PropertyChanged += SectionPropertyChanged;
@@ -41,6 +42,7 @@ public sealed class SettingsViewModel : ViewModelBase
             new("MCP 服务与安全", "Server", McpSettings),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
             new("元数据来源", "Search", MetadataLookupSettings),
+            new("搜索重写", "Filter", SearchRewriteSettings),
             new("本地文件", "FolderOpen", LocalFileManagement),
             new("外观与显示", "Palette", AppearanceSettings)
         };
@@ -57,6 +59,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public McpSettingsViewModel McpSettings { get; }
     public OcrProviderSettingsViewModel OcrProviderSettings { get; }
     public MetadataLookupSettingsViewModel MetadataLookupSettings { get; }
+    public SearchRewriteSettingsViewModel SearchRewriteSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
     public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
 
