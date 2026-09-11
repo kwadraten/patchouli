@@ -79,7 +79,13 @@ public class AboutViewModel : ViewModelBase
             new("typst/biblatex", "MIT / Apache-2.0", "https://github.com/typst/biblatex",
                 openUrlCommand),
             new("NDL Koten OCR Lite", "CC-BY-4.0", "https://github.com/ndl-lab/ndlkotenocr-lite",
-                openUrlCommand)
+                openUrlCommand),
+            new("NDLOCR-Lite", "CC-BY-4.0", "https://github.com/ndl-lab/ndlocr-lite",
+                openUrlCommand),
+            new("RapidOCR", "Apache-2.0", "https://github.com/RapidAI/RapidOCR",
+                openUrlCommand),
+            new("RapidOCR Models (PP-OCRv6, ModelScope)", "Apache-2.0",
+                "https://www.modelscope.cn/models/RapidAI/RapidOCR", openUrlCommand)
         };
     }
 }

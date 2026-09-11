@@ -35,6 +35,8 @@ using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Ocr;
 using Patchouli.Infrastructure.Ocr.MinerU;
 using Patchouli.Infrastructure.Ocr.NdlKoten;
+using Patchouli.Infrastructure.Ocr.NdlLite;
+using Patchouli.Infrastructure.Ocr.RapidOcr;
 using Patchouli.Infrastructure.Operations;
 using Patchouli.Infrastructure.Rendering;
 using Patchouli.Infrastructure.Search;
@@ -62,6 +64,8 @@ public sealed class HostServices
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
+    private HttpClient? _ndlLiteModelHttpClient;
+    private HttpClient? _rapidOcrModelHttpClient;
 
     private IReadOnlyList<Core.Bibliography.MetadataLookup.MetadataSourcePreference>
         _metadataLookupPreferences = [];
@@ -144,11 +148,19 @@ public sealed class HostServices
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
         adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter());
         adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
+        adapterRegistry.RegisterAdapter(new NdlLiteOcrAdapter(ModelPathValidator));
+        adapterRegistry.RegisterAdapter(new RapidOcrOcrAdapter(ModelPathValidator, OcrStorage.RapidOcrModelsDirectory));
 
         OcrAdapters = adapterRegistry;
         _ndlKotenModelHttpClient = new HttpClient();
         NdlKotenModelDownload =
             new NdlKotenModelDownloadService(_ndlKotenModelHttpClient, OcrStorage.NdlKotenModelsDirectory);
+        _ndlLiteModelHttpClient = new HttpClient();
+        NdlLiteModelDownload =
+            new NdlLiteModelDownloadService(_ndlLiteModelHttpClient, OcrStorage.NdlLiteModelsDirectory);
+        _rapidOcrModelHttpClient = new HttpClient();
+        RapidOcrModelDownload =
+            new RapidOcrModelDownloadService(_rapidOcrModelHttpClient, OcrStorage.RapidOcrModelsDirectory);
         PdfiumPdfPageRenderer pdfRenderer = new();
         PdfPreviewRenderer = pdfRenderer;
         PageRenders = new PageRenderService(ConnectionFactory, Library, FileResolution, pdfRenderer, Clock,
@@ -263,6 +275,8 @@ public sealed class HostServices
     public IOcrAdapterRegistry OcrAdapters { get; }
     public OcrStorageLocations OcrStorage { get; }
     public INdlKotenModelDownloadService NdlKotenModelDownload { get; }
+    public INdlLiteModelDownloadService NdlLiteModelDownload { get; }
+    public IRapidOcrModelDownloadService RapidOcrModelDownload { get; }
     public IPageRenderService PageRenders { get; }
     public IPdfPagePixelBufferRenderer PdfPreviewRenderer { get; }
     public IPageCoordinateService PageCoordinates { get; }

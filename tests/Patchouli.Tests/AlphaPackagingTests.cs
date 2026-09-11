@@ -222,6 +222,42 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void About_lists_ndlocr_lite_with_cc_by_license_and_upstream_url()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
+
+        about.ThirdPartyLibraries.Should().Contain(library =>
+            library.Name == "NDLOCR-Lite" &&
+            library.License == "CC-BY-4.0" &&
+            library.Url == "https://github.com/ndl-lab/ndlocr-lite");
+    }
+
+    [Fact]
+    public void About_lists_rapidocr_with_apache_license_and_upstream_url()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
+
+        about.ThirdPartyLibraries.Should().Contain(library =>
+            library.Name == "RapidOCR" &&
+            library.License == "Apache-2.0" &&
+            library.Url == "https://github.com/RapidAI/RapidOCR");
+    }
+
+    [Fact]
+    public void About_lists_rapidocr_model_distribution_with_modelscope_source()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
+
+        about.ThirdPartyLibraries.Should().Contain(library =>
+            library.Name == "RapidOCR Models (PP-OCRv6, ModelScope)" &&
+            library.License == "Apache-2.0" &&
+            library.Url == "https://www.modelscope.cn/models/RapidAI/RapidOCR");
+    }
+
+    [Fact]
     public void Macos_plist_describes_supported_user_selected_locations()
     {
         string plist = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "macos", "Info.plist.template"));
@@ -292,7 +328,8 @@ public sealed class AlphaPackagingTests
             HostServices services =
                 await HostServices.CreateAsync(path, PatchouliAppSettings.Default() with { Runtime = runtime });
             services.OcrAdapters.ListCapabilities().Select(x => x.EngineId).Should()
-                .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten);
+                .Equal(OcrEngineIds.MinerU, OcrEngineIds.MultimodalLlm, OcrEngineIds.NdlKoten, OcrEngineIds.NdlLite,
+                    OcrEngineIds.RapidOcr);
         }
         finally
         {

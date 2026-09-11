@@ -7,4 +7,6 @@ public static class OcrEngineIds
     public const string MinerU = "mineru";
     public const string MultimodalLlm = "multimodal-llm";
     public const string NdlKoten = "ndl-koten";
+    public const string NdlLite = "ndlocr-lite";
+    public const string RapidOcr = "rapidocr";
 }

@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Ocr.NdlKoten;
+using Patchouli.Infrastructure.Ocr.NdlLite;
+using Patchouli.Infrastructure.Ocr.RapidOcr;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.Host.Composition;
 
@@ -72,7 +74,22 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
                 "NDL Koten 模型文件",
                 storage.NdlKotenModelsDirectory,
                 true,
-                true));
+                true,
+                ModelDownloadKind.NdlKoten));
+            Locations.Add(new ManagedLocationViewModel(
+                this,
+                "NDLOCR-Lite 模型文件",
+                storage.NdlLiteModelsDirectory,
+                true,
+                true,
+                ModelDownloadKind.NdlLite));
+            Locations.Add(new ManagedLocationViewModel(
+                this,
+                "RapidOCR 模型文件",
+                storage.RapidOcrModelsDirectory,
+                true,
+                true,
+                ModelDownloadKind.RapidOcr));
             Locations.Add(new ManagedLocationViewModel(
                 this,
                 "MinerU OCR 临时文件",
@@ -83,6 +100,18 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
                 this,
                 "NDL Koten 工作临时文件",
                 storage.NdlKotenWorkDirectory,
+                false,
+                true));
+            Locations.Add(new ManagedLocationViewModel(
+                this,
+                "NDLOCR-Lite 工作临时文件",
+                storage.NdlLiteWorkDirectory,
+                false,
+                true));
+            Locations.Add(new ManagedLocationViewModel(
+                this,
+                "RapidOCR 工作临时文件",
+                storage.RapidOcrWorkDirectory,
                 false,
                 true));
 
@@ -123,15 +152,31 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
 
     internal async Task DownloadModelsAsync(ManagedLocationViewModel location)
     {
-        if (IsDownloading)
+        if (IsDownloading || location.DownloadKind == ModelDownloadKind.None)
         {
+            return;
+        }
+
+        (string title, long totalBytes) = location.DownloadKind switch
+        {
+            ModelDownloadKind.NdlKoten => ("下载 NDL Koten 模型",
+                NdlKotenModelFiles.Files.Sum(static file => file.ExpectedBytes)),
+            ModelDownloadKind.NdlLite => ("下载 NDLOCR-Lite 模型",
+                NdlLiteModelFiles.Files.Sum(static file => file.ExpectedBytes)),
+            ModelDownloadKind.RapidOcr => ("下载 RapidOCR 模型",
+                RapidOcrModelFiles.Files.Sum(static file => file.ExpectedBytes)),
+            _ => (string.Empty, 0L)
+        };
+        if (title.Length == 0)
+        {
+            SetStatus($"没有可下载的模型位置：{location.Name}。");
             return;
         }
 
         ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
             new ConfirmDialogViewModel(
-                "下载 NDL Koten 模型",
-                $"将从 GitHub 下载约 {FormatBytes(NdlKotenModelFiles.Files.Sum(static f => f.ExpectedBytes))} 的模型与配置文件到：\n{location.Path}",
+                title,
+                $"将从网络下载约 {FormatBytes(totalBytes)} 的模型与配置文件到：\n{location.Path}",
                 "下载",
                 confirmDanger: false));
         if (choice != ConfirmDialogResult.Confirm)
@@ -141,12 +186,19 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
 
         IsDownloading = true;
         DownloadProgress = 0;
-        SetStatus("正在下载 NDL Koten 模型…");
+        SetStatus($"正在下载 {location.Name}…");
         try
         {
             HostServices services = await _main.ServicesAsync();
             Progress<double> progress = new(value => DownloadProgress = value);
-            Result result = await services.NdlKotenModelDownload.DownloadAllAsync(progress);
+            Result result = location.DownloadKind switch
+            {
+                ModelDownloadKind.NdlKoten => await services.NdlKotenModelDownload.DownloadAllAsync(progress),
+                ModelDownloadKind.NdlLite => await services.NdlLiteModelDownload.DownloadAllAsync(progress),
+                ModelDownloadKind.RapidOcr => await services.RapidOcrModelDownload.DownloadAllAsync(progress),
+                _ => Result.Failure(AppErrorCodes.ValidationFailed,
+                    $"Unsupported model download kind: {location.DownloadKind}")
+            };
             if (result.IsFailure)
             {
                 SetStatus($"下载失败：{result.ErrorMessage}");
@@ -154,7 +206,7 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
             }
 
             await location.RefreshAsync();
-            SetStatus("NDL Koten 模型下载完成。");
+            SetStatus($"{location.Name}下载完成。");
         }
         catch (OperationCanceledException)
         {
@@ -256,6 +308,14 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
     }
 }
 
+public enum ModelDownloadKind
+{
+    None,
+    NdlKoten,
+    NdlLite,
+    RapidOcr
+}
+
 public sealed class ManagedLocationViewModel : ViewModelBase
 {
     private readonly LocalFileManagementSettingsViewModel _parent;
@@ -267,13 +327,15 @@ public sealed class ManagedLocationViewModel : ViewModelBase
         string name,
         string path,
         bool canDownload,
-        bool canClear)
+        bool canClear,
+        ModelDownloadKind downloadKind = ModelDownloadKind.None)
     {
         _parent = parent;
         Name = name;
         Path = path;
         CanDownload = canDownload;
         CanClear = canClear;
+        DownloadKind = downloadKind;
         DownloadCommand = new AsyncCommand(async () => await parent.DownloadModelsAsync(this));
         ClearCommand = new AsyncCommand(async () => await parent.ClearLocationAsync(this));
         OpenCommand = new AsyncCommand(async () => await parent.OpenLocationAsync(this));
@@ -283,6 +345,7 @@ public sealed class ManagedLocationViewModel : ViewModelBase
     public string Path { get; }
     public bool CanDownload { get; }
     public bool CanClear { get; }
+    public ModelDownloadKind DownloadKind { get; }
 
     public long SizeBytes
     {

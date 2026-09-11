@@ -261,6 +261,8 @@ public sealed class LibraryImportOrchestrator
         {
             OcrEngineIds.MinerU => await EnsureMinerUPresetAsync(cancellationToken),
             OcrEngineIds.NdlKoten => await EnsureNdlKotenPresetAsync(cancellationToken),
+            OcrEngineIds.NdlLite => await EnsureNdlLitePresetAsync(cancellationToken),
+            OcrEngineIds.RapidOcr => await EnsureRapidOcrPresetAsync(cancellationToken),
             _ => Result<OcrPresetId>.Failure(
                 AppErrorCodes.UnsupportedOperation,
                 $"未实现默认 OCR preset 的引擎：{engineId}")
@@ -471,6 +473,63 @@ public sealed class LibraryImportOrchestrator
             OcrEngineIds.NdlKoten,
             OcrModelIds.NdlKotenDefault,
             _services.OcrStorage.NdlKotenModelsDirectory,
+            "{}",
+            true,
+            cancellationToken);
+        return created.IsFailure
+            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
+            : Result<OcrPresetId>.Success(created.Value.PresetId);
+    }
+
+    private async Task<Result<OcrPresetId>> EnsureNdlLitePresetAsync(CancellationToken cancellationToken)
+    {
+        Result<OcrPreset?> existing =
+            await _services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.NdlLite, cancellationToken);
+        if (existing.IsFailure)
+        {
+            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
+        }
+
+        if (existing.Value is not null)
+        {
+            return Result<OcrPresetId>.Success(existing.Value.PresetId);
+        }
+
+        Result<OcrPreset> created = await _services.OcrPresets.CreatePresetAsync(
+            "NDLOCR-Lite",
+            "Local Japanese OCR preset for ndlocr-lite",
+            OcrEngineIds.NdlLite,
+            OcrModelIds.NdlLiteDefault,
+            _services.OcrStorage.NdlLiteModelsDirectory,
+            "{}",
+            true,
+            cancellationToken);
+        return created.IsFailure
+            ? Result<OcrPresetId>.Failure(created.ErrorCode!, created.ErrorMessage!)
+            : Result<OcrPresetId>.Success(created.Value.PresetId);
+    }
+
+    private async Task<Result<OcrPresetId>> EnsureRapidOcrPresetAsync(CancellationToken cancellationToken)
+    {
+        Result<OcrPreset?> existing =
+            await _services.OcrPresets.FindActivePresetByEngineIdAsync(OcrEngineIds.RapidOcr, cancellationToken);
+        if (existing.IsFailure)
+        {
+            return Result<OcrPresetId>.Failure(existing.ErrorCode!, existing.ErrorMessage!);
+        }
+
+        if (existing.Value is not null)
+        {
+            return Result<OcrPresetId>.Success(existing.Value.PresetId);
+        }
+
+        // Empty parameters keep the RapidOCR ONNX pipeline on the upstream v3.9.2 defaults.
+        Result<OcrPreset> created = await _services.OcrPresets.CreatePresetAsync(
+            "RapidOCR",
+            "Local RapidOCR preset using the pinned PP-OCRv6 models",
+            OcrEngineIds.RapidOcr,
+            OcrModelIds.RapidOcrDefault,
+            _services.OcrStorage.RapidOcrModelsDirectory,
             "{}",
             true,
             cancellationToken);

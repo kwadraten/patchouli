@@ -23,7 +23,7 @@
 - 同步：快照分片；分支检查与显式导入；无自动对象级合并
 - 书库与题录（V3-T5）：按类型显示来源、分组详情、回收站与恢复、永久删除、标签置顶/筛选/拖拽、查重与合并、FileAsset GC；原 PRD 记录 AC1–AC19 已验收。生命周期与快照规则见 [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md)。
 - 搜索（V3-T8）：元数据/全文双模式、AND 高级筛选、平铺题录与分组片段结果、证据跳转；全文筛选下推 `SearchRequest.ItemFilters`，MCP texts scope 支持 `item_id`。见 [领域文档](CONTEXT.md)。
-- 本地 OCR（V3-T9）：NDL koten C# ONNX 管线、按需模型下载、文档/页面/区域引擎选择、本地模型与 OCR 临时文件管理；见 [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md)。更多 provider 仍属 V3-T3。
+- 本地 OCR（V3-T9）：NDL koten、RapidOCR 与 NDLOCR-Lite 的 C# ONNX 管线、按需模型下载、文档/页面/区域引擎选择、本地模型与 OCR 临时文件管理；见 [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) / [0031](adr/0031-native-rapidocr-onnx-port.md) / [0032](adr/0032-ndlocr-lite-onnx-port.md)。更多 provider 仍属 V3-T3。
 - 文档版本（V3-T6 / V3-T10）：统一 working/committed、原地 commit、文档级 DocumentCommit、页面/文档历史与恢复、版本谱系 UI、versioned URI；见 [ADR 0027](adr/0027-unified-working-copy-and-immutable-revision-model.md) / [0028](adr/0028-versioned-uri-evidence.md)。不包含题录/样式版本或 diff。
 - 性能（V3-T7 已实现部分）：共享 Host 组合层、首屏/查询与 OCR 批量路径优化、PDF viewing session/缓存、性能烟测及 UI 探针；完整规模预算和订阅式增量刷新仍须收口。基准入口见 [perf/README](perf/README.md)。
 - 桌面补充：单实例与本地激活（[ADR 0029](adr/0029-ui-single-instance-and-local-activation.md)）、可选配色、BibLaTeX 自定义字段往返与验证警告。
@@ -273,7 +273,8 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 **状态**：方向已定，细则待补。
 
 - 使用 **LLMTornado** 集成多模态大语言模型 OCR/理解路径，输出仍必须进入既有 `OcrDocumentTreeCandidate` → 统一 import/commit，禁止 provider 直写 `document_boxes`
-- 同时探索接入：**onnxOCR**、**ultimateOCR**、**ndlocr-lite**；**ndlkotenocr-lite** 作为首个本地 OCR 实现落地，见顶部 V3-T9 基线与 ADR `0025`
+- 已交付本地 OCR 引擎：**ndlkotenocr-lite**（ADR [0025](adr/0025-ndlkotenocr-lite-onnx-port.md)）、**RapidOCR**（ADR [0031](adr/0031-native-rapidocr-onnx-port.md)）、**ndlocr-lite**（ADR [0032](adr/0032-ndlocr-lite-onnx-port.md)），见顶部 V3-T9 基线
+- 仍待探索接入：**onnxOCR**、**ultimateOCR**
 - MinerU 仍为已交付的生产参考路径；新 provider 的打包、模型分发、许可、preset UX、失败分类与密钥边界在后续修订中规定
 - 继续遵守：Mock/历史占位不进生产默认；secret 仅 local-only credentials；不规则表等 canonical 规则不因新 provider 回退
 
@@ -347,7 +348,7 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 | 文档布局、当前 Host 组成与一致性机制 | [domain.md](domain.md) |
 | MCP / CLI 参数、响应 schema、错误与回归义务 | [mcp-protocol.md](mcp-protocol.md)；决策 ADR `0023` / `0024` |
 | 数据存储、快照、文件、Document Tree 等架构决策 | [adr/](adr/) |
-| NDL 本地 OCR 与文件管理 | [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) |
+| NDL 本地 OCR 与文件管理 | [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) / [0031](adr/0031-native-rapidocr-onnx-port.md) / [0032](adr/0032-ndlocr-lite-onnx-port.md) |
 | 统一版本模型、versioned URI | ADR [0027](adr/0027-unified-working-copy-and-immutable-revision-model.md) / [0028](adr/0028-versioned-uri-evidence.md) |
 | 题录删除、合并、GC 与快照冲突 | [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md) |
 | 性能 fixture、运行方式与基准限制 | [perf/README.md](perf/README.md) |
