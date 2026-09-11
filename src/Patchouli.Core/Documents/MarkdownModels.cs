@@ -52,9 +52,11 @@ public interface IDocumentMarkdownCompiler
 }
 
 /// <summary>
-/// A host-owned cache for immutable document-tree markdown revisions.  The cache key includes
-/// every rendering option, so moving a page to a new revision naturally makes the old entry
-/// unreachable without broad invalidation.
+/// A host-owned cache for document-tree markdown revisions.  The cache key includes every
+/// rendering option, so moving a page to a new revision naturally makes the old entry
+/// unreachable without broad invalidation.  Working (draft) revisions are the exception: an
+/// edit session mutates boxes in place under a stable revision id, so the mutating service
+/// must call <see cref="Invalidate"/> after every successful draft change.
 /// </summary>
 public interface ICompiledMarkdownCache
 {
@@ -66,6 +68,8 @@ public interface ICompiledMarkdownCache
         bool includeComplexTableHtml,
         Func<CancellationToken, Task<Result<CompiledMarkdown>>> factory,
         CancellationToken cancellationToken = default);
+
+    void Invalidate(DocumentTreeRevisionId revisionId);
 }
 
 /// <summary>Content-free counters suitable for runtime performance reporting.</summary>

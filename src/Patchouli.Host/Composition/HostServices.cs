@@ -125,10 +125,11 @@ public sealed class HostServices
         ]);
         Pages = new PageService(ConnectionFactory, Clock);
         Markdown = new MarkdigMarkdownEngine();
-        DocumentTrees = new DocumentTreeService(ConnectionFactory, Clock, Markdown, LibraryRevisions);
+        CompiledMarkdownCache = new CompiledMarkdownCache();
+        DocumentTrees = new DocumentTreeService(ConnectionFactory, Clock, Markdown, LibraryRevisions,
+            CompiledMarkdownCache);
         DocumentTreeEditor = (IDocumentTreeEditor)DocumentTrees;
         Overlaps = new OverlapProjectionService();
-        CompiledMarkdownCache = new CompiledMarkdownCache();
         DocumentMarkdown = new CachedDocumentMarkdownCompiler(
             new DocumentMarkdownCompiler(DocumentTrees, Markdown), CompiledMarkdownCache);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);

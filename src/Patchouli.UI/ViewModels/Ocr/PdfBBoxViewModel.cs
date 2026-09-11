@@ -279,6 +279,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
 
             _text = value;
             Raise();
+            Raise(nameof(Summary));
         }
     }
 
@@ -334,6 +335,7 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         else
         {
             Workspace.Status = "文本已写入页面草稿。";
+            Workspace.RefreshContinuationDependents(BoxId, Text);
             await Workspace.RefreshPreviewAsync();
         }
     }

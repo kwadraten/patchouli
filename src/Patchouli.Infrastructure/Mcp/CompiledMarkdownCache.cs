@@ -133,6 +133,12 @@ public sealed class CompiledMarkdownCache : ICompiledMarkdownCache
             return false;
         }
 
+        // The entry may have been invalidated (or replaced) while the factory was running.
+        if (!_entries.TryGetValue(key, out Entry? current) || !ReferenceEquals(current, entry))
+        {
+            return false;
+        }
+
         entry.Node = _lru.AddFirst(key);
         _cachedBytes += entry.Size;
         while (_cachedBytes > _byteLimit && _lru.Last is { } oldest)
@@ -191,6 +197,23 @@ public sealed class CompiledMarkdownCache : ICompiledMarkdownCache
 
         _lru.Remove(entry.Node);
         _lru.AddFirst(entry.Node);
+    }
+
+    public void Invalidate(DocumentTreeRevisionId revisionId)
+    {
+        lock (_sync)
+        {
+            foreach (CacheKey key in _entries.Keys.Where(key => key.RevisionId == revisionId).ToArray())
+            {
+                Entry entry = _entries[key];
+                _entries.Remove(key);
+                if (entry.Node is not null)
+                {
+                    _lru.Remove(entry.Node);
+                    _cachedBytes -= entry.Size;
+                }
+            }
+        }
     }
 
     private readonly record struct CacheKey(

@@ -7,6 +7,7 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
+using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 
 namespace Patchouli.Tests;
@@ -101,6 +102,45 @@ public sealed class DocumentTreeServiceTests
         (await context.Compiler.CompilePageMarkdownAsync(corrected.TreeRevisionId)).Value.Markdown
             .Should().EndWith("Corrected paragraph.");
         corrected.ParentTreeRevisionId.Should().Be(committed.TreeRevisionId);
+    }
+
+    [Fact]
+    public async Task Draft_mutation_invalidates_compiled_markdown_cache_across_commit()
+    {
+        await using Context context = await Context.CreateAsync();
+        CompiledMarkdownCache cache = new();
+        MarkdigMarkdownEngine markdown = new();
+        DocumentTreeService trees = new(context.DatabaseConnectionFactory, context.Clock, markdown,
+            null, cache);
+        CachedDocumentMarkdownCompiler compiler = new(new DocumentMarkdownCompiler(trees, markdown), cache);
+
+        PageEditSession edit = (await trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentBox leaf = (await trees.DrawAndInsertLeafAsync(
+            edit.SessionId,
+            new InsertLeafCommand(
+                null,
+                null,
+                DocumentBoxType.Text,
+                null,
+                null,
+                new NormalizedBBox(0.05, 0.05, 0.9, 0.1),
+                new TextBoxPayload("Original text.")))).Value;
+
+        (await compiler.CompilePageMarkdownAsync(edit.DraftRevisionId)).Value.Markdown
+            .Should().Contain("Original text.");
+
+        (await trees.UpdateLeafAsync(
+                edit.SessionId,
+                new UpdateLeafCommand(leaf.BoxId, DocumentBoxType.Text, new TextBoxPayload("Edited text."))))
+            .IsSuccess.Should().BeTrue();
+
+        (await compiler.CompilePageMarkdownAsync(edit.DraftRevisionId)).Value.Markdown
+            .Should().Contain("Edited text.");
+
+        DocumentTreeRevision committed = (await trees.CommitPageEditAsync(edit.SessionId)).Value;
+        committed.TreeRevisionId.Should().Be(edit.DraftRevisionId);
+        (await compiler.CompilePageMarkdownAsync(committed.TreeRevisionId)).Value.Markdown
+            .Should().Contain("Edited text.");
     }
 
     [Fact]

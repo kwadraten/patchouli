@@ -18,17 +18,20 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
     private readonly IClock _clock;
     private readonly DocumentTreeValidator _validator;
     private readonly ILibraryRevisionService? _revisions;
+    private readonly ICompiledMarkdownCache? _compiledMarkdownCache;
 
     public DocumentTreeService(
         SqliteConnectionFactory connectionFactory,
         IClock clock,
         IMarkdownEngine markdownEngine,
-        ILibraryRevisionService? revisions = null)
+        ILibraryRevisionService? revisions = null,
+        ICompiledMarkdownCache? compiledMarkdownCache = null)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
         _validator = new DocumentTreeValidator(markdownEngine);
         _revisions = revisions;
+        _compiledMarkdownCache = compiledMarkdownCache;
     }
 
     public async Task<Result> ValidateStoredTreesAsync(CancellationToken cancellationToken = default)
@@ -1033,6 +1036,10 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             }
 
             await ReplaceBoxesAsync(connection, transaction, revision.TreeRevisionId, boxes);
+
+            // Working drafts keep a stable revision id while boxes are replaced in place, so the
+            // compiled-markdown cache (keyed by revision id) must drop this revision's entries.
+            _compiledMarkdownCache?.Invalidate(revision.TreeRevisionId);
             return Result<T>.Success(mutation.Value!);
         }, cancellationToken);
     }

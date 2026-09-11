@@ -117,6 +117,39 @@ public sealed class McpReadApiCachingTests
     }
 
     [Fact]
+    public async Task Invalidate_forces_recompile_for_every_option_combination()
+    {
+        CompiledMarkdownCache cache = new();
+        DocumentTreeRevisionId revisionId = DocumentTreeRevisionId.New();
+        DocumentTreeRevisionId otherRevisionId = DocumentTreeRevisionId.New();
+        int compileCount = 0;
+
+        Task<Result<CompiledMarkdown>> Compile(CancellationToken _)
+        {
+            return Task.FromResult(Result<CompiledMarkdown>.Success(
+                new CompiledMarkdown($"compile {Interlocked.Increment(ref compileCount)}", [], [])));
+        }
+
+        async Task<string> GetAsync(DocumentTreeRevisionId id, bool includeSuppressed)
+        {
+            return (await cache.GetOrCreateAsync(id, includeSuppressed, true, Compile, CancellationToken.None))
+                .Value.Markdown;
+        }
+
+        (await GetAsync(revisionId, false)).Should().Be("compile 1");
+        (await GetAsync(revisionId, true)).Should().Be("compile 2");
+        (await GetAsync(otherRevisionId, false)).Should().Be("compile 3");
+        (await GetAsync(revisionId, false)).Should().Be("compile 1");
+
+        cache.Invalidate(revisionId);
+
+        (await GetAsync(revisionId, false)).Should().Be("compile 4");
+        (await GetAsync(revisionId, true)).Should().Be("compile 5");
+        (await GetAsync(otherRevisionId, false)).Should().Be("compile 3");
+        compileCount.Should().Be(5);
+    }
+
+    [Fact]
     public async Task Canceling_one_waiter_does_not_cancel_shared_generation()
     {
         CompiledMarkdownCache cache = new();

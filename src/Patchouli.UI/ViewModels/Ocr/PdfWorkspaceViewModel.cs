@@ -2549,6 +2549,17 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
+    internal void RefreshContinuationDependents(DocumentBoxId headBoxId, string? headText)
+    {
+        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        {
+            if (box.ContinuesFromBoxId == headBoxId)
+            {
+                box.ContinuationHeadText = headText;
+            }
+        }
+    }
+
     internal async Task RefreshBoxesAsync()
     {
         if (_draftRevisionId is null)
