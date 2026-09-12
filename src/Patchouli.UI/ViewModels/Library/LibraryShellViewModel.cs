@@ -555,11 +555,15 @@ public sealed class LibraryShellViewModel : ViewModelBase
         RecentItems = new ObservableCollection<string>(refreshed.RecentItems);
         RecentDocuments = new ObservableCollection<string>(refreshed.RecentDocuments);
 
-        SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
-        SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
         Raise(nameof(Items));
         Raise(nameof(RecentItems));
         Raise(nameof(RecentDocuments));
+
+        // Publish the new Items collection before restoring the selection. The DataGrid selection
+        // model only accepts items that belong to its current ItemsSource, and the ItemsSource
+        // binding still points at the previous collection until the notification above is processed.
+        SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
+        SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
         Raise(nameof(SelectedItem));
         Raise(nameof(InspectorTitle));
         Raise(nameof(InspectorStatus));
