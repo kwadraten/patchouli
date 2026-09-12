@@ -85,7 +85,9 @@ public class AboutViewModel : ViewModelBase
             new("RapidOCR", "Apache-2.0", "https://github.com/RapidAI/RapidOCR",
                 openUrlCommand),
             new("RapidOCR Models (PP-OCRv6, ModelScope)", "Apache-2.0",
-                "https://www.modelscope.cn/models/RapidAI/RapidOCR", openUrlCommand)
+                "https://www.modelscope.cn/models/RapidAI/RapidOCR", openUrlCommand),
+            new("AvaloniaRichEditor", "MIT",
+                "https://github.com/centwon/AvaloniaRichEditor", openUrlCommand)
         };
     }
 }
