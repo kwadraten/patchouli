@@ -163,6 +163,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         ExitBookReadingCommand = new RelayCommand(_ => ExitBookReading());
         BookReadingDecreaseFontSizeCommand = new RelayCommand(_ => AdjustBookReadingFontSize(-1));
         BookReadingIncreaseFontSizeCommand = new RelayCommand(_ => AdjustBookReadingFontSize(1));
+        BookReadingResetFontSizeCommand =
+            new RelayCommand(_ => BookReadingFontSize = ReadingFontCatalog.DefaultFontSize);
         _bookReadingFontSize = ReadingFontCatalog.ClampSize(_main.AppOptions.Ui.ReadingFontSize);
         _bookReadingFontFamily = FamilyToDisplay(_main.AppOptions.Ui.ReadingFontFamily);
     }
@@ -2956,6 +2958,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public RelayCommand ExitBookReadingCommand { get; }
     public RelayCommand BookReadingDecreaseFontSizeCommand { get; }
     public RelayCommand BookReadingIncreaseFontSizeCommand { get; }
+    public RelayCommand BookReadingResetFontSizeCommand { get; }
 
     public bool IsBookReadingMode
     {

@@ -157,6 +157,21 @@ public sealed class BookReadingModeTests : IDisposable
     }
 
     [Fact]
+    public void Reset_font_size_command_restores_the_default_and_persists()
+    {
+        MainWindowViewModel main = new(settingsPath: _settings.Path);
+        LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+        PdfWorkspaceViewModel workspace = new(main, item);
+
+        workspace.BookReadingFontSize = 22;
+        workspace.BookReadingResetFontSizeCommand.Execute(null);
+
+        workspace.BookReadingFontSize.Should().Be(ReadingFontCatalog.DefaultFontSize);
+        main.AppOptions.Ui.ReadingFontSize.Should().Be(ReadingFontCatalog.DefaultFontSize,
+            "the reset persists immediately like any other font change");
+    }
+
+    [Fact]
     public async Task ExitBookReadingToPage_leaves_reading_mode()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));

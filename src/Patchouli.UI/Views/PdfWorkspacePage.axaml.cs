@@ -758,7 +758,7 @@ public sealed partial class PdfWorkspacePage : UserControl
             };
             ToolTip.SetTip(badge, $"退出阅读模式并跳转到第 {pageNumber} 页");
             badge.Click += OnBookReadingBadgeClick;
-            Canvas.SetLeft(badge, 2);
+            Canvas.SetLeft(badge, 10);
             Canvas.SetTop(badge, editorMargin.Top + startY);
             BookReadingBadgeRail.Children.Add(badge);
         }

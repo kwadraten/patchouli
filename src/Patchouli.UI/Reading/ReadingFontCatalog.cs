@@ -10,10 +10,11 @@ public static class ReadingFontCatalog
 {
     public const double MinimumFontSize = 10;
     public const double MaximumFontSize = 28;
+    public const double DefaultFontSize = 14;
 
     public static double ClampSize(double size)
     {
-        return double.IsNaN(size) ? 14 : Math.Clamp(size, MinimumFontSize, MaximumFontSize);
+        return double.IsNaN(size) ? DefaultFontSize : Math.Clamp(size, MinimumFontSize, MaximumFontSize);
     }
 
     public static double ScaleForHeading(int headingLevel)

@@ -49,13 +49,17 @@
       <Setter Property="Background" Value="#22FFFFFF" />
     </Style>
     <Style Selector="Button.PageBadge">
-      <Setter Property="Background" Value="{DynamicResource SurfaceContainerHighBrush}" />
+      <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
       <Setter Property="CornerRadius" Value="7" />
       <Setter Property="Padding" Value="5,1" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="FontSize" Value="10" />
-      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
       <Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style Selector="Button.PageBadge:pointerover">
+      <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
     </Style>
     <Style Selector="Border.BBox.selected">
       <Setter Property="BorderThickness" Value="4" />
@@ -719,19 +723,25 @@
           <ComboBox x:Name="BookReadingFontComboBox"
                     ItemsSource="{Binding BookReadingFontFamilies}"
                     SelectedItem="{Binding BookReadingFontFamily, Mode=TwoWay}"
-                    MinWidth="180" MaxWidth="220" Height="28"
+                    MinWidth="180" MaxWidth="220" Height="28" VerticalAlignment="Center"
                     ToolTip.Tip="阅读字体（系统默认 = 使用界面默认字体）" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="12,0" VerticalAlignment="Center">
             <Button Classes="ToolbarButton" Command="{Binding BookReadingDecreaseFontSizeCommand}" ToolTip.Tip="缩小字号">
               <TextBlock Text="-" FontSize="16" FontWeight="Bold"
                          Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </Button>
-            <TextBlock Text="{Binding BookReadingFontSizeText}" FontSize="13"
-                       Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center"
-                       MinWidth="44" TextAlignment="Center" />
+            <NumericUpDown Value="{Binding BookReadingFontSize, Mode=TwoWay}"
+                           Minimum="10" Maximum="28" Increment="1"
+                           Width="84" Height="28" VerticalAlignment="Center"
+                           ToolTip.Tip="阅读字号（10–28pt，可直接输入）" />
             <Button Classes="ToolbarButton" Command="{Binding BookReadingIncreaseFontSizeCommand}" ToolTip.Tip="放大字号">
               <TextBlock Text="+" FontSize="16" FontWeight="Bold"
                          Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+            </Button>
+            <Button Classes="ToolbarButton" Command="{Binding BookReadingResetFontSizeCommand}"
+                    ToolTip.Tip="重置为默认字号 14pt">
+              <lucide:Lucide Icon="RefreshCw" Width="13" Height="13"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
             </Button>
           </StackPanel>
           <TextBlock Grid.Column="2" Text="{Binding BookReadingProgressText}" FontSize="12"
@@ -739,6 +749,7 @@
                      Margin="12,0" />
           <Button Grid.Column="4" Command="{Binding ExitBookReadingCommand}"
                   Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
+                  VerticalAlignment="Center"
                   ToolTip.Tip="退出阅读模式，返回 PDF 查看模式">
             <StackPanel Orientation="Horizontal" Spacing="4">
               <lucide:Lucide Icon="X" Width="14" Height="14" />
@@ -754,7 +765,7 @@
       <ScrollViewer x:Name="BookReadingScroller" Grid.Row="1"
                     HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
                     Background="{DynamicResource SurfaceBrush}">
-        <Grid ColumnDefinitions="64,*">
+        <Grid ColumnDefinitions="72,*">
           <Canvas x:Name="BookReadingBadgeRail" VerticalAlignment="Top" />
           <are:RichEditor x:Name="BookReadingEditor" Grid.Column="1" IsReadOnly="True" Margin="24,16,24,16" />
         </Grid>
