@@ -1496,8 +1496,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return;
         }
 
-        await _main.ImportBiblatexTextIntoEditorAsync(text, null, _itemId);
-        if (_itemId is not null)
+        bool applied = await _main.ImportBiblatexTextIntoEditorAsync(text, null, _itemId);
+        if (applied && _itemId is not null)
         {
             await LoadAsync(_itemId.Value.ToString());
         }
@@ -1528,8 +1528,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
 
         string? directory = Path.GetDirectoryName(path);
-        await _main.ImportBiblatexTextIntoEditorAsync(text, directory, _itemId);
-        if (_itemId is not null)
+        bool applied = await _main.ImportBiblatexTextIntoEditorAsync(text, directory, _itemId);
+        if (applied && _itemId is not null)
         {
             await LoadAsync(_itemId.Value.ToString());
         }

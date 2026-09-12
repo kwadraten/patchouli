@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
 use biblatex::{
     Bibliography, Chunk, ChunksExt, Date, DateValue, Entry, EntryType, PermissiveType, Person,
-    RetrievalError, Spanned,
+    RawBibliography, RetrievalError, Spanned,
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,13 +61,39 @@ fn write_json(stdout: &mut impl Write, value: &Response) -> Result<(), ExitCode>
 }
 
 fn parse_bibliography(text: &str) -> Response {
-    let bibliography = match Bibliography::parse(text) {
-        Ok(value) => value,
-        Err(error) => {
-            return Response::error("parse_failed", error.to_string());
-        }
-    };
+    // Standard Bib(La)TeX already parses upstream, so a document that succeeds
+    // on the first, unmodified attempt is never rewritten. The compatibility
+    // pass exists to accept loose database exports: entries without a citation
+    // key and the `(` entry delimiter that `biblatex` 0.12.0 does not accept.
+    //
+    // Missing keys are syntactically ambiguous with the rare citation key that
+    // contains `=`. The raw grammar is the authority there, and the fallback
+    // keeps its interpretation whenever it can parse the candidate as a valid
+    // keyed entry. A failed retry still reports the original parse error as
+    // well as the retry error so callers can see both.
+    match Bibliography::parse(text) {
+        Ok(bibliography) => success_response(&bibliography),
+        Err(original) => {
+            let original_message = original.to_string();
+            let Some(normalized) = normalize_bibtex_compatible(text) else {
+                return Response::error("parse_failed", original_message);
+            };
 
+            match Bibliography::parse(&normalized.text) {
+                Ok(bibliography) => success_response(&bibliography),
+                Err(retry) => Response::error(
+                    "parse_failed",
+                    format!(
+                        "{original_message}; BibTeX compatibility retry ({} generated key(s), {} converted delimiter(s)) failed: {retry}",
+                        normalized.injected_keys, normalized.converted_entries
+                    ),
+                ),
+            }
+        }
+    }
+}
+
+fn success_response(bibliography: &Bibliography) -> Response {
     let entries = bibliography.iter().map(entry_to_dto).collect::<Vec<_>>();
 
     Response {
@@ -76,6 +102,347 @@ fn parse_bibliography(text: &str) -> Response {
         entries: Some(entries),
         text: None,
     }
+}
+
+/// Result of the BibTeX compatibility rewrite.
+struct CompatNormalization {
+    text: String,
+    injected_keys: usize,
+    converted_entries: usize,
+}
+
+/// Rewrites a bibliography that uses the wider BibTeX surface into the subset
+/// `biblatex` 0.12.0 accepts:
+///
+/// * a normal entry whose body starts with `field = ...` is missing its
+///   citation key, so a unique temporary key is injected — unless the entry
+///   already parses as a legal keyed entry under the raw grammar, which covers
+///   the rare citation key containing `=`;
+/// * an entry opened with `(` is rewritten to the brace delimiter;
+/// * a standard bibtex `@string(...)` / `@preamble(...)` directive is rewritten
+///   to braces while `@comment(...)` is left untouched, because its body is
+///   arbitrary and may contain braces a rewrite would misread.
+///
+/// The scan is structural: nested field values, quoted strings, escapes and
+/// comments are skipped. An entry whose braces cannot be proven balanced after
+/// the rewrite (for example a stray `}` inside a parenthesized entry) abandons
+/// the whole pass with `None`, preserving the original parse error instead of
+/// silently truncating the entry. Returns `None` when nothing needed to change,
+/// so the caller can preserve the original parse error.
+fn normalize_bibtex_compatible(text: &str) -> Option<CompatNormalization> {
+    let mut result = String::with_capacity(text.len());
+    let mut injected_keys = 0usize;
+    let mut converted_entries = 0usize;
+    let mut next_key_ordinal = 1usize;
+    let reserved_key_ordinals = collect_reserved_key_ordinals(text);
+    let mut i = 0usize;
+
+    while i < text.len() {
+        let current = text[i..].chars().next().expect("cursor is in bounds");
+        if current == '%' {
+            let start = i;
+            while i < text.len() {
+                let c = text[i..].chars().next().expect("cursor is in bounds");
+                i += c.len_utf8();
+                if c == '\n' {
+                    break;
+                }
+            }
+            result.push_str(&text[start..i]);
+            continue;
+        }
+
+        if current != '@' {
+            result.push(current);
+            i += current.len_utf8();
+            continue;
+        }
+
+        let type_start = i + 1;
+        let mut type_end = type_start;
+        if let Some(first) = text[type_start..]
+            .chars()
+            .next()
+            .filter(|c| is_id_start(*c))
+        {
+            type_end += first.len_utf8();
+            while let Some(next) = text[type_end..].chars().next() {
+                if !is_id_continue(next) {
+                    break;
+                }
+                type_end += next.len_utf8();
+            }
+        }
+
+        if type_end == type_start {
+            result.push('@');
+            i += 1;
+            continue;
+        }
+
+        let entry_type = &text[type_start..type_end];
+        let mut open_index = type_end;
+        while let Some(next) = text[open_index..].chars().next() {
+            if !next.is_whitespace() {
+                break;
+            }
+            open_index += next.len_utf8();
+        }
+
+        let open = match text[open_index..].chars().next() {
+            Some('{') => '{',
+            Some('(') => '(',
+            _ => {
+                // Not an entry opening; keep scanning after the '@'.
+                result.push('@');
+                i += 1;
+                continue;
+            }
+        };
+        let close = if open == '{' { '}' } else { ')' };
+
+        let end = match find_entry_end(text, open_index, open, close) {
+            EntryEnd::Terminated(end) => end,
+            EntryEnd::Unterminated => {
+                // Unterminated entry: copy the remainder unchanged.
+                result.push_str(&text[i..]);
+                break;
+            }
+            EntryEnd::Unbalanced => {
+                // Rewriting this entry to braces could truncate it and drop
+                // fields, so leave the whole source untouched and keep the
+                // original parse error.
+                return None;
+            }
+        };
+
+        let directive = entry_type.to_ascii_lowercase();
+        let is_directive = matches!(directive.as_str(), "string" | "preamble" | "comment");
+        let body_start = open_index + open.len_utf8();
+        let body = &text[body_start..end];
+        // `@comment(...)` is deliberately not rewritten: its body is arbitrary
+        // and a brace rewrite could terminate on content braces.
+        let convert_delimiter = open == '(' && directive != "comment";
+        let missing_key = !is_directive
+            && entry_body_starts_with_field(text, body_start)
+            && !parses_as_keyed_raw_entry(&text[i..open_index], body);
+
+        if !missing_key && !convert_delimiter {
+            result.push_str(&text[i..=end]);
+            i = end + close.len_utf8();
+            continue;
+        }
+
+        // Copy the header up to the opening delimiter, then always emit a brace
+        // opening and the injected key when one is missing.
+        result.push_str(&text[i..open_index]);
+        result.push('{');
+        if missing_key {
+            let key = generate_compat_key(&reserved_key_ordinals, &mut next_key_ordinal);
+            result.push_str(&key);
+            result.push(',');
+            injected_keys += 1;
+        }
+        result.push_str(body);
+        result.push('}');
+        if convert_delimiter {
+            converted_entries += 1;
+        }
+        i = end + close.len_utf8();
+    }
+
+    if injected_keys == 0 && converted_entries == 0 {
+        None
+    } else {
+        Some(CompatNormalization {
+            text: result,
+            injected_keys,
+            converted_entries,
+        })
+    }
+}
+
+/// Where an entry opened at `open_index` ends.
+enum EntryEnd {
+    /// The closing delimiter is at this byte index.
+    Terminated(usize),
+    /// The input ended before the closing delimiter.
+    Unterminated,
+    /// A `}` was found at brace depth zero inside a parenthesized entry, so
+    /// rewriting it to braces could close the entry early.
+    Unbalanced,
+}
+
+/// Parses one candidate entry with the upstream raw grammar. That grammar is
+/// the authority for the keyless / `=`-in-key ambiguity: when the body already
+/// forms a valid keyed entry it must not receive a temporary key.
+fn parses_as_keyed_raw_entry(header: &str, body: &str) -> bool {
+    let candidate = format!("{header}{{{body}}}");
+    matches!(
+        RawBibliography::parse(&candidate),
+        Ok(parsed) if parsed.entries.len() == 1 && !parsed.entries[0].v.key.v.is_empty()
+    )
+}
+
+/// Finds the index of the delimiter that closes the entry opened at
+/// `open_index`. Field values are skipped so braces and parentheses inside them
+/// cannot close the entry early. A brace that would unbalance the rewritten
+/// brace entry is reported as [`EntryEnd::Unbalanced`].
+fn find_entry_end(text: &str, open_index: usize, open: char, close: char) -> EntryEnd {
+    let mut brace_depth = 0usize;
+    let mut i = open_index + open.len_utf8();
+
+    while i < text.len() {
+        let Some(c) = text[i..].chars().next() else {
+            break;
+        };
+        match c {
+            '\\' => {
+                i += c.len_utf8();
+                if let Some(escaped) = text[i..].chars().next() {
+                    i += escaped.len_utf8();
+                }
+            }
+            '%' if brace_depth == 0 => {
+                while i < text.len() {
+                    let Some(cc) = text[i..].chars().next() else {
+                        break;
+                    };
+                    i += cc.len_utf8();
+                    if cc == '\n' {
+                        break;
+                    }
+                }
+            }
+            '"' if brace_depth == 0 => {
+                i += c.len_utf8();
+                while i < text.len() {
+                    let Some(cc) = text[i..].chars().next() else {
+                        break;
+                    };
+                    if cc == '\\' {
+                        i += cc.len_utf8();
+                        if let Some(escaped) = text[i..].chars().next() {
+                            i += escaped.len_utf8();
+                        }
+                        continue;
+                    }
+                    i += cc.len_utf8();
+                    if cc == '"' {
+                        break;
+                    }
+                }
+            }
+            '{' => {
+                brace_depth += 1;
+                i += c.len_utf8();
+            }
+            '}' => {
+                if brace_depth == 0 {
+                    if close == '}' {
+                        return EntryEnd::Terminated(i);
+                    }
+                    // A stray closing brace inside a parenthesized entry would
+                    // terminate the brace rewrite early.
+                    return EntryEnd::Unbalanced;
+                }
+                brace_depth -= 1;
+                i += c.len_utf8();
+            }
+            ')' if open == '(' && brace_depth == 0 => return EntryEnd::Terminated(i),
+            _ => i += c.len_utf8(),
+        }
+    }
+
+    EntryEnd::Unterminated
+}
+
+/// True when the first key-value pair directly follows the opening delimiter,
+/// i.e. the entry is missing its citation key.
+fn entry_body_starts_with_field(text: &str, start: usize) -> bool {
+    let mut i = skip_whitespace_and_comments(text, start);
+    let Some(first) = text[i..].chars().next().filter(|c| is_id_start(*c)) else {
+        return false;
+    };
+    i += first.len_utf8();
+    while let Some(next) = text[i..].chars().next() {
+        if !is_id_continue(next) {
+            break;
+        }
+        i += next.len_utf8();
+    }
+
+    i = skip_whitespace_and_comments(text, i);
+    text[i..].chars().next() == Some('=')
+}
+
+fn skip_whitespace_and_comments(text: &str, start: usize) -> usize {
+    let mut i = start;
+    while let Some(c) = text[i..].chars().next() {
+        if c.is_whitespace() {
+            i += c.len_utf8();
+            continue;
+        }
+        if c == '%' {
+            while let Some(cc) = text[i..].chars().next() {
+                i += cc.len_utf8();
+                if cc == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        break;
+    }
+    i
+}
+
+/// Collects the ordinals of `patchouli-import-<n>` keys already present in the
+/// source in a single pass, so key generation never rescans the whole document.
+fn collect_reserved_key_ordinals(text: &str) -> HashSet<usize> {
+    const PREFIX: &str = "patchouli-import-";
+    let mut reserved = HashSet::new();
+    let mut search = 0usize;
+    while let Some(offset) = text[search..].find(PREFIX) {
+        let digits_start = search + offset + PREFIX.len();
+        let rest = &text[digits_start..];
+        let digits_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits_end > 0 {
+            if let Ok(ordinal) = rest[..digits_end].parse::<usize>() {
+                reserved.insert(ordinal);
+            }
+        }
+        search = digits_start;
+    }
+    reserved
+}
+
+/// Generates a temporary import key that is unique among the source keys and
+/// among the keys injected for this document. Patchouli assigns the real
+/// citation key when it creates the item.
+fn generate_compat_key(reserved: &HashSet<usize>, ordinal: &mut usize) -> String {
+    loop {
+        let candidate = *ordinal;
+        *ordinal += 1;
+        if !reserved.contains(&candidate) {
+            return format!("patchouli-import-{candidate}");
+        }
+    }
+}
+
+/// Mirrors the upstream identifier rules used for entry types and field names.
+fn is_id_continue(c: char) -> bool {
+    !matches!(
+        c,
+        '@' | '{' | '}' | '"' | '#' | '\'' | '(' | ')' | ',' | '=' | '%' | '\\' | '~'
+    ) && !c.is_control()
+        && !c.is_whitespace()
+}
+
+fn is_id_start(c: char) -> bool {
+    !matches!(c, ':' | '<' | '-' | '>') && is_id_continue(c)
 }
 
 fn write_bibliography(entries: &[WriteEntryDto]) -> Response {
@@ -539,5 +906,199 @@ mod tests {
         let person = &entries[0].persons["origauthor"][0];
         assert_eq!(person.family.as_deref(), Some("Doe"));
         assert_eq!(person.given.as_deref(), Some("Jane"));
+    }
+
+    #[test]
+    fn valid_bibtex_is_parsed_without_normalization() {
+        let text = "@article{key,title={T},author={Doe, Jane},year={2020}}";
+        assert!(normalize_bibtex_compatible(text).is_none());
+
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok);
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "key");
+    }
+
+    #[test]
+    fn missing_citation_key_is_injected() {
+        let parsed = parse_bibliography(
+            "@phdthesis{\n  author = {Doe, Jane},\n  title = {A thesis},\n  year = {2021},\n}",
+        );
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_type, "phdthesis");
+        assert_eq!(entries[0].key, "patchouli-import-1");
+        assert_eq!(entries[0].fields["title"], "A thesis");
+    }
+
+    #[test]
+    fn multiple_keyless_entries_receive_unique_keys() {
+        let parsed = parse_bibliography(
+            "@book{ author={A}, title={One} }\n@article{ author={B}, title={Two} }",
+        );
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, "patchouli-import-1");
+        assert_eq!(entries[1].key, "patchouli-import-2");
+    }
+
+    #[test]
+    fn generated_keys_avoid_keys_already_present_in_the_source() {
+        let text = "@misc{patchouli-import-1,title={Existing}}\n@book{ title={Keyless} }";
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let keys = parsed
+            .entries
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["patchouli-import-1", "patchouli-import-2"]);
+    }
+
+    #[test]
+    fn parenthesis_delimiters_are_accepted() {
+        let parsed = parse_bibliography("@article(key, title={T}, note={a) b})");
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "key");
+        assert_eq!(entries[0].fields["note"], "a) b");
+
+        let keyless = parse_bibliography("@article(title={T}, year={2020})");
+        let entries = keyless.entries.unwrap();
+        assert_eq!(entries[0].key, "patchouli-import-1");
+        assert_eq!(entries[0].fields["year"], "2020");
+    }
+
+    #[test]
+    fn string_preamble_and_comment_directives_are_not_rewritten() {
+        let text = "@string{jt=\"Journal of Tests\"}\n@preamble{\"\\\\foo\"}\n@comment{nothing}\n@article{ author={Doe, Jane}, journal=jt }";
+        let normalization = normalize_bibtex_compatible(text).expect("keyless entry needs a key");
+        assert_eq!(normalization.injected_keys, 1);
+        assert_eq!(normalization.converted_entries, 0);
+        assert!(normalization
+            .text
+            .contains("@string{jt=\"Journal of Tests\"}"));
+        assert!(normalization.text.contains("@preamble{\"\\\\foo\"}"));
+        assert!(normalization.text.contains("@comment{nothing}"));
+
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries[0].fields["journal"], "Journal of Tests");
+    }
+
+    #[test]
+    fn fields_nested_inside_values_are_not_mistaken_for_entries() {
+        let text =
+            "% @article{ fake, title={not an entry} }\n@book{ author={A}, note={see @article{ x = y }} }";
+        let normalization = normalize_bibtex_compatible(text).expect("keyless entry needs a key");
+        assert_eq!(normalization.injected_keys, 1);
+        assert_eq!(normalization.converted_entries, 0);
+
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_type, "book");
+        // The nested `@article{ x = y }` text must stay untouched inside the field value.
+        assert!(!entries[0].fields["note"].contains("patchouli-import"));
+    }
+
+    #[test]
+    fn unrelated_syntax_errors_still_fail_without_a_compat_retry() {
+        assert!(normalize_bibtex_compatible("@article{key title={T}}").is_none());
+
+        let parsed = parse_bibliography("@article{key title={T}}");
+        assert!(!parsed.ok);
+        let message = parsed.error.unwrap().message;
+        assert!(!message.contains("compatibility retry"), "{message}");
+    }
+
+    #[test]
+    fn failed_compat_retry_reports_the_original_error_and_the_retry() {
+        let parsed = parse_bibliography("@article{ title = }");
+        assert!(!parsed.ok);
+        let message = parsed.error.unwrap().message;
+        assert!(message.contains("compatibility retry"), "{message}");
+    }
+
+    #[test]
+    fn unbalanced_parenthesis_entry_is_not_rewritten() {
+        // The stray `}` would close the rewritten brace entry early and drop
+        // `title`, so the whole compatibility pass must back off.
+        let text = "@article(key, note=123}extra, title={T})";
+        assert!(normalize_bibtex_compatible(text).is_none());
+
+        let parsed = parse_bibliography(text);
+        assert!(!parsed.ok);
+        let message = parsed.error.unwrap().message;
+        assert!(!message.contains("compatibility retry"), "{message}");
+    }
+
+    #[test]
+    fn keyed_entry_with_equals_in_key_survives_a_keyless_sibling() {
+        let text = "@article{a=2020, title={T}}\n@book{ author={Doe}, title={Keyless} }";
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries.len(), 2);
+        // `a=2020` is a legal raw key, so the entry must not be renamed.
+        assert_eq!(entries[0].key, "a=2020");
+        assert_eq!(entries[0].fields["title"], "T");
+        assert_eq!(entries[1].key, "patchouli-import-1");
+        assert_eq!(entries[1].fields["title"], "Keyless");
+    }
+
+    #[test]
+    fn string_and_preamble_parenthesis_directives_are_converted() {
+        let text =
+            "@string(jt=\"Journal of Tests\")\n@preamble(\"\\foo\")\n@article{key, journal=jt}";
+        let normalization =
+            normalize_bibtex_compatible(text).expect("parenthesis directives need rewriting");
+        assert_eq!(normalization.injected_keys, 0);
+        assert_eq!(normalization.converted_entries, 2);
+        assert!(normalization
+            .text
+            .contains("@string{jt=\"Journal of Tests\"}"));
+        assert!(normalization.text.contains("@preamble{\"\\foo\"}"));
+
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let entries = parsed.entries.unwrap();
+        assert_eq!(entries[0].fields["journal"], "Journal of Tests");
+    }
+
+    #[test]
+    fn comment_parenthesis_directive_is_not_blindly_rewritten() {
+        assert!(normalize_bibtex_compatible("@comment(anything)").is_none());
+        assert!(!parse_bibliography("@comment(anything)").ok);
+    }
+
+    #[test]
+    fn generated_keys_skip_reserved_ordinals() {
+        let text = "@misc{patchouli-import-1,title={One}}\n@misc{patchouli-import-3,title={Three}}\n@book{ title={Keyless A} }\n@book{ title={Keyless B} }";
+        let parsed = parse_bibliography(text);
+        assert!(parsed.ok, "{:?}", parsed.error.map(|error| error.message));
+        let keys = parsed
+            .entries
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec![
+                "patchouli-import-1",
+                "patchouli-import-3",
+                "patchouli-import-2",
+                "patchouli-import-4"
+            ]
+        );
     }
 }

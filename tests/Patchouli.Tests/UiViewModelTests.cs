@@ -296,6 +296,45 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Invalid_biblatex_paste_keeps_the_import_error_instead_of_reloading_the_editor()
+    {
+        if (!File.Exists(BiblatexHelperClient.ResolveDefaultHelperPath()))
+        {
+            return;
+        }
+
+        string path = Path.Combine(Path.GetTempPath(), $"ui-biblatex-invalid-{Guid.NewGuid():N}.sqlite");
+        FakeClipboard clipboard = new();
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(clipboard), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            Result<ItemMetadata> created =
+                await (await vm.ServicesAsync()).Items.CreateItemAsync("book", "已有题录");
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+
+            await vm.EditItemByIdAsync(created.Value.ItemId.ToString());
+            await clipboard.SetTextAsync("@article{key title={T}}");
+
+            await vm.ItemEditor.ImportBiblatexFromClipboardCommand.ExecuteAsync();
+
+            // LoadAsync would overwrite the status with "正在编辑：…"; the failed paste must keep the error.
+            vm.Status.Should().Contain("BibLaTeX 导入失败");
+            vm.StatusIsError.Should().BeTrue();
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Toolbar_patchouli_uri_opens_item_and_zero_based_text_page()
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.sqlite");

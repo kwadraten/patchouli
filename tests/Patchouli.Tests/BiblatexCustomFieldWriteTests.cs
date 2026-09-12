@@ -155,6 +155,64 @@ public sealed class BiblatexCustomFieldWriteTests : IAsyncLifetime
         mergeOriginalType.Should().Throw<JsonException>();
     }
 
+    [Fact]
+    public async Task Keyless_relaxed_bibtex_parses_and_maps_representative_fields()
+    {
+        // Representative database export: missing citation key, trailing comma,
+        // Chinese note, curly quotes, long abstract and the standard BibTeX fields.
+        const string bib = """
+                           @phdthesis{
+                             author = {山田, 太郎},
+                             year = {2021},
+                             title = {关于“汉字”标题的研究},
+                             journal = {テスト誌},
+                             note = {中文备注，含“弯引号”与，逗号},
+                             abstract = {这是一段很长的摘要，用于验证宽松 BibTeX 的兼容性。},
+                             keywords = {汉字, 测试, thesis},
+                             isbn = {978-4-0000-0000-0},
+                             language = {chinese},
+                             url = {https://example.com/thesis},
+                           }
+                           """;
+
+        Result<IReadOnlyList<BiblatexEntryDto>> parsed = await _import.ParseTextAsync(bib);
+        parsed.IsSuccess.Should().BeTrue(parsed.ErrorMessage);
+        parsed.Value.Should().ContainSingle();
+
+        Result<BiblatexMappedItem> mapped = BiblatexFieldMapper.MapVisibleEntry(parsed.Value.Single());
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+        BiblatexMappedItem item = mapped.Value;
+        item.ItemType.Should().Be("thesis");
+        item.Title.Should().Be("关于“汉字”标题的研究");
+        item.PublicationTitle.Should().Be("テスト誌");
+        item.Note.Should().Contain("中文备注");
+        item.AbstractText.Should().Contain("摘要");
+        item.Language.Should().Be("chinese");
+        item.Tags.Should().Contain("汉字");
+        item.Creators.Should().ContainSingle(creator => creator.Family == "山田" && creator.Given == "太郎");
+        item.Dates.Should().ContainSingle(date => date.Role == ItemDateRoles.Issued);
+        item.Identifiers.Select(identifier => identifier.Scheme).Should().Contain(
+            new[] { BuiltInIdentifierSchemes.ISBN, BuiltInIdentifierSchemes.URL });
+    }
+
+    [Fact]
+    public async Task Keyless_import_does_not_adopt_the_temporary_source_key_as_citation_key()
+    {
+        Result<IReadOnlyList<BiblatexEntryDto>> parsed = await _import.ParseTextAsync(
+            "@book{ author={Doe, Jane}, title={Temporary key regression} }");
+        parsed.IsSuccess.Should().BeTrue(parsed.ErrorMessage);
+        parsed.Value.Single().Key.Should().Be("patchouli-import-1");
+
+        Result<BiblatexMappedItem> mapped = BiblatexFieldMapper.MapVisibleEntry(parsed.Value.Single());
+        mapped.IsSuccess.Should().BeTrue(mapped.ErrorMessage);
+        Result<BiblatexImportApplyResult> applied = await _import.ApplySingleAsync(mapped.Value, null, null, null);
+        applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
+
+        ItemId createdId = ItemId.Parse(applied.Value.CreatedItemIds.Single());
+        ItemMetadata created = (await _items.GetItemAsync(createdId)).Value;
+        created.CitationKey.Should().NotBe("patchouli-import-1");
+    }
+
     private async Task<ItemMetadata> CreateItem()
     {
         Result<ItemMetadata> created = await _items.CreateItemAsync(new CreateItemRequest(

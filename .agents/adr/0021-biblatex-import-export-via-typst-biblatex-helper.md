@@ -12,6 +12,7 @@ Patchouli parses and writes BibLaTeX/BibTeX through a locked Rust helper under `
 **Consequences**
 
 - Import uses `Bibliography::parse` plus per-entry `Entry::verify()`. Export constructs `biblatex::Entry` and calls `Entry::to_biblatex_string`.
+- Standard BibTeX and BibLaTeX are parsed unchanged first. If that parse fails, the helper may apply a bounded compatibility rewrite for structurally recognizable database exports that omit an entry key or use BibTeX parenthesis delimiters, then retry once. The rewrite must preserve already valid keyed entries, must not guess across unbalanced delimiters, and must retain both parse errors when the retry fails.
 - `@xdata` entries are inheritance containers only. Expanded fields are imported; `crossref`/`xdata` relationships are not persisted.
 - Patchouli identity remains `ItemId`; BibLaTeX entry keys are preview/export labels only.
 - Conflict codes `CF-06` (item field conflict) and `CF-07` (batch link candidates) live in domain `bibliography_import`. These slots were freed when layout sibling-overlap stopped being a structured conflict (ADR 0019).

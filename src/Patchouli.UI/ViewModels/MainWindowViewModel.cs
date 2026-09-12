@@ -2301,21 +2301,27 @@ public sealed class MainWindowViewModel : ViewModelBase
     }
 
 
-    public async Task ImportBiblatexTextIntoEditorAsync(string text, string? bibFileDirectory, ItemId? targetItemId)
+    /// <summary>
+    /// Runs the single-entry BibLaTeX import into the item editor. Returns true only
+    /// when an entry was mapped and applied; failures and cancellations return false
+    /// so the caller can keep the current editor state and its status message.
+    /// </summary>
+    public async Task<bool> ImportBiblatexTextIntoEditorAsync(string text, string? bibFileDirectory,
+        ItemId? targetItemId)
     {
         LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
         Result<BiblatexImportApplyResult?> result =
             await orchestrator.ImportBiblatexTextAsync(text, bibFileDirectory, targetItemId, CancellationToken.None);
         if (result.IsFailure)
         {
-            Report($"BibLaTeX 导入失败：{result.ErrorCode} {result.ErrorMessage}");
-            return;
+            ReportError($"BibLaTeX 导入失败：{result.ErrorCode} {result.ErrorMessage}");
+            return false;
         }
 
         if (result.Value is null)
         {
             Report("已取消 BibLaTeX 导入。");
-            return;
+            return false;
         }
 
         BiblatexImportApplyResult applied = result.Value;
@@ -2330,6 +2336,8 @@ public sealed class MainWindowViewModel : ViewModelBase
         {
             await EditItemByIdAsync(createdId);
         }
+
+        return true;
     }
 
     private async Task ImportBiblatexBatchAsync()
