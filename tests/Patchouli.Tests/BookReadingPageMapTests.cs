@@ -63,4 +63,30 @@ public sealed class BookReadingPageMapTests
         map.StartOffsets.Should().BeEmpty();
         map.TryGetStart(0, out _).Should().BeFalse();
     }
+
+    [Fact]
+    public void GetInsertY_returns_the_next_recorded_page_offset()
+    {
+        BookReadingPageMap map = new();
+        map.RecordAppend(2, 0);
+        map.RecordAppend(3, 100);
+        map.RecordAppend(4, 250);
+
+        // A page inserted before page 2 lands where page 2 begins; page 2's own successor is
+        // page 3, so inserting page 0 or 1 uses the same anchor.
+        map.GetInsertY(0).Should().Be(0);
+        map.GetInsertY(1).Should().Be(0);
+        map.GetInsertY(2).Should().Be(100);
+        map.GetInsertY(3).Should().Be(250);
+    }
+
+    [Fact]
+    public void GetInsertY_returns_zero_when_no_higher_page_is_recorded()
+    {
+        BookReadingPageMap map = new();
+        map.RecordAppend(5, 300);
+
+        map.GetInsertY(5).Should().Be(0);
+        map.GetInsertY(9).Should().Be(0);
+    }
 }

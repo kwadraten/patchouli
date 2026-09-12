@@ -18,64 +18,73 @@ public sealed class BookReadingStreamTests
     private static readonly DocumentInstanceId DocumentId = DocumentInstanceId.New();
 
     [Fact]
-    public async Task Streams_from_the_start_page_then_prepends_the_earlier_pages()
+    public async Task Lists_page_indices_in_ascending_order()
     {
-        BookReadingStream stream = CreateStream(CreatePages(0, 1, 2, 3, 4));
+        BookReadingStream stream = CreateStream(CreatePages(3, 0, 2, 1));
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 2);
+        IReadOnlyList<int> indices = await stream.ListPageIndicesAsync(DocumentId);
 
-        pages.Select(page => page.PageIndex).Should().Equal(2, 3, 4, 0, 1);
-        pages.Select(page => page.IsPrepend).Should().Equal(false, false, false, true, true);
-        pages.Should().OnlyContain(page => page.PageCount == 5);
-        pages.Should().OnlyContain(page => !page.Html.Contains("data-page", StringComparison.Ordinal),
-            "page boundaries are shown as rail badges, not in-flow anchors");
+        indices.Should().Equal(0, 1, 2, 3);
     }
 
     [Fact]
-    public async Task Streams_every_page_in_order_when_starting_at_the_first_page()
+    public async Task Lists_pages_once_across_mixed_calls()
     {
-        BookReadingStream stream = CreateStream(CreatePages(0, 1, 2));
+        Page[] pages = CreatePages(0, 1);
+        int listCalls = 0;
+        BookReadingStream stream = CreateStream(
+            pages,
+            listPages: (_, _) =>
+            {
+                listCalls++;
+                return Task.FromResult(Result<IReadOnlyList<Page>>.Success((IReadOnlyList<Page>)pages));
+            });
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0);
+        await stream.ListPageIndicesAsync(DocumentId);
+        await stream.LoadPageAsync(DocumentId, 0, 2);
+        await stream.LoadPageAsync(DocumentId, 1, 2);
 
-        pages.Select(page => page.PageIndex).Should().Equal(0, 1, 2);
-        pages.Should().OnlyContain(page => !page.IsPrepend);
-    }
-
-    [Theory]
-    [InlineData(-3, 0, 1, 2, 3)]
-    [InlineData(9, 3, 0, 1, 2)]
-    public async Task Clamps_an_out_of_range_start_page_into_the_book(
-        int startPageIndex, int expectedFirst, int second, int third, int fourth)
-    {
-        BookReadingStream stream = CreateStream(CreatePages(0, 1, 2, 3));
-
-        List<BookReadingPage> pages = await CollectAsync(stream, startPageIndex);
-
-        pages.Select(page => page.PageIndex).Should().Equal(expectedFirst, second, third, fourth);
+        listCalls.Should().Be(1,
+            "LoadPageAsync runs once per page, so the stream caches the page list for the session");
     }
 
     [Fact]
-    public async Task Streams_no_pages_for_a_document_without_pages()
+    public async Task Lists_no_pages_for_a_document_without_pages()
     {
         BookReadingStream stream = CreateStream([]);
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0);
+        IReadOnlyList<int> indices = await stream.ListPageIndicesAsync(DocumentId);
 
-        pages.Should().BeEmpty();
+        indices.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Streams_no_pages_when_the_page_list_cannot_be_read()
+    public async Task Lists_no_pages_when_the_page_list_cannot_be_read()
     {
         BookReadingStream stream = CreateStream(
             CreatePages(0, 1),
             listPages: (_, _) => Task.FromResult(
                 Result<IReadOnlyList<Page>>.Failure(AppErrorCodes.NotFound, "Document was not found.")));
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0);
+        IReadOnlyList<int> indices = await stream.ListPageIndicesAsync(DocumentId);
 
-        pages.Should().BeEmpty();
+        indices.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Loads_a_page_compiled_from_its_committed_revision()
+    {
+        BookReadingStream stream = CreateStream(
+            CreatePages(0, 1),
+            compile: _ => Result<CompiledMarkdown>.Success(new CompiledMarkdown("识别后的正文", [], [])));
+
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
+
+        page.PageIndex.Should().Be(0);
+        page.PageCount.Should().Be(2);
+        page.IsPrepend.Should().BeFalse("the view model decides prepend ordering, not the stream");
+        page.Html.Should().Contain("<p>识别后的正文</p>");
+        page.Html.Should().NotContain("本页尚未识别文字。");
     }
 
     [Fact]
@@ -85,66 +94,37 @@ public sealed class BookReadingStreamTests
             CreatePages(0, 1),
             _ => Result<DocumentTreeRevision>.Failure(AppErrorCodes.NotFound, "No committed revision."));
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0);
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 1, 2);
 
-        pages.Should().HaveCount(2);
-        pages[0].Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
-        pages[1].Html.Should().Contain("本页尚未识别文字。");
-        pages.Select(page => page.IsPrepend).Should().Equal(false, false);
+        page.Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
+        page.PageIndex.Should().Be(1);
+        page.IsPrepend.Should().BeFalse();
     }
 
     [Fact]
     public async Task Uses_placeholder_html_when_markdown_compilation_fails()
     {
         BookReadingStream stream = CreateStream(
-            CreatePages(0, 1),
+            CreatePages(0),
             compile: _ => Result<CompiledMarkdown>.Failure(
                 AppErrorCodes.DatabaseError, "Compilation failed."));
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0);
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 1);
 
-        pages.Should().HaveCount(2);
-        pages.Should().OnlyContain(page =>
-            page.Html.Contains("本页尚未识别文字。", StringComparison.Ordinal));
+        page.Html.Should().Contain("本页尚未识别文字。");
     }
 
     [Fact]
-    public async Task Uses_compiled_markdown_html_when_a_committed_revision_exists()
+    public async Task Uses_placeholder_html_when_the_page_list_cannot_be_read()
     {
         BookReadingStream stream = CreateStream(
             CreatePages(0),
-            compile: _ => Result<CompiledMarkdown>.Success(new CompiledMarkdown("识别后的正文", [], [])));
+            listPages: (_, _) => Task.FromResult(
+                Result<IReadOnlyList<Page>>.Failure(AppErrorCodes.NotFound, "Document was not found.")));
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0);
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 1);
 
-        pages.Should().ContainSingle();
-        pages[0].Html.Should().Contain("<p>识别后的正文</p>");
-        pages[0].Html.Should().NotContain("本页尚未识别文字。");
-    }
-
-    [Fact]
-    public async Task Stops_streaming_when_cancelled_mid_enumeration()
-    {
-        BookReadingStream stream = CreateStream(CreatePages(0, 1, 2, 3, 4));
-        using CancellationTokenSource cancellation = new();
-        await using IAsyncEnumerator<BookReadingPage> enumerator =
-            stream.StreamPagesAsync(DocumentId, 2, cancellation.Token).GetAsyncEnumerator();
-
-        (await enumerator.MoveNextAsync()).Should().BeTrue();
-        BookReadingPage first = enumerator.Current;
-        await cancellation.CancelAsync();
-        bool cancelled = false;
-        try
-        {
-            await enumerator.MoveNextAsync();
-        }
-        catch (OperationCanceledException)
-        {
-            cancelled = true;
-        }
-
-        cancelled.Should().BeTrue();
-        first.PageIndex.Should().Be(2);
+        page.Html.Should().Contain("本页尚未识别文字。");
     }
 
     [Fact]
@@ -161,14 +141,15 @@ public sealed class BookReadingStreamTests
         using CancellationTokenSource cancellation = new();
         await cancellation.CancelAsync();
         CancellationToken token = cancellation.Token;
-        Func<Task> enumerate = () => CollectAsync(stream, 0, cancellationToken: token);
 
-        await enumerate.Should().ThrowAsync<OperationCanceledException>();
+        Func<Task> load = () => stream.LoadPageAsync(DocumentId, 0, 1, token);
+
+        await load.Should().ThrowAsync<OperationCanceledException>();
         listCalled.Should().BeFalse();
     }
 
     [Fact]
-    public async Task Streams_real_compiled_markdown_for_recognized_pages_and_placeholder_for_the_rest()
+    public async Task Loads_real_compiled_markdown_for_recognized_pages_and_placeholder_for_the_rest()
     {
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
         await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
@@ -198,11 +179,13 @@ public sealed class BookReadingStreamTests
             trees.GetCurrentRevisionAsync,
             compiler.CompilePageMarkdownAsync);
 
-        List<BookReadingPage> pages = await CollectAsync(stream, 0, documentId);
+        IReadOnlyList<int> indices = await stream.ListPageIndicesAsync(documentId);
+        BookReadingPage recognizedPage = await stream.LoadPageAsync(documentId, 0, indices.Count);
+        BookReadingPage missingPage = await stream.LoadPageAsync(documentId, 1, indices.Count);
 
-        pages.Select(page => page.PageIndex).Should().Equal(0, 1);
-        pages[0].Html.Should().Contain("<p>识别出的正文</p>");
-        pages[1].Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
+        indices.Should().Equal(0, 1);
+        recognizedPage.Html.Should().Contain("<p>识别出的正文</p>");
+        missingPage.Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
     }
 
     private static async Task SeedDocumentAsync(
@@ -303,21 +286,5 @@ public sealed class BookReadingStreamTests
             (revisionId, _, _, _) => Task.FromResult(compile is null
                 ? Result<CompiledMarkdown>.Success(new CompiledMarkdown("识别后的正文", [], []))
                 : compile(pagesByRevision[revisionId])));
-    }
-
-    private static async Task<List<BookReadingPage>> CollectAsync(
-        IBookReadingStream stream,
-        int startPageIndex,
-        DocumentInstanceId? documentInstanceId = null,
-        CancellationToken cancellationToken = default)
-    {
-        List<BookReadingPage> pages = [];
-        await foreach (BookReadingPage page in stream.StreamPagesAsync(
-                           documentInstanceId ?? DocumentId, startPageIndex, cancellationToken))
-        {
-            pages.Add(page);
-        }
-
-        return pages;
     }
 }

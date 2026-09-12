@@ -57,4 +57,23 @@ public sealed class BookReadingPageMap
     {
         return _startOffsets.TryGetValue(pageIndex, out startY);
     }
+
+    /// <summary>Returns the smallest start offset among recorded pages whose index is greater
+    /// than <paramref name="pageIndex"/> — i.e. the offset of the page that directly follows it
+    /// in visual order. This is where a prepended page must be inserted (just above its
+    /// successor). Returns 0 when no larger page is recorded; callers guarantee the start page
+    /// and everything after it were recorded first, so that only happens if the contract is
+    /// broken.</summary>
+    public double GetInsertY(int pageIndex)
+    {
+        foreach ((int index, double start) in _startOffsets)
+        {
+            if (index > pageIndex)
+            {
+                return start;
+            }
+        }
+
+        return 0;
+    }
 }

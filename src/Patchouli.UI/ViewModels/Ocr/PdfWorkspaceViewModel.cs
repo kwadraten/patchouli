@@ -78,6 +78,19 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private string _bookReadingProgressText = string.Empty;
     private IReadOnlyList<string>? _bookReadingFontFamilies;
 
+    // Reading mode loads a window of pages around the current page and grows it on demand as the
+    // reader scrolls. The session keeps every delivered page (so a view recreated on a tab switch
+    // can replay it) and the set of already-loaded indices (so on-demand windows deduplicate).
+    private readonly List<BookReadingPage> _bookReadingDelivered = new();
+    private readonly HashSet<int> _bookReadingLoaded = new();
+    private int[] _bookReadingIndices = [];
+    private int _bookReadingStartIndex;
+    private int _bookReadingLo;
+    private int _bookReadingHi;
+    private bool _bookReadingLoading;
+    private IBookReadingStream? _bookReadingStream;
+    private DocumentInstanceId? _bookReadingDocumentInstanceId;
+
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
         _main = main;
@@ -2937,13 +2950,21 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public const string SystemDefaultReadingFontLabel = "系统默认";
 
-    /// <summary>Raised once when reading mode is entered, before any page arrives, so the view
-    /// can reset the editor, apply the current font and zero the scroll offset.</summary>
+    // Initial window around the current page: enough context behind for the reader to scroll up,
+    // a longer run ahead because reading is mostly forward. Scrolling near an edge pulls the next
+    // batch of the same size, so a large book never compiles all at once.
+    private const int BookReadingInitialBehind = 2;
+    private const int BookReadingInitialAhead = 8;
+    private const int BookReadingBatchSize = 8;
+
+    /// <summary>Raised once when reading mode is entered, before any page arrives, so the view can
+    /// reset the editor, apply the current font and zero the scroll offset. Also raised by
+    /// <see cref="ReplayBookReading"/> when a recreated view re-attaches.</summary>
     public event Action? BookReadingStarted;
 
-    /// <summary>Raised on the UI thread for each streamed page, in reading order. The view
-    /// appends non-prepended pages and front-inserts (with scroll compensation) the prepended
-    /// ones, preserving page order by tracking how many blocks it has already prepended.</summary>
+    /// <summary>Raised on the UI thread for each delivered page. The view appends non-prepended
+    /// pages and front-inserts (with scroll compensation) the prepended ones; the view model owns
+    /// the delivery order so page order is preserved without the view tracking block counts.</summary>
     public event Action<BookReadingPage>? BookReadingPageReady;
 
     /// <summary>Test seam: when set, the workspace builds the reading stream from this factory
@@ -2951,6 +2972,11 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     /// substituted stream ignores the services argument, so a unit test can drive page ordering
     /// and progress text without opening a real database.</summary>
     internal Func<HostServices, IBookReadingStream>? BookReadingStreamFactory { get; set; }
+
+    /// <summary>Test seam: overrides the page the reading session starts at. The workspace's own
+    /// page index is private, so a test cannot otherwise enter reading mode on a non-zero start
+    /// page. Null uses the workspace's current page.</summary>
+    internal int? BookReadingStartPageOverride { get; set; }
 
     public AsyncCommand EnterBookReadingCommand { get; }
     public RelayCommand ExitBookReadingCommand { get; }
@@ -3062,6 +3088,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         IsBookReadingMode = true;
         BookReadingProgressText = "正在准备阅读视图...";
+        // Reset the session cache before announcing the start so the view is empty and the only
+        // pages it ever sees are the ones this session delivers or replays.
+        _bookReadingDelivered.Clear();
+        _bookReadingLoaded.Clear();
         BookReadingStarted?.Invoke();
 
         try
@@ -3079,12 +3109,38 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 stream = new BookReadingStream(services);
             }
 
-            await StreamBookReadingAsync(stream, DocumentInstanceId.Parse(Item.DocumentInstanceId),
-                _pageIndex, token);
+            // The stream lives for the whole session: on-demand windows reuse it until exit, so
+            // the cancellation source is not disposed here (ExitBookReading owns its lifetime).
+            DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+            _bookReadingDocumentInstanceId = documentInstanceId;
+            _bookReadingStream = stream;
+            IReadOnlyList<int> indices = await stream.ListPageIndicesAsync(documentInstanceId, token)
+                .ConfigureAwait(true);
+            if (indices.Count == 0)
+            {
+                BookReadingProgressText = "该文档没有可阅读的页面。";
+                return;
+            }
+
+            _bookReadingIndices = indices.ToArray();
+            int start = Math.Clamp(BookReadingStartPageOverride ?? _pageIndex, 0, _bookReadingIndices.Length - 1);
+            _bookReadingStartIndex = start;
+            _bookReadingLo = start;
+            _bookReadingHi = start;
+            int lo = Math.Max(0, start - BookReadingInitialBehind);
+            int hi = Math.Min(_bookReadingIndices.Length - 1, start + BookReadingInitialAhead);
+
+            // The view derives a prepend's insertion offset from the already-recorded page with
+            // the next higher index, so the start page and everything after it must arrive first:
+            // {start} ∪ (start..hi] ∪ [lo..start).
+            List<int> ordered = [start];
+            ordered.AddRange(Enumerable.Range(start + 1, Math.Max(0, hi - start)));
+            ordered.AddRange(Enumerable.Range(lo, start - lo));
+            await LoadBookReadingPagesAsync(stream, documentInstanceId, ordered, token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
-            // Exiting reading mode cancels the in-flight stream; progress is already cleared.
+            // Exiting reading mode cancels the in-flight load; progress is cleared by ExitBookReading.
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -3092,50 +3148,141 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             Status = $"阅读模式加载失败：{exception.Message}";
             _main.ReportError($"阅读模式加载失败：{exception.Message}");
         }
+    }
+
+    /// <summary>Loads the pages in the caller-supplied order, delivering each to the view as it
+    /// finishes. Order is the caller's responsibility: a prepend must not be delivered before the
+    /// page that follows it, or the view cannot compute its insertion offset. A load already in
+    /// flight wins; the caller is expected to retry from a later scroll event.</summary>
+    private async Task LoadBookReadingPagesAsync(
+        IBookReadingStream stream,
+        DocumentInstanceId documentInstanceId,
+        IEnumerable<int> orderedIndices,
+        CancellationToken token)
+    {
+        if (_bookReadingLoading)
+        {
+            return;
+        }
+
+        _bookReadingLoading = true;
+        try
+        {
+            foreach (int pageIndex in orderedIndices)
+            {
+                token.ThrowIfCancellationRequested();
+                if (_bookReadingLoaded.Contains(pageIndex))
+                {
+                    continue;
+                }
+
+                BookReadingPage page = await stream.LoadPageAsync(
+                        documentInstanceId, pageIndex, _bookReadingIndices.Length, token)
+                    .ConfigureAwait(true);
+                await DeliverBookReadingPageAsync(page).ConfigureAwait(true);
+                _bookReadingLo = Math.Min(_bookReadingLo, page.PageIndex);
+                _bookReadingHi = Math.Max(_bookReadingHi, page.PageIndex);
+            }
+        }
         finally
         {
-            if (ReferenceEquals(_bookReadingCancellation, cancellation))
-            {
-                _bookReadingCancellation?.Dispose();
-                _bookReadingCancellation = null;
-            }
+            _bookReadingLoading = false;
         }
     }
 
-    private async Task StreamBookReadingAsync(
-        IBookReadingStream stream, DocumentInstanceId documentInstanceId, int startPageIndex, CancellationToken token)
+    private Task LoadBookReadingRangeAsync(
+        IBookReadingStream stream, DocumentInstanceId documentInstanceId, int lo, int hi, CancellationToken token)
     {
-        int delivered = 0;
-        int pageCount = 0;
+        List<int> ordered = [];
+        for (int index = lo; index <= hi; index++)
+        {
+            ordered.Add(index);
+        }
+
+        return LoadBookReadingPagesAsync(stream, documentInstanceId, ordered, token);
+    }
+
+    private async Task DeliverBookReadingPageAsync(BookReadingPage raw)
+    {
+        BookReadingPage page = raw with { IsPrepend = raw.PageIndex < _bookReadingStartIndex };
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _bookReadingDelivered.Add(page);
+            _bookReadingLoaded.Add(page.PageIndex);
+            BookReadingProgressText = _bookReadingLoaded.Count >= _bookReadingIndices.Length
+                ? string.Empty
+                : $"已加载 {_bookReadingLoaded.Count}/{_bookReadingIndices.Length} 页";
+            BookReadingPageReady?.Invoke(page);
+        });
+    }
+
+    /// <summary>Loads the next window of pages after the highest page delivered so far. Called by
+    /// the view when the reader scrolls near the bottom; a no-op at the end of the book, while a
+    /// load is in flight, or outside reading mode. Never throws: a failed batch sets the status
+    /// line and leaves reading mode usable.</summary>
+    public async Task RequestBookReadingForwardAsync()
+    {
+        if (!IsBookReadingMode || _bookReadingLoading || _bookReadingStream is not { } stream ||
+            _bookReadingDocumentInstanceId is not { } documentInstanceId ||
+            _bookReadingHi >= _bookReadingIndices.Length - 1)
+        {
+            return;
+        }
+
+        await RequestBookReadingRangeAsync(stream, documentInstanceId, _bookReadingHi + 1,
+            Math.Min(_bookReadingIndices.Length - 1, _bookReadingHi + BookReadingBatchSize));
+    }
+
+    /// <summary>Loads the window of pages before the lowest page delivered so far. Called by the
+    /// view when the reader scrolls near the top; a no-op at the start of the book, while a load
+    /// is in flight, or outside reading mode.</summary>
+    public async Task RequestBookReadingBackwardAsync()
+    {
+        if (!IsBookReadingMode || _bookReadingLoading || _bookReadingStream is not { } stream ||
+            _bookReadingDocumentInstanceId is not { } documentInstanceId ||
+            _bookReadingLo <= 0)
+        {
+            return;
+        }
+
+        await RequestBookReadingRangeAsync(stream, documentInstanceId,
+            Math.Max(0, _bookReadingLo - BookReadingBatchSize), _bookReadingLo - 1);
+    }
+
+    private async Task RequestBookReadingRangeAsync(
+        IBookReadingStream stream, DocumentInstanceId documentInstanceId, int lo, int hi)
+    {
         try
         {
-            await foreach (BookReadingPage page in stream.StreamPagesAsync(documentInstanceId, startPageIndex, token)
-                               .ConfigureAwait(true))
-            {
-                token.ThrowIfCancellationRequested();
-                pageCount = page.PageCount;
-                delivered++;
-                int deliveredCount = delivered;
-                int totalPages = pageCount;
-                BookReadingPage current = page;
-                await Dispatcher.UIThread.InvokeAsync(() =>
-                {
-                    BookReadingProgressText = totalPages > 0
-                        ? $"已加载 {deliveredCount}/{totalPages} 页"
-                        : "正在加载...";
-                    BookReadingPageReady?.Invoke(current);
-                });
-            }
-
-            int finalPageCount = pageCount;
-            await Dispatcher.UIThread.InvokeAsync(() =>
-                BookReadingProgressText = finalPageCount > 0
-                    ? string.Empty
-                    : "该文档没有可阅读的页面。");
+            CancellationToken token = _bookReadingCancellation?.Token ?? CancellationToken.None;
+            await LoadBookReadingRangeAsync(stream, documentInstanceId, lo, hi, token).ConfigureAwait(true);
         }
         catch (OperationCanceledException)
         {
-            // Leaving reading mode cancels the stream; progress is cleared by ExitBookReading.
+            // ExitBookReading cancels the in-flight window; nothing to report to the reader.
+        }
+        catch (Exception exception)
+        {
+            Status = $"阅读模式加载失败：{exception.Message}";
+            _main.ReportError($"阅读模式加载失败：{exception.Message}");
+        }
+    }
+
+    /// <summary>Re-raises the start event and every page delivered so far in ascending page
+    /// order, so a view recreated by a tab switch repopulates without a reload. In-flight loads
+    /// keep delivering through the live events; the loaded-page set keeps late arrivals from
+    /// duplicating what the replay already restored.</summary>
+    public void ReplayBookReading()
+    {
+        if (!IsBookReadingMode)
+        {
+            return;
+        }
+
+        BookReadingStarted?.Invoke();
+        foreach (BookReadingPage page in _bookReadingDelivered.OrderBy(page => page.PageIndex))
+        {
+            BookReadingPageReady?.Invoke(page);
         }
     }
 
@@ -3144,6 +3291,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _bookReadingCancellation?.Cancel();
         _bookReadingCancellation?.Dispose();
         _bookReadingCancellation = null;
+        _bookReadingStream = null;
+        _bookReadingDocumentInstanceId = null;
+        _bookReadingDelivered.Clear();
+        _bookReadingLoaded.Clear();
+        _bookReadingIndices = [];
+        _bookReadingLoading = false;
         BookReadingProgressText = string.Empty;
         IsBookReadingMode = false;
     }

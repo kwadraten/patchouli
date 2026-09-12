@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Avalonia.Headless;
 using FluentAssertions;
 using Patchouli.Core.Ids;
@@ -10,12 +9,13 @@ using Patchouli.UI.ViewModels;
 namespace Patchouli.Tests;
 
 /// <summary>
-/// B1: the PDF workspace's whole-book reading mode. Verifies the view model toggles into and
-/// out of reading mode, guards against items without a document instance, clamps and persists
-/// the live font settings, and streams pages to the view in reading order with progress text.
-/// The real <see cref="BookReadingStream" /> ordering is covered by <c>BookReadingStreamTests</c>;
-/// these tests inject a fake stream through <see cref="PdfWorkspaceViewModel.BookReadingStreamFactory" />
-/// so they never need a database.
+/// B1: the PDF workspace's whole-book reading mode. Verifies the view model toggles into and out
+/// of reading mode, guards against items without a document instance, clamps and persists the
+/// live font settings, and loads pages as a window around the current page: an initial window on
+/// entry, on-demand batches near either edge, and a replay for views recreated on a tab switch.
+/// The real <see cref="BookReadingStream" /> is covered by <c>BookReadingStreamTests</c>; these
+/// tests inject a fake through <see cref="PdfWorkspaceViewModel.BookReadingStreamFactory" /> so
+/// they never need a database.
 /// </summary>
 [Collection("Avalonia")]
 public sealed class BookReadingModeTests : IDisposable
@@ -23,7 +23,7 @@ public sealed class BookReadingModeTests : IDisposable
     private readonly TemporaryAppSettingsFile _settings = new();
 
     // A parseable document-instance id (the view model feeds it to DocumentInstanceId.Parse before
-    // streaming); the fake stream ignores it, but it must be a valid Guid.
+    // loading); the fake stream ignores it, but it must be a valid Guid.
     private const string DocumentInstanceGuid = "00000000-0000-0000-0000-000000000001";
 
     [Fact]
@@ -35,7 +35,7 @@ public sealed class BookReadingModeTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
             PdfWorkspaceViewModel workspace = new(main, item);
-            workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(0, 0);
+            workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(0);
 
             workspace.IsBookReadingMode.Should().BeFalse();
             await workspace.EnterBookReadingCommand.ExecuteAsync();
@@ -55,12 +55,200 @@ public sealed class BookReadingModeTests : IDisposable
         MainWindowViewModel main = new(settingsPath: _settings.Path);
         LibraryItemViewModel item = CreateItem(null);
         PdfWorkspaceViewModel workspace = new(main, item);
-        workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(0, 0);
+        workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(0);
 
         await workspace.EnterBookReadingCommand.ExecuteAsync();
 
         workspace.IsBookReadingMode.Should().BeFalse("an item without a document instance cannot be read");
         workspace.Status.Should().Contain("没有可阅读的文档实例");
+    }
+
+    [Fact]
+    public async Task Enter_loads_only_the_initial_window_around_the_current_page()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+            List<BookReadingPage> delivered = [];
+            workspace.BookReadingPageReady += page => delivered.Add(page);
+
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+
+            // Start page 0, so the initial window is the start page plus eight ahead; nothing
+            // behind it exists. The other 21 pages stay unloaded.
+            delivered.Select(page => page.PageIndex).Should().Equal(Enumerable.Range(0, 9));
+            delivered.Should().OnlyContain(page => !page.IsPrepend);
+            stream.RequestedPages.Should().Equal(Enumerable.Range(0, 9));
+            workspace.BookReadingProgressText.Should().Be("已加载 9/30 页",
+                "progress stays visible while pages remain unloaded");
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Enter_preloads_the_pages_behind_the_start_page_after_the_pages_ahead()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+            workspace.BookReadingStartPageOverride = 20;
+            List<BookReadingPage> delivered = [];
+            workspace.BookReadingPageReady += page => delivered.Add(page);
+
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+
+            // The pages that follow the start page must arrive before the ones behind it, or the
+            // view cannot anchor a prepend against its already-recorded successor.
+            int[] expected = [20, 21, 22, 23, 24, 25, 26, 27, 28, 18, 19];
+            delivered.Select(page => page.PageIndex).Should().Equal(expected);
+            delivered.Select(page => page.IsPrepend).Should().Equal(
+                false, false, false, false, false, false, false, false, false, true, true);
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Forward_requests_load_the_next_batch_and_stop_at_the_end()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+            List<BookReadingPage> delivered = [];
+            workspace.BookReadingPageReady += page => delivered.Add(page);
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+            delivered.Clear();
+
+            await workspace.RequestBookReadingForwardAsync();
+
+            delivered.Select(page => page.PageIndex).Should().Equal(Enumerable.Range(9, 8));
+            delivered.Should().OnlyContain(page => !page.IsPrepend);
+            stream.RequestedPages.Should().OnlyHaveUniqueItems();
+
+            // Walk forward to the end, then a further request must not touch the stream.
+            await workspace.RequestBookReadingForwardAsync();
+            await workspace.RequestBookReadingForwardAsync();
+            delivered.Select(page => page.PageIndex).Should().Equal(Enumerable.Range(9, 21));
+            int requested = stream.RequestedPages.Count;
+            await workspace.RequestBookReadingForwardAsync();
+            stream.RequestedPages.Count.Should().Be(requested, "the last page is already loaded");
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Backward_requests_load_the_previous_batch_as_prepends_and_stop_at_the_start()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+            workspace.BookReadingStartPageOverride = 20;
+            List<BookReadingPage> delivered = [];
+            workspace.BookReadingPageReady += page => delivered.Add(page);
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+            delivered.Clear();
+
+            await workspace.RequestBookReadingBackwardAsync();
+
+            delivered.Select(page => page.PageIndex).Should().Equal(Enumerable.Range(10, 8));
+            delivered.Should().OnlyContain(page => page.IsPrepend);
+
+            await workspace.RequestBookReadingBackwardAsync();
+            await workspace.RequestBookReadingBackwardAsync();
+            delivered.Select(page => page.PageIndex).Should().Equal(
+                Enumerable.Range(10, 8).Concat(Enumerable.Range(2, 8)).Concat(Enumerable.Range(0, 2)));
+            int requested = stream.RequestedPages.Count;
+            await workspace.RequestBookReadingBackwardAsync();
+            stream.RequestedPages.Count.Should().Be(requested, "page 0 is already loaded");
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Requests_are_no_ops_outside_reading_mode()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+
+            await workspace.RequestBookReadingForwardAsync();
+            await workspace.RequestBookReadingBackwardAsync();
+
+            stream.ListCalls.Should().Be(0, "reading mode was never entered");
+            stream.RequestedPages.Should().BeEmpty();
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Replay_reannounces_the_start_and_every_delivered_page_in_order()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+            workspace.BookReadingStartPageOverride = 20;
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+            int started = 0;
+            List<BookReadingPage> replayed = [];
+            workspace.BookReadingStarted += () => started++;
+            workspace.BookReadingPageReady += page => replayed.Add(page);
+
+            workspace.ReplayBookReading();
+
+            started.Should().Be(1);
+            replayed.Select(page => page.PageIndex).Should().Equal(Enumerable.Range(18, 11));
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Exit_clears_the_session_cache_so_reentering_reloads()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            FakeBookReadingStream stream = new(30);
+            workspace.BookReadingStreamFactory = _ => stream;
+            List<BookReadingPage> delivered = [];
+            workspace.BookReadingPageReady += page => delivered.Add(page);
+
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+            stream.ListCalls.Should().Be(1);
+            delivered.Should().HaveCount(9);
+
+            workspace.ExitBookReadingCommand.Execute(null);
+            delivered.Clear();
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+
+            stream.ListCalls.Should().Be(2, "a fresh session re-lists the pages");
+            delivered.Should().HaveCount(9, "the cleared cache means every page is delivered again");
+        }, CancellationToken.None);
     }
 
     [Fact]
@@ -120,43 +308,6 @@ public sealed class BookReadingModeTests : IDisposable
     }
 
     [Fact]
-    public async Task Stream_delivers_pages_in_reading_order_and_reports_load_progress()
-    {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(async () =>
-        {
-            MainWindowViewModel main = new(settingsPath: _settings.Path);
-            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
-            PdfWorkspaceViewModel workspace = new(main, item);
-            // Five pages, start at page 2: the fake yields 2,3,4 (append) then 0,1 (prepend),
-            // mirroring the real stream's ordering so the test exercises both delivery paths.
-            workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(5, 2);
-
-            List<BookReadingPage> delivered = [];
-            string? lastNonEmptyProgress = null;
-            workspace.BookReadingPageReady += page => delivered.Add(page);
-            workspace.PropertyChanged += (_, args) =>
-            {
-                if (args.PropertyName == nameof(PdfWorkspaceViewModel.BookReadingProgressText))
-                {
-                    string current = workspace.BookReadingProgressText;
-                    if (!string.IsNullOrEmpty(current))
-                    {
-                        lastNonEmptyProgress = current;
-                    }
-                }
-            };
-
-            await workspace.EnterBookReadingCommand.ExecuteAsync();
-
-            delivered.Select(page => page.PageIndex).Should().Equal(2, 3, 4, 0, 1);
-            delivered.Select(page => page.IsPrepend).Should().Equal(false, false, false, true, true);
-            workspace.BookReadingProgressText.Should().BeEmpty("progress is cleared once streaming completes");
-            lastNonEmptyProgress.Should().Be("已加载 5/5 页");
-        }, CancellationToken.None);
-    }
-
-    [Fact]
     public void Reset_font_size_command_restores_the_default_and_persists()
     {
         MainWindowViewModel main = new(settingsPath: _settings.Path);
@@ -180,7 +331,7 @@ public sealed class BookReadingModeTests : IDisposable
             MainWindowViewModel main = new(settingsPath: _settings.Path);
             LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
             PdfWorkspaceViewModel workspace = new(main, item);
-            workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(3, 0);
+            workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(3);
 
             await workspace.EnterBookReadingCommand.ExecuteAsync();
             workspace.IsBookReadingMode.Should().BeTrue();
@@ -206,29 +357,28 @@ public sealed class BookReadingModeTests : IDisposable
             null, "source.pdf", "", 0, 0, "", _ => Task.CompletedTask, _ => Task.CompletedTask);
     }
 
-    // A stand-in for BookReadingStream that yields a fixed page set in reading order (start..last
-    // appended, then 0..start prepended) without touching a database. The start page is taken from
-    // the fake's own startIndex because the view model's _pageIndex is private; what matters here
-    // is the delivery/progress contract, not which start page the VM picks.
-    private sealed class FakeBookReadingStream(int pageCount, int startIndex) : IBookReadingStream
+    // A stand-in for BookReadingStream that serves a fixed page count from memory. It records the
+    // order pages were requested in and how many times the page list was read, so a test can
+    // assert the windowing and replay contract without a database.
+    private sealed class FakeBookReadingStream(int pageCount) : IBookReadingStream
     {
-        public async IAsyncEnumerable<BookReadingPage> StreamPagesAsync(
-            DocumentInstanceId documentInstanceId, int startPageIndex,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
-        {
-            for (int i = startIndex; i < pageCount; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await Task.Yield();
-                yield return new BookReadingPage(i, pageCount, false, $"<p>page {i}</p>");
-            }
+        public List<int> RequestedPages { get; } = [];
+        public int ListCalls { get; private set; }
 
-            for (int i = 0; i < startIndex; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await Task.Yield();
-                yield return new BookReadingPage(i, pageCount, true, $"<p>page {i}</p>");
-            }
+        public Task<IReadOnlyList<int>> ListPageIndicesAsync(
+            DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
+        {
+            ListCalls++;
+            return Task.FromResult((IReadOnlyList<int>)Enumerable.Range(0, pageCount).ToArray());
+        }
+
+        public Task<BookReadingPage> LoadPageAsync(
+            DocumentInstanceId documentInstanceId, int pageIndex, int pageCountValue,
+            CancellationToken cancellationToken = default)
+        {
+            RequestedPages.Add(pageIndex);
+            return Task.FromResult(new BookReadingPage(
+                pageIndex, pageCountValue, false, $"<p>page {pageIndex}</p>"));
         }
     }
 }

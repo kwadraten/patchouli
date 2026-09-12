@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -8,11 +7,11 @@ using Patchouli.Host.Composition;
 namespace Patchouli.UI.Reading;
 
 /// <summary>
-/// Host-backed <see cref="IBookReadingStream"/>. Pages are streamed one at a time as soon as
-/// their committed revision has been compiled, so a large book starts rendering without waiting
-/// for a whole-book compile. Pages at or after <c>startPageIndex</c> come first in reading order;
-/// the earlier pages follow with <see cref="BookReadingPage.IsPrepend"/> set so the view can insert
-/// them above the current scroll position.
+/// Host-backed <see cref="IBookReadingStream"/>. The view model asks for the page list once and
+/// then compiles individual pages on demand as its window grows, so a large book never pays for a
+/// whole-book compile when the reader only looks at a few pages. Pages without a committed
+/// revision (or whose compile fails) fall back to placeholder HTML so the reading flow stays
+/// continuous.
 /// </summary>
 public sealed class BookReadingStream : IBookReadingStream
 {
@@ -24,6 +23,11 @@ public sealed class BookReadingStream : IBookReadingStream
     private readonly Func<DocumentTreeRevisionId, bool, CancellationToken, bool, Task<Result<CompiledMarkdown>>>
         _compilePageMarkdown;
 
+    // Page list cache: LoadPageAsync runs once per page, so re-listing the whole document for
+    // every page would multiply the database round-trips by the window size. A stream instance
+    // lives for one reading session, so a stale list is not a concern.
+    private Page[]? _pages;
+
     public BookReadingStream(HostServices services)
     {
         ArgumentNullException.ThrowIfNull(services);
@@ -33,7 +37,7 @@ public sealed class BookReadingStream : IBookReadingStream
     }
 
     // Seam for tests: the three host calls the stream actually depends on, so a test can drive
-    // ordering, placeholders and cancellation without composing a whole HostServices graph.
+    // placeholders and cancellation without composing a whole HostServices graph.
     internal BookReadingStream(
         Func<DocumentInstanceId, CancellationToken, Task<Result<IReadOnlyList<Page>>>> listPages,
         Func<DocumentInstanceId, PageId, CancellationToken, Task<Result<DocumentTreeRevision>>> getCurrentRevision,
@@ -45,63 +49,69 @@ public sealed class BookReadingStream : IBookReadingStream
         _compilePageMarkdown = compilePageMarkdown;
     }
 
-    public async IAsyncEnumerable<BookReadingPage> StreamPagesAsync(
-        DocumentInstanceId documentInstanceId,
-        int startPageIndex,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<int>> ListPageIndicesAsync(
+        DocumentInstanceId documentInstanceId, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        Result<IReadOnlyList<Page>> listed = await _listPages(documentInstanceId, cancellationToken)
-            .ConfigureAwait(false);
-        if (listed.IsFailure)
+        Page[]? pages = await GetPagesAsync(documentInstanceId, cancellationToken).ConfigureAwait(false);
+        if (pages is null)
         {
-            // The contract has no error channel: an unreadable document streams no pages rather
+            // The contract has no error channel: an unreadable document reports no pages rather
             // than interrupting the reader with an exception the view cannot represent.
-            yield break;
+            return [];
         }
 
-        Page[] pages = listed.Value.OrderBy(page => page.PageIndex).ToArray();
-        if (pages.Length == 0)
-        {
-            yield break;
-        }
-
-        int start = Math.Clamp(startPageIndex, 0, pages.Length - 1);
-        for (int index = start; index < pages.Length; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            yield return await CompilePageAsync(pages[index], pages.Length, false, cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        for (int index = 0; index < start; index++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            yield return await CompilePageAsync(pages[index], pages.Length, true, cancellationToken)
-                .ConfigureAwait(false);
-        }
+        return pages.Select(page => page.PageIndex).ToArray();
     }
 
-    private async Task<BookReadingPage> CompilePageAsync(
-        Page page,
-        int pageCount,
-        bool isPrepend,
-        CancellationToken cancellationToken)
+    public async Task<BookReadingPage> LoadPageAsync(
+        DocumentInstanceId documentInstanceId, int pageIndex, int pageCount,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        Page[]? pages = await GetPagesAsync(documentInstanceId, cancellationToken).ConfigureAwait(false);
+        Page? page = pages?.FirstOrDefault(candidate => candidate.PageIndex == pageIndex);
+        if (page is null)
+        {
+            return new BookReadingPage(pageIndex, pageCount, false,
+                BookReadingHtml.CompilePlaceholderHtml(pageIndex, pageCount));
+        }
+
         Result<DocumentTreeRevision> revision =
             await _getCurrentRevision(page.DocumentInstanceId, page.PageId, cancellationToken).ConfigureAwait(false);
         if (revision.IsFailure)
         {
-            return new BookReadingPage(page.PageIndex, pageCount, isPrepend,
-                BookReadingHtml.CompilePlaceholderHtml(page.PageIndex, pageCount));
+            return new BookReadingPage(pageIndex, pageCount, false,
+                BookReadingHtml.CompilePlaceholderHtml(pageIndex, pageCount));
         }
 
         Result<CompiledMarkdown> compiled = await _compilePageMarkdown(
                 revision.Value.TreeRevisionId, false, cancellationToken, true)
             .ConfigureAwait(false);
         string html = compiled.IsFailure
-            ? BookReadingHtml.CompilePlaceholderHtml(page.PageIndex, pageCount)
-            : BookReadingHtml.CompilePageHtml(compiled.Value, page.PageIndex, pageCount);
-        return new BookReadingPage(page.PageIndex, pageCount, isPrepend, html);
+            ? BookReadingHtml.CompilePlaceholderHtml(pageIndex, pageCount)
+            : BookReadingHtml.CompilePageHtml(compiled.Value, pageIndex, pageCount);
+        // IsPrepend is the view model's call; the stream only reports page content.
+        return new BookReadingPage(pageIndex, pageCount, false, html);
+    }
+
+    // Returns null when the page list cannot be read; only a successful list is cached.
+    private async Task<Page[]?> GetPagesAsync(
+        DocumentInstanceId documentInstanceId, CancellationToken cancellationToken)
+    {
+        if (_pages is not null)
+        {
+            return _pages;
+        }
+
+        Result<IReadOnlyList<Page>> listed = await _listPages(documentInstanceId, cancellationToken)
+            .ConfigureAwait(false);
+        if (listed.IsFailure)
+        {
+            return null;
+        }
+
+        _pages = listed.Value.OrderBy(page => page.PageIndex).ToArray();
+        return _pages;
     }
 }

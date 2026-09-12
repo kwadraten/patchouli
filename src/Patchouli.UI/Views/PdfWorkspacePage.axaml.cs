@@ -38,18 +38,14 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private Vector _panStartOffset;
 
-    // Whole-book reading mode: counts blocks already front-inserted above the start page so
-    // each prepended page batch is inserted right after the previous one (preserving page order
-    // instead of reversing it by always inserting at index 0).
-    private int _prependedBlockCount;
-
     // Reading-mode page rail: per-page HTML cache (so a font change can rebuild the document and
-    // re-measure page offsets), the set of pages that arrived as front-inserts, the measured
-    // height of the prepended region, and the page-index → vertical-offset map feeding badges.
+    // re-measure page offsets), the set of pages that arrived as front-inserts, the block count
+    // each front-inserted page contributed (so a new batch lands in page order regardless of how
+    // many batches arrived), and the page-index → vertical-offset map feeding badges.
     private readonly SortedDictionary<int, string> _bookReadingHtmlCache = new();
     private readonly HashSet<int> _bookReadingPrependedPages = [];
+    private readonly SortedList<int, int> _bookReadingPrependedBlockCounts = new();
     private readonly BookReadingPageMap _bookReadingPageMap = new();
-    private double _bookReadingPrependedHeight;
 
     public PdfWorkspacePage()
     {
@@ -59,6 +55,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         // Tunnel so Ctrl+wheel is handled (and swallowed) before ScrollViewer's own bubble-phase scrolling.
         PdfScrollViewer.AddHandler(PointerWheelChangedEvent, OnScrollPointerWheelChanged,
             RoutingStrategies.Tunnel);
+        BookReadingScroller.ScrollChanged += OnBookReadingScrollChanged;
     }
 
     private void OnBBoxContextRequested(object? sender, ContextRequestedEventArgs e)
@@ -101,6 +98,13 @@ public sealed partial class PdfWorkspacePage : UserControl
             _workspace.BookReadingStarted += OnBookReadingStarted;
             _workspace.BookReadingPageReady += OnBookReadingPageReady;
             _workspace.PropertyChanged += OnBookReadingPropertyChanged;
+            if (_workspace.IsBookReadingMode)
+            {
+                // The view was recreated after reading mode had already started (e.g. a tab switch
+                // back). The start/page events fired before this subscription existed, so ask the
+                // workspace to replay what it has delivered.
+                _workspace.ReplayBookReading();
+            }
         }
     }
 
@@ -543,11 +547,10 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnBookReadingStarted()
     {
-        _prependedBlockCount = 0;
         _bookReadingHtmlCache.Clear();
         _bookReadingPrependedPages.Clear();
+        _bookReadingPrependedBlockCounts.Clear();
         _bookReadingPageMap.Clear();
-        _bookReadingPrependedHeight = 0;
         BookReadingBadgeRail.Children.Clear();
         if (_workspace is null)
         {
@@ -598,38 +601,70 @@ public sealed partial class PdfWorkspacePage : UserControl
             return;
         }
 
-        // Earlier pages: front-insert preserving page order. Insert this page's blocks right
-        // after the blocks already front-inserted (which sit above the start page). Always
-        // inserting at index 0 would reverse the earlier pages, so the view tracks how many
-        // blocks it has prepended and inserts each batch right after them.
-        // Settle the pending measure first: appended pages only invalidate, so without a layout
-        // pass heightBefore (and therefore the recorded insertion delta) could be stale.
+        // Earlier pages: front-insert preserving page order. Each page lands right after every
+        // already-prepended page with a lower index, so page order holds no matter how the pages
+        // were batched. Settle the pending measure first: appended pages only invalidate, so
+        // without a layout pass heightBefore (and therefore the recorded insertion delta) could be
+        // stale.
         BookReadingEditor.UpdateLayout();
         double heightBefore = BookReadingEditor.DesiredSize.Height;
         double offsetBefore = BookReadingScroller.Offset.Y;
-        int insertAt = _prependedBlockCount;
+        int insertAt = _bookReadingPrependedBlockCounts
+            .Where(entry => entry.Key < page.PageIndex)
+            .Sum(entry => entry.Value);
+        int blockCount = parsed.Blocks.Count;
         foreach (Block block in parsed.Blocks)
         {
             document.Blocks.Insert(insertAt, block);
             insertAt++;
         }
 
-        _prependedBlockCount = insertAt;
+        _bookReadingPrependedBlockCounts[page.PageIndex] = blockCount;
         _bookReadingPrependedPages.Add(page.PageIndex);
         BookReadingEditor.InvalidateMeasure();
         BookReadingEditor.UpdateLayout();
 
         // Keep the reading position stable: the inserted blocks sit above the viewport, so push
-        // the scroll offset down by the amount the editor just grew.
+        // the scroll offset down by the amount the editor just grew. The insertion point comes
+        // from the already-recorded page that follows this one in visual order.
         double delta = BookReadingEditor.DesiredSize.Height - heightBefore;
-        _bookReadingPageMap.RecordPrepend(page.PageIndex, _bookReadingPrependedHeight, delta);
-        _bookReadingPrependedHeight += delta;
-        if (delta > 0)
+        double insertY = _bookReadingPageMap.GetInsertY(page.PageIndex);
+        _bookReadingPageMap.RecordPrepend(page.PageIndex, insertY, delta);
+        if (delta > 0 && insertY <= offsetBefore)
         {
             BookReadingScroller.Offset = new Vector(0, offsetBefore + delta);
         }
 
         UpdateBookReadingBadges();
+    }
+
+    // Pulls the next page window when the reader nears either end of the loaded range. Prefetch
+    // is deliberately generous (a full viewport of slack): a batch is cheap, and waiting until
+    // the very edge would show a blank frame while it loads.
+    private void OnBookReadingScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        if (_workspace is not { IsBookReadingMode: true } workspace)
+        {
+            return;
+        }
+
+        double viewport = BookReadingScroller.Viewport.Height;
+        double extent = BookReadingScroller.Extent.Height;
+        if (viewport <= 0 || extent <= 0)
+        {
+            return;
+        }
+
+        double offsetY = BookReadingScroller.Offset.Y;
+        if (offsetY + 2 * viewport >= extent)
+        {
+            _ = workspace.RequestBookReadingForwardAsync();
+        }
+
+        if (offsetY <= viewport)
+        {
+            _ = workspace.RequestBookReadingBackwardAsync();
+        }
     }
 
     private void OnBookReadingPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -707,8 +742,7 @@ public sealed partial class PdfWorkspacePage : UserControl
 
         double baseSize = _workspace.BookReadingFontSize;
         _bookReadingPageMap.Clear();
-        _prependedBlockCount = 0;
-        double startPageY = -1;
+        _bookReadingPrependedBlockCounts.Clear();
         foreach ((int pageIndex, string html) in _bookReadingHtmlCache)
         {
             FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(html);
@@ -721,15 +755,10 @@ public sealed partial class PdfWorkspacePage : UserControl
             BookReadingEditor.InvalidateMeasure();
             if (_bookReadingPrependedPages.Contains(pageIndex))
             {
-                _prependedBlockCount += blockCount;
-            }
-            else if (startPageY < 0)
-            {
-                startPageY = startY;
+                _bookReadingPrependedBlockCounts[pageIndex] = blockCount;
             }
         }
 
-        _bookReadingPrependedHeight = startPageY >= 0 ? startPageY : 0;
         BookReadingEditor.UpdateLayout();
         double extent = BookReadingEditor.DesiredSize.Height;
         if (extent > 0 && scrollRatio > 0)
