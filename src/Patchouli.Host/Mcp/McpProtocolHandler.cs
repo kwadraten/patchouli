@@ -27,7 +27,11 @@ public sealed class McpProtocolHandler
         Func<object, string>? toonEncoder = null)
     {
         _readApi = api;
-        _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader);
+        _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader,
+            (settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow))
+            .ExposeLibraryTags,
+            (settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow))
+            .ExposeLibraryCollections);
         _ = db;
         _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
         {
@@ -159,7 +163,7 @@ public sealed class McpProtocolHandler
                     ["query"] = ToolSchemaProperty.String("Search query. Omit to browse the scope."),
                     ["in"] = ToolSchemaProperty.String("Resource scope URI to search or browse."),
                     ["where"] = ToolSchemaProperty.Array(
-                        "Filter clauses as KEY=VALUE; supported keys: item_type, item_status, document_status, source_status, primary_document_ocr_index_status, ocr_index_status, style_enabled, citable.",
+                        "Filter clauses as KEY=VALUE; supported keys: item_type, item_status, primary_document_ocr_index_status, collection_id (exact Collection id), tag (exact, case-sensitive), citable, document_status, source_status, ocr_index_status, style_enabled.",
                         ToolSchemaProperty.String("KEY=VALUE filter clause.")),
                     ["literal"] = ToolSchemaProperty.Boolean("Require an exact literal substring match."),
                     ["limit"] = ToolSchemaProperty.Integer("Maximum results, from 1 through 50."),
@@ -175,7 +179,7 @@ public sealed class McpProtocolHandler
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["uris"] = ToolSchemaProperty.Array(
-                        "Resource URIs: items/<id>.bib, texts/<document-id>/, texts/<document-id>/page-<index>.md, " +
+                        "Resource URIs: library.toon, items/<id>.bib, texts/<document-id>/, texts/<document-id>/page-<index>.md, " +
                         "texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>] or csl-styles/<id>.csl.",
                         ToolSchemaProperty.String("Resource URI.")),
                     ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
@@ -843,6 +847,7 @@ public sealed class McpProtocolHandler
         }
 
         public Task<Result<string>> ExportItemForAgentAsync(ItemId itemId,
+            bool includeKeywords,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Unavailable<string>());

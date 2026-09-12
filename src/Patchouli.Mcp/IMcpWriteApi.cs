@@ -2,7 +2,7 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
 
-public sealed record McpPutRequest(string Uri, string Content);
+public sealed record McpPutRequest(string Uri, string Content, bool PreserveTags = false);
 
 public sealed record McpPutResponse(
     string Uri,

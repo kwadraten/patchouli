@@ -573,6 +573,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private NavCategoryViewModel _activeNavSection = null!;
     private bool _availableItemTypesLoaded;
     private bool _hasUnsavedChanges;
+    private bool _collectionsDirty;
     private bool _isSaving;
 
     /// <summary>Test seam over <see cref="MetadataLookupUiBridge" />; production code never overrides it.</summary>
@@ -955,6 +956,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private void ResetUnsavedState()
     {
         _hasUnsavedChanges = false;
+        _collectionsDirty = false;
         Raise(nameof(HasUnsavedChanges));
     }
 
@@ -986,8 +988,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public ObservableCollection<IdentifierSchemeShortcutViewModel> IdentifierSchemeShortcuts { get; } = new();
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
     public ObservableCollection<DocumentCommitViewModel> DocumentCommits { get; } = new();
+    public ObservableCollection<CollectionSelectionItemViewModel> Collections { get; } = new();
     public bool HasIdentifierSchemeShortcuts => IdentifierSchemeShortcuts.Count > 0;
     public bool HasDocumentCommits => DocumentCommits.Count > 0;
+    public bool HasCollections => Collections.Count > 0;
+    public bool NoCollections => Collections.Count == 0;
 
     private LinkedDocumentInstanceItemViewModel? _selectedHistoryDocument;
 
@@ -1106,6 +1111,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         ExtraCslRows.Clear();
         RefreshExtraCslVariableChoices();
         UpdateUnsavedCslPreviewState();
+        await RefreshCollectionsAsync(await _main.ServicesAsync());
         ResetUnsavedState();
         RaiseAll();
     }
@@ -1219,6 +1225,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
         await RefreshLinkedFilesAsync();
         await RefreshDocumentCommitsAsync();
         await RefreshCslPreviewAsync();
+        await RefreshCollectionsAsync(services);
         ResetUnsavedState();
         RaiseAll();
     }
@@ -1353,7 +1360,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 CustomFieldsJson: customFieldsJson,
                 Creators: creators,
                 Dates: dates,
-                Identifiers: _pendingIdentifiers.ToArray()));
+                Identifiers: _pendingIdentifiers.ToArray(),
+                Collections: _collectionsDirty ? SelectedCollectionIds() : null));
 
             if (created.IsFailure)
             {
@@ -1415,7 +1423,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
                     CustomFieldsJson: customFieldsJson,
                     Creators: creators,
                     Dates: dates,
-                    ExpectedUpdatedAt: loadedItem.UpdatedAt));
+                    ExpectedUpdatedAt: loadedItem.UpdatedAt,
+                    Collections: _collectionsDirty ? SelectedCollectionIds() : null));
 
             if (updated.IsFailure)
             {
@@ -1547,6 +1556,81 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Raise(nameof(Status));
         _main.Report(Status);
         return Task.CompletedTask;
+    }
+
+    private async Task RefreshCollectionsAsync(HostServices services)
+    {
+        Collections.Clear();
+        Result<IReadOnlyList<Collection>> all = await services.Collections.ListCollectionsAsync();
+        if (all.IsFailure)
+        {
+            Raise(nameof(HasCollections));
+            Raise(nameof(NoCollections));
+            return;
+        }
+
+        HashSet<CollectionId> selected = new();
+        if (_itemId is not null)
+        {
+            Result<IReadOnlyList<CollectionId>> membership =
+                await services.Collections.GetItemCollectionIdsAsync(_itemId.Value);
+            if (membership.IsSuccess)
+            {
+                selected = membership.Value.ToHashSet();
+            }
+        }
+
+        foreach (Collection collection in all.Value)
+        {
+            Collections.Add(new CollectionSelectionItemViewModel(
+                collection.CollectionId, collection.Name, selected.Contains(collection.CollectionId),
+                MarkCollectionsDirty));
+        }
+
+        Raise(nameof(HasCollections));
+        Raise(nameof(NoCollections));
+    }
+
+    private void MarkCollectionsDirty()
+    {
+        _collectionsDirty = true;
+        MarkUnsaved();
+    }
+
+    private CollectionId[] SelectedCollectionIds()
+    {
+        return Collections.Where(collection => collection.IsSelected)
+            .Select(collection => collection.CollectionId)
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Reloads the collection catalog after a committed Collection change while preserving this
+    /// editor's staged checkbox state. Unlike <see cref="RefreshCollectionsAsync"/> it never resets
+    /// selection to persisted membership, so an open editor with unsaved collection edits keeps
+    /// them; dissolved collections are dropped and newly created ones start unchecked.
+    /// </summary>
+    public async Task RefreshCollectionCatalogAsync()
+    {
+        HostServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<Collection>> all = await services.Collections.ListCollectionsAsync();
+        if (all.IsFailure)
+        {
+            return;
+        }
+
+        Dictionary<CollectionId, bool> staged = Collections
+            .ToDictionary(collection => collection.CollectionId, collection => collection.IsSelected);
+        Collections.Clear();
+        foreach (Collection collection in all.Value)
+        {
+            bool isSelected = staged.TryGetValue(collection.CollectionId, out bool selected) && selected;
+            Collections.Add(new CollectionSelectionItemViewModel(
+                collection.CollectionId, collection.Name, isSelected, MarkCollectionsDirty));
+        }
+
+        Raise(nameof(HasCollections));
+        Raise(nameof(NoCollections));
     }
 
     private async Task RefreshIdentifiersAsync()

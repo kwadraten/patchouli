@@ -57,6 +57,10 @@ A user-editable label attached to an Item for organization and filtering. Tags o
 User-facing Chinese term: 标签.
 _Avoid_: Keyword, subject, category
 
+**Collection**:
+A one-level user playlist inside a Library: a named many-to-many relation over Items (集合). Collections sort by name, may be empty, and cannot nest. Membership lives in `item_collections` keyed by stable `collection_id`; the legacy `items.collections_json` mirror is cleared and never authoritative. Dissolving a Collection removes only its membership rows and never deletes Items. Memberships survive Item trash/restore, follow the target on merge, and are removed on purge.
+_Avoid_: Folder, tag, nested collection, `collections_json` as authority
+
 **FileAsset**:
 The identity and verification record for an original user-owned file, independent of where that file currently lives.
 _Avoid_: PDF, attachment, path
@@ -137,14 +141,14 @@ A user-owned token, key, or credential used by OCR/HTR providers. It is never ex
 _Avoid_: Provider config, secret in shard
 
 **MCP surface**:
-The text-only external surface for library exploration, evidence retrieval, citation rendering, and—when enabled—limited whole-resource writes of item bibliography and CSL styles (ADR `0023`). Production uses `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` under ADR `0024`, served by the one desktop or headless runtime host for the Library. CLI is a local MCP client of that host; remote/local agent clients use the same service. It never exposes local paths, provider secrets, images, file URLs, or OCR/index actions. The Bashkit shell has been removed from `main` (historical evidence remains on the `feature/mcp-ab-benchmark` branch) and is not a production tool. .NET remains the sole domain authority for Library data.
+The text-only external surface for library exploration, evidence retrieval, citation rendering, and—when enabled—limited whole-resource writes of item bibliography and CSL styles (ADR `0023`). Production uses `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` under ADR `0024`, served by the one desktop or headless runtime host for the Library. CLI is a local MCP client of that host; remote/local agent clients use the same service. All agents can fetch the fixed `patchouli://library.toon` projection (`library_id`, `display_name`, and—when the device-local `ExposeLibraryTags`/`ExposeLibraryCollections` policy allows—sorted tags and collections with item counts; collections include empty ones). Item filtering supports exact `collection_id` and exact case-sensitive `tag` clauses intersecting with AND; hiding a category returns `PERMISSION_DENIED` for that filter and removes it from relationship output. There is no `/collections` VFS directory and no collection URI, and Collections are MCP write-protected. MCP never exposes local paths, provider secrets, images, file URLs, or OCR/index actions. `.NET` remains the sole domain authority for Library data.
 
 
 ## Library Lifecycle And Search UI
 
 **Item Lifecycle**: Active, Trash (回收站), Merged (合并重定向墓碑), and Purged (永久删除，仅保留 purge record). Trash and Merged retain Item rows; Purged does not. These are lifecycle states, separate from the user-editable bibliographic `item_status`. See [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md) for merge, purge, snapshot remapping, tags and GC.
 
-**Bibliographic Search / 元数据筛选**: title/creator/identifier matching plus structured Item filters through `LibraryItemQueryService.SearchRowsAsync`. Results exclude trash/merged Items and use the library's columns and persisted grid preferences.
+**Bibliographic Search / 元数据筛选**: title/creator/identifier matching plus structured Item filters through `LibraryItemQueryService.SearchRowsAsync`. Structured keys include exact `collection_id` and exact case-sensitive `tag` filters that intersect with the other filters by AND. Results exclude trash/merged Items and use the library's columns and persisted grid preferences.
 
 **Full-text Search / 全文搜索**: SearchUnit/FTS search grouped by Item, with child snippets and navigation through versioned evidence URIs. Snippets normalize line breaks, emphasize matches and truncate around matches with CJK display width considered. Index readiness remains a derived capability, not an Item/Document/FileAsset status.
 
@@ -154,7 +158,7 @@ Switching modes keeps input and filter rows. Enter and the search button use the
 
 ## Desktop View And Dialog Vocabulary
 
-- **Library / 书库**: the ProDataGrid Item list, tag sidebar and selected-Item inspector. Source fields are type-aware; column visibility, width, order and sorting use persisted UI preferences. Search grids follow the library column settings.
+- **Library / 书库**: the ProDataGrid Item list, tag and collection sidebars and selected-Item inspector. The collection section lists one-level playlists sorted by name, filters the grid to a selected collection, and accepts Item drag/drop, rename, and dissolve actions. Source fields are type-aware; column visibility, width, order and sorting use persisted UI preferences. Search grids follow the library column settings.
 - **Trash / 回收站**: a library section with restore/permanent-purge actions; tag navigation and content-edit/OCR entry points are hidden.
 - **PDF Workspace / PDF 工作台**: page navigation, raster, Box Tree, text preview and page revision history. Document commit history is also available from the Item editor's file-management area. History restoration creates a new commit, never rolls HEAD backward.
 - **ConfirmDialog**: shared confirmation window; danger mode is used for destructive local-file/tag operations.

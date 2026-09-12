@@ -48,6 +48,24 @@ public readonly record struct ItemId(Guid Value)
     }
 }
 
+public readonly record struct CollectionId(Guid Value)
+{
+    public static CollectionId New()
+    {
+        return new CollectionId(Guid.NewGuid());
+    }
+
+    public static CollectionId Parse(string value)
+    {
+        return new CollectionId(Guid.Parse(value));
+    }
+
+    public override string ToString()
+    {
+        return Value.ToString("D");
+    }
+}
+
 public readonly record struct IdentifierId(Guid Value)
 {
     public static IdentifierId New()

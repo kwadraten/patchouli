@@ -228,6 +228,7 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             BibliographicSearchFilterKeys.ItemType => options.ItemTypes,
             BibliographicSearchFilterKeys.ItemStatus => options.ItemStatuses,
             BibliographicSearchFilterKeys.PrimaryDocumentOcrIndexStatus => options.OcrIndexStatuses,
+            BibliographicSearchFilterKeys.CollectionId => options.Collections,
             BibliographicSearchFilterKeys.Citable =>
             [
                 new SearchFilterOption("true", "可引用"),
@@ -244,6 +245,26 @@ public sealed class SearchEvidenceViewModel : ViewModelBase
             return;
         }
 
+        await LoadFilterOptionsAsync();
+    }
+
+    /// <summary>
+    /// Re-reads the filter option catalogs after a committed Library change so an open advanced
+    /// search observes collection create/rename/dissolve without a tab reload. A no-op until the
+    /// options were first requested, so the reload stays cheap and lazy.
+    /// </summary>
+    public async Task ReloadFilterOptionsAsync()
+    {
+        if (_filterOptions is null)
+        {
+            return;
+        }
+
+        await LoadFilterOptionsAsync();
+    }
+
+    private async Task LoadFilterOptionsAsync()
+    {
         HostServices services = await _main.ServicesAsync();
         Result<BibliographicSearchFilterOptions> options = await services.LibraryItems.GetSearchFilterOptionsAsync();
         if (options.IsFailure)

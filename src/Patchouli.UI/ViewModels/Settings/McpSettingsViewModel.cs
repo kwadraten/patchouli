@@ -1,6 +1,7 @@
 using Patchouli.UI.ViewModels;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Cli;
+using Patchouli.Mcp;
 using System;
 using System.Collections.ObjectModel;
 using System.Security.Cryptography;
@@ -52,6 +53,100 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         SaveAndRestartCommand = new AsyncCommand(SaveAndRestartAsync);
         AddCliToPathCommand = new AsyncCommand(AddCliToPathAsync);
         RemoveCliFromPathCommand = new AsyncCommand(RemoveCliFromPathAsync);
+        RefreshLibraryPreviewCommand = new AsyncCommand(RefreshLibraryPreviewAsync);
+    }
+
+    private string _libraryPreviewText = "";
+
+    public bool ExposeLibraryTags
+    {
+        get => _settings.ExposeLibraryTags;
+        set
+        {
+            if (_settings.ExposeLibraryTags == value)
+            {
+                return;
+            }
+
+            _settings = _settings with { ExposeLibraryTags = value };
+            Raise();
+            MarkDirty();
+        }
+    }
+
+    public bool ExposeLibraryCollections
+    {
+        get => _settings.ExposeLibraryCollections;
+        set
+        {
+            if (_settings.ExposeLibraryCollections == value)
+            {
+                return;
+            }
+
+            _settings = _settings with { ExposeLibraryCollections = value };
+            Raise();
+            MarkDirty();
+        }
+    }
+
+    public string LibraryPreviewText
+    {
+        get => _libraryPreviewText;
+        private set
+        {
+            if (_libraryPreviewText == value)
+            {
+                return;
+            }
+
+            _libraryPreviewText = value;
+            Raise();
+        }
+    }
+
+    public AsyncCommand RefreshLibraryPreviewCommand { get; }
+
+    /// <summary>
+    /// Explains the relationship between this preview and the running MCP server. Exposure is
+    /// saved-and-restarted policy, so the preview always renders the persisted settings rather
+    /// than the unsaved draft and must never imply that an edit is already live.
+    /// </summary>
+    public string LibraryPreviewHint
+    {
+        get
+        {
+            if (_isDirty)
+            {
+                return "预览使用已保存的设置；保存并重启 MCP Server 后该更改才会生效。";
+            }
+
+            if (RequiresReload)
+            {
+                return "正在运行的 MCP Server 仍使用旧设置，重启后预览才与运行输出一致。";
+            }
+
+            return "预览与正在运行的 MCP Server 暴露策略一致。";
+        }
+    }
+
+    private async Task RefreshLibraryPreviewAsync()
+    {
+        try
+        {
+            Result<McpLibraryProjection> projection = await (await _main.ServicesAsync()).Mcp
+                .GetLibraryProjectionAsync(_persistedSettings.ExposeLibraryTags,
+                    _persistedSettings.ExposeLibraryCollections);
+            LibraryPreviewText = projection.IsSuccess
+                ? McpCommandService.DefaultToonEncoder(projection.Value)
+                : $"ERROR {projection.ErrorCode}: {projection.ErrorMessage}";
+        }
+        catch (Exception exception)
+        {
+            LibraryPreviewText = $"ERROR: {exception.Message}";
+        }
+
+        Raise(nameof(LibraryPreviewHint));
     }
 
     public int Port
@@ -236,6 +331,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             SaveState = SettingsSaveState.Clean;
             LastError = null;
             RefreshRequiresReload();
+            await RefreshLibraryPreviewAsync();
             SetStatus("已放弃更改");
         }
         finally
@@ -353,6 +449,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         LastError = null;
         RefreshRequiresReload();
         RefreshCliStatus(await _main.ServicesAsync());
+        await RefreshLibraryPreviewAsync();
         SetStatus("已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -463,6 +560,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         _isDirty = true;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
+        Raise(nameof(LibraryPreviewHint));
         SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";
     }
@@ -471,6 +569,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     {
         RequiresReload = _main.McpRunningSettingsRevision is long runningRevision &&
                          runningRevision != _persistedSettings.Revision;
+        Raise(nameof(LibraryPreviewHint));
     }
 
     private void ReloadToolOverrides()
@@ -490,7 +589,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
                  {
                      nameof(Port), nameof(BindAddress), nameof(AllowExternalAccess), nameof(CorsEnabled),
                      nameof(TransportDescription), nameof(AllowedOriginsText), nameof(AuthRequired),
-                     nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides)
+                     nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides),
+                     nameof(ExposeLibraryTags), nameof(ExposeLibraryCollections), nameof(LibraryPreviewHint)
                  })
         {
             Raise(property);

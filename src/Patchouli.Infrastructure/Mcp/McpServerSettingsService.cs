@@ -172,6 +172,11 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             mcp.TryGetProperty("ShellCommandTimeoutSeconds", out JsonElement timeoutValue)
                 ? timeoutValue.GetInt32()
                 : 15;
+        bool exposeLibraryTags =
+            !mcp.TryGetProperty("ExposeLibraryTags", out JsonElement exposeTags) || exposeTags.GetBoolean();
+        bool exposeLibraryCollections =
+            !mcp.TryGetProperty("ExposeLibraryCollections", out JsonElement exposeCollections) ||
+            exposeCollections.GetBoolean();
         DateTimeOffset updatedAt =
             mcp.TryGetProperty("UpdatedAt", out JsonElement updatedAtValue) &&
             DateTimeOffset.TryParse(updatedAtValue.GetString(), out DateTimeOffset parsedUpdatedAt)
@@ -181,7 +186,9 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             auth || !string.IsNullOrWhiteSpace(token),
             string.IsNullOrWhiteSpace(token) ? null : token, tools, updatedAt, revision)
         {
-            ShellCommandTimeoutSeconds = shellCommandTimeoutSeconds
+            ShellCommandTimeoutSeconds = shellCommandTimeoutSeconds,
+            ExposeLibraryTags = exposeLibraryTags,
+            ExposeLibraryCollections = exposeLibraryCollections
         };
     }
 
@@ -215,6 +222,8 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             ["Token"] = settings.Token ?? "",
             ["ToolOverrides"] = JsonSerializer.SerializeToNode(settings.ToolOverrides),
             ["ShellCommandTimeoutSeconds"] = settings.ShellCommandTimeoutSeconds,
+            ["ExposeLibraryTags"] = settings.ExposeLibraryTags,
+            ["ExposeLibraryCollections"] = settings.ExposeLibraryCollections,
             ["UpdatedAt"] = settings.UpdatedAt.ToUniversalTime().ToString("O"),
             ["Revision"] = settings.Revision
         };

@@ -124,7 +124,10 @@ static void PrintUsage()
         "patchouli-cli [--json] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite> [arguments]");
     Console.Error.WriteLine(
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
+    Console.Error.WriteLine(
+        "    Filter keys include item_type, item_status, collection_id, tag (exact, case-sensitive), citable.");
     Console.Error.WriteLine("  fetch <uri>... [--range <lines:S-E|pages:S-E>] [--limit-bytes <n>]");
+    Console.Error.WriteLine("    Library projection: patchouli://library.toon");
     Console.Error.WriteLine(
         "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>]");
     Console.Error.WriteLine("  put <uri> --from <path>|--stdin");

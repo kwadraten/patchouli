@@ -345,6 +345,48 @@ public sealed partial class LibraryPage : UserControl
         }
     }
 
+    // ---------- Collection interactions ----------
+
+    private void OnCollectionDragOver(object? sender, DragEventArgs e)
+    {
+        if (sender is not Border border || border.DataContext is not CollectionListItemViewModel ||
+            DataContext is not LibraryShellViewModel)
+        {
+            e.DragEffects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        e.DragEffects = HasItemDrag(e) ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private async void OnCollectionDrop(object? sender, DragEventArgs e)
+    {
+        if (sender is not Border border || border.DataContext is not CollectionListItemViewModel collection ||
+            DataContext is not LibraryShellViewModel shell)
+        {
+            return;
+        }
+
+        IReadOnlyList<string> draggedItemIds = GetDraggedItemIds(e);
+        if (draggedItemIds.Count == 0)
+        {
+            return;
+        }
+
+        LibraryItemViewModel[] draggedItems = shell.Items
+            .Where(item => draggedItemIds.Contains(item.ItemId, StringComparer.Ordinal))
+            .ToArray();
+        if (draggedItems.Length == 0)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        await shell.DropItemsOnCollectionAsync(draggedItems, collection.CollectionId);
+    }
+
     // ---------- DataGrid row drag source ----------
 
     private LibraryItemViewModel? _dragItem;

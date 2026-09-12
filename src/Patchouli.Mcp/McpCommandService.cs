@@ -22,15 +22,20 @@ public sealed class McpCommandService
     private readonly IBiblatexImportService _biblatex;
     private readonly IItemService _items;
     private readonly IVersionedEvidenceReader _evidenceReader;
+    private readonly bool _exposeLibraryTags;
+    private readonly bool _exposeLibraryCollections;
 
     public McpCommandService(IMcpReadApi read, IMcpWriteApi write, IBiblatexImportService biblatex,
-        IItemService items, IVersionedEvidenceReader evidenceReader)
+        IItemService items, IVersionedEvidenceReader evidenceReader,
+        bool exposeLibraryTags = true, bool exposeLibraryCollections = true)
     {
         _read = read;
         _write = write;
         _biblatex = biblatex;
         _items = items;
         _evidenceReader = evidenceReader;
+        _exposeLibraryTags = exposeLibraryTags;
+        _exposeLibraryCollections = exposeLibraryCollections;
     }
 
     public const int MaxLimit = 50;
@@ -149,6 +154,12 @@ public sealed class McpCommandService
         if (matrixError is not null)
         {
             return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.InvalidArgument, matrixError);
+        }
+
+        string? exposureError = ValidateExposure(where);
+        if (exposureError is not null)
+        {
+            return McpCommandResult<McpFindMeta, object>.Fail(McpErrorCode.PermissionDenied, exposureError);
         }
 
         int limit = Math.Clamp(request.Limit, 1, MaxLimit);
@@ -279,7 +290,7 @@ public sealed class McpCommandService
         }
 
         McpUriKind kind = parsed.Value.Kind;
-        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence)
+        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence or McpUriKind.Library)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
                 $"'{request.Uri}' is read-only; only items/*.bib and csl-styles/*.csl can be replaced.");
@@ -294,7 +305,10 @@ public sealed class McpCommandService
         Result<McpLibraryStateResponse> beforeWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
         string baseRevision = beforeWrite.IsSuccess ? beforeWrite.Value.LibraryRevision : "lib:0";
 
-        Result<McpPutResponse> result = await _write.PutAsync(request, cancellationToken);
+        McpPutRequest effectiveRequest = _exposeLibraryTags
+            ? request
+            : request with { PreserveTags = true };
+        Result<McpPutResponse> result = await _write.PutAsync(effectiveRequest, cancellationToken);
         if (result.IsFailure)
         {
             McpErrorCode code = McpErrorMappings.ToWriteError(result.ErrorCode);
@@ -452,9 +466,33 @@ public sealed class McpCommandService
             McpUriKind.Style => await FetchStyleAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Evidence => await FetchEvidenceAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
+            McpUriKind.Library => await FetchLibraryAsync(range, limitBytes, state, cancellationToken),
             _ => FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument,
                 "Scopes cannot be fetched; use find to browse a scope."), limitBytes)
         };
+    }
+
+    private async Task<McpFetchResult> FetchLibraryAsync(string? range, int limitBytes,
+        McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        string uri = McpResourceUris.LibraryUri();
+        Result<McpLibraryProjection> projection = await _read.GetLibraryProjectionAsync(
+            _exposeLibraryTags, _exposeLibraryCollections, cancellationToken);
+        if (projection.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(projection.ErrorCode),
+                    projection.ErrorMessage ?? "Library projection is unavailable."), limitBytes);
+        }
+
+        string? rangeError = ValidateRange(range, "lines");
+        if (rangeError is not null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
+        }
+
+        string content = ApplyLines(DefaultToonEncoder(projection.Value), range, "lines");
+        return FitTextEntry(uri, "library_toon", uri, content, limitBytes, state.LibraryRevision);
     }
 
     private async Task<McpFetchResult> FetchItemAsync(McpUriParseResult target, string? range, int limitBytes,
@@ -504,7 +542,8 @@ public sealed class McpCommandService
                     metadata.ErrorMessage ?? metadata.ErrorCode ?? "Item was not found."), limitBytes);
         }
 
-        Result<string> exported = await _biblatex.ExportItemForAgentAsync(target.ItemId.Value, cancellationToken);
+        Result<string> exported =
+            await _biblatex.ExportItemForAgentAsync(target.ItemId.Value, _exposeLibraryTags, cancellationToken);
         if (exported.IsFailure)
         {
             return FailedFetch(uri,
@@ -1198,6 +1237,16 @@ public sealed class McpCommandService
                     OcrIndexStatus: ocrIndexStatus);
             }
 
+            case McpUriKind.Library:
+            {
+                Result<McpLibraryProjection> projection = await _read.GetLibraryProjectionAsync(
+                    _exposeLibraryTags, _exposeLibraryCollections, cancellationToken);
+                return projection.IsSuccess
+                    ? new SingletonResource(McpResourceUris.LibraryUri(), projection.Value.DisplayName, "file", false,
+                        IsLibrary: true)
+                    : null;
+            }
+
             default:
                 return null;
         }
@@ -1241,17 +1290,19 @@ public sealed class McpCommandService
 
     private static object BuildLongEntryFromSingleton(SingletonResource singleton)
     {
-        return singleton.StyleEnabled is { } styleEnabled
-            ? new McpStyleLongEntry(singleton.Uri, singleton.Title, singleton.Type, styleEnabled)
-            : singleton.DocumentId is not null
-                ? new McpTextLongEntry(singleton.Uri, singleton.Title, singleton.Type, singleton.ItemUri,
-                    singleton.ItemStatus, singleton.DocumentStatus ?? "missing_source",
-                    singleton.SourceStatus ?? "unavailable",
-                    PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable)
-                : new McpItemLongEntry(singleton.Uri, singleton.Title, singleton.Type,
-                    singleton.ItemStatus ?? "unset",
-                    PrimaryDocumentOcrIndexState.FromValue(singleton.PrimaryDocumentOcrIndexStatus).Value,
-                    singleton.Citable);
+        return singleton.IsLibrary
+            ? new McpLibraryLongEntry(singleton.Uri, singleton.Title, singleton.Type)
+            : singleton.StyleEnabled is { } styleEnabled
+                ? new McpStyleLongEntry(singleton.Uri, singleton.Title, singleton.Type, styleEnabled)
+                : singleton.DocumentId is not null
+                    ? new McpTextLongEntry(singleton.Uri, singleton.Title, singleton.Type, singleton.ItemUri,
+                        singleton.ItemStatus, singleton.DocumentStatus ?? "missing_source",
+                        singleton.SourceStatus ?? "unavailable",
+                        PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable)
+                    : new McpItemLongEntry(singleton.Uri, singleton.Title, singleton.Type,
+                        singleton.ItemStatus ?? "unset",
+                        PrimaryDocumentOcrIndexState.FromValue(singleton.PrimaryDocumentOcrIndexStatus).Value,
+                        singleton.Citable);
     }
 
     private static object BuildItemEntry(McpBrowseItemRow row, bool longMode)
@@ -1430,6 +1481,38 @@ public sealed class McpCommandService
 
                     break;
 
+                case "tag":
+                    if (itemId is null)
+                    {
+                        return false;
+                    }
+
+                    Result<McpItemMetadataResponse> tagMetadata = await _read.GetItemMetadataAsync(itemId.Value,
+                        cancellationToken);
+                    if (tagMetadata.IsFailure ||
+                        !TagsContainExact(tagMetadata.Value.TagsJson, clause.Value.Trim()))
+                    {
+                        return false;
+                    }
+
+                    break;
+
+                case "collection_id":
+                    if (itemId is null)
+                    {
+                        return false;
+                    }
+
+                    Result<IReadOnlyList<CollectionId>> membership = await _read.GetItemCollectionIdsAsync(
+                        itemId.Value, cancellationToken);
+                    if (membership.IsFailure || !membership.Value.Any(id =>
+                            string.Equals(id.ToString(), clause.Value.Trim(), StringComparison.Ordinal)))
+                    {
+                        return false;
+                    }
+
+                    break;
+
                 default:
                     return false;
             }
@@ -1444,14 +1527,38 @@ public sealed class McpCommandService
         [
             new("patchouli://items/", "/items", "directory"),
             new("patchouli://texts/", "/texts", "directory"),
-            new("patchouli://csl-styles/", "/csl-styles", "directory")
+            new("patchouli://csl-styles/", "/csl-styles", "directory"),
+            new(McpResourceUris.LibraryUri(), "/library.toon", "file")
         ];
         int from = Math.Clamp(offset, 0, all.Length);
         object[] page = all.Skip(from).Take(limit).Cast<object>().ToArray();
         string? continuation = from + page.Length < all.Length
             ? EncodeCursor(null, null, false, null, from + page.Length, null)
             : null;
-        return new FindPage(page, continuation, 3, 3);
+        return new FindPage(page, continuation, all.Length, all.Length);
+    }
+
+    private string? ValidateExposure(IReadOnlyList<McpWhereClause>? where)
+    {
+        if (where is null || where.Count == 0)
+        {
+            return null;
+        }
+
+        foreach (McpWhereClause clause in where)
+        {
+            if (clause.Key == "tag" && !_exposeLibraryTags)
+            {
+                return "tag filtering is disabled by the host's MCP exposure settings.";
+            }
+
+            if (clause.Key == "collection_id" && !_exposeLibraryCollections)
+            {
+                return "collection filtering is disabled by the host's MCP exposure settings.";
+            }
+        }
+
+        return null;
     }
 
     private static string? ValidateScopeMatrix(McpUriKind kind, string? query, IReadOnlyList<McpWhereClause>? where)
@@ -1472,10 +1579,31 @@ public sealed class McpCommandService
             return null;
         }
 
+        if (kind == McpUriKind.Library)
+        {
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                return "The library projection resource is a singleton and does not accept a query.";
+            }
+
+            return where is { Count: > 0 }
+                ? "The library projection resource does not accept where filters."
+                : null;
+        }
+
         IReadOnlyList<string>? allowed = kind switch
         {
-            McpUriKind.ItemsScope or McpUriKind.Item =>
-                new[] { "item_type", "item_status", "primary_document_ocr_index_status", "citable" },
+            McpUriKind.ItemsScope =>
+                new[]
+                {
+                    "item_type", "item_status", "primary_document_ocr_index_status", "citable", "tag", "collection_id"
+                },
+            McpUriKind.Item =>
+                new[]
+                {
+                    "item_type", "item_status", "primary_document_ocr_index_status", "citable", "tag",
+                    "collection_id"
+                },
             McpUriKind.TextsScope or McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence =>
                 new[]
                 {
@@ -1504,7 +1632,7 @@ public sealed class McpCommandService
     private static bool IsFileScope(McpUriKind kind)
     {
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
-            or McpUriKind.Evidence;
+            or McpUriKind.Evidence or McpUriKind.Library;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,
@@ -1584,6 +1712,34 @@ public sealed class McpCommandService
     {
         return !string.Equals(itemType, "general", StringComparison.Ordinal) ||
                !string.IsNullOrWhiteSpace(title);
+    }
+
+    /// <summary>Exact, case-sensitive tag membership test over an Item's JSON tag array.</summary>
+    private static bool TagsContainExact(string tagsJson, string tag)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(tagsJson);
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
+            foreach (JsonElement element in document.RootElement.EnumerateArray())
+            {
+                if (element.ValueKind == JsonValueKind.String &&
+                    string.Equals(element.GetString(), tag, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     private static void AddWarning(List<string> warnings, string code)
@@ -1698,7 +1854,8 @@ public sealed class McpCommandService
         string? SourceStatus = null,
         bool? StyleEnabled = null,
         string PrimaryDocumentOcrIndexStatus = "no_primary_document",
-        string OcrIndexStatus = "no_ocr");
+        string OcrIndexStatus = "no_ocr",
+        bool IsLibrary = false);
 
     private sealed record FindPage(
         IReadOnlyList<object> Entries,

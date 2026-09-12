@@ -32,13 +32,25 @@
           <Grid RowDefinitions="*,Auto" Margin="0,10,0,0">
             <ScrollViewer>
               <StackPanel Spacing="16">
-                <!-- Main navigation -->
+                <!-- Library and collection navigation -->
                 <StackPanel Spacing="2">
+                  <Grid ColumnDefinitions="*,Auto" Margin="16,0,16,4">
+                    <TextBlock Classes="SidebarSectionHeader" Text="集合" VerticalAlignment="Center" />
+                    <Button Grid.Column="1" Content="新建"
+                            Command="{Binding Sidebar.CreateCollectionCommand}"
+                            FontSize="11" Padding="8,2" />
+                  </Grid>
                   <ListBox Classes="SidebarListBox"
-                           ItemsSource="{Binding Sidebar.Sections}"
-                           SelectedItem="{Binding Sidebar.SelectedSection}">
-                    <ListBox.ItemTemplate>
-                      <DataTemplate x:DataType="vm:LibrarySidebarSectionViewModel">
+                           ItemsSource="{Binding Sidebar.NavigationItems}"
+                           SelectedItem="{Binding Sidebar.SelectedNavigationItem}">
+                    <ListBox.Styles>
+                      <Style Selector="ListBoxItem">
+                        <Setter Property="(DragDrop.AllowDrop)" Value="True" />
+                      </Style>
+                    </ListBox.Styles>
+                    <ListBox.DataTemplates>
+                      <DataTemplate DataType="vm:LibrarySidebarSectionViewModel"
+                                    x:DataType="vm:LibrarySidebarSectionViewModel">
                         <Border Classes="ItemBorder">
                           <StackPanel Orientation="Horizontal" Spacing="10">
                             <lucide:Lucide Classes="ItemIcon" Icon="{Binding Icon}" Width="13" Height="13" />
@@ -46,7 +58,27 @@
                           </StackPanel>
                         </Border>
                       </DataTemplate>
-                    </ListBox.ItemTemplate>
+                      <DataTemplate DataType="vm:CollectionListItemViewModel"
+                                    x:DataType="vm:CollectionListItemViewModel">
+                        <Border Classes="ItemBorder"
+                                DragDrop.DragOver="OnCollectionDragOver"
+                                DragDrop.Drop="OnCollectionDrop">
+                          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                            <lucide:Lucide Classes="ItemIcon" Icon="Folder" Width="13" Height="13" />
+                            <TextBlock Grid.Column="1" Classes="ItemText" Text="{Binding Name}" FontSize="13"
+                                       TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Name}" />
+                            <TextBlock Grid.Column="2" Classes="ItemText" Text="{Binding CountText}" FontSize="11"
+                                       IsVisible="{Binding HasCount}" />
+                          </Grid>
+                          <Border.ContextMenu>
+                            <ContextMenu>
+                              <MenuItem Header="重命名" Command="{Binding RenameCommand}" />
+                              <MenuItem Header="解散" Command="{Binding DissolveCommand}" />
+                            </ContextMenu>
+                          </Border.ContextMenu>
+                        </Border>
+                      </DataTemplate>
+                    </ListBox.DataTemplates>
                   </ListBox>
                 </StackPanel>
 
@@ -171,6 +203,7 @@
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
                 </StackPanel>
+
               </StackPanel>
             </ScrollViewer>
           </Grid>
@@ -207,6 +240,23 @@
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"
+                      IsEnabled="{Binding HasCollections}" ItemsSource="{Binding CollectionContextItems}"
+                      x:CompileBindings="False">
+              <MenuItem.ItemTemplate>
+                <DataTemplate x:DataType="vm:CollectionListItemViewModel">
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </MenuItem.ItemTemplate>
+              <MenuItem.Styles>
+                <Style Selector="MenuItem MenuItem">
+                  <Setter Property="Command" Value="{Binding AddToSelectionCommand}" />
+                </Style>
+              </MenuItem.Styles>
+            </MenuItem>
+            <MenuItem Header="从当前集合移除"
+                      Command="{Binding RemoveSelectedItemsFromCurrentCollectionCommand}"
+                      IsVisible="{Binding HasSelectedCollectionFilter}" />
             <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
                       Command="{Binding CopyCslBibliographyDescriptor}"
                       ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
@@ -230,17 +280,21 @@
                               IsVisible="{Binding ShowItemTypeColumn}" Width="100" />
 
           <!-- Year -->
-          <DataGridTextColumn Header="年份" Tag="Year" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}" Width="60" />
+          <DataGridTextColumn Header="年份" Tag="Year" Binding="{Binding Year}" IsVisible="{Binding ShowYearColumn}"
+                              Width="60" />
 
           <!-- Author -->
-          <DataGridTextColumn Header="作者" Tag="Author" Binding="{Binding Authors}" IsVisible="{Binding ShowAuthorColumn}"
+          <DataGridTextColumn Header="作者" Tag="Author" Binding="{Binding Authors}"
+                              IsVisible="{Binding ShowAuthorColumn}"
                               Width="120" />
 
           <!-- Title -->
-          <DataGridTextColumn Header="标题" Tag="Title" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}" Width="*" />
+          <DataGridTextColumn Header="标题" Tag="Title" Binding="{Binding Title}" IsVisible="{Binding ShowTitleColumn}"
+                              Width="*" />
 
           <!-- Source -->
-          <DataGridTextColumn Header="来源" Tag="Source" Binding="{Binding SourceText}" IsVisible="{Binding ShowSourceColumn}"
+          <DataGridTextColumn Header="来源" Tag="Source" Binding="{Binding SourceText}"
+                              IsVisible="{Binding ShowSourceColumn}"
                               Width="150" />
 
           <!-- Status -->
@@ -254,11 +308,13 @@
           </DataGridTemplateColumn>
 
           <!-- Pages -->
-          <DataGridTextColumn Header="页数" Tag="Pages" Binding="{Binding PageCountDisplay}" IsVisible="{Binding ShowPagesColumn}"
+          <DataGridTextColumn Header="页数" Tag="Pages" Binding="{Binding PageCountDisplay}"
+                              IsVisible="{Binding ShowPagesColumn}"
                               Width="80" />
 
           <!-- File -->
-          <DataGridTextColumn Header="关联文件" Tag="File" Binding="{Binding SourcePath}" IsVisible="{Binding ShowFileColumn}"
+          <DataGridTextColumn Header="关联文件" Tag="File" Binding="{Binding SourcePath}"
+                              IsVisible="{Binding ShowFileColumn}"
                               Width="150" />
         </DataGrid.Columns>
       </DataGrid>

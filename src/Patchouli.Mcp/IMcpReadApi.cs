@@ -69,4 +69,20 @@ public interface IMcpReadApi
     /// </summary>
     Task<Result<McpLibraryStateResponse>> GetCurrentLibraryStateAsync(
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Builds the patchouli://library.toon projection. Tags and Collections are included only
+    /// when the caller's device-local exposure settings enable them; the fixed library_id and
+    /// display_name are always present.
+    /// </summary>
+    Task<Result<McpLibraryProjection>> GetLibraryProjectionAsync(bool includeTags, bool includeCollections,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the Collection ids that contain one Item, ordered by Collection name. Used by
+    /// item-URI singleton scopes so the <c>collection_id</c> filter matches the item scope
+    /// semantics without reading the cleared legacy <c>collections_json</c> mirror.
+    /// </summary>
+    Task<Result<IReadOnlyList<CollectionId>>> GetItemCollectionIdsAsync(ItemId itemId,
+        CancellationToken cancellationToken = default);
 }

@@ -1,3 +1,5 @@
+using Patchouli.Core.Ids;
+
 namespace Patchouli.Core.Bibliography;
 
 public sealed record UpdateItemRequest(
@@ -29,4 +31,5 @@ public sealed record UpdateItemRequest(
     string? CustomFieldsJson = null,
     IReadOnlyList<ItemCreatorInput>? Creators = null,
     IReadOnlyList<ItemDateInput>? Dates = null,
-    DateTimeOffset? ExpectedUpdatedAt = null);
+    DateTimeOffset? ExpectedUpdatedAt = null,
+    IReadOnlyList<CollectionId>? Collections = null);

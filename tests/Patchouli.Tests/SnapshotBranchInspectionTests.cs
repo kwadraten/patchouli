@@ -150,6 +150,38 @@ public sealed class SnapshotBranchInspectionTests
     }
 
     [Fact]
+    public async Task Apply_same_library_branch_copies_empty_collections()
+    {
+        await using Ctx c = await Ctx.Create();
+        SnapshotBranchInspectionInfo branch = (await c.Open()).Value;
+        CollectionId collectionId = CollectionId.New();
+        await c.InsertBranchCollection(branch, collectionId, "Empty Branch List");
+
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync(branch, [], [])).Value;
+        Result<BranchImportResult> applied = await c.Service.ApplyImportPlanAsync(plan, true);
+
+        applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
+        (await c.Count("collections")).Should().Be(1);
+        (await c.Scalar<string>("select name from collections where collection_id = @Id",
+            new { Id = collectionId.ToString() })).Should().Be("Empty Branch List");
+    }
+
+    [Fact]
+    public async Task Apply_same_library_branch_without_collection_tables_still_imports()
+    {
+        await using Ctx c = await Ctx.Create();
+        SnapshotBranchInspectionInfo branch = (await c.Open()).Value;
+        await c.DropBranchCollectionTables(branch);
+
+        BranchImportPlan plan = (await c.Service.BuildImportPlanAsync(branch, [c.Item], [c.Doc])).Value;
+        Result<BranchImportResult> applied = await c.Service.ApplyImportPlanAsync(plan, true);
+
+        applied.IsSuccess.Should().BeTrue(applied.ErrorMessage);
+        (await c.Count("items")).Should().Be(1);
+        (await c.Count("document_instances")).Should().Be(1);
+    }
+
+    [Fact]
     public void MCP_has_no_branch_import_methods()
     {
         typeof(Mcp.IMcpReadApi).GetMethods().Select(x => x.Name).Should().NotContain(x =>
@@ -467,6 +499,35 @@ public sealed class SnapshotBranchInspectionTests
                 .ToString());
             await c.OpenAsync();
             return await c.ExecuteScalarAsync<int>($"select count(*) from {t}");
+        }
+
+        public async Task InsertBranchCollection(SnapshotBranchInspectionInfo branch, CollectionId collectionId,
+            string name)
+        {
+            await using SqliteConnection c = new(new SqliteConnectionStringBuilder
+                {
+                    DataSource = branch.StagingDatabasePath, Pooling = false
+                }
+                .ToString());
+            await c.OpenAsync();
+            string now = DateTimeOffset.UtcNow.ToString("O");
+            await c.ExecuteAsync(
+                """
+                insert into collections (collection_id, library_id, name, created_at, updated_at)
+                values (@Id, @LibraryId, @Name, @Now, @Now);
+                """,
+                new { Id = collectionId.ToString(), LibraryId = ActiveLibraryId.ToString(), Name = name, Now = now });
+        }
+
+        public async Task DropBranchCollectionTables(SnapshotBranchInspectionInfo branch)
+        {
+            await using SqliteConnection c = new(new SqliteConnectionStringBuilder
+                {
+                    DataSource = branch.StagingDatabasePath, Pooling = false, ForeignKeys = false
+                }
+                .ToString());
+            await c.OpenAsync();
+            await c.ExecuteAsync("drop table if exists item_collections; drop table if exists collections;");
         }
 
         public async Task<string?> Status(DocumentInstanceId d)

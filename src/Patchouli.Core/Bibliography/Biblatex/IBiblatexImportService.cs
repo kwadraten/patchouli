@@ -61,9 +61,13 @@ public interface IBiblatexImportService
     /// <see cref="ExportItemsAsync"/>, general items are projected to <c>@misc</c>
     /// so the agent can fetch and round-trip them without promoting or demoting
     /// the underlying Patchouli item type. This path is intentionally separate
-    /// from the UI export layer which continues to forbid general export.
+    /// from the UI export layer which continues to forbid general export. When
+    /// <paramref name="includeKeywords"/> is false the entry omits the BibLaTeX
+    /// <c>keywords</c> field at the data-model level, so no textual surgery is
+    /// needed to honor the device-local ExposeLibraryTags policy.
     /// </summary>
     Task<Result<string>> ExportItemForAgentAsync(
         ItemId itemId,
+        bool includeKeywords,
         CancellationToken cancellationToken = default);
 }

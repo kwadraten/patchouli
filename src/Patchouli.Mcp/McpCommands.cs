@@ -63,6 +63,16 @@ public sealed record McpStyleLongEntry(
     [property: JsonPropertyName("style_enabled")]
     bool StyleEnabled);
 
+/// <summary>
+/// Long projection of the fixed <c>patchouli://library.toon</c> singleton. It carries only the
+/// universal entry fields because library identity, tags, and collections are already the
+/// resource content returned by <c>fetch</c>; it is never an Item projection.
+/// </summary>
+public sealed record McpLibraryLongEntry(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("type")] string Type);
+
 public sealed record McpFetchRequest(IReadOnlyList<string> Uris, string? Range, int? LimitBytes);
 
 public sealed record McpFetchMeta(

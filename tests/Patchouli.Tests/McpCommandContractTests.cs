@@ -66,7 +66,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Find_root_returns_only_the_three_vfs_directories_without_message()
+    public async Task Find_root_returns_the_three_vfs_directories_and_library_projection_without_message()
     {
         McpCommandResult<McpFindMeta, object> result =
             await _library.Commands.FindAsync(new McpFindRequest(null, null, null));
@@ -75,15 +75,17 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(3);
-        envelope.Meta.DomainTotal.Should().Be(3);
-        envelope.Meta.FilteredTotal.Should().Be(3);
+        envelope.Meta.ShownTotal.Should().Be(4);
+        envelope.Meta.DomainTotal.Should().Be(4);
+        envelope.Meta.FilteredTotal.Should().Be(4);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().Equal(
             "patchouli://items/",
             "patchouli://texts/",
-            "patchouli://csl-styles/");
-        envelope.Entries.Select(Entry).Should().OnlyContain(entry => entry.Type == "directory");
+            "patchouli://csl-styles/",
+            "patchouli://library.toon");
+        envelope.Entries.Select(Entry).Take(3).Should().OnlyContain(entry => entry.Type == "directory");
+        envelope.Entries.Select(Entry).Last().Type.Should().Be("file");
     }
 
     [Fact]
@@ -774,6 +776,205 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         cite.Envelope!.Message.Should().BeNull();
     }
 
+    [Fact]
+    public async Task Fetch_library_toon_includes_identity_tags_and_collections_including_empty()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest(["patchouli://library.toon"], null, null));
+
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        McpFetchResult entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.Error.Should().BeNull();
+        entry.ResourceType.Should().Be("library_toon");
+        entry.Complete.Should().BeTrue();
+        string content = entry.Content!;
+        content.Should().Contain("Contract test library");
+        content.Should().Contain("Reading List");
+        content.Should().Contain("Empty List");
+        content.Should().Contain("Alpha");
+        content.Should().Contain("beta");
+    }
+
+    [Fact]
+    public async Task Find_items_scope_filters_by_exact_tag_and_collection_id_with_and()
+    {
+        McpCommandResult<McpFindMeta, object> byTag = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", [new McpWhereClause("tag", "Alpha")]));
+        byTag.IsSuccess.Should().BeTrue();
+        EntryUris(byTag).Should().Equal(McpResourceUris.ItemUri(_library.BookA));
+
+        McpCommandResult<McpFindMeta, object> caseMismatch = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", [new McpWhereClause("tag", "alpha")]));
+        caseMismatch.IsSuccess.Should().BeTrue();
+        EntryUris(caseMismatch).Should().BeEmpty("tag matching is case-sensitive");
+
+        McpCommandResult<McpFindMeta, object> byCollection = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/",
+                [new McpWhereClause("collection_id", _library.ReadingList.ToString())]));
+        byCollection.IsSuccess.Should().BeTrue();
+        EntryUris(byCollection).Should().Equal(McpResourceUris.ItemUri(_library.BookA));
+
+        McpCommandResult<McpFindMeta, object> intersection = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/",
+            [
+                new McpWhereClause("tag", "Alpha"),
+                new McpWhereClause("collection_id", _library.ReadingList.ToString())
+            ]));
+        intersection.IsSuccess.Should().BeTrue();
+        EntryUris(intersection).Should().Equal(McpResourceUris.ItemUri(_library.BookA));
+
+        McpCommandResult<McpFindMeta, object> emptyIntersection = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://items/",
+            [
+                new McpWhereClause("tag", "beta"),
+                new McpWhereClause("collection_id", _library.ReadingList.ToString())
+            ]));
+        emptyIntersection.IsSuccess.Should().BeTrue();
+        EntryUris(emptyIntersection).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Hidden_exposure_removes_projection_categories_and_disables_filters()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> projection = await _library.CommandsHidden.FetchAsync(
+            new McpFetchRequest(["patchouli://library.toon"], null, null));
+        projection.IsSuccess.Should().BeTrue();
+        string content = projection.Envelope!.Entries.Single().Content!;
+        content.Should().Contain("Contract test library");
+        content.Should().NotContain("Reading List");
+        content.Should().NotContain("Alpha");
+        using (JsonDocument document = JsonDocument.Parse(McpToonCodec.DecodeToJson(content)))
+        {
+            JsonElement root = document.RootElement;
+            root.EnumerateObject().Select(property => property.Name)
+                .Should().Equal("library_id", "display_name");
+            root.TryGetProperty("tags", out _).Should().BeFalse("a disabled category is omitted, not null");
+            root.TryGetProperty("collections", out _).Should().BeFalse("a disabled category is omitted, not null");
+        }
+
+        McpCommandResult<McpFindMeta, object> tagFilter = await _library.CommandsHidden.FindAsync(
+            new McpFindRequest(null, "patchouli://items/", [new McpWhereClause("tag", "Alpha")]));
+        tagFilter.IsSuccess.Should().BeFalse();
+        tagFilter.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+        tagFilter.Error.Detail.Should().NotContain("PERMISSION_DENIED",
+            "the terminal line already carries the error name");
+
+        McpCommandResult<McpFindMeta, object> collectionFilter = await _library.CommandsHidden.FindAsync(
+            new McpFindRequest(null, "patchouli://items/",
+                [new McpWhereClause("collection_id", _library.ReadingList.ToString())]));
+        collectionFilter.IsSuccess.Should().BeFalse();
+        collectionFilter.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+        collectionFilter.Error.Detail.Should().NotContain("PERMISSION_DENIED");
+    }
+
+    [Fact]
+    public async Task Hidden_tags_strip_biblatex_keywords_and_writes_preserve_existing_tags()
+    {
+        string uri = McpResourceUris.ItemUri(_library.BookA);
+        McpCommandResult<McpFetchMeta, McpFetchResult> visible = await _library.Commands.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        visible.Envelope!.Entries.Single().Content!.Should().Contain("Alpha");
+
+        McpCommandResult<McpFetchMeta, McpFetchResult> hidden = await _library.CommandsHidden.FetchAsync(
+            new McpFetchRequest([uri], null, null));
+        hidden.Envelope!.Entries.Single().Content!.Should().NotContain("keywords");
+
+        string key = RegexKey(visible.Envelope.Entries.Single().Content!);
+        McpCommandResult<McpPutMeta, McpPutResult> put = await _library.CommandsHidden.PutAsync(
+            new McpPutRequest(uri,
+                "@book{" + key + ",\n" +
+                "  author = {Doe, Jane},\n" +
+                "  title = {Rewritten title},\n" +
+                "  keywords = {Injected},\n" +
+                "  year = {2024}\n}"));
+        put.IsSuccess.Should().BeTrue($"error: {put.Error?.Code} {put.Error?.Detail}");
+
+        Result<ItemMetadata> item = await _library.Items.GetItemAsync(_library.BookA);
+        item.Value.TagsJson.Should().Be("[\"Alpha\"]", "hidden tags preserve the existing tag set");
+        item.Value.Title.Should().Be("Rewritten title");
+    }
+
+    [Fact]
+    public async Task Library_toon_uses_exact_snake_case_schema_keys()
+    {
+        McpCommandResult<McpFetchMeta, McpFetchResult> result = await _library.Commands.FetchAsync(
+            new McpFetchRequest(["patchouli://library.toon"], null, null));
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        string toon = result.Envelope!.Entries.Single().Content!;
+        using JsonDocument document = JsonDocument.Parse(McpToonCodec.DecodeToJson(toon));
+        JsonElement root = document.RootElement;
+        root.EnumerateObject().Select(property => property.Name)
+            .Should().BeEquivalentTo("library_id", "display_name", "tags", "collections");
+        root.GetProperty("tags")[0].EnumerateObject().Select(property => property.Name)
+            .Should().BeEquivalentTo("tag", "item_count");
+        root.GetProperty("collections")[0].EnumerateObject().Select(property => property.Name)
+            .Should().BeEquivalentTo("collection_id", "name", "item_count");
+        toon.Should().NotContain("LibraryId").And.NotContain("DisplayName")
+            .And.NotContain("ItemCount").And.NotContain("CollectionId");
+    }
+
+    [Fact]
+    public async Task Put_library_toon_is_read_only()
+    {
+        McpCommandResult<McpPutMeta, McpPutResult> result = await _library.Commands.PutAsync(
+            new McpPutRequest("patchouli://library.toon", "library_id: x"));
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be((int)McpErrorCode.PermissionDenied);
+    }
+
+    [Fact]
+    public async Task Find_library_file_singleton_long_returns_library_entry_not_item_entry()
+    {
+        McpCommandResult<McpFindMeta, object> result = await _library.Commands.FindAsync(
+            new McpFindRequest(null, "patchouli://library.toon", null, Long: true));
+
+        result.IsSuccess.Should().BeTrue($"error: {result.Error?.Code} {result.Error?.Detail}");
+        object entry = result.Envelope!.Entries.Should().ContainSingle().Subject;
+        entry.Should().BeOfType<McpLibraryLongEntry>();
+        entry.Should().NotBeOfType<McpItemLongEntry>();
+        McpLibraryLongEntry library = (McpLibraryLongEntry)entry;
+        library.Uri.Should().Be("patchouli://library.toon");
+        library.Type.Should().Be("file");
+    }
+
+    [Fact]
+    public async Task Item_file_uri_supports_exact_tag_and_collection_filters()
+    {
+        string itemUri = McpResourceUris.ItemUri(_library.BookA);
+
+        McpCommandResult<McpFindMeta, object> byTag = await _library.Commands.FindAsync(
+            new McpFindRequest(null, itemUri, [new McpWhereClause("tag", " Alpha ")]));
+        byTag.IsSuccess.Should().BeTrue();
+        EntryUris(byTag).Should().Equal(new[] { itemUri }, "the item filter trims the tag value");
+
+        McpCommandResult<McpFindMeta, object> wrongTag = await _library.Commands.FindAsync(
+            new McpFindRequest(null, itemUri, [new McpWhereClause("tag", "beta")]));
+        wrongTag.IsSuccess.Should().BeTrue();
+        EntryUris(wrongTag).Should().BeEmpty();
+
+        McpCommandResult<McpFindMeta, object> byCollection = await _library.Commands.FindAsync(
+            new McpFindRequest(null, itemUri,
+                [new McpWhereClause("collection_id", _library.ReadingList.ToString())]));
+        byCollection.IsSuccess.Should().BeTrue();
+        EntryUris(byCollection).Should().Equal(itemUri);
+
+        McpCommandResult<McpFindMeta, object> wrongCollection = await _library.Commands.FindAsync(
+            new McpFindRequest(null, itemUri,
+                [new McpWhereClause("collection_id", _library.EmptyList.ToString())]));
+        wrongCollection.IsSuccess.Should().BeTrue();
+        EntryUris(wrongCollection).Should().BeEmpty();
+
+        McpCommandResult<McpFindMeta, object> unsupported = await _library.Commands.FindAsync(
+            new McpFindRequest(null, itemUri, [new McpWhereClause("nonsense", "x")]));
+        unsupported.IsSuccess.Should().BeFalse("unknown item-URI filters are rejected by default");
+        unsupported.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+    }
+
+    private static IReadOnlyList<string> EntryUris(McpCommandResult<McpFindMeta, object> result)
+    {
+        return result.Envelope!.Entries.Select(Entry).Select(entry => entry.Uri).ToArray();
+    }
+
     private static McpFindEntry Entry(object entry)
     {
         return (McpFindEntry)entry;
@@ -801,11 +1002,15 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         PageId PageA2,
         PageId PageB1,
         PageId PageB2,
+        CollectionId ReadingList,
+        CollectionId EmptyList,
         SqliteConnectionFactory ConnectionFactory,
         IMcpReadApi Api,
         IMcpWriteApi Writes,
         IBiblatexImportService Biblatex,
-        McpCommandService Commands)
+        ItemService Items,
+        McpCommandService Commands,
+        McpCommandService CommandsHidden)
     {
         public static async Task<TestLibrary> SeedAsync(string databasePath)
         {
@@ -867,6 +1072,18 @@ public sealed class McpCommandContractTests : IAsyncLifetime
             IVersionedEvidenceReader evidenceReader = new VersionedEvidenceReader(
                 db, library, tree, new DocumentMarkdownCompiler(tree, new MarkdigMarkdownEngine()));
             McpCommandService commands = new(api, writes, biblatex, items, evidenceReader);
+            McpCommandService commandsHidden = new(api, writes, biblatex, items, evidenceReader,
+                false, false);
+
+            CollectionService collections = new(db, library, clock);
+            Result<Collection> readingList = await collections.CreateCollectionAsync("Reading List");
+            Result<Collection> emptyList = await collections.CreateCollectionAsync("Empty List");
+            Require(readingList);
+            Require(emptyList);
+            Require(await collections.AddItemsAsync(readingList.Value.CollectionId,
+                [bookA.Value.ItemId]));
+            Require(await new ItemTagService(db).AddTagsToItemsAsync([bookA.Value.ItemId], ["Alpha"]));
+            Require(await new ItemTagService(db).AddTagsToItemsAsync([bookB.Value.ItemId], ["beta"]));
 
             Result<CslStyle> installed = await cslStore.InstallStyleAsync(
                 new CslCatalogStyle("apa", "APA 7th", null, "catalog"), ApaStyleXml);
@@ -874,7 +1091,8 @@ public sealed class McpCommandContractTests : IAsyncLifetime
 
             return new TestLibrary(databasePath, bookA.Value.ItemId, bookB.Value.ItemId, general.Value.ItemId,
                 docA.Value.DocumentInstanceId, docB.Value.DocumentInstanceId, pageA1, pageA2, pageB1, pageB2,
-                db, api, writes, biblatex, commands);
+                readingList.Value.CollectionId, emptyList.Value.CollectionId,
+                db, api, writes, biblatex, items, commands, commandsHidden);
         }
 
         private static async Task<PageId> CommitPageAsync(

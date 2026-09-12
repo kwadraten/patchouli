@@ -354,8 +354,24 @@ public sealed class ItemService : IItemService
                 }
             }
 
+            IReadOnlyCollection<CollectionId> collectionIds = [];
+            if (request.Collections is not null)
+            {
+                Result<IReadOnlyCollection<CollectionId>> replaced = await ReplaceItemCollectionsAsync(
+                    connection, transaction, updated.LibraryId, itemId, request.Collections, cancellationToken);
+                if (replaced.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<ItemMetadata>.Failure(replaced.ErrorCode!, replaced.ErrorMessage!);
+                }
+
+                collectionIds = replaced.Value;
+            }
+
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
-                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+                connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = [itemId], CollectionIds = collectionIds },
+                cancellationToken);
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -424,8 +440,15 @@ public sealed class ItemService : IItemService
                 return Result.Failure(AppErrorCodes.NotFound, "One or more items were not found.");
             }
 
+            CollectionId[] affectedCollections = (await connection.QueryAsync<string>(
+                    "select distinct collection_id from item_collections where item_id in @ItemIds;",
+                    new { ItemIds = idStrings }, transaction))
+                .Select(CollectionId.Parse)
+                .ToArray();
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
-                connection, transaction, LibraryChangeSet.Empty with { ItemIds = distinctIds }, cancellationToken);
+                connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = distinctIds, CollectionIds = affectedCollections },
+                cancellationToken);
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -500,8 +523,15 @@ public sealed class ItemService : IItemService
                 return Result.Failure(AppErrorCodes.NotFound, "One or more items were not found in trash.");
             }
 
+            CollectionId[] affectedCollections = (await connection.QueryAsync<string>(
+                    "select distinct collection_id from item_collections where item_id in @ItemIds;",
+                    new { ItemIds = idStrings }, transaction))
+                .Select(CollectionId.Parse)
+                .ToArray();
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
-                connection, transaction, LibraryChangeSet.Empty with { ItemIds = distinctIds }, cancellationToken);
+                connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = distinctIds, CollectionIds = affectedCollections },
+                cancellationToken);
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -1451,8 +1481,24 @@ public sealed class ItemService : IItemService
                 await InsertIdentifierAsync(connection, transaction, itemId, normalized, now);
             }
 
+            IReadOnlyCollection<CollectionId> collectionIds = [];
+            if (request.Collections is not null)
+            {
+                Result<IReadOnlyCollection<CollectionId>> replaced = await ReplaceItemCollectionsAsync(
+                    connection, transaction, item.LibraryId, itemId, request.Collections, cancellationToken);
+                if (replaced.IsFailure)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<ItemMetadata>.Failure(replaced.ErrorCode!, replaced.ErrorMessage!);
+                }
+
+                collectionIds = replaced.Value;
+            }
+
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
-                connection, transaction, LibraryChangeSet.Empty with { ItemIds = [itemId] }, cancellationToken);
+                connection, transaction,
+                LibraryChangeSet.Empty with { ItemIds = [itemId], CollectionIds = collectionIds },
+                cancellationToken);
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
@@ -1498,6 +1544,61 @@ public sealed class ItemService : IItemService
         {
             _revisions!.PublishCommitted(changeSet);
         }
+    }
+
+    /// <summary>
+    /// Validates every requested Collection and then atomically replaces one Item's full
+    /// membership inside the caller's metadata transaction. Returns every affected Collection id
+    /// (previous union requested) so the committed change set can refresh sidebar counts.
+    /// </summary>
+    private async Task<Result<IReadOnlyCollection<CollectionId>>> ReplaceItemCollectionsAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        LibraryId libraryId,
+        ItemId itemId,
+        IReadOnlyList<CollectionId> collectionIds,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        string[] targetIds = collectionIds.Select(static id => id.ToString()).Distinct(StringComparer.Ordinal)
+            .ToArray();
+        string[] validIds = targetIds.Length == 0
+            ? []
+            : (await connection.QueryAsync<string>(
+                """
+                select collection_id
+                from collections
+                where library_id = @LibraryId and collection_id in @CollectionIds;
+                """,
+                new { LibraryId = libraryId.ToString(), CollectionIds = targetIds }, transaction)).ToArray();
+        if (validIds.Length != targetIds.Length)
+        {
+            return Result<IReadOnlyCollection<CollectionId>>.Failure(AppErrorCodes.NotFound,
+                "一个或多个集合不存在。");
+        }
+
+        string[] previousIds = (await connection.QueryAsync<string>(
+            "select collection_id from item_collections where item_id = @ItemId;",
+            new { ItemId = itemId.ToString() }, transaction)).ToArray();
+
+        await connection.ExecuteAsync(
+            "delete from item_collections where item_id = @ItemId;",
+            new { ItemId = itemId.ToString() }, transaction);
+        string now = FormatUtc(_clock.UtcNow);
+        foreach (string validId in validIds)
+        {
+            await connection.ExecuteAsync(
+                """
+                insert or ignore into item_collections (collection_id, item_id, added_at)
+                values (@CollectionId, @ItemId, @Now);
+                """,
+                new { CollectionId = validId, ItemId = itemId.ToString(), Now = now }, transaction);
+        }
+
+        return Result<IReadOnlyCollection<CollectionId>>.Success(previousIds.Concat(validIds)
+            .Distinct(StringComparer.Ordinal)
+            .Select(CollectionId.Parse)
+            .ToArray());
     }
 
     private static IReadOnlyList<ItemCreatorInput> ParseCreatorInputs(string? creatorsJson)

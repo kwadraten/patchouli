@@ -149,6 +149,13 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                  select distinct {PrimaryDocumentOcrIndexStatusExpression("item_id")} as Value
                  {activeItems} order by Value;
                  """)).ToList();
+            IReadOnlyList<CollectionOptionRow> collectionRows = (await connection.QueryAsync<CollectionOptionRow>(
+                """
+                select c.collection_id as CollectionId, c.name as Name
+                from collections c
+                where c.library_id = (select library_id from library_metadata order by created_at, library_id limit 1)
+                order by c.name collate binary, c.collection_id;
+                """)).ToArray();
             return Result<BibliographicSearchFilterOptions>.Success(new BibliographicSearchFilterOptions(
                 itemTypes.Select(value => new SearchFilterOption(value, CslItemTypeDisplayNames.For(value)))
                     .ToArray(),
@@ -157,14 +164,15 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     .ToArray(),
                 ocrStatuses.Select(value =>
                         new SearchFilterOption(value, PrimaryDocumentOcrIndexState.FromValue(value).ChineseLabel))
-                    .ToArray()));
+                    .ToArray(),
+                collectionRows.Select(row => new SearchFilterOption(row.CollectionId, row.Name)).ToArray()));
         }
         catch (OperationCanceledException)
         {
             throw;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
-                                                  "infrastructure.library-item-query"))
+                                              "infrastructure.library-item-query"))
         {
             return Result<BibliographicSearchFilterOptions>.Failure(AppErrorCodes.DatabaseError,
                 $"Database operation failed: {exception.Message}");
@@ -258,6 +266,16 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     break;
                 case BibliographicSearchFilterKeys.PrimaryDocumentOcrIndexStatus:
                     clauses.Add($"{PrimaryDocumentOcrIndexStatusExpression("i.item_id")} = @{name}");
+                    parameters[name] = filter.Value.Trim();
+                    break;
+                case BibliographicSearchFilterKeys.Tag:
+                    clauses.Add(
+                        $"exists (select 1 from json_each(i.tags_json) where value = @{name})");
+                    parameters[name] = filter.Value.Trim();
+                    break;
+                case BibliographicSearchFilterKeys.CollectionId:
+                    clauses.Add(
+                        $"exists (select 1 from item_collections ic where ic.item_id = i.item_id and ic.collection_id = @{name})");
                     parameters[name] = filter.Value.Trim();
                     break;
                 default:
@@ -784,6 +802,12 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         {
             return string.Empty;
         }
+    }
+
+    private sealed class CollectionOptionRow
+    {
+        public string CollectionId { get; init; } = "";
+        public string Name { get; init; } = "";
     }
 
     private sealed class CoreRow

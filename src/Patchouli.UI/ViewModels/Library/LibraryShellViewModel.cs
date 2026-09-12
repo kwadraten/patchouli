@@ -28,6 +28,18 @@ public sealed class LibraryShellViewModel : ViewModelBase
     {
         _main = main;
         Sidebar = new LibrarySidebarViewModel();
+        // The sidebar replaces its collection catalog on every reload, so the shell must re-raise
+        // the computed context-menu source and visibility flags or the item context menu keeps a
+        // stale ItemsSource reference.
+        Sidebar.PropertyChanged += (_, args) =>
+        {
+            if (string.IsNullOrEmpty(args.PropertyName) ||
+                args.PropertyName == nameof(LibrarySidebarViewModel.Collections))
+            {
+                Raise(nameof(CollectionContextItems));
+                Raise(nameof(HasCollections));
+            }
+        };
         Inspector = new ItemInspectorViewModel(
             async () => (await _main.ServicesAsync()).Items,
             async () => (await _main.ServicesAsync()).Tags,
@@ -47,6 +59,15 @@ public sealed class LibraryShellViewModel : ViewModelBase
         Sidebar.RemoveRequested += async (_, tag) => await RemoveTagAsync(tag);
         Sidebar.RenameRequested += async (_, tag) => await RenameTagAsync(tag);
         Sidebar.MergeIntoRequested += async (_, tag) => await MergeTagAsync(tag);
+        Sidebar.CollectionSelectionChanged += async (_, _) => await RefreshItemsFromCollectionSelectionAsync();
+        Sidebar.CreateCollectionRequested += async (_, _) => await CreateCollectionAsync();
+        Sidebar.RenameCollectionRequested += async (_, collection) => await RenameCollectionAsync(collection);
+        Sidebar.DissolveCollectionRequested += async (_, collection) => await DissolveCollectionAsync(collection);
+        Sidebar.AddToSelectionRequested += async (_, collection) =>
+            await AddSelectedItemsToCollectionAsync(collection.CollectionId);
+        RemoveSelectedItemsFromCurrentCollectionCommand =
+            new AsyncCommand(RemoveSelectedItemsFromCurrentCollectionAsync);
+        CreateCollectionCommand = new AsyncCommand(CreateCollectionAsync);
         RefreshCommand = new AsyncCommand(RefreshItemsAsync);
         ShowRecentItemsCommand = new AsyncCommand(ShowRecentItemsAsync);
         SwitchToReadingModeCommand = new AsyncCommand(SwitchToReadingModeAsync);
@@ -86,6 +107,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private int _tagRefreshVersion;
     private int _tagReconcileVersion;
+    private int _collectionReconcileVersion;
 
     private async Task RefreshAfterTagDebounceAsync(int version)
     {
@@ -216,6 +238,17 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public AsyncCommand RestoreSelectedItemsCommand { get; }
     public AsyncCommand PurgeSelectedItemsCommand { get; }
     public AsyncCommand QuickFillOcrCommand { get; }
+    public AsyncCommand RemoveSelectedItemsFromCurrentCollectionCommand { get; }
+    public AsyncCommand CreateCollectionCommand { get; }
+
+    /// <summary>Collections offered as context-menu targets for the current selection.</summary>
+    public ObservableCollection<CollectionListItemViewModel> CollectionContextItems => Sidebar.Collections;
+
+    public bool HasCollections => Sidebar.Collections.Count > 0;
+
+    public bool HasSelectedCollectionFilter => Sidebar.HasSelectedCollection;
+
+    public string SelectedCollectionFilterName => Sidebar.SelectedCollectionName;
 
     public bool CanModifyLibraryItems => Sidebar.IsActiveSelected;
 
@@ -429,8 +462,20 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
         bool isTrashScope = Sidebar.SelectedScope == LibrarySidebarScope.Trash;
         IReadOnlyList<string>? requiredTags = null;
+        CollectionId? requiredCollectionId = null;
         if (!isTrashScope)
         {
+            Result<IReadOnlyList<Collection>> collections =
+                await Task.Run(() => services.Collections.ListCollectionsAsync());
+            if (collections.IsFailure)
+            {
+                throw new InvalidOperationException(collections.ErrorMessage);
+            }
+
+            Sidebar.LoadCollections(collections.Value);
+            Raise(nameof(HasCollections));
+            requiredCollectionId = Sidebar.SelectedCollection?.CollectionId;
+
             IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services));
             await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags);
             Sidebar.ApplyPinnedOrder(pinnedTags);
@@ -472,6 +517,19 @@ public sealed class LibraryShellViewModel : ViewModelBase
                     rows = noTagSelected
                         ? services.LibraryItemCache.QueryUntagged()
                         : services.LibraryItemCache.QueryByTags(requiredTags);
+
+                    if (requiredCollectionId is { } collectionId)
+                    {
+                        Result<IReadOnlyList<ItemId>> members =
+                            await services.Collections.GetCollectionItemIdsAsync(collectionId);
+                        if (members.IsFailure)
+                        {
+                            throw new InvalidOperationException(members.ErrorMessage);
+                        }
+
+                        HashSet<ItemId> memberIds = members.Value.ToHashSet();
+                        rows = rows.Where(row => memberIds.Contains(row.ItemId)).ToArray();
+                    }
                 }
 
                 List<LibraryItemViewModel> items = new();
@@ -820,6 +878,139 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
     }
 
+    private async Task RefreshItemsFromCollectionSelectionAsync()
+    {
+        Raise(nameof(CanModifyLibraryItems));
+        Raise(nameof(HasSelectedCollectionFilter));
+        Raise(nameof(SelectedCollectionFilterName));
+        await RefreshItemsAsync();
+    }
+
+    private async Task CreateCollectionAsync()
+    {
+        string? name = await _main.Dialogs.ShowDialogAsync<string?>(
+            new TagNamePromptDialogViewModel(
+                "新建集合",
+                "集合名称：",
+                "创建"));
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        Result<Collection> result = await services.Collections.CreateCollectionAsync(name);
+        if (result.IsFailure)
+        {
+            _main.ReportError($"创建集合失败：{result.ErrorMessage}");
+            return;
+        }
+
+        await RefreshItemsAsync();
+    }
+
+    private async Task RenameCollectionAsync(CollectionListItemViewModel collection)
+    {
+        string? name = await _main.Dialogs.ShowDialogAsync<string?>(
+            new TagNamePromptDialogViewModel(
+                "重命名集合",
+                $"将集合“{collection.Name}”重命名为：",
+                "重命名"));
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        Result<Collection> result = await services.Collections.RenameCollectionAsync(collection.CollectionId, name);
+        if (result.IsFailure)
+        {
+            _main.ReportError($"重命名集合失败：{result.ErrorMessage}");
+            return;
+        }
+
+        await RefreshItemsAsync();
+    }
+
+    private async Task DissolveCollectionAsync(CollectionListItemViewModel collection)
+    {
+        ConfirmDialogResult? confirm = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
+            new ConfirmDialogViewModel(
+                "解散集合",
+                $"将解散集合“{collection.Name}”。集合中的题录不会被删除。",
+                "解散",
+                confirmDanger: true));
+        if (confirm != ConfirmDialogResult.Confirm)
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        Result result = await services.Collections.DissolveCollectionAsync(collection.CollectionId);
+        if (!result.IsSuccess)
+        {
+            _main.ReportError($"解散集合失败：{result.ErrorMessage}");
+            return;
+        }
+
+        if (Sidebar.SelectedCollection?.CollectionId == collection.CollectionId)
+        {
+            Sidebar.ClearCollectionSelection();
+        }
+
+        await RefreshItemsAsync();
+    }
+
+    private Task AddSelectedItemsToCollectionAsync(CollectionId collectionId)
+    {
+        LibraryItemViewModel[] items = SelectedItems.Count > 0
+            ? SelectedItems.ToArray()
+            : SelectedItem is null
+                ? []
+                : [SelectedItem];
+        return DropItemsOnCollectionAsync(items, collectionId);
+    }
+
+    private async Task RemoveSelectedItemsFromCurrentCollectionAsync()
+    {
+        if (Sidebar.SelectedCollection is not { } collection || SelectedItems.Count == 0)
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
+        Result result = await services.Collections.RemoveItemsAsync(collection.CollectionId, itemIds);
+        if (!result.IsSuccess)
+        {
+            _main.ReportError($"从集合移除失败：{result.ErrorMessage}");
+            return;
+        }
+
+        await RefreshItemsAsync();
+    }
+
+    /// <summary>Drops library items onto a collection, adding each item as a member.</summary>
+    public async Task DropItemsOnCollectionAsync(IReadOnlyList<LibraryItemViewModel> items,
+        CollectionId collectionId)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        ItemId[] itemIds = items.Select(item => ItemId.Parse(item.ItemId)).ToArray();
+        Result result = await services.Collections.AddItemsAsync(collectionId, itemIds);
+        if (!result.IsSuccess)
+        {
+            _main.ReportError($"添加到集合失败：{result.ErrorMessage}");
+            return;
+        }
+
+        await RefreshItemsAsync();
+    }
+
     /// <summary>
     /// Detects duplicate library items and lets the user process or skip each pair.
     /// </summary>
@@ -914,8 +1105,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        if (Sidebar.SelectedScope == LibrarySidebarScope.Trash)
+        bool hasActiveFilter = Sidebar.HasSelectedCollection || Sidebar.IsNoTagSelected ||
+                               Sidebar.GetSelectedTagNames().Count > 0;
+        if (Sidebar.SelectedScope == LibrarySidebarScope.Trash || hasActiveFilter)
         {
+            // Incremental row lookup returns active items by ID without applying the current
+            // sidebar relation filters. Re-run the filtered query so newly imported/scanned
+            // items cannot leak into an empty collection or a tag-filtered view.
             await DispatcherTasks.RunAsync(RefreshItemsAsync);
             return;
         }
@@ -1032,6 +1228,14 @@ public sealed class LibraryShellViewModel : ViewModelBase
         {
             await ReconcileTagsAfterCommittedChangeAsync();
         }
+
+        // Collection counts follow item lifecycle and membership changes; the catalog itself
+        // changes when a Collection is created, renamed, or dissolved. Reload it reactively so
+        // the sidebar and an active collection filter never observe a stale catalog.
+        if (changeSet.CollectionIds.Count > 0)
+        {
+            await ReconcileCollectionsAfterCommittedChangeAsync();
+        }
     }
 
     /// <summary>
@@ -1101,6 +1305,47 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (filterWasActive || Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0)
         {
             await ApplyTagFilterMembershipAsync();
+        }
+    }
+
+    /// <summary>
+    /// Reloads the sidebar collection catalog after a committed change so names, membership
+    /// counts, and the active collection filter follow writes published by any host surface. A
+    /// version guard discards stale runs; the active filter re-runs only when a collection is
+    /// selected or the selected collection disappeared.
+    /// </summary>
+    private async Task ReconcileCollectionsAfterCommittedChangeAsync()
+    {
+        if (Sidebar.SelectedScope == LibrarySidebarScope.Trash)
+        {
+            return;
+        }
+
+        int version = ++_collectionReconcileVersion;
+        HostServices services = await _main.ServicesAsync();
+        Result<IReadOnlyList<Collection>> collections =
+            await Task.Run(() => services.Collections.ListCollectionsAsync());
+        if (collections.IsFailure || version != _collectionReconcileVersion)
+        {
+            return;
+        }
+
+        CollectionId? previousSelection = Sidebar.SelectedCollection?.CollectionId;
+        await DispatcherTasks.RunAsync(() =>
+        {
+            Sidebar.LoadCollections(collections.Value);
+            return Task.CompletedTask;
+        });
+        if (version != _collectionReconcileVersion)
+        {
+            return;
+        }
+
+        CollectionId? currentSelection = Sidebar.SelectedCollection?.CollectionId;
+        if (previousSelection != currentSelection || currentSelection is not null)
+        {
+            // The filter selection changed or an active collection's membership may have changed.
+            await RefreshItemsAsync();
         }
     }
 

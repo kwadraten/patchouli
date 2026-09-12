@@ -87,6 +87,7 @@ public sealed class HostServices
         LibraryItems = new LibraryItemQueryService(ConnectionFactory);
         Items = new ItemService(ConnectionFactory, Library, Clock, LibraryRevisions);
         Tags = new ItemTagService(ConnectionFactory, LibraryRevisions);
+        Collections = new CollectionService(ConnectionFactory, Library, Clock, LibraryRevisions);
         LibraryItemCache = new LibraryItemCache(LibraryItems, Tags);
         LibraryRevisionMonitor = new LibraryRevisionMonitor(LibraryRevisions, LibraryItemCache,
             reportUnexpectedException: _reportUnexpectedException);
@@ -239,6 +240,7 @@ public sealed class HostServices
     public ILibraryItemQueryService LibraryItems { get; }
     public IItemService Items { get; }
     public IItemTagService Tags { get; }
+    public ICollectionService Collections { get; }
     public LibraryItemCache LibraryItemCache { get; }
     public LibraryRevisionMonitor LibraryRevisionMonitor { get; }
     public IItemMergeService MergeItems { get; }

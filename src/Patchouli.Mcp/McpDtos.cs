@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Search;
@@ -156,6 +157,31 @@ public sealed record McpSearchContextResponse(
 public sealed record McpLibraryStateResponse(
     string LibraryId,
     string LibraryRevision);
+
+/// <summary>The fixed Library identity projection exposed at patchouli://library.toon.</summary>
+public sealed record McpLibraryProjection(
+    [property: JsonPropertyName("library_id")]
+    string LibraryId,
+    [property: JsonPropertyName("display_name")]
+    string DisplayName,
+    [property: JsonPropertyName("tags")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpLibraryTag>? Tags,
+    [property: JsonPropertyName("collections")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpLibraryCollection>? Collections);
+
+public sealed record McpLibraryTag(
+    [property: JsonPropertyName("tag")] string Tag,
+    [property: JsonPropertyName("item_count")]
+    int ItemCount);
+
+public sealed record McpLibraryCollection(
+    [property: JsonPropertyName("collection_id")]
+    string CollectionId,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("item_count")]
+    int ItemCount);
 
 public sealed record McpContextUnit(
     SearchUnitId UnitId,

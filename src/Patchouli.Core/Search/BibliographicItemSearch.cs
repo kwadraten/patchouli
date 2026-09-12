@@ -11,6 +11,8 @@ public static class BibliographicSearchFilterKeys
     public const string ItemStatus = "item_status";
     public const string PrimaryDocumentOcrIndexStatus = "primary_document_ocr_index_status";
     public const string Citable = "citable";
+    public const string Tag = "tag";
+    public const string CollectionId = "collection_id";
 }
 
 /// <summary>One structured filter row; rows combine with AND.</summary>
@@ -32,4 +34,5 @@ public sealed record SearchFilterOption(string Value, string Label);
 public sealed record BibliographicSearchFilterOptions(
     IReadOnlyList<SearchFilterOption> ItemTypes,
     IReadOnlyList<SearchFilterOption> ItemStatuses,
-    IReadOnlyList<SearchFilterOption> OcrIndexStatuses);
+    IReadOnlyList<SearchFilterOption> OcrIndexStatuses,
+    IReadOnlyList<SearchFilterOption> Collections);

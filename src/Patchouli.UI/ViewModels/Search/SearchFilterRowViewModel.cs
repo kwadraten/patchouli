@@ -24,7 +24,9 @@ public sealed record SearchFilterKeyOption(string Key, string Label, bool IsText
         new(BibliographicSearchFilterKeys.ItemType, "题录类型", false),
         new(BibliographicSearchFilterKeys.ItemStatus, "条目状态", false),
         new(BibliographicSearchFilterKeys.PrimaryDocumentOcrIndexStatus, "OCR 索引状态", false),
-        new(BibliographicSearchFilterKeys.Citable, "可引用", false)
+        new(BibliographicSearchFilterKeys.Citable, "可引用", false),
+        new(BibliographicSearchFilterKeys.Tag, "标签（精确）", true),
+        new(BibliographicSearchFilterKeys.CollectionId, "集合", false)
     ];
 
     public static SearchFilterKeyOption For(string key)

@@ -681,6 +681,26 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
 
             string[] items = plan.ItemsToImport.Select(itemId => itemId.ToString()).ToArray();
             string[] documents = plan.DocumentInstancesToImport.Select(documentId => documentId.ToString()).ToArray();
+            bool sameLibrary = plan.SourceBranch.LibraryId == plan.TargetLibraryId;
+
+            // Older snapshots were taken before migration 040 and therefore have no collection
+            // tables. Importing them must still succeed: collection copying is skipped when the
+            // branch predates the tables, and empty Collections are copied even when no Items are
+            // selected because collections are independent of item membership.
+            bool branchHasCollections = await TableExistsAsync(connection, "branch", "collections");
+            bool branchHasItemCollections = await TableExistsAsync(connection, "branch", "item_collections");
+            if (sameLibrary && branchHasCollections)
+            {
+                await connection.ExecuteAsync(
+                    """
+                    insert or ignore into collections (collection_id, library_id, name, created_at, updated_at)
+                    select collection_id, @TargetLibraryId, name, created_at, updated_at
+                    from branch.collections
+                    where library_id = @TargetLibraryId;
+                    """,
+                    new { TargetLibraryId = plan.TargetLibraryId.ToString() },
+                    transaction);
+            }
 
             if (items.Length > 0)
             {
@@ -733,6 +753,19 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                         """,
                         new { SourceItemId = sourceItemId, TargetItemId = targetItemId, Remapped = remapped ? 1 : 0 },
                         transaction);
+
+                    if (branchHasItemCollections)
+                    {
+                        await connection.ExecuteAsync(
+                            """
+                            insert or ignore into item_collections (collection_id, item_id, added_at)
+                            select collection_id, @TargetItemId, added_at
+                            from branch.item_collections
+                            where item_id = @SourceItemId;
+                            """,
+                            new { SourceItemId = sourceItemId, TargetItemId = targetItemId },
+                            transaction);
+                    }
                 }
 
                 if (plan.ItemStateOverrides.Count > 0)
@@ -845,7 +878,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
                 }
             }
 
-            bool sameLibrary = plan.SourceBranch.LibraryId == plan.TargetLibraryId;
             if (sameLibrary)
             {
                 await connection.ExecuteAsync(
@@ -964,6 +996,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         }.ToString());
         connection.Open();
         return connection;
+    }
+
+    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string schema, string table)
+    {
+        return await connection.ExecuteScalarAsync<int>(
+            $"select count(1) from {schema}.sqlite_master where type in ('table','view') and name = @Table;",
+            new { Table = table }) > 0;
     }
 
     private static async Task<Result> ValidateStagedTreesAsync(string path, CancellationToken cancellationToken)

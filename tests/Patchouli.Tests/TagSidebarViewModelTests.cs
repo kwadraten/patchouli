@@ -155,6 +155,72 @@ public sealed class TagSidebarViewModelTests
         fired.Should().BeTrue();
     }
 
+    [Fact]
+    public void LoadCollections_keeps_stable_collection_instance_and_preserves_selection()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        Collection first = new(CollectionId.New(), LibraryId.New(), "Alpha", 1,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        sidebar.LoadCollections([first]);
+        IReadOnlyList<CollectionListItemViewModel> original = sidebar.Collections;
+        sidebar.ToggleCollectionSelection(sidebar.Collections[0]);
+
+        sidebar.LoadCollections([first with { Name = "Alpha renamed", ItemCount = 2 }]);
+
+        sidebar.Collections.Should().BeSameAs(original, "the item context menu binds the stable instance");
+        sidebar.Collections.Should().ContainSingle();
+        sidebar.Collections[0].Name.Should().Be("Alpha renamed");
+        sidebar.Collections[0].IsSelected.Should().BeTrue();
+    }
+
+    [Fact]
+    public void Collection_and_builtin_navigation_share_a_single_visual_selection()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        Collection collection = new(CollectionId.New(), LibraryId.New(), "Alpha", 1,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        sidebar.LoadCollections([collection]);
+
+        sidebar.SelectedCollection = sidebar.Collections[0];
+
+        sidebar.SelectedNavigationItem.Should().BeSameAs(sidebar.Collections[0]);
+        sidebar.SelectedCollection.Should().BeSameAs(sidebar.Collections[0]);
+
+        sidebar.SelectedSection = sidebar.Sections[0];
+
+        sidebar.SelectedNavigationItem.Should().BeSameAs(sidebar.Sections[0]);
+        sidebar.SelectedCollection.Should().BeNull();
+    }
+
+    [Fact]
+    public void Navigation_items_place_collections_between_library_and_trash()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        sidebar.SelectedNavigationItem.Should().BeSameAs(sidebar.Sections[0]);
+        Collection collection = new(CollectionId.New(), LibraryId.New(), "Alpha", 0,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+
+        sidebar.LoadCollections([collection]);
+
+        sidebar.NavigationItems.Should().Equal(sidebar.Sections[0], sidebar.Collections[0], sidebar.Sections[1]);
+        sidebar.SelectedNavigationItem.Should().BeSameAs(sidebar.Sections[0]);
+    }
+
+    [Fact]
+    public void Selecting_a_collection_from_trash_returns_to_the_active_scope()
+    {
+        LibrarySidebarViewModel sidebar = new();
+        Collection collection = new(CollectionId.New(), LibraryId.New(), "Empty", 0,
+            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
+        sidebar.LoadCollections([collection]);
+        sidebar.SelectedSection = sidebar.Sections[1];
+
+        sidebar.SelectedNavigationItem = sidebar.Collections[0];
+
+        sidebar.IsActiveSelected.Should().BeTrue();
+        sidebar.SelectedCollection.Should().BeSameAs(sidebar.Collections[0]);
+    }
+
     private static LibraryItemRow CreateRow(string title, IReadOnlyList<string> tags)
     {
         return new LibraryItemRow(
@@ -308,7 +374,7 @@ public sealed class TagSidebarViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<BibliographicSearchFilterOptions>.Success(
-                new BibliographicSearchFilterOptions([], [], [])));
+                new BibliographicSearchFilterOptions([], [], [], [])));
         }
     }
 }

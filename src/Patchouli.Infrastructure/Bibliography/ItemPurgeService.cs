@@ -282,6 +282,16 @@ public sealed class ItemPurgeService : IItemPurgeService
                 new { ItemIds = itemIdStrings },
                 transaction);
 
+            CollectionId[] affectedCollections = (await connection.QueryAsync<string>(
+                    "select distinct collection_id from item_collections where item_id in @ItemIds;",
+                    new { ItemIds = itemIdStrings }, transaction))
+                .Select(CollectionId.Parse)
+                .ToArray();
+            await connection.ExecuteAsync(
+                "delete from item_collections where item_id in @ItemIds;",
+                new { ItemIds = itemIdStrings },
+                transaction);
+
             await connection.ExecuteAsync(
                 "delete from items where item_id in @ItemIds;",
                 new { ItemIds = itemIdStrings },
@@ -309,7 +319,7 @@ public sealed class ItemPurgeService : IItemPurgeService
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
                 connection,
                 transaction,
-                LibraryChangeSet.Empty with { ItemIds = distinctIds },
+                LibraryChangeSet.Empty with { ItemIds = distinctIds, CollectionIds = affectedCollections },
                 cancellationToken);
             if (revision.IsFailure)
             {

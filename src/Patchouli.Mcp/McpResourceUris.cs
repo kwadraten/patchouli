@@ -13,7 +13,8 @@ public enum McpUriKind
     Document,
     Page,
     Style,
-    Evidence
+    Evidence,
+    Library
 }
 
 public sealed record McpUriParseResult(
@@ -85,6 +86,12 @@ public static class McpResourceUris
         return $"{Prefix}csl-styles/{styleId}.csl";
     }
 
+    /// <summary>The single root Library projection resource exposed to agents.</summary>
+    public static string LibraryUri()
+    {
+        return $"{Prefix}library.toon";
+    }
+
     public static Result<McpUriParseResult> Parse(string uri)
     {
         if (string.IsNullOrWhiteSpace(uri))
@@ -114,6 +121,14 @@ public static class McpResourceUris
         }
 
         string[] segments = rest.Split('/');
+        if (rest.Length == "library.toon".Length &&
+            string.Equals(rest, "library.toon", StringComparison.Ordinal))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.Library))
+                : Invalid(uri, "The library projection URI does not accept query parameters.");
+        }
+
         return segments[0] switch
         {
             "items" => ParseItemUri(uri, segments),

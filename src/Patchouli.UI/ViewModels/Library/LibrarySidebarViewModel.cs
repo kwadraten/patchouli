@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Host.Caching;
 
@@ -33,7 +34,9 @@ public sealed class LibrarySidebarSectionViewModel : ViewModelBase
 public sealed class LibrarySidebarViewModel : ViewModelBase
 {
     private LibrarySidebarSectionViewModel _selectedSection;
+    private object? _selectedNavigationItem;
     private ObservableCollection<TagListItemViewModel> _tags = new();
+    private CollectionListItemViewModel? _selectedCollection;
     private readonly List<TagListItemViewModel> _selectedTags = new();
 
     public LibrarySidebarViewModel()
@@ -44,6 +47,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             new LibrarySidebarSectionViewModel("回收站", "Trash2", LibrarySidebarScope.Trash)
         ];
         _selectedSection = Sections[0];
+        RebuildNavigationItems();
 
         SelectActiveCommand = new AsyncCommand(() =>
         {
@@ -56,22 +60,56 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             SelectedSection = Sections[1];
             return Task.CompletedTask;
         });
+
+        CreateCollectionCommand = new AsyncCommand(() =>
+        {
+            CreateCollectionRequested?.Invoke(this, EventArgs.Empty);
+            return Task.CompletedTask;
+        });
     }
 
     public ObservableCollection<LibrarySidebarSectionViewModel> Sections { get; }
+
+    /// <summary>Built-in library rows and user collections in their single visual section.</summary>
+    public ObservableCollection<object> NavigationItems { get; } = new();
 
     public LibrarySidebarSectionViewModel SelectedSection
     {
         get => _selectedSection;
         set
         {
-            if (ReferenceEquals(_selectedSection, value) || value is null)
+            if (value is null)
             {
                 return;
             }
 
+            if (ReferenceEquals(_selectedSection, value))
+            {
+                if (_selectedCollection is not null)
+                {
+                    ClearCollectionSelection();
+                }
+
+                SyncSelectedNavigationItem();
+                return;
+            }
+
+            if (_selectedCollection is not null)
+            {
+                _selectedCollection = null;
+                foreach (CollectionListItemViewModel item in Collections)
+                {
+                    item.IsSelected = false;
+                }
+
+                Raise(nameof(SelectedCollection));
+                Raise(nameof(HasSelectedCollection));
+                Raise(nameof(SelectedCollectionName));
+            }
+
             _selectedSection = value;
             Raise();
+            SyncSelectedNavigationItem();
             Raise(nameof(SelectedScope));
             Raise(nameof(IsTrashSelected));
             Raise(nameof(IsActiveSelected));
@@ -79,11 +117,47 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             Raise(nameof(CanDelete));
             Raise(nameof(CanPurge));
             Raise(nameof(IsTagAreaVisible));
+            Raise(nameof(IsCollectionAreaVisible));
+            if (!IsActiveSelected)
+            {
+                ClearCollectionSelection();
+            }
+
             ScopeChanged?.Invoke(this, EventArgs.Empty);
         }
     }
 
     public LibrarySidebarScope SelectedScope => _selectedSection.Scope;
+
+    /// <summary>The one selected row across built-in scopes and user collections.</summary>
+    public object? SelectedNavigationItem
+    {
+        get => _selectedNavigationItem;
+        set
+        {
+            if (ReferenceEquals(_selectedNavigationItem, value))
+            {
+                return;
+            }
+
+            if (value is null)
+            {
+                _selectedNavigationItem = null;
+                Raise();
+                return;
+            }
+
+            switch (value)
+            {
+                case LibrarySidebarSectionViewModel section:
+                    SelectedSection = section;
+                    break;
+                case CollectionListItemViewModel collection:
+                    SelectedCollection = collection;
+                    break;
+            }
+        }
+    }
 
     public bool IsTrashSelected => _selectedSection.Scope == LibrarySidebarScope.Trash;
 
@@ -97,9 +171,17 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
     public bool IsTagAreaVisible => IsActiveSelected;
 
+    public bool IsCollectionAreaVisible => IsActiveSelected;
+
+    public bool HasCollections => Collections.Count > 0;
+
+    public bool NoCollections => Collections.Count == 0;
+
     public AsyncCommand SelectActiveCommand { get; }
 
     public AsyncCommand SelectTrashCommand { get; }
+
+    public AsyncCommand CreateCollectionCommand { get; }
 
     public ObservableCollection<TagListItemViewModel> Tags
     {
@@ -117,6 +199,58 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
     }
 
     /// <summary>
+    /// The collection catalog, exposed as one stable instance so bindings survive a reload. A new
+    /// projection is applied by clearing and re-adding rather than replacing the collection.
+    /// </summary>
+    public ObservableCollection<CollectionListItemViewModel> Collections { get; } = new();
+
+    /// <summary>The single selected collection filter, or null for no collection filter.</summary>
+    public CollectionListItemViewModel? SelectedCollection
+    {
+        get => _selectedCollection;
+        set
+        {
+            if (ReferenceEquals(_selectedCollection, value))
+            {
+                return;
+            }
+
+            if (value is not null && !IsActiveSelected)
+            {
+                _selectedSection = Sections[0];
+                Raise(nameof(SelectedSection));
+                Raise(nameof(SelectedScope));
+                Raise(nameof(IsTrashSelected));
+                Raise(nameof(IsActiveSelected));
+                Raise(nameof(CanRestore));
+                Raise(nameof(CanDelete));
+                Raise(nameof(CanPurge));
+                Raise(nameof(IsTagAreaVisible));
+                Raise(nameof(IsCollectionAreaVisible));
+            }
+
+            _selectedCollection = value;
+            if (_selectedCollection is not null)
+            {
+                foreach (CollectionListItemViewModel item in Collections)
+                {
+                    item.IsSelected = ReferenceEquals(item, _selectedCollection);
+                }
+            }
+
+            Raise();
+            SyncSelectedNavigationItem();
+            Raise(nameof(HasSelectedCollection));
+            Raise(nameof(SelectedCollectionName));
+            CollectionSelectionChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    public bool HasSelectedCollection => _selectedCollection is not null;
+
+    public string SelectedCollectionName => _selectedCollection?.Name ?? string.Empty;
+
+    /// <summary>
     /// The currently selected tag filters. AND semantics: an item must carry every selected tag,
     /// or (when "无标签" is selected) carry no tags at all. "无标签" is mutually exclusive with
     /// ordinary tag selection.
@@ -126,6 +260,16 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
     public event EventHandler? ScopeChanged;
 
     public event EventHandler? TagSelectionChanged;
+
+    public event EventHandler? CollectionSelectionChanged;
+
+    public event EventHandler? CreateCollectionRequested;
+
+    public event EventHandler<CollectionListItemViewModel>? RenameCollectionRequested;
+
+    public event EventHandler<CollectionListItemViewModel>? DissolveCollectionRequested;
+
+    public event EventHandler<CollectionListItemViewModel>? AddToSelectionRequested;
 
     public event EventHandler<TagListItemViewModel>? PinToggled;
 
@@ -198,6 +342,132 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
         Tags = new ObservableCollection<TagListItemViewModel>(sorted);
         Tags.Add(noTagItem);
+    }
+
+    /// <summary>
+    /// Rebuilds the sidebar collection list from a fresh catalog snapshot, preserving the
+    /// current selection when that collection still exists. Collections are ordered by name.
+    /// </summary>
+    public void LoadCollections(IReadOnlyList<Collection> collections)
+    {
+        CollectionId? previousSelection = _selectedCollection?.CollectionId;
+        List<CollectionListItemViewModel> next = collections
+            .OrderBy(collection => collection.Name, StringComparer.Ordinal)
+            .Select(collection =>
+            {
+                CollectionListItemViewModel item =
+                    new(collection.CollectionId, collection.Name, collection.ItemCount);
+                WireCollectionEvents(item);
+                return item;
+            })
+            .ToList();
+
+        Collections.Clear();
+        foreach (CollectionListItemViewModel item in next)
+        {
+            Collections.Add(item);
+        }
+
+        CollectionListItemViewModel? restored = previousSelection is { } previous
+            ? next.FirstOrDefault(item => item.CollectionId == previous)
+            : null;
+        _selectedCollection = restored;
+        if (restored is not null)
+        {
+            restored.IsSelected = true;
+        }
+
+        RebuildNavigationItems();
+
+        Raise(nameof(Collections));
+        Raise(nameof(HasCollections));
+        Raise(nameof(NoCollections));
+        Raise(nameof(SelectedCollection));
+        Raise(nameof(HasSelectedCollection));
+        Raise(nameof(SelectedCollectionName));
+    }
+
+    /// <summary>Selects one collection, or clears the filter when the same collection is clicked again.</summary>
+    public void ToggleCollectionSelection(CollectionListItemViewModel item)
+    {
+        if (ReferenceEquals(_selectedCollection, item))
+        {
+            ClearCollectionSelection();
+            return;
+        }
+
+        SelectedCollection = item;
+    }
+
+    public void ClearCollectionSelection()
+    {
+        if (_selectedCollection is null)
+        {
+            return;
+        }
+
+        _selectedCollection = null;
+        foreach (CollectionListItemViewModel item in Collections)
+        {
+            item.IsSelected = false;
+        }
+
+        Raise(nameof(SelectedCollection));
+        SyncSelectedNavigationItem();
+        Raise(nameof(HasSelectedCollection));
+        Raise(nameof(SelectedCollectionName));
+        CollectionSelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void WireCollectionEvents(CollectionListItemViewModel item)
+    {
+        item.RequestRename = collection =>
+        {
+            RenameCollectionRequested?.Invoke(this, collection);
+            return Task.CompletedTask;
+        };
+        item.RequestDissolve = collection =>
+        {
+            DissolveCollectionRequested?.Invoke(this, collection);
+            return Task.CompletedTask;
+        };
+        item.RequestAddToSelection = collection =>
+        {
+            AddToSelectionRequested?.Invoke(this, collection);
+            return Task.CompletedTask;
+        };
+    }
+
+    private void RebuildNavigationItems()
+    {
+        NavigationItems.Clear();
+        NavigationItems.Add(Sections[0]);
+        foreach (CollectionListItemViewModel collection in Collections)
+        {
+            NavigationItems.Add(collection);
+        }
+
+        NavigationItems.Add(Sections[1]);
+        Raise(nameof(NavigationItems));
+        SyncSelectedNavigationItem(true);
+    }
+
+    private void SyncSelectedNavigationItem(bool forceNotification = false)
+    {
+        object target = _selectedCollection is not null ? _selectedCollection : _selectedSection;
+        if (!forceNotification && ReferenceEquals(_selectedNavigationItem, target))
+        {
+            return;
+        }
+
+        if (forceNotification && ReferenceEquals(_selectedNavigationItem, target))
+        {
+            _selectedNavigationItem = null;
+            Raise(nameof(SelectedNavigationItem));
+        }
+
+        _selectedNavigationItem = target;
+        Raise(nameof(SelectedNavigationItem));
     }
 
     /// <summary>

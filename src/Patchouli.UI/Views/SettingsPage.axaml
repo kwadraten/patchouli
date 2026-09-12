@@ -380,6 +380,26 @@
 
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
+                    <TextBlock Text="Library 投影暴露" Classes="CardTitle" />
+                    <TextBlock
+                      Text="仅对 MCP/CLI agent 生效，保存在本设备。隐藏后对应筛选返回 PERMISSION_DENIED；隐藏标签同时隐藏 BibLaTeX keyword，写入时保留现有标签。"
+                      FontSize="12" TextWrapping="Wrap"
+                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <CheckBox Content="暴露标签（patchouli://library.toon 与题录关系）"
+                              IsChecked="{Binding ExposeLibraryTags}" />
+                    <CheckBox Content="暴露集合（patchouli://library.toon 与题录关系）"
+                              IsChecked="{Binding ExposeLibraryCollections}" />
+                    <Button Content="刷新预览" Command="{Binding RefreshLibraryPreviewCommand}"
+                            HorizontalAlignment="Left" />
+                    <TextBlock Text="{Binding LibraryPreviewHint}" FontSize="12" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <TextBox Text="{Binding LibraryPreviewText}" IsReadOnly="True" AcceptsReturn="True"
+                             MinHeight="120" FontFamily="Consolas" TextWrapping="NoWrap" />
+                  </StackPanel>
+                </Border>
+
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
                     <TextBlock Text="命令行工具 (patchouli-cli)" Classes="CardTitle" />
                     <TextBlock Text="{Binding CliStatusText}" FontSize="12" TextWrapping="Wrap"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />

@@ -828,6 +828,127 @@ public sealed class McpReadApi : IMcpReadApi
         public long LibraryRevision { get; init; }
     }
 
+    public async Task<Result<McpLibraryProjection>> GetLibraryProjectionAsync(bool includeTags,
+        bool includeCollections, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            LibraryProjectionRow? library = await connection.QuerySingleOrDefaultAsync<LibraryProjectionRow>(
+                """
+                select library_id as LibraryId, display_name as DisplayName
+                from library_metadata
+                order by created_at, library_id
+                limit 1;
+                """);
+            if (library is null || string.IsNullOrWhiteSpace(library.LibraryId))
+            {
+                return Result<McpLibraryProjection>.Failure(AppErrorCodes.NotFound,
+                    "No library identity exists in this runtime database.");
+            }
+
+            IReadOnlyList<McpLibraryTag>? tags = null;
+            if (includeTags)
+            {
+                tags = (await connection.QueryAsync<LibraryTagRow>(
+                        """
+                        select value as Tag, count(*) as ItemCount
+                        from items, json_each(tags_json)
+                        where items.library_id = @LibraryId
+                          and deleted_at is null
+                          and merged_into_item_id is null
+                          and json_type(tags_json) = 'array'
+                        group by value
+                        order by value collate binary;
+                        """,
+                        new { LibraryId = library.LibraryId }))
+                    .Select(row => new McpLibraryTag(row.Tag, (int)row.ItemCount)).ToArray();
+            }
+
+            IReadOnlyList<McpLibraryCollection>? collections = null;
+            if (includeCollections)
+            {
+                collections = (await connection.QueryAsync<LibraryCollectionRow>(
+                        """
+                        select c.collection_id as CollectionId,
+                               c.name as Name,
+                               (select count(1)
+                                from item_collections ic
+                                join items i on i.item_id = ic.item_id
+                                where ic.collection_id = c.collection_id
+                                  and i.deleted_at is null
+                                  and i.merged_into_item_id is null) as ItemCount
+                        from collections c
+                        where c.library_id = @LibraryId
+                        order by c.name collate binary, c.collection_id;
+                        """,
+                        new { LibraryId = library.LibraryId }))
+                    .Select(row => new McpLibraryCollection(row.CollectionId, row.Name, (int)row.ItemCount)).ToArray();
+            }
+
+            return Result<McpLibraryProjection>.Success(new McpLibraryProjection(
+                LibraryId.Parse(library.LibraryId).ToString(), library.DisplayName, tags, collections));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpLibraryProjection>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    private sealed class LibraryProjectionRow
+    {
+        public string LibraryId { get; init; } = "";
+        public string DisplayName { get; init; } = "";
+    }
+
+    private sealed class LibraryTagRow
+    {
+        public string Tag { get; init; } = "";
+        public long ItemCount { get; init; }
+    }
+
+    private sealed class LibraryCollectionRow
+    {
+        public string CollectionId { get; init; } = "";
+        public string Name { get; init; } = "";
+        public long ItemCount { get; init; }
+    }
+
+    public async Task<Result<IReadOnlyList<CollectionId>>> GetItemCollectionIdsAsync(ItemId itemId,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            string[] ids = (await connection.QueryAsync<string>(
+                """
+                select ic.collection_id
+                from item_collections ic
+                join collections c on c.collection_id = ic.collection_id
+                where ic.item_id = @ItemId
+                order by c.name collate binary, c.collection_id;
+                """,
+                new { ItemId = itemId.ToString() })).ToArray();
+            return Result<IReadOnlyList<CollectionId>>.Success(ids.Select(CollectionId.Parse).ToArray());
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<IReadOnlyList<CollectionId>>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
     private async Task<Result<McpPageTextResponse>> CurrentPageTextAsync(PageId pageId, bool includeSuppressed,
         CancellationToken cancellationToken)
     {
@@ -1203,6 +1324,15 @@ public sealed class McpReadApi : IMcpReadApi
                     clauses.Add(PrimaryDocumentOcrIndexStatusExpression("items.item_id") +
                                 " = @PrimaryDocumentOcrIndexStatus");
                     parameters["PrimaryDocumentOcrIndexStatus"] = clause.Value;
+                    break;
+                case "tag":
+                    clauses.Add("exists (select 1 from json_each(items.tags_json) where value = @Tag)");
+                    parameters["Tag"] = clause.Value.Trim();
+                    break;
+                case "collection_id":
+                    clauses.Add(
+                        "exists (select 1 from item_collections ic where ic.item_id = items.item_id and ic.collection_id = @CollectionId)");
+                    parameters["CollectionId"] = clause.Value.Trim();
                     break;
             }
         }

@@ -57,6 +57,80 @@ public sealed class LibraryRevisionUiSubscriptionTests : IDisposable
         }, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task Imported_item_does_not_leak_into_the_selected_empty_collection()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            string databasePath = _settings.CreateDatabasePath("ui-empty-collection-import");
+            MainWindowViewModel viewModel = new(settingsPath: _settings.Path) { RuntimeDatabasePath = databasePath };
+            try
+            {
+                await viewModel.OpenDatabaseCommand.ExecuteAsync();
+                await viewModel.Library.CreateCommand.ExecuteAsync();
+                HostServices services = await viewModel.ServicesAsync();
+                Result<Collection> collection = await services.Collections.CreateCollectionAsync("Empty");
+                collection.IsSuccess.Should().BeTrue(collection.ErrorMessage);
+                await viewModel.Shell.RefreshItemsAsync();
+                viewModel.Shell.Sidebar.SelectedNavigationItem =
+                    viewModel.Shell.Sidebar.Collections.Single(item =>
+                        item.CollectionId == collection.Value.CollectionId);
+                viewModel.Shell.Items.Should().BeEmpty();
+
+                Result<ItemMetadata> imported = await services.Items.CreateItemAsync("book", "Imported");
+                imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+                await viewModel.Shell.ApplyChangeSetAsync([imported.Value.ItemId]);
+
+                viewModel.Shell.Items.Should().BeEmpty(
+                    "an imported item has no membership in the selected empty collection");
+            }
+            finally
+            {
+                await viewModel.BeginLibrarySwitchAsync();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Imported_item_does_not_leak_into_the_selected_tag_filter()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            string databasePath = _settings.CreateDatabasePath("ui-tag-filter-import");
+            MainWindowViewModel viewModel = new(settingsPath: _settings.Path) { RuntimeDatabasePath = databasePath };
+            try
+            {
+                await viewModel.OpenDatabaseCommand.ExecuteAsync();
+                await viewModel.Library.CreateCommand.ExecuteAsync();
+                HostServices services = await viewModel.ServicesAsync();
+                Result<ItemMetadata> tagged = await services.Items.CreateItemAsync("book", "Tagged",
+                    tagsJson: "[\"Alpha\"]");
+                tagged.IsSuccess.Should().BeTrue(tagged.ErrorMessage);
+                await viewModel.Shell.RefreshItemsAsync();
+                viewModel.Shell.Sidebar.ToggleTagSelection(
+                    viewModel.Shell.Sidebar.Tags.Single(item => item.Name == "Alpha"));
+                await viewModel.Shell.RefreshItemsAsync();
+
+                Result<ItemMetadata> imported = await services.Items.CreateItemAsync("book", "Imported");
+                imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+                await viewModel.Shell.ApplyChangeSetAsync([imported.Value.ItemId]);
+
+                viewModel.Shell.Items.Should().ContainSingle().Which.ItemId.Should()
+                    .Be(tagged.Value.ItemId.ToString());
+            }
+            finally
+            {
+                await viewModel.BeginLibrarySwitchAsync();
+            }
+
+            return true;
+        }, CancellationToken.None);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> condition)
     {
         for (int attempt = 0; attempt < 100; attempt++)

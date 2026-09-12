@@ -203,6 +203,40 @@ exception details, stacks, local paths, or secrets.
 replacement implementation satisfies ADR `0023`. No temporary write path is
 acceptable.
 
+## Revision: Library projection and exact relation filters
+
+The production discovery tree adds one fixed singleton, `patchouli://library.toon`.
+It carries `library_id` and `display_name` and, when the device-local
+`ExposeLibraryTags` / `ExposeLibraryCollections` settings allow, sorted `tags`
+and `collections` arrays with item counts. Collections are included even when
+empty. The projection is produced by the same production TOON encoder as every
+other read and is also used by the desktop live preview, so the preview cannot
+drift from the agent-visible bytes. There is no `/collections` VFS directory and
+no collection URI; Collections remain MCP write-protected and are discovered
+only through this projection.
+
+Device-local exposure is a policy, not a data scope. Hiding tags removes them
+from `library.toon` and from BibLaTeX `keywords` output, makes an agent `put`
+preserve the existing tags and ignore incoming keywords, and makes the `tag`
+filter return `PERMISSION_DENIED`. Hiding collections removes them from
+`library.toon` and makes the `collection_id` filter return
+`PERMISSION_DENIED`. The fixed `library_id` and `display_name` are never hidden.
+
+The item scope gains two exact, case-sensitive relation filters that intersect
+with the existing filters and each other with AND: `tag` matches one exact tag
+value on the Item, and `collection_id` matches one exact Collection id using the
+stable id rather than a name. The desktop advanced-search rows use the same two
+keys so the UI, CLI, and MCP agree on filter semantics. A known item file URI
+uses its owning item scope's filter set, so the same exact `tag` and
+`collection_id` clauses work against `patchouli://items/{id}.bib`; unknown keys
+are still rejected. `patchouli://library.toon` is read-only like document, page,
+and evidence resources, so any `put` to it returns `PERMISSION_DENIED` rather
+than an argument error. Tag hiding is applied when the BibLaTeX write entry is
+built, so the entry simply has no `keywords` field and no textual removal of a
+serialized bibliography is performed. The root discovery tree still exposes only
+`/items`, `/texts`, `/csl-styles`, and now `/library.toon`; no collection or tag
+scope root is created.
+
 ## Consequences
 
 The structured surface avoids a persistent stateful shell protocol. The

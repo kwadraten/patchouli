@@ -1,3 +1,5 @@
+using Patchouli.Core.Ids;
+
 namespace Patchouli.Core.Bibliography;
 
 public sealed record CreateItemRequest(
@@ -29,7 +31,8 @@ public sealed record CreateItemRequest(
     string? CustomFieldsJson = null,
     IReadOnlyList<ItemCreatorInput>? Creators = null,
     IReadOnlyList<ItemDateInput>? Dates = null,
-    IReadOnlyList<ItemIdentifierInput>? Identifiers = null);
+    IReadOnlyList<ItemIdentifierInput>? Identifiers = null,
+    IReadOnlyList<CollectionId>? Collections = null);
 
 public sealed record ItemIdentifierInput(
     string Scheme,

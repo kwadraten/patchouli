@@ -939,6 +939,19 @@ public sealed class MainWindowViewModel : ViewModelBase
                 await editor.RefreshStylePreviewAsync();
             }
         }
+
+        if (changeSet.CollectionIds.Count > 0)
+        {
+            // Collection catalog changes reach already-open advanced searches and editors through
+            // the same committed change-set flow: options/catalogs reload in place while staged
+            // editor selections are preserved.
+            await SearchEvidence.ReloadFilterOptionsAsync();
+            foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
+                         .OfType<ItemEditorViewModel>())
+            {
+                await editor.RefreshCollectionCatalogAsync();
+            }
+        }
     }
 
     /// <summary>

@@ -184,13 +184,15 @@ public sealed class McpServerTransportTests
         envelope.RootElement.TryGetProperty("message", out _).Should().BeFalse();
         JsonElement meta = envelope.RootElement.GetProperty("meta");
         meta.GetProperty("library_revision").GetString().Should().Be("lib:1");
-        meta.GetProperty("domain_total").GetInt32().Should().Be(3);
-        meta.GetProperty("shown_total").GetInt32().Should().Be(3);
+        meta.GetProperty("domain_total").GetInt32().Should().Be(4);
+        meta.GetProperty("shown_total").GetInt32().Should().Be(4);
         JsonElement[] entries = envelope.RootElement.GetProperty("entries").EnumerateArray().ToArray();
-        entries.Should().HaveCount(3);
+        entries.Should().HaveCount(4);
         entries.Select(e => e.GetProperty("uri").GetString())
-            .Should().Equal("patchouli://items/", "patchouli://texts/", "patchouli://csl-styles/");
-        entries.Should().OnlyContain(e => e.GetProperty("type").GetString() == "directory");
+            .Should().Equal("patchouli://items/", "patchouli://texts/", "patchouli://csl-styles/",
+                "patchouli://library.toon");
+        entries.Take(3).Should().OnlyContain(e => e.GetProperty("type").GetString() == "directory");
+        entries[3].GetProperty("type").GetString().Should().Be("file");
         envelope.RootElement.GetProperty("continuation").ValueKind.Should().Be(JsonValueKind.Null);
         ToolIsError(response).Should().BeFalse();
     }
@@ -661,6 +663,20 @@ public sealed class McpServerTransportTests
 
             return Task.FromResult(Result<McpLibraryStateResponse>.Success(
                 new McpLibraryStateResponse("lib", "lib:1")));
+        }
+
+        public Task<Result<McpLibraryProjection>> GetLibraryProjectionAsync(bool includeTags,
+            bool includeCollections, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<McpLibraryProjection>.Success(
+                new McpLibraryProjection("lib", "Fake Library", includeTags ? [] : null,
+                    includeCollections ? [] : null)));
+        }
+
+        public Task<Result<IReadOnlyList<CollectionId>>> GetItemCollectionIdsAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<CollectionId>>.Success([]));
         }
 
         public Task<Result<McpSearchLibraryResponse>> SearchLibraryAsync(McpSearchLibraryRequest request,

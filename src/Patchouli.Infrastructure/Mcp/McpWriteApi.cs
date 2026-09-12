@@ -168,7 +168,9 @@ public sealed class McpWriteApi : IMcpWriteApi
             Status: mapped.Value.Status,
             Note: mapped.Value.Note,
             AbstractText: mapped.Value.AbstractText,
-            TagsJson: JsonSerializer.Serialize(mapped.Value.Tags),
+            TagsJson: request.PreserveTags
+                ? existing.Value.TagsJson
+                : JsonSerializer.Serialize(mapped.Value.Tags),
             CollectionsJson: existing.Value.CollectionsJson,
             CustomFieldsJson: BiblatexMappedItemMerge.BuildCustomFields(mapped.Value) ?? "{}",
             Creators: mapped.Value.Creators,

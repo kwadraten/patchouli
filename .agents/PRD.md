@@ -21,7 +21,7 @@
 - MCP / CLI（V3-T1 已实现部分）：结构化 `find` / `fetch` / `put` / `cite`、CLI HTTP 客户端、TOON/JSON、实时分页、有限题录/样式写入；Bashkit 已移出 main。参数与响应见 [协议契约](mcp-protocol.md)，宿主自动接管仍待完成。
 - UI 信息架构：设置五分组；`UiCommandDescriptor`；书库 ProDataGrid（列宽/顺序/排序/显隐/持久化）；阻塞与冲突模态
 - 同步：快照分片；分支检查与显式导入；无自动对象级合并
-- 书库与题录（V3-T5）：按类型显示来源、分组详情、回收站与恢复、永久删除、标签置顶/筛选/拖拽、查重与合并、FileAsset GC；原 PRD 记录 AC1–AC19 已验收。生命周期与快照规则见 [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md)。
+- 书库与题录（V3-T5）：按类型显示来源、分组详情、回收站与恢复、永久删除、标签置顶/筛选/拖拽、一层集合（collection）侧栏/拖放/重命名/解散、查重与合并、FileAsset GC；原 PRD 记录 AC1–AC19 已验收。集合以 `item_collections` 为唯一权威，可空、不可嵌套，成员关系随 trash/restore 保留、随 merge 跟随目标、随 purge 删除。生命周期与快照规则见 [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md)。
 - 搜索（V3-T8）：元数据/全文双模式、AND 高级筛选、平铺题录与分组片段结果、证据跳转；全文筛选下推 `SearchRequest.ItemFilters`，MCP texts scope 支持 `item_id`。见 [领域文档](CONTEXT.md)。
 - 本地 OCR（V3-T9）：NDL koten、RapidOCR 与 NDLOCR-Lite 的 C# ONNX 管线、按需模型下载、文档/页面/区域引擎选择、本地模型与 OCR 临时文件管理；见 [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) / [0031](adr/0031-native-rapidocr-onnx-port.md) / [0032](adr/0032-ndlocr-lite-onnx-port.md)。更多 provider 仍属 V3-T3。
 - 文档版本（V3-T6 / V3-T10）：统一 working/committed、原地 commit、文档级 DocumentCommit、页面/文档历史与恢复、版本谱系 UI、versioned URI；见 [ADR 0027](adr/0027-unified-working-copy-and-immutable-revision-model.md) / [0028](adr/0028-versioned-uri-evidence.md)。不包含题录/样式版本或 diff。
@@ -325,7 +325,7 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 
 - 不把向量化、混合搜索、语义搜索作为 v3 完成标准
 - 不做题录/CSL 样式版本控制、diff/compare 或跨 Item 历史拼接
-- 集合（collection）暂不做；以后再依据标签使用结果决定引入集合或清理 `collections_json` 等遗留字段
+- 不做多层/嵌套集合、集合级权限或集合同步合并；集合仅是一层只读关系，MCP 不能创建、重命名、解散或改成员，只能通过 `patchouli://library.toon` 发现并按精确 `collection_id` 过滤
 - 不做程序托管的原文件同步
 - 不做账号注册、配额购买、云端计费管理
 - 不做自动对象级同步合并或静默 last-writer-wins

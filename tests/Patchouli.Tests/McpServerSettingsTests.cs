@@ -58,6 +58,30 @@ public sealed class McpServerSettingsTests
 
         loaded.IsSuccess.Should().BeTrue();
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(15);
+        loaded.Value.ExposeLibraryTags.Should().BeTrue();
+        loaded.Value.ExposeLibraryCollections.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Save_and_load_round_trip_preserves_library_exposure_flags()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        string settingsPath = Path.Combine(Path.GetTempPath(), $"patchouli-mcp-{Guid.NewGuid():N}.json");
+        McpServerSettingsService service = new(settingsPath, clock);
+
+        Result<McpServerSettings> saved = await service.SaveSettingsAsync(
+            McpServerSettingsService.DefaultSettings(clock.UtcNow) with
+            {
+                ExposeLibraryTags = false,
+                ExposeLibraryCollections = false
+            });
+        Result<McpServerSettings> loaded = await service.GetSettingsAsync();
+
+        saved.IsSuccess.Should().BeTrue(saved.ErrorMessage);
+        loaded.Value.ExposeLibraryTags.Should().BeFalse();
+        loaded.Value.ExposeLibraryCollections.Should().BeFalse();
     }
 
     [Theory]

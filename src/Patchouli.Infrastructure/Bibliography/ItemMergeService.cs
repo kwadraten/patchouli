@@ -262,6 +262,20 @@ public sealed class ItemMergeService : IItemMergeService
                 new { TargetId = targetId.ToString(), SourceId = sourceId.ToString() },
                 transaction);
 
+            // Collection membership is a many-to-many relation: the merged Item keeps the union
+            // of both source and target memberships, then the source edges are removed.
+            await connection.ExecuteAsync(
+                """
+                insert or ignore into item_collections (collection_id, item_id, added_at)
+                select collection_id, @TargetId, added_at
+                from item_collections
+                where item_id = @SourceId;
+
+                delete from item_collections where item_id = @SourceId;
+                """,
+                new { TargetId = targetId.ToString(), SourceId = sourceId.ToString() },
+                transaction);
+
             await connection.ExecuteAsync(
                 """
                 update items
@@ -279,10 +293,15 @@ public sealed class ItemMergeService : IItemMergeService
                 },
                 transaction);
 
+            CollectionId[] affectedCollections = (await connection.QueryAsync<string>(
+                    "select distinct collection_id from item_collections where item_id = @TargetId;",
+                    new { TargetId = targetId.ToString() }, transaction))
+                .Select(CollectionId.Parse)
+                .ToArray();
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
                 connection,
                 transaction,
-                LibraryChangeSet.Empty with { ItemIds = [sourceId, targetId] },
+                LibraryChangeSet.Empty with { ItemIds = [sourceId, targetId], CollectionIds = affectedCollections },
                 cancellationToken);
             if (revision.IsFailure)
             {

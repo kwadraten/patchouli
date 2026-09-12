@@ -41,12 +41,13 @@ public sealed record LibraryChangeSet(
     IReadOnlyCollection<DocumentInstanceId> DocumentInstanceIds,
     IReadOnlyCollection<string> StyleIds,
     IReadOnlyCollection<PageId> PageIds,
-    IReadOnlyCollection<OcrRunId> OcrRunIds)
+    IReadOnlyCollection<OcrRunId> OcrRunIds,
+    IReadOnlyCollection<CollectionId> CollectionIds)
 {
-    public static readonly LibraryChangeSet Empty = new(0, [], [], [], [], []);
+    public static readonly LibraryChangeSet Empty = new(0, [], [], [], [], [], []);
 
     public bool IsEmpty => ItemIds.Count == 0 && DocumentInstanceIds.Count == 0 && StyleIds.Count == 0 &&
-                           PageIds.Count == 0 && OcrRunIds.Count == 0;
+                           PageIds.Count == 0 && OcrRunIds.Count == 0 && CollectionIds.Count == 0;
 }
 
 public sealed class LibraryRevisionCommittedEventArgs : EventArgs

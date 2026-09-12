@@ -332,6 +332,7 @@ public sealed class BiblatexImportService : IBiblatexImportService
 
     public async Task<Result<string>> ExportItemForAgentAsync(
         ItemId itemId,
+        bool includeKeywords,
         CancellationToken cancellationToken = default)
     {
         Result<ItemMetadata> item = await _items.GetItemAsync(itemId, cancellationToken);
@@ -346,7 +347,8 @@ public sealed class BiblatexImportService : IBiblatexImportService
             return Result<string>.Failure(mapped.ErrorCode!, mapped.ErrorMessage!);
         }
 
-        return await _helper.WriteAsync([mapped.Value], cancellationToken);
+        BiblatexWriteEntryDto entry = includeKeywords ? mapped.Value : mapped.Value with { Keywords = [] };
+        return await _helper.WriteAsync([entry], cancellationToken);
     }
 
     /// <summary>

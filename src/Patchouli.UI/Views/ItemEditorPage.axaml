@@ -278,6 +278,28 @@
             </StackPanel>
           </Border>
 
+          <!-- 集合 -->
+          <Border Classes="Card">
+            <StackPanel Spacing="12">
+              <TextBlock Text="集合" Classes="CardTitle" />
+              <TextBlock Text="暂无集合。可在书库侧栏新建集合。" FontSize="12"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                         IsVisible="{Binding NoCollections}" />
+              <ItemsControl ItemsSource="{Binding Collections}" IsVisible="{Binding HasCollections}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <WrapPanel />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="editor:CollectionSelectionItemViewModel">
+                    <CheckBox Content="{Binding Name}" IsChecked="{Binding IsSelected}" Margin="0,0,12,4" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+
           <!-- 文件关联 -->
           <Border Classes="Card" IsVisible="{Binding IsFilesSectionActive}">
             <StackPanel Spacing="12">
