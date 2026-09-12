@@ -27,9 +27,8 @@ public sealed class BookReadingStreamTests
         pages.Select(page => page.PageIndex).Should().Equal(2, 3, 4, 0, 1);
         pages.Select(page => page.IsPrepend).Should().Equal(false, false, false, true, true);
         pages.Should().OnlyContain(page => page.PageCount == 5);
-        pages.Should().OnlyContain(page => page.Html.StartsWith("<h2 data-page=", StringComparison.Ordinal));
-        pages.Should().OnlyContain(page => page.Html.Contains(
-            $"data-page=\"{page.PageIndex + 1}\"", StringComparison.Ordinal));
+        pages.Should().OnlyContain(page => !page.Html.Contains("data-page", StringComparison.Ordinal),
+            "page boundaries are shown as rail badges, not in-flow anchors");
     }
 
     [Fact]
@@ -89,7 +88,7 @@ public sealed class BookReadingStreamTests
         List<BookReadingPage> pages = await CollectAsync(stream, 0);
 
         pages.Should().HaveCount(2);
-        pages[0].Html.Should().Be("<h2 data-page=\"1\">第 1 页 / 共 2 页</h2>\n<p><i>本页尚未识别文字。</i></p>");
+        pages[0].Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
         pages[1].Html.Should().Contain("本页尚未识别文字。");
         pages.Select(page => page.IsPrepend).Should().Equal(false, false);
     }
@@ -203,7 +202,7 @@ public sealed class BookReadingStreamTests
 
         pages.Select(page => page.PageIndex).Should().Equal(0, 1);
         pages[0].Html.Should().Contain("<p>识别出的正文</p>");
-        pages[1].Html.Should().Be("<h2 data-page=\"2\">第 2 页 / 共 2 页</h2>\n<p><i>本页尚未识别文字。</i></p>");
+        pages[1].Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
     }
 
     private static async Task SeedDocumentAsync(

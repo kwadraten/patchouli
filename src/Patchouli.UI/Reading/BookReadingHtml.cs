@@ -1,12 +1,12 @@
-using System.Text;
 using Markdig;
 using Patchouli.Core.Documents;
 
 namespace Patchouli.UI.Reading;
 
 // Projects one page's compiled markdown into an HTML fragment for the reading surface
-// (AvaloniaRichEditor). Every page fragment starts with a page-anchor heading carrying
-// data-page="{PageIndex + 1}" so the view can reason about page boundaries while scrolling.
+// (AvaloniaRichEditor). Fragments carry no page anchor: page boundaries are shown as badges
+// in the view's left rail (tracked through BookReadingPageMap) so a paragraph that spans a
+// page break flows uninterrupted.
 public static class BookReadingHtml
 {
     // Pipe tables cover GFM tables; complex tables already arrive as raw HTML inside the markdown,
@@ -16,30 +16,20 @@ public static class BookReadingHtml
     public static string CompilePageHtml(CompiledMarkdown compiled, int pageIndex, int pageCount)
     {
         ArgumentNullException.ThrowIfNull(compiled);
-        StringBuilder html = new();
-        AppendAnchor(html, pageIndex, pageCount);
-        if (!string.IsNullOrWhiteSpace(compiled.Markdown))
+        if (string.IsNullOrWhiteSpace(compiled.Markdown))
         {
-            html.Append(Markdown.ToHtml(compiled.Markdown, Pipeline));
+            // An empty paragraph keeps the page a line tall so its rail badge does not overlap
+            // the next page's badge.
+            return "<p></p>\n";
         }
 
-        return html.ToString();
+        return Markdown.ToHtml(compiled.Markdown, Pipeline);
     }
 
     // Fragment for a page that has no committed revision yet (not OCR'd); keeps the reading
     // flow continuous instead of silently skipping pages.
     public static string CompilePlaceholderHtml(int pageIndex, int pageCount)
     {
-        StringBuilder html = new();
-        AppendAnchor(html, pageIndex, pageCount);
-        html.Append("<p><i>本页尚未识别文字。</i></p>");
-        return html.ToString();
-    }
-
-    private static void AppendAnchor(StringBuilder html, int pageIndex, int pageCount)
-    {
-        int pageNumber = pageIndex + 1;
-        html.Append("<h2 data-page=\"").Append(pageNumber).Append("\">第 ").Append(pageNumber)
-            .Append(" 页 / 共 ").Append(pageCount).Append(" 页</h2>\n");
+        return "<p><i>本页尚未识别文字。</i></p>";
     }
 }

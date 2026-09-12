@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
@@ -41,6 +42,14 @@ public sealed partial class PdfWorkspacePage : UserControl
     // each prepended page batch is inserted right after the previous one (preserving page order
     // instead of reversing it by always inserting at index 0).
     private int _prependedBlockCount;
+
+    // Reading-mode page rail: per-page HTML cache (so a font change can rebuild the document and
+    // re-measure page offsets), the set of pages that arrived as front-inserts, the measured
+    // height of the prepended region, and the page-index → vertical-offset map feeding badges.
+    private readonly SortedDictionary<int, string> _bookReadingHtmlCache = new();
+    private readonly HashSet<int> _bookReadingPrependedPages = [];
+    private readonly BookReadingPageMap _bookReadingPageMap = new();
+    private double _bookReadingPrependedHeight;
 
     public PdfWorkspacePage()
     {
@@ -535,6 +544,11 @@ public sealed partial class PdfWorkspacePage : UserControl
     private void OnBookReadingStarted()
     {
         _prependedBlockCount = 0;
+        _bookReadingHtmlCache.Clear();
+        _bookReadingPrependedPages.Clear();
+        _bookReadingPageMap.Clear();
+        _bookReadingPrependedHeight = 0;
+        BookReadingBadgeRail.Children.Clear();
         if (_workspace is null)
         {
             return;
@@ -566,6 +580,7 @@ public sealed partial class PdfWorkspacePage : UserControl
             return;
         }
 
+        _bookReadingHtmlCache[page.PageIndex] = page.Html;
         FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(page.Html);
         // Stamp the current reading size on the incoming page so pages arriving after a
         // mid-stream font-size change match the rest of the document.
@@ -573,9 +588,13 @@ public sealed partial class PdfWorkspacePage : UserControl
 
         if (!page.IsPrepend)
         {
-            // Pages after the start page: append at the bottom in arrival order.
+            // Pages after the start page: append at the bottom in arrival order. Settle the
+            // pending measure first so the recorded page start is the real document height.
+            BookReadingEditor.UpdateLayout();
+            _bookReadingPageMap.RecordAppend(page.PageIndex, BookReadingEditor.DesiredSize.Height);
             document.Blocks.AddRange(parsed.Blocks);
             BookReadingEditor.InvalidateMeasure();
+            UpdateBookReadingBadges();
             return;
         }
 
@@ -583,6 +602,9 @@ public sealed partial class PdfWorkspacePage : UserControl
         // after the blocks already front-inserted (which sit above the start page). Always
         // inserting at index 0 would reverse the earlier pages, so the view tracks how many
         // blocks it has prepended and inserts each batch right after them.
+        // Settle the pending measure first: appended pages only invalidate, so without a layout
+        // pass heightBefore (and therefore the recorded insertion delta) could be stale.
+        BookReadingEditor.UpdateLayout();
         double heightBefore = BookReadingEditor.DesiredSize.Height;
         double offsetBefore = BookReadingScroller.Offset.Y;
         int insertAt = _prependedBlockCount;
@@ -593,16 +615,21 @@ public sealed partial class PdfWorkspacePage : UserControl
         }
 
         _prependedBlockCount = insertAt;
+        _bookReadingPrependedPages.Add(page.PageIndex);
         BookReadingEditor.InvalidateMeasure();
         BookReadingEditor.UpdateLayout();
 
         // Keep the reading position stable: the inserted blocks sit above the viewport, so push
         // the scroll offset down by the amount the editor just grew.
         double delta = BookReadingEditor.DesiredSize.Height - heightBefore;
+        _bookReadingPageMap.RecordPrepend(page.PageIndex, _bookReadingPrependedHeight, delta);
+        _bookReadingPrependedHeight += delta;
         if (delta > 0)
         {
             BookReadingScroller.Offset = new Vector(0, offsetBefore + delta);
         }
+
+        UpdateBookReadingBadges();
     }
 
     private void OnBookReadingPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -625,13 +652,12 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void ApplyBookReadingFontSize()
     {
-        if (_workspace is null || BookReadingEditor.Document is not { } document)
+        if (_workspace is null)
         {
             return;
         }
 
-        ReadingFontCatalog.ApplyFontSize(document, _workspace.BookReadingFontSize);
-        BookReadingEditor.InvalidateMeasure();
+        RebuildBookReadingDocument();
     }
 
     private void ApplyBookReadingFontFamily()
@@ -647,6 +673,94 @@ public sealed partial class PdfWorkspacePage : UserControl
             string.Equals(family, PdfWorkspaceViewModel.SystemDefaultReadingFontLabel, StringComparison.Ordinal)
                 ? FontFamily.Default
                 : new FontFamily(family);
-        BookReadingEditor.InvalidateMeasure();
+        RebuildBookReadingDocument();
+    }
+
+    // Font family/size changes re-flow the whole document, invalidating every recorded page
+    // offset. With no block-geometry API on the editor, the only exact way to recover the badge
+    // positions is to rebuild from the cached per-page HTML and re-measure page by page. Each
+    // page forces a layout, so this is O(pages²) in measure work — acceptable for an explicit
+    // user action, but it must never run per streamed page.
+    private void RebuildBookReadingDocument()
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        if (_bookReadingHtmlCache.Count == 0)
+        {
+            BookReadingEditor.InvalidateMeasure();
+            return;
+        }
+
+        BookReadingEditor.UpdateLayout();
+        double extentBefore = BookReadingEditor.DesiredSize.Height;
+        double scrollRatio = extentBefore > 0 ? BookReadingScroller.Offset.Y / extentBefore : 0;
+
+        BookReadingEditor.LoadHtml(string.Empty);
+        FlowDocument? document = BookReadingEditor.Document;
+        if (document is null)
+        {
+            return;
+        }
+
+        double baseSize = _workspace.BookReadingFontSize;
+        _bookReadingPageMap.Clear();
+        _prependedBlockCount = 0;
+        double startPageY = -1;
+        foreach ((int pageIndex, string html) in _bookReadingHtmlCache)
+        {
+            FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(html);
+            ReadingFontCatalog.ApplyFontSize(parsed, baseSize);
+            int blockCount = parsed.Blocks.Count;
+            BookReadingEditor.UpdateLayout();
+            double startY = BookReadingEditor.DesiredSize.Height;
+            _bookReadingPageMap.RecordAppend(pageIndex, startY);
+            document.Blocks.AddRange(parsed.Blocks);
+            BookReadingEditor.InvalidateMeasure();
+            if (_bookReadingPrependedPages.Contains(pageIndex))
+            {
+                _prependedBlockCount += blockCount;
+            }
+            else if (startPageY < 0)
+            {
+                startPageY = startY;
+            }
+        }
+
+        _bookReadingPrependedHeight = startPageY >= 0 ? startPageY : 0;
+        BookReadingEditor.UpdateLayout();
+        double extent = BookReadingEditor.DesiredSize.Height;
+        if (extent > 0 && scrollRatio > 0)
+        {
+            BookReadingScroller.Offset = new Vector(0, scrollRatio * extent);
+        }
+
+        UpdateBookReadingBadges();
+    }
+
+    // Pins one badge per streamed page in the left rail, aligned with the page's first block.
+    // The rail shares the editor's scroll content, so badges scroll with the text.
+    private void UpdateBookReadingBadges()
+    {
+        BookReadingBadgeRail.Children.Clear();
+        Thickness editorMargin = BookReadingEditor.Margin;
+        foreach ((int pageIndex, double startY) in _bookReadingPageMap.StartOffsets)
+        {
+            Border badge = new()
+            {
+                Classes = { "PageBadge" },
+                Child = new TextBlock
+                {
+                    Text = (pageIndex + 1).ToString(CultureInfo.InvariantCulture)
+                }
+            };
+            Canvas.SetLeft(badge, 2);
+            Canvas.SetTop(badge, editorMargin.Top + startY);
+            BookReadingBadgeRail.Children.Add(badge);
+        }
+
+        BookReadingBadgeRail.Height = editorMargin.Top + BookReadingEditor.DesiredSize.Height + editorMargin.Bottom;
     }
 }

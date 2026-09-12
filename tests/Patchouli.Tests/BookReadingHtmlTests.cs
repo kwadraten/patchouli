@@ -39,37 +39,38 @@ public sealed class BookReadingHtmlTests
     }
 
     [Fact]
-    public void Starts_the_fragment_with_a_one_based_page_anchor()
+    public void Compiles_the_markdown_without_any_in_flow_page_anchor()
     {
         CompiledMarkdown compiled = new("本文", [], []);
 
         string html = BookReadingHtml.CompilePageHtml(compiled, 4, 5);
 
-        html.Should().StartWith("<h2 data-page=\"5\">第 5 页 / 共 5 页</h2>");
-        html.Should().Contain("<p>本文</p>");
+        html.Should().Be("<p>本文</p>\n");
+        html.Should().NotContain("data-page",
+            "page boundaries are shown as badges in the left rail, not as in-flow headings");
     }
 
     [Fact]
-    public void Emits_only_the_anchor_for_empty_markdown()
+    public void Emits_an_empty_paragraph_for_empty_markdown_so_the_page_keeps_its_badge_line()
     {
         string html = BookReadingHtml.CompilePageHtml(new CompiledMarkdown("", [], []), 1, 4);
 
-        html.Should().Be("<h2 data-page=\"2\">第 2 页 / 共 4 页</h2>\n");
+        html.Should().Be("<p></p>\n");
     }
 
     [Fact]
-    public void Emits_only_the_anchor_for_whitespace_markdown()
+    public void Emits_an_empty_paragraph_for_whitespace_markdown()
     {
         string html = BookReadingHtml.CompilePageHtml(new CompiledMarkdown("   \n\n  ", [], []), 2, 4);
 
-        html.Should().Be("<h2 data-page=\"3\">第 3 页 / 共 4 页</h2>\n");
+        html.Should().Be("<p></p>\n");
     }
 
     [Fact]
-    public void Placeholder_keeps_the_page_anchor_and_explains_the_missing_text()
+    public void Placeholder_explains_the_missing_text_without_a_page_anchor()
     {
         string html = BookReadingHtml.CompilePlaceholderHtml(2, 5);
 
-        html.Should().Be("<h2 data-page=\"3\">第 3 页 / 共 5 页</h2>\n<p><i>本页尚未识别文字。</i></p>");
+        html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
     }
 }

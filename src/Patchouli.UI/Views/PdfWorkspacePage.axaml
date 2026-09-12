@@ -48,6 +48,15 @@
       <Setter Property="BorderThickness" Value="2" />
       <Setter Property="Background" Value="#22FFFFFF" />
     </Style>
+    <Style Selector="Border.PageBadge">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerHighBrush}" />
+      <Setter Property="CornerRadius" Value="7" />
+      <Setter Property="Padding" Value="5,1" />
+    </Style>
+    <Style Selector="Border.PageBadge TextBlock">
+      <Setter Property="FontSize" Value="10" />
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    </Style>
     <Style Selector="Border.BBox.selected">
       <Setter Property="BorderThickness" Value="4" />
       <Setter Property="Background" Value="#44FFFFFF" />
@@ -739,11 +748,16 @@
         </Grid>
       </Border>
 
-      <!-- Reading area: a read-only RichEditor streamed page by page inside a vertical scroller. -->
+      <!-- Reading area: a read-only RichEditor streamed page by page inside a vertical scroller.
+           The left rail carries one page-number badge per page, aligned with the page's first
+           block (positions tracked by the code-behind through BookReadingPageMap). -->
       <ScrollViewer x:Name="BookReadingScroller" Grid.Row="1"
                     HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
                     Background="{DynamicResource SurfaceBrush}">
-        <are:RichEditor x:Name="BookReadingEditor" IsReadOnly="True" Margin="24,16" />
+        <Grid ColumnDefinitions="44,*">
+          <Canvas x:Name="BookReadingBadgeRail" VerticalAlignment="Top" />
+          <are:RichEditor x:Name="BookReadingEditor" Grid.Column="1" IsReadOnly="True" Margin="24,16,24,16" />
+        </Grid>
       </ScrollViewer>
     </Grid>
   </Grid>
