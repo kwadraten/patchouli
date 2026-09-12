@@ -726,18 +726,10 @@
                     MinWidth="180" MaxWidth="220" Height="28" VerticalAlignment="Center"
                     ToolTip.Tip="阅读字体（系统默认 = 使用界面默认字体）" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" Margin="12,0" VerticalAlignment="Center">
-            <Button Classes="ToolbarButton" Command="{Binding BookReadingDecreaseFontSizeCommand}" ToolTip.Tip="缩小字号">
-              <TextBlock Text="-" FontSize="16" FontWeight="Bold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-            </Button>
             <NumericUpDown Value="{Binding BookReadingFontSize, Mode=TwoWay}"
                            Minimum="10" Maximum="28" Increment="1"
-                           Width="84" Height="28" VerticalAlignment="Center"
+                           Width="100" Height="28" VerticalAlignment="Center"
                            ToolTip.Tip="阅读字号（10–28pt，可直接输入）" />
-            <Button Classes="ToolbarButton" Command="{Binding BookReadingIncreaseFontSizeCommand}" ToolTip.Tip="放大字号">
-              <TextBlock Text="+" FontSize="16" FontWeight="Bold"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
-            </Button>
             <Button Classes="ToolbarButton" Command="{Binding BookReadingResetFontSizeCommand}"
                     ToolTip.Tip="重置为默认字号 14pt">
               <lucide:Lucide Icon="RefreshCw" Width="13" Height="13"

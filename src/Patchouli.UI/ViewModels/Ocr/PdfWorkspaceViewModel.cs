@@ -161,8 +161,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         EnterBookReadingCommand = new AsyncCommand(EnterBookReadingAsync);
         ExitBookReadingCommand = new RelayCommand(_ => ExitBookReading());
-        BookReadingDecreaseFontSizeCommand = new RelayCommand(_ => AdjustBookReadingFontSize(-1));
-        BookReadingIncreaseFontSizeCommand = new RelayCommand(_ => AdjustBookReadingFontSize(1));
         BookReadingResetFontSizeCommand =
             new RelayCommand(_ => BookReadingFontSize = ReadingFontCatalog.DefaultFontSize);
         _bookReadingFontSize = ReadingFontCatalog.ClampSize(_main.AppOptions.Ui.ReadingFontSize);
@@ -2956,8 +2954,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public AsyncCommand EnterBookReadingCommand { get; }
     public RelayCommand ExitBookReadingCommand { get; }
-    public RelayCommand BookReadingDecreaseFontSizeCommand { get; }
-    public RelayCommand BookReadingIncreaseFontSizeCommand { get; }
     public RelayCommand BookReadingResetFontSizeCommand { get; }
 
     public bool IsBookReadingMode
@@ -3158,13 +3154,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     {
         ExitBookReading();
         await GoToPageAsync(pageIndex + 1);
-    }
-
-    private void AdjustBookReadingFontSize(double delta)
-    {
-        // Round to the nearest point first so repeated clicks from a fractional size seeded from
-        // settings step in whole points and stay clamped to the supported range.
-        BookReadingFontSize = Math.Round(BookReadingFontSize) + delta;
     }
 
     private static IReadOnlyList<string> BuildBookReadingFontFamilies()
