@@ -156,6 +156,29 @@ public sealed class BookReadingModeTests : IDisposable
         }, CancellationToken.None);
     }
 
+    [Fact]
+    public async Task ExitBookReadingToPage_leaves_reading_mode()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path);
+            LibraryItemViewModel item = CreateItem(DocumentInstanceGuid);
+            PdfWorkspaceViewModel workspace = new(main, item);
+            workspace.BookReadingStreamFactory = _ => new FakeBookReadingStream(3, 0);
+
+            await workspace.EnterBookReadingCommand.ExecuteAsync();
+            workspace.IsBookReadingMode.Should().BeTrue();
+
+            await workspace.ExitBookReadingToPageAsync(2);
+
+            workspace.IsBookReadingMode.Should().BeFalse();
+            workspace.BookReadingProgressText.Should().BeEmpty();
+            // Page navigation itself is guarded by the loaded page count, which stays zero for
+            // this documentless fixture; GoToPageAsync's clamping is exercised elsewhere.
+        }, CancellationToken.None);
+    }
+
     public void Dispose()
     {
         _settings.Dispose();

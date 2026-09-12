@@ -1,9 +1,9 @@
 using System.ComponentModel;
-using System.Globalization;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -58,7 +58,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         ReadingView.BlockClicked += OnReadingBlockClicked;
         // Tunnel so Ctrl+wheel is handled (and swallowed) before ScrollViewer's own bubble-phase scrolling.
         PdfScrollViewer.AddHandler(PointerWheelChangedEvent, OnScrollPointerWheelChanged,
-            Avalonia.Interactivity.RoutingStrategies.Tunnel);
+            RoutingStrategies.Tunnel);
     }
 
     private void OnBBoxContextRequested(object? sender, ContextRequestedEventArgs e)
@@ -475,7 +475,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         return null;
     }
 
-    private void OnOpenBoxEditor(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnOpenBoxEditor(object? sender, RoutedEventArgs e)
     {
         if (sender is Control { DataContext: PdfBBoxViewModel bbox } && _workspace is not null)
         {
@@ -501,7 +501,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         }
     }
 
-    private void OnTreeExpandToggle(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    private void OnTreeExpandToggle(object? sender, RoutedEventArgs e)
     {
         if (sender is Control { DataContext: PdfBBoxViewModel box } && _workspace is not null)
         {
@@ -741,26 +741,38 @@ public sealed partial class PdfWorkspacePage : UserControl
     }
 
     // Pins one badge per streamed page in the left rail, aligned with the page's first block.
-    // The rail shares the editor's scroll content, so badges scroll with the text.
+    // The rail shares the editor's scroll content, so badges scroll with the text. Clicking a
+    // badge leaves reading mode and opens that page in the PDF workbench.
     private void UpdateBookReadingBadges()
     {
         BookReadingBadgeRail.Children.Clear();
         Thickness editorMargin = BookReadingEditor.Margin;
         foreach ((int pageIndex, double startY) in _bookReadingPageMap.StartOffsets)
         {
-            Border badge = new()
+            int pageNumber = pageIndex + 1;
+            Button badge = new()
             {
                 Classes = { "PageBadge" },
-                Child = new TextBlock
-                {
-                    Text = (pageIndex + 1).ToString(CultureInfo.InvariantCulture)
-                }
+                Content = $"第 {pageNumber} 页",
+                Tag = pageIndex
             };
+            ToolTip.SetTip(badge, $"退出阅读模式并跳转到第 {pageNumber} 页");
+            badge.Click += OnBookReadingBadgeClick;
             Canvas.SetLeft(badge, 2);
             Canvas.SetTop(badge, editorMargin.Top + startY);
             BookReadingBadgeRail.Children.Add(badge);
         }
 
         BookReadingBadgeRail.Height = editorMargin.Top + BookReadingEditor.DesiredSize.Height + editorMargin.Bottom;
+    }
+
+    private async void OnBookReadingBadgeClick(object? sender, RoutedEventArgs e)
+    {
+        if (_workspace is null || sender is not Button { Tag: int pageIndex })
+        {
+            return;
+        }
+
+        await _workspace.ExitBookReadingToPageAsync(pageIndex);
     }
 }

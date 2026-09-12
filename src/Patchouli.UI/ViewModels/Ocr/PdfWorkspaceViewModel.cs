@@ -3149,6 +3149,14 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IsBookReadingMode = false;
     }
 
+    /// <summary>Exits reading mode and navigates the PDF workbench to the given zero-based page,
+    /// so the user can fix what they spotted while reading. Invoked from the rail badges.</summary>
+    internal async Task ExitBookReadingToPageAsync(int pageIndex)
+    {
+        ExitBookReading();
+        await GoToPageAsync(pageIndex + 1);
+    }
+
     private void AdjustBookReadingFontSize(double delta)
     {
         // Round to the nearest point first so repeated clicks from a fractional size seeded from
