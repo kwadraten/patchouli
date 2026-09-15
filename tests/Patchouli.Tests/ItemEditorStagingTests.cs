@@ -371,9 +371,22 @@ public sealed class ItemEditorStagingTests : IDisposable
     private static void CleanupDb(string path)
     {
         SqliteConnection.ClearAllPools();
-        if (File.Exists(path))
+        for (int i = 0; i < 5; i++)
         {
-            File.Delete(path);
+            try
+            {
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                break;
+            }
+            catch (IOException) when (i < 4)
+            {
+                Thread.Sleep(50);
+                SqliteConnection.ClearAllPools();
+            }
         }
     }
 }

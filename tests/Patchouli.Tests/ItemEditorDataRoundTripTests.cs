@@ -75,11 +75,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            CleanupDb(path);
         }
     }
 
@@ -133,11 +129,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            CleanupDb(path);
         }
     }
 
@@ -200,11 +192,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            CleanupDb(path);
         }
     }
 
@@ -239,11 +227,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
+            CleanupDb(path);
         }
     }
 
@@ -274,10 +258,95 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
         }
         finally
         {
-            SqliteConnection.ClearAllPools();
-            if (File.Exists(path))
+            CleanupDb(path);
+        }
+    }
+
+    [Fact]
+    public async Task Revision_watermark_guard_skips_redundant_and_unsaved_reloads()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"item-editor-guard-{Guid.NewGuid():N}.sqlite");
+        try
+        {
+            MainWindowViewModel main = new(settingsPath: _settings.Path) { RuntimeDatabasePath = path };
+            await main.OpenDatabaseCommand.ExecuteAsync();
+            await main.Library.CreateCommand.ExecuteAsync();
+            HostServices services = await main.ServicesAsync();
+
+            Result<ItemMetadata> created = await services.Items.CreateItemAsync(
+                new CreateItemRequest("classic", "Guard test item")
+                {
+                    TitleShort = "Original Short"
+                });
+            created.IsSuccess.Should().BeTrue(created.ErrorMessage);
+
+            await main.EditItemByIdAsync(created.Value.ItemId.ToString());
+            ItemEditorViewModel editor = main.ItemEditor;
+            editor.LoadedRevision.Should().BeGreaterThan(0);
+            long initialRevision = editor.LoadedRevision;
+
+            ItemFieldDescriptor titleShortField = editor.Fields.Single(field => field.Key == "TitleShort");
+            titleShortField.Value.Should().Be("Original Short");
+
+            // Guard condition 1: LoadedRevision >= newRevision skips reload
+            titleShortField.Value = "Edited in UI";
+            editor.HasUnsavedChanges.Should().BeTrue();
+
+            await main.RefreshOpenItemEditorsAsync([created.Value.ItemId], initialRevision);
+            titleShortField.Value.Should().Be("Edited in UI");
+
+            // Guard condition 2: HasUnsavedChanges is true skips reload even when newRevision > LoadedRevision
+            await main.RefreshOpenItemEditorsAsync([created.Value.ItemId], initialRevision + 10);
+            titleShortField.Value.Should().Be("Edited in UI");
+
+            // Forced path RefreshOpenItemEditorsAsync(itemIds) ignores the guard and forces reload
+            await main.RefreshOpenItemEditorsAsync([created.Value.ItemId]);
+            titleShortField = editor.Fields.Single(field => field.Key == "TitleShort");
+            titleShortField.Value.Should().Be("Original Short");
+            editor.HasUnsavedChanges.Should().BeFalse();
+
+            // Guard condition 3: Clean editor with newRevision > LoadedRevision reloads and updates LoadedRevision
+            Result<ItemMetadata> updatedInDb = await services.Items.UpdateItemAsync(
+                created.Value.ItemId,
+                new UpdateItemRequest(
+                    created.Value.ItemType,
+                    created.Value.Title,
+                    TitleShort: "Updated in DB"));
+            updatedInDb.IsSuccess.Should().BeTrue(updatedInDb.ErrorMessage);
+
+            Result<long> latestRevision = await services.LibraryRevisions.GetCurrentRevisionAsync();
+            latestRevision.IsSuccess.Should().BeTrue(latestRevision.ErrorMessage);
+            latestRevision.Value.Should().BeGreaterThan(editor.LoadedRevision);
+
+            await main.RefreshOpenItemEditorsAsync([created.Value.ItemId], latestRevision.Value);
+            titleShortField = editor.Fields.Single(field => field.Key == "TitleShort");
+            titleShortField.Value.Should().Be("Updated in DB");
+            editor.LoadedRevision.Should().Be(latestRevision.Value);
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
+    private static void CleanupDb(string path)
+    {
+        SqliteConnection.ClearAllPools();
+        for (int i = 0; i < 5; i++)
+        {
+            try
             {
-                File.Delete(path);
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+
+                break;
+            }
+            catch (IOException) when (i < 4)
+            {
+                Thread.Sleep(50);
+                SqliteConnection.ClearAllPools();
             }
         }
     }

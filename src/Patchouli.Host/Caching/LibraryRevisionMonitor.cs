@@ -5,14 +5,13 @@ using Patchouli.Core.Results;
 namespace Patchouli.Host.Caching;
 
 /// <summary>
-/// Watches the persistent library revision so the <see cref="LibraryItemCache"/> stays current
-/// for both in-process writes and writes from other processes sharing the same SQLite database
-/// (the desktop UI and the standalone MCP server). In-process commits arrive via
+/// Keeps the <see cref="LibraryItemCache"/> current. Normal desktop, CLI, and MCP writes are
+/// serialized by the single runtime host and arrive through
 /// <see cref="ILibraryRevisionService.ChangeCommitted"/>; a polling loop compares
 /// <see cref="ILibraryRevisionService.GetCurrentRevisionAsync"/> against the last observed
-/// revision to catch everything else. Any change triggers a full cache reload — per-changeset
-/// invalidation is a future optimization. The monitor never auto-starts; call
-/// <see cref="Start"/> explicitly. Timer and refresh failures are reported, never thrown.
+/// revision only when a caller explicitly enables abnormal external-write recovery. The desktop
+/// does not start that loop during normal operation. Any detected change triggers a full cache
+/// reload. The monitor never auto-starts; call <see cref="Start"/> explicitly for recovery.
 /// </summary>
 public sealed class LibraryRevisionMonitor : IDisposable
 {
@@ -31,6 +30,7 @@ public sealed class LibraryRevisionMonitor : IDisposable
     private readonly object _gate = new();
     private CancellationTokenSource? _pollCts;
     private Task? _pollLoop;
+    private bool _disposed;
 
     /// <summary>-1 until the first revision read establishes a baseline.</summary>
     private long _lastKnownRevision = -1;
@@ -70,7 +70,7 @@ public sealed class LibraryRevisionMonitor : IDisposable
     {
         lock (_gate)
         {
-            if (_pollLoop is not null)
+            if (_disposed || _pollLoop is not null)
             {
                 return;
             }
@@ -97,15 +97,43 @@ public sealed class LibraryRevisionMonitor : IDisposable
 
     public void Dispose()
     {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+        }
+
         Stop();
         _revisions.ChangeCommitted -= OnChangeCommitted;
-        _refreshGate.Dispose();
+        try
+        {
+            _refreshGate.Wait(TimeSpan.FromSeconds(5));
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            _refreshGate.Dispose();
+        }
     }
 
     // ChangeCommitted subscribers must not run database work on the committer's thread, so the
     // refresh is scheduled fire-and-forget; the gate serializes it against poll-triggered refreshes.
     private void OnChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs eventArgs)
     {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+        }
+
         Interlocked.Exchange(ref _lastKnownRevision, eventArgs.ChangeSet.NewRevision);
         _ = RefreshAsync(false);
     }
@@ -166,9 +194,25 @@ public sealed class LibraryRevisionMonitor : IDisposable
 
     private async Task RefreshAsync(bool isExternal)
     {
-        await _refreshGate.WaitAsync();
         try
         {
+            await _refreshGate.WaitAsync();
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        try
+        {
+            lock (_gate)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+            }
+
             Result result = await _cache.RefreshAsync();
             if (result.IsFailure)
             {
@@ -188,7 +232,13 @@ public sealed class LibraryRevisionMonitor : IDisposable
         }
         finally
         {
-            _refreshGate.Release();
+            try
+            {
+                _refreshGate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
     }
 }

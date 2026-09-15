@@ -19,7 +19,7 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
     private readonly object _sync = new();
     private readonly Dictionary<string, CacheEntry> _entries = new(StringComparer.OrdinalIgnoreCase);
     private readonly LinkedList<string> _lru = new();
-    private readonly Dictionary<string, Task<IPdfPageSession>> _pendingOpens = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, PendingOpen> _pendingOpens = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IPdfPageSession> _sessionsToDispose = [];
     private long _cachedBytes;
     private bool _disposed;
@@ -80,13 +80,15 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
     /// Returns the cached session for <paramref name="path"/> or opens a new one through the
     /// factory. Concurrent callers for the same path share a single in-flight open. The
     /// returned session must be released with <see cref="Return"/> after rendering so the
-    /// cache can evict and dispose it later.
+    /// cache can evict and dispose it later. If an eviction raced the in-flight open, the
+    /// returned session may already be disposed; callers must treat a disposed-session
+    /// failure as retryable (the next call reopens cleanly).
     /// </summary>
     public async Task<IPdfPageSession> GetOrOpenAsync(string path,
         CancellationToken cancellationToken = default)
     {
         string key = Path.GetFullPath(path);
-        Task<IPdfPageSession> pending;
+        PendingOpen pending;
         lock (_sync)
         {
             ThrowIfDisposed();
@@ -101,41 +103,55 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
             Misses++;
             if (!_pendingOpens.TryGetValue(key, out pending!))
             {
-                pending = OpenSessionCoreAsync(key);
+                pending = new PendingOpen();
+                pending.Task = OpenSessionCoreAsync(key, pending);
                 _pendingOpens.Add(key, pending);
             }
         }
 
-        IPdfPageSession opened = await pending.WaitAsync(cancellationToken);
+        IPdfPageSession opened = await pending.Task!.WaitAsync(cancellationToken);
 
         IPdfPageSession result;
         lock (_sync)
         {
             ThrowIfDisposed();
-            if (_pendingOpens.TryGetValue(key, out Task<IPdfPageSession>? current) &&
+            if (_pendingOpens.TryGetValue(key, out PendingOpen? current) &&
                 ReferenceEquals(current, pending))
             {
                 _pendingOpens.Remove(key);
             }
 
-            // Every awaiter of the shared pending open receives the same session instance, so
-            // reusing the existing entry never leaves an unowned duplicate to dispose.
-            if (_entries.TryGetValue(key, out CacheEntry? existing))
+            if (pending.Evicted)
             {
-                existing.InUse++;
-                result = existing.Session;
+                if (!pending.Disposed)
+                {
+                    pending.Disposed = true;
+                    _sessionsToDispose.Add(opened);
+                }
+
+                result = opened;
             }
             else
             {
-                CacheEntry entry = new(opened, EstimateBytes(key));
-                _entries.Add(key, entry);
-                entry.Node = _lru.AddFirst(key);
-                entry.InUse = 1;
-                _cachedBytes += entry.EstimatedBytes;
-                result = opened;
-            }
+                // Every awaiter of the shared pending open receives the same session instance, so
+                // reusing the existing entry never leaves an unowned duplicate to dispose.
+                if (_entries.TryGetValue(key, out CacheEntry? existing))
+                {
+                    existing.InUse++;
+                    result = existing.Session;
+                }
+                else
+                {
+                    CacheEntry entry = new(opened, EstimateBytes(key));
+                    _entries.Add(key, entry);
+                    entry.Node = _lru.AddFirst(key);
+                    entry.InUse = 1;
+                    _cachedBytes += entry.EstimatedBytes;
+                    result = opened;
+                }
 
-            EvictWhileOverBudgetLocked();
+                EvictWhileOverBudgetLocked();
+            }
         }
 
         await DrainDisposedAsync();
@@ -184,6 +200,11 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         IPdfPageSession? toDispose = null;
         lock (_sync)
         {
+            if (_pendingOpens.TryGetValue(key, out PendingOpen? pending))
+            {
+                pending.Evicted = true;
+            }
+
             if (_entries.TryGetValue(key, out CacheEntry? entry))
             {
                 if (entry.InUse > 0)
@@ -225,19 +246,47 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         }
     }
 
-    private async Task<IPdfPageSession> OpenSessionCoreAsync(string key)
+    private async Task<IPdfPageSession> OpenSessionCoreAsync(string key, PendingOpen pending)
     {
         try
         {
             IPdfPageSession session = await _openFactory(key, CancellationToken.None);
             Opens++;
+            bool shouldDispose = false;
+            lock (_sync)
+            {
+                if (pending.Evicted)
+                {
+                    if (_pendingOpens.TryGetValue(key, out PendingOpen? current) &&
+                        ReferenceEquals(current, pending))
+                    {
+                        _pendingOpens.Remove(key);
+                    }
+
+                    if (!pending.Disposed)
+                    {
+                        pending.Disposed = true;
+                        shouldDispose = true;
+                    }
+                }
+            }
+
+            if (shouldDispose)
+            {
+                await session.DisposeAsync();
+            }
+
             return session;
         }
         catch
         {
             lock (_sync)
             {
-                _pendingOpens.Remove(key);
+                if (_pendingOpens.TryGetValue(key, out PendingOpen? current) &&
+                    ReferenceEquals(current, pending))
+                {
+                    _pendingOpens.Remove(key);
+                }
             }
 
             throw;
@@ -332,5 +381,12 @@ public sealed class PdfiumSessionCache : IAsyncDisposable
         public LinkedListNode<string>? Node { get; set; }
         public int InUse { get; set; }
         public bool EvictWhenIdle { get; set; }
+    }
+
+    private sealed class PendingOpen
+    {
+        public Task<IPdfPageSession>? Task { get; set; }
+        public bool Evicted { get; set; }
+        public bool Disposed { get; set; }
     }
 }

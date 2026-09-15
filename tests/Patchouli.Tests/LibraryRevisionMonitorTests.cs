@@ -44,7 +44,8 @@ public sealed class LibraryRevisionMonitorTests
             Result<ItemMetadata> second = await secondItems.CreateItemAsync("book", "Second process");
             second.IsSuccess.Should().BeTrue(second.ErrorMessage);
 
-            await WaitUntilAsync(() => externalSignals.Count > 0);
+            await WaitUntilAsync(() => externalSignals.Count > 0 && refreshes.Count > 0);
+            externalSignals.Count.Should().BeGreaterThan(0);
             refreshes.Count.Should().BeGreaterThan(0);
             context.Cache.QueryByTags(null).Select(row => row.ItemId.ToString())
                 .Should().Contain(second.Value.ItemId.ToString(),

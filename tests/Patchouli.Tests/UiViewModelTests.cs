@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.IO.Compression;
 using System.Net.Sockets;
 using System.Reflection;
@@ -24,6 +25,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Mcp;
+using Patchouli.Core.Settings;
 using Patchouli.Host.Watching;
 using Patchouli.Core.Results;
 using Patchouli.Core.Search;
@@ -1144,8 +1146,8 @@ public sealed class UiViewModelTests : IDisposable
             File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "LibraryPage.axaml"));
         xaml.Should().Contain("DefaultSyncRootPath");
         xaml.Should().Contain("FileSearchRoots");
-        xaml.Should().Contain("Sidebar.Sections");
-        xaml.Should().Contain("Sidebar.SelectedSection");
+        xaml.Should().Contain("Sidebar.NavigationItems");
+        xaml.Should().Contain("Sidebar.SelectedNavigationItem");
         xaml.Should().NotContain("/Documents/Papers");
         xaml.Should().NotContain("/Downloads/Scan");
         xaml.Should().NotContain("WPS Drive");
@@ -1217,10 +1219,20 @@ public sealed class UiViewModelTests : IDisposable
         vm.Shell.IsLibraryRightSidebarVisible.Should().BeTrue();
 
         await vm.OpenAboutAsync();
+        for (int i = 0; i < 50 && vm.Shell.IsLibraryRightSidebarVisible; i++)
+        {
+            await Task.Delay(10);
+        }
+
         vm.Shell.IsLibraryLeftSidebarVisible.Should().BeFalse();
         vm.Shell.IsLibraryRightSidebarVisible.Should().BeFalse();
 
         vm.Workspace.ActivateKind(WorkspaceTabKind.Library).Should().BeTrue();
+        for (int i = 0; i < 50 && !vm.Shell.IsLibraryRightSidebarVisible; i++)
+        {
+            await Task.Delay(10);
+        }
+
         vm.Shell.IsLibraryLeftSidebarVisible.Should().BeTrue();
         vm.Shell.IsLibraryRightSidebarVisible.Should().BeTrue();
         shellChanges.Should().Contain(nameof(LibraryShellViewModel.IsLibraryLeftSidebarVisible));
@@ -1930,13 +1942,14 @@ public sealed class UiViewModelTests : IDisposable
             .FullName;
         string path = Path.Combine(root, "failure.sqlite");
         string pdf = Path.Combine(root, "failure.pdf");
+        MainWindowViewModel? vm = null;
         HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
                 HostServices services = await vm.ServicesAsync();
@@ -1966,12 +1979,19 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
-            session.Dispose();
-            if (Directory.Exists(root))
+            if (vm is not null)
             {
-                SqliteConnection.ClearAllPools();
-                Directory.Delete(root, true);
+                await session.Dispatch(async () =>
+                {
+                    await vm.ShutdownAsync();
+                    return true;
+                }, CancellationToken.None);
             }
+
+            // The dispatch continuation can resume inline on the session thread; Dispose must not
+            // run there or it deadlocks waiting for the session loop that is executing this code.
+            await Task.Run(() => session.Dispose());
+            TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -1985,8 +2005,8 @@ public sealed class UiViewModelTests : IDisposable
             .Should().BeNull("OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
         queueType.GetMethod("EnsureAutoRefreshLoop", BindingFlags.Instance | BindingFlags.NonPublic)
             .Should().BeNull("OCR queue refresh must be subscription-driven, not a fixed-period polling loop");
-        queueType.GetField("_refreshScheduled", BindingFlags.Instance | BindingFlags.NonPublic).Should().NotBeNull(
-            "the event-driven coalesced refresh gate must remain so bursts of queue events collapse into one refresh");
+        queueType.GetField("_refreshRequests", BindingFlags.Instance | BindingFlags.NonPublic).Should().NotBeNull(
+            "the event-driven coalesced refresh stream must remain so bursts of queue events collapse into one refresh");
     }
 
     [Fact]
@@ -2229,6 +2249,28 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Search_rewrite_settings_row_handles_null_values_without_nre()
+    {
+        MainWindowViewModel vm = CreateMainWindow();
+        SearchRewriteSettingsViewModel section = vm.Settings.SearchRewriteSettings;
+        section.AddRuleCommand.Execute(null);
+        SearchRewriteRuleRowViewModel row = section.Rules[0];
+
+        row.Pattern = null!;
+        row.Replacement = null!;
+        row.Note = null!;
+
+        row.Pattern.Should().Be("");
+        row.Replacement.Should().Be("");
+        row.Note.Should().Be("");
+
+        HostServices services = await vm.ServicesAsync();
+        Result committed = await row.CommitAsync(services);
+        committed.IsFailure.Should().BeTrue();
+        committed.ErrorCode.Should().Be(AppErrorCodes.ValidationFailed);
+    }
+
+    [Fact]
     public async Task Search_rewrite_settings_commits_opencc_rule_and_previews_plan()
     {
         string path = _settings.CreateDatabasePath("ui-rewrite-opencc");
@@ -2281,10 +2323,11 @@ public sealed class UiViewModelTests : IDisposable
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
         string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        MainWindowViewModel? vm = null;
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             HostServices services = await vm.ServicesAsync();
@@ -2299,16 +2342,13 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
-            if (File.Exists(pdf))
+            if (vm is not null)
             {
-                File.Delete(pdf);
+                await vm.ShutdownAsync();
             }
 
-            if (File.Exists(path))
-            {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
-            }
+            TestTempFileCleanup.DeleteFileWithRetry(pdf);
+            TestTempFileCleanup.DeleteFileWithRetry(path);
         }
     }
 
@@ -2979,7 +3019,6 @@ public sealed class UiViewModelTests : IDisposable
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
 
         vm.Shell.IsReadingMode = true;
-        vm.RaiseShellSelectionChanged();
 
         vm.Shell.ShowLibraryList.Should().BeFalse();
         vm.ShowSidebar.Should().BeFalse();
@@ -3130,15 +3169,18 @@ public sealed class UiViewModelTests : IDisposable
     {
         string path = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.sqlite");
         string pdf = Path.Combine(Path.GetTempPath(), $"ui-shell-{Guid.NewGuid():N}.pdf");
+        MainWindowViewModel? vm = null;
+        HostServices? services = null;
+        PdfImportResult? import = null;
         try
         {
+            SynchronizationContext.SetSynchronizationContext(null);
             File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
-            HostServices services = await vm.ServicesAsync();
-            PdfImportResult import =
-                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
+            services = await vm.ServicesAsync();
+            import = await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Persistent Tab", null, 1));
             import.Success.Should().BeTrue(import.ErrorMessage);
             await vm.Shell.RefreshItemsAsync();
 
@@ -3168,16 +3210,19 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
-            if (File.Exists(pdf))
+            if (vm is not null)
             {
-                File.Delete(pdf);
+                await vm.ShutdownAsync();
             }
 
-            if (File.Exists(path))
+            if (services is not null && import?.CreatedDocumentInstanceId is not null)
             {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
+                await services.PageRenders.ReleaseDocumentSessionAsync(
+                    DocumentInstanceId.Parse(import.CreatedDocumentInstanceId));
             }
+
+            TestTempFileCleanup.DeleteFileWithRetry(pdf);
+            TestTempFileCleanup.DeleteFileWithRetry(path);
         }
     }
 
@@ -3188,23 +3233,25 @@ public sealed class UiViewModelTests : IDisposable
             .FullName;
         string path = Path.Combine(root, "preview.sqlite");
         string pdf = Path.Combine(root, "preview.pdf");
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        MainWindowViewModel? vm = null;
+        HostServices? services = null;
+        PdfImportResult? import = null;
+        HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
         try
         {
             await session.Dispatch(async () =>
             {
                 File.Copy(TestFixtures.RealThreePagePdf, pdf);
-                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
                 await vm.OpenDatabaseCommand.ExecuteAsync();
                 await vm.Library.CreateCommand.ExecuteAsync();
-                HostServices services = await vm.ServicesAsync();
-                PdfImportResult import =
+                services = await vm.ServicesAsync();
+                import =
                     await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "Previewable", null, 1));
                 import.Success.Should().BeTrue(import.ErrorMessage);
                 await vm.Shell.RefreshItemsAsync();
 
                 await vm.Shell.SwitchToReadingModeCommand.ExecuteAsync();
-                vm.RaiseShellSelectionChanged();
 
                 vm.Shell.ShowPdfWorkspace.Should().BeTrue();
                 vm.ShowSidebar.Should().BeFalse();
@@ -3219,11 +3266,25 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
-            if (Directory.Exists(root))
+            if (vm is not null)
             {
-                SqliteConnection.ClearAllPools();
-                Directory.Delete(root, true);
+                await session.Dispatch(async () =>
+                {
+                    await vm.ShutdownAsync();
+                    if (services is not null && import?.CreatedDocumentInstanceId is not null)
+                    {
+                        await services.PageRenders.ReleaseDocumentSessionAsync(
+                            DocumentInstanceId.Parse(import.CreatedDocumentInstanceId));
+                    }
+
+                    return true;
+                }, CancellationToken.None);
             }
+
+            // The dispatch continuation can resume inline on the session thread; Dispose must not
+            // run there or it deadlocks waiting for the session loop that is executing this code.
+            await Task.Run(() => session.Dispose());
+            TestTempFileCleanup.DeleteDirectoryWithRetry(root);
         }
     }
 
@@ -3321,6 +3382,77 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            if (File.Exists(path))
+            {
+                SqliteConnection.ClearAllPools();
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Mcp_settings_discard_during_save_cancels_persistence_and_reverts_state()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"ui-mcp-discard-save-{Guid.NewGuid():N}.sqlite");
+        SemaphoreSlim fileGate = SettingsFileWriteCoordinator.ForPath(_settings.Path);
+        try
+        {
+            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            await vm.OpenDatabaseCommand.ExecuteAsync();
+            await vm.Library.CreateCommand.ExecuteAsync();
+            McpSettingsViewModel mcp = vm.Settings.McpSettings;
+            await mcp.LoadAsync();
+            int initialPort = mcp.Port;
+
+            // Hold file write gate to simulate slow/in-flight persistence write window
+            await fileGate.WaitAsync();
+
+            TaskCompletionSource savingStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            PropertyChangedEventHandler onPropertyChanged = (_, e) =>
+            {
+                if (e.PropertyName == nameof(ISettingsSection.SaveState) && mcp.SaveState == SettingsSaveState.Saving)
+                {
+                    savingStarted.TrySetResult();
+                }
+            };
+            mcp.PropertyChanged += onPropertyChanged;
+
+            mcp.Port = initialPort + 100;
+            mcp.IsDirty.Should().BeTrue();
+
+            Task saveTask = mcp.SaveAsync();
+
+            // Wait until save has started and reached the file persistence window
+            await savingStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            mcp.PropertyChanged -= onPropertyChanged;
+
+            // Discard while save is in flight
+            Task discardTask = mcp.DiscardAsync();
+
+            await discardTask;
+            await saveTask;
+
+            fileGate.Release();
+
+            // Assert: UI state reverted to clean and reflects discard
+            mcp.Port.Should().Be(initialPort);
+            mcp.IsDirty.Should().BeFalse();
+            mcp.SaveState.Should().Be(SettingsSaveState.Clean);
+            mcp.SaveStateText.Should().Be("已放弃更改");
+            mcp.LastError.Should().BeNull();
+
+            // Assert: Persistence did not occur (settings file still has the initial values)
+            Result<McpServerSettings> persisted = await (await vm.ServicesAsync()).McpSettings.GetSettingsAsync();
+            persisted.IsSuccess.Should().BeTrue();
+            persisted.Value.Port.Should().Be(initialPort);
+        }
+        finally
+        {
+            if (fileGate.CurrentCount == 0)
+            {
+                fileGate.Release();
+            }
+
             if (File.Exists(path))
             {
                 SqliteConnection.ClearAllPools();
