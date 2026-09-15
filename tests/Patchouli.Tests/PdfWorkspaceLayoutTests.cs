@@ -125,7 +125,7 @@ public sealed class PdfWorkspaceLayoutTests
         viewModel.Should().Contain("SchedulePrefetchAsync")
             .And.Contain("PrefetchPageAsync")
             .And.Contain("PrefetchWindow")
-            .And.Contain("_prefetchCancellation?.Cancel()")
+            .And.Contain("_prefetchSubject")
             .And.Contain("_lastNavigationDirection")
             .And.Contain("_renderGeneration")
             .And.Contain("preview.Value.Dispose()")

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Snapshots;
@@ -18,18 +19,32 @@ public enum SyncCenterSection
 /// The user-facing Sync Center state. The coordinator owns all internal paths, staging, device identity, and lineage;
 /// this model only selects an intentional user operation and presents its durable outcome.
 /// </summary>
-public sealed class SnapshotViewModel : ViewModelBase
+public sealed partial class SnapshotViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private SnapshotContentResolutionPlan? _contentPlan;
     private SnapshotSyncStatus? _status;
     private SnapshotIncomingPlan? _incoming;
-    private string _exportDestinationDirectory = "";
-    private string _packageManifestPath = "";
-    private string _incomingCopyDestinationPath = "";
-    private bool _confirmApply;
-    private string _operationMessage = "同步中心尚未检查同步目录。";
-    private NavCategoryViewModel _activeNavSection = null!;
+
+    [ObservableProperty] public partial NavCategoryViewModel ActiveNavSection { get; set; }
+    [ObservableProperty] public partial string ExportDestinationDirectory { get; set; } = "";
+    [ObservableProperty] public partial string PackageManifestPath { get; set; } = "";
+
+    [ObservableProperty] public partial bool ConfirmApply { get; set; }
+
+    [ObservableProperty] public partial string IncomingCopyDestinationPath { get; set; } = "";
+    [ObservableProperty] public partial string OperationMessage { get; private set; } = "同步中心尚未检查同步目录。";
+
+    partial void OnConfirmApplyChanged(bool value)
+    {
+        Raise(nameof(CanApply));
+        ApplyCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIncomingCopyDestinationPathChanged(string value)
+    {
+        KeepIncomingCopyCommand.NotifyCanExecuteChanged();
+    }
 
     public SnapshotViewModel(MainWindowViewModel main)
     {
@@ -39,11 +54,12 @@ public sealed class SnapshotViewModel : ViewModelBase
         ExportCommand = new AsyncCommand(ExportAsync);
         CheckCurrentCommand = new AsyncCommand(CheckCurrentAsync);
         OpenPackageCommand = new AsyncCommand(OpenPackageAsync);
-        ResolveConflictsCommand = new AsyncCommand(ResolveConflictsAsync);
-        ApplyCommand = new AsyncCommand(ApplyAsync);
-        DiscardIncomingCommand = new AsyncCommand(DiscardIncomingAsync);
-        KeepIncomingCopyCommand = new AsyncCommand(KeepIncomingCopyAsync);
-        _activeNavSection = NavSections[0];
+        ResolveConflictsCommand = new AsyncCommand(ResolveConflictsAsync, () => CanResolveContentConflicts);
+        ApplyCommand = new AsyncCommand(ApplyAsync, () => CanApply);
+        DiscardIncomingCommand = new AsyncCommand(DiscardIncomingAsync, () => HasIncomingPlan);
+        KeepIncomingCopyCommand = new AsyncCommand(KeepIncomingCopyAsync,
+            () => HasIncomingPlan && !string.IsNullOrWhiteSpace(IncomingCopyDestinationPath));
+        ActiveNavSection = NavSections[0];
     }
 
     /// <summary>Left-navigation sections. The sync center has no save concept: every button is an
@@ -55,94 +71,15 @@ public sealed class SnapshotViewModel : ViewModelBase
         new("接收与检查", "Search", SyncCenterSection.Receive)
     ];
 
-    public NavCategoryViewModel ActiveNavSection
-    {
-        get => _activeNavSection;
-        set
-        {
-            if (ReferenceEquals(_activeNavSection, value))
-            {
-                return;
-            }
+    public bool IsOverviewSectionActive => ActiveNavSection?.Content is SyncCenterSection.Overview;
+    public bool IsPublishSectionActive => ActiveNavSection?.Content is SyncCenterSection.Publish;
+    public bool IsReceiveSectionActive => ActiveNavSection?.Content is SyncCenterSection.Receive;
 
-            _activeNavSection = value;
-            Raise();
-            Raise(nameof(IsOverviewSectionActive));
-            Raise(nameof(IsPublishSectionActive));
-            Raise(nameof(IsReceiveSectionActive));
-        }
-    }
-
-    public bool IsOverviewSectionActive => Equals(_activeNavSection.Content, SyncCenterSection.Overview);
-    public bool IsPublishSectionActive => Equals(_activeNavSection.Content, SyncCenterSection.Publish);
-    public bool IsReceiveSectionActive => Equals(_activeNavSection.Content, SyncCenterSection.Receive);
-
-    public string ExportDestinationDirectory
-    {
-        get => _exportDestinationDirectory;
-        set
-        {
-            if (_exportDestinationDirectory == value)
-            {
-                return;
-            }
-
-            _exportDestinationDirectory = value;
-            Raise();
-        }
-    }
-
-    /// <summary>Path selected from a portable package; it is never a runtime/staging path.</summary>
-    public string PackageManifestPath
-    {
-        get => _packageManifestPath;
-        set
-        {
-            if (_packageManifestPath == value)
-            {
-                return;
-            }
-
-            _packageManifestPath = value;
-            Raise();
-        }
-    }
-
-    public bool ConfirmApply
-    {
-        get => _confirmApply;
-        set
-        {
-            if (_confirmApply == value)
-            {
-                return;
-            }
-
-            _confirmApply = value;
-            Raise();
-            Raise(nameof(CanApply));
-        }
-    }
-
-    /// <summary>Destination selected for preserving a reviewed incoming branch as a standalone library copy.</summary>
-    public string IncomingCopyDestinationPath
-    {
-        get => _incomingCopyDestinationPath;
-        set
-        {
-            if (_incomingCopyDestinationPath == value)
-            {
-                return;
-            }
-
-            _incomingCopyDestinationPath = value;
-            Raise();
-        }
-    }
-
+    [ExcludeFromDerivedGeneration]
     public SnapshotSyncOperationState OperationState =>
         _status?.State ?? SnapshotSyncOperationState.NotConfigured;
 
+    [ExcludeFromDerivedGeneration]
     public string OperationStateText => OperationState switch
     {
         SnapshotSyncOperationState.NotConfigured => "尚未配置",
@@ -161,14 +98,17 @@ public sealed class SnapshotViewModel : ViewModelBase
         _ => OperationState.ToString()
     };
 
+    [ExcludeFromDerivedGeneration]
     public string SyncRootSummary => _status is { IsSyncRootAvailable: true, SyncRootId: not null }
         ? $"已就绪（绑定 {_status.SyncRootId}）"
         : "不可用或尚未配置";
 
+    [ExcludeFromDerivedGeneration]
     public string LibrarySummary => _status?.LibraryId is { Length: > 0 } libraryId
         ? libraryId
         : "身份未知";
 
+    [ExcludeFromDerivedGeneration]
     public string DeviceSummary
     {
         get
@@ -178,6 +118,7 @@ public sealed class SnapshotViewModel : ViewModelBase
         }
     }
 
+    [ExcludeFromDerivedGeneration]
     public string BranchDetailSummary
     {
         get
@@ -193,50 +134,44 @@ public sealed class SnapshotViewModel : ViewModelBase
         }
     }
 
+    [ExcludeFromDerivedGeneration]
     public string LastErrorText => _status?.LocalState.LastError is { Length: > 0 } error
         ? $"最近错误：{error}"
         : "";
 
-    public bool HasLastError => LastErrorText.Length > 0;
+    [ExcludeFromDerivedGeneration] public bool HasLastError => LastErrorText.Length > 0;
 
+    [ExcludeFromDerivedGeneration]
     public string LocalSnapshotSummary => _status?.LocalState.LineageSnapshotId is { Length: > 0 } snapshotId
         ? $"本机分支：{ShortId(snapshotId)}"
         : "本机尚无已发布或已应用的快照";
 
+    [ExcludeFromDerivedGeneration]
     public string RemoteSnapshotSummary => _status?.RemoteCurrent?.SnapshotId is { Length: > 0 } snapshotId
         ? $"同步目录当前快照：{ShortId(snapshotId)}"
         : "同步目录中尚无可用快照";
 
-    public string OperationMessage
-    {
-        get => _operationMessage;
-        private set
-        {
-            if (_operationMessage == value)
-            {
-                return;
-            }
+    [ExcludeFromDerivedGeneration] public int IncomingItemCount => _incoming?.Items.Count ?? 0;
 
-            _operationMessage = value;
-            Raise();
-        }
-    }
+    [ExcludeFromDerivedGeneration] public int IncomingDocumentCount => _incoming?.Documents.Count ?? 0;
 
-    public int IncomingItemCount => _incoming?.Items.Count ?? 0;
-    public int IncomingDocumentCount => _incoming?.Documents.Count ?? 0;
-
+    [ExcludeFromDerivedGeneration]
     public int BlockingConflictCount => _incoming?.Conflicts.Count(conflict =>
         conflict.Severity == ConflictSeverity.Blocking &&
         conflict.ResolutionStatus == ConflictResolutionStatus.Unresolved) ?? 0;
 
-    public int WarningCount => _incoming?.Warnings.Count ?? 0;
-    public bool HasIncomingPlan => _contentPlan is not null;
+    [ExcludeFromDerivedGeneration] public int WarningCount => _incoming?.Warnings.Count ?? 0;
 
+    [ExcludeFromDerivedGeneration] public bool HasIncomingPlan => _contentPlan is not null;
+
+    [ExcludeFromDerivedGeneration]
     public bool CanResolveContentConflicts => _contentPlan?.BranchImportPlan.Conflicts.Any(
         IsExecutableContentConflict) == true;
 
-    public bool CanApply => _contentPlan is not null && ConfirmApply && BlockingConflictCount == 0;
+    [ExcludeFromDerivedGeneration]
+    public bool CanApply => HasIncomingPlan && ConfirmApply && BlockingConflictCount == 0;
 
+    [ExcludeFromDerivedGeneration]
     public string IncomingSummary => _incoming is null
         ? "尚未打开传入快照。"
         : $"传入快照包含 {IncomingItemCount} 条题录、{IncomingDocumentCount} 个文档实例、{BlockingConflictCount} 个阻塞冲突。";
@@ -529,6 +464,10 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private void RaiseStatus()
     {
+        // Properties below derive from the immutable snapshot record _status (or _main.AppOptions.Sync / ShortId formatting).
+        // They cannot be handled by DerivedPropertyGenerator because _status is not an ObservableObject.
+        // LastErrorText is a get-only property without a setter, so DerivedPropertyGenerator cannot cascade from it.
+        // HasLastError must therefore be raised manually.
         Raise(nameof(OperationState));
         Raise(nameof(OperationStateText));
         Raise(nameof(SyncRootSummary));
@@ -543,6 +482,10 @@ public sealed class SnapshotViewModel : ViewModelBase
 
     private void RaiseIncoming()
     {
+        // Properties below derive from immutable inspection records _incoming / _contentPlan (or LINQ queries).
+        // They cannot be handled by DerivedPropertyGenerator because _incoming/_contentPlan are not ObservableObjects.
+        // HasIncomingPlan and BlockingConflictCount are get-only properties without setters, so DerivedPropertyGenerator
+        // cannot cascade from them. CanApply must therefore be raised manually here and on ConfirmApply changes.
         Raise(nameof(IncomingItemCount));
         Raise(nameof(IncomingDocumentCount));
         Raise(nameof(BlockingConflictCount));
@@ -551,6 +494,10 @@ public sealed class SnapshotViewModel : ViewModelBase
         Raise(nameof(CanResolveContentConflicts));
         Raise(nameof(CanApply));
         Raise(nameof(IncomingSummary));
+        ApplyCommand.NotifyCanExecuteChanged();
+        ResolveConflictsCommand.NotifyCanExecuteChanged();
+        DiscardIncomingCommand.NotifyCanExecuteChanged();
+        KeepIncomingCopyCommand.NotifyCanExecuteChanged();
     }
 
     private ConflictDescriptor? FindNextExecutableContentConflict()

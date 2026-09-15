@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Patchouli.Performance", "te
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Patchouli.Host", "src\Patchouli.Host\Patchouli.Host.csproj", "{2AC65EC4-B907-44D5-A393-FA9C0BA0B50F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Patchouli.UI.Generators", "src\Patchouli.UI.Generators\Patchouli.UI.Generators.csproj", "{D997F3AE-4ABE-460E-9725-DF87D77B9571}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -155,6 +157,18 @@ Global
 		{2AC65EC4-B907-44D5-A393-FA9C0BA0B50F}.Release|x64.Build.0 = Release|Any CPU
 		{2AC65EC4-B907-44D5-A393-FA9C0BA0B50F}.Release|x86.ActiveCfg = Release|Any CPU
 		{2AC65EC4-B907-44D5-A393-FA9C0BA0B50F}.Release|x86.Build.0 = Release|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Debug|x64.Build.0 = Debug|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Debug|x86.Build.0 = Debug|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Release|x64.ActiveCfg = Release|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Release|x64.Build.0 = Release|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Release|x86.ActiveCfg = Release|Any CPU
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -163,5 +177,6 @@ Global
 		{FD040FA8-F5A0-41F8-AC46-FBF740D86128} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{89BD6192-BC9B-4063-8E1E-F593CE757776} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{2AC65EC4-B907-44D5-A393-FA9C0BA0B50F} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{D997F3AE-4ABE-460E-9725-DF87D77B9571} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

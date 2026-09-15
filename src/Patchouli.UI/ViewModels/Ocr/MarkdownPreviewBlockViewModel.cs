@@ -1,12 +1,11 @@
-using Patchouli.Core.Ids;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Ids;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class MarkdownPreviewBlockViewModel : ViewModelBase
+public sealed partial class MarkdownPreviewBlockViewModel : ViewModelBase
 {
-    private bool _isSelected;
-
     public MarkdownPreviewBlockViewModel(
         string kind,
         string markdown,
@@ -32,20 +31,7 @@ public sealed class MarkdownPreviewBlockViewModel : ViewModelBase
     public bool IsMedia => Kind is DocumentBoxType.Image or DocumentBoxType.Chart;
     public string MediaLabel => Kind == DocumentBoxType.Chart ? "图表" : "图像";
 
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected == value)
-            {
-                return;
-            }
-
-            _isSelected = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool IsSelected { get; set; }
 
     public AsyncCommand SelectCommand { get; }
 }

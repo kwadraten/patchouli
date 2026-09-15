@@ -1,52 +1,106 @@
-using Patchouli.UI.ViewModels;
-using Patchouli.Core.Mcp;
-using Patchouli.Core.Cli;
-using Patchouli.Mcp;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
+using System.Linq;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Security.Cryptography;
+using System.Threading;
 using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.Core.Cli;
+using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
+using Patchouli.Mcp;
+using Patchouli.UI.Diagnostics;
+using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private readonly IScheduler _timingScheduler;
+    private readonly IScheduler _uiScheduler;
+    private readonly Subject<Unit> _previewRequests = new();
+    private readonly SemaphoreSlim _commitGate = new(1, 1);
+
     private McpServerSettings _settings = new(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
 
     private McpServerSettings _persistedSettings =
         new(4536, "127.0.0.1", false, [], false, null, [], DateTimeOffset.UtcNow);
 
     private bool _isDirty;
+    private bool _isConstructing;
+    private bool _isSyncing;
     private long _editRevision;
+
     private long _loadGeneration;
+
+    // Semantic cancellation: persistence file write window requires explicit cancellation token interruption.
     private CancellationTokenSource? _activeSaveCancellation;
-    private readonly SemaphoreSlim _commitGate = new(1, 1);
+    private int _previewGeneration;
     private CliInstallation _cliInstallation = new(null, null, false);
 
     public McpSettingsViewModel(MainWindowViewModel main)
+        : this(
+            main,
+            TaskPoolScheduler.Default,
+            SynchronizationContext.Current is { } synchronizationContext
+                ? new SynchronizationContextScheduler(synchronizationContext)
+                : CurrentThreadScheduler.Instance)
     {
+    }
+
+    internal McpSettingsViewModel(
+        MainWindowViewModel main,
+        IScheduler timingScheduler,
+        IScheduler uiScheduler)
+    {
+        _isConstructing = true;
         _main = main;
-        _main.PropertyChanged += (_, args) =>
-        {
-            if (args.PropertyName is nameof(MainWindowViewModel.McpStatusText)
+        _timingScheduler = timingScheduler;
+        _uiScheduler = uiScheduler;
+
+        Register(_previewRequests);
+
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _previewRequests,
+            TimeSpan.Zero,
+            _timingScheduler,
+            _uiScheduler,
+            RefreshLibraryPreviewInternalAsync,
+            ex => UnexpectedExceptions.Sink.Report(ex, nameof(McpSettingsViewModel), "RefreshLibraryPreview")));
+
+        IDisposable mainSubscription = Observable
+            .FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                h => _main.PropertyChanged += h,
+                h => _main.PropertyChanged -= h)
+            .Where(e => e.EventArgs.PropertyName is nameof(MainWindowViewModel.McpStatusText)
                 or nameof(MainWindowViewModel.McpEndpoint)
                 or nameof(MainWindowViewModel.McpServerRunning)
                 or nameof(MainWindowViewModel.McpRunningSettingsRevision))
-            {
-                Raise(args.PropertyName switch
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e =>
                 {
-                    nameof(MainWindowViewModel.McpStatusText) => nameof(McpStatusText),
-                    nameof(MainWindowViewModel.McpEndpoint) => nameof(McpEndpoint),
-                    nameof(MainWindowViewModel.McpServerRunning) => nameof(McpServerRunning),
-                    nameof(MainWindowViewModel.McpRunningSettingsRevision) => nameof(RequiresReload),
-                    _ => args.PropertyName ?? string.Empty
-                });
-                RefreshRequiresReload();
-            }
-        };
+                    Raise(e.EventArgs.PropertyName switch
+                    {
+                        nameof(MainWindowViewModel.McpStatusText) => nameof(McpStatusText),
+                        nameof(MainWindowViewModel.McpEndpoint) => nameof(McpEndpoint),
+                        nameof(MainWindowViewModel.McpServerRunning) => nameof(McpServerRunning),
+                        nameof(MainWindowViewModel.McpRunningSettingsRevision) => nameof(RequiresReload),
+                        _ => e.EventArgs.PropertyName ?? string.Empty
+                    });
+                    RefreshRequiresReload();
+                },
+                ex => UnexpectedExceptions.Sink.Report(ex, nameof(McpSettingsViewModel), "MainPropertyChanged"));
+        Register(mainSubscription);
+
         GenerateTokenCommand = new AsyncCommand(GenerateTokenAsync);
         StartMcpCommand = new AsyncCommand(StartMcpAsync);
         StopMcpCommand = new AsyncCommand(StopMcpAsync);
@@ -54,56 +108,38 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         AddCliToPathCommand = new AsyncCommand(AddCliToPathAsync);
         RemoveCliFromPathCommand = new AsyncCommand(RemoveCliFromPathAsync);
         RefreshLibraryPreviewCommand = new AsyncCommand(RefreshLibraryPreviewAsync);
+
+        SyncFromSettings(_settings);
+        _isConstructing = false;
     }
 
-    private string _libraryPreviewText = "";
+    [ObservableProperty] public partial bool ExposeLibraryTags { get; set; }
 
-    public bool ExposeLibraryTags
+    partial void OnExposeLibraryTagsChanged(bool value)
     {
-        get => _settings.ExposeLibraryTags;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            if (_settings.ExposeLibraryTags == value)
-            {
-                return;
-            }
-
-            _settings = _settings with { ExposeLibraryTags = value };
-            Raise();
-            MarkDirty();
+            return;
         }
+
+        _settings = _settings with { ExposeLibraryTags = value };
+        MarkDirty();
     }
 
-    public bool ExposeLibraryCollections
+    [ObservableProperty] public partial bool ExposeLibraryCollections { get; set; }
+
+    partial void OnExposeLibraryCollectionsChanged(bool value)
     {
-        get => _settings.ExposeLibraryCollections;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            if (_settings.ExposeLibraryCollections == value)
-            {
-                return;
-            }
-
-            _settings = _settings with { ExposeLibraryCollections = value };
-            Raise();
-            MarkDirty();
+            return;
         }
+
+        _settings = _settings with { ExposeLibraryCollections = value };
+        MarkDirty();
     }
 
-    public string LibraryPreviewText
-    {
-        get => _libraryPreviewText;
-        private set
-        {
-            if (_libraryPreviewText == value)
-            {
-                return;
-            }
-
-            _libraryPreviewText = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string LibraryPreviewText { get; private set; } = "";
 
     public AsyncCommand RefreshLibraryPreviewCommand { get; }
 
@@ -112,6 +148,7 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     /// saved-and-restarted policy, so the preview always renders the persisted settings rather
     /// than the unsaved draft and must never imply that an edit is already live.
     /// </summary>
+    [ExcludeFromDerivedGeneration]
     public string LibraryPreviewHint
     {
         get
@@ -130,172 +167,174 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         }
     }
 
-    private async Task RefreshLibraryPreviewAsync()
+    public Task RefreshLibraryPreviewAsync()
     {
+        _previewRequests.OnNext(Unit.Default);
+        return Task.CompletedTask;
+    }
+
+    private async Task RefreshLibraryPreviewInternalAsync(CancellationToken cancellationToken)
+    {
+        int generation = Interlocked.Increment(ref _previewGeneration);
         try
         {
             Result<McpLibraryProjection> projection = await (await _main.ServicesAsync()).Mcp
                 .GetLibraryProjectionAsync(_persistedSettings.ExposeLibraryTags,
                     _persistedSettings.ExposeLibraryCollections);
+            if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _previewGeneration))
+            {
+                return;
+            }
+
             LibraryPreviewText = projection.IsSuccess
                 ? McpCommandService.DefaultToonEncoder(projection.Value)
                 : $"ERROR {projection.ErrorCode}: {projection.ErrorMessage}";
         }
         catch (Exception exception)
         {
+            if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _previewGeneration))
+            {
+                return;
+            }
+
             LibraryPreviewText = $"ERROR: {exception.Message}";
         }
 
         Raise(nameof(LibraryPreviewHint));
     }
 
-    public int Port
+    [ObservableProperty] public partial int Port { get; set; }
+
+    partial void OnPortChanged(int value)
     {
-        get => _settings.Port;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            if (_settings.Port != value)
-            {
-                _settings = _settings with { Port = value };
-                Raise();
-                MarkDirty();
-            }
+            return;
         }
+
+        _settings = _settings with { Port = value };
+        MarkDirty();
     }
 
-    public string BindAddress
-    {
-        get => _settings.BindAddress;
-        set
-        {
-            string next = string.IsNullOrWhiteSpace(value) ? "127.0.0.1" : value.Trim();
-            if (_settings.BindAddress == next)
-            {
-                return;
-            }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AllowExternalAccess))]
+    [NotifyPropertyChangedFor(nameof(IsAllowExternalAccessWarningVisible))]
+    public partial string BindAddress { get; set; } = "127.0.0.1";
 
-            _settings = _settings with { BindAddress = next };
-            Raise();
-            Raise(nameof(AllowExternalAccess));
-            Raise(nameof(IsAllowExternalAccessWarningVisible));
-            MarkDirty();
+    partial void OnBindAddressChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
         }
+
+        string next = string.IsNullOrWhiteSpace(value) ? "127.0.0.1" : value.Trim();
+        if (_settings.BindAddress == next)
+        {
+            return;
+        }
+
+        _settings = _settings with { BindAddress = next };
+        MarkDirty();
     }
 
+    [ExcludeFromDerivedGeneration]
     public bool AllowExternalAccess
     {
-        get => string.Equals(_settings.BindAddress, "0.0.0.0", StringComparison.Ordinal);
+        get => string.Equals(BindAddress, "0.0.0.0", StringComparison.Ordinal);
         set
         {
             string next = value ? "0.0.0.0" : "127.0.0.1";
-            if (_settings.BindAddress == next)
+            if (BindAddress == next)
             {
                 return;
             }
 
-            _settings = _settings with { BindAddress = next };
-            Raise();
-            Raise(nameof(BindAddress));
-            Raise(nameof(IsAllowExternalAccessWarningVisible));
-            MarkDirty();
+            BindAddress = next;
         }
     }
 
+    [ExcludeFromDerivedGeneration]
     public bool IsAllowExternalAccessWarningVisible => AllowExternalAccess && string.IsNullOrWhiteSpace(ServerToken);
 
-    public bool CorsEnabled
-    {
-        get => _settings.CorsEnabled;
-        set
-        {
-            if (_settings.CorsEnabled == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool CorsEnabled { get; set; }
 
-            _settings = _settings with { CorsEnabled = value };
-            Raise();
-            MarkDirty();
+    partial void OnCorsEnabledChanged(bool value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
         }
+
+        _settings = _settings with { CorsEnabled = value };
+        MarkDirty();
     }
 
     public string TransportDescription => "Streamable HTTP：使用同一个 /mcp 地址，POST 发送 JSON-RPC，GET 建立 SSE。";
 
-    public string AllowedOriginsText
-    {
-        get => string.Join("\n", _settings.AllowedOrigins);
-        set
-        {
-            string[] origins = value.Split(new[] { '\r', '\n', ',', ';' },
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (_settings.AllowedOrigins.SequenceEqual(origins, StringComparer.Ordinal))
-            {
-                return;
-            }
+    [ObservableProperty] public partial string AllowedOriginsText { get; set; } = "";
 
-            _settings = _settings with { AllowedOrigins = origins };
-            Raise();
+    partial void OnAllowedOriginsTextChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        string[] origins = value.Split(new[] { '\r', '\n', ',', ';' },
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (_settings.AllowedOrigins.SequenceEqual(origins, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        _settings = _settings with { AllowedOrigins = origins };
+        MarkDirty();
+    }
+
+    [ObservableProperty] public partial bool AuthRequired { get; set; }
+
+    partial void OnAuthRequiredChanged(bool value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        _settings = _settings with { AuthRequired = value };
+        MarkDirty();
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsAllowExternalAccessWarningVisible))]
+    public partial string ServerToken { get; set; } = "";
+
+    partial void OnServerTokenChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        string? next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        if (_settings.Token != next)
+        {
+            _settings = _settings with { Token = next };
             MarkDirty();
         }
     }
 
-    public bool AuthRequired
-    {
-        get => _settings.AuthRequired;
-        set
-        {
-            if (_settings.AuthRequired == value)
-            {
-                return;
-            }
+    [ExcludeFromDerivedGeneration] public ObservableCollection<McpToolOverrideViewModel> ToolOverrides { get; } = new();
 
-            _settings = _settings with { AuthRequired = value };
-            Raise();
-            MarkDirty();
-        }
-    }
+    [ExcludeFromDerivedGeneration] public string McpEndpoint => _main.McpEndpoint;
 
-    public string ServerToken
-    {
-        get => _settings.Token ?? "";
-        set
-        {
-            string? next = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
-            if (_settings.Token != next)
-            {
-                _settings = _settings with { Token = next };
-                Raise();
-                Raise(nameof(IsAllowExternalAccessWarningVisible));
-                MarkDirty();
-            }
-        }
-    }
+    [ExcludeFromDerivedGeneration] public string McpStatusText => _main.McpStatusText;
 
-    public ObservableCollection<McpToolOverrideViewModel> ToolOverrides { get; } = new();
+    [ExcludeFromDerivedGeneration] public bool McpServerRunning => _main.McpServerRunning;
 
-    public string McpEndpoint => _main.McpEndpoint;
-    public string McpStatusText => _main.McpStatusText;
-    public bool McpServerRunning => _main.McpServerRunning;
+    [ObservableProperty] public partial string CliStatusText { get; private set; } = "patchouli-cli 未检测到（未随应用安装）";
 
-    public string CliStatusText
-    {
-        get
-        {
-            if (_cliInstallation.Path is null)
-            {
-                return "patchouli-cli 未检测到（未随应用安装）";
-            }
-
-            string version = string.IsNullOrWhiteSpace(_cliInstallation.Version)
-                ? string.Empty
-                : $" v{_cliInstallation.Version}";
-            return _cliInstallation.InPath
-                ? $"patchouli-cli{version} 已就绪，并已加入 PATH"
-                : $"patchouli-cli{version} 已就绪，尚未加入 PATH";
-        }
-    }
-
-    public bool IsCliInPath => _cliInstallation.InPath;
+    [ObservableProperty] public partial bool IsCliInPath { get; private set; }
 
     public AsyncCommand GenerateTokenCommand { get; }
     public AsyncCommand StartMcpCommand { get; }
@@ -304,8 +343,10 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     public AsyncCommand AddCliToPathCommand { get; }
     public AsyncCommand RemoveCliFromPathCommand { get; }
     public override bool SupportsEditing => true;
-    public override bool IsDirty => _isDirty;
-    public override bool CanSave => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty;
 
     public override async Task DiscardAsync()
     {
@@ -322,17 +363,15 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
                 _persistedSettings = persisted.Value;
             }
 
-            _settings = _persistedSettings;
+            SyncFromSettings(_persistedSettings);
             _isDirty = false;
-            ReloadToolOverrides();
-            RaiseAllSettings();
-            Raise(nameof(IsDirty));
-            Raise(nameof(CanSave));
             SaveState = SettingsSaveState.Clean;
             LastError = null;
             RefreshRequiresReload();
-            await RefreshLibraryPreviewAsync();
+            await RefreshLibraryPreviewInternalAsync(CancellationToken.None);
             SetStatus("已放弃更改");
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
         }
         finally
         {
@@ -391,8 +430,21 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     private void RefreshCliStatus(HostServices services)
     {
         _cliInstallation = services.CliPath.GetInstallation();
-        Raise(nameof(CliStatusText));
-        Raise(nameof(IsCliInPath));
+        if (_cliInstallation.Path is null)
+        {
+            CliStatusText = "patchouli-cli 未检测到（未随应用安装）";
+        }
+        else
+        {
+            string version = string.IsNullOrWhiteSpace(_cliInstallation.Version)
+                ? string.Empty
+                : $" v{_cliInstallation.Version}";
+            CliStatusText = _cliInstallation.InPath
+                ? $"patchouli-cli{version} 已就绪，并已加入 PATH"
+                : $"patchouli-cli{version} 已就绪，尚未加入 PATH";
+        }
+
+        IsCliInPath = _cliInstallation.InPath;
     }
 
     private async Task SaveAndRestartAsync()
@@ -426,7 +478,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
 
         long loadGeneration = ++_loadGeneration;
         long editRevision = _editRevision;
-        Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync();
+        Result<McpServerSettings> result =
+            await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync(cancellationToken);
         if (result.IsFailure)
         {
             LastError = result.ErrorMessage;
@@ -440,16 +493,14 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        _settings = result.Value;
         _persistedSettings = result.Value;
+        SyncFromSettings(result.Value);
         _isDirty = false;
-        ReloadToolOverrides();
-        RaiseAllSettings();
         SaveState = SettingsSaveState.Clean;
         LastError = null;
         RefreshRequiresReload();
         RefreshCliStatus(await _main.ServicesAsync());
-        await RefreshLibraryPreviewAsync();
+        await RefreshLibraryPreviewInternalAsync(cancellationToken);
         SetStatus("已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
@@ -459,6 +510,8 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     {
         await _commitGate.WaitAsync();
         CancellationTokenSource saveCancellation = new();
+        _activeSaveCancellation?.Cancel();
+        _activeSaveCancellation?.Dispose();
         _activeSaveCancellation = saveCancellation;
         try
         {
@@ -583,18 +636,20 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
         }
     }
 
-    private void RaiseAllSettings()
+    private void SyncFromSettings(McpServerSettings settings)
     {
-        foreach (string property in new[]
-                 {
-                     nameof(Port), nameof(BindAddress), nameof(AllowExternalAccess), nameof(CorsEnabled),
-                     nameof(TransportDescription), nameof(AllowedOriginsText), nameof(AuthRequired),
-                     nameof(ServerToken), nameof(IsAllowExternalAccessWarningVisible), nameof(ToolOverrides),
-                     nameof(ExposeLibraryTags), nameof(ExposeLibraryCollections), nameof(LibraryPreviewHint)
-                 })
-        {
-            Raise(property);
-        }
+        _isSyncing = true;
+        _settings = settings;
+        ExposeLibraryTags = settings.ExposeLibraryTags;
+        ExposeLibraryCollections = settings.ExposeLibraryCollections;
+        Port = settings.Port;
+        BindAddress = settings.BindAddress;
+        CorsEnabled = settings.CorsEnabled;
+        AllowedOriginsText = string.Join("\n", settings.AllowedOrigins);
+        AuthRequired = settings.AuthRequired;
+        ServerToken = settings.Token ?? "";
+        _isSyncing = false;
+        ReloadToolOverrides();
     }
 
     private static readonly string[] KnownTools =
@@ -606,33 +661,31 @@ public sealed class McpSettingsViewModel : SettingsSectionViewModelBase
     ];
 }
 
-public sealed class McpToolOverrideViewModel : ViewModelBase
+public sealed partial class McpToolOverrideViewModel : ViewModelBase
 {
     private readonly McpSettingsViewModel _parent;
-    private bool _enabled;
+    private readonly bool _isConstructing;
 
     public McpToolOverrideViewModel(McpSettingsViewModel parent, string toolName, bool enabled)
     {
+        _isConstructing = true;
         _parent = parent;
         ToolName = toolName;
-        _enabled = enabled;
+        Enabled = enabled;
+        _isConstructing = false;
     }
 
     public string ToolName { get; }
 
-    public bool Enabled
-    {
-        get => _enabled;
-        set
-        {
-            if (_enabled == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool Enabled { get; set; }
 
-            _enabled = value;
-            Raise();
-            _parent.UpdateToolOverride(ToolName, value);
+    partial void OnEnabledChanged(bool value)
+    {
+        if (_isConstructing)
+        {
+            return;
         }
+
+        _parent.UpdateToolOverride(ToolName, value);
     }
 }

@@ -7,6 +7,39 @@ namespace Patchouli.Tests;
 public sealed class AsyncCommandExceptionTests
 {
     [Fact]
+    public async Task ICommand_execute_uses_toolkit_running_and_cancellation_state()
+    {
+        TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        AsyncCommand command = new(async cancellationToken =>
+        {
+            started.TrySetResult();
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            finally
+            {
+                stopped.TrySetResult();
+            }
+        });
+        List<string?> changes = [];
+        command.PropertyChanged += (_, args) => changes.Add(args.PropertyName);
+
+        command.Execute(null);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        command.IsRunning.Should().BeTrue();
+        command.CanBeCanceled.Should().BeTrue();
+        command.Cancel();
+        await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await command.ExecutionTask!.WaitAsync(TimeSpan.FromSeconds(5));
+
+        command.IsRunning.Should().BeFalse();
+        changes.Should().Contain(nameof(AsyncCommand.IsRunning));
+    }
+
+    [Fact]
     public async Task ICommand_execute_reports_unexpected_exception()
     {
         TaskCompletionSource<(Exception Exception, string Boundary, string? Operation)> reported =
@@ -39,6 +72,19 @@ public sealed class AsyncCommandExceptionTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_with_parameter_matches_parameterless_exception_semantics()
+    {
+        int reports = 0;
+        RecordingUnexpectedExceptionSink sink = new((_, _, _) => reports++);
+        AsyncCommand command = new(() => Task.FromException(new InvalidOperationException("boom")), sink,
+            "test-command");
+
+        Func<Task> action = () => command.ExecuteAsync((object?)null);
+        await action.Should().ThrowAsync<InvalidOperationException>();
+        reports.Should().Be(0);
+    }
+
+    [Fact]
     public async Task ICommand_execute_swallows_operation_canceled()
     {
         int reports = 0;
@@ -64,5 +110,17 @@ public sealed class AsyncCommandExceptionTests
         command.Execute(null);
 
         (await reported.Task.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeOfType<OperationCanceledException>();
+    }
+
+    [Fact]
+    public void NotifyCanExecuteChanged_triggers_event()
+    {
+        AsyncCommand command = new(() => Task.CompletedTask);
+        int invoked = 0;
+        command.CanExecuteChanged += (_, _) => invoked++;
+
+        command.NotifyCanExecuteChanged();
+
+        invoked.Should().Be(1);
     }
 }

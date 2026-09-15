@@ -258,6 +258,32 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void About_lists_shipped_runtime_dependencies_with_licenses_and_upstream_urls()
+    {
+        using TemporaryAppSettingsFile settings = new();
+        AboutViewModel about = new(new MainWindowViewModel(new TestClipboard(), settingsPath: settings.Path));
+
+        (string Name, string License, string Url)[] expected =
+        [
+            ("CommunityToolkit.Mvvm", "MIT", "https://github.com/CommunityToolkit/dotnet"),
+            ("System.Reactive (Rx.NET)", "MIT", "https://github.com/dotnet/reactive"),
+            ("Lucide", "ISC", "https://github.com/lucide-icons/lucide"),
+            ("SQLitePCLRaw", "Apache-2.0", "https://github.com/ericsink/SQLitePCL.raw"),
+            ("SQLite", "Public Domain", "https://sqlite.org/"),
+            ("SkiaSharp", "MIT", "https://github.com/mono/SkiaSharp"),
+            ("Microsoft.ML.OnnxRuntime", "MIT", "https://github.com/microsoft/onnxruntime"),
+            ("OpenccNetLib", "MIT", "https://github.com/laisuk/OpenccNet"),
+            ("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid")
+        ];
+
+        foreach ((string name, string license, string url) in expected)
+        {
+            about.ThirdPartyLibraries.Should().Contain(library =>
+                library.Name == name && library.License == license && library.Url == url);
+        }
+    }
+
+    [Fact]
     public void Macos_plist_describes_supported_user_selected_locations()
     {
         string plist = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "macos", "Info.plist.template"));

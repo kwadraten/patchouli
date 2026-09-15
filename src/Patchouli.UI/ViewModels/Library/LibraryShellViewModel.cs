@@ -1,5 +1,13 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Text.Json;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Files;
@@ -15,56 +23,171 @@ using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Import;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class LibraryShellViewModel : ViewModelBase
+public sealed partial class LibraryShellViewModel : ViewModelBase
 {
+    private static readonly TimeSpan TagSelectionThrottle = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
+    private static readonly TimeSpan SidebarEventThrottle = TimeSpan.Zero;
     private readonly MainWindowViewModel _main;
-    private readonly SemaphoreSlim _committedChangeGate = new(1, 1);
+    private readonly IScheduler _timingScheduler = TaskPoolScheduler.Default;
+    private readonly IScheduler _uiScheduler;
+    private readonly Subject<Unit> _selectionChangedRequests = new();
+    private readonly Subject<Unit> _tagReconcileRequests = new();
+    private readonly Subject<Unit> _collectionReconcileRequests = new();
+    private readonly SerialDisposable _revisionSubscription = new();
+    private ItemId? _pendingInspectorItemId;
     private ILibraryRevisionService? _observedLibraryRevisions;
 
     public LibraryShellViewModel(MainWindowViewModel main)
     {
         _main = main;
+        _uiScheduler = SynchronizationContext.Current is { } synchronizationContext
+            ? new SynchronizationContextScheduler(synchronizationContext)
+            : CurrentThreadScheduler.Instance;
         Sidebar = new LibrarySidebarViewModel();
-        // The sidebar replaces its collection catalog on every reload, so the shell must re-raise
-        // the computed context-menu source and visibility flags or the item context menu keeps a
-        // stale ItemsSource reference.
-        Sidebar.PropertyChanged += (_, args) =>
-        {
-            if (string.IsNullOrEmpty(args.PropertyName) ||
-                args.PropertyName == nameof(LibrarySidebarViewModel.Collections))
-            {
-                Raise(nameof(CollectionContextItems));
-                Raise(nameof(HasCollections));
-            }
-        };
         Inspector = new ItemInspectorViewModel(
             async () => (await _main.ServicesAsync()).Items,
             async () => (await _main.ServicesAsync()).Tags,
             async () => (await _main.ServicesAsync()).ItemTypeProfiles);
-        Sidebar.ScopeChanged += async (_, _) =>
-        {
-            Raise(nameof(CanModifyLibraryItems));
-            await RefreshItemsAsync();
-        };
-        Sidebar.TagSelectionChanged += (_, _) =>
-        {
-            // The badge toggles instantly; coalesce rapid tag clicks into a single reload.
-            int version = ++_tagRefreshVersion;
-            RefreshAfterTagDebounceAsync(version).Observe("library-shell-tag-refresh", $"v{version}");
-        };
-        Sidebar.PinToggled += async (_, tag) => await ToggleTagPinAsync(tag);
-        Sidebar.RemoveRequested += async (_, tag) => await RemoveTagAsync(tag);
-        Sidebar.RenameRequested += async (_, tag) => await RenameTagAsync(tag);
-        Sidebar.MergeIntoRequested += async (_, tag) => await MergeTagAsync(tag);
-        Sidebar.CollectionSelectionChanged += async (_, _) => await RefreshItemsFromCollectionSelectionAsync();
-        Sidebar.CreateCollectionRequested += async (_, _) => await CreateCollectionAsync();
-        Sidebar.RenameCollectionRequested += async (_, collection) => await RenameCollectionAsync(collection);
-        Sidebar.DissolveCollectionRequested += async (_, collection) => await DissolveCollectionAsync(collection);
-        Sidebar.AddToSelectionRequested += async (_, collection) =>
-            await AddSelectedItemsToCollectionAsync(collection.CollectionId);
+        Register(Sidebar);
+        Register(Inspector);
+        Register(_revisionSubscription);
+
+        // The sidebar replaces its collection catalog on every reload, so the shell must re-raise
+        // the computed context-menu source and visibility flags or the item context menu keeps a
+        // stale ItemsSource reference.
+        Register(Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                handler => Sidebar.PropertyChanged += handler,
+                handler => Sidebar.PropertyChanged -= handler)
+            .Subscribe(
+                pattern =>
+                {
+                    if (string.IsNullOrEmpty(pattern.EventArgs.PropertyName) ||
+                        pattern.EventArgs.PropertyName == nameof(LibrarySidebarViewModel.Collections))
+                    {
+                        Raise(nameof(CollectionContextItems));
+                        Raise(nameof(HasCollections));
+                    }
+                },
+                exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-sidebar-watch")));
+
+        Register(ReactiveUiFlow.SubscribeLatest(
+            Observable.FromEventPattern(handler => Sidebar.ScopeChanged += handler,
+                    handler => Sidebar.ScopeChanged -= handler)
+                .Select(_ => Unit.Default),
+            SidebarEventThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            RefreshScopeChangedAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-scope-refresh")));
+
+        IObservable<Unit> tagSelectionChanges = Observable.FromEventPattern(
+                handler => Sidebar.TagSelectionChanged += handler,
+                handler => Sidebar.TagSelectionChanged -= handler)
+            .Select(_ => Unit.Default);
+        Register(ReactiveUiFlow.SubscribeLatest(
+            tagSelectionChanges,
+            TagSelectionThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            RefreshItemsCoreAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-tag-refresh")));
+
+        // Rapid selection changes must not stack inspector loads: only the latest selection
+        // resolves, and the inspector pipeline cancels the superseded fetch.
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _selectionChangedRequests,
+            SidebarEventThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            _ => Inspector.LoadAsync(_pendingInspectorItemId),
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-inspector-load")));
+
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<TagListItemViewModel>(handler => Sidebar.PinToggled += handler,
+                handler => Sidebar.PinToggled -= handler),
+            (tag, _) => ToggleTagPinAsync(tag));
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<TagListItemViewModel>(handler => Sidebar.RemoveRequested += handler,
+                handler => Sidebar.RemoveRequested -= handler),
+            (tag, _) => RemoveTagAsync(tag));
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<TagListItemViewModel>(handler => Sidebar.RenameRequested += handler,
+                handler => Sidebar.RenameRequested -= handler),
+            (tag, _) => RenameTagAsync(tag));
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<TagListItemViewModel>(handler => Sidebar.MergeIntoRequested += handler,
+                handler => Sidebar.MergeIntoRequested -= handler),
+            (tag, _) => MergeTagAsync(tag));
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern(handler => Sidebar.CollectionSelectionChanged += handler,
+                handler => Sidebar.CollectionSelectionChanged -= handler),
+            (_, _) => RefreshItemsFromCollectionSelectionAsync());
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern(handler => Sidebar.CreateCollectionRequested += handler,
+                handler => Sidebar.CreateCollectionRequested -= handler),
+            (_, _) => CreateCollectionAsync());
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<CollectionListItemViewModel>(
+                handler => Sidebar.RenameCollectionRequested += handler,
+                handler => Sidebar.RenameCollectionRequested -= handler),
+            (collection, _) => RenameCollectionAsync(collection));
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<CollectionListItemViewModel>(
+                handler => Sidebar.DissolveCollectionRequested += handler,
+                handler => Sidebar.DissolveCollectionRequested -= handler),
+            (collection, _) => DissolveCollectionAsync(collection));
+        RegisterSequentialSidebarEvent(
+            Observable.FromEventPattern<CollectionListItemViewModel>(
+                handler => Sidebar.AddToSelectionRequested += handler,
+                handler => Sidebar.AddToSelectionRequested -= handler),
+            (collection, _) => AddSelectedItemsToCollectionAsync(collection.CollectionId));
+
+        // The batch-selection derived state is collection-driven: project it from
+        // CollectionChanged instead of raising it by hand at every mutation site.
+        IObservable<Unit> selectedItemsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                handler => SelectedItems.CollectionChanged += handler,
+                handler => SelectedItems.CollectionChanged -= handler)
+            .Select(_ => Unit.Default);
+        selectedItemsChanged
+            .Select(_ => SelectedItems.Count)
+            .BindOutput(this, count => SelectedItemCount = count, ImmediateScheduler.Instance, null, true,
+                SelectedItems.Count);
+        selectedItemsChanged
+            .Select(_ => SelectedItems.Count > 0)
+            .BindOutput(this, hasItems => HasBatchSelection = hasItems, ImmediateScheduler.Instance, null, true,
+                SelectedItems.Count > 0);
+        selectedItemsChanged
+            .Select(_ => SelectedItems.Count <= 1)
+            .BindOutput(this, single => IsSingleSelectionOrNone = single, ImmediateScheduler.Instance, null, true,
+                true);
+        selectedItemsChanged
+            .Select(_ => SelectedItems.Count == 2)
+            .BindOutput(this, canMerge => CanMergeSelectedItems = canMerge, ImmediateScheduler.Instance, null, true,
+                false);
+
+        // Committed-change reconciles reload sidebar state from a fresh snapshot; a latest-wins
+        // pipeline discards stale runs when commits arrive faster than the reload completes.
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _tagReconcileRequests,
+            SidebarEventThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            ReconcileTagsAfterCommittedChangeAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-tag-reconcile")));
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _collectionReconcileRequests,
+            SidebarEventThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            ReconcileCollectionsAfterCommittedChangeAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-reconcile")));
+
         RemoveSelectedItemsFromCurrentCollectionCommand =
             new AsyncCommand(RemoveSelectedItemsFromCurrentCollectionAsync);
         CreateCollectionCommand = new AsyncCommand(CreateCollectionAsync);
@@ -81,6 +204,52 @@ public sealed class LibraryShellViewModel : ViewModelBase
         QuickFillOcrCommand = new AsyncCommand(RunQuickFillOcrAsync);
     }
 
+    private void RegisterSequentialSidebarEvent<TEventArgs>(
+        IObservable<EventPattern<TEventArgs>> source,
+        Func<TEventArgs, CancellationToken, Task> operation)
+    {
+        // Command-style sidebar requests must all be handled in order (no latest-wins dropping),
+        // so they concatenate instead of switching.
+        Register(source
+            .Select(pattern => Observable.FromAsync(cancellationToken =>
+                RunSidebarEventSafelyAsync(pattern.EventArgs, operation, cancellationToken)))
+            .Concat()
+            .Subscribe());
+    }
+
+    private static async Task RunSidebarEventSafelyAsync<TEventArgs>(
+        TEventArgs eventArgs,
+        Func<TEventArgs, CancellationToken, Task> operation,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await operation(eventArgs, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            // The reporter is an error-boundary callback and must never escape into Rx OnError.
+            try
+            {
+                UnexpectedExceptions.Sink.Report(exception, "library-shell-sidebar-event");
+            }
+            catch (Exception reportException)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"Sidebar event reportError callback failed: {reportException}");
+            }
+        }
+    }
+
+    private async Task RefreshScopeChangedAsync(CancellationToken cancellationToken)
+    {
+        Raise(nameof(CanModifyLibraryItems));
+        await RefreshItemsCoreAsync(cancellationToken);
+    }
+
     /// <summary>
     /// Binds this shell to the revision stream for the currently open Library. The main window
     /// owns Library lifetime and calls this again with <see langword="null"/> before switching
@@ -93,77 +262,78 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        if (_observedLibraryRevisions is not null)
+        _revisionSubscription.Disposable = null;
+        if (revisions is null)
         {
-            _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
+            // The main window detaches before switching databases: cancel any metadata batch in
+            // flight so its completion cannot refresh the grid or editors against the next Library.
+            CancelMetadataBatchForLibrarySwitch();
+            _observedLibraryRevisions = null;
+            return;
         }
 
-        _observedLibraryRevisions = revisions;
-        if (_observedLibraryRevisions is not null)
-        {
-            _observedLibraryRevisions.ChangeCommitted += OnLibraryChangeCommitted;
-        }
+        ILibraryRevisionService observedRevisions = revisions;
+        _observedLibraryRevisions = observedRevisions;
+        IObservable<LibraryChangeSet> changes = Observable
+            .FromEventPattern<LibraryRevisionCommittedEventArgs>(
+                handler => observedRevisions.ChangeCommitted += handler,
+                handler => observedRevisions.ChangeCommitted -= handler)
+            .Select(eventPattern => eventPattern.EventArgs.ChangeSet);
+        _revisionSubscription.Disposable = ReactiveUiFlow.SubscribeBufferedSequential(
+            changes,
+            RevisionBufferWindow,
+            _timingScheduler,
+            _uiScheduler,
+            (batch, cancellationToken) =>
+                ApplyBufferedChangeSetsAsync(observedRevisions, batch, cancellationToken),
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-revision"));
     }
 
-    private int _tagRefreshVersion;
-    private int _tagReconcileVersion;
-    private int _collectionReconcileVersion;
-
-    private async Task RefreshAfterTagDebounceAsync(int version)
+    private async Task ApplyBufferedChangeSetsAsync(
+        ILibraryRevisionService revisions,
+        IReadOnlyList<LibraryChangeSet> batch,
+        CancellationToken cancellationToken)
     {
-        await Task.Delay(200);
-        if (version != _tagRefreshVersion)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!ReferenceEquals(revisions, _observedLibraryRevisions))
         {
             return;
         }
 
-        await RefreshItemsAsync();
+        await ApplyChangeSetAsync(MergeChangeSets(batch));
     }
 
-    private void OnLibraryChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs eventArgs)
+    internal static LibraryChangeSet MergeChangeSets(IReadOnlyList<LibraryChangeSet> changeSets)
     {
-        if (_observedLibraryRevisions is null || !ReferenceEquals(sender, _observedLibraryRevisions))
+        if (changeSets.Count == 0)
         {
-            return;
+            return LibraryChangeSet.Empty;
         }
 
-        ILibraryRevisionService revisions = _observedLibraryRevisions;
-        ApplyCommittedChangeSetAsync(revisions, eventArgs.ChangeSet)
-            .Observe("library-shell-revision", $"apply-{eventArgs.ChangeSet.NewRevision}");
+        return new LibraryChangeSet(
+            changeSets.Max(changeSet => changeSet.NewRevision),
+            changeSets.SelectMany(changeSet => changeSet.ItemIds).Distinct().ToArray(),
+            changeSets.SelectMany(changeSet => changeSet.DocumentInstanceIds).Distinct().ToArray(),
+            changeSets.SelectMany(changeSet => changeSet.StyleIds).Distinct(StringComparer.Ordinal).ToArray(),
+            changeSets.SelectMany(changeSet => changeSet.PageIds).Distinct().ToArray(),
+            changeSets.SelectMany(changeSet => changeSet.OcrRunIds).Distinct().ToArray(),
+            changeSets.SelectMany(changeSet => changeSet.CollectionIds).Distinct().ToArray());
     }
 
-    private async Task ApplyCommittedChangeSetAsync(ILibraryRevisionService revisions, LibraryChangeSet changeSet)
-    {
-        await _committedChangeGate.WaitAsync();
-        try
-        {
-            if (!ReferenceEquals(revisions, _observedLibraryRevisions))
-            {
-                return;
-            }
+    [ObservableProperty] public partial string LibraryName { get; set; } = "我的书库";
 
-            if (ReferenceEquals(revisions, _observedLibraryRevisions))
-            {
-                await ApplyChangeSetAsync(changeSet);
-            }
-        }
-        finally
-        {
-            _committedChangeGate.Release();
-        }
-    }
-
-    public string LibraryName { get; set; } = "我的书库";
     public LibrarySidebarViewModel Sidebar { get; }
     public ItemInspectorViewModel Inspector { get; }
     public ObservableCollection<string> RecentItems { get; private set; } = new();
     public ObservableCollection<string> RecentDocuments { get; private set; } = new();
     public ObservableCollection<LibraryItemViewModel> Items { get; private set; } = new();
     public ObservableCollection<LibraryItemViewModel> SelectedItems { get; } = new();
-    public string StatusText => _main.Status;
-    public string MinerUToken { get; set; } = "";
-    public bool IsBusy { get; set; }
-    private LibraryItemViewModel? _selectedItem;
+
+    [ExcludeFromDerivedGeneration] public string StatusText => _main.Status;
+
+    [ObservableProperty] public partial string MinerUToken { get; set; } = "";
+
+    [ObservableProperty] public partial bool IsBusy { get; set; }
 
     private static ItemId? ParseItemIdOrNull(string? itemId)
     {
@@ -182,45 +352,53 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
     }
 
-    public LibraryItemViewModel? SelectedItem
-    {
-        get => _selectedItem;
-        set
-        {
-            if (_selectedItem == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial LibraryItemViewModel? SelectedItem { get; set; }
 
-            _selectedItem = value;
-            Raise();
-            Raise(nameof(InspectorTitle));
-            Raise(nameof(InspectorStatus));
-            Raise(nameof(InspectorPath));
-            Raise(nameof(HasSelectedItem));
-            Raise(nameof(NoSelectedItem));
-            _ = Inspector.LoadAsync(ParseItemIdOrNull(value?.ItemId));
-            _main.RaiseShellSelectionChanged();
-        }
+    partial void OnSelectedItemChanged(LibraryItemViewModel? value)
+    {
+        // The derived Inspector*/HasSelectedItem/NoSelectedItem notifications come from the
+        // derived-property generator; the inspector load goes through the latest-wins pipeline
+        // registered in the constructor so rapid selection changes cancel the superseded fetch.
+        _pendingInspectorItemId = ParseItemIdOrNull(value?.ItemId);
+        _selectionChangedRequests.OnNext(Unit.Default);
     }
 
     public bool HasSelectedItem => SelectedItem is not null;
     public bool NoSelectedItem => SelectedItem is null;
-    public bool IsLibraryLeftSidebarVisible => _main.IsLibraryLeftSidebarVisible;
-    public bool IsLibraryRightSidebarVisible => _main.IsLibraryRightSidebarVisible;
-    public bool IsLibraryVisible => _main.IsLibraryVisible;
-    public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
-    public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
+
+    [ExcludeFromDerivedGeneration] public bool IsLibraryLeftSidebarVisible => _main.IsLibraryLeftSidebarVisible;
+
+    [ExcludeFromDerivedGeneration] public bool IsLibraryRightSidebarVisible => _main.IsLibraryRightSidebarVisible;
+
+    [ExcludeFromDerivedGeneration] public bool IsLibraryVisible => _main.IsLibraryVisible;
+
+    [ExcludeFromDerivedGeneration] public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
+
+    [ExcludeFromDerivedGeneration] public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
+
+    [ExcludeFromDerivedGeneration]
     public ObservableCollection<SidebarFileSearchRootViewModel> FileSearchRoots => _main.FileSearchRoots;
-    public bool HasFileSearchRoots => _main.HasFileSearchRoots;
-    public bool NoFileSearchRoots => _main.NoFileSearchRoots;
+
+    [ExcludeFromDerivedGeneration] public bool HasFileSearchRoots => _main.HasFileSearchRoots;
+
+    [ExcludeFromDerivedGeneration] public bool NoFileSearchRoots => _main.NoFileSearchRoots;
+
+    [ExcludeFromDerivedGeneration]
     public AsyncCommand RescanFileSearchRootsCommand => _main.RescanFileSearchRootsCommand;
-    public AsyncCommand EditSelectedItemCommand => _main.EditSelectedItemCommand;
-    public AsyncCommand ShowReadingCommand => _main.ShowReadingCommand;
-    public AsyncCommand RunSelectedItemOcrCommand => _main.RunSelectedItemOcrCommand;
+
+    [ExcludeFromDerivedGeneration] public AsyncCommand EditSelectedItemCommand => _main.EditSelectedItemCommand;
+
+    [ExcludeFromDerivedGeneration] public AsyncCommand ShowReadingCommand => _main.ShowReadingCommand;
+
+    [ExcludeFromDerivedGeneration] public AsyncCommand RunSelectedItemOcrCommand => _main.RunSelectedItemOcrCommand;
+
+    [ExcludeFromDerivedGeneration]
     public UiCommandDescriptor CopyCslBibliographyDescriptor => _main.CopyCslBibliographyDescriptor;
-    public UiCommandDescriptor ExportItemDescriptor => _main.ExportItemDescriptor;
-    public bool IsReadingMode { get; set; }
+
+    [ExcludeFromDerivedGeneration] public UiCommandDescriptor ExportItemDescriptor => _main.ExportItemDescriptor;
+
+    [ObservableProperty] public partial bool IsReadingMode { get; set; }
+
     public bool ShowLibraryList => !IsReadingMode;
     public bool ShowPdfWorkspace => IsReadingMode;
     public string InspectorTitle => SelectedItem?.Title ?? "";
@@ -242,72 +420,41 @@ public sealed class LibraryShellViewModel : ViewModelBase
     public AsyncCommand CreateCollectionCommand { get; }
 
     /// <summary>Collections offered as context-menu targets for the current selection.</summary>
+    [ExcludeFromDerivedGeneration]
     public ObservableCollection<CollectionListItemViewModel> CollectionContextItems => Sidebar.Collections;
 
-    public bool HasCollections => Sidebar.Collections.Count > 0;
+    [ExcludeFromDerivedGeneration] public bool HasCollections => Sidebar.Collections.Count > 0;
 
-    public bool HasSelectedCollectionFilter => Sidebar.HasSelectedCollection;
+    [ExcludeFromDerivedGeneration] public bool HasSelectedCollectionFilter => Sidebar.HasSelectedCollection;
 
-    public string SelectedCollectionFilterName => Sidebar.SelectedCollectionName;
+    [ExcludeFromDerivedGeneration] public string SelectedCollectionFilterName => Sidebar.SelectedCollectionName;
 
-    public bool CanModifyLibraryItems => Sidebar.IsActiveSelected;
+    [ExcludeFromDerivedGeneration] public bool CanModifyLibraryItems => Sidebar.IsActiveSelected;
 
     private CancellationTokenSource? _metadataBatchCancellation;
-    private bool _isMetadataBatchBusy;
-    private double _metadataBatchProgress;
-    private string _metadataBatchStatus = "";
+    private bool _cancelMetadataBatchForLibrarySwitch;
 
-    public bool IsMetadataBatchBusy
+    [ObservableProperty] public partial bool IsMetadataBatchBusy { get; private set; }
+
+    [ObservableProperty] public partial double MetadataBatchProgress { get; private set; }
+
+    [ObservableProperty] public partial string MetadataBatchStatus { get; private set; } = "";
+
+    partial void OnMetadataBatchStatusChanged(string value)
     {
-        get => _isMetadataBatchBusy;
-        private set
-        {
-            if (_isMetadataBatchBusy == value)
-            {
-                return;
-            }
-
-            _isMetadataBatchBusy = value;
-            Raise();
-        }
+        Raise(nameof(HasMetadataBatchStatus));
     }
 
-    public double MetadataBatchProgress
-    {
-        get => _metadataBatchProgress;
-        private set
-        {
-            if (_metadataBatchProgress == value)
-            {
-                return;
-            }
-
-            _metadataBatchProgress = value;
-            Raise();
-        }
-    }
-
-    public string MetadataBatchStatus
-    {
-        get => _metadataBatchStatus;
-        private set
-        {
-            if (_metadataBatchStatus == value)
-            {
-                return;
-            }
-
-            _metadataBatchStatus = value;
-            Raise();
-            Raise(nameof(HasMetadataBatchStatus));
-        }
-    }
-
+    [ExcludeFromDerivedGeneration]
     public bool HasMetadataBatchStatus => !string.IsNullOrWhiteSpace(MetadataBatchStatus);
-    public int SelectedItemCount => SelectedItems.Count;
-    public bool HasBatchSelection => SelectedItems.Count > 0;
-    public bool IsSingleSelectionOrNone => SelectedItems.Count <= 1;
-    public bool CanMergeSelectedItems => SelectedItems.Count == 2;
+
+    [ObservableProperty] public partial int SelectedItemCount { get; private set; }
+
+    [ObservableProperty] public partial bool HasBatchSelection { get; private set; }
+
+    [ObservableProperty] public partial bool IsSingleSelectionOrNone { get; private set; } = true;
+
+    [ObservableProperty] public partial bool CanMergeSelectedItems { get; private set; }
 
     public void SetSelectedItems(IEnumerable<LibraryItemViewModel> items)
     {
@@ -318,11 +465,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
             SelectedItems.Add(item);
         }
 
+        // SelectedItemCount/HasBatchSelection/IsSingleSelectionOrNone/CanMergeSelectedItems are
+        // projected from CollectionChanged by the pipeline registered in the constructor.
         Raise(nameof(SelectedItems));
-        Raise(nameof(SelectedItemCount));
-        Raise(nameof(HasBatchSelection));
-        Raise(nameof(IsSingleSelectionOrNone));
-        Raise(nameof(CanMergeSelectedItems));
     }
 
     public bool ShowItemTypeColumn
@@ -440,23 +585,26 @@ public sealed class LibraryShellViewModel : ViewModelBase
         });
     }
 
-    public void NotifyMinerUTokenChanged()
+    public Task RefreshItemsAsync()
     {
-        Raise(nameof(MinerUToken));
+        return RefreshItemsCoreAsync(CancellationToken.None);
     }
 
-    public async Task RefreshItemsAsync()
+    private async Task RefreshItemsCoreAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         string? primaryItemId = SelectedItem?.ItemId;
         HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
         HostServices services = await _main.ServicesAsync();
         // Microsoft.Data.Sqlite executes synchronously under the async facade, so the database
         // reads run on a thread-pool thread to keep scope switching responsive.
-        Result<LibraryMetadata> library = await Task.Run(() => services.Library.GetCurrentLibraryAsync());
+        Result<LibraryMetadata> library = await Task.Run(
+            () => services.Library.GetCurrentLibraryAsync(cancellationToken),
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         if (library.IsSuccess && LibraryName != library.Value.DisplayName)
         {
             LibraryName = library.Value.DisplayName;
-            Raise(nameof(LibraryName));
             _main.RaiseLibraryTitleChanged();
         }
 
@@ -466,7 +614,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         if (!isTrashScope)
         {
             Result<IReadOnlyList<Collection>> collections =
-                await Task.Run(() => services.Collections.ListCollectionsAsync());
+                await Task.Run(() => services.Collections.ListCollectionsAsync(cancellationToken), cancellationToken);
             if (collections.IsFailure)
             {
                 throw new InvalidOperationException(collections.ErrorMessage);
@@ -476,8 +624,10 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Raise(nameof(HasCollections));
             requiredCollectionId = Sidebar.SelectedCollection?.CollectionId;
 
-            IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services));
-            await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags);
+            IReadOnlyList<string> pinnedTags = await Task.Run(
+                () => LoadPinnedTagsAsync(services, cancellationToken),
+                cancellationToken);
+            await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags, cancellationToken);
             Sidebar.ApplyPinnedOrder(pinnedTags);
             requiredTags = Sidebar.GetSelectedTagNames();
         }
@@ -495,7 +645,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 if (isTrashScope)
                 {
                     Result<IReadOnlyList<LibraryItemRow>> rowsResult =
-                        await services.LibraryItems.ListTrashedRowsAsync();
+                        await services.LibraryItems.ListTrashedRowsAsync(cancellationToken);
                     if (rowsResult.IsFailure)
                     {
                         throw new InvalidOperationException(rowsResult.ErrorMessage);
@@ -508,7 +658,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                     // Reload the snapshot so a full refresh always reflects the latest committed
                     // state (same cost as the previous direct ListRowsAsync query); the cache
                     // still gives LoadTagsAsync and the tag queries a consistent in-memory view.
-                    Result refreshResult = await services.LibraryItemCache.RefreshAsync();
+                    Result refreshResult = await services.LibraryItemCache.RefreshAsync(cancellationToken);
                     if (refreshResult.IsFailure)
                     {
                         throw new InvalidOperationException(refreshResult.ErrorMessage);
@@ -521,7 +671,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                     if (requiredCollectionId is { } collectionId)
                     {
                         Result<IReadOnlyList<ItemId>> members =
-                            await services.Collections.GetCollectionItemIdsAsync(collectionId);
+                            await services.Collections.GetCollectionItemIdsAsync(collectionId, cancellationToken);
                         if (members.IsFailure)
                         {
                             throw new InvalidOperationException(members.ErrorMessage);
@@ -549,8 +699,9 @@ public sealed class LibraryShellViewModel : ViewModelBase
                 }
 
                 return (items, recentItems, recentDocuments);
-            });
+            }, cancellationToken);
 
+        cancellationToken.ThrowIfCancellationRequested();
         Items = new ObservableCollection<LibraryItemViewModel>(refreshed.Items);
         RecentItems = new ObservableCollection<string>(refreshed.RecentItems);
         RecentDocuments = new ObservableCollection<string>(refreshed.RecentDocuments);
@@ -564,19 +715,15 @@ public sealed class LibraryShellViewModel : ViewModelBase
         // binding still points at the previous collection until the notification above is processed.
         SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
         SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
-        Raise(nameof(SelectedItem));
-        Raise(nameof(InspectorTitle));
-        Raise(nameof(InspectorStatus));
-        Raise(nameof(InspectorPath));
-        Raise(nameof(HasSelectedItem));
-        Raise(nameof(NoSelectedItem));
     }
 
-    private async Task<IReadOnlyList<string>> LoadPinnedTagsAsync(HostServices services)
+    private async Task<IReadOnlyList<string>> LoadPinnedTagsAsync(
+        HostServices services,
+        CancellationToken cancellationToken = default)
     {
         Result<PinnedTagsAppSettings?> result =
             await services.LibrarySettingCoordinator.ReadAsync<PinnedTagsAppSettings>(
-                LibrarySettingKeys.PinnedTags, true);
+                LibrarySettingKeys.PinnedTags, true, cancellationToken);
         if (result.IsFailure || result.Value is null)
         {
             return Array.Empty<string>();
@@ -1195,14 +1342,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
         {
             // The selected row was deleted or merged away: drop it from the batch selection and
             // clear the inspector instead of reloading it for an id that no longer resolves.
-            if (SelectedItems.Remove(SelectedItem))
-            {
-                Raise(nameof(SelectedItemCount));
-                Raise(nameof(HasBatchSelection));
-                Raise(nameof(IsSingleSelectionOrNone));
-                Raise(nameof(CanMergeSelectedItems));
-            }
-
+            // The batch-selection derived properties update through the CollectionChanged pipeline.
+            SelectedItems.Remove(SelectedItem);
             SelectedItem = null;
         }
         else if (SelectedItem is not null &&
@@ -1226,11 +1367,20 @@ public sealed class LibraryShellViewModel : ViewModelBase
     /// </summary>
     public async Task ApplyChangeSetAsync(LibraryChangeSet changeSet)
     {
-        await ApplyChangeSetAsync(changeSet.ItemIds);
-        await ApplyDocumentChangeSetAsync(changeSet.DocumentInstanceIds);
+        bool hasTagFilter = Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0;
+        if (!hasTagFilter)
+        {
+            await ApplyChangeSetAsync(changeSet.ItemIds);
+            await ApplyDocumentChangeSetAsync(changeSet.DocumentInstanceIds);
+        }
+
         if (changeSet.ItemIds.Count > 0 || changeSet.DocumentInstanceIds.Count > 0)
         {
-            await ReconcileTagsAfterCommittedChangeAsync();
+            // An active tag filter is reconciled from one refreshed cache snapshot below. Avoid
+            // first projecting unfiltered rows by ID, which would expose a transient invalid grid
+            // state between the incremental update and the tag-membership pass. The reconcile is
+            // latest-wins: it runs on the pipeline registered in the constructor.
+            _tagReconcileRequests.OnNext(Unit.Default);
         }
 
         // Collection counts follow item lifecycle and membership changes; the catalog itself
@@ -1238,7 +1388,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
         // the sidebar and an active collection filter never observe a stale catalog.
         if (changeSet.CollectionIds.Count > 0)
         {
-            await ReconcileCollectionsAfterCommittedChangeAsync();
+            _collectionReconcileRequests.OnNext(Unit.Default);
         }
     }
 
@@ -1268,10 +1418,10 @@ public sealed class LibraryShellViewModel : ViewModelBase
     /// filter so the grid follows tag edits published by write services (add/remove/rename/merge).
     /// Pin state and selection survive the reload; a selected tag that no longer exists is dropped
     /// by <see cref="LibrarySidebarViewModel.LoadTagsAsync"/>, and the filter re-run then reflects
-    /// the surviving selection. A version guard discards stale runs when commits arrive faster
-    /// than the reload completes, mirroring the inspector's load guard.
+    /// the surviving selection. The pipeline discards stale runs when commits arrive faster than
+    /// the reload completes by cancelling the superseded run's token.
     /// </summary>
-    private async Task ReconcileTagsAfterCommittedChangeAsync()
+    private async Task ReconcileTagsAfterCommittedChangeAsync(CancellationToken cancellationToken)
     {
         if (Sidebar.SelectedScope == LibrarySidebarScope.Trash)
         {
@@ -1279,57 +1429,51 @@ public sealed class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        int version = ++_tagReconcileVersion;
         HostServices services = await _main.ServicesAsync();
         // The commit is already visible in SQLite; refresh the in-memory snapshot here as well
         // (the revision monitor refreshes it independently) so tag counts and the tag filter
         // query observe this commit regardless of event-handler ordering.
-        Result refreshResult = await Task.Run(() => services.LibraryItemCache.RefreshAsync());
-        if (refreshResult.IsFailure || version != _tagReconcileVersion)
+        Result refreshResult = await Task.Run(() => services.LibraryItemCache.RefreshAsync(), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (refreshResult.IsFailure)
         {
             return;
         }
 
-        IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services));
-        if (version != _tagReconcileVersion)
-        {
-            return;
-        }
+        IReadOnlyList<string> pinnedTags = await Task.Run(() => LoadPinnedTagsAsync(services), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         bool filterWasActive = Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0;
-        await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags);
+        await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags, cancellationToken);
         Sidebar.ApplyPinnedOrder(pinnedTags);
-        if (version != _tagReconcileVersion)
-        {
-            return;
-        }
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Re-run the filter whenever it was or still is active: item tag membership may have
         // changed even though the sidebar selection did not.
         if (filterWasActive || Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0)
         {
-            await ApplyTagFilterMembershipAsync();
+            await ApplyTagFilterMembershipAsync(cancellationToken);
         }
     }
 
     /// <summary>
     /// Reloads the sidebar collection catalog after a committed change so names, membership
-    /// counts, and the active collection filter follow writes published by any host surface. A
-    /// version guard discards stale runs; the active filter re-runs only when a collection is
-    /// selected or the selected collection disappeared.
+    /// counts, and the active collection filter follow writes published by any host surface. The
+    /// pipeline discards stale runs by cancelling the superseded run's token; the active filter
+    /// re-runs only when a collection is selected or the selected collection disappeared.
     /// </summary>
-    private async Task ReconcileCollectionsAfterCommittedChangeAsync()
+    private async Task ReconcileCollectionsAfterCommittedChangeAsync(CancellationToken cancellationToken)
     {
         if (Sidebar.SelectedScope == LibrarySidebarScope.Trash)
         {
             return;
         }
 
-        int version = ++_collectionReconcileVersion;
         HostServices services = await _main.ServicesAsync();
         Result<IReadOnlyList<Collection>> collections =
-            await Task.Run(() => services.Collections.ListCollectionsAsync());
-        if (collections.IsFailure || version != _collectionReconcileVersion)
+            await Task.Run(() => services.Collections.ListCollectionsAsync(), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (collections.IsFailure)
         {
             return;
         }
@@ -1340,16 +1484,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
             Sidebar.LoadCollections(collections.Value);
             return Task.CompletedTask;
         });
-        if (version != _collectionReconcileVersion)
-        {
-            return;
-        }
+        cancellationToken.ThrowIfCancellationRequested();
 
         CollectionId? currentSelection = Sidebar.SelectedCollection?.CollectionId;
         if (previousSelection != currentSelection || currentSelection is not null)
         {
             // The filter selection changed or an active collection's membership may have changed.
-            await RefreshItemsAsync();
+            await RefreshItemsCoreAsync(cancellationToken);
         }
     }
 
@@ -1359,32 +1500,33 @@ public sealed class LibraryShellViewModel : ViewModelBase
     /// are inserted in created_at order, and the current grid selection is preserved for items
     /// that survived the re-filter (the selected item is cleared when it no longer matches).
     /// </summary>
-    private async Task ApplyTagFilterMembershipAsync()
+    private async Task ApplyTagFilterMembershipAsync(CancellationToken cancellationToken)
     {
-        int version = _tagReconcileVersion;
         bool noTagSelected = Sidebar.IsNoTagSelected;
         IReadOnlyList<string> requiredTags = Sidebar.GetSelectedTagNames();
         HostServices services = await _main.ServicesAsync();
         IReadOnlyList<LibraryItemRow> matching = await Task.Run(() =>
             noTagSelected
                 ? services.LibraryItemCache.QueryUntagged()
-                : services.LibraryItemCache.QueryByTags(requiredTags));
-        if (version != _tagReconcileVersion)
-        {
-            return;
-        }
+                : services.LibraryItemCache.QueryByTags(requiredTags), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         await DispatcherTasks.RunAsync(() =>
         {
-            HashSet<string> matchingIds = matching.Select(row => row.ItemId.ToString())
-                .ToHashSet(StringComparer.Ordinal);
+            Dictionary<string, LibraryItemRow> matchingById = matching.ToDictionary(
+                row => row.ItemId.ToString(),
+                StringComparer.Ordinal);
             string? primaryItemId = SelectedItem?.ItemId;
             HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId)
                 .ToHashSet(StringComparer.Ordinal);
 
             for (int index = Items.Count - 1; index >= 0; index--)
             {
-                if (!matchingIds.Contains(Items[index].ItemId))
+                if (matchingById.TryGetValue(Items[index].ItemId, out LibraryItemRow? row))
+                {
+                    Items[index].ApplyRow(row);
+                }
+                else
                 {
                     Items.RemoveAt(index);
                 }
@@ -1542,7 +1684,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
 
         IsBusy = true;
-        Raise(nameof(IsBusy));
         Raise(nameof(InspectorStatus));
         try
         {
@@ -1614,7 +1755,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
-            Raise(nameof(IsBusy));
             Raise(nameof(InspectorStatus));
         }
     }
@@ -1627,7 +1767,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
 
         ItemId[] itemIds = SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray();
-        _metadataBatchCancellation = new CancellationTokenSource();
+        CancellationTokenSource cancellation = new();
+        _metadataBatchCancellation = cancellation;
         IsMetadataBatchBusy = true;
         MetadataBatchProgress = 0;
         MetadataBatchStatus = $"正在获取 0/{itemIds.Length} 个题录的元数据...";
@@ -1644,7 +1785,7 @@ public sealed class LibraryShellViewModel : ViewModelBase
                     MetadataBatchStatus =
                         $"正在获取 {progress.Completed}/{Math.Max(progress.Total, itemIds.Length)} 个题录的元数据...";
                 },
-                _metadataBatchCancellation.Token);
+                cancellation.Token);
 
             await RefreshItemsOnUiThreadAsync();
             await _main.RefreshOpenItemEditorsAsync(itemIds);
@@ -1670,10 +1811,13 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
         catch (OperationCanceledException)
         {
-            await RefreshItemsOnUiThreadAsync();
-            await _main.RefreshOpenItemEditorsAsync(itemIds);
-            MetadataBatchStatus = $"批量获取已取消：已处理 {latest.Completed}/{itemIds.Length} 个。";
-            _main.Report(MetadataBatchStatus);
+            if (!_cancelMetadataBatchForLibrarySwitch)
+            {
+                await RefreshItemsOnUiThreadAsync();
+                await _main.RefreshOpenItemEditorsAsync(itemIds);
+                MetadataBatchStatus = $"批量获取已取消：已处理 {latest.Completed}/{itemIds.Length} 个。";
+                _main.Report(MetadataBatchStatus);
+            }
         }
         catch (Exception exception)
         {
@@ -1682,10 +1826,27 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
         finally
         {
-            IsMetadataBatchBusy = false;
-            _metadataBatchCancellation.Dispose();
-            _metadataBatchCancellation = null;
+            if (ReferenceEquals(_metadataBatchCancellation, cancellation))
+            {
+                _metadataBatchCancellation = null;
+                IsMetadataBatchBusy = false;
+                _cancelMetadataBatchForLibrarySwitch = false;
+            }
+
+            cancellation.Dispose();
         }
+    }
+
+    private void CancelMetadataBatchForLibrarySwitch()
+    {
+        if (_metadataBatchCancellation is null)
+        {
+            return;
+        }
+
+        // The completion path must not refresh the grid or editors against the next Library.
+        _cancelMetadataBatchForLibrarySwitch = true;
+        _metadataBatchCancellation.Cancel();
     }
 
     private Task CancelMetadataBatchAsync()
@@ -1859,10 +2020,8 @@ public sealed class LibraryShellViewModel : ViewModelBase
 
     private async Task SwitchToReadingModeAsync()
     {
+        // ShowLibraryList/ShowPdfWorkspace follow IsReadingMode through the derived-property generator.
         IsReadingMode = true;
-        Raise(nameof(IsReadingMode));
-        Raise(nameof(ShowLibraryList));
-        Raise(nameof(ShowPdfWorkspace));
         await _main.ShowReadingAsync();
     }
 
@@ -1874,10 +2033,6 @@ public sealed class LibraryShellViewModel : ViewModelBase
         }
 
         IsReadingMode = false;
-        Raise(nameof(IsReadingMode));
-        Raise(nameof(ShowLibraryList));
-        Raise(nameof(ShowPdfWorkspace));
-        _main.RaiseShellSelectionChanged();
     }
 
     public async Task RefreshAsync()
@@ -1933,9 +2088,8 @@ internal static class MetadataLookupUiBridge
     }
 }
 
-public sealed class LibraryItemViewModel : ViewModelBase
+public sealed partial class LibraryItemViewModel : ViewModelBase
 {
-    private string _ocrStatus;
     private PrimaryDocumentOcrIndexState _primaryDocumentOcrIndexState;
 
     public LibraryItemViewModel(
@@ -1962,25 +2116,25 @@ public sealed class LibraryItemViewModel : ViewModelBase
         bool hasOcrText = false)
     {
         ItemId = itemId;
-        _title = title;
-        _itemType = itemType;
-        _authors = authors;
-        _year = year;
-        _publicationTitle = publicationTitle;
-        _publisher = publisher;
-        _documentInstanceId = documentInstanceId;
-        _fileAssetId = fileAssetId;
-        _fileName = fileName;
-        _sourcePath = sourcePath;
-        _pageCount = pageCount;
-        _searchUnitCount = searchUnitCount;
-        _indexStatus = indexStatus;
+        Title = title;
+        ItemType = itemType;
+        Authors = authors;
+        Year = year;
+        PublicationTitle = publicationTitle;
+        Publisher = publisher;
+        DocumentInstanceId = documentInstanceId;
+        FileAssetId = fileAssetId;
+        FileName = fileName;
+        SourcePath = sourcePath;
+        PageCount = pageCount;
+        SearchUnitCount = searchUnitCount;
+        IndexStatus = indexStatus;
         CreatedAt = createdAt ?? "";
         _primaryDocumentOcrIndexState = primaryDocumentOcrIndexState ??
                                         PrimaryDocumentOcrIndexState.Resolve(documentInstanceId is not null, null, null,
                                             false, false);
         HasOcrText = hasOcrText;
-        _ocrStatus = ocrStatus ?? _primaryDocumentOcrIndexState.Detail;
+        OcrStatus = ocrStatus ?? _primaryDocumentOcrIndexState.Detail;
         RunOcrCommand = new AsyncCommand(() => runOcr(this));
         EditMetadataCommand = new AsyncCommand(() => editMetadata(this));
         ViewPdfCommand = new AsyncCommand(() => (viewPdf ?? editMetadata)(this));
@@ -1989,248 +2143,68 @@ public sealed class LibraryItemViewModel : ViewModelBase
     public string ItemId { get; }
     public string CreatedAt { get; }
 
-    private string _title = "";
-    private string _itemType = "";
-    private string _authors = "";
-    private string _year = "";
-    private string _publicationTitle = "";
-    private string? _publisher;
-    private string? _documentInstanceId;
-    private string? _fileAssetId;
-    private string _fileName = "";
-    private string _sourcePath = "";
-    private int _pageCount;
-    private int _searchUnitCount;
-    private string _indexStatus = "";
+    [ObservableProperty] public partial string Title { get; set; }
 
-    public string Title
-    {
-        get => _title;
-        set
-        {
-            if (_title == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string ItemType { get; set; }
 
-            _title = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string Authors { get; set; }
 
-    public string ItemType
-    {
-        get => _itemType;
-        set
-        {
-            if (_itemType == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string Year { get; set; }
 
-            _itemType = value;
-            Raise();
-        }
-    }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SourceText))]
+    public partial string PublicationTitle { get; set; }
 
-    public string Authors
-    {
-        get => _authors;
-        set
-        {
-            if (_authors == value)
-            {
-                return;
-            }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SourceText))]
+    public partial string? Publisher { get; set; }
 
-            _authors = value;
-            Raise();
-        }
-    }
-
-    public string Year
-    {
-        get => _year;
-        set
-        {
-            if (_year == value)
-            {
-                return;
-            }
-
-            _year = value;
-            Raise();
-        }
-    }
-
-    public string PublicationTitle
-    {
-        get => _publicationTitle;
-        set
-        {
-            if (_publicationTitle == value)
-            {
-                return;
-            }
-
-            _publicationTitle = value;
-            Raise();
-            Raise(nameof(SourceText));
-        }
-    }
-
-    public string? Publisher
-    {
-        get => _publisher;
-        set
-        {
-            if (_publisher == value)
-            {
-                return;
-            }
-
-            _publisher = value;
-            Raise();
-            Raise(nameof(SourceText));
-        }
-    }
-
+    // The resolver is a method call, so the derived-property generator cannot classify this
+    // getter; PublicationTitle/Publisher notify it through NotifyPropertyChangedFor instead.
+    [ExcludeFromDerivedGeneration]
     public string SourceText => ItemSourceTextResolver.Resolve(ItemType, PublicationTitle, Publisher);
 
-    public string? DocumentInstanceId
-    {
-        get => _documentInstanceId;
-        set
-        {
-            if (_documentInstanceId == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string? DocumentInstanceId { get; set; }
 
-            _documentInstanceId = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string? FileAssetId { get; set; }
 
-    public string? FileAssetId
-    {
-        get => _fileAssetId;
-        set
-        {
-            if (_fileAssetId == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string FileName { get; set; }
 
-            _fileAssetId = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string SourcePath { get; set; }
 
-    public string FileName
-    {
-        get => _fileName;
-        set
-        {
-            if (_fileName == value)
-            {
-                return;
-            }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PageCountDisplay))]
+    public partial int PageCount { get; set; }
 
-            _fileName = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial int SearchUnitCount { get; set; }
 
-    public string SourcePath
-    {
-        get => _sourcePath;
-        set
-        {
-            if (_sourcePath == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string IndexStatus { get; set; }
 
-            _sourcePath = value;
-            Raise();
-        }
-    }
+    // PageCountDisplay calls ToString(), which the derived-property generator classifies as an
+    // unsafe method call; PageCount notifies it through NotifyPropertyChangedFor instead.
+    [ExcludeFromDerivedGeneration] public string PageCountDisplay => PageCount <= 0 ? "-" : PageCount.ToString();
 
-    public int PageCount
-    {
-        get => _pageCount;
-        set
-        {
-            if (_pageCount == value)
-            {
-                return;
-            }
-
-            _pageCount = value;
-            Raise();
-            Raise(nameof(PageCountDisplay));
-        }
-    }
-
-    public int SearchUnitCount
-    {
-        get => _searchUnitCount;
-        set
-        {
-            if (_searchUnitCount == value)
-            {
-                return;
-            }
-
-            _searchUnitCount = value;
-            Raise();
-        }
-    }
-
-    public string IndexStatus
-    {
-        get => _indexStatus;
-        set
-        {
-            if (_indexStatus == value)
-            {
-                return;
-            }
-
-            _indexStatus = value;
-            Raise();
-        }
-    }
-
-    public string PageCountDisplay => PageCount <= 0 ? "-" : PageCount.ToString();
     public AsyncCommand RunOcrCommand { get; }
     public AsyncCommand EditMetadataCommand { get; }
     public AsyncCommand ViewPdfCommand { get; }
 
-    public string OcrStatus
-    {
-        get => _ocrStatus;
-        set
-        {
-            if (_ocrStatus == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string OcrStatus { get; set; }
 
-            _ocrStatus = value;
-            Raise();
-        }
-    }
+    // These three read the mutable non-readonly backing field directly, so they stay manual and
+    // are raised by ApplyPrimaryDocumentOcrIndexState.
+    [ExcludeFromDerivedGeneration] public string OcrIndexState => _primaryDocumentOcrIndexState.Value;
 
-    public string OcrIndexState => _primaryDocumentOcrIndexState.Value;
-    public string OcrIndexStateLabel => _primaryDocumentOcrIndexState.ChineseLabel;
-    public string OcrIndexStateDetail => _primaryDocumentOcrIndexState.Detail;
-    public bool HasOcrText { get; private set; }
+    [ExcludeFromDerivedGeneration] public string OcrIndexStateLabel => _primaryDocumentOcrIndexState.ChineseLabel;
+
+    [ExcludeFromDerivedGeneration] public string OcrIndexStateDetail => _primaryDocumentOcrIndexState.Detail;
+
+    [ObservableProperty] public partial bool HasOcrText { get; private set; }
 
     public void ApplyPrimaryDocumentOcrIndexState(PrimaryDocumentOcrIndexState state)
     {
         _primaryDocumentOcrIndexState = state;
+        // OcrStatus notifies through its Toolkit setter; the index-state projections are
+        // excluded from derived generation and stay manual.
         OcrStatus = state.Detail;
         Raise(nameof(OcrIndexState));
         Raise(nameof(OcrIndexStateLabel));

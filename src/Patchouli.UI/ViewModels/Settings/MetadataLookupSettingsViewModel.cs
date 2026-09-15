@@ -1,11 +1,18 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class MetadataLookupSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private bool _isDirty;
 
     public MetadataLookupSettingsViewModel(MainWindowViewModel main)
     {
@@ -16,17 +23,18 @@ public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBa
         Load(_main.AppOptions.MetadataLookup, false);
     }
 
+    [ExcludeFromDerivedGeneration]
     public ObservableCollection<MetadataSourceSettingsRowViewModel> Sources { get; } = new();
+
     public RelayCommand RestoreDefaultsCommand { get; }
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
 
     public override bool SupportsEditing => true;
-    public override bool CanSave => IsDirty;
 
-    private bool _isDirty;
+    [ExcludeFromDerivedGeneration] public override bool CanSave => IsDirty;
 
-    public override bool IsDirty => _isDirty;
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
 
     private void SetDirty(bool value)
     {
@@ -37,6 +45,7 @@ public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBa
 
         _isDirty = value;
         Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
     }
 
     public override async Task SaveAsync()
@@ -152,23 +161,23 @@ public sealed class MetadataLookupSettingsViewModel : SettingsSectionViewModelBa
         };
 }
 
-public sealed class MetadataSourceSettingsRowViewModel : ViewModelBase
+public sealed partial class MetadataSourceSettingsRowViewModel : ViewModelBase
 {
     private readonly MetadataLookupSettingsViewModel _parent;
-    private bool _enabled;
-    private bool _isFirst;
-    private bool _isLast;
+    private bool _isConstructing;
 
     internal MetadataSourceSettingsRowViewModel(MetadataLookupSettingsViewModel parent, string sourceId, string name,
         string description, bool enabled)
     {
+        _isConstructing = true;
         _parent = parent;
         SourceId = sourceId;
         Name = name;
         Description = description;
-        _enabled = enabled;
+        Enabled = enabled;
         MoveUpCommand = new RelayCommand(_ => _parent.Move(this, -1));
         MoveDownCommand = new RelayCommand(_ => _parent.Move(this, 1));
+        _isConstructing = false;
     }
 
     public string SourceId { get; }
@@ -177,30 +186,28 @@ public sealed class MetadataSourceSettingsRowViewModel : ViewModelBase
     public RelayCommand MoveUpCommand { get; }
     public RelayCommand MoveDownCommand { get; }
 
-    public bool Enabled
-    {
-        get => _enabled;
-        set
-        {
-            if (_enabled == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool Enabled { get; set; }
 
-            _enabled = value;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnEnabledChanged(bool value)
+    {
+        if (_isConstructing)
+        {
+            return;
         }
+
+        _parent.MarkDirty();
     }
 
-    public bool CanMoveUp => !_isFirst;
-    public bool CanMoveDown => !_isLast;
+    [ObservableProperty] private partial bool IsFirst { get; set; }
+
+    [ObservableProperty] private partial bool IsLast { get; set; }
+
+    public bool CanMoveUp => !IsFirst;
+    public bool CanMoveDown => !IsLast;
 
     internal void SetPosition(bool isFirst, bool isLast)
     {
-        _isFirst = isFirst;
-        _isLast = isLast;
-        Raise(nameof(CanMoveUp));
-        Raise(nameof(CanMoveDown));
+        IsFirst = isFirst;
+        IsLast = isLast;
     }
 }

@@ -1,16 +1,19 @@
-using Patchouli.UI.ViewModels;
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
+using System.Reactive.Linq;
 using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.UI.Diagnostics;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class SettingsViewModel : ViewModelBase
+public sealed partial class SettingsViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private NavCategoryViewModel _activeCategory = null!;
-    private string _globalStatus = "";
     private bool _isRoutingCommand;
     private Task _activeSectionLoad = Task.CompletedTask;
 
@@ -26,14 +29,23 @@ public sealed class SettingsViewModel : ViewModelBase
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
 
-        foreach (ISettingsSection section in new ISettingsSection[]
-                 {
-                     AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
-                     MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement
-                 })
-        {
-            ((INotifyPropertyChanged)section).PropertyChanged += SectionPropertyChanged;
-        }
+        ISettingsSection[] sections =
+        [
+            AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
+            MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement
+        ];
+
+        IDisposable sectionSubscription = Observable.Merge(
+                sections.Select(section =>
+                    Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                        handler => ((INotifyPropertyChanged)section).PropertyChanged += handler,
+                        handler => ((INotifyPropertyChanged)section).PropertyChanged -= handler)))
+            .Subscribe(
+                _ => RaiseActiveSectionState(),
+                ex => UnexpectedExceptions.Sink.Report(ex, "settings-section-property-changed",
+                    nameof(SettingsViewModel)));
+
+        Register(sectionSubscription);
 
         Categories = new ObservableCollection<NavCategoryViewModel>
         {
@@ -65,47 +77,37 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public ObservableCollection<NavCategoryViewModel> Categories { get; }
 
-    public NavCategoryViewModel ActiveCategory
-    {
-        get => _activeCategory;
-        set
-        {
-            if (ReferenceEquals(_activeCategory, value))
-            {
-                return;
-            }
+    [ObservableProperty] public partial NavCategoryViewModel ActiveCategory { get; set; } = null!;
 
-            // Unsaved drafts stay in memory when switching sections; the header save/discard
-            // acts on all dirty sections at once.
-            _activeCategory = value;
-            Raise();
-            RaiseActiveSectionState();
-            _activeSectionLoad = SectionOf(value)?.LoadAsync() ?? Task.CompletedTask;
-            _activeSectionLoad.Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
-        }
+    partial void OnActiveCategoryChanged(NavCategoryViewModel value)
+    {
+        // Unsaved drafts stay in memory when switching sections; the header save/discard
+        // acts on all dirty sections at once.
+        RaiseActiveSectionState();
+        _activeSectionLoad = SectionOf(value)?.LoadAsync() ?? Task.CompletedTask;
+        _activeSectionLoad.Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
     }
 
-    public string GlobalStatus
+    [ObservableProperty] public partial string GlobalStatus { get; set; } = "";
+
+    partial void OnGlobalStatusChanged(string value)
     {
-        get => _globalStatus;
-        set
+        if (!string.IsNullOrWhiteSpace(value))
         {
-            _globalStatus = value;
-            Raise();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                _main.Report(value);
-            }
+            _main.Report(value);
         }
     }
 
     public AsyncCommand SaveCommand { get; }
     public AsyncCommand DiscardCommand { get; }
+
+    [ExcludeFromDerivedGeneration]
     public bool HasDirtySections => Categories.Any(category => SectionOf(category)?.IsDirty == true);
 
-    public bool ShowSaveControls => SectionOf(ActiveCategory)?.SupportsEditing == true;
+    [ExcludeFromDerivedGeneration] public bool ShowSaveControls => SectionOf(ActiveCategory)?.SupportsEditing == true;
 
     /// <summary>The header save commits every dirty section in one action.</summary>
+    [ExcludeFromDerivedGeneration]
     public bool CanSaveAll => HasDirtySections &&
                               Categories.Select(SectionOf)
                                   .OfType<ISettingsSection>()
@@ -114,6 +116,7 @@ public sealed class SettingsViewModel : ViewModelBase
                               !_isRoutingCommand;
 
     /// <summary>The header discard reverts every dirty section in one action.</summary>
+    [ExcludeFromDerivedGeneration]
     public bool CanDiscardAll => HasDirtySections && !_isRoutingCommand;
 
     public Task WaitForActiveSectionLoadAsync()
@@ -236,12 +239,6 @@ public sealed class SettingsViewModel : ViewModelBase
         Raise(nameof(CanSaveAll));
         Raise(nameof(CanDiscardAll));
         Raise(nameof(HasDirtySections));
-    }
-
-    private void SectionPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        // Header save/discard targets all dirty sections, so any section's state change matters.
-        RaiseActiveSectionState();
     }
 
     private static ISettingsSection? SectionOf(NavCategoryViewModel category)

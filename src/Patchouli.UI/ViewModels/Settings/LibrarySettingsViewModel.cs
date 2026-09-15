@@ -1,36 +1,42 @@
-using Patchouli.Core.Results;
-using Patchouli.UI.ViewModels;
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
-using Patchouli.Infrastructure.Files;
-using Patchouli.UI.ViewModels.Dialogs;
+using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Watching;
+using Patchouli.Infrastructure.Files;
+using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private readonly ObservableCollection<FileSearchRootSettingsRowViewModel> _fileSearchRoots = new();
-    private bool _rememberLastDatabase;
-    private string _exclusionPatternsText;
     private string _persistedExclusionPatternsText;
     private bool _isDirty;
+    private bool _isConstructing;
+    private bool _isSyncing;
 
     public LibrarySettingsViewModel(MainWindowViewModel main)
     {
+        _isConstructing = true;
         _main = main;
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
-        _rememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
+        RememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
         _persistedExclusionPatternsText =
             string.Join(Environment.NewLine, _main.AppOptions.FileScanning.ExclusionPatterns);
-        _exclusionPatternsText = _persistedExclusionPatternsText;
+        ExclusionPatternsText = _persistedExclusionPatternsText;
+        _isConstructing = false;
         LoadFileSearchRootsAsync().Observe(nameof(LibrarySettingsViewModel), nameof(LoadFileSearchRootsAsync));
     }
 
@@ -64,21 +70,20 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(FileSearchRoots));
     }
 
-    public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
-    public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
+    [ExcludeFromDerivedGeneration] public string RuntimeDatabasePath => _main.RuntimeDatabasePath;
 
-    public bool RememberLastDatabase
+    [ExcludeFromDerivedGeneration] public string DefaultSyncRootPath => _main.DefaultSyncRootPath;
+
+    [ObservableProperty] public partial bool RememberLastDatabase { get; set; }
+
+    partial void OnRememberLastDatabaseChanged(bool value)
     {
-        get => _rememberLastDatabase;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            if (_rememberLastDatabase != value)
-            {
-                _rememberLastDatabase = value;
-                Raise();
-                MarkDirty();
-            }
+            return;
         }
+
+        MarkDirty();
     }
 
     public void NotifyRuntimeDatabasePathChanged()
@@ -86,38 +91,47 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(RuntimeDatabasePath));
     }
 
-    public string FileSearchRootInput { get; set; } = "";
+    [ObservableProperty] public partial string FileSearchRootInput { get; set; } = "";
 
-    public string ExclusionPatternsText
+    [ObservableProperty] public partial string ExclusionPatternsText { get; set; } = "";
+
+    partial void OnExclusionPatternsTextChanged(string value)
     {
-        get => _exclusionPatternsText;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            if (_exclusionPatternsText == value)
-            {
-                return;
-            }
-
-            _exclusionPatternsText = value;
-            Raise();
-            MarkDirty();
+            return;
         }
+
+        MarkDirty();
     }
 
-    public SelectedFileSearchRoot? SelectedFileSearchRoot { get; set; }
+    [ObservableProperty] public partial SelectedFileSearchRoot? SelectedFileSearchRoot { get; set; }
+
+    [ExcludeFromDerivedGeneration]
     public ObservableCollection<FileSearchRootSettingsRowViewModel> FileSearchRoots => _fileSearchRoots;
 
     public AsyncCommand AddFileSearchRootCommand { get; }
     public AsyncCommand RescanFileSearchRootsCommand { get; }
 
     public override bool SupportsEditing => true;
-    public override bool IsDirty => _isDirty;
-    public override bool CanSave => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty;
 
     public override Task DiscardAsync()
     {
-        _rememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
-        _exclusionPatternsText = _persistedExclusionPatternsText;
+        _isSyncing = true;
+        try
+        {
+            RememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
+            ExclusionPatternsText = _persistedExclusionPatternsText;
+        }
+        finally
+        {
+            _isSyncing = false;
+        }
+
         _isDirty = false;
         Raise(nameof(RememberLastDatabase));
         Raise(nameof(ExclusionPatternsText));
@@ -143,8 +157,8 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        AppRuntimeOptions runtime = _main.AppOptions.Runtime with { RememberLastDatabase = _rememberLastDatabase };
-        if (_rememberLastDatabase)
+        AppRuntimeOptions runtime = _main.AppOptions.Runtime with { RememberLastDatabase = RememberLastDatabase };
+        if (RememberLastDatabase)
         {
             runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
         }
@@ -156,7 +170,7 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
         });
         if (saved.IsSuccess)
         {
-            _persistedExclusionPatternsText = _exclusionPatternsText;
+            _persistedExclusionPatternsText = ExclusionPatternsText;
             _isDirty = false;
             LastError = null;
             SaveState = SettingsSaveState.Saved;
@@ -220,8 +234,6 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
 
             FileSearchRootInput = "";
             SelectedFileSearchRoot = null;
-            Raise(nameof(FileSearchRootInput));
-            Raise(nameof(SelectedFileSearchRoot));
 
             await LoadFileSearchRootsAsync();
             await _main.RefreshSidebarPathsAsync();
@@ -273,7 +285,7 @@ public sealed class LibrarySettingsViewModel : SettingsSectionViewModelBase
     }
 }
 
-public sealed class FileSearchRootSettingsRowViewModel : ViewModelBase
+public sealed partial class FileSearchRootSettingsRowViewModel : ViewModelBase
 {
     private readonly LibrarySettingsViewModel _parent;
 

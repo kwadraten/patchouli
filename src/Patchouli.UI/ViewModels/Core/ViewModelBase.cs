@@ -1,32 +1,64 @@
-using System.ComponentModel;
-using System.Collections.ObjectModel;
+using System.Reactive.Disposables;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
-using System.Windows.Input;
-using Avalonia.Media;
-using Dapper;
-using Patchouli.Core.Credentials;
-using Patchouli.Core.Documents;
-using Patchouli.Core.Files;
-using Patchouli.Core.Ids;
-using Patchouli.Core.Import;
-using Patchouli.Core.Layout;
-using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Snapshots;
-using Patchouli.Infrastructure.Workflows;
-using Patchouli.Mcp;
-using Patchouli.McpServer;
-using Patchouli.Ocr;
-using Patchouli.Core.Search;
+using System.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Patchouli.UI.ViewModels;
 
-public abstract class ViewModelBase : INotifyPropertyChanged
+public abstract class ViewModelBase : ObservableObject, IDisposable
 {
-    public event PropertyChangedEventHandler? PropertyChanged;
+    private CompositeDisposable? _disposables;
+    private int _isDisposed;
 
     protected void Raise([CallerMemberName] string? name = null)
     {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        OnPropertyChanged(name);
+    }
+
+    internal void Register(IDisposable disposable)
+    {
+        if (Volatile.Read(ref _isDisposed) == 1)
+        {
+            disposable.Dispose();
+            return;
+        }
+
+        lock (this)
+        {
+            if (Volatile.Read(ref _isDisposed) == 1)
+            {
+                disposable.Dispose();
+                return;
+            }
+
+            _disposables ??= new CompositeDisposable();
+            _disposables.Add(disposable);
+        }
+    }
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (Interlocked.Exchange(ref _isDisposed, 1) == 1)
+        {
+            return;
+        }
+
+        if (disposing)
+        {
+            CompositeDisposable? toDispose;
+            lock (this)
+            {
+                toDispose = _disposables;
+                _disposables = null;
+            }
+
+            toDispose?.Dispose();
+        }
     }
 }

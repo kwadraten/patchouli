@@ -1,14 +1,19 @@
-using Patchouli.UI.ViewModels;
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using Patchouli.Core.Import;
+using System.IO;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Files;
+using Patchouli.Core.Import;
 using Patchouli.Host.Import;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.UI.Services;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class FirstRunViewModel : ViewModelBase
+public sealed partial class FirstRunViewModel : ViewModelBase
 {
     private FirstRunWorkflow? _workflow;
     private PdfDiscoveryService? _discovery;
@@ -17,6 +22,9 @@ public sealed class FirstRunViewModel : ViewModelBase
     private readonly IModalOperationRunner? _modalOperations;
     public Action<string>? OnError { get; set; }
     public Action<string>? OnProgress { get; set; }
+
+    private FirstRunWorkflowState _state;
+    private ExistingDatabaseSetup? _existingDatabaseSetup;
 
     private FirstRunWorkflowState State
     {
@@ -39,16 +47,21 @@ public sealed class FirstRunViewModel : ViewModelBase
                     newState.IsComplete);
             }
 
+            if (EqualityComparer<FirstRunWorkflowState>.Default.Equals(_state, newState))
+            {
+                return;
+            }
+
             _state = newState;
             if (!string.IsNullOrWhiteSpace(newState.ProgressText))
             {
                 OnProgress?.Invoke(newState.ProgressText);
             }
+
+            OnPropertyChanged(nameof(State));
+            NotifyStateChanged();
         }
     }
-
-    private FirstRunWorkflowState _state;
-    private ExistingDatabaseSetup? _existingDatabaseSetup;
 
     public FirstRunViewModel(FirstRunWorkflow workflow, PdfDiscoveryService discovery)
     {
@@ -80,29 +93,21 @@ public sealed class FirstRunViewModel : ViewModelBase
         CompleteCommand = new AsyncCommand(complete ?? FinishSetupAsync);
     }
 
-    public string CurrentStep => _state.CurrentStep;
-    public string ProgressText => _state.ProgressText;
-    public string? LastError => _state.LastError;
-    public bool IsComplete => _state.IsComplete;
-    public bool HasError => !string.IsNullOrWhiteSpace(_state.LastError);
+    [ExcludeFromDerivedGeneration] public string CurrentStep => State.CurrentStep;
 
-    private string? _databasePath = "";
-    private bool _isImportMode;
+    [ExcludeFromDerivedGeneration] public string ProgressText => State.ProgressText;
 
-    public bool IsImportMode
-    {
-        get => _isImportMode;
-        set
-        {
-            if (_isImportMode != value)
-            {
-                _isImportMode = value;
-                Raise(nameof(IsImportMode));
-                Raise(nameof(IsCreateMode));
-                Raise(nameof(DatabasePickerMode));
-            }
-        }
-    }
+    [ExcludeFromDerivedGeneration] public string? LastError => State.LastError;
+
+    [ExcludeFromDerivedGeneration] public bool IsComplete => State.IsComplete;
+
+    [ExcludeFromDerivedGeneration] public bool HasError => !string.IsNullOrWhiteSpace(LastError);
+
+    [ObservableProperty] public partial string? DatabasePath { get; set; } = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsCreateMode))]
+    public partial bool IsImportMode { get; set; }
 
     public bool IsCreateMode
     {
@@ -117,128 +122,68 @@ public sealed class FirstRunViewModel : ViewModelBase
     }
 
     public Controls.PathPickerMode DatabasePickerMode =>
-        _isImportMode ? Controls.PathPickerMode.OpenFile : Controls.PathPickerMode.SaveFile;
+        IsImportMode ? Controls.PathPickerMode.OpenFile : Controls.PathPickerMode.SaveFile;
 
-    public string? DatabasePath
+    [ObservableProperty] public partial string LibraryName { get; set; } = "My Library";
+
+    [ObservableProperty] public partial string ScanRoot { get; set; } = "";
+
+    [ObservableProperty] public partial SelectedFileSearchRoot? SelectedScanRoot { get; set; }
+
+    [ExcludeFromDerivedGeneration] public ObservableCollection<PdfCandidateViewModel> PdfCandidates { get; } = new();
+
+    [ObservableProperty] public partial PdfCandidateViewModel? SelectedPdf { get; set; }
+
+    [ObservableProperty] public partial string ItemTitle { get; set; } = "";
+
+    [ObservableProperty] public partial string ItemAuthors { get; set; } = "";
+
+    [ObservableProperty] public partial string MinerUToken { get; set; } = "";
+
+    [ObservableProperty] public partial int ImportedPdfCount { get; set; }
+
+    [ObservableProperty] public partial int FailedImportCount { get; set; }
+
+    [ExcludeFromDerivedGeneration] public bool ShowInitStep => CurrentStep == FirstRunStep.Database;
+
+    [ExcludeFromDerivedGeneration] public bool ShowLibraryStep => CurrentStep == FirstRunStep.Library;
+
+    [ExcludeFromDerivedGeneration] public bool ShowScanStep => CurrentStep == FirstRunStep.Scan;
+
+    [ExcludeFromDerivedGeneration] public bool ShowImportStep => false;
+
+    [ExcludeFromDerivedGeneration] public bool ShowMinerUConfigStep => CurrentStep == FirstRunStep.MinerUConfig;
+
+    [ExcludeFromDerivedGeneration] public bool ShowExtractStep => CurrentStep == FirstRunStep.Extract;
+
+    [ExcludeFromDerivedGeneration] public bool ShowIndexStep => CurrentStep == FirstRunStep.Index;
+
+    [ExcludeFromDerivedGeneration] public bool ShowVerifyStep => CurrentStep == FirstRunStep.McpVerify;
+
+    [ExcludeFromDerivedGeneration] public bool ShowCompleteStep => CurrentStep == FirstRunStep.Complete;
+
+    [ObservableProperty] public partial bool IsBusy { get; set; }
+
+    [ExcludeFromDerivedGeneration]
+    public int ProgressPercent => CurrentStep switch
     {
-        get => _databasePath;
-        set
-        {
-            if (_databasePath == value)
-            {
-                return;
-            }
+        FirstRunStep.Database => 25,
+        FirstRunStep.Library => 50,
+        FirstRunStep.Scan => 75,
+        FirstRunStep.MinerUConfig => 90,
+        FirstRunStep.Complete => 100,
+        _ => 0
+    };
 
-            _databasePath = value;
-            Raise();
-        }
-    }
-
-    public string LibraryName { get; set; } = "My Library";
-
-    private string _scanRoot = "";
-
-    public string ScanRoot
+    [ExcludeFromDerivedGeneration]
+    public string StepProgressText => CurrentStep switch
     {
-        get => _scanRoot;
-        set
-        {
-            if (_scanRoot == value)
-            {
-                return;
-            }
-
-            _scanRoot = value;
-            Raise();
-        }
-    }
-
-    public SelectedFileSearchRoot? SelectedScanRoot { get; set; }
-
-    public ObservableCollection<PdfCandidateViewModel> PdfCandidates { get; } = new();
-    public PdfCandidateViewModel? SelectedPdf { get; set; }
-    public string ItemTitle { get; set; } = "";
-    public string ItemAuthors { get; set; } = "";
-    public string MinerUToken { get; set; } = "";
-    public int ImportedPdfCount { get; set; }
-    public int FailedImportCount { get; set; }
-
-    public bool ShowInitStep => _state.CurrentStep == FirstRunStep.Database;
-    public bool ShowLibraryStep => _state.CurrentStep == FirstRunStep.Library;
-    public bool ShowScanStep => _state.CurrentStep == FirstRunStep.Scan;
-    public bool ShowImportStep => false;
-    public bool ShowMinerUConfigStep => _state.CurrentStep == FirstRunStep.MinerUConfig;
-    public bool ShowExtractStep => _state.CurrentStep == FirstRunStep.Extract;
-    public bool ShowIndexStep => _state.CurrentStep == FirstRunStep.Index;
-    public bool ShowVerifyStep => _state.CurrentStep == FirstRunStep.McpVerify;
-    public bool ShowCompleteStep => _state.CurrentStep == FirstRunStep.Complete;
-    public bool IsBusy { get; set; }
-
-    public int ProgressPercent
-    {
-        get
-        {
-            if (_state.CurrentStep == FirstRunStep.Database)
-            {
-                return 25;
-            }
-
-            if (_state.CurrentStep == FirstRunStep.Library)
-            {
-                return 50;
-            }
-
-            if (_state.CurrentStep == FirstRunStep.Scan)
-            {
-                return 75;
-            }
-
-            if (_state.CurrentStep == FirstRunStep.MinerUConfig)
-            {
-                return 90;
-            }
-
-            if (_state.CurrentStep == FirstRunStep.Complete)
-            {
-                return 100;
-            }
-
-            return 0;
-        }
-    }
-
-    public string StepProgressText
-    {
-        get
-        {
-            if (_state.CurrentStep == FirstRunStep.Database)
-            {
-                return "Step 1 of 4";
-            }
-
-            if (_state.CurrentStep == FirstRunStep.Library)
-            {
-                return "Step 2 of 4";
-            }
-
-            if (_state.CurrentStep == FirstRunStep.Scan)
-            {
-                return "Step 3 of 4";
-            }
-
-            if (_state.CurrentStep == FirstRunStep.MinerUConfig)
-            {
-                return "Step 4 of 4";
-            }
-
-            if (_state.CurrentStep == FirstRunStep.Complete)
-            {
-                return "Step 4 of 4";
-            }
-
-            return "Step 1 of 4";
-        }
-    }
+        FirstRunStep.Database => "Step 1 of 4",
+        FirstRunStep.Library => "Step 2 of 4",
+        FirstRunStep.Scan => "Step 3 of 4",
+        FirstRunStep.MinerUConfig or FirstRunStep.Complete => "Step 4 of 4",
+        _ => "Step 1 of 4"
+    };
 
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CreateLibraryCommand { get; }
@@ -262,7 +207,6 @@ public sealed class FirstRunViewModel : ViewModelBase
             {
                 State = new FirstRunWorkflowState(FirstRunStep.Database, "所选数据库文件不存在或为空。", null, null, null, null, null,
                     "所选数据库文件不存在或为空。", false);
-                RaiseAll();
                 return;
             }
 
@@ -274,13 +218,11 @@ public sealed class FirstRunViewModel : ViewModelBase
             {
                 State = new FirstRunWorkflowState(FirstRunStep.Database, "无效的 Patchouli.Net 数据库格式。", null, null, null,
                     null, null, $"验证失败：{ex.Message}", false);
-                RaiseAll();
                 return;
             }
         }
 
         IsBusy = true;
-        Raise(nameof(IsBusy));
         try
         {
             _orchestrator = await _openDatabase(DatabasePath);
@@ -297,10 +239,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
-            Raise(nameof(IsBusy));
         }
-
-        RaiseAll();
     }
 
     public async Task CreateLibraryAsync()
@@ -319,7 +258,6 @@ public sealed class FirstRunViewModel : ViewModelBase
         }
 
         IsBusy = true;
-        Raise(nameof(IsBusy));
         try
         {
             State = orchestrator is not null
@@ -329,10 +267,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
-            Raise(nameof(IsBusy));
         }
-
-        RaiseAll();
     }
 
     public async Task ScanDirectoryAsync()
@@ -356,7 +291,6 @@ public sealed class FirstRunViewModel : ViewModelBase
         }
 
         IsBusy = true;
-        Raise(nameof(IsBusy));
         try
         {
             FirstRunImportResult result;
@@ -398,11 +332,8 @@ public sealed class FirstRunViewModel : ViewModelBase
                 PdfCandidates.Add(new PdfCandidateViewModel(c));
             }
 
-            Raise(nameof(PdfCandidates));
             ImportedPdfCount = result.ImportedCount;
             FailedImportCount = result.FailedCount;
-            Raise(nameof(ImportedPdfCount));
-            Raise(nameof(FailedImportCount));
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
@@ -420,10 +351,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
-            Raise(nameof(IsBusy));
         }
-
-        RaiseAll();
     }
 
     public async Task ImportPdfAsync()
@@ -442,7 +370,6 @@ public sealed class FirstRunViewModel : ViewModelBase
         }
 
         IsBusy = true;
-        Raise(nameof(IsBusy));
         try
         {
             PdfImportRequest request = new(SelectedPdf.Path, ItemTitle, ItemAuthors, null);
@@ -485,10 +412,7 @@ public sealed class FirstRunViewModel : ViewModelBase
         finally
         {
             IsBusy = false;
-            Raise(nameof(IsBusy));
         }
-
-        RaiseAll();
     }
 
     public Task FinishSetupAsync()
@@ -505,7 +429,6 @@ public sealed class FirstRunViewModel : ViewModelBase
                 _state.CreatedDocumentInstanceId,
                 "完成初始化前需要 MinerU API token。",
                 false);
-            RaiseAll();
             return Task.CompletedTask;
         }
 
@@ -519,7 +442,6 @@ public sealed class FirstRunViewModel : ViewModelBase
             _state.CreatedDocumentInstanceId,
             null,
             true);
-        RaiseAll();
         return Task.CompletedTask;
     }
 
@@ -533,28 +455,25 @@ public sealed class FirstRunViewModel : ViewModelBase
     {
         State = new FirstRunWorkflowState(FirstRunStep.Database, "请先打开一个运行时数据库。", null, null, null, null, null,
             "请先打开一个运行时数据库。", false);
-        RaiseAll();
     }
 
-    private void RaiseAll()
+    private void NotifyStateChanged()
     {
-        Raise(nameof(CurrentStep));
-        Raise(nameof(ProgressText));
-        Raise(nameof(LastError));
-        Raise(nameof(HasError));
-        Raise(nameof(IsComplete));
-        Raise(nameof(ImportedPdfCount));
-        Raise(nameof(FailedImportCount));
-        Raise(nameof(ShowInitStep));
-        Raise(nameof(ShowLibraryStep));
-        Raise(nameof(ShowScanStep));
-        Raise(nameof(ShowImportStep));
-        Raise(nameof(ShowMinerUConfigStep));
-        Raise(nameof(ShowExtractStep));
-        Raise(nameof(ShowIndexStep));
-        Raise(nameof(ShowVerifyStep));
-        Raise(nameof(ShowCompleteStep));
-        Raise(nameof(ProgressPercent));
-        Raise(nameof(StepProgressText));
+        OnPropertyChanged(nameof(CurrentStep));
+        OnPropertyChanged(nameof(ProgressText));
+        OnPropertyChanged(nameof(LastError));
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(IsComplete));
+        OnPropertyChanged(nameof(ShowInitStep));
+        OnPropertyChanged(nameof(ShowLibraryStep));
+        OnPropertyChanged(nameof(ShowScanStep));
+        OnPropertyChanged(nameof(ShowImportStep));
+        OnPropertyChanged(nameof(ShowMinerUConfigStep));
+        OnPropertyChanged(nameof(ShowExtractStep));
+        OnPropertyChanged(nameof(ShowIndexStep));
+        OnPropertyChanged(nameof(ShowVerifyStep));
+        OnPropertyChanged(nameof(ShowCompleteStep));
+        OnPropertyChanged(nameof(ProgressPercent));
+        OnPropertyChanged(nameof(StepProgressText));
     }
 }

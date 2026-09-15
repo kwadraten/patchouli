@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Search;
 
 namespace Patchouli.UI.ViewModels;
@@ -8,11 +9,34 @@ public enum SearchMode
     FullText
 }
 
-public sealed record SearchModeOption(SearchMode Mode, string Label, string Hint);
+public sealed record SearchModeOption
+{
+    public SearchModeOption(SearchMode mode, string label, string hint)
+    {
+        Mode = mode;
+        Label = label;
+        Hint = hint;
+    }
+
+    public SearchMode Mode { get; }
+    public string Label { get; }
+    public string Hint { get; }
+}
 
 /// <summary>One selectable key in the advanced-search filter row.</summary>
-public sealed record SearchFilterKeyOption(string Key, string Label, bool IsText)
+public sealed record SearchFilterKeyOption
 {
+    public SearchFilterKeyOption(string key, string label, bool isText)
+    {
+        Key = key;
+        Label = label;
+        IsText = isText;
+    }
+
+    public string Key { get; }
+    public string Label { get; }
+    public bool IsText { get; }
+
     public const string KeywordKey = "keyword";
 
     public static readonly SearchFilterKeyOption[] All =
@@ -36,73 +60,60 @@ public sealed record SearchFilterKeyOption(string Key, string Label, bool IsText
 }
 
 /// <summary>A dynamic filter row in the advanced-search form; rows combine with AND.</summary>
-public sealed class SearchFilterRowViewModel : ViewModelBase
+public sealed partial class SearchFilterRowViewModel : ViewModelBase
 {
     private readonly SearchEvidenceViewModel _owner;
-    private SearchFilterKeyOption _key;
-    private string _value = "";
 
     public SearchFilterRowViewModel(SearchEvidenceViewModel owner, SearchFilterKeyOption? key = null)
     {
         _owner = owner;
-        _key = key ?? SearchFilterKeyOption.All[1];
+        Key = key ?? SearchFilterKeyOption.All[1];
+        if (IsKeyword)
+        {
+            Value = _owner.Query;
+        }
+
         RemoveCommand = new RelayCommand(_ => owner.RemoveFilterRow(this));
     }
 
     public RelayCommand RemoveCommand { get; }
 
-    public SearchFilterKeyOption Key
+    [ObservableProperty] public partial SearchFilterKeyOption Key { get; set; } = null!;
+
+    partial void OnKeyChanged(SearchFilterKeyOption value)
     {
-        get => _key;
-        set
+        if (!IsKeyword)
         {
-            if (_key == value)
-            {
-                return;
-            }
-
-            _key = value;
-            if (!IsKeyword)
-            {
-                Value = "";
-            }
-
-            Raise();
-            Raise(nameof(IsTextKey));
-            Raise(nameof(IsChoiceKey));
-            Raise(nameof(IsKeyword));
-            Raise(nameof(CanRemove));
-            Raise(nameof(AvailableValues));
+            Value = "";
         }
+        else
+        {
+            Value = _owner.Query;
+        }
+
+        Raise(nameof(AvailableValues));
     }
 
-    public bool IsKeyword => _key.Key == SearchFilterKeyOption.KeywordKey;
+    public bool IsKeyword => Key.Key == SearchFilterKeyOption.KeywordKey;
     public bool CanRemove => !IsKeyword;
 
-    public bool IsTextKey => _key.IsText;
-    public bool IsChoiceKey => !_key.IsText;
+    public bool IsTextKey => Key.IsText;
+    public bool IsChoiceKey => !Key.IsText;
     public string PlaceholderText => IsKeyword ? "关键词" : "输入包含的文本";
 
-    public IReadOnlyList<SearchFilterOption> AvailableValues => _owner.FilterOptionsFor(_key.Key);
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<SearchFilterOption> AvailableValues => _owner.FilterOptionsFor(Key.Key);
 
-    public string Value
+    [ObservableProperty] public partial string Value { get; set; } = "";
+
+    partial void OnValueChanged(string value)
     {
-        get => IsKeyword ? _owner.Query : _value;
-        set
+        if (IsKeyword)
         {
-            if (IsKeyword)
+            if (_owner.Query != value)
             {
                 _owner.Query = value;
-                return;
             }
-
-            if (_value == value)
-            {
-                return;
-            }
-
-            _value = value;
-            Raise();
         }
     }
 
@@ -110,7 +121,14 @@ public sealed class SearchFilterRowViewModel : ViewModelBase
     {
         if (IsKeyword)
         {
-            Raise(nameof(Value));
+            if (Value != _owner.Query)
+            {
+                Value = _owner.Query;
+            }
+            else
+            {
+                Raise(nameof(Value));
+            }
         }
     }
 
@@ -121,7 +139,7 @@ public sealed class SearchFilterRowViewModel : ViewModelBase
             return null;
         }
 
-        return string.IsNullOrWhiteSpace(Value) ? null : new BibliographicSearchFilter(_key.Key, Value.Trim());
+        return string.IsNullOrWhiteSpace(Value) ? null : new BibliographicSearchFilter(Key.Key, Value.Trim());
     }
 
     public void RefreshAvailableValues()

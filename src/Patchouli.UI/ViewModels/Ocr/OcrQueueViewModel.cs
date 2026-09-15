@@ -1,84 +1,184 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
-using Patchouli.Ocr;
 using Patchouli.Host.Composition;
+using Patchouli.Ocr;
+using Patchouli.UI.Diagnostics;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class OcrQueueViewModel : ViewModelBase
+public sealed partial class OcrQueueViewModel : ViewModelBase
 {
+    private static readonly TimeSpan DefaultRefreshThrottle = TimeSpan.FromMilliseconds(50);
+
     private readonly MainWindowViewModel _main;
+    private readonly IScheduler _timingScheduler;
+    private readonly IScheduler _uiScheduler;
+    private readonly TimeSpan _refreshThrottle;
+    private readonly Subject<Unit> _refreshRequests = new();
+    private readonly SerialDisposable _queueSubscription = new();
     private IOcrQueueScheduler? _subscribedQueue;
-    private int _refreshScheduled;
 
     public OcrQueueViewModel(MainWindowViewModel main)
+        : this(
+            main,
+            TaskPoolScheduler.Default,
+            SynchronizationContext.Current is { } synchronizationContext
+                ? new SynchronizationContextScheduler(synchronizationContext)
+                : CurrentThreadScheduler.Instance)
+    {
+    }
+
+    internal OcrQueueViewModel(
+        MainWindowViewModel main,
+        IScheduler timingScheduler,
+        IScheduler uiScheduler,
+        TimeSpan? refreshThrottle = null)
     {
         _main = main;
+        _timingScheduler = timingScheduler;
+        _uiScheduler = uiScheduler;
+        _refreshThrottle = refreshThrottle ?? DefaultRefreshThrottle;
+
+        Register(_queueSubscription);
+        Register(_refreshRequests);
+
         RefreshCommand = new AsyncCommand(() => RefreshAsync());
         EnqueueMockCommand = new AsyncCommand(EnqueueMockAsync);
-        StartCommand = new AsyncCommand(StartAsync);
-        StopCommand = new AsyncCommand(StopAsync);
-        PauseGlobalCommand = new AsyncCommand(() => PauseAsync(OcrPauseScope.Global));
-        ResumeGlobalCommand = new AsyncCommand(() => ResumeAsync(OcrPauseScope.Global));
-        ClearFinishedCommand = new AsyncCommand(ClearFinishedAsync);
-        RetryFailedCommand = new AsyncCommand(RetryFailedAsync);
+        StartCommand = new AsyncCommand(StartAsync, () => IsQueueStopped);
+        StopCommand = new AsyncCommand(StopAsync, () => IsQueueRunning);
+        PauseGlobalCommand = new AsyncCommand(() => PauseAsync(OcrPauseScope.Global), () => IsGloballyResumed);
+        ResumeGlobalCommand = new AsyncCommand(() => ResumeAsync(OcrPauseScope.Global), () => IsGloballyPaused);
+        ClearFinishedCommand = new AsyncCommand(ClearFinishedAsync, () => HasFinishedTasks);
+        RetryFailedCommand = new AsyncCommand(RetryFailedAsync, () => HasRetryableTasks);
+
+        Register(ReactiveUiFlow.SubscribeBufferedSequential(
+            _refreshRequests,
+            _refreshThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            (_, _) => RefreshOnUiThreadAsync(),
+            exception => _main.ReportError($"刷新 OCR 队列失败：{exception.Message}")));
+
+        IObservable<Unit> activeRowsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => ActiveTaskRows.CollectionChanged += h,
+                h => ActiveTaskRows.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        activeRowsChanged
+            .Select(_ => ActiveTaskRows.Count)
+            .BindOutput(this, count => ActiveTaskCount = count, ImmediateScheduler.Instance, null, true,
+                ActiveTaskRows.Count);
+
+        activeRowsChanged
+            .Select(_ => $"进行中 ({ActiveTaskRows.Count})")
+            .BindOutput(this, header => ActiveTabHeader = header, ImmediateScheduler.Instance, null, true,
+                $"进行中 ({ActiveTaskRows.Count})");
+
+        activeRowsChanged
+            .Select(_ => ActiveTaskRows.Count > 0)
+            .BindOutput(this, has => HasActiveTasks = has, ImmediateScheduler.Instance, null, true,
+                ActiveTaskRows.Count > 0);
+
+        activeRowsChanged
+            .Select(_ => ActiveTaskRows.Count == 0)
+            .BindOutput(this, no => NoActiveTasks = no, ImmediateScheduler.Instance, null, true,
+                ActiveTaskRows.Count == 0);
+
+        IObservable<Unit> finishedRowsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => FinishedTaskRows.CollectionChanged += h,
+                h => FinishedTaskRows.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        finishedRowsChanged
+            .Select(_ => FinishedTaskRows.Count)
+            .BindOutput(this, count => FinishedTaskCount = count, ImmediateScheduler.Instance, null, true,
+                FinishedTaskRows.Count);
+
+        finishedRowsChanged
+            .Select(_ => $"已完成 ({FinishedTaskRows.Count})")
+            .BindOutput(this, header => FinishedTabHeader = header, ImmediateScheduler.Instance, null, true,
+                $"已完成 ({FinishedTaskRows.Count})");
+
+        finishedRowsChanged
+            .Select(_ => FinishedTaskRows.Count > 0)
+            .BindOutput(this, has => HasFinishedTasks = has, ImmediateScheduler.Instance, null, true,
+                FinishedTaskRows.Count > 0);
+
+        finishedRowsChanged
+            .Select(_ => FinishedTaskRows.Count == 0)
+            .BindOutput(this, no => NoFinishedTasks = no, ImmediateScheduler.Instance, null, true,
+                FinishedTaskRows.Count == 0);
+
+        finishedRowsChanged
+            .Select(_ => FinishedTaskRows.Any(row => row.IsFailed))
+            .BindOutput(this, retryable => HasRetryableTasks = retryable, ImmediateScheduler.Instance, null, true,
+                FinishedTaskRows.Any(row => row.IsFailed));
     }
 
-    private string _statusSummary = "";
+    [ObservableProperty] public partial string StatusSummary { get; private set; } = "";
 
-    public string StatusSummary
+    [ObservableProperty] public partial bool IsQueueRunning { get; internal set; }
+
+    partial void OnIsQueueRunningChanged(bool value)
     {
-        get => _statusSummary;
-        private set
-        {
-            _statusSummary = value;
-            Raise();
-        }
-    }
-
-    private bool _isQueueRunning;
-
-    public bool IsQueueRunning
-    {
-        get => _isQueueRunning;
-        private set
-        {
-            _isQueueRunning = value;
-            Raise();
-            Raise(nameof(IsQueueStopped));
-        }
+        StartCommand?.NotifyCanExecuteChanged();
+        StopCommand?.NotifyCanExecuteChanged();
     }
 
     public bool IsQueueStopped => !IsQueueRunning;
 
-    private bool _isGloballyPaused;
+    [ObservableProperty] public partial bool IsGloballyPaused { get; internal set; }
 
-    public bool IsGloballyPaused
+    partial void OnIsGloballyPausedChanged(bool value)
     {
-        get => _isGloballyPaused;
-        private set
-        {
-            _isGloballyPaused = value;
-            Raise();
-            Raise(nameof(IsGloballyResumed));
-        }
+        PauseGlobalCommand?.NotifyCanExecuteChanged();
+        ResumeGlobalCommand?.NotifyCanExecuteChanged();
     }
 
     public bool IsGloballyResumed => !IsGloballyPaused;
 
     public ObservableCollection<OcrQueueTaskViewModel> ActiveTaskRows { get; } = new();
     public ObservableCollection<OcrQueueTaskViewModel> FinishedTaskRows { get; } = new();
-    public int ActiveTaskCount => ActiveTaskRows.Count;
-    public int FinishedTaskCount => FinishedTaskRows.Count;
-    public string ActiveTabHeader => $"进行中 ({ActiveTaskCount})";
-    public string FinishedTabHeader => $"已完成 ({FinishedTaskCount})";
-    public bool HasActiveTasks => ActiveTaskRows.Count > 0;
-    public bool NoActiveTasks => !HasActiveTasks;
-    public bool HasFinishedTasks => FinishedTaskRows.Count > 0;
-    public bool NoFinishedTasks => !HasFinishedTasks;
-    public bool HasRetryableTasks => FinishedTaskRows.Any(row => row.IsFailed);
+
+    [ObservableProperty] public partial int ActiveTaskCount { get; private set; }
+
+    [ObservableProperty] public partial int FinishedTaskCount { get; private set; }
+
+    [ObservableProperty] public partial string ActiveTabHeader { get; private set; } = "进行中 (0)";
+
+    [ObservableProperty] public partial string FinishedTabHeader { get; private set; } = "已完成 (0)";
+
+    [ObservableProperty] public partial bool HasActiveTasks { get; private set; }
+
+    [ObservableProperty] public partial bool NoActiveTasks { get; private set; } = true;
+
+    [ObservableProperty] public partial bool HasFinishedTasks { get; private set; }
+
+    partial void OnHasFinishedTasksChanged(bool value)
+    {
+        ClearFinishedCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial bool NoFinishedTasks { get; private set; } = true;
+
+    [ObservableProperty] public partial bool HasRetryableTasks { get; private set; }
+
+    partial void OnHasRetryableTasksChanged(bool value)
+    {
+        RetryFailedCommand?.NotifyCanExecuteChanged();
+    }
 
     public AsyncCommand RefreshCommand { get; }
     public AsyncCommand EnqueueMockCommand { get; }
@@ -318,6 +418,8 @@ public sealed class OcrQueueViewModel : ViewModelBase
         StatusSummary =
             $"{(status.Value.IsRunning ? "运行中" : "已停止")}；排队 {status.Value.Queued}，运行 {status.Value.Running}，成功 {status.Value.Succeeded}，失败 {status.Value.Failed}，已取消 {status.Value.Cancelled}，阻塞 {status.Value.Blocked}{FormatPausedScopes(status.Value.PausedScopes)}";
 
+        HashSet<string> pausedScopes = new(status.Value.PausedScopes, StringComparer.Ordinal);
+
         List<OcrQueueTask> active = [];
         List<OcrQueueTask> finished = [];
         foreach (OcrQueueTask task in rows.Value.Select(static row => row.Task))
@@ -325,18 +427,8 @@ public sealed class OcrQueueViewModel : ViewModelBase
             (IsActiveState(task.State) ? active : finished).Add(task);
         }
 
-        SyncRows(ActiveTaskRows, active, queue, titles, progress);
-        SyncRows(FinishedTaskRows, finished, queue, titles, progress);
-
-        Raise(nameof(ActiveTaskCount));
-        Raise(nameof(FinishedTaskCount));
-        Raise(nameof(ActiveTabHeader));
-        Raise(nameof(FinishedTabHeader));
-        Raise(nameof(HasActiveTasks));
-        Raise(nameof(NoActiveTasks));
-        Raise(nameof(HasFinishedTasks));
-        Raise(nameof(NoFinishedTasks));
-        Raise(nameof(HasRetryableTasks));
+        SyncRows(ActiveTaskRows, active, queue, titles, progress, pausedScopes);
+        SyncRows(FinishedTaskRows, finished, queue, titles, progress, pausedScopes);
     }
 
     private static bool IsActiveState(string state)
@@ -349,7 +441,8 @@ public sealed class OcrQueueViewModel : ViewModelBase
         List<OcrQueueTask> tasks,
         IOcrQueueScheduler queue,
         Dictionary<string, string> titles,
-        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress)
+        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress,
+        HashSet<string> pausedScopes)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         for (int i = collection.Count - 1; i >= 0; i--)
@@ -370,6 +463,7 @@ public sealed class OcrQueueViewModel : ViewModelBase
             OcrQueueProgress? pageProgress = progress.GetValueOrDefault(task.TaskId);
             OcrTaskProgressReport? stage = queue.GetTaskProgress(task.TaskId);
             DateTimeOffset? finishedAt = queue.GetTaskFinishedAt(task.TaskId);
+            bool isPaused = pausedScopes.Contains($"task:{taskId}");
 
             int existingIndex = -1;
             for (int j = 0; j < collection.Count; j++)
@@ -384,11 +478,15 @@ public sealed class OcrQueueViewModel : ViewModelBase
             if (existingIndex < 0)
             {
                 collection.Insert(Math.Min(i, collection.Count),
-                    new OcrQueueTaskViewModel(task, title, this, pageProgress, stage, finishedAt, now));
+                    new OcrQueueTaskViewModel(task, title, this, pageProgress, stage, finishedAt, now)
+                    {
+                        IsPaused = isPaused
+                    });
             }
             else
             {
                 collection[existingIndex].Update(task, title, pageProgress, stage, finishedAt, now);
+                collection[existingIndex].IsPaused = isPaused;
                 if (existingIndex != i)
                 {
                     collection.Move(existingIndex, i);
@@ -437,13 +535,12 @@ public sealed class OcrQueueViewModel : ViewModelBase
             return;
         }
 
-        if (_subscribedQueue is not null)
-        {
-            _subscribedQueue.Changed -= OnQueueChanged;
-        }
-
         _subscribedQueue = queue;
-        _subscribedQueue.Changed += OnQueueChanged;
+        _queueSubscription.Disposable = Observable
+            .FromEventPattern<EventHandler<OcrQueueChangedEventArgs>, OcrQueueChangedEventArgs>(
+                h => queue.Changed += h,
+                h => queue.Changed -= h)
+            .Subscribe(pattern => OnQueueChanged(pattern.Sender, pattern.EventArgs));
     }
 
     public void ObserveQueue(IOcrQueueScheduler queue)
@@ -500,23 +597,9 @@ public sealed class OcrQueueViewModel : ViewModelBase
 
     private void ScheduleRefresh()
     {
-        if (Interlocked.Exchange(ref _refreshScheduled, 1) == 1)
+        if (!_refreshRequests.IsDisposed)
         {
-            return;
-        }
-
-        RefreshScheduledAsync().Observe("ocr-queue-ui", "scheduled-refresh");
-    }
-
-    private async Task RefreshScheduledAsync()
-    {
-        try
-        {
-            await RefreshOnUiThreadAsync();
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _refreshScheduled, 0);
+            _refreshRequests.OnNext(Unit.Default);
         }
     }
 
@@ -524,9 +607,19 @@ public sealed class OcrQueueViewModel : ViewModelBase
     {
         return DispatcherTasks.RunAsync(RefreshAsync);
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _subscribedQueue = null;
+        }
+
+        base.Dispose(disposing);
+    }
 }
 
-public sealed class OcrQueueTaskViewModel : ViewModelBase
+public sealed partial class OcrQueueTaskViewModel : ViewModelBase
 {
     private string? _stageKey;
     private DateTimeOffset _stageStartedAt;
@@ -540,10 +633,19 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         Kind = task.TaskKind;
         Priority = task.Priority;
 
-        PauseCommand = new AsyncCommand(() => queueViewModel.PauseAsync(OcrPauseScope.Task, TaskId));
-        ResumeCommand = new AsyncCommand(() => queueViewModel.ResumeAsync(OcrPauseScope.Task, TaskId));
-        CancelCommand = new AsyncCommand(() => queueViewModel.CancelAsync(TaskId));
-        RetryCommand = new AsyncCommand(() => queueViewModel.RetryAsync(TaskId));
+        PauseCommand = new AsyncCommand(
+            () => queueViewModel.PauseAsync(OcrPauseScope.Task, TaskId),
+            () => !IsPaused &&
+                  State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Blocked);
+        ResumeCommand = new AsyncCommand(
+            () => queueViewModel.ResumeAsync(OcrPauseScope.Task, TaskId),
+            () => IsPaused);
+        CancelCommand = new AsyncCommand(
+            () => queueViewModel.CancelAsync(TaskId),
+            () => State is OcrQueueTaskState.Queued or OcrQueueTaskState.Running or OcrQueueTaskState.Paused);
+        RetryCommand = new AsyncCommand(
+            () => queueViewModel.RetryAsync(TaskId),
+            () => State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked);
 
         Update(task, title, pageProgress, stage, finishedAt, now);
     }
@@ -552,17 +654,7 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
     public string ShortTaskId { get; }
     public string Kind { get; }
 
-    private int _pageCount;
-
-    public int PageCount
-    {
-        get => _pageCount;
-        private set
-        {
-            _pageCount = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial int PageCount { get; private set; }
 
     public string KindText => Kind switch
     {
@@ -587,29 +679,24 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         _ => Priority
     };
 
-    private string _documentTitle = "";
+    [ObservableProperty] public partial string DocumentTitle { get; private set; } = "";
 
-    public string DocumentTitle
+    [ObservableProperty] public partial string State { get; private set; } = "";
+
+    partial void OnStateChanged(string value)
     {
-        get => _documentTitle;
-        private set
-        {
-            _documentTitle = value;
-            Raise();
-        }
+        PauseCommand?.NotifyCanExecuteChanged();
+        ResumeCommand?.NotifyCanExecuteChanged();
+        CancelCommand?.NotifyCanExecuteChanged();
+        RetryCommand?.NotifyCanExecuteChanged();
     }
 
-    private string _state = "";
+    [ObservableProperty] public partial bool IsPaused { get; internal set; }
 
-    public string State
+    partial void OnIsPausedChanged(bool value)
     {
-        get => _state;
-        private set
-        {
-            _state = value;
-            Raise();
-            Raise(nameof(StateText));
-        }
+        PauseCommand?.NotifyCanExecuteChanged();
+        ResumeCommand?.NotifyCanExecuteChanged();
     }
 
     public string StateText => State switch
@@ -624,83 +711,23 @@ public sealed class OcrQueueTaskViewModel : ViewModelBase
         _ => State
     };
 
-    private bool _isFailed;
+    [ObservableProperty] public partial bool IsFailed { get; private set; }
 
-    public bool IsFailed
-    {
-        get => _isFailed;
-        private set
-        {
-            _isFailed = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool IsActive { get; private set; }
 
-    private bool _isActive;
-
-    public bool IsActive
-    {
-        get => _isActive;
-        private set
-        {
-            _isActive = value;
-            Raise();
-        }
-    }
-
-    private double _progressValue;
-
-    public double ProgressValue
-    {
-        get => _progressValue;
-        private set
-        {
-            _progressValue = value;
-            Raise();
-            Raise(nameof(ProgressPercentText));
-        }
-    }
+    [ObservableProperty] public partial double ProgressValue { get; private set; }
 
     public string ProgressPercentText => $"{ProgressValue:F0}%";
 
-    private string _stageText = "";
+    [ObservableProperty] public partial string StageText { get; private set; } = "";
 
-    public string StageText
-    {
-        get => _stageText;
-        private set
-        {
-            _stageText = value;
-            Raise();
-        }
-    }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasError))]
+    public partial string ErrorText { get; private set; } = "";
 
-    private string _errorText = "";
+    [ExcludeFromDerivedGeneration] public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
 
-    public string ErrorText
-    {
-        get => _errorText;
-        private set
-        {
-            _errorText = value;
-            Raise();
-            Raise(nameof(HasError));
-        }
-    }
-
-    public bool HasError => !string.IsNullOrWhiteSpace(ErrorText);
-
-    private string _metaText = "";
-
-    public string MetaText
-    {
-        get => _metaText;
-        private set
-        {
-            _metaText = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string MetaText { get; private set; } = "";
 
     public AsyncCommand PauseCommand { get; }
     public AsyncCommand ResumeCommand { get; }

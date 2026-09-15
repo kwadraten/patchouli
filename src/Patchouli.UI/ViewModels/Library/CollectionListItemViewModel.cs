@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Ids;
 using Patchouli.UI.ViewModels.Core;
 
@@ -7,10 +8,8 @@ namespace Patchouli.UI.ViewModels;
 /// A single entry in the library sidebar collection list. Collections are one-level playlists:
 /// selecting one filters the item grid to its members.
 /// </summary>
-public sealed class CollectionListItemViewModel : ViewModelBase
+public sealed partial class CollectionListItemViewModel : ViewModelBase
 {
-    private bool _isSelected;
-
     public CollectionListItemViewModel(CollectionId collectionId, string name, int itemCount)
     {
         CollectionId = collectionId;
@@ -25,29 +24,24 @@ public sealed class CollectionListItemViewModel : ViewModelBase
     public string Name { get; }
     public int ItemCount { get; }
 
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected == value)
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial bool IsSelected { get; set; }
 
-            _isSelected = value;
-            Raise();
-        }
-    }
-
+    [ExcludeFromDerivedGeneration]
     public string CountText => ItemCount > 0 ? ItemCount.ToString() : "";
+
+    [ExcludeFromDerivedGeneration]
     public bool HasCount => ItemCount > 0;
 
     public AsyncCommand RenameCommand { get; }
+
     public AsyncCommand DissolveCommand { get; }
+
     public AsyncCommand AddToSelectionCommand { get; }
 
     public Func<CollectionListItemViewModel, Task>? RequestRename { get; set; }
+
     public Func<CollectionListItemViewModel, Task>? RequestDissolve { get; set; }
+
     public Func<CollectionListItemViewModel, Task>? RequestAddToSelection { get; set; }
 }

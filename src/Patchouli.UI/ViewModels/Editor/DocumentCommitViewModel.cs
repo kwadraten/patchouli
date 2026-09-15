@@ -1,4 +1,5 @@
 using Avalonia.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -26,7 +27,7 @@ public sealed class DocumentCommitPageViewModel
     public AsyncCommand RevertCommand { get; }
 }
 
-public sealed class DocumentCommitViewModel
+public sealed partial class DocumentCommitViewModel : ViewModelBase
 {
     // Height of a history-table row; the revert connector geometry assumes every row
     // renders at exactly this height so the curve lands on the target row's node.
@@ -68,27 +69,34 @@ public sealed class DocumentCommitViewModel
     public IReadOnlyList<DocumentCommitPageViewModel> Pages { get; }
 
     /// <summary>True for the commit that represents the current document state (the newest).</summary>
-    public bool IsCurrent { get; set; }
+    [ObservableProperty] private bool _isCurrent;
 
     /// <summary>True for the topmost (newest) row; the graph draws no line segment above it.</summary>
-    public bool IsNewest { get; set; }
+    [ObservableProperty] private bool _isNewest;
 
     /// <summary>True for the bottommost (oldest) row; the graph draws no line segment below it.</summary>
-    public bool IsOldest { get; set; }
+    [ObservableProperty] private bool _isOldest;
 
     /// <summary>Number of rows between this revert row and the row it restored, if both are listed.</summary>
-    public int? RevertRowOffset { get; set; }
+    [ObservableProperty] private int? _revertRowOffset;
 
-    public string ShortId => CommitId.ToString()[..8];
+    partial void OnRevertRowOffsetChanged(int? value)
+    {
+        OnPropertyChanged(nameof(RevertLinkGeometry));
+    }
 
-    public string DateText => $"{CreatedAt:yyyy-MM-dd HH:mm}";
+    [ExcludeFromDerivedGeneration] public string ShortId => CommitId.ToString()[..8];
 
+    [ExcludeFromDerivedGeneration] public string DateText => $"{CreatedAt:yyyy-MM-dd HH:mm}";
+
+    [ExcludeFromDerivedGeneration]
     public string DescriptionText =>
         !string.IsNullOrWhiteSpace(Message) ? Message : $"{PageCount} 页";
 
-    public bool HasRevertLink => RevertRowOffset is > 0;
+    public bool HasRevertLink => RevertRowOffset > 0;
 
-    public Geometry? RevertLinkGeometry => RevertRowOffset is > 0 ? BuildRevertLink(RevertRowOffset.Value) : null;
+    [ExcludeFromDerivedGeneration]
+    public Geometry? RevertLinkGeometry => RevertRowOffset > 0 ? BuildRevertLink(RevertRowOffset.Value) : null;
 
     private static Geometry BuildRevertLink(int rowOffset)
     {

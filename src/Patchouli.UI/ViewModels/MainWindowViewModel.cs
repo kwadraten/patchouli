@@ -1,9 +1,11 @@
 using System.ComponentModel;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Credentials;
@@ -33,8 +35,15 @@ using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Import;
+using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Watching;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
+using Patchouli.UI;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -46,8 +55,17 @@ using Dialogs;
 using Views;
 using Services;
 
-public sealed class MainWindowViewModel : ViewModelBase
+public sealed partial class MainWindowViewModel : ViewModelBase
 {
+    private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
+    private readonly IScheduler _timingScheduler;
+    private readonly IScheduler _uiScheduler;
+    private readonly SerialDisposable _revisionSubscription = new();
+    private readonly SerialDisposable _mcpSubscriptions = new();
+    private readonly SerialDisposable _watcherSubscriptions = new();
+    private readonly Subject<bool> _queryRewriteRequests = new();
+    private bool _suppressQueryRewritePersist;
+
     private static readonly Action<Exception, string, string?> ReportUnexpectedException =
         static (exception, boundary, operation) =>
             UnexpectedExceptions.Sink.Report(exception, boundary, operation);
@@ -58,19 +76,18 @@ public sealed class MainWindowViewModel : ViewModelBase
     private FileSearchRootWatcherService? _fileSearchRootWatcher;
     private LibraryImportOrchestrator? _importOrchestrator;
     private LibraryRevisionMonitor? _libraryRevisionMonitor;
+    private RuntimeHostLease? _runtimeHostLease;
     private RescanCompletionCapture? _activeRescanCapture;
-    private bool _externalLibraryChangePending;
     private readonly bool _autoStartMcpServer;
+    private readonly bool _enforceRuntimeHostOwnership;
     private PatchouliAppSettings _settings;
     private readonly string? _settingsPath;
-    private string _runtimeDatabasePath;
     private int _libraryGeneration;
-    private bool _queryRewriteEnabled;
     private bool _queryRewriteEnabledPersisted = true;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
-    public ObservableCollection<WorkspaceTabViewModel> OpenTabs => Layout.Tabs;
+    [ExcludeFromDerivedGeneration] public ObservableCollection<WorkspaceTabViewModel> OpenTabs => Layout.Tabs;
 
     public WorkspaceTabViewModel? ActiveTab
     {
@@ -78,45 +95,52 @@ public sealed class MainWindowViewModel : ViewModelBase
         set => Layout.ActiveTab = value;
     }
 
-    public string RuntimeDatabasePath
-    {
-        get => _runtimeDatabasePath;
-        set
-        {
-            if (_runtimeDatabasePath == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string RuntimeDatabasePath { get; set; }
 
-            _runtimeDatabasePath = value;
-            Raise();
-            Raise(nameof(VersionInfo));
-            Settings?.NotifyRuntimeDatabasePathChanged();
-        }
+    partial void OnRuntimeDatabasePathChanged(string value)
+    {
+        Settings?.NotifyRuntimeDatabasePathChanged();
+        OpenDatabaseCommand?.NotifyCanExecuteChanged();
     }
 
-    public string DefaultSyncRootPath => _settings.Runtime.DefaultSyncRoot;
+    [ExcludeFromDerivedGeneration] public string DefaultSyncRootPath => _settings.Runtime.DefaultSyncRoot;
+
     public ObservableCollection<SidebarFileSearchRootViewModel> FileSearchRoots { get; } = new();
-    public bool HasFileSearchRoots => FileSearchRoots.Count > 0;
-    public bool NoFileSearchRoots => !HasFileSearchRoots;
-    public string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
-    public bool StatusIsError { get; set; }
-    public string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}/mcp";
-    public string McpStatusText { get; private set; } = "MCP: 未启动";
-    public bool McpServerRunning => _mcpHost?.IsRunning == true;
-    public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
-    public string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
-    public IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
+
+    [ObservableProperty] public partial bool HasFileSearchRoots { get; private set; }
+
+    [ObservableProperty] public partial bool NoFileSearchRoots { get; private set; } = true;
+
+    [ObservableProperty] public partial string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
+
+    [ObservableProperty] public partial bool StatusIsError { get; set; }
+
+    [ObservableProperty]
+    public partial string McpEndpoint { get; private set; } = $"http://localhost:{McpServerOptions.DefaultPort}/mcp";
+
+    [ObservableProperty] public partial string McpStatusText { get; private set; } = "MCP: 未启动";
+
+    [ExcludeFromDerivedGeneration] public bool McpServerRunning => _mcpHost?.IsRunning == true;
+
+    [ExcludeFromDerivedGeneration] public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
+
+    [ObservableProperty] public partial string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
+
+    [ObservableProperty] public partial IBrush McpStatusBrush { get; private set; } = Brushes.Gray;
 
     public string VersionInfo =>
         $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion} | {RuntimeDatabasePath}";
 
+    [ExcludeFromDerivedGeneration]
     public string StatusBarVersion =>
         $"{Patchouli.Core.BuildInfo.AppName} {Patchouli.Core.BuildInfo.Version} | Schema {Patchouli.Core.BuildInfo.SchemaVersion}";
 
-    public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
-    public bool HasOpenRuntimeDatabase => _services is not null;
-    public int LibraryGeneration => Volatile.Read(ref _libraryGeneration);
+    [ExcludeFromDerivedGeneration] public string SettingsFilePath => PatchouliAppSettings.ResolvePath(_settingsPath);
+
+    [ExcludeFromDerivedGeneration] public bool HasOpenRuntimeDatabase => _services is not null;
+
+    [ExcludeFromDerivedGeneration] public int LibraryGeneration => Volatile.Read(ref _libraryGeneration);
+
     public IClipboardService Clipboard { get; }
     public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
@@ -124,44 +148,17 @@ public sealed class MainWindowViewModel : ViewModelBase
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
     public SettingsViewModel Settings { get; }
-    public FirstRunViewModel FirstRun { get; private set; }
-    public bool IsFirstRunVisible { get; set; }
+
+    [ObservableProperty] public partial FirstRunViewModel FirstRun { get; private set; }
+
+    [ObservableProperty] public partial bool IsFirstRunVisible { get; set; }
+
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
 
-    private bool _isStartupLoadingVisible = true;
+    [ObservableProperty] public partial bool IsStartupLoadingVisible { get; set; } = true;
 
-    public bool IsStartupLoadingVisible
-    {
-        get => _isStartupLoadingVisible;
-        set
-        {
-            if (_isStartupLoadingVisible == value)
-            {
-                return;
-            }
-
-            _isStartupLoadingVisible = value;
-            Raise();
-        }
-    }
-
-    private string _startupLoadingStatus = "正在启动…";
-
-    public string StartupLoadingStatus
-    {
-        get => _startupLoadingStatus;
-        set
-        {
-            if (_startupLoadingStatus == value)
-            {
-                return;
-            }
-
-            _startupLoadingStatus = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string StartupLoadingStatus { get; set; } = "正在启动…";
 
     public bool ShowInspectorPane
     {
@@ -169,8 +166,19 @@ public sealed class MainWindowViewModel : ViewModelBase
         set => Layout.ShowInspectorPane = value;
     }
 
-    public bool ShowSidebar => Layout.ShowSidebar && !Shell.IsReadingMode;
-    public bool IsInspectorVisible => Layout.IsInspectorVisible && !Shell.IsReadingMode;
+    [ObservableProperty] public partial bool ShowSidebar { get; private set; }
+
+    [ObservableProperty] public partial bool IsInspectorVisible { get; private set; }
+
+    partial void OnShowSidebarChanged(bool value)
+    {
+        Shell?.RaisePageStateChanged();
+    }
+
+    partial void OnIsInspectorVisibleChanged(bool value)
+    {
+        Shell?.RaisePageStateChanged();
+    }
 
     public bool ShowLibraryLeftSidebarPreference
     {
@@ -188,8 +196,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 return;
             }
 
+            // Manual Raise notifies ShowLibraryLeftSidebarPreference property change to trigger UI update and downstream generator derivation for IsLibraryLeftSidebarVisible.
             Raise();
-            Raise(nameof(IsLibraryLeftSidebarVisible));
             Shell.RaisePageStateChanged();
         }
     }
@@ -210,8 +218,8 @@ public sealed class MainWindowViewModel : ViewModelBase
                 return;
             }
 
+            // Manual Raise notifies ShowLibraryRightSidebarPreference property change to trigger UI update and downstream generator derivation for IsLibraryRightSidebarVisible.
             Raise();
-            Raise(nameof(IsLibraryRightSidebarVisible));
             Shell.RaisePageStateChanged();
         }
     }
@@ -224,38 +232,54 @@ public sealed class MainWindowViewModel : ViewModelBase
     /// request; <see cref="ApplyQueryRewriteEnabled"/> is the non-persisting path used while loading
     /// per-library state and when reverting a failed persist.
     /// </summary>
-    public bool QueryRewriteEnabled
-    {
-        get => _queryRewriteEnabled;
-        set
-        {
-            if (_queryRewriteEnabled == value)
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial bool QueryRewriteEnabled { get; set; }
 
-            _ = SetQueryRewriteEnabledAsync(value);
+    partial void OnQueryRewriteEnabledChanged(bool value)
+    {
+        if (_suppressQueryRewritePersist)
+        {
+            return;
+        }
+
+        _queryRewriteRequests.OnNext(value);
+    }
+
+    [ObservableProperty] public partial bool ShowSelectedDocumentTab { get; private set; }
+
+    [ObservableProperty] public partial bool ShowSettingsTab { get; private set; }
+
+    [ObservableProperty] public partial bool ShowItemEditorTab { get; private set; }
+
+    [ObservableProperty] public partial bool IsLibraryTabActive { get; private set; }
+
+    [ObservableProperty] public partial bool IsReaderTabActive { get; private set; }
+
+    [ObservableProperty] public partial bool IsSettingsVisible { get; private set; }
+
+    [ObservableProperty] public partial bool IsItemEditorVisible { get; private set; }
+
+    [ObservableProperty] public partial string LibraryTabTitle { get; private set; } = "我的书库";
+
+    partial void OnLibraryTabTitleChanged(string value)
+    {
+        WorkspaceTabViewModel? libTab = OpenTabs.FirstOrDefault(t => t.Kind == WorkspaceTabKind.Library);
+        if (libTab != null)
+        {
+            libTab.Title = value;
         }
     }
 
-    public bool ShowSelectedDocumentTab => Layout.HasPdfWorkspaceTab;
-    public bool ShowSettingsTab => Layout.HasSettingsTab;
-    public bool ShowItemEditorTab => Layout.HasItemEditorTab;
-    public bool IsLibraryTabActive => Layout.IsLibraryActive;
-    public bool IsReaderTabActive => Layout.IsReaderActive;
-    public bool IsSettingsVisible => Layout.IsSettingsActive;
-    public bool IsItemEditorVisible => Layout.IsItemEditorActive;
-    public string LibraryTabTitle => string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName;
-
-    public string PdfTabTitle =>
-        BuildItemWorkspaceTabTitle("PDF 工作台", Shell.SelectedItem?.Title ?? Shell.SelectedItem?.FileName ?? "PDF 阅读");
+    [ObservableProperty] public partial string PdfTabTitle { get; private set; } = "";
 
     public LibraryViewModel Library { get; }
 
+    [ExcludeFromDerivedGeneration]
     public PdfWorkspaceViewModel PdfWorkspace =>
         GetWorkspaceContent<PdfWorkspaceViewModel>(WorkspaceTabKind.PdfWorkspace) ??
         throw new InvalidOperationException("PDF workspace tab is not open.");
 
+    [ExcludeFromDerivedGeneration]
     public ItemEditorViewModel ItemEditor => GetWorkspaceContent<ItemEditorViewModel>(WorkspaceTabKind.ItemEditor) ??
                                              throw new InvalidOperationException("Item editor tab is not open.");
 
@@ -313,7 +337,7 @@ public sealed class MainWindowViewModel : ViewModelBase
     public UiCommandDescriptor ExportBiblatexDescriptor { get; }
     public UiCommandDescriptor CopyBiblatexDescriptor { get; }
 
-    public PatchouliAppSettings AppOptions => _settings;
+    [ExcludeFromDerivedGeneration] public PatchouliAppSettings AppOptions => _settings;
 
     public SettingsSaveResult UpdateAppOptions(PatchouliAppSettings settings)
     {
@@ -433,8 +457,16 @@ public sealed class MainWindowViewModel : ViewModelBase
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null,
         IDialogService? dialogs = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort,
         string? settingsPath = null, IModalOperationRunner? modalOperations = null,
-        IFilePickerService? filePicker = null)
+        IFilePickerService? filePicker = null, bool enforceRuntimeHostOwnership = false,
+        IScheduler? timingScheduler = null, IScheduler? uiScheduler = null)
     {
+        _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
+        _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
+            ? new SynchronizationContextScheduler(synchronizationContext)
+            : ImmediateScheduler.Instance);
+        Register(_revisionSubscription);
+        Register(_mcpSubscriptions);
+        Register(_watcherSubscriptions);
         _settingsPath = settingsPath;
         SettingsLoadFailure? settingsLoadFailure = null;
         _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
@@ -474,10 +506,11 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         ThemePaletteApplier.Apply(_settings.Ui.PaletteId);
 
-        _runtimeDatabasePath = _settings.Runtime.RememberLastDatabase
+        RuntimeDatabasePath = _settings.Runtime.RememberLastDatabase
             ? _settings.Runtime.RuntimeDatabasePath
             : AppRuntimeOptions.Default().RuntimeDatabasePath;
         _autoStartMcpServer = autoStartMcpServer;
+        _enforceRuntimeHostOwnership = enforceRuntimeHostOwnership;
         McpEndpoint = $"http://localhost:{mcpPort}/mcp";
         Clipboard = clipboard ?? new AvaloniaClipboardService();
         FilePicker = filePicker ?? new AvaloniaFilePickerService();
@@ -485,7 +518,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
         Layout = new WorkspaceLayoutViewModel();
-        Layout.PropertyChanged += OnLayoutPropertyChanged;
         Workspace = new WorkspaceManager(Layout);
         Shell = new LibraryShellViewModel(this);
         Settings = new SettingsViewModel(this);
@@ -494,24 +526,176 @@ public sealed class MainWindowViewModel : ViewModelBase
         FileDocument = new FileDocumentViewModel(this);
         OcrQueue = new OcrQueueViewModel(this);
         SearchEvidence = new SearchEvidenceViewModel(this);
+        Register(SearchEvidence);
         McpPreview = new McpPreviewViewModel(this);
         Snapshot = new SnapshotViewModel(this);
-        Snapshot.PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName is nameof(SnapshotViewModel.OperationStateText) or
-                nameof(SnapshotViewModel.OperationMessage))
-            {
-                Settings.SyncSettings.NotifySnapshotStateChanged();
-            }
-
-            if (e.PropertyName is nameof(SnapshotViewModel.OperationStateText) or
-                nameof(SnapshotViewModel.OperationState))
-            {
-                RefreshSyncDescriptors();
-            }
-        };
         About = new AboutViewModel(this);
         Shell.MinerUToken = "";
+
+        IDisposable queryRewriteSub = _queryRewriteRequests
+            .ObserveOn(_uiScheduler)
+            .Select(enabled => Observable.FromAsync(async ct =>
+            {
+                try
+                {
+                    await PersistQueryRewriteEnabledAsync(enabled, ct);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                }
+                catch (Exception ex)
+                {
+                    UnexpectedExceptions.Sink.Report(ex, "query-rewrite", "persist");
+                }
+            }))
+            .Switch()
+            .Subscribe();
+        Register(queryRewriteSub);
+        Register(_queryRewriteRequests);
+
+        IObservable<EventPattern<PropertyChangedEventArgs>> layoutChanges =
+            Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                h => Layout.PropertyChanged += h,
+                h => Layout.PropertyChanged -= h);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.HasPdfWorkspaceTab))
+            .Select(_ => Layout.HasPdfWorkspaceTab)
+            .BindOutput(this, v => ShowSelectedDocumentTab = v, _uiScheduler, null, true, Layout.HasPdfWorkspaceTab);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.HasSettingsTab))
+            .Select(_ => Layout.HasSettingsTab)
+            .BindOutput(this, v => ShowSettingsTab = v, _uiScheduler, null, true, Layout.HasSettingsTab);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.HasItemEditorTab))
+            .Select(_ => Layout.HasItemEditorTab)
+            .BindOutput(this, v => ShowItemEditorTab = v, _uiScheduler, null, true, Layout.HasItemEditorTab);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.IsLibraryActive))
+            .Select(_ => Layout.IsLibraryActive)
+            .BindOutput(this, v => IsLibraryTabActive = v, _uiScheduler, null, true, Layout.IsLibraryActive);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.IsReaderActive))
+            .Select(_ => Layout.IsReaderActive)
+            .BindOutput(this, v => IsReaderTabActive = v, _uiScheduler, null, true, Layout.IsReaderActive);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.IsSettingsActive))
+            .Select(_ => Layout.IsSettingsActive)
+            .BindOutput(this, v => IsSettingsVisible = v, _uiScheduler, null, true, Layout.IsSettingsActive);
+
+        layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.IsItemEditorActive))
+            .Select(_ => Layout.IsItemEditorActive)
+            .BindOutput(this, v => IsItemEditorVisible = v, _uiScheduler, null, true, Layout.IsItemEditorActive);
+
+        IObservable<EventPattern<PropertyChangedEventArgs>> shellChanges =
+            Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                h => Shell.PropertyChanged += h,
+                h => Shell.PropertyChanged -= h);
+
+        IObservable<bool> layoutShowSidebar = layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.ShowSidebar))
+            .Select(_ => Layout.ShowSidebar)
+            .StartWith(Layout.ShowSidebar);
+
+        IObservable<bool> shellReadingMode = shellChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(LibraryShellViewModel.IsReadingMode))
+            .Select(_ => Shell.IsReadingMode)
+            .StartWith(Shell.IsReadingMode);
+
+        layoutShowSidebar.CombineLatest(shellReadingMode, (show, reading) => show && !reading)
+            .BindOutput(this, v => ShowSidebar = v, _uiScheduler, null, true,
+                Layout.ShowSidebar && !Shell.IsReadingMode);
+
+        IObservable<bool> layoutInspector = layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.IsInspectorVisible))
+            .Select(_ => Layout.IsInspectorVisible)
+            .StartWith(Layout.IsInspectorVisible);
+
+        layoutInspector.CombineLatest(shellReadingMode, (inspector, reading) => inspector && !reading)
+            .BindOutput(this, v => IsInspectorVisible = v, _uiScheduler, null, true,
+                Layout.IsInspectorVisible && !Shell.IsReadingMode);
+
+        shellChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(LibraryShellViewModel.LibraryName))
+            .Select(_ => string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName)
+            .BindOutput(this, v => LibraryTabTitle = v, _uiScheduler, null, true,
+                string.IsNullOrWhiteSpace(Shell.LibraryName) ? "我的书库" : Shell.LibraryName);
+
+        shellChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(LibraryShellViewModel.SelectedItem))
+            .Select(_ =>
+                BuildItemWorkspaceTabTitle("PDF 工作台",
+                    Shell.SelectedItem?.Title ?? Shell.SelectedItem?.FileName ?? "PDF 阅读"))
+            .BindOutput(this, v => PdfTabTitle = v, _uiScheduler, null, true,
+                BuildItemWorkspaceTabTitle("PDF 工作台",
+                    Shell.SelectedItem?.Title ?? Shell.SelectedItem?.FileName ?? "PDF 阅读"));
+
+        IObservable<EventPattern<NotifyCollectionChangedEventArgs>> rootsChanged =
+            Observable.FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => FileSearchRoots.CollectionChanged += h,
+                h => FileSearchRoots.CollectionChanged -= h);
+
+        rootsChanged.Select(_ => FileSearchRoots.Count > 0)
+            .BindOutput(this, v => HasFileSearchRoots = v, _uiScheduler, null, true, FileSearchRoots.Count > 0);
+
+        rootsChanged.Select(_ => FileSearchRoots.Count == 0)
+            .BindOutput(this, v => NoFileSearchRoots = v, _uiScheduler, null, true, FileSearchRoots.Count == 0);
+
+        IDisposable activeTabSub = layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.ActiveTab))
+            .ObserveOn(_uiScheduler)
+            .Subscribe(_ =>
+            {
+                if (Layout.IsLibraryActive)
+                {
+                    Shell.ExitReadingMode();
+                }
+
+                OnPropertyChanged(nameof(ActiveTab));
+            }, exception => UnexpectedExceptions.Sink.Report(exception, "layout-active-tab"));
+        Register(activeTabSub);
+
+        IDisposable inspectorPaneSub = layoutChanges
+            .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.ShowInspectorPane))
+            .ObserveOn(_uiScheduler)
+            .Subscribe(_ =>
+            {
+                OnPropertyChanged(nameof(ShowInspectorPane));
+                Shell.RaisePageStateChanged();
+            }, exception => UnexpectedExceptions.Sink.Report(exception, "layout-inspector-pane"));
+        Register(inspectorPaneSub);
+
+        IObservable<EventPattern<PropertyChangedEventArgs>> snapshotChanges =
+            Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                h => Snapshot.PropertyChanged += h,
+                h => Snapshot.PropertyChanged -= h);
+
+        IDisposable snapshotSub = snapshotChanges
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e =>
+            {
+                if (e.EventArgs.PropertyName is null or
+                    nameof(SnapshotViewModel.OperationStateText) or
+                    nameof(SnapshotViewModel.OperationMessage))
+                {
+                    Settings.SyncSettings.NotifySnapshotStateChanged();
+                }
+
+                if (e.EventArgs.PropertyName is null or
+                    nameof(SnapshotViewModel.OperationStateText) or
+                    nameof(SnapshotViewModel.OperationState))
+                {
+                    RefreshSyncDescriptors();
+                }
+            }, exception => UnexpectedExceptions.Sink.Report(exception, "snapshot-property-changed"));
+        Register(snapshotSub);
+
         OpenDatabaseCommand = new AsyncCommand(async () =>
         {
             if (Settings.HasDirtySections)
@@ -526,10 +710,7 @@ public sealed class MainWindowViewModel : ViewModelBase
                 HostServices services;
                 try
                 {
-                    services = await HostServices.CreateAsync(RuntimeDatabasePath, _settings, SettingsFilePath,
-                        CreateMigrationProgress(),
-                        reportUnexpectedException: ReportUnexpectedException,
-                        startupProgress: CreateStartupStageProgress());
+                    services = await CreateOwnedHostServicesAsync();
                     SetServices(services);
                 }
                 catch (UnsupportedLibrarySchemaException exception)
@@ -552,16 +733,13 @@ public sealed class MainWindowViewModel : ViewModelBase
                 StartupLoadingStatus = "正在刷新文件搜索路径…";
                 await RefreshSidebarPathsAsync();
                 Status = $"数据库已就绪：{RuntimeDatabasePath}";
-                Raise(nameof(Status));
-                Raise(nameof(VersionInfo));
-                Raise(nameof(StatusBarVersion));
                 if (_autoStartMcpServer)
                 {
                     StartupLoadingStatus = "正在启动 MCP 服务器…";
                     await StartMcpServerAsync(services);
                 }
             });
-        });
+        }, () => !string.IsNullOrWhiteSpace(RuntimeDatabasePath));
         FirstRun = CreateFirstRunViewModel();
 
         Workspace.OpenOrActivate(WorkspaceTabKind.Library, "Library", "我的书库", "Database", false, () => Shell);
@@ -580,24 +758,28 @@ public sealed class MainWindowViewModel : ViewModelBase
         ActivateOcrQueueTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.OcrQueue));
         ActivateAboutTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.About));
         CheckSyncStateCommand = new AsyncCommand(OpenSyncCenterAsync);
-        CopyCslBibliographyCommand = new AsyncCommand(CopyCslBibliographyAsync);
-        ExportItemCommand = new AsyncCommand(ExportSelectedItemBibliographyAsync);
+        CopyCslBibliographyCommand = new AsyncCommand(CopyCslBibliographyAsync, () => Shell.SelectedItem is not null);
+        ExportItemCommand = new AsyncCommand(ExportSelectedItemBibliographyAsync, () => Shell.SelectedItem is not null);
         ImportBiblatexBatchCommand = new AsyncCommand(ImportBiblatexBatchAsync);
         ExportBiblatexCommand = new AsyncCommand(ExportBiblatexAsync);
         CopyBiblatexCommand = new AsyncCommand(CopyBiblatexAsync);
         CreateItemMenuCommand = new AsyncCommand(OpenNewItemEditorAsync);
         OpenItemEditorCommand = new AsyncCommand(OpenItemEditorTabAsync);
-        EditSelectedItemCommand = new AsyncCommand(EditSelectedItemAsync);
-        DetectDuplicateItemsCommand = new AsyncCommand(() => Shell.DetectDuplicatesAsync());
-        RunSelectedItemOcrCommand = new AsyncCommand(RunSelectedItemOcrAsync);
-        ClosePdfWorkspaceTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.PdfWorkspace));
-        CloseSettingsTabCommand = new AsyncCommand(CloseSettingsTabAsync);
+        EditSelectedItemCommand = new AsyncCommand(EditSelectedItemAsync, () => Shell.SelectedItem is not null);
+        DetectDuplicateItemsCommand =
+            new AsyncCommand(() => Shell.DetectDuplicatesAsync(), () => HasOpenRuntimeDatabase);
+        RunSelectedItemOcrCommand = new AsyncCommand(RunSelectedItemOcrAsync, () => Shell.SelectedItem is not null);
+        ClosePdfWorkspaceTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.PdfWorkspace),
+            () => Layout.HasPdfWorkspaceTab);
+        CloseSettingsTabCommand = new AsyncCommand(CloseSettingsTabAsync, () => Layout.HasSettingsTab);
         CloseSearchTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
-        CloseItemEditorTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.ItemEditor));
+        CloseItemEditorTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.ItemEditor),
+            () => Layout.HasItemEditorTab);
         CloseAboutTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.About));
-        RebuildSearchIndexCommand = new AsyncCommand(RebuildSearchIndexAsync);
-        RescanFileSearchRootsCommand = new AsyncCommand(() => RescanFileSearchRootsAsync("手动重新扫描完成。", true));
+        RebuildSearchIndexCommand = new AsyncCommand(RebuildSearchIndexAsync, () => HasOpenRuntimeDatabase);
+        RescanFileSearchRootsCommand = new AsyncCommand(() => RescanFileSearchRootsAsync("手动重新扫描完成。", true),
+            () => HasOpenRuntimeDatabase);
         ToggleInspectorPaneCommand = new AsyncCommand(() =>
         {
             ShowInspectorPane = !ShowInspectorPane;
@@ -605,6 +787,24 @@ public sealed class MainWindowViewModel : ViewModelBase
         });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
+
+        IDisposable commandInvalidationSub = layoutChanges.ObserveOn(_uiScheduler).Subscribe(_ =>
+        {
+            ClosePdfWorkspaceTabCommand?.NotifyCanExecuteChanged();
+            CloseSettingsTabCommand?.NotifyCanExecuteChanged();
+            CloseItemEditorTabCommand?.NotifyCanExecuteChanged();
+        }, exception => UnexpectedExceptions.Sink.Report(exception, "layout-command-invalidation"));
+        Register(commandInvalidationSub);
+
+        IDisposable shellCommandSub = shellChanges.ObserveOn(_uiScheduler).Subscribe(_ =>
+        {
+            EditSelectedItemCommand?.NotifyCanExecuteChanged();
+            ExportItemCommand?.NotifyCanExecuteChanged();
+            RunSelectedItemOcrCommand?.NotifyCanExecuteChanged();
+            CopyCslBibliographyCommand?.NotifyCanExecuteChanged();
+        }, exception => UnexpectedExceptions.Sink.Report(exception, "shell-command-invalidation"));
+        Register(shellCommandSub);
+
         CheckSyncStateDescriptor = new UiCommandDescriptor("sync.open_center", "打开同步中心", CheckSyncStateCommand);
         PublishSnapshotDescriptor = new UiCommandDescriptor(
             "sync.publish",
@@ -642,58 +842,6 @@ public sealed class MainWindowViewModel : ViewModelBase
             new UiCommandDescriptor("biblatex.copy", "复制 BibLaTeX", CopyBiblatexCommand);
     }
 
-    private void OnLayoutPropertyChanged(object? sender, PropertyChangedEventArgs e)
-    {
-        switch (e.PropertyName)
-        {
-            case nameof(WorkspaceLayoutViewModel.ActiveTab):
-                if (Layout.IsLibraryActive)
-                {
-                    Shell.ExitReadingMode();
-                }
-
-                Raise(nameof(ActiveTab));
-                RaiseShellSelectionChanged();
-                break;
-            case nameof(WorkspaceLayoutViewModel.ShowInspectorPane):
-                Raise(nameof(ShowInspectorPane));
-                Raise(nameof(IsLibraryRightSidebarVisible));
-                Shell.RaisePageStateChanged();
-                break;
-            case nameof(WorkspaceLayoutViewModel.ShowSidebar):
-                Raise(nameof(ShowSidebar));
-                Raise(nameof(IsLibraryLeftSidebarVisible));
-                Shell.RaisePageStateChanged();
-                break;
-            case nameof(WorkspaceLayoutViewModel.IsInspectorVisible):
-                Raise(nameof(IsInspectorVisible));
-                Raise(nameof(IsLibraryRightSidebarVisible));
-                Shell.RaisePageStateChanged();
-                break;
-            case nameof(WorkspaceLayoutViewModel.HasPdfWorkspaceTab):
-                Raise(nameof(ShowSelectedDocumentTab));
-                break;
-            case nameof(WorkspaceLayoutViewModel.HasSettingsTab):
-                Raise(nameof(ShowSettingsTab));
-                break;
-            case nameof(WorkspaceLayoutViewModel.HasItemEditorTab):
-                Raise(nameof(ShowItemEditorTab));
-                break;
-            case nameof(WorkspaceLayoutViewModel.IsLibraryActive):
-                Raise(nameof(IsLibraryTabActive));
-                break;
-            case nameof(WorkspaceLayoutViewModel.IsReaderActive):
-                Raise(nameof(IsReaderTabActive));
-                break;
-            case nameof(WorkspaceLayoutViewModel.IsSettingsActive):
-                Raise(nameof(IsSettingsVisible));
-                break;
-            case nameof(WorkspaceLayoutViewModel.IsItemEditorActive):
-                Raise(nameof(IsItemEditorVisible));
-                break;
-        }
-    }
-
     public async Task<HostServices> ServicesAsync(bool startMcpServer = true)
     {
         if (_services is not null)
@@ -712,13 +860,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         StartupLoadingStatus = "正在启动…";
         try
         {
-            HostServices services = await HostServices.CreateAsync(
-                RuntimeDatabasePath,
-                _settings,
-                SettingsFilePath,
-                CreateMigrationProgress(),
-                reportUnexpectedException: ReportUnexpectedException,
-                startupProgress: CreateStartupStageProgress());
+            HostServices services = await CreateOwnedHostServicesAsync();
             SetServices(services);
             StartupLoadingStatus = "正在同步元数据查找设置…";
             await RefreshSyncedMetadataLookupAsync(services);
@@ -803,24 +945,52 @@ public sealed class MainWindowViewModel : ViewModelBase
         _services = services;
         EnsureLibraryChangeNotifications(services);
         AttachHostServices(services);
+        // Manual Raise: HasOpenRuntimeDatabase derives from private HostServices field _services (not an ObservableObject).
         Raise(nameof(HasOpenRuntimeDatabase));
+        DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
+        RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
+        RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
     }
 
     /// <summary>
     /// Creates the per-services host wrappers (MCP server host, file-search-root watcher fleet,
-    /// import orchestrator) and starts the cross-process library revision monitor. Called every
+    /// import orchestrator) and attaches in-process cache invalidation. Called every
     /// time a new <see cref="HostServices"/> instance is installed.
     /// </summary>
     private void AttachHostServices(HostServices services)
     {
         _mcpHost = new McpServerHost(services, ReportUnexpectedException);
-        _mcpHost.StatusChanged += OnMcpHostStatusChanged;
-        _mcpHost.ConnectionCountsChanged += OnMcpHostConnectionCountsChanged;
+        CompositeDisposable mcpSubs = new();
+        mcpSubs.Add(Observable.FromEventPattern<McpServerHostStatusChangedEventArgs>(
+                h => _mcpHost.StatusChanged += h,
+                h => _mcpHost.StatusChanged -= h)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e => OnMcpHostStatusChanged(e.Sender, e.EventArgs)));
+        mcpSubs.Add(Observable.FromEventPattern<EventHandler, EventArgs>(
+                h => _mcpHost.ConnectionCountsChanged += h,
+                h => _mcpHost.ConnectionCountsChanged -= h)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e => OnMcpHostConnectionCountsChanged(e.Sender, e.EventArgs)));
+        _mcpSubscriptions.Disposable = mcpSubs;
 
         _fileSearchRootWatcher = new FileSearchRootWatcherService(services, Logger);
-        _fileSearchRootWatcher.RescanCompleted += OnFileSearchRootRescanCompleted;
-        _fileSearchRootWatcher.RescanFailed += OnFileSearchRootRescanFailed;
-        _fileSearchRootWatcher.SearchRootAvailabilityChanged += OnSearchRootAvailabilityChanged;
+        CompositeDisposable watcherSubs = new();
+        watcherSubs.Add(Observable.FromEventPattern<FileSearchRootRescanCompleted>(
+                h => _fileSearchRootWatcher.RescanCompleted += h,
+                h => _fileSearchRootWatcher.RescanCompleted -= h)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e => OnFileSearchRootRescanCompleted(e.Sender, e.EventArgs)));
+        watcherSubs.Add(Observable.FromEventPattern<FileSearchRootRescanFailed>(
+                h => _fileSearchRootWatcher.RescanFailed += h,
+                h => _fileSearchRootWatcher.RescanFailed -= h)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e => OnFileSearchRootRescanFailed(e.Sender, e.EventArgs)));
+        watcherSubs.Add(Observable.FromEventPattern<SearchRootAvailabilityChanged>(
+                h => _fileSearchRootWatcher.SearchRootAvailabilityChanged += h,
+                h => _fileSearchRootWatcher.SearchRootAvailabilityChanged -= h)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e => OnSearchRootAvailabilityChanged(e.Sender, e.EventArgs)));
+        _watcherSubscriptions.Disposable = watcherSubs;
 
         _importOrchestrator = new LibraryImportOrchestrator(
             services,
@@ -828,46 +998,39 @@ public sealed class MainWindowViewModel : ViewModelBase
             new DialogBiblatexImportPrompt(this));
 
         _libraryRevisionMonitor = services.LibraryRevisionMonitor;
-        _libraryRevisionMonitor.ExternalChangeDetected += OnLibraryExternalChangeDetected;
-        _libraryRevisionMonitor.CacheRefreshed += OnLibraryCacheRefreshed;
-        _libraryRevisionMonitor.Start();
     }
 
     /// <summary>Tears down the host wrappers created by <see cref="AttachHostServices"/>.</summary>
     private void DetachHostServices()
     {
+        _mcpSubscriptions.Disposable = null;
         if (_mcpHost is not null)
         {
-            _mcpHost.StatusChanged -= OnMcpHostStatusChanged;
-            _mcpHost.ConnectionCountsChanged -= OnMcpHostConnectionCountsChanged;
             _mcpHost.DisposeAsync().AsTask().Observe("host-services", "dispose-mcp-host");
             _mcpHost = null;
         }
 
+        _watcherSubscriptions.Disposable = null;
         if (_fileSearchRootWatcher is not null)
         {
-            _fileSearchRootWatcher.RescanCompleted -= OnFileSearchRootRescanCompleted;
-            _fileSearchRootWatcher.RescanFailed -= OnFileSearchRootRescanFailed;
-            _fileSearchRootWatcher.SearchRootAvailabilityChanged -= OnSearchRootAvailabilityChanged;
             _fileSearchRootWatcher.DisposeAsync().AsTask().Observe("host-services", "dispose-root-watcher");
             _fileSearchRootWatcher = null;
         }
 
         if (_libraryRevisionMonitor is not null)
         {
-            _libraryRevisionMonitor.ExternalChangeDetected -= OnLibraryExternalChangeDetected;
-            _libraryRevisionMonitor.CacheRefreshed -= OnLibraryCacheRefreshed;
             _libraryRevisionMonitor.Dispose();
             _libraryRevisionMonitor = null;
         }
 
         _importOrchestrator = null;
-        _externalLibraryChangePending = false;
     }
 
     private void StopLibraryRevisionMonitor()
     {
         _libraryRevisionMonitor?.Stop();
+        _libraryRevisionMonitor?.Dispose();
+        _libraryRevisionMonitor = null;
     }
 
     internal async Task<LibraryImportOrchestrator> ImportOrchestratorAsync()
@@ -882,47 +1045,71 @@ public sealed class MainWindowViewModel : ViewModelBase
         if (_observedLibraryRevisions is not null &&
             !ReferenceEquals(_observedLibraryRevisions, services.LibraryRevisions))
         {
-            _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
+            _revisionSubscription.Disposable = null;
         }
 
         _observedLibraryRevisions = services.LibraryRevisions;
-        _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
-        _observedLibraryRevisions.ChangeCommitted += OnLibraryChangeCommitted;
+        ILibraryRevisionService observedRevisions = _observedLibraryRevisions;
+        IObservable<LibraryChangeSet> changes = Observable
+            .FromEventPattern<LibraryRevisionCommittedEventArgs>(
+                handler => observedRevisions.ChangeCommitted += handler,
+                handler => observedRevisions.ChangeCommitted -= handler)
+            .Select(eventPattern => eventPattern.EventArgs.ChangeSet);
+
+        _revisionSubscription.Disposable = ReactiveUiFlow.SubscribeBufferedSequential(
+            changes,
+            RevisionBufferWindow,
+            _timingScheduler,
+            _uiScheduler,
+            (batch, cancellationToken) =>
+                ApplyBufferedChangeSetsAsync(observedRevisions, batch, cancellationToken),
+            exception => UnexpectedExceptions.Sink.Report(exception, "main-window-revision"));
+
         Shell.ObserveLibraryRevisions(_observedLibraryRevisions);
     }
 
     private void DetachLibraryChangeNotifications()
     {
         Shell.ObserveLibraryRevisions(null);
-        if (_observedLibraryRevisions is not null)
-        {
-            _observedLibraryRevisions.ChangeCommitted -= OnLibraryChangeCommitted;
-            _observedLibraryRevisions = null;
-        }
+        _revisionSubscription.Disposable = null;
+        _observedLibraryRevisions = null;
     }
 
-    private void OnLibraryChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs change)
+    private async Task ApplyBufferedChangeSetsAsync(
+        ILibraryRevisionService revisions,
+        IReadOnlyList<LibraryChangeSet> batch,
+        CancellationToken cancellationToken)
     {
-        if (_observedLibraryRevisions is null || !ReferenceEquals(sender, _observedLibraryRevisions))
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!ReferenceEquals(revisions, _observedLibraryRevisions))
         {
             return;
         }
 
-        ILibraryRevisionService revisions = _observedLibraryRevisions;
-        DispatcherTasks.RunAsync(() => RefreshAfterLibraryChangeAsync(revisions, change.ChangeSet))
-            .Observe("library-revision-ui", $"refresh-{change.ChangeSet.NewRevision}");
+        await RefreshAfterLibraryChangeAsync(revisions, LibraryShellViewModel.MergeChangeSets(batch),
+            cancellationToken);
     }
 
-    private async Task RefreshAfterLibraryChangeAsync(ILibraryRevisionService revisions, LibraryChangeSet changeSet)
+    private async Task RefreshAfterLibraryChangeAsync(
+        ILibraryRevisionService revisions,
+        LibraryChangeSet changeSet,
+        CancellationToken cancellationToken)
     {
-        if (_services is null || !ReferenceEquals(revisions, _observedLibraryRevisions))
+        int gen = LibraryGeneration;
+        cancellationToken.ThrowIfCancellationRequested();
+        if (_services is null || !ReferenceEquals(revisions, _observedLibraryRevisions) || gen != LibraryGeneration)
         {
             return;
         }
 
         if (changeSet.ItemIds.Count > 0)
         {
-            await RefreshOpenItemEditorsAsync(changeSet.ItemIds);
+            await RefreshOpenItemEditorsAsync(changeSet.ItemIds, changeSet.NewRevision);
+        }
+
+        if (gen != LibraryGeneration)
+        {
+            return;
         }
 
         if (changeSet.StyleIds.Count > 0)
@@ -940,6 +1127,11 @@ public sealed class MainWindowViewModel : ViewModelBase
             }
         }
 
+        if (gen != LibraryGeneration)
+        {
+            return;
+        }
+
         if (changeSet.CollectionIds.Count > 0)
         {
             // Collection catalog changes reach already-open advanced searches and editors through
@@ -954,44 +1146,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
     }
 
-    /// <summary>
-    /// The monitor raises <see cref="LibraryRevisionMonitor.ExternalChangeDetected"/> on a poll
-    /// thread right before <see cref="LibraryRevisionMonitor.CacheRefreshed"/>; the flag pairs
-    /// them so in-process commits (which also raise CacheRefreshed) do not trigger a full refresh.
-    /// </summary>
-    private void OnLibraryExternalChangeDetected(object? sender, EventArgs e)
-    {
-        if (!ReferenceEquals(sender, _libraryRevisionMonitor))
-        {
-            return;
-        }
-
-        Volatile.Write(ref _externalLibraryChangePending, true);
-    }
-
-    private void OnLibraryCacheRefreshed(object? sender, EventArgs e)
-    {
-        if (!ReferenceEquals(sender, _libraryRevisionMonitor) ||
-            !Volatile.Read(ref _externalLibraryChangePending))
-        {
-            return;
-        }
-
-        Volatile.Write(ref _externalLibraryChangePending, false);
-        DispatcherTasks.RunAsync(RefreshItemsAfterExternalLibraryChangeAsync)
-            .Observe("library-revision-monitor", "external-refresh");
-    }
-
-    private async Task RefreshItemsAfterExternalLibraryChangeAsync()
-    {
-        if (_services is null)
-        {
-            return;
-        }
-
-        await Shell.RefreshItemsAsync();
-    }
-
     public void StartMcpServerInBackground()
     {
         if (!_autoStartMcpServer)
@@ -1004,8 +1158,8 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private async Task StartMcpServerInBackgroundAsync()
     {
-        _ = await ServicesAsync(false);
-        _mcpHost?.StartInBackground();
+        HostServices services = await ServicesAsync(false);
+        await StartMcpServerAsync(services);
     }
 
     public async Task RefreshSyncedMetadataLookupAsync()
@@ -1057,8 +1211,15 @@ public sealed class MainWindowViewModel : ViewModelBase
         ApplyQueryRewriteEnabled(settings.Value.RewriteEnabled);
     }
 
-    internal async Task SetQueryRewriteEnabledAsync(bool enabled)
+    internal async Task SetQueryRewriteEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
     {
+        await PersistQueryRewriteEnabledAsync(enabled, cancellationToken);
+    }
+
+    private async Task PersistQueryRewriteEnabledAsync(bool enabled, CancellationToken cancellationToken)
+    {
+        int gen = LibraryGeneration;
+        cancellationToken.ThrowIfCancellationRequested();
         HostServices? services = _services;
         if (services is null)
         {
@@ -1068,6 +1229,12 @@ public sealed class MainWindowViewModel : ViewModelBase
 
         ApplyQueryRewriteEnabled(enabled);
         Result saved = await services.SearchProfiles.SetRewriteEnabledAsync(enabled);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (gen != LibraryGeneration)
+        {
+            return;
+        }
+
         if (saved.IsFailure)
         {
             ApplyQueryRewriteEnabled(_queryRewriteEnabledPersisted);
@@ -1081,13 +1248,20 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private void ApplyQueryRewriteEnabled(bool enabled)
     {
-        if (_queryRewriteEnabled == enabled)
+        if (QueryRewriteEnabled == enabled)
         {
             return;
         }
 
-        _queryRewriteEnabled = enabled;
-        Raise(nameof(QueryRewriteEnabled));
+        _suppressQueryRewritePersist = true;
+        try
+        {
+            QueryRewriteEnabled = enabled;
+        }
+        finally
+        {
+            _suppressQueryRewritePersist = false;
+        }
     }
 
     public async Task<Result<ConflictResolutionResult>> ResolveConflictAsync(
@@ -1137,10 +1311,8 @@ public sealed class MainWindowViewModel : ViewModelBase
             FileSearchRoots.Clear();
         }
 
-        Raise(nameof(FileSearchRoots));
-        Raise(nameof(HasFileSearchRoots));
-        Raise(nameof(NoFileSearchRoots));
-        Raise(nameof(DefaultSyncRootPath));
+        // FileSearchRoots mutations are notified via ObservableCollection.CollectionChanged (wired to HasFileSearchRoots/NoFileSearchRoots via Rx).
+        // DefaultSyncRootPath is not changed here; Shell page state is refreshed below.
         Shell.RaisePageStateChanged();
     }
 
@@ -1228,14 +1400,25 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        DispatcherTasks.RunAsync(() => ApplyFileSearchRootRescanResultAsync(completed))
+        ApplyFileSearchRootRescanResultAsync(completed)
             .Observe("file-search-root-rescan", "completed");
     }
 
     private async Task ApplyFileSearchRootRescanResultAsync(FileSearchRootRescanCompleted completed)
     {
+        int gen = LibraryGeneration;
         await RefreshSidebarPathsAsync();
+        if (LibraryGeneration != gen)
+        {
+            return;
+        }
+
         await Shell.RefreshItemsAsync();
+        if (LibraryGeneration != gen)
+        {
+            return;
+        }
+
         if (completed.Summary.HasWarnings)
         {
             ReportError(completed.Message);
@@ -1259,12 +1442,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        DispatcherTasks.RunAsync(() =>
-            {
-                ReportError(failed.Message);
-                return Task.CompletedTask;
-            })
-            .Observe("file-search-root-rescan", "failed");
+        ReportError(failed.Message);
     }
 
     private void OnSearchRootAvailabilityChanged(object? sender, SearchRootAvailabilityChanged change)
@@ -1274,23 +1452,17 @@ public sealed class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        DispatcherTasks.RunAsync(() =>
+        for (int index = 0; index < FileSearchRoots.Count; index++)
+        {
+            if (!string.Equals(FileSearchRoots[index].RootPath, change.RootPath,
+                    StringComparison.OrdinalIgnoreCase) ||
+                FileSearchRoots[index].IsAvailable == change.IsAvailable)
             {
-                for (int index = 0; index < FileSearchRoots.Count; index++)
-                {
-                    if (!string.Equals(FileSearchRoots[index].RootPath, change.RootPath,
-                            StringComparison.OrdinalIgnoreCase) ||
-                        FileSearchRoots[index].IsAvailable == change.IsAvailable)
-                    {
-                        continue;
-                    }
+                continue;
+            }
 
-                    FileSearchRoots[index] = FileSearchRoots[index] with { IsAvailable = change.IsAvailable };
-                }
-
-                return Task.CompletedTask;
-            })
-            .Observe("file-search-root-rescan", "availability-changed");
+            FileSearchRoots[index] = FileSearchRoots[index] with { IsAvailable = change.IsAvailable };
+        }
     }
 
     private async Task RebuildSearchIndexAsync()
@@ -1365,8 +1537,11 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
+        Shell.Dispose();
         await StopMcpServerAsync();
         StopLibraryRevisionMonitor();
+        await StopHostServicesAsync();
+        await ReleaseRuntimeHostAsync();
     }
 
     private async Task StopFileSearchRootWatchersAsync()
@@ -1432,23 +1607,115 @@ public sealed class MainWindowViewModel : ViewModelBase
         await StopFileSearchRootWatchersAsync();
         StopLibraryRevisionMonitor();
         DetachLibraryChangeNotifications();
+        await StopHostServicesAsync();
         DetachHostServices();
         _services = null;
+        await ReleaseRuntimeHostAsync();
         Interlocked.Increment(ref _libraryGeneration);
         _queryRewriteEnabledPersisted = false;
         ApplyQueryRewriteEnabled(false);
         Settings.NotifyLibraryContextChanged();
+        // Manual Raise: HasOpenRuntimeDatabase derives from lifecycle field _services being cleared.
         Raise(nameof(HasOpenRuntimeDatabase));
+        // Manual Raise: LibraryGeneration is an atomic volatile generation counter incremented on database close.
+        Raise(nameof(LibraryGeneration));
+        DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
+        RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
+        RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
     }
 
-    private Task StartMcpServerAsync(HostServices services)
+    private async Task StartMcpServerAsync(HostServices services)
     {
         if (_mcpHost is null)
         {
             throw new InvalidOperationException("MCP Server 主机不可用。");
         }
 
-        return _mcpHost.StartAsync();
+        await _mcpHost.StartAsync();
+        if (!_mcpHost.IsRunning)
+        {
+            Result<McpServerSettings> configured = await services.McpSettings.GetSettingsAsync();
+            if (configured.IsSuccess)
+            {
+                await _mcpHost.StartAsync(configured.Value with
+                {
+                    Port = RuntimeHostCoordinator.ReserveEphemeralLoopbackPort()
+                });
+            }
+        }
+
+        if (_mcpHost.IsRunning)
+        {
+            await PublishRuntimeHostAsync(services);
+        }
+    }
+
+    private async Task PublishRuntimeHostAsync(HostServices services)
+    {
+        if (_runtimeHostLease is null || _mcpHost?.IsRunning != true)
+        {
+            return;
+        }
+
+        Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
+        if (library.IsSuccess)
+        {
+            await _runtimeHostLease.PublishAsync(library.Value.LibraryId.ToString(), _mcpHost.Endpoint);
+        }
+    }
+
+    private async Task<HostServices> CreateOwnedHostServicesAsync()
+    {
+        if (!_enforceRuntimeHostOwnership)
+        {
+            return await CreateHostServicesAsync(RuntimeDatabasePath);
+        }
+
+        if (_runtimeHostLease is not null)
+        {
+            throw new InvalidOperationException("A runtime-host lease is already active.");
+        }
+
+        _runtimeHostLease = await RuntimeHostCoordinator.AcquireDesktopAsync(
+            RuntimeDatabasePath, TimeSpan.FromSeconds(10));
+        try
+        {
+            return await CreateHostServicesAsync(_runtimeHostLease.DatabasePath);
+        }
+        catch
+        {
+            await ReleaseRuntimeHostAsync();
+            throw;
+        }
+    }
+
+    private Task<HostServices> CreateHostServicesAsync(string databasePath)
+    {
+        return HostServices.CreateAsync(
+            databasePath,
+            _settings,
+            SettingsFilePath,
+            CreateMigrationProgress(),
+            reportUnexpectedException: ReportUnexpectedException,
+            startupProgress: CreateStartupStageProgress());
+    }
+
+    private async Task StopHostServicesAsync()
+    {
+        if (_services is not null)
+        {
+            await _services.ShutdownAsync();
+        }
+    }
+
+    private async Task ReleaseRuntimeHostAsync()
+    {
+        RuntimeHostLease? lease = _runtimeHostLease;
+        _runtimeHostLease = null;
+        if (lease is not null)
+        {
+            await lease.DisposeAsync();
+        }
     }
 
     private void OnMcpHostStatusChanged(object? sender, McpServerHostStatusChangedEventArgs change)
@@ -1471,6 +1738,7 @@ public sealed class MainWindowViewModel : ViewModelBase
         if (change.Status == McpServerHostStatus.Running && _mcpHost is { } host)
         {
             SetMcpEndpoint(host.Endpoint);
+            // Manual Raise: McpRunningSettingsRevision bridges _mcpHost external status change into ViewModel PropertyChanged.
             Raise(nameof(McpRunningSettingsRevision));
             LogOperationAsync("mcp_http_start", $"MCP HTTP server listening on {host.Endpoint}")
                 .Observe("mcp-server", "log-start");
@@ -1482,55 +1750,23 @@ public sealed class MainWindowViewModel : ViewModelBase
         }
         else if (change.Status == McpServerHostStatus.Stopped)
         {
+            // Manual Raise: McpRunningSettingsRevision bridges _mcpHost external status change into ViewModel PropertyChanged.
             Raise(nameof(McpRunningSettingsRevision));
         }
     }
 
     private void SetMcpStatus(string text, string detail, IBrush brush)
     {
-        void Update()
-        {
-            McpStatusText = text;
-            McpStatusDetail = detail;
-            McpStatusBrush = brush;
-            Raise(nameof(McpStatusText));
-            Raise(nameof(McpStatusDetail));
-            Raise(nameof(McpStatusBrush));
-            Raise(nameof(McpServerRunning));
-        }
-
-        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
-        {
-            Update();
-        }
-        else
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
-        }
+        McpStatusText = text;
+        McpStatusDetail = detail;
+        McpStatusBrush = brush;
+        // Manual Raise: McpServerRunning bridges _mcpHost external status change into ViewModel PropertyChanged.
+        Raise(nameof(McpServerRunning));
     }
 
     private void SetMcpEndpoint(string endpoint)
     {
-        void Update()
-        {
-            McpEndpoint = endpoint;
-            Raise(nameof(McpEndpoint));
-        }
-
-        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess() || !HasDesktopMainWindow())
-        {
-            Update();
-        }
-        else
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
-        }
-    }
-
-    private static bool HasDesktopMainWindow()
-    {
-        return Avalonia.Application.Current?.ApplicationLifetime is
-            Avalonia.Controls.ApplicationLifetimes.IClassicDesktopStyleApplicationLifetime { MainWindow: not null };
+        McpEndpoint = endpoint;
     }
 
     private string BuildMcpConnectionDetail()
@@ -1542,46 +1778,24 @@ public sealed class MainWindowViewModel : ViewModelBase
 
     private void OnMcpHostConnectionCountsChanged(object? sender, EventArgs e)
     {
-        if (!ReferenceEquals(sender, _mcpHost))
+        if (!ReferenceEquals(sender, _mcpHost) || _mcpHost?.IsRunning != true)
         {
             return;
         }
 
-        void Update()
-        {
-            if (!ReferenceEquals(sender, _mcpHost) || _mcpHost?.IsRunning != true)
-            {
-                return;
-            }
-
-            McpStatusDetail = BuildMcpConnectionDetail();
-            Raise(nameof(McpStatusDetail));
-        }
-
-        if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess())
-        {
-            Update();
-        }
-        else
-        {
-            Avalonia.Threading.Dispatcher.UIThread.Post(Update);
-        }
+        McpStatusDetail = BuildMcpConnectionDetail();
     }
 
     public void Report(string message)
     {
         Status = message;
         StatusIsError = false;
-        Raise(nameof(Status));
-        Raise(nameof(StatusIsError));
     }
 
     public void ReportError(string message)
     {
         Status = message;
         StatusIsError = true;
-        Raise(nameof(Status));
-        Raise(nameof(StatusIsError));
     }
 
     public Task ShowInlineFirstRunAsync()
@@ -1589,23 +1803,12 @@ public sealed class MainWindowViewModel : ViewModelBase
         FirstRun = CreateFirstRunViewModel();
         FirstRun.DatabasePath = RuntimeDatabasePath;
         IsFirstRunVisible = true;
-        Raise(nameof(FirstRun));
-        Raise(nameof(IsFirstRunVisible));
-        Raise(nameof(IsLibraryVisible));
-        Raise(nameof(IsSearchEnabled));
-        Raise(nameof(IsInspectorVisible));
-        Raise(nameof(LibraryTabTitle));
         return Task.CompletedTask;
     }
 
     public async Task HideInlineFirstRunAsync()
     {
         IsFirstRunVisible = false;
-        Raise(nameof(IsFirstRunVisible));
-        Raise(nameof(IsLibraryVisible));
-        Raise(nameof(IsSearchEnabled));
-        Raise(nameof(IsInspectorVisible));
-        Raise(nameof(LibraryTabTitle));
         await Shell.RefreshItemsAsync();
         await RefreshQueryRewriteEnabledAsync();
     }
@@ -1632,6 +1835,11 @@ public sealed class MainWindowViewModel : ViewModelBase
         if (!FirstRun.IsComplete)
         {
             return;
+        }
+
+        if (_services is not null)
+        {
+            await PublishRuntimeHostAsync(_services);
         }
 
         bool persisted = await SaveMinerUTokenSettingsAsync(FirstRun.MinerUToken);
@@ -1733,7 +1941,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         Shell.MinerUToken = trimmed;
         FirstRun.MinerUToken = trimmed;
         Settings.OcrProviderSettings.LoadPersistedToken(trimmed);
-        Shell.NotifyMinerUTokenChanged();
         Report("MinerU 凭据已保存。");
         return true;
     }
@@ -1858,7 +2065,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         Shell.MinerUToken = "";
         FirstRun.MinerUToken = "";
         Settings.OcrProviderSettings.LoadPersistedToken("");
-        Shell.NotifyMinerUTokenChanged();
         Report("MinerU 凭据已移除。");
         return true;
     }
@@ -1869,12 +2075,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         Shell.MinerUToken = token;
         FirstRun.MinerUToken = token;
         Settings.OcrProviderSettings.LoadPersistedToken(token);
-        Shell.NotifyMinerUTokenChanged();
-    }
-
-    public void RaiseShellSelectionChanged()
-    {
-        RaiseWorkspaceStateChanged();
     }
 
     private static IDialogService CreateDialogService()
@@ -1901,6 +2101,7 @@ public sealed class MainWindowViewModel : ViewModelBase
             libTab.Title = LibraryTabTitle;
         }
 
+        // Manual Raise retained for explicit cross-component synchronization contract.
         Raise(nameof(LibraryTabTitle));
     }
 
@@ -1945,6 +2146,21 @@ public sealed class MainWindowViewModel : ViewModelBase
         foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>())
         {
             if (wanted.Contains(editor.ItemIdText) && !editor.IsSaving)
+            {
+                await editor.LoadAsync(editor.ItemIdText);
+            }
+        }
+    }
+
+    internal async Task RefreshOpenItemEditorsAsync(IReadOnlyCollection<ItemId> itemIds, long newRevision)
+    {
+        HashSet<string> wanted = itemIds.Select(itemId => itemId.ToString()).ToHashSet(StringComparer.Ordinal);
+        foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content).OfType<ItemEditorViewModel>())
+        {
+            if (wanted.Contains(editor.ItemIdText)
+                && !editor.IsSaving
+                && !editor.HasUnsavedChanges
+                && editor.LoadedRevision < newRevision)
             {
                 await editor.LoadAsync(editor.ItemIdText);
             }
@@ -2000,8 +2216,6 @@ public sealed class MainWindowViewModel : ViewModelBase
         };
         Settings.ActiveCategory = Settings.Categories.Single(c => c.IconName == icon);
         await Settings.WaitForActiveSectionLoadAsync();
-
-        RaiseShellSelectionChanged();
     }
 
     private async Task OpenSearchRewriteSettingsAsync()
@@ -2013,7 +2227,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     public async Task OpenAboutAsync()
     {
         await ActivateTabAsync(WorkspaceTabKind.About, "About", "关于", "Info", true, () => About);
-        RaiseShellSelectionChanged();
     }
 
     private async Task OpenOcrQueueAsync()
@@ -2509,19 +2722,6 @@ public sealed class MainWindowViewModel : ViewModelBase
     {
         Workspace.Close(tabId);
         return Task.CompletedTask;
-    }
-
-    private void RaiseWorkspaceStateChanged()
-    {
-        Raise(nameof(ShowSidebar));
-        Raise(nameof(IsInspectorVisible));
-        Raise(nameof(ShowSelectedDocumentTab));
-        Raise(nameof(ShowSettingsTab));
-        Raise(nameof(ShowItemEditorTab));
-        Raise(nameof(IsLibraryTabActive));
-        Raise(nameof(IsReaderTabActive));
-        Raise(nameof(IsSettingsVisible));
-        Raise(nameof(IsItemEditorVisible));
     }
 
     public async Task ExportEvidenceMarkdownToFileAsync(string versionedUri, string targetPath)

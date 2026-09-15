@@ -11,6 +11,8 @@ using Patchouli.Core.Documents;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
+using Patchouli.Core.Results;
+using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.Host.Composition;
@@ -207,6 +209,98 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
                 .And.Contain(SourceValidationStatus.Changed);
             workspace.IsSourceValidating.Should().NotBe(workspace.HasSourceWarning,
                 "validating and warning must be mutually exclusive, distinct states");
+            await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Rapid_page_flipping_discards_obsolete_renders_and_applies_latest()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-rapid-flip"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+
+            TaskCompletionSource<bool> slowRenderTrigger = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<bool> slowRenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            workspace.PageRenderPreviewHandler = async (request, ct) =>
+            {
+                if (workspace.PageIndex == 0)
+                {
+                    slowRenderStarted.TrySetResult(true);
+                    await slowRenderTrigger.Task;
+                    return Result<PdfPagePixelBufferLease>.Success(
+                        new PdfPagePixelBufferLease(new byte[400], 10, 10, 40, 0, "test", 10, 10, "v1"));
+                }
+                else
+                {
+                    return Result<PdfPagePixelBufferLease>.Success(
+                        new PdfPagePixelBufferLease(new byte[800], 20, 20, 80, 0, "test", 20, 20, "v1"));
+                }
+            };
+
+            Task loadTask = workspace.LoadAsync();
+            await slowRenderStarted.Task;
+
+            // Quickly navigate to next page while page 0 is still in flight
+            Task nextTask = workspace.NextPageCommand.ExecuteAsync();
+
+            // Release page 0 render after page 1 has superseded it
+            slowRenderTrigger.TrySetResult(true);
+
+            await Task.WhenAll(loadTask, nextTask);
+
+            workspace.PageIndex.Should().Be(1);
+            workspace.WidthPixels.Should().Be(20, "latest page render wins and obsolete page 0 render is discarded");
+
+            await ReleaseDocumentSessionAsync(vm, item);
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Clear_cancels_in_flight_render_and_leaves_workspace_clean()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            MainWindowViewModel vm = CreateMainWindow(CreateDatabasePath("ui-pdf-clear-render"));
+            await OpenImportedItemAsync(vm, CreatePdfPath());
+            LibraryItemViewModel item = vm.Shell.Items.Single();
+            await vm.ShowReadingAsync(item);
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)vm.ActiveTab!.Content!;
+
+            TaskCompletionSource<bool> slowRenderTrigger = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource<bool> slowRenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            workspace.PageRenderPreviewHandler = async (request, ct) =>
+            {
+                slowRenderStarted.TrySetResult(true);
+                await slowRenderTrigger.Task;
+                return Result<PdfPagePixelBufferLease>.Success(
+                    new PdfPagePixelBufferLease(new byte[400], 10, 10, 40, 0, "test", 10, 10, "v1"));
+            };
+
+            Task loadTask = workspace.LoadAsync();
+            await slowRenderStarted.Task;
+            workspace.IsBusy.Should().BeTrue();
+
+            workspace.Clear();
+            workspace.IsBusy.Should().BeFalse();
+            workspace.Image.Should().BeNull();
+
+            slowRenderTrigger.TrySetResult(true);
+            await loadTask;
+
+            workspace.Image.Should().BeNull("obsolete render after Clear is discarded and never applied");
+            workspace.WidthPixels.Should().Be(0);
+
             await ReleaseDocumentSessionAsync(vm, item);
             return true;
         }, CancellationToken.None);

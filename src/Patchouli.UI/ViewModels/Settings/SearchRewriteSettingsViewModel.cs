@@ -1,9 +1,16 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Search;
 using Patchouli.Host.Composition;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -12,14 +19,11 @@ namespace Patchouli.UI.ViewModels.Settings;
 /// and per-profile rules are displayed together. The enabled checkbox is dirty-tracked like every
 /// other table cell and is committed by the shared settings save command.
 /// </summary>
-public sealed class SearchRewriteSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private readonly List<SearchRewriteRuleId> _pendingDeletions = [];
     private bool _isDirty;
-    private string _previewQuery = "";
-    private string _previewSummary = "输入示例查询后点击「预览」。预览按需构建重写计划，不受「启用查询重写」开关影响。";
-    private bool _previewIsError;
 
     public SearchRewriteSettingsViewModel(MainWindowViewModel main)
     {
@@ -47,9 +51,12 @@ public sealed class SearchRewriteSettingsViewModel : SettingsSectionViewModelBas
         Scopes.Add(SearchRewriteScopeOption.Global);
     }
 
-    public ObservableCollection<SearchRewriteRuleRowViewModel> Rules { get; } = [];
-    public ObservableCollection<SearchRewriteScopeOption> Scopes { get; } = [];
-    public ObservableCollection<string> OpenccOptions { get; }
+    [ExcludeFromDerivedGeneration] public ObservableCollection<SearchRewriteRuleRowViewModel> Rules { get; } = [];
+
+    [ExcludeFromDerivedGeneration] public ObservableCollection<SearchRewriteScopeOption> Scopes { get; } = [];
+
+    [ExcludeFromDerivedGeneration] public ObservableCollection<string> OpenccOptions { get; }
+
     public IReadOnlyList<SearchRewriteRuleTypeOption> RuleTypeOptions { get; }
     public IReadOnlyList<SearchRewriteDirectionOption> DirectionOptions { get; }
 
@@ -59,50 +66,22 @@ public sealed class SearchRewriteSettingsViewModel : SettingsSectionViewModelBas
     public AsyncCommand PreviewCommand { get; }
 
     public override bool SupportsEditing => true;
-    public override bool IsDirty => _isDirty;
-    public override bool CanSave => IsDirty;
 
-    public string PreviewQuery
-    {
-        get => _previewQuery;
-        set
-        {
-            if (_previewQuery != value)
-            {
-                _previewQuery = value;
-                Raise();
-            }
-        }
-    }
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
 
-    public string PreviewSummary
-    {
-        get => _previewSummary;
-        private set
-        {
-            if (_previewSummary != value)
-            {
-                _previewSummary = value;
-                Raise();
-            }
-        }
-    }
+    [ExcludeFromDerivedGeneration] public override bool CanSave => IsDirty;
 
-    public bool PreviewIsError
-    {
-        get => _previewIsError;
-        private set
-        {
-            if (_previewIsError != value)
-            {
-                _previewIsError = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string PreviewQuery { get; set; } = "";
 
-    public ObservableCollection<string> PreviewExpandedQueries { get; } = [];
-    public ObservableCollection<string> PreviewWarnings { get; } = [];
+    [ObservableProperty]
+    public partial string PreviewSummary { get; private set; } =
+        "输入示例查询后点击「预览」。预览按需构建重写计划，不受「启用查询重写」开关影响。";
+
+    [ObservableProperty] public partial bool PreviewIsError { get; private set; }
+
+    [ExcludeFromDerivedGeneration] public ObservableCollection<string> PreviewExpandedQueries { get; } = [];
+
+    [ExcludeFromDerivedGeneration] public ObservableCollection<string> PreviewWarnings { get; } = [];
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -344,6 +323,7 @@ public sealed class SearchRewriteSettingsViewModel : SettingsSectionViewModelBas
 
         _isDirty = value;
         Raise(nameof(IsDirty));
+        Raise(nameof(CanSave));
     }
 
     private static string FormatProfileName(SearchProfile profile)
@@ -364,19 +344,12 @@ public sealed record SearchRewriteScopeOption(string Label, SearchProfileId? Pro
 
 /// <summary>One editable rewrite-rule row. All edits, including the enabled checkbox, mark the
 /// section dirty; <see cref="SearchRewriteSettingsViewModel.SaveAsync"/> persists them.</summary>
-public sealed class SearchRewriteRuleRowViewModel : ViewModelBase
+public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
 {
     private readonly SearchRewriteSettingsViewModel _parent;
     private readonly SearchProfileId? _originalProfileId;
     private readonly bool _originalEnabled;
-    private SearchRewriteRuleTypeOption _selectedRuleType;
-    private SearchRewriteDirectionOption _selectedDirection;
-    private SearchRewriteScopeOption _selectedScope;
-    private string _pattern;
-    private string _replacement;
-    private int _priority;
-    private string _note;
-    private bool _enabled;
+    private readonly bool _isConstructing;
 
     internal SearchRewriteRuleRowViewModel(
         SearchRewriteSettingsViewModel parent,
@@ -391,182 +364,179 @@ public sealed class SearchRewriteRuleRowViewModel : ViewModelBase
         string note,
         bool enabled)
     {
+        _isConstructing = true;
         _parent = parent;
         RuleId = ruleId;
-        _selectedScope = scope;
-        _selectedRuleType = ruleType;
-        _selectedDirection = direction;
+        SelectedScope = scope;
+        SelectedRuleType = ruleType;
+        SelectedDirection = direction;
         _originalProfileId = originalProfileId;
         _originalEnabled = enabled;
-        _pattern = pattern;
-        _replacement = replacement;
-        _priority = priority;
-        _note = note;
-        _enabled = enabled;
+        Pattern = pattern ?? "";
+        Replacement = replacement ?? "";
+        Priority = priority;
+        Note = note ?? "";
+        Enabled = enabled;
         DeleteCommand = new RelayCommand(_ => _parent.Remove(this));
+        _isConstructing = false;
     }
 
     public SearchRewriteRuleId? RuleId { get; }
     public bool IsExisting => RuleId is not null;
     public RelayCommand DeleteCommand { get; }
+
+    [ExcludeFromDerivedGeneration]
     public IReadOnlyList<SearchRewriteRuleTypeOption> RuleTypeOptions => _parent.RuleTypeOptions;
+
+    [ExcludeFromDerivedGeneration]
     public IReadOnlyList<SearchRewriteDirectionOption> DirectionOptions => _parent.DirectionOptions;
-    public IReadOnlyList<SearchRewriteScopeOption> ScopeOptions => _parent.Scopes;
-    public IReadOnlyList<string> OpenccOptions => _parent.OpenccOptions;
 
-    public bool Enabled
+    [ExcludeFromDerivedGeneration] public IReadOnlyList<SearchRewriteScopeOption> ScopeOptions => _parent.Scopes;
+
+    [ExcludeFromDerivedGeneration] public IReadOnlyList<string> OpenccOptions => _parent.OpenccOptions;
+
+    [ObservableProperty] public partial bool Enabled { get; set; }
+
+    partial void OnEnabledChanged(bool value)
     {
-        get => _enabled;
-        set
+        if (_isConstructing)
         {
-            if (_enabled == value)
-            {
-                return;
-            }
-
-            _enabled = value;
-            Raise();
-            _parent.MarkDirty();
+            return;
         }
+
+        _parent.MarkDirty();
     }
 
-    public SearchRewriteRuleTypeOption SelectedRuleType
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsOpenccRule))]
+    [NotifyPropertyChangedFor(nameof(IsStandardRule))]
+    [NotifyPropertyChangedFor(nameof(DisplayLabel))]
+    public partial SearchRewriteRuleTypeOption SelectedRuleType { get; set; }
+
+    partial void OnSelectedRuleTypeChanged(SearchRewriteRuleTypeOption value)
     {
-        get => _selectedRuleType;
-        set
+        if (_isConstructing || value is null)
         {
-            if (ReferenceEquals(_selectedRuleType, value) || value is null)
-            {
-                return;
-            }
-
-            _selectedRuleType = value;
-            Raise();
-            Raise(nameof(IsOpenccRule));
-            Raise(nameof(IsStandardRule));
-            Raise(nameof(DisplayLabel));
-            if (value.Value == SearchRuleType.SimplifiedTraditional &&
-                !OpenccConfigs.All.Contains(Pattern, StringComparer.Ordinal))
-            {
-                _pattern = OpenccConfigs.S2T;
-                Raise(nameof(Pattern));
-            }
-
-            _parent.MarkDirty();
+            return;
         }
+
+        if (value.Value == SearchRuleType.SimplifiedTraditional &&
+            !OpenccConfigs.All.Contains(Pattern, StringComparer.Ordinal))
+        {
+            Pattern = OpenccConfigs.S2T;
+        }
+
+        _parent.MarkDirty();
     }
 
-    public SearchRewriteDirectionOption SelectedDirection
-    {
-        get => _selectedDirection;
-        set
-        {
-            if (ReferenceEquals(_selectedDirection, value) || value is null)
-            {
-                return;
-            }
+    [ObservableProperty] public partial SearchRewriteDirectionOption SelectedDirection { get; set; }
 
-            _selectedDirection = value;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnSelectedDirectionChanged(SearchRewriteDirectionOption value)
+    {
+        if (_isConstructing || value is null)
+        {
+            return;
         }
+
+        _parent.MarkDirty();
     }
 
-    public SearchRewriteScopeOption SelectedScope
-    {
-        get => _selectedScope;
-        set
-        {
-            if (ReferenceEquals(_selectedScope, value) || value is null)
-            {
-                return;
-            }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(DisplayLabel))]
+    public partial SearchRewriteScopeOption SelectedScope { get; set; }
 
-            _selectedScope = value;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnSelectedScopeChanged(SearchRewriteScopeOption value)
+    {
+        if (_isConstructing || value is null)
+        {
+            return;
         }
+
+        _parent.MarkDirty();
     }
 
-    public string Pattern
-    {
-        get => _pattern;
-        set
-        {
-            string updated = value ?? "";
-            if (_pattern == updated)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string Pattern { get; set; } = "";
 
-            _pattern = updated;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnPatternChanged(string value)
+    {
+        if (value is null)
+        {
+            Pattern = "";
+            return;
         }
+
+        if (_isConstructing)
+        {
+            return;
+        }
+
+        _parent.MarkDirty();
     }
 
-    public string Replacement
-    {
-        get => _replacement;
-        set
-        {
-            string updated = value ?? "";
-            if (_replacement == updated)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string Replacement { get; set; } = "";
 
-            _replacement = updated;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnReplacementChanged(string value)
+    {
+        if (value is null)
+        {
+            Replacement = "";
+            return;
         }
+
+        if (_isConstructing)
+        {
+            return;
+        }
+
+        _parent.MarkDirty();
     }
 
-    public int Priority
-    {
-        get => _priority;
-        set
-        {
-            if (_priority == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial int Priority { get; set; }
 
-            _priority = value;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnPriorityChanged(int value)
+    {
+        if (_isConstructing)
+        {
+            return;
         }
+
+        _parent.MarkDirty();
     }
 
-    public string Note
-    {
-        get => _note;
-        set
-        {
-            string updated = value ?? "";
-            if (_note == updated)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string Note { get; set; } = "";
 
-            _note = updated;
-            Raise();
-            _parent.MarkDirty();
+    partial void OnNoteChanged(string value)
+    {
+        if (value is null)
+        {
+            Note = "";
+            return;
         }
+
+        if (_isConstructing)
+        {
+            return;
+        }
+
+        _parent.MarkDirty();
     }
 
-    public bool IsOpenccRule => _selectedRuleType.Value == SearchRuleType.SimplifiedTraditional;
-    public bool IsStandardRule => !IsOpenccRule;
-    public string DisplayLabel => $"{_selectedRuleType.Label} / {_selectedScope.Label}";
+    [ExcludeFromDerivedGeneration]
+    public bool IsOpenccRule => SelectedRuleType.Value == SearchRuleType.SimplifiedTraditional;
+
+    [ExcludeFromDerivedGeneration] public bool IsStandardRule => !IsOpenccRule;
+
+    [ExcludeFromDerivedGeneration] public string DisplayLabel => $"{SelectedRuleType.Label} / {SelectedScope.Label}";
 
     /// <summary>The rewrite engine reads only <see cref="Pattern"/> for OpenCC rules, but the
     /// service rejects an empty replacement, so a placeholder is stored for those rows.</summary>
+    [ExcludeFromDerivedGeneration]
     private string ReplacementForPersistence =>
-        IsOpenccRule && string.IsNullOrWhiteSpace(_replacement) ? _pattern : _replacement;
+        IsOpenccRule && string.IsNullOrWhiteSpace(Replacement) ? Pattern : Replacement;
 
     internal async Task<Result> CommitAsync(HostServices services)
     {
-        string pattern = _pattern.Trim();
+        string pattern = Pattern.Trim();
         string replacement = ReplacementForPersistence.Trim();
         if (string.IsNullOrWhiteSpace(pattern))
         {
@@ -578,15 +548,15 @@ public sealed class SearchRewriteRuleRowViewModel : ViewModelBase
             return Result.Failure(AppErrorCodes.ValidationFailed, "替换内容不能为空。");
         }
 
-        string? note = string.IsNullOrWhiteSpace(_note) ? null : _note.Trim();
-        SearchProfileId? profileId = _selectedScope.ProfileId;
-        string ruleType = _selectedRuleType.Value;
-        string direction = _selectedDirection.Value;
+        string? note = string.IsNullOrWhiteSpace(Note) ? null : Note.Trim();
+        SearchProfileId? profileId = SelectedScope.ProfileId;
+        string ruleType = SelectedRuleType.Value;
+        string direction = SelectedDirection.Value;
 
         if (RuleId is null)
         {
             Result<SearchRewriteRule> added = await services.SearchProfiles.AddRewriteRuleAsync(profileId, ruleType,
-                pattern, replacement, direction, _priority, note);
+                pattern, replacement, direction, Priority, note);
             return added.IsFailure
                 ? Result.Failure(added.ErrorCode!, added.ErrorMessage!)
                 : await ApplyEnabledIfNeededAsync(services, added.Value.RuleId, true);
@@ -602,14 +572,14 @@ public sealed class SearchRewriteRuleRowViewModel : ViewModelBase
             }
 
             Result<SearchRewriteRule> reAdded = await services.SearchProfiles.AddRewriteRuleAsync(profileId, ruleType,
-                pattern, replacement, direction, _priority, note);
+                pattern, replacement, direction, Priority, note);
             return reAdded.IsFailure
                 ? Result.Failure(reAdded.ErrorCode!, reAdded.ErrorMessage!)
                 : await ApplyEnabledIfNeededAsync(services, reAdded.Value.RuleId, true);
         }
 
         Result<SearchRewriteRule> updated = await services.SearchProfiles.UpdateRewriteRuleAsync(ruleId, ruleType,
-            pattern, replacement, direction, _priority, note);
+            pattern, replacement, direction, Priority, note);
         return updated.IsFailure
             ? Result.Failure(updated.ErrorCode!, updated.ErrorMessage!)
             : await ApplyEnabledIfNeededAsync(services, ruleId, _originalEnabled);

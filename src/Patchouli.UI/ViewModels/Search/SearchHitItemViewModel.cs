@@ -1,3 +1,5 @@
+using CommunityToolkit.Mvvm.ComponentModel;
+
 namespace Patchouli.UI.ViewModels;
 
 /// <summary>A matched snippet shown in the expandable full-width details section of a hit row.
@@ -30,10 +32,8 @@ public sealed class SearchHitSnippetViewModel : ViewModelBase
 
 /// <summary>A full-text hit row: the bibliographic item rendered in the grid columns, plus the
 /// matched snippets rendered in the row's full-width details section when expanded.</summary>
-public sealed class SearchHitItemViewModel : ViewModelBase
+public sealed partial class SearchHitItemViewModel : ViewModelBase
 {
-    private bool _isExpanded;
-
     private SearchHitItemViewModel(LibraryItemViewModel item, IReadOnlyList<SearchHitSnippetViewModel> snippets)
     {
         Item = item;
@@ -43,25 +43,12 @@ public sealed class SearchHitItemViewModel : ViewModelBase
 
     public LibraryItemViewModel Item { get; }
     public IReadOnlyList<SearchHitSnippetViewModel> Snippets { get; }
-    public bool HasSnippets => Snippets.Count > 0;
-    public double DetailsHeight => Math.Min(Snippets.Count * 28 + 10, 360);
-    public double DetailsContainerHeight => DetailsHeight + 10;
+    [ExcludeFromDerivedGeneration] public bool HasSnippets => Snippets.Count > 0;
+    [ExcludeFromDerivedGeneration] public double DetailsHeight => Math.Min(Snippets.Count * 28 + 10, 360);
+    [ExcludeFromDerivedGeneration] public double DetailsContainerHeight => DetailsHeight + 10;
     public RelayCommand ToggleExpandedCommand { get; }
 
-    public bool IsExpanded
-    {
-        get => _isExpanded;
-        set
-        {
-            if (_isExpanded == value)
-            {
-                return;
-            }
-
-            _isExpanded = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool IsExpanded { get; set; }
 
     public static SearchHitItemViewModel HitItem(LibraryItemViewModel item,
         IReadOnlyList<SearchHitSnippetViewModel> snippets)

@@ -1,5 +1,12 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using System.Text.Json;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -13,14 +20,17 @@ namespace Patchouli.UI.ViewModels;
 /// The view model formats fields for display and exposes lightweight tag editing that routes
 /// writes through <see cref="IItemTagService"/>.
 /// </summary>
-public sealed class ItemInspectorViewModel : ViewModelBase
+public sealed partial class ItemInspectorViewModel : ViewModelBase
 {
+    private static readonly TimeSpan LoadRequestThrottle = TimeSpan.Zero;
     private readonly Func<Task<IItemService>> _itemServiceFactory;
     private readonly Func<Task<IItemTagService>> _tagServiceFactory;
     private readonly Func<Task<ICslItemTypeProfileService>> _profileServiceFactory;
+    private readonly Subject<Unit> _loadRequests = new();
     private ItemId? _currentItemId;
-    private bool _isTagEditorOpen;
-    private int _loadVersion;
+    private ItemId? _latestLoadId;
+    private TaskCompletionSource? _latestLoadCompletion;
+    private bool _isDisposed;
 
     public ItemInspectorViewModel(
         Func<Task<IItemService>> itemServiceFactory,
@@ -33,13 +43,28 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         Groups = new ObservableCollection<InspectorGroupViewModel>();
         Tags = new ObservableCollection<InspectorTagViewModel>();
         Sections = new ObservableCollection<object>();
+        TagsSection = new InspectorTagsSectionViewModel(this);
+        Register(TagsSection);
         AddTagCommand = new AsyncCommand(AddTagAsync);
         ToggleTagEditorCommand = new RelayCommand(_ => IsTagEditorOpen = !IsTagEditorOpen);
+        IScheduler uiScheduler = SynchronizationContext.Current is { } synchronizationContext
+            ? new SynchronizationContextScheduler(synchronizationContext)
+            : CurrentThreadScheduler.Instance;
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _loadRequests,
+            LoadRequestThrottle,
+            TaskPoolScheduler.Default,
+            uiScheduler,
+            LoadLatestAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "item-inspector-load")));
     }
 
-    public string Title { get; private set; } = "";
-    public string Subtitle { get; private set; } = "";
-    public bool IsEmpty { get; private set; } = true;
+    [ObservableProperty] public partial string Title { get; private set; } = "";
+
+    [ObservableProperty] public partial string Subtitle { get; private set; } = "";
+
+    [ObservableProperty] public partial bool IsEmpty { get; private set; } = true;
+
     public bool HasContent => !IsEmpty;
     public ObservableCollection<InspectorGroupViewModel> Groups { get; }
     public ObservableCollection<InspectorTagViewModel> Tags { get; }
@@ -47,22 +72,11 @@ public sealed class ItemInspectorViewModel : ViewModelBase
     /// <summary>Display-ordered inspector cards: 基本信息, the tags section, then the remaining field groups.</summary>
     public ObservableCollection<object> Sections { get; }
 
-    public string NewTagName { get; set; } = "";
+    internal InspectorTagsSectionViewModel TagsSection { get; }
 
-    public bool IsTagEditorOpen
-    {
-        get => _isTagEditorOpen;
-        private set
-        {
-            if (_isTagEditorOpen == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string NewTagName { get; set; } = "";
 
-            _isTagEditorOpen = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool IsTagEditorOpen { get; private set; }
 
     public AsyncCommand AddTagCommand { get; }
     public RelayCommand ToggleTagEditorCommand { get; }
@@ -85,7 +99,6 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         if (result.IsSuccess)
         {
             NewTagName = "";
-            Raise(nameof(NewTagName));
             await LoadAsync(_currentItemId.Value);
         }
     }
@@ -107,13 +120,47 @@ public sealed class ItemInspectorViewModel : ViewModelBase
 
     /// <summary>
     /// Loads the inspector for the given item. Passing <see langword="null"/> clears the inspector.
-    /// Cancellation is ignored so that transient selection changes do not surface errors.
+    /// Requests are coalesced latest-wins: a newer request supersedes an in-flight load so a slow
+    /// fetch that completes after a newer selection cannot repopulate the inspector with stale
+    /// content. Superseded requests complete immediately; cancellation never surfaces as an error.
     /// </summary>
-    public async Task LoadAsync(ItemId? itemId)
+    public Task LoadAsync(ItemId? itemId)
     {
-        // Supersede any earlier load still in flight: a slow fetch that completes after a
-        // newer LoadAsync must not repopulate the inspector with stale content.
-        int version = ++_loadVersion;
+        if (_isDisposed)
+        {
+            return Task.CompletedTask;
+        }
+
+        // Completing the previous completion hands its caller a finished task while only the
+        // newest request drives the actual projection.
+        _latestLoadCompletion?.TrySetResult();
+        _latestLoadCompletion =
+            new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _latestLoadId = itemId;
+        _loadRequests.OnNext(Unit.Default);
+        return _latestLoadCompletion.Task;
+    }
+
+    private async Task LoadLatestAsync(CancellationToken cancellationToken)
+    {
+        if (_latestLoadCompletion is not { } completion)
+        {
+            return;
+        }
+
+        try
+        {
+            await LoadCoreAsync(_latestLoadId, cancellationToken);
+        }
+        finally
+        {
+            completion.TrySetResult();
+        }
+    }
+
+    private async Task LoadCoreAsync(ItemId? itemId, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
         if (itemId is null)
         {
             Clear();
@@ -124,12 +171,10 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         {
             // Microsoft.Data.Sqlite executes synchronously under the async facade; keep the
             // reads off the UI thread so selection changes do not stall the library page.
-            IItemService itemService = await Task.Run(_itemServiceFactory);
-            Result<ItemMetadata> result = await Task.Run(() => itemService.GetItemAsync(itemId.Value));
-            if (version != _loadVersion)
-            {
-                return;
-            }
+            IItemService itemService = await Task.Run(_itemServiceFactory, cancellationToken);
+            Result<ItemMetadata> result =
+                await Task.Run(() => itemService.GetItemAsync(itemId.Value), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (result.IsFailure || result.Value is null)
             {
@@ -137,12 +182,24 @@ public sealed class ItemInspectorViewModel : ViewModelBase
                 return;
             }
 
-            await ProjectAsync(result.Value, version);
+            await ProjectAsync(result.Value, cancellationToken);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Selection changed while loading; leave the current state unchanged.
+            // A newer load superseded this one; leave the current state unchanged.
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        _isDisposed = true;
+        if (disposing)
+        {
+            // Release any caller still awaiting an in-flight load.
+            _latestLoadCompletion?.TrySetResult();
+        }
+
+        base.Dispose(disposing);
     }
 
     private void Clear()
@@ -155,22 +212,16 @@ public sealed class ItemInspectorViewModel : ViewModelBase
         Tags.Clear();
         Sections.Clear();
         _currentItemId = null;
-        Raise(nameof(Title));
-        Raise(nameof(Subtitle));
-        Raise(nameof(IsEmpty));
-        Raise(nameof(HasContent));
         Raise(nameof(Tags));
-        Raise(nameof(IsTagEditorOpen));
         Raise(nameof(Sections));
     }
 
-    private async Task ProjectAsync(ItemMetadata metadata, int version)
+    private async Task ProjectAsync(ItemMetadata metadata, CancellationToken cancellationToken)
     {
         Title = metadata.Title;
         Subtitle = metadata.ItemType;
         IsEmpty = false;
         _currentItemId = metadata.ItemId;
-        Raise(nameof(HasContent));
 
         Tags.Clear();
         foreach (string tag in ParseTags(metadata.TagsJson).OrderBy(static t => t, StringComparer.Ordinal))
@@ -178,13 +229,10 @@ public sealed class ItemInspectorViewModel : ViewModelBase
             Tags.Add(new InspectorTagViewModel(tag, RemoveTagAsync));
         }
 
-        ICslItemTypeProfileService profileService = await Task.Run(_profileServiceFactory);
+        ICslItemTypeProfileService profileService = await Task.Run(_profileServiceFactory, cancellationToken);
         Result<CslItemTypeProfile> profileResult =
-            await Task.Run(() => profileService.GetProfileAsync(metadata.ItemType));
-        if (version != _loadVersion)
-        {
-            return;
-        }
+            await Task.Run(() => profileService.GetProfileAsync(metadata.ItemType), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         IReadOnlyDictionary<string, string> fieldLabels = profileResult.IsSuccess
             ? profileResult.Value.FieldLabels
@@ -319,9 +367,6 @@ public sealed class ItemInspectorViewModel : ViewModelBase
             Groups.Add(other);
         }
 
-        Raise(nameof(Title));
-        Raise(nameof(Subtitle));
-        Raise(nameof(IsEmpty));
         Raise(nameof(Groups));
 
         // Card order in the view: 基本信息 first, then the tags section, then the remaining groups.
@@ -331,7 +376,7 @@ public sealed class ItemInspectorViewModel : ViewModelBase
             Sections.Add(Groups[0]);
         }
 
-        Sections.Add(new InspectorTagsSectionViewModel(this));
+        Sections.Add(TagsSection);
         foreach (InspectorGroupViewModel group in Groups.Skip(1))
         {
             Sections.Add(group);
@@ -450,15 +495,20 @@ public sealed class InspectorTagsSectionViewModel : ViewModelBase
     public InspectorTagsSectionViewModel(ItemInspectorViewModel parent)
     {
         _parent = parent;
-        _parent.PropertyChanged += (_, args) =>
-        {
-            if (args.PropertyName is nameof(ItemInspectorViewModel.IsTagEditorOpen)
+        // Forwarding subscriptions are owned by this section and cleaned up when it is disposed.
+        IObservable<EventPattern<PropertyChangedEventArgs>> parentPropertyChanged = Observable
+            .FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                handler => _parent.PropertyChanged += handler,
+                handler => _parent.PropertyChanged -= handler);
+        Register(parentPropertyChanged
+            .Where(pattern => pattern.EventArgs.PropertyName is nameof(ItemInspectorViewModel.IsTagEditorOpen)
                 or nameof(ItemInspectorViewModel.NewTagName))
-            {
-                Raise(args.PropertyName);
-            }
-        };
-        _parent.Tags.CollectionChanged += (_, _) => Raise(nameof(HasNoTags));
+            .Subscribe(pattern => Raise(pattern.EventArgs.PropertyName)));
+        Register(Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                handler => _parent.Tags.CollectionChanged += handler,
+                handler => _parent.Tags.CollectionChanged -= handler)
+            .Subscribe(_ => Raise(nameof(HasNoTags))));
     }
 
     public string Title => "标签";

@@ -1,18 +1,25 @@
-using System.Text.Json;
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
+using System.Linq;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
-using Patchouli.UI;
-using Patchouli.UI.ViewModels;
-using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Settings;
 using Patchouli.Host.Composition;
+using Patchouli.Infrastructure.Snapshots;
+using Patchouli.UI;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private SyncAppSettings _persisted;
@@ -21,10 +28,14 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
     private int _libraryGeneration = -1;
     private long _editGeneration;
     private long _loadGeneration;
+    private bool _isDirty;
+    private bool _isConstructing;
+    private bool _isSyncing;
     private readonly ObservableCollection<SyncSettingScopeRowViewModel> _settingScopeRows = new();
 
     public SyncSettingsViewModel(MainWindowViewModel main)
     {
+        _isConstructing = true;
         _main = main;
         _persisted = main.AppOptions.Sync;
         _draft = _persisted;
@@ -33,63 +44,66 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         CheckIncomingSnapshotCommand = new AsyncCommand(CheckIncomingSnapshotAsync);
         ExportSnapshotPackageCommand = new AsyncCommand(ExportSnapshotPackageAsync);
         Status = "已保存";
+        SyncFromDraft(_draft);
+        _isConstructing = false;
+    }
+
+    [ExcludeFromDerivedGeneration] public string DeviceId => _draft.DeviceId;
+
+    [ObservableProperty] public partial string DeviceName { get; set; } = "";
+
+    partial void OnDeviceNameChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        _draft = _draft with { DeviceName = value };
+        MarkDirty();
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    public partial string SyncRoot { get; set; } = "";
+
+    partial void OnSyncRootChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        _draft = _draft with { SyncRoot = value };
+        MarkDirty();
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MetadataLookupScopeText))]
+    [NotifyPropertyChangedFor(nameof(MetadataLookupEffectiveSourceText))]
+    public partial bool SyncMetadataLookup { get; set; }
+
+    partial void OnSyncMetadataLookupChanged(bool value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        _draft = _draft.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, value);
+        MarkDirty();
         RefreshScopeRows();
     }
 
-    public string DeviceId => _draft.DeviceId;
-
-    public string DeviceName
-    {
-        get => _draft.DeviceName;
-        set
-        {
-            if (_draft.DeviceName != value)
-            {
-                _draft = _draft with { DeviceName = value };
-                MarkDirty();
-                Raise();
-            }
-        }
-    }
-
-    public string SyncRoot
-    {
-        get => _draft.SyncRoot;
-        set
-        {
-            if (_draft.SyncRoot != value)
-            {
-                _draft = _draft with { SyncRoot = value };
-                MarkDirty();
-                Raise();
-            }
-        }
-    }
-
-    public bool SyncMetadataLookup
-    {
-        get => _draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
-        set
-        {
-            if (_draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup) != value)
-            {
-                _draft = _draft.WithSettingEnabled(LibrarySettingKeys.MetadataLookup, value);
-                MarkDirty();
-                Raise();
-                Raise(nameof(MetadataLookupScopeText));
-                Raise(nameof(MetadataLookupEffectiveSourceText));
-                Raise(nameof(MetadataLookupSchemaText));
-                RefreshScopeRows();
-            }
-        }
-    }
-
+    [ExcludeFromDerivedGeneration]
     public string MetadataLookupScopeText =>
         SyncMetadataLookup ? "随当前资料库的内容快照同步" : "仅此设备";
 
+    [ExcludeFromDerivedGeneration]
     public string MetadataLookupEffectiveSourceText =>
         SyncMetadataLookup ? "资料库 setting record" : "本机 JSON 设置";
 
+    [ExcludeFromDerivedGeneration]
     public string MetadataLookupSchemaText
     {
         get
@@ -103,16 +117,19 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
     public AsyncCommand PublishSnapshotCommand { get; }
     public AsyncCommand CheckIncomingSnapshotCommand { get; }
     public AsyncCommand ExportSnapshotPackageCommand { get; }
+
+    [ExcludeFromDerivedGeneration]
     public ObservableCollection<SyncSettingScopeRowViewModel> SettingScopeRows => _settingScopeRows;
-    public string SnapshotOperationStateText => _main.Snapshot.OperationStateText;
-    public string SnapshotOperationMessage => _main.Snapshot.OperationMessage;
+
+    [ExcludeFromDerivedGeneration] public string SnapshotOperationStateText => _main.Snapshot.OperationStateText;
+
+    [ExcludeFromDerivedGeneration] public string SnapshotOperationMessage => _main.Snapshot.OperationMessage;
+
     public override bool SupportsEditing => true;
 
-    private bool _isDirty;
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
 
-    public override bool IsDirty => _isDirty;
-
-    public override bool CanSave => _isDirty && !string.IsNullOrWhiteSpace(_draft.SyncRoot);
+    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty && !string.IsNullOrWhiteSpace(SyncRoot);
 
     public override async Task SaveAsync()
     {
@@ -191,12 +208,11 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         if (result.IsSuccess)
         {
             _persisted = ToLibraryDraft(savedDraft, binding);
-            _draft = _persisted;
+            SyncFromDraft(_persisted);
             _isDirty = false;
             LastError = null;
             SaveState = SettingsSaveState.Saved;
             Status = "已保存";
-            RefreshScopeRows();
         }
         else
         {
@@ -212,17 +228,10 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
     {
         _editGeneration++;
         _loadGeneration++;
-        _draft = _persisted;
+        SyncFromDraft(_persisted);
         _isDirty = false;
         SaveState = SettingsSaveState.Clean;
         Status = "已放弃更改";
-        Raise(nameof(DeviceName));
-        Raise(nameof(SyncRoot));
-        Raise(nameof(SyncMetadataLookup));
-        Raise(nameof(MetadataLookupScopeText));
-        Raise(nameof(MetadataLookupEffectiveSourceText));
-        Raise(nameof(MetadataLookupSchemaText));
-        RefreshScopeRows();
         RaiseState();
         return Task.CompletedTask;
     }
@@ -259,18 +268,11 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         SyncAppSettings sync = _main.AppOptions.Sync;
         DeviceRootBindingAppSettings? binding = sync.CurrentSyncRootBinding(library.Value);
         _persisted = ToLibraryDraft(sync, binding);
-        _draft = _persisted;
+        SyncFromDraft(_persisted);
         _isDirty = false;
         LastError = null;
         SaveState = SettingsSaveState.Clean;
         Status = "已加载同步设置";
-        Raise(nameof(DeviceName));
-        Raise(nameof(SyncRoot));
-        Raise(nameof(SyncMetadataLookup));
-        Raise(nameof(MetadataLookupScopeText));
-        Raise(nameof(MetadataLookupEffectiveSourceText));
-        Raise(nameof(MetadataLookupSchemaText));
-        RefreshScopeRows();
         RaiseState();
     }
 
@@ -301,13 +303,9 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
         }
 
         _persisted = _main.AppOptions.Sync;
-        _draft = _persisted;
+        SyncFromDraft(_persisted);
         SaveState = SettingsSaveState.Clean;
         Status = "同步设置将在新资料库加载后刷新";
-        RefreshScopeRows();
-        Raise(nameof(DeviceName));
-        Raise(nameof(SyncRoot));
-        Raise(nameof(SyncMetadataLookup));
         RaiseState();
     }
 
@@ -362,6 +360,18 @@ public sealed class SyncSettingsViewModel : SettingsSectionViewModelBase
             SyncedSettingKeys = enabledKeys,
             SyncMetadataLookup = enabledKeys.Contains(LibrarySettingKeys.MetadataLookup, StringComparer.Ordinal)
         };
+    }
+
+    private void SyncFromDraft(SyncAppSettings draft)
+    {
+        _isSyncing = true;
+        _draft = draft;
+        DeviceName = draft.DeviceName;
+        SyncRoot = draft.SyncRoot;
+        SyncMetadataLookup = draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
+        _isSyncing = false;
+        Raise(nameof(DeviceId));
+        RefreshScopeRows();
     }
 
     private void RefreshScopeRows()

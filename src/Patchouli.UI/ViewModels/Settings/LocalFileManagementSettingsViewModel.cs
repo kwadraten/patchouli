@@ -1,19 +1,24 @@
+using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Results;
+using Patchouli.Host.Composition;
 using Patchouli.Infrastructure.Ocr.NdlKoten;
 using Patchouli.Infrastructure.Ocr.NdlLite;
 using Patchouli.Infrastructure.Ocr.RapidOcr;
+using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
-using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class LocalFileManagementSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private bool _isDownloading;
-    private double _downloadProgress;
 
     public LocalFileManagementSettingsViewModel(MainWindowViewModel main)
     {
@@ -23,34 +28,11 @@ public sealed class LocalFileManagementSettingsViewModel : SettingsSectionViewMo
         DownloadModelsCommand = new AsyncCommand(DownloadModelsAsync);
     }
 
-    public ObservableCollection<ManagedLocationViewModel> Locations { get; }
+    [ExcludeFromDerivedGeneration] public ObservableCollection<ManagedLocationViewModel> Locations { get; }
 
-    public bool IsDownloading
-    {
-        get => _isDownloading;
-        private set
-        {
-            if (_isDownloading != value)
-            {
-                _isDownloading = value;
-                Raise();
-                Raise(nameof(CanDownloadModels));
-            }
-        }
-    }
+    [ObservableProperty] public partial bool IsDownloading { get; private set; }
 
-    public double DownloadProgress
-    {
-        get => _downloadProgress;
-        private set
-        {
-            if (Math.Abs(_downloadProgress - value) > 0.001)
-            {
-                _downloadProgress = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial double DownloadProgress { get; private set; }
 
     public bool CanDownloadModels => !IsDownloading;
 
@@ -316,11 +298,9 @@ public enum ModelDownloadKind
     RapidOcr
 }
 
-public sealed class ManagedLocationViewModel : ViewModelBase
+public sealed partial class ManagedLocationViewModel : ViewModelBase
 {
     private readonly LocalFileManagementSettingsViewModel _parent;
-    private long _sizeBytes;
-    private int _itemCount;
 
     public ManagedLocationViewModel(
         LocalFileManagementSettingsViewModel parent,
@@ -347,37 +327,16 @@ public sealed class ManagedLocationViewModel : ViewModelBase
     public bool CanClear { get; }
     public ModelDownloadKind DownloadKind { get; }
 
-    public long SizeBytes
-    {
-        get => _sizeBytes;
-        private set
-        {
-            if (_sizeBytes != value)
-            {
-                _sizeBytes = value;
-                Raise();
-                Raise(nameof(SizeDisplay));
-            }
-        }
-    }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SizeDisplay))]
+    public partial long SizeBytes { get; private set; }
 
-    public int ItemCount
-    {
-        get => _itemCount;
-        private set
-        {
-            if (_itemCount != value)
-            {
-                _itemCount = value;
-                Raise();
-                Raise(nameof(ItemCountDisplay));
-            }
-        }
-    }
+    [ObservableProperty] public partial int ItemCount { get; private set; }
 
+    [ExcludeFromDerivedGeneration]
     public string SizeDisplay => LocalFileManagementSettingsViewModel.FormatBytes(SizeBytes);
 
-    public string ItemCountDisplay => $"{_itemCount} 项";
+    public string ItemCountDisplay => $"{ItemCount} 项";
 
     public AsyncCommand DownloadCommand { get; }
     public AsyncCommand ClearCommand { get; }

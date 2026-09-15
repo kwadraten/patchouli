@@ -1,13 +1,13 @@
-using System;
 using System.Collections.ObjectModel;
-using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
-public sealed class BlockingOperationDialogViewModel : ViewModelBase
+public sealed partial class BlockingOperationDialogViewModel : ViewModelBase
 {
     private readonly Action? _cancel;
+    private bool _canCancel;
 
     public BlockingOperationDialogViewModel(Action? cancel = null)
     {
@@ -17,133 +17,39 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
         ToggleDetailsCommand = new AsyncCommand(ToggleDetailsAsync);
     }
 
-    private string _title = "正在处理";
+    [ObservableProperty] public partial string Title { get; set; } = "正在处理";
 
-    public string Title
-    {
-        get => _title;
-        set
-        {
-            if (_title != value)
-            {
-                _title = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string StatusMessage { get; set; } = "请等待操作完成...";
 
-    private string _statusMessage = "请等待操作完成...";
+    [ObservableProperty] public partial bool IsIndeterminate { get; set; } = true;
 
-    public string StatusMessage
-    {
-        get => _statusMessage;
-        set
-        {
-            if (_statusMessage != value)
-            {
-                _statusMessage = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial double ProgressValue { get; set; }
 
-    private bool _isIndeterminate = true;
-
-    public bool IsIndeterminate
-    {
-        get => _isIndeterminate;
-        set
-        {
-            if (_isIndeterminate != value)
-            {
-                _isIndeterminate = value;
-                Raise();
-            }
-        }
-    }
-
-    private double _progressValue = 0.0;
-
-    public double ProgressValue
-    {
-        get => _progressValue;
-        set
-        {
-            if (_progressValue != value)
-            {
-                _progressValue = value;
-                Raise();
-            }
-        }
-    }
-
-    private bool _isDetailsVisible;
-
-    public bool IsDetailsVisible
-    {
-        get => _isDetailsVisible;
-        set
-        {
-            if (_isDetailsVisible != value)
-            {
-                _isDetailsVisible = value;
-                Raise();
-                Raise(nameof(DetailsToggleText));
-            }
-        }
-    }
+    [ObservableProperty] public partial bool IsDetailsVisible { get; set; }
 
     public string DetailsToggleText => IsDetailsVisible ? "隐藏详细信息" : "显示详细信息";
 
     public ObservableCollection<string> Logs { get; } = new();
-    private string _detailedResult = "";
 
-    public string DetailedResult
-    {
-        get => _detailedResult;
-        private set
-        {
-            if (_detailedResult == value)
-            {
-                return;
-            }
-
-            _detailedResult = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string DetailedResult { get; private set; } = "";
 
     public AsyncCommand ConfirmCommand { get; }
     public AsyncCommand CancelCommand { get; }
     public AsyncCommand ToggleDetailsCommand { get; }
     public Action<object?>? RequestClose { get; set; }
 
-    private bool _isRunning = true;
-    public bool IsRunning => _isRunning;
-    public bool IsTerminal => !_isRunning;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanCancel))]
+    public partial bool IsRunning { get; private set; } = true;
 
-    private string _operationState = "运行中";
+    public bool IsTerminal => !IsRunning;
 
-    public string OperationState
-    {
-        get => _operationState;
-        private set
-        {
-            if (_operationState == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string OperationState { get; private set; } = "运行中";
 
-            _operationState = value;
-            Raise();
-        }
-    }
-
-    private bool _canCancel;
-
+    [ExcludeFromDerivedGeneration]
     public bool CanCancel
     {
-        get => _canCancel && _isRunning;
+        get => _canCancel && IsRunning;
         set
         {
             _canCancel = value;
@@ -159,7 +65,7 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
 
     private Task ConfirmAsync()
     {
-        if (_isRunning)
+        if (IsRunning)
         {
             return Task.CompletedTask;
         }
@@ -175,10 +81,9 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
             return Task.CompletedTask;
         }
 
-        _canCancel = false;
+        CanCancel = false;
         StatusMessage = "正在取消操作...";
         AddLog("已请求取消操作。");
-        Raise(nameof(CanCancel));
         _cancel?.Invoke();
         return Task.CompletedTask;
     }
@@ -191,39 +96,29 @@ public sealed class BlockingOperationDialogViewModel : ViewModelBase
 
     public void MarkCompleted(string? resultMessage = null)
     {
-        _isRunning = false;
+        IsRunning = false;
         IsIndeterminate = false;
         ProgressValue = 100;
         OperationState = "已成功";
         StatusMessage = resultMessage ?? "操作已成功完成。";
         AddLog(StatusMessage);
-        RaiseTerminalState();
     }
 
     public void MarkCancelled()
     {
-        _isRunning = false;
+        IsRunning = false;
         IsIndeterminate = false;
         OperationState = "已取消";
         StatusMessage = "操作已取消。";
         AddLog(StatusMessage);
-        RaiseTerminalState();
     }
 
     public void MarkFailed(string message)
     {
-        _isRunning = false;
+        IsRunning = false;
         IsIndeterminate = false;
         OperationState = "失败";
         StatusMessage = $"操作失败：{message}";
         AddLog(StatusMessage);
-        RaiseTerminalState();
-    }
-
-    private void RaiseTerminalState()
-    {
-        Raise(nameof(IsRunning));
-        Raise(nameof(IsTerminal));
-        Raise(nameof(CanCancel));
     }
 }

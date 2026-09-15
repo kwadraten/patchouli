@@ -1,48 +1,36 @@
-using System.ComponentModel;
-using System.Collections.ObjectModel;
-using System.Runtime.CompilerServices;
-using System.Text.Json;
 using System.Windows.Input;
-using Avalonia.Media;
-using Dapper;
-using Patchouli.Core.Credentials;
-using Patchouli.Core.Documents;
-using Patchouli.Core.Files;
-using Patchouli.Core.Ids;
-using Patchouli.Core.Import;
-using Patchouli.Core.Layout;
-using Patchouli.Core.Results;
-using Patchouli.Infrastructure.Snapshots;
-using Patchouli.Infrastructure.Workflows;
-using Patchouli.Mcp;
-using Patchouli.McpServer;
-using Patchouli.Ocr;
-using Patchouli.Core.Search;
+using CommunityToolkit.Mvvm.Input;
+using ToolkitRelayCommand = CommunityToolkit.Mvvm.Input.RelayCommand<object?>;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class RelayCommand : ICommand
+public sealed class RelayCommand : IRelayCommand
 {
-    private readonly Action<object?> _execute;
+    private readonly ToolkitRelayCommand _inner;
 
     public RelayCommand(Action<object?> execute)
     {
-        _execute = execute;
+        _inner = new ToolkitRelayCommand(execute);
     }
 
     public event EventHandler? CanExecuteChanged
     {
-        add { }
-        remove { }
+        add => _inner.CanExecuteChanged += value;
+        remove => _inner.CanExecuteChanged -= value;
     }
 
     public bool CanExecute(object? parameter)
     {
-        return true;
+        return _inner.CanExecute(parameter);
     }
 
     public void Execute(object? parameter)
     {
-        _execute(parameter);
+        _inner.Execute(parameter);
+    }
+
+    public void NotifyCanExecuteChanged()
+    {
+        _inner.NotifyCanExecuteChanged();
     }
 }

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Dapper;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
@@ -22,19 +23,36 @@ using Patchouli.Core.Search;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class BibliographyViewModel : ViewModelBase
+public sealed partial class BibliographyViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    public string ItemType { get; set; } = "book";
-    public string Title { get; set; } = "";
-    public string Subtitle { get; set; } = "";
-    public string ItemId { get; set; } = "";
-    public string Scheme { get; set; } = "DOI";
-    public string IdentifierValue { get; set; } = "";
-    public string Output { get; set; } = "";
+
+    [ObservableProperty] public partial string ItemType { get; set; } = "book";
+    [ObservableProperty] public partial string Title { get; set; } = "";
+    [ObservableProperty] public partial string Subtitle { get; set; } = "";
+    [ObservableProperty] public partial string ItemId { get; set; } = "";
+    [ObservableProperty] public partial string Scheme { get; set; } = "DOI";
+    [ObservableProperty] public partial string IdentifierValue { get; set; } = "";
+    [ObservableProperty] public partial string Output { get; set; } = "";
+
     public ObservableCollection<string> RecentItems { get; } = new();
     public AsyncCommand CreateItemCommand { get; }
     public AsyncCommand AddIdentifierCommand { get; }
+
+    partial void OnTitleChanged(string value)
+    {
+        CreateItemCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnItemIdChanged(string value)
+    {
+        AddIdentifierCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIdentifierValueChanged(string value)
+    {
+        AddIdentifierCommand.NotifyCanExecuteChanged();
+    }
 
     public BibliographyViewModel(MainWindowViewModel main)
     {
@@ -47,16 +65,15 @@ public sealed class BibliographyViewModel : ViewModelBase
             {
                 ItemId = r.Value.ItemId.ToString();
                 RecentItems.Add($"{r.Value.ItemId} | {r.Value.Title}");
-                Raise(nameof(ItemId));
                 await _main.Shell.RefreshItemsAsync();
             }
 
             Output = r.IsSuccess
                 ? $"Item: {r.Value.ItemId}\n{r.Value.Title}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
-            Raise(nameof(Output));
             await _main.LogOperationAsync("create_item", Output);
-        });
+        }, () => !string.IsNullOrWhiteSpace(Title));
+
         AddIdentifierCommand = new AsyncCommand(async () =>
         {
             Result<ItemIdentifier> r =
@@ -65,7 +82,6 @@ public sealed class BibliographyViewModel : ViewModelBase
             Output = r.IsSuccess
                 ? $"Identifier: {r.Value.Scheme} {r.Value.Value}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
-            Raise(nameof(Output));
-        });
+        }, () => !string.IsNullOrWhiteSpace(ItemId) && !string.IsNullOrWhiteSpace(IdentifierValue));
     }
 }

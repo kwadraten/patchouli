@@ -1,3 +1,4 @@
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels;
@@ -6,11 +7,8 @@ namespace Patchouli.UI.ViewModels;
 /// A single entry in the library sidebar tag list. A normal entry represents a tag;
 /// <see cref="IsNoTagEntry"/> represents the fixed "no tag" filter item.
 /// </summary>
-public sealed class TagListItemViewModel : ViewModelBase
+public sealed partial class TagListItemViewModel : ViewModelBase
 {
-    private bool _isPinned;
-    private bool _isSelected;
-
     public TagListItemViewModel(
         string name,
         int count,
@@ -20,7 +18,7 @@ public sealed class TagListItemViewModel : ViewModelBase
         Name = name;
         Count = count;
         IsNoTagEntry = isNoTagEntry;
-        _isPinned = isPinned;
+        IsPinned = isPinned;
         TogglePinCommand = new AsyncCommand(() => RequestTogglePin?.Invoke(this) ?? Task.CompletedTask);
         RemoveCommand = new AsyncCommand(() => RequestRemove?.Invoke(this) ?? Task.CompletedTask);
         RenameCommand = new AsyncCommand(() => RequestRename?.Invoke(this) ?? Task.CompletedTask);
@@ -31,50 +29,36 @@ public sealed class TagListItemViewModel : ViewModelBase
     public int Count { get; }
     public bool IsNoTagEntry { get; }
 
-    public bool IsPinned
-    {
-        get => _isPinned;
-        set
-        {
-            if (_isPinned == value)
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial bool IsPinned { get; set; }
 
-            _isPinned = value;
-            Raise();
-        }
-    }
-
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected == value)
-            {
-                return;
-            }
-
-            _isSelected = value;
-            Raise();
-        }
-    }
+    [ObservableProperty]
+    public partial bool IsSelected { get; set; }
 
     public string DisplayText => IsNoTagEntry ? "无标签" : Name;
+
+    [ExcludeFromDerivedGeneration]
     public string CountText => Count > 0 ? Count.ToString() : "";
+
+    [ExcludeFromDerivedGeneration]
     public bool HasCount => Count > 0;
 
     /// <summary>"无标签" is a fixed filter entry, not a real tag, so pinning is not offered.</summary>
     public bool CanPin => !IsNoTagEntry;
 
     public AsyncCommand TogglePinCommand { get; }
+
     public AsyncCommand RemoveCommand { get; }
+
     public AsyncCommand RenameCommand { get; }
+
     public AsyncCommand MergeIntoCommand { get; }
 
     public Func<TagListItemViewModel, Task>? RequestTogglePin { get; set; }
+
     public Func<TagListItemViewModel, Task>? RequestRemove { get; set; }
+
     public Func<TagListItemViewModel, Task>? RequestRename { get; set; }
+
     public Func<TagListItemViewModel, Task>? RequestMergeInto { get; set; }
 }

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Dapper;
 using Patchouli.Core.Conflicts;
 using Patchouli.Core.Credentials;
@@ -23,19 +24,36 @@ using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class FileDocumentViewModel : ViewModelBase
+public sealed partial class FileDocumentViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    public string FilePath { get; set; } = "";
-    public string ItemId { get; set; } = "";
-    public string FileAssetId { get; set; } = "";
-    public string InstanceType { get; set; } = "primary_scan";
-    public string Output { get; set; } = "";
+
+    [ObservableProperty] public partial string FilePath { get; set; } = "";
+    [ObservableProperty] public partial string ItemId { get; set; } = "";
+    [ObservableProperty] public partial string FileAssetId { get; set; } = "";
+    [ObservableProperty] public partial string InstanceType { get; set; } = "primary_scan";
+    [ObservableProperty] public partial string Output { get; set; } = "";
+
     public ObservableCollection<string> RecentFileAssets { get; } = new();
     public ObservableCollection<string> RecentDocumentInstances { get; } = new();
     public AsyncCommand RegisterCommand { get; }
     public AsyncCommand AttachCommand { get; }
     public AsyncCommand ResolveCommand { get; }
+
+    partial void OnFilePathChanged(string value)
+    {
+        RegisterCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnItemIdChanged(string value)
+    {
+        AttachCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnFileAssetIdChanged(string value)
+    {
+        ResolveCommand.NotifyCanExecuteChanged();
+    }
 
     public FileDocumentViewModel(MainWindowViewModel main)
     {
@@ -47,15 +65,14 @@ public sealed class FileDocumentViewModel : ViewModelBase
             {
                 FileAssetId = r.Value.FileAssetId.ToString();
                 RecentFileAssets.Add($"{r.Value.FileAssetId} | {r.Value.FileName} ({r.Value.Status})");
-                Raise(nameof(FileAssetId));
             }
 
             Output = r.IsSuccess
                 ? $"File asset: {r.Value.FileAssetId}\n{r.Value.Status}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
-            Raise(nameof(Output));
             await _main.LogOperationAsync("register_file", Output);
-        });
+        }, () => !string.IsNullOrWhiteSpace(FilePath));
+
         AttachCommand = new AsyncCommand(async () =>
         {
             FileAssetId? f = string.IsNullOrWhiteSpace(FileAssetId)
@@ -72,10 +89,10 @@ public sealed class FileDocumentViewModel : ViewModelBase
             Output = r.IsSuccess
                 ? $"Document: {r.Value.DocumentInstanceId}\nPrimary: {r.Value.IsPrimary}"
                 : $"ERROR {r.ErrorCode}: {r.ErrorMessage}";
-            Raise(nameof(Output));
             await _main.LogOperationAsync("attach_document_instance", Output);
-        });
-        ResolveCommand = new AsyncCommand(ResolveAsync);
+        }, () => !string.IsNullOrWhiteSpace(ItemId));
+
+        ResolveCommand = new AsyncCommand(ResolveAsync, () => !string.IsNullOrWhiteSpace(FileAssetId));
     }
 
     private async Task ResolveAsync()
@@ -91,20 +108,17 @@ public sealed class FileDocumentViewModel : ViewModelBase
             if (resolved.IsFailure)
             {
                 Output = $"ERROR {resolved.ErrorCode}: {resolved.ErrorMessage}";
-                Raise(nameof(Output));
                 return;
             }
 
             Output = resolved.Value.WasExecuted
                 ? $"冲突已按 {resolved.Value.Descriptor.SelectedAction} 处理。"
                 : "冲突保持未解决。";
-            Raise(nameof(Output));
             return;
         }
 
         Output = result.IsSuccess
             ? $"{result.Value.Status}\n{result.Value.Confidence}\n{result.Value.RequiredAction}"
             : $"ERROR {result.ErrorCode}: {result.ErrorMessage}";
-        Raise(nameof(Output));
     }
 }

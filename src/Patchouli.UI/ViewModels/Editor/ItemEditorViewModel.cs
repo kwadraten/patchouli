@@ -10,198 +10,108 @@ using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
-using Patchouli.UI.ViewModels;
-using Patchouli.UI.ViewModels.Dialogs;
+using System.Collections.Specialized;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Disposables;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Host.Composition;
+using Patchouli.UI;
+using Patchouli.UI.Diagnostics;
+using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Core;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.UI.ViewModels.Editor;
 
 public sealed record CreatorRoleOption(string Key, string Label);
 
-public sealed class CreatorItemViewModel : ViewModelBase
+public sealed partial class CreatorItemViewModel : ViewModelBase
 {
-    private string _role = ItemCreatorRoles.Author;
-    private string _family = "";
-    private string _given = "";
-    private string _literal = "";
-    private string _suffix = "";
-    private string _particles = "";
-    private string _name = "";
-    private bool _isLiteral;
+    [ObservableProperty] private string _role = ItemCreatorRoles.Author;
+
+    [ObservableProperty] private string _family = "";
+
+    [ObservableProperty] private string _given = "";
+
+    [ObservableProperty] private string _literal = "";
+
+    [ObservableProperty] private string _suffix = "";
+
+    [ObservableProperty] private string _particles = "";
+
+    [ObservableProperty] private string _name = "";
+
+    [ObservableProperty] private bool _isLiteral;
+
+    [ObservableProperty] private bool _isExpanded;
+
     private bool _isApplyingName;
 
-    public string Role
+    partial void OnRoleChanged(string value)
     {
-        get => _role;
-        set
-        {
-            if (_role == value)
-            {
-                return;
-            }
+        OnPropertyChanged(nameof(SelectedRole));
+    }
 
-            _role = value;
-            Raise();
-            Raise(nameof(SelectedRole));
+    partial void OnLiteralChanged(string value)
+    {
+        if (_isApplyingName)
+        {
+            return;
+        }
+
+        bool isLit = !string.IsNullOrWhiteSpace(value);
+        if (isLit)
+        {
+            _isApplyingName = true;
+            try
+            {
+                IsLiteral = true;
+                Name = value;
+                Family = "";
+                Given = "";
+            }
+            finally
+            {
+                _isApplyingName = false;
+            }
+        }
+        else
+        {
+            IsLiteral = false;
         }
     }
 
-    public string Literal
+    partial void OnNameChanged(string value)
     {
-        get => _literal;
-        set
+        if (_isApplyingName)
         {
-            if (_literal == value)
-            {
-                return;
-            }
-
-            _literal = value;
-            Raise();
-            if (_isApplyingName)
-            {
-                return;
-            }
-
-            _isLiteral = !string.IsNullOrWhiteSpace(value);
-            _name = _isLiteral ? value : _name;
-            if (_isLiteral)
-            {
-                _family = "";
-                _given = "";
-                Raise(nameof(Name));
-                Raise(nameof(IsLiteral));
-                Raise(nameof(IsPersonalName));
-                Raise(nameof(Family));
-                Raise(nameof(Given));
-            }
+            return;
         }
+
+        ApplyNameParts();
     }
 
-    public string Family
+    partial void OnIsLiteralChanged(bool value)
     {
-        get => _family;
-        set
+        OnPropertyChanged(nameof(IsPersonalName));
+        if (_isApplyingName)
         {
-            if (_family == value)
-            {
-                return;
-            }
-
-            _family = value;
-            Raise();
+            return;
         }
+
+        ApplyNameParts();
     }
 
-    public string Given
+    public bool IsPersonalName => !IsLiteral;
+
+    [ObservableProperty] private IReadOnlyList<CreatorRoleOption> _availableRoles = DefaultRoleOptions();
+
+    partial void OnAvailableRolesChanged(IReadOnlyList<CreatorRoleOption> value)
     {
-        get => _given;
-        set
-        {
-            if (_given == value)
-            {
-                return;
-            }
-
-            _given = value;
-            Raise();
-        }
-    }
-
-    public string Suffix
-    {
-        get => _suffix;
-        set
-        {
-            if (_suffix == value)
-            {
-                return;
-            }
-
-            _suffix = value;
-            Raise();
-        }
-    }
-
-    public string Particles
-    {
-        get => _particles;
-        set
-        {
-            if (_particles == value)
-            {
-                return;
-            }
-
-            _particles = value;
-            Raise();
-        }
-    }
-
-    public string Name
-    {
-        get => _name;
-        set
-        {
-            if (_name == value)
-            {
-                return;
-            }
-
-            _name = value;
-            Raise();
-            ApplyNameParts();
-        }
-    }
-
-    public bool IsLiteral
-    {
-        get => _isLiteral;
-        set
-        {
-            if (_isLiteral == value)
-            {
-                return;
-            }
-
-            _isLiteral = value;
-            Raise();
-            Raise(nameof(IsPersonalName));
-            ApplyNameParts();
-        }
-    }
-
-    public bool IsPersonalName => !_isLiteral;
-
-    private bool _isExpanded;
-
-    public bool IsExpanded
-    {
-        get => _isExpanded;
-        set
-        {
-            if (_isExpanded == value)
-            {
-                return;
-            }
-
-            _isExpanded = value;
-            Raise();
-        }
-    }
-
-    private IReadOnlyList<CreatorRoleOption> _availableRoles = DefaultRoleOptions();
-
-    /// <summary>Role choices for the dropdown, driven by the active item-type profile.</summary>
-    public IReadOnlyList<CreatorRoleOption> AvailableRoles
-    {
-        get => _availableRoles;
-        set
-        {
-            _availableRoles = value;
-            Raise();
-            Raise(nameof(SelectedRole));
-        }
+        OnPropertyChanged(nameof(SelectedRole));
     }
 
     /// <summary>ComboBox selection wrapper around the English <see cref="Role" /> key.</summary>
@@ -241,47 +151,43 @@ public sealed class CreatorItemViewModel : ViewModelBase
     public void LoadFrom(ItemCreator creator)
     {
         _isApplyingName = true;
-        _role = creator.Role;
-        _family = creator.Family ?? "";
-        _given = creator.Given ?? "";
-        _literal = creator.Literal ?? "";
-        _suffix = creator.Suffix ?? "";
-        _particles = creator.Particles ?? "";
-        _isLiteral = !string.IsNullOrWhiteSpace(_literal);
-        _name = _isLiteral
-            ? _literal
-            : FormatPersonalName(_family, _given, _particles, _suffix);
-        _isApplyingName = false;
-
-        Raise(nameof(Role));
-        Raise(nameof(Name));
-        Raise(nameof(IsLiteral));
-        Raise(nameof(IsPersonalName));
-        Raise(nameof(Family));
-        Raise(nameof(Given));
-        Raise(nameof(Literal));
-        Raise(nameof(Suffix));
-        Raise(nameof(Particles));
+        try
+        {
+            Role = creator.Role;
+            Family = creator.Family ?? "";
+            Given = creator.Given ?? "";
+            Literal = creator.Literal ?? "";
+            Suffix = creator.Suffix ?? "";
+            Particles = creator.Particles ?? "";
+            IsLiteral = !string.IsNullOrWhiteSpace(Literal);
+            Name = IsLiteral
+                ? Literal
+                : FormatPersonalName(Family, Given, Particles, Suffix);
+        }
+        finally
+        {
+            _isApplyingName = false;
+        }
     }
 
     private void ApplyNameParts()
     {
         ItemCreatorNameParts parts = ItemCreatorNameParser.Parse(
-            _name,
-            _isLiteral ? ItemCreatorNameMode.Literal : ItemCreatorNameMode.Personal);
+            Name,
+            IsLiteral ? ItemCreatorNameMode.Literal : ItemCreatorNameMode.Personal);
         _isApplyingName = true;
-        _family = parts.Family ?? "";
-        _given = parts.Given ?? "";
-        _literal = parts.Literal ?? "";
-        _suffix = parts.Suffix ?? "";
-        _particles = parts.Particles ?? "";
-        _isApplyingName = false;
-
-        Raise(nameof(Family));
-        Raise(nameof(Given));
-        Raise(nameof(Literal));
-        Raise(nameof(Suffix));
-        Raise(nameof(Particles));
+        try
+        {
+            Family = parts.Family ?? "";
+            Given = parts.Given ?? "";
+            Literal = parts.Literal ?? "";
+            Suffix = parts.Suffix ?? "";
+            Particles = parts.Particles ?? "";
+        }
+        finally
+        {
+            _isApplyingName = false;
+        }
     }
 
     private static string FormatPersonalName(string family, string given, string particles, string suffix)
@@ -341,11 +247,13 @@ public sealed class LinkedDocumentInstanceItemViewModel : ViewModelBase
     public string RemoveLabel { get; }
 }
 
-public sealed class IdentifierItemViewModel : ViewModelBase
+public sealed partial class IdentifierItemViewModel : ViewModelBase
 {
     private readonly string _pendingScheme = "";
-    private bool _isBusy;
-    private string _status = "";
+
+    [ObservableProperty] private bool _isBusy;
+
+    [ObservableProperty] private string _status = "";
 
     public IdentifierItemViewModel(
         ItemIdentifier identifier,
@@ -371,46 +279,16 @@ public sealed class IdentifierItemViewModel : ViewModelBase
 
     public ItemIdentifier? ItemIdentifier { get; }
     public string DisplayText { get; }
-    public string Scheme => ItemIdentifier?.Scheme ?? _pendingScheme;
-    public bool IsPending => ItemIdentifier is null;
+
+    [ExcludeFromDerivedGeneration] public string Scheme => ItemIdentifier?.Scheme ?? _pendingScheme;
+
+    [ExcludeFromDerivedGeneration] public bool IsPending => ItemIdentifier is null;
+
     public bool CanLookup { get; }
-    public bool ShowLookup => CanLookup && !_isBusy;
-    public bool ShowRemove => ItemIdentifier is not null && !_isBusy;
+    public bool ShowLookup => CanLookup && !IsBusy;
+    public bool ShowRemove => ItemIdentifier is not null && !IsBusy;
 
-    public bool IsBusy
-    {
-        get => _isBusy;
-        set
-        {
-            if (_isBusy == value)
-            {
-                return;
-            }
-
-            _isBusy = value;
-            Raise();
-            Raise(nameof(ShowLookup));
-            Raise(nameof(ShowRemove));
-        }
-    }
-
-    public string Status
-    {
-        get => _status;
-        set
-        {
-            if (_status == value)
-            {
-                return;
-            }
-
-            _status = value;
-            Raise();
-            Raise(nameof(HasStatus));
-        }
-    }
-
-    public bool HasStatus => !string.IsNullOrWhiteSpace(Status);
+    public bool HasStatus => Status.Length > 0;
     public AsyncCommand LookupCommand { get; }
     public AsyncCommand RemoveCommand { get; }
 
@@ -488,10 +366,11 @@ public static class ExtraCslVariableCatalog
     }
 }
 
-public sealed class ExtraCslRowViewModel : ViewModelBase
+public sealed partial class ExtraCslRowViewModel : ViewModelBase
 {
-    private string _value = "";
-    private bool _isProjection;
+    [ObservableProperty] private string _value = "";
+
+    [ObservableProperty] private bool _isProjection;
 
     public ExtraCslRowViewModel(string key, string label, bool isMultiline, Action<ExtraCslRowViewModel> remove)
     {
@@ -510,50 +389,24 @@ public sealed class ExtraCslRowViewModel : ViewModelBase
 
     public string Label { get; }
     public bool IsMultiline { get; }
-    public bool CanRemove => !_isProjection;
-
-    /// <summary>True when the active type projects this row into its basic-information form.</summary>
-    public bool IsProjection
-    {
-        get => _isProjection;
-        set
-        {
-            if (_isProjection == value)
-            {
-                return;
-            }
-
-            _isProjection = value;
-            Raise();
-            Raise(nameof(CanRemove));
-        }
-    }
+    public bool CanRemove => !IsProjection;
 
     /// <summary>Invoked after <see cref="Value" /> changes; syncs extra-CSL-backed form fields.</summary>
     public Action<ExtraCslRowViewModel>? ValueChanged { get; set; }
 
-    public string Value
+    partial void OnValueChanged(string value)
     {
-        get => _value;
-        set
-        {
-            if (_value == value)
-            {
-                return;
-            }
-
-            _value = value;
-            Raise();
-            ValueChanged?.Invoke(this);
-        }
+        ValueChanged?.Invoke(this);
     }
 
     public AsyncCommand RemoveCommand { get; }
 }
 
-public sealed class ItemEditorViewModel : ViewModelBase
+public sealed partial class ItemEditorViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private bool _isConstructing = true;
+    private bool _isLoading;
     private ItemId? _itemId;
     private ItemMetadata? _loadedItem;
     private readonly List<ItemIdentifierInput> _pendingIdentifiers = new();
@@ -566,22 +419,30 @@ public sealed class ItemEditorViewModel : ViewModelBase
     private readonly List<CreatorItemViewModel> _creatorCache = new();
     private readonly ObservableCollection<CreatorItemViewModel> _emptyCreators = new();
     private IReadOnlyList<CreatorRoleOption> _creatorRoleOptions = CreatorItemViewModel.DefaultRoleOptions();
-    private string _cslPreviewText = "保存题录后可使用默认 CSL 样式预览。";
-    private bool _hasCslPreviewWarning;
     private bool _suppressProjectionSync;
-    private ExtraCslVariableOption? _selectedExtraCslVariable;
-    private NavCategoryViewModel _activeNavSection = null!;
     private bool _availableItemTypesLoaded;
     private bool _hasUnsavedChanges;
     private bool _collectionsDirty;
-    private bool _isSaving;
+    private CompositeDisposable _fieldSubscriptions = new();
+    private readonly Subject<Unit> _itemTypeRequests = new();
+    private readonly SemaphoreSlim _loadGate = new(1, 1);
+    private int _buildFieldsGeneration;
 
     /// <summary>Test seam over <see cref="MetadataLookupUiBridge" />; production code never overrides it.</summary>
     internal Func<HostServices, ItemId, ItemIdentifier, CancellationToken, Task<MetadataLookupOutcome>> LookupRunner =
         MetadataLookupUiBridge.LookupAsync;
 
     public ItemEditorViewModel(MainWindowViewModel main)
+        : this(main, null, null)
     {
+    }
+
+    internal ItemEditorViewModel(
+        MainWindowViewModel main,
+        IScheduler? uiScheduler,
+        IScheduler? timingScheduler)
+    {
+        _isConstructing = true;
         _main = main;
         NewCommand = new AsyncCommand(NewAsync);
         SaveCommand = new AsyncCommand(SaveAsync);
@@ -593,9 +454,64 @@ public sealed class ItemEditorViewModel : ViewModelBase
         ImportBiblatexFromFileCommand = new AsyncCommand(ImportBiblatexFromFileAsync);
         AddExtraCslRowCommand = new AsyncCommand(AddExtraCslRow);
 
-        _activeNavSection = NavSections[0];
+        ActiveNavSection = NavSections[0];
         RefreshExtraCslVariableChoices();
         BuildFields(null);
+
+        IScheduler actualUiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } syncContext
+            ? new SynchronizationContextScheduler(syncContext)
+            : ImmediateScheduler.Instance);
+        IScheduler actualTimingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
+
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _itemTypeRequests,
+            TimeSpan.Zero,
+            actualTimingScheduler,
+            actualUiScheduler,
+            token => BuildFieldsAsync(token),
+            ex => UnexpectedExceptions.Sink.Report(ex, "item-editor-build-fields")));
+
+        Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => MoreFields.CollectionChanged += h,
+                h => MoreFields.CollectionChanged -= h)
+            .Select(_ => MoreFields.Count > 0)
+            .BindOutput(this, has => HasMoreFields = has, ImmediateScheduler.Instance, null, true,
+                MoreFields.Count > 0);
+
+        Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => IdentifierSchemeShortcuts.CollectionChanged += h,
+                h => IdentifierSchemeShortcuts.CollectionChanged -= h)
+            .Select(_ => IdentifierSchemeShortcuts.Count > 0)
+            .BindOutput(this, has => HasIdentifierSchemeShortcuts = has, ImmediateScheduler.Instance, null, true,
+                IdentifierSchemeShortcuts.Count > 0);
+
+        Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => DocumentCommits.CollectionChanged += h,
+                h => DocumentCommits.CollectionChanged -= h)
+            .Select(_ => DocumentCommits.Count > 0)
+            .BindOutput(this, has => HasDocumentCommits = has, ImmediateScheduler.Instance, null, true,
+                DocumentCommits.Count > 0);
+
+        IObservable<Unit> collectionsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => Collections.CollectionChanged += h,
+                h => Collections.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        collectionsChanged
+            .Select(_ => Collections.Count > 0)
+            .BindOutput(this, has => HasCollections = has, ImmediateScheduler.Instance, null, true,
+                Collections.Count > 0);
+
+        collectionsChanged
+            .Select(_ => Collections.Count == 0)
+            .BindOutput(this, no => NoCollections = no, ImmediateScheduler.Instance, null, true,
+                Collections.Count == 0);
+
+        _isConstructing = false;
     }
 
     /// <summary>Left-navigation sections; the page keeps a single view model so saving stays atomic.</summary>
@@ -607,93 +523,77 @@ public sealed class ItemEditorViewModel : ViewModelBase
         new("文件关联", "FolderOpen", ItemEditorSection.Files)
     ];
 
-    public NavCategoryViewModel ActiveNavSection
+    [ObservableProperty] public partial NavCategoryViewModel ActiveNavSection { get; set; } = null!;
+
+    public bool IsBasicSectionActive => ActiveNavSection?.Content is ItemEditorSection.BasicInformation;
+    public bool IsExtendedSectionActive => ActiveNavSection?.Content is ItemEditorSection.ExtendedInformation;
+    public bool IsIdentifiersSectionActive => ActiveNavSection?.Content is ItemEditorSection.Identifiers;
+    public bool IsFilesSectionActive => ActiveNavSection?.Content is ItemEditorSection.Files;
+
+    [ObservableProperty] public partial string ItemIdText { get; private set; } = "";
+
+    public string Header => HasItem ? "编辑题录" : "新建题录";
+    public bool HasItem => ItemIdText.Length > 0;
+
+    [ObservableProperty] public partial bool IsSaving { get; private set; }
+
+    internal long LoadedRevision { get; private set; }
+
+    internal void SetLoadedRevisionForTesting(long revision)
     {
-        get => _activeNavSection;
-        set
-        {
-            if (ReferenceEquals(_activeNavSection, value))
-            {
-                return;
-            }
-
-            _activeNavSection = value;
-            Raise();
-            Raise(nameof(IsBasicSectionActive));
-            Raise(nameof(IsExtendedSectionActive));
-            Raise(nameof(IsIdentifiersSectionActive));
-            Raise(nameof(IsFilesSectionActive));
-        }
+        LoadedRevision = revision;
     }
-
-    public bool IsBasicSectionActive => Equals(_activeNavSection.Content, ItemEditorSection.BasicInformation);
-    public bool IsExtendedSectionActive => Equals(_activeNavSection.Content, ItemEditorSection.ExtendedInformation);
-    public bool IsIdentifiersSectionActive => Equals(_activeNavSection.Content, ItemEditorSection.Identifiers);
-    public bool IsFilesSectionActive => Equals(_activeNavSection.Content, ItemEditorSection.Files);
-
-    public string Header => _itemId is null ? "新建题录" : "编辑题录";
-    public string ItemIdText => _itemId?.ToString() ?? "";
-    public bool HasItem => _itemId is not null;
-    public bool IsSaving => _isSaving;
 
     /// <summary>
     /// Indicates whether the editor has unsaved changes. Used by the merge service guard to refuse
     /// merging items that are currently being edited.
     /// </summary>
+    [ExcludeFromDerivedGeneration]
     public bool HasUnsavedChanges => _hasUnsavedChanges || HasPendingOperations();
 
     /// <summary>
     /// True when the loaded item has been merged into another item. In this state editing is disabled
-    /// and a banner points to the target item.
+    /// and a banner points to the target item. The three merged-state properties are hand-written
+    /// mutable state notified through <see cref="RaiseAll"/> on every load/new path.
     /// </summary>
     public bool IsMergedSource { get; private set; }
 
     public string MergedIntoItemIdText { get; private set; } = "";
     public string MergedBannerText { get; private set; } = "";
 
-    private string _itemType = "book";
+    [ObservableProperty] public partial string ItemType { get; set; } = "book";
 
-    public string ItemType
+    partial void OnItemTypeChanged(string value)
     {
-        get => _itemType;
-        set
+        SelectedItemTypeOption = AvailableItemTypes.FirstOrDefault(option => option.Key == value);
+        Raise(nameof(IsExtendedSectionEmpty));
+        if (!_isConstructing && !_isLoading)
         {
-            if (_itemType == value)
-            {
-                return;
-            }
-
-            _itemType = value;
-            Raise();
-            Raise(nameof(SelectedItemTypeOption));
-            Raise(nameof(IsGeneralTypeWarningVisible));
-            Raise(nameof(IsExtraCslCardVisible));
-            Raise(nameof(IsExtendedSectionEmpty));
-            BuildFieldsAsync().Observe(nameof(ItemEditorViewModel), nameof(BuildFieldsAsync));
+            _itemTypeRequests.OnNext(Unit.Default);
             UpdateUnsavedCslPreviewState();
         }
     }
 
-    public bool IsGeneralTypeWarningVisible => _itemType == "general";
+    public bool IsGeneralTypeWarningVisible => ItemType == "general";
 
     /// <summary>The structured extra-CSL editor is only offered for concrete (non-general) types.</summary>
-    public bool IsExtraCslCardVisible => _itemType != "general";
+    public bool IsExtraCslCardVisible => ItemType != "general";
 
     /// <summary>The 扩展信息 section has no content for the general type.</summary>
+    [ExcludeFromDerivedGeneration]
     public bool IsExtendedSectionEmpty => !HasMoreFields && !IsExtraCslCardVisible;
 
     public ObservableCollection<ItemTypeOption> AvailableItemTypes { get; } = new();
 
     /// <summary>ComboBox selection wrapper; <see cref="ItemType" /> stays the English CSL key everywhere else.</summary>
-    public ItemTypeOption? SelectedItemTypeOption
+    [ObservableProperty]
+    public partial ItemTypeOption? SelectedItemTypeOption { get; set; }
+
+    partial void OnSelectedItemTypeOptionChanged(ItemTypeOption? value)
     {
-        get => AvailableItemTypes.FirstOrDefault(option => option.Key == _itemType);
-        set
+        if (value is not null && value.Key != ItemType)
         {
-            if (value is not null)
-            {
-                ItemType = value.Key;
-            }
+            ItemType = value.Key;
         }
     }
 
@@ -702,26 +602,17 @@ public sealed class ItemEditorViewModel : ViewModelBase
     /// <summary>Overflow fields rendered inside the collapsed "更多字段" section of the metadata card.</summary>
     public ObservableCollection<ItemFieldDescriptor> MoreFields { get; } = new();
 
-    public bool HasMoreFields => MoreFields.Count > 0;
+    [ObservableProperty] public partial bool HasMoreFields { get; private set; }
+
+    partial void OnHasMoreFieldsChanged(bool value)
+    {
+        Raise(nameof(IsExtendedSectionEmpty));
+    }
 
     public ObservableCollection<ExtraCslRowViewModel> ExtraCslRows { get; } = new();
     public ObservableCollection<ExtraCslVariableOption> AvailableExtraCslVariables { get; } = new();
 
-    public ExtraCslVariableOption? SelectedExtraCslVariable
-    {
-        get => _selectedExtraCslVariable;
-        set
-        {
-            if (_selectedExtraCslVariable == value)
-            {
-                return;
-            }
-
-            _selectedExtraCslVariable = value;
-            Raise();
-            Raise(nameof(CanAddExtraCslRow));
-        }
-    }
+    [ObservableProperty] public partial ExtraCslVariableOption? SelectedExtraCslVariable { get; set; }
 
     public bool CanAddExtraCslRow => SelectedExtraCslVariable is not null;
     public AsyncCommand AddExtraCslRowCommand { get; }
@@ -744,40 +635,18 @@ public sealed class ItemEditorViewModel : ViewModelBase
         set => SetFieldValue("IssuedDate", value);
     }
 
+    [ExcludeFromDerivedGeneration]
     public ObservableCollection<CreatorItemViewModel> Creators => GetCreatorField()?.Creators ?? _emptyCreators;
 
-    public string CslPreviewText
-    {
-        get => _cslPreviewText;
-        private set
-        {
-            if (_cslPreviewText == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string CslPreviewText { get; private set; } = "保存题录后可使用默认 CSL 样式预览。";
 
-            _cslPreviewText = value;
-            Raise();
-        }
-    }
-
-    public bool HasCslPreviewWarning
-    {
-        get => _hasCslPreviewWarning;
-        private set
-        {
-            if (_hasCslPreviewWarning == value)
-            {
-                return;
-            }
-
-            _hasCslPreviewWarning = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool HasCslPreviewWarning { get; private set; }
 
     private void BuildFields(CslItemTypeProfile? itemTypeProfile)
     {
+        _fieldSubscriptions.Dispose();
+        _fieldSubscriptions = new CompositeDisposable();
+
         CacheCurrentFields();
         UpdateCreatorRoles(itemTypeProfile);
 
@@ -798,7 +667,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
         SynchronizeExtraCslProjectionRows();
         SyncProjectionFields();
-        Raise(nameof(HasMoreFields));
         Raise(nameof(IsExtendedSectionEmpty));
         RaiseEditorFieldProxies();
     }
@@ -844,7 +712,12 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 field.Creators.Add(CreateCreatorItem());
             }
 
-            field.Creators.CollectionChanged += (_, _) => MarkUnsaved();
+            IDisposable creatorSub = Observable
+                .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                    h => field.Creators.CollectionChanged += h,
+                    h => field.Creators.CollectionChanged -= h)
+                .Subscribe(_ => MarkUnsaved());
+            _fieldSubscriptions.Add(creatorSub);
 
             field.AddCreatorCommand = new AsyncCommand(() =>
             {
@@ -856,11 +729,25 @@ public sealed class ItemEditorViewModel : ViewModelBase
         return field;
     }
 
-    private async Task BuildFieldsAsync()
+    private async Task BuildFieldsAsync(CancellationToken cancellationToken = default)
     {
+        int generation = Interlocked.Increment(ref _buildFieldsGeneration);
+        string currentType = ItemType;
+
         await EnsureAvailableItemTypesAsync();
+        if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _buildFieldsGeneration))
+        {
+            return;
+        }
+
         Result<CslItemTypeProfile> profileResult =
-            await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(_itemType);
+            await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(currentType);
+
+        if (cancellationToken.IsCancellationRequested || generation != Volatile.Read(ref _buildFieldsGeneration))
+        {
+            return;
+        }
+
         BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
     }
 
@@ -883,8 +770,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         {
             IdentifierScheme = IdentifierSchemeShortcuts[0].Scheme;
         }
-
-        Raise(nameof(HasIdentifierSchemeShortcuts));
     }
 
     private void SelectIdentifierScheme(string scheme)
@@ -960,26 +845,25 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Raise(nameof(HasUnsavedChanges));
     }
 
-    private string _status = "就绪";
+    [ObservableProperty] public partial string Status { get; private set; } = "就绪";
 
-    public string Status
+    partial void OnStatusChanged(string value)
     {
-        get => _status;
-        private set
+        if (_isConstructing)
         {
-            _status = value;
-            Raise();
-            if (!string.IsNullOrWhiteSpace(value))
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不能", StringComparison.Ordinal) ||
+                value.Contains("无法", StringComparison.Ordinal))
             {
-                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不能", StringComparison.Ordinal) ||
-                    value.Contains("无法", StringComparison.Ordinal))
-                {
-                    _main.ReportError(value);
-                }
-                else
-                {
-                    _main.Report(value);
-                }
+                _main.ReportError(value);
+            }
+            else
+            {
+                _main.Report(value);
             }
         }
     }
@@ -989,27 +873,20 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public ObservableCollection<LinkedDocumentInstanceItemViewModel> LinkedFiles { get; } = new();
     public ObservableCollection<DocumentCommitViewModel> DocumentCommits { get; } = new();
     public ObservableCollection<CollectionSelectionItemViewModel> Collections { get; } = new();
-    public bool HasIdentifierSchemeShortcuts => IdentifierSchemeShortcuts.Count > 0;
-    public bool HasDocumentCommits => DocumentCommits.Count > 0;
-    public bool HasCollections => Collections.Count > 0;
-    public bool NoCollections => Collections.Count == 0;
 
-    private LinkedDocumentInstanceItemViewModel? _selectedHistoryDocument;
+    [ObservableProperty] public partial bool HasIdentifierSchemeShortcuts { get; private set; }
 
-    public LinkedDocumentInstanceItemViewModel? SelectedHistoryDocument
+    [ObservableProperty] public partial bool HasDocumentCommits { get; private set; }
+
+    [ObservableProperty] public partial bool HasCollections { get; private set; }
+
+    [ObservableProperty] public partial bool NoCollections { get; private set; } = true;
+
+    [ObservableProperty] public partial LinkedDocumentInstanceItemViewModel? SelectedHistoryDocument { get; set; }
+
+    partial void OnSelectedHistoryDocumentChanged(LinkedDocumentInstanceItemViewModel? value)
     {
-        get => _selectedHistoryDocument;
-        set
-        {
-            if (ReferenceEquals(_selectedHistoryDocument, value))
-            {
-                return;
-            }
-
-            _selectedHistoryDocument = value;
-            Raise();
-            _ = LoadDocumentCommitsAsync();
-        }
+        LoadDocumentCommitsAsync().Observe(nameof(ItemEditorViewModel), nameof(LoadDocumentCommitsAsync));
     }
 
     public AsyncCommand NewCommand { get; }
@@ -1021,99 +898,69 @@ public sealed class ItemEditorViewModel : ViewModelBase
     public AsyncCommand ImportBiblatexFromClipboardCommand { get; }
     public AsyncCommand ImportBiblatexFromFileCommand { get; }
 
-    public string FilePath { get; set; } = "";
+    [ObservableProperty] public partial string FilePath { get; set; } = "";
 
     // Identifier specific bindings
-    private string _identifierScheme = BuiltInIdentifierSchemes.DOI;
+    [ObservableProperty] public partial string IdentifierScheme { get; set; } = BuiltInIdentifierSchemes.DOI;
 
-    public string IdentifierScheme
-    {
-        get => _identifierScheme;
-        set
-        {
-            if (_identifierScheme == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string IdentifierValue { get; set; } = "";
 
-            _identifierScheme = value;
-            Raise();
-        }
-    }
-
-    private string _identifierValue = "";
-
-    public string IdentifierValue
-    {
-        get => _identifierValue;
-        set
-        {
-            if (_identifierValue == value)
-            {
-                return;
-            }
-
-            _identifierValue = value;
-            Raise();
-        }
-    }
-
-    private string _identifierNote = "";
-
-    public string IdentifierNote
-    {
-        get => _identifierNote;
-        set
-        {
-            if (_identifierNote == value)
-            {
-                return;
-            }
-
-            _identifierNote = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string IdentifierNote { get; set; } = "";
 
     public async Task NewAsync()
     {
         await EnsureAvailableItemTypesAsync();
-        _itemId = null;
-        _loadedItem = null;
-        IsMergedSource = false;
-        MergedIntoItemIdText = "";
-        MergedBannerText = "";
-        _fieldValueCache.Clear();
-        _creatorCache.Clear();
-        _projectionStaged.Clear();
-        ItemType = "general";
-
-        foreach (ItemFieldDescriptor f in Fields.Concat(MoreFields))
+        _isLoading = true;
+        Interlocked.Increment(ref _buildFieldsGeneration);
+        try
         {
-            f.Value = "";
-            if (f.Type == "CreatorList")
-            {
-                f.Creators.Clear();
-                f.Creators.Add(CreateCreatorItem());
-            }
-        }
+            LoadedRevision = 0;
+            _itemId = null;
+            ItemIdText = "";
+            _loadedItem = null;
+            IsMergedSource = false;
+            MergedIntoItemIdText = "";
+            MergedBannerText = "";
+            _fieldValueCache.Clear();
+            _creatorCache.Clear();
+            _projectionStaged.Clear();
+            ItemType = "general";
 
-        Status = "就绪";
-        Identifiers.Clear();
-        _pendingIdentifiers.Clear();
-        _pendingIdentifierRemovals.Clear();
-        _pendingFileRegistrations.Clear();
-        _pendingDocumentRemovals.Clear();
-        _pendingPrimaryDocumentId = null;
-        LinkedFiles.Clear();
-        DocumentCommits.Clear();
-        SelectedHistoryDocument = null;
-        ExtraCslRows.Clear();
-        RefreshExtraCslVariableChoices();
-        UpdateUnsavedCslPreviewState();
-        await RefreshCollectionsAsync(await _main.ServicesAsync());
-        ResetUnsavedState();
-        RaiseAll();
+            Result<CslItemTypeProfile> profileResult =
+                await (await _main.ServicesAsync()).ItemTypeProfiles.GetProfileAsync(ItemType);
+            BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
+
+            foreach (ItemFieldDescriptor f in Fields.Concat(MoreFields))
+            {
+                f.Value = "";
+                if (f.Type == "CreatorList")
+                {
+                    f.Creators.Clear();
+                    f.Creators.Add(CreateCreatorItem());
+                }
+            }
+
+            Status = "就绪";
+            Identifiers.Clear();
+            _pendingIdentifiers.Clear();
+            _pendingIdentifierRemovals.Clear();
+            _pendingFileRegistrations.Clear();
+            _pendingDocumentRemovals.Clear();
+            _pendingPrimaryDocumentId = null;
+            LinkedFiles.Clear();
+            DocumentCommits.Clear();
+            SelectedHistoryDocument = null;
+            ExtraCslRows.Clear();
+            RefreshExtraCslVariableChoices();
+            UpdateUnsavedCslPreviewState();
+            await RefreshCollectionsAsync(await _main.ServicesAsync());
+            ResetUnsavedState();
+            RaiseAll();
+        }
+        finally
+        {
+            _isLoading = false;
+        }
     }
 
     private async Task DiscardAsync()
@@ -1128,106 +975,117 @@ public sealed class ItemEditorViewModel : ViewModelBase
         }
 
         Status = "已放弃未保存的更改";
-        Raise(nameof(Status));
     }
 
     public async Task LoadAsync(string itemId)
     {
-        await EnsureAvailableItemTypesAsync();
-        HostServices services = await _main.ServicesAsync();
-        ItemId parsed = ItemId.Parse(itemId);
-        Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
-        if (item.IsFailure)
+        // 串行化重入：库修订事件（线程池线程）与用户显式加载可能并发触发 LoadAsync，
+        // 并发执行会在 ExtraCslRows 的 Clear 与枚举之间产生竞态。
+        await _loadGate.WaitAsync();
+        _isLoading = true;
+        Interlocked.Increment(ref _buildFieldsGeneration);
+        try
         {
-            string? mergedInto = await TryGetMergedIntoAsync(services, parsed);
-            if (!string.IsNullOrWhiteSpace(mergedInto))
+            await EnsureAvailableItemTypesAsync();
+            HostServices services = await _main.ServicesAsync();
+            Result<long> currentRevision = await services.LibraryRevisions.GetCurrentRevisionAsync();
+            LoadedRevision = currentRevision.IsSuccess ? currentRevision.Value : 0;
+            ItemId parsed = ItemId.Parse(itemId);
+            Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
+            if (item.IsFailure)
             {
-                _itemId = parsed;
-                _loadedItem = null;
-                IsMergedSource = true;
-                MergedIntoItemIdText = mergedInto;
-                MergedBannerText = $"该题录已合并到 {mergedInto}。";
-                Status = MergedBannerText;
-                Raise(nameof(IsMergedSource));
-                Raise(nameof(MergedIntoItemIdText));
-                Raise(nameof(MergedBannerText));
-                Raise(nameof(Status));
-                RaiseAll();
+                string? mergedInto = await TryGetMergedIntoAsync(services, parsed);
+                if (!string.IsNullOrWhiteSpace(mergedInto))
+                {
+                    _itemId = parsed;
+                    ItemIdText = parsed.ToString();
+                    _loadedItem = null;
+                    IsMergedSource = true;
+                    MergedIntoItemIdText = mergedInto;
+                    MergedBannerText = $"该题录已合并到 {mergedInto}。";
+                    Status = MergedBannerText;
+                    RaiseAll();
+                    return;
+                }
+
+                LoadedRevision = 0;
+                Status = item.ErrorMessage ?? "无法加载题录。";
+                _main.Report(Status);
                 return;
             }
 
-            Status = item.ErrorMessage ?? "无法加载题录。";
-            Raise(nameof(Status));
-            _main.Report(Status);
-            return;
+            IsMergedSource = false;
+            MergedIntoItemIdText = "";
+            MergedBannerText = "";
+
+            _itemId = parsed;
+            ItemIdText = parsed.ToString();
+            _loadedItem = item.Value;
+            ItemType = item.Value.ItemType;
+            Raise(nameof(ItemType));
+            SelectedItemTypeOption = AvailableItemTypes.FirstOrDefault(option => option.Key == ItemType);
+
+            _fieldValueCache.Clear();
+            _creatorCache.Clear();
+            _fieldValueCache["Title"] = item.Value.Title;
+            _fieldValueCache["Subtitle"] = item.Value.Subtitle ?? "";
+            _fieldValueCache["TitleShort"] = item.Value.TitleShort ?? "";
+            _fieldValueCache["IssuedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Issued, item.Value.Date);
+            _fieldValueCache["AccessedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Accessed, null);
+            _fieldValueCache["OriginalDate"] = FormatDate(item.Value.Dates, ItemDateRoles.OriginalDate, null);
+            _fieldValueCache["EventDate"] = FormatDate(item.Value.Dates, ItemDateRoles.EventDate, null);
+            _fieldValueCache["SubmittedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Submitted, null);
+            _fieldValueCache["PublicationTitle"] = item.Value.PublicationTitle ?? "";
+            _fieldValueCache["ContainerTitleShort"] = item.Value.ContainerTitleShort ?? "";
+            _fieldValueCache["CollectionTitle"] = item.Value.CollectionTitle ?? "";
+            _fieldValueCache["Publisher"] = item.Value.Publisher ?? "";
+            _fieldValueCache["Place"] = item.Value.Place ?? "";
+            _fieldValueCache["Edition"] = item.Value.Edition ?? "";
+            _fieldValueCache["Genre"] = item.Value.Genre ?? "";
+            _fieldValueCache["Number"] = item.Value.Number ?? "";
+            _fieldValueCache["ChapterNumber"] = item.Value.ChapterNumber ?? "";
+            _fieldValueCache["Volume"] = item.Value.Volume ?? "";
+            _fieldValueCache["Version"] = item.Value.Version ?? "";
+            _fieldValueCache["Issue"] = item.Value.Issue ?? "";
+            _fieldValueCache["Pages"] = item.Value.Pages ?? "";
+            _fieldValueCache["Language"] = item.Value.Language ?? "";
+            _fieldValueCache["Status"] = item.Value.Status ?? "";
+            _fieldValueCache["Note"] = item.Value.Note ?? "";
+            _fieldValueCache["AbstractText"] = item.Value.Abstract ?? "";
+            _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
+            LoadExtraCslRows(item.Value.CustomFieldsJson);
+            foreach (ItemCreator creator in item.Value.Creators)
+            {
+                CreatorItemViewModel editableCreator = CreateCreatorItem();
+                editableCreator.LoadFrom(creator);
+                _creatorCache.Add(editableCreator);
+            }
+
+            Result<CslItemTypeProfile> profileResult = await services.ItemTypeProfiles.GetProfileAsync(ItemType);
+            Fields.Clear();
+            BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
+
+            Status = $"正在编辑：{item.Value.Title}";
+            _pendingIdentifiers.Clear();
+            _pendingIdentifierRemovals.Clear();
+            _pendingFileRegistrations.Clear();
+            _pendingDocumentRemovals.Clear();
+            _pendingPrimaryDocumentId = null;
+            _projectionStaged.Clear();
+
+            await RefreshIdentifiersAsync();
+            await RefreshLinkedFilesAsync();
+            await RefreshDocumentCommitsAsync();
+            await RefreshCslPreviewAsync();
+            await RefreshCollectionsAsync(services);
+            ResetUnsavedState();
+            RaiseAll();
         }
-
-        IsMergedSource = false;
-        MergedIntoItemIdText = "";
-        MergedBannerText = "";
-
-        _itemId = parsed;
-        _loadedItem = item.Value;
-        _itemType = item.Value.ItemType;
-        Raise(nameof(ItemType));
-        Raise(nameof(SelectedItemTypeOption));
-        Raise(nameof(IsGeneralTypeWarningVisible));
-
-        _fieldValueCache.Clear();
-        _creatorCache.Clear();
-        _fieldValueCache["Title"] = item.Value.Title;
-        _fieldValueCache["Subtitle"] = item.Value.Subtitle ?? "";
-        _fieldValueCache["TitleShort"] = item.Value.TitleShort ?? "";
-        _fieldValueCache["IssuedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Issued, item.Value.Date);
-        _fieldValueCache["AccessedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Accessed, null);
-        _fieldValueCache["OriginalDate"] = FormatDate(item.Value.Dates, ItemDateRoles.OriginalDate, null);
-        _fieldValueCache["EventDate"] = FormatDate(item.Value.Dates, ItemDateRoles.EventDate, null);
-        _fieldValueCache["SubmittedDate"] = FormatDate(item.Value.Dates, ItemDateRoles.Submitted, null);
-        _fieldValueCache["PublicationTitle"] = item.Value.PublicationTitle ?? "";
-        _fieldValueCache["ContainerTitleShort"] = item.Value.ContainerTitleShort ?? "";
-        _fieldValueCache["CollectionTitle"] = item.Value.CollectionTitle ?? "";
-        _fieldValueCache["Publisher"] = item.Value.Publisher ?? "";
-        _fieldValueCache["Place"] = item.Value.Place ?? "";
-        _fieldValueCache["Edition"] = item.Value.Edition ?? "";
-        _fieldValueCache["Genre"] = item.Value.Genre ?? "";
-        _fieldValueCache["Number"] = item.Value.Number ?? "";
-        _fieldValueCache["ChapterNumber"] = item.Value.ChapterNumber ?? "";
-        _fieldValueCache["Volume"] = item.Value.Volume ?? "";
-        _fieldValueCache["Version"] = item.Value.Version ?? "";
-        _fieldValueCache["Issue"] = item.Value.Issue ?? "";
-        _fieldValueCache["Pages"] = item.Value.Pages ?? "";
-        _fieldValueCache["Language"] = item.Value.Language ?? "";
-        _fieldValueCache["Status"] = item.Value.Status ?? "";
-        _fieldValueCache["Note"] = item.Value.Note ?? "";
-        _fieldValueCache["AbstractText"] = item.Value.Abstract ?? "";
-        _fieldValueCache["TagsText"] = FormatTags(item.Value.TagsJson);
-        LoadExtraCslRows(item.Value.CustomFieldsJson);
-        foreach (ItemCreator creator in item.Value.Creators)
+        finally
         {
-            CreatorItemViewModel editableCreator = CreateCreatorItem();
-            editableCreator.LoadFrom(creator);
-            _creatorCache.Add(editableCreator);
+            _isLoading = false;
+            _loadGate.Release();
         }
-
-        Result<CslItemTypeProfile> profileResult = await services.ItemTypeProfiles.GetProfileAsync(_itemType);
-        Fields.Clear();
-        BuildFields(profileResult.IsSuccess ? profileResult.Value : null);
-
-        Status = $"正在编辑：{item.Value.Title}";
-        _pendingIdentifiers.Clear();
-        _pendingIdentifierRemovals.Clear();
-        _pendingFileRegistrations.Clear();
-        _pendingDocumentRemovals.Clear();
-        _pendingPrimaryDocumentId = null;
-        _projectionStaged.Clear();
-
-        await RefreshIdentifiersAsync();
-        await RefreshLinkedFilesAsync();
-        await RefreshDocumentCommitsAsync();
-        await RefreshCslPreviewAsync();
-        await RefreshCollectionsAsync(services);
-        ResetUnsavedState();
-        RaiseAll();
     }
 
     private async Task EnsureAvailableItemTypesAsync()
@@ -1255,7 +1113,7 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
         _availableItemTypesLoaded = true;
         Raise(nameof(AvailableItemTypes));
-        Raise(nameof(SelectedItemTypeOption));
+        SelectedItemTypeOption = AvailableItemTypes.FirstOrDefault(option => option.Key == ItemType);
     }
 
     private string GetFieldValue(string key)
@@ -1271,21 +1129,19 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
     private async Task SaveAsync()
     {
-        if (_isSaving)
+        if (IsSaving)
         {
             return;
         }
 
-        _isSaving = true;
-        Raise(nameof(IsSaving));
+        IsSaving = true;
         try
         {
             await SaveCoreAsync();
         }
         finally
         {
-            _isSaving = false;
-            Raise(nameof(IsSaving));
+            IsSaving = false;
         }
     }
 
@@ -1294,8 +1150,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         if (IsMergedSource)
         {
             Status = "已合并的题录无法保存。";
-            Raise(nameof(Status));
-            _main.Report(Status);
             return;
         }
 
@@ -1304,8 +1158,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         if (string.IsNullOrWhiteSpace(title))
         {
             Status = "标题不能为空。";
-            Raise(nameof(Status));
-            _main.Report(Status);
             return;
         }
 
@@ -1366,12 +1218,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
             if (created.IsFailure)
             {
                 Status = created.ErrorMessage ?? "题录创建失败。";
-                Raise(nameof(Status));
-                _main.Report(Status);
                 return;
             }
 
             _itemId = created.Value.ItemId;
+            ItemIdText = created.Value.ItemId.ToString();
             _loadedItem = created.Value;
             _pendingIdentifiers.Clear();
         }
@@ -1564,8 +1415,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         Result<IReadOnlyList<Collection>> all = await services.Collections.ListCollectionsAsync();
         if (all.IsFailure)
         {
-            Raise(nameof(HasCollections));
-            Raise(nameof(NoCollections));
             return;
         }
 
@@ -1586,9 +1435,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
                 collection.CollectionId, collection.Name, selected.Contains(collection.CollectionId),
                 MarkCollectionsDirty));
         }
-
-        Raise(nameof(HasCollections));
-        Raise(nameof(NoCollections));
     }
 
     private void MarkCollectionsDirty()
@@ -1628,9 +1474,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
             Collections.Add(new CollectionSelectionItemViewModel(
                 collection.CollectionId, collection.Name, isSelected, MarkCollectionsDirty));
         }
-
-        Raise(nameof(HasCollections));
-        Raise(nameof(NoCollections));
     }
 
     private async Task RefreshIdentifiersAsync()
@@ -1906,7 +1749,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         {
             DocumentCommits.Clear();
             SelectedHistoryDocument = null;
-            Raise(nameof(HasDocumentCommits));
             return;
         }
 
@@ -1927,7 +1769,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         DocumentCommits.Clear();
         if (SelectedHistoryDocument is null || SelectedHistoryDocument.IsPendingRegistration)
         {
-            Raise(nameof(HasDocumentCommits));
             return;
         }
 
@@ -1938,8 +1779,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         if (commits.IsFailure)
         {
             Status = $"无法加载文档版本历史：{commits.ErrorMessage}";
-            Raise(nameof(Status));
-            Raise(nameof(HasDocumentCommits));
             return;
         }
 
@@ -1980,8 +1819,6 @@ public sealed class ItemEditorViewModel : ViewModelBase
         {
             DocumentCommits.Add(row);
         }
-
-        Raise(nameof(HasDocumentCommits));
     }
 
     private async Task RevertCommitPageAsync(DocumentCommitPageViewModel page)
@@ -2313,7 +2150,8 @@ public sealed class ItemEditorViewModel : ViewModelBase
         AvailableExtraCslVariables.Clear();
         foreach (ExtraCslVariableOption option in ExtraCslVariableCatalog.Options)
         {
-            if (ExtraCslRows.Any(row => string.Equals(row.Key, option.Key, StringComparison.Ordinal)))
+            if (ExtraCslRows.Any(row =>
+                    row is not null && string.Equals(row.Key, option.Key, StringComparison.Ordinal)))
             {
                 continue;
             }
@@ -2612,8 +2450,10 @@ public sealed class ItemEditorViewModel : ViewModelBase
 
                 if (field.IsExtraCslBacked && field.ExtraCslVariableKey is not null)
                 {
-                    field.Value = ExtraCslRows.LastOrDefault(row =>
-                        string.Equals(row.Key, field.ExtraCslVariableKey, StringComparison.Ordinal))?.Value ?? "";
+                    field.Value = ExtraCslRows.ToArray().LastOrDefault(row =>
+                            row is not null && string.Equals(row.Key, field.ExtraCslVariableKey,
+                                StringComparison.Ordinal))
+                        ?.Value ?? "";
                 }
             }
         }
@@ -2630,10 +2470,11 @@ public sealed class ItemEditorViewModel : ViewModelBase
             return staged?.Value ?? "";
         }
 
-        return _pendingIdentifiers.LastOrDefault(input =>
-                   string.Equals(input.Scheme, scheme, StringComparison.OrdinalIgnoreCase))?.Value
-               ?? Identifiers.LastOrDefault(row =>
-                       !row.IsPending && string.Equals(row.Scheme, scheme, StringComparison.OrdinalIgnoreCase))
+        return _pendingIdentifiers.ToArray().LastOrDefault(input =>
+                   input is not null && string.Equals(input.Scheme, scheme, StringComparison.OrdinalIgnoreCase))?.Value
+               ?? Identifiers.ToArray().LastOrDefault(row =>
+                       row is not null && !row.IsPending &&
+                       string.Equals(row.Scheme, scheme, StringComparison.OrdinalIgnoreCase))
                    ?.ItemIdentifier?.Value
                ?? "";
     }
@@ -2757,27 +2598,35 @@ public sealed class ItemEditorViewModel : ViewModelBase
     {
         foreach (string property in new[]
                  {
-                     nameof(Header),
-                     nameof(ItemIdText),
-                     nameof(HasItem),
                      nameof(ItemType),
                      nameof(SelectedItemTypeOption),
                      nameof(Status),
-                     nameof(IsGeneralTypeWarningVisible),
-                     nameof(IsExtraCslCardVisible),
                      nameof(IsExtendedSectionEmpty),
-                     nameof(HasMoreFields),
                      nameof(CslPreviewText),
                      nameof(HasCslPreviewWarning),
                      nameof(IdentifierScheme),
-                     nameof(HasIdentifierSchemeShortcuts),
                      nameof(IdentifierValue),
-                     nameof(IdentifierNote)
+                     nameof(IdentifierNote),
+                     nameof(IsMergedSource),
+                     nameof(MergedIntoItemIdText),
+                     nameof(MergedBannerText)
                  })
         {
             Raise(property);
         }
 
         RaiseEditorFieldProxies();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _itemTypeRequests.Dispose();
+            _fieldSubscriptions.Dispose();
+            _loadGate.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }

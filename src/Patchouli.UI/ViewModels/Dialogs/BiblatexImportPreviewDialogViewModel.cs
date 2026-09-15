@@ -1,11 +1,12 @@
 using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography.Biblatex;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
 public sealed record BiblatexImportPreviewResult(bool Confirmed, string? SelectedEntryKey = null);
 
-public sealed class BiblatexEntryChoiceViewModel : ViewModelBase
+public sealed partial class BiblatexEntryChoiceViewModel : ViewModelBase
 {
     public BiblatexEntryChoiceViewModel(string key, string entryType, string title)
     {
@@ -20,10 +21,8 @@ public sealed class BiblatexEntryChoiceViewModel : ViewModelBase
     public string Display => $"{Key} (@{EntryType}) — {Title}";
 }
 
-public sealed class BiblatexImportPreviewDialogViewModel : ViewModelBase
+public sealed partial class BiblatexImportPreviewDialogViewModel : ViewModelBase
 {
-    private BiblatexEntryChoiceViewModel? _selectedEntry;
-
     public BiblatexImportPreviewDialogViewModel(
         IReadOnlyList<BiblatexMappedItem> entries,
         bool requireSelection,
@@ -50,15 +49,7 @@ public sealed class BiblatexImportPreviewDialogViewModel : ViewModelBase
     public bool RequireSelection { get; }
     public ObservableCollection<BiblatexEntryChoiceViewModel> Entries { get; } = new();
 
-    public BiblatexEntryChoiceViewModel? SelectedEntry
-    {
-        get => _selectedEntry;
-        set
-        {
-            _selectedEntry = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial BiblatexEntryChoiceViewModel? SelectedEntry { get; set; }
 
     public AsyncCommand ConfirmCommand { get; }
     public AsyncCommand CancelCommand { get; }

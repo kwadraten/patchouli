@@ -1,12 +1,13 @@
 using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Editor;
 
-public sealed class ItemFieldDescriptor : ViewModelBase
+public sealed partial class ItemFieldDescriptor : ViewModelBase
 {
-    private string _value = "";
+    [ObservableProperty] private string _value = "";
 
     public string Key { get; }
     public string Label { get; }
@@ -27,17 +28,18 @@ public sealed class ItemFieldDescriptor : ViewModelBase
     public AsyncCommand? LookupFromUrlCommand { get; set; }
 
     /// <summary>The URL projection field offers extracting an identifier from the URL and fetching metadata.</summary>
+    [ExcludeFromDerivedGeneration]
     public bool ShowsLookupButton => IsIdentifierBacked &&
                                      string.Equals(IdentifierScheme, BuiltInIdentifierSchemes.URL,
                                          StringComparison.Ordinal) &&
                                      LookupFromUrlCommand is not null;
 
-    public bool IsString => Type == "String";
-    public bool IsMultilineString => Type == "MultilineString";
-    public bool IsDate => Type == "Date";
-    public bool IsCreatorList => Type == "CreatorList";
-    public bool IsIdentifierBacked => Type == "IdentifierBacked";
-    public bool IsExtraCslBacked => Type == "ExtraCslBacked";
+    [ExcludeFromDerivedGeneration] public bool IsString => Type == "String";
+    [ExcludeFromDerivedGeneration] public bool IsMultilineString => Type == "MultilineString";
+    [ExcludeFromDerivedGeneration] public bool IsDate => Type == "Date";
+    [ExcludeFromDerivedGeneration] public bool IsCreatorList => Type == "CreatorList";
+    [ExcludeFromDerivedGeneration] public bool IsIdentifierBacked => Type == "IdentifierBacked";
+    [ExcludeFromDerivedGeneration] public bool IsExtraCslBacked => Type == "ExtraCslBacked";
 
     public ItemFieldDescriptor(string key, string label, string type, string? identifierScheme = null,
         string? extraCslVariableKey = null)
@@ -49,20 +51,9 @@ public sealed class ItemFieldDescriptor : ViewModelBase
         ExtraCslVariableKey = extraCslVariableKey;
     }
 
-    public string Value
+    partial void OnValueChanged(string value)
     {
-        get => _value;
-        set
-        {
-            if (_value == value)
-            {
-                return;
-            }
-
-            _value = value;
-            Raise();
-            ValueChanged?.Invoke(this, value);
-        }
+        ValueChanged?.Invoke(this, value);
     }
 
     // specific for CreatorList

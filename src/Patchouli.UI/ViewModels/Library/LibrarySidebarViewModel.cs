@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
@@ -31,13 +32,11 @@ public sealed class LibrarySidebarSectionViewModel : ViewModelBase
 /// delegated to the owning shell through the command callbacks supplied to each
 /// <see cref="TagListItemViewModel"/>.
 /// </summary>
-public sealed class LibrarySidebarViewModel : ViewModelBase
+public sealed partial class LibrarySidebarViewModel : ViewModelBase
 {
     private LibrarySidebarSectionViewModel _selectedSection;
-    private object? _selectedNavigationItem;
-    private ObservableCollection<TagListItemViewModel> _tags = new();
-    private CollectionListItemViewModel? _selectedCollection;
     private readonly List<TagListItemViewModel> _selectedTags = new();
+    private bool _silentCollectionSelection;
 
     public LibrarySidebarViewModel()
     {
@@ -85,7 +84,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
             if (ReferenceEquals(_selectedSection, value))
             {
-                if (_selectedCollection is not null)
+                if (SelectedCollection is not null)
                 {
                     ClearCollectionSelection();
                 }
@@ -94,30 +93,19 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
                 return;
             }
 
-            if (_selectedCollection is not null)
+            if (SelectedCollection is not null)
             {
-                _selectedCollection = null;
                 foreach (CollectionListItemViewModel item in Collections)
                 {
                     item.IsSelected = false;
                 }
 
-                Raise(nameof(SelectedCollection));
-                Raise(nameof(HasSelectedCollection));
-                Raise(nameof(SelectedCollectionName));
+                SetSelectedCollectionSilently(null);
             }
 
             _selectedSection = value;
             Raise();
             SyncSelectedNavigationItem();
-            Raise(nameof(SelectedScope));
-            Raise(nameof(IsTrashSelected));
-            Raise(nameof(IsActiveSelected));
-            Raise(nameof(CanRestore));
-            Raise(nameof(CanDelete));
-            Raise(nameof(CanPurge));
-            Raise(nameof(IsTagAreaVisible));
-            Raise(nameof(IsCollectionAreaVisible));
             if (!IsActiveSelected)
             {
                 ClearCollectionSelection();
@@ -127,41 +115,28 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
         }
     }
 
-    public LibrarySidebarScope SelectedScope => _selectedSection.Scope;
+    public LibrarySidebarScope SelectedScope => SelectedSection.Scope;
 
     /// <summary>The one selected row across built-in scopes and user collections.</summary>
-    public object? SelectedNavigationItem
+    [ObservableProperty]
+    public partial object? SelectedNavigationItem { get; set; }
+
+    partial void OnSelectedNavigationItemChanged(object? value)
     {
-        get => _selectedNavigationItem;
-        set
+        switch (value)
         {
-            if (ReferenceEquals(_selectedNavigationItem, value))
-            {
-                return;
-            }
-
-            if (value is null)
-            {
-                _selectedNavigationItem = null;
-                Raise();
-                return;
-            }
-
-            switch (value)
-            {
-                case LibrarySidebarSectionViewModel section:
-                    SelectedSection = section;
-                    break;
-                case CollectionListItemViewModel collection:
-                    SelectedCollection = collection;
-                    break;
-            }
+            case LibrarySidebarSectionViewModel section:
+                SelectedSection = section;
+                break;
+            case CollectionListItemViewModel collection:
+                SelectedCollection = collection;
+                break;
         }
     }
 
-    public bool IsTrashSelected => _selectedSection.Scope == LibrarySidebarScope.Trash;
+    public bool IsTrashSelected => SelectedSection.Scope == LibrarySidebarScope.Trash;
 
-    public bool IsActiveSelected => _selectedSection.Scope == LibrarySidebarScope.Active;
+    public bool IsActiveSelected => SelectedSection.Scope == LibrarySidebarScope.Active;
 
     public bool CanRestore => IsTrashSelected;
 
@@ -173,8 +148,10 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
     public bool IsCollectionAreaVisible => IsActiveSelected;
 
+    [ExcludeFromDerivedGeneration]
     public bool HasCollections => Collections.Count > 0;
 
+    [ExcludeFromDerivedGeneration]
     public bool NoCollections => Collections.Count == 0;
 
     public AsyncCommand SelectActiveCommand { get; }
@@ -183,20 +160,8 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
     public AsyncCommand CreateCollectionCommand { get; }
 
-    public ObservableCollection<TagListItemViewModel> Tags
-    {
-        get => _tags;
-        private set
-        {
-            if (ReferenceEquals(_tags, value))
-            {
-                return;
-            }
-
-            _tags = value;
-            Raise();
-        }
-    }
+    [ObservableProperty]
+    public partial ObservableCollection<TagListItemViewModel> Tags { get; private set; } = new();
 
     /// <summary>
     /// The collection catalog, exposed as one stable instance so bindings survive a reload. A new
@@ -205,56 +170,52 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
     public ObservableCollection<CollectionListItemViewModel> Collections { get; } = new();
 
     /// <summary>The single selected collection filter, or null for no collection filter.</summary>
-    public CollectionListItemViewModel? SelectedCollection
+    [ObservableProperty]
+    public partial CollectionListItemViewModel? SelectedCollection { get; set; }
+
+    partial void OnSelectedCollectionChanging(CollectionListItemViewModel? value)
     {
-        get => _selectedCollection;
-        set
+        if (_silentCollectionSelection)
         {
-            if (ReferenceEquals(_selectedCollection, value))
-            {
-                return;
-            }
+            return;
+        }
 
-            if (value is not null && !IsActiveSelected)
-            {
-                _selectedSection = Sections[0];
-                Raise(nameof(SelectedSection));
-                Raise(nameof(SelectedScope));
-                Raise(nameof(IsTrashSelected));
-                Raise(nameof(IsActiveSelected));
-                Raise(nameof(CanRestore));
-                Raise(nameof(CanDelete));
-                Raise(nameof(CanPurge));
-                Raise(nameof(IsTagAreaVisible));
-                Raise(nameof(IsCollectionAreaVisible));
-            }
-
-            _selectedCollection = value;
-            if (_selectedCollection is not null)
-            {
-                foreach (CollectionListItemViewModel item in Collections)
-                {
-                    item.IsSelected = ReferenceEquals(item, _selectedCollection);
-                }
-            }
-
-            Raise();
-            SyncSelectedNavigationItem();
-            Raise(nameof(HasSelectedCollection));
-            Raise(nameof(SelectedCollectionName));
-            CollectionSelectionChanged?.Invoke(this, EventArgs.Empty);
+        if (value is not null && !IsActiveSelected)
+        {
+            _selectedSection = Sections[0];
+            Raise(nameof(SelectedSection));
         }
     }
 
-    public bool HasSelectedCollection => _selectedCollection is not null;
+    partial void OnSelectedCollectionChanged(CollectionListItemViewModel? value)
+    {
+        if (_silentCollectionSelection)
+        {
+            return;
+        }
 
-    public string SelectedCollectionName => _selectedCollection?.Name ?? string.Empty;
+        if (value is not null)
+        {
+            foreach (CollectionListItemViewModel item in Collections)
+            {
+                item.IsSelected = ReferenceEquals(item, value);
+            }
+        }
+
+        SyncSelectedNavigationItem();
+        CollectionSelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public bool HasSelectedCollection => SelectedCollection is not null;
+
+    public string SelectedCollectionName => SelectedCollection?.Name ?? string.Empty;
 
     /// <summary>
     /// The currently selected tag filters. AND semantics: an item must carry every selected tag,
     /// or (when "无标签" is selected) carry no tags at all. "无标签" is mutually exclusive with
     /// ordinary tag selection.
     /// </summary>
+    [ExcludeFromDerivedGeneration]
     public IReadOnlyList<TagListItemViewModel> SelectedTags => _selectedTags;
 
     public event EventHandler? ScopeChanged;
@@ -350,7 +311,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
     /// </summary>
     public void LoadCollections(IReadOnlyList<Collection> collections)
     {
-        CollectionId? previousSelection = _selectedCollection?.CollectionId;
+        CollectionId? previousSelection = SelectedCollection?.CollectionId;
         List<CollectionListItemViewModel> next = collections
             .OrderBy(collection => collection.Name, StringComparer.Ordinal)
             .Select(collection =>
@@ -371,7 +332,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
         CollectionListItemViewModel? restored = previousSelection is { } previous
             ? next.FirstOrDefault(item => item.CollectionId == previous)
             : null;
-        _selectedCollection = restored;
+        SetSelectedCollectionSilently(restored);
         if (restored is not null)
         {
             restored.IsSelected = true;
@@ -382,15 +343,12 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
         Raise(nameof(Collections));
         Raise(nameof(HasCollections));
         Raise(nameof(NoCollections));
-        Raise(nameof(SelectedCollection));
-        Raise(nameof(HasSelectedCollection));
-        Raise(nameof(SelectedCollectionName));
     }
 
     /// <summary>Selects one collection, or clears the filter when the same collection is clicked again.</summary>
     public void ToggleCollectionSelection(CollectionListItemViewModel item)
     {
-        if (ReferenceEquals(_selectedCollection, item))
+        if (ReferenceEquals(SelectedCollection, item))
         {
             ClearCollectionSelection();
             return;
@@ -401,22 +359,17 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
     public void ClearCollectionSelection()
     {
-        if (_selectedCollection is null)
+        if (SelectedCollection is null)
         {
             return;
         }
 
-        _selectedCollection = null;
         foreach (CollectionListItemViewModel item in Collections)
         {
             item.IsSelected = false;
         }
 
-        Raise(nameof(SelectedCollection));
-        SyncSelectedNavigationItem();
-        Raise(nameof(HasSelectedCollection));
-        Raise(nameof(SelectedCollectionName));
-        CollectionSelectionChanged?.Invoke(this, EventArgs.Empty);
+        SelectedCollection = null;
     }
 
     private void WireCollectionEvents(CollectionListItemViewModel item)
@@ -454,20 +407,31 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
 
     private void SyncSelectedNavigationItem(bool forceNotification = false)
     {
-        object target = _selectedCollection is not null ? _selectedCollection : _selectedSection;
-        if (!forceNotification && ReferenceEquals(_selectedNavigationItem, target))
+        object target = SelectedCollection is not null ? SelectedCollection : _selectedSection;
+        if (!forceNotification && Equals(SelectedNavigationItem, target))
         {
             return;
         }
 
-        if (forceNotification && ReferenceEquals(_selectedNavigationItem, target))
+        if (forceNotification && Equals(SelectedNavigationItem, target))
         {
-            _selectedNavigationItem = null;
-            Raise(nameof(SelectedNavigationItem));
+            SelectedNavigationItem = null;
         }
 
-        _selectedNavigationItem = target;
-        Raise(nameof(SelectedNavigationItem));
+        SelectedNavigationItem = target;
+    }
+
+    private void SetSelectedCollectionSilently(CollectionListItemViewModel? value)
+    {
+        _silentCollectionSelection = true;
+        try
+        {
+            SelectedCollection = value;
+        }
+        finally
+        {
+            _silentCollectionSelection = false;
+        }
     }
 
     /// <summary>
@@ -555,6 +519,7 @@ public sealed class LibrarySidebarViewModel : ViewModelBase
             .ToArray();
     }
 
+    [ExcludeFromDerivedGeneration]
     public bool IsNoTagSelected => _selectedTags.Any(item => item.IsNoTagEntry);
 
     public void ClearTagSelection()

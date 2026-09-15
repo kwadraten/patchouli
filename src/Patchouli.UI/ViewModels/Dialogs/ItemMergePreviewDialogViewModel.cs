@@ -1,7 +1,13 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
@@ -18,17 +24,15 @@ public enum ItemMergeDialogResult
 /// A single conflict row exposed in the merge preview dialog. The default selection matches the
 /// preview (target value when non-empty).
 /// </summary>
-public sealed class MergeConflictRowViewModel : ViewModelBase
+public sealed partial class MergeConflictRowViewModel : ViewModelBase
 {
-    private bool _useSourceValue;
-
     public MergeConflictRowViewModel(ItemMergeConflictField field)
     {
         FieldName = field.FieldName;
         Label = field.Label;
         TargetValue = field.TargetValue;
         SourceValue = field.SourceValue;
-        _useSourceValue = !string.Equals(field.SelectedValue, field.TargetValue, StringComparison.Ordinal);
+        UseSourceValue = !string.Equals(field.SelectedValue, field.TargetValue, StringComparison.Ordinal);
     }
 
     public string FieldName { get; }
@@ -36,34 +40,19 @@ public sealed class MergeConflictRowViewModel : ViewModelBase
     public string TargetValue { get; }
     public string SourceValue { get; }
 
-    public bool UseSourceValue
-    {
-        get => _useSourceValue;
-        set
-        {
-            if (_useSourceValue == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool UseSourceValue { get; set; }
 
-            _useSourceValue = value;
-            Raise();
-            Raise(nameof(SelectedValue));
-        }
-    }
-
-    public string SelectedValue => _useSourceValue ? SourceValue : TargetValue;
+    public string SelectedValue => UseSourceValue ? SourceValue : TargetValue;
 }
 
 /// <summary>
 /// View model for the item merge preview dialog. Supports swapping source/target, choosing conflict
 /// values, and returning the final choices.
 /// </summary>
-public sealed class ItemMergePreviewDialogViewModel : ViewModelBase
+public sealed partial class ItemMergePreviewDialogViewModel : ViewModelBase
 {
     private readonly Func<ItemId, ItemId, CancellationToken, Task<Result<ItemMergePreview>>> _rebuildPreviewAsync;
     private ItemMergePreview _preview;
-    private bool _isBusy;
 
     public ItemMergePreviewDialogViewModel(
         ItemMergePreview preview,
@@ -73,43 +62,63 @@ public sealed class ItemMergePreviewDialogViewModel : ViewModelBase
         _rebuildPreviewAsync = rebuildPreviewAsync;
 
         Title = $"合并题录：{preview.SourceTitle} → {preview.TargetTitle}";
+        CurrentSourceItemId = preview.SourceItemId;
+        CurrentTargetItemId = preview.TargetItemId;
         Conflicts = new ObservableCollection<MergeConflictRowViewModel>(
             preview.ConflictFields.Select(field => new MergeConflictRowViewModel(field)));
         MissingFields = preview.MissingFields;
         TagUnion = preview.TagUnion;
         DocumentInstancesToTransfer = preview.DocumentInstancesToTransfer;
 
+        IObservable<Unit> conflictsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => Conflicts.CollectionChanged += h,
+                h => Conflicts.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        conflictsChanged
+            .Select(_ => Conflicts.Count > 0)
+            .BindOutput(this, has => HasConflicts = has, ImmediateScheduler.Instance, null, true, Conflicts.Count > 0);
+
         SwapCommand = new AsyncCommand(() => SwapAsync(CancellationToken.None));
         MergeCommand = new RelayCommand(_ => RequestClose?.Invoke(ItemMergeDialogResult.Merge));
         CancelCommand = new RelayCommand(_ => RequestClose?.Invoke(ItemMergeDialogResult.Cancel));
     }
 
-    public string Title { get; private set; }
-    public ObservableCollection<MergeConflictRowViewModel> Conflicts { get; }
-    public IReadOnlyList<ItemMergeMissingField> MissingFields { get; private set; }
-    public IReadOnlyList<string> TagUnion { get; private set; }
-    public string TagUnionText => string.Join(", ", TagUnion);
-    public int DocumentInstancesToTransfer { get; private set; }
+    [ObservableProperty] public partial string Title { get; private set; }
 
-    public bool HasConflicts => Conflicts.Count > 0;
-    public bool HasMissingFields => MissingFields.Count > 0;
-    public bool HasTags => TagUnion.Count > 0;
-    public bool HasDocumentsToTransfer => DocumentInstancesToTransfer > 0;
+    public ObservableCollection<MergeConflictRowViewModel> Conflicts { get; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasMissingFields))]
+    public partial IReadOnlyList<ItemMergeMissingField> MissingFields { get; private set; }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(TagUnionText))]
+    [NotifyPropertyChangedFor(nameof(HasTags))]
+    public partial IReadOnlyList<string> TagUnion { get; private set; }
+
+    [ExcludeFromDerivedGeneration] public string TagUnionText => string.Join(", ", TagUnion);
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasDocumentsToTransfer))]
+    public partial int DocumentInstancesToTransfer { get; private set; }
+
+    [ObservableProperty] public partial bool HasConflicts { get; private set; }
+
+    [ExcludeFromDerivedGeneration] public bool HasMissingFields => MissingFields.Count > 0;
+
+    [ExcludeFromDerivedGeneration] public bool HasTags => TagUnion.Count > 0;
+
+    [ExcludeFromDerivedGeneration] public bool HasDocumentsToTransfer => DocumentInstancesToTransfer > 0;
+
     public bool CanMerge => !IsBusy;
 
-    public bool IsBusy
-    {
-        get => _isBusy;
-        private set
-        {
-            _isBusy = value;
-            Raise();
-            Raise(nameof(CanMerge));
-        }
-    }
+    [ObservableProperty] public partial bool IsBusy { get; private set; }
 
-    public ItemId CurrentSourceItemId => _preview.SourceItemId;
-    public ItemId CurrentTargetItemId => _preview.TargetItemId;
+    [ObservableProperty] public partial ItemId CurrentSourceItemId { get; private set; }
+
+    [ObservableProperty] public partial ItemId CurrentTargetItemId { get; private set; }
 
     public Action<ItemMergeDialogResult>? RequestClose { get; set; }
     public AsyncCommand SwapCommand { get; }
@@ -143,9 +152,8 @@ public sealed class ItemMergePreviewDialogViewModel : ViewModelBase
 
             _preview = result.Value;
             Title = $"合并题录：{_preview.SourceTitle} → {_preview.TargetTitle}";
-            Raise(nameof(Title));
-            Raise(nameof(CurrentSourceItemId));
-            Raise(nameof(CurrentTargetItemId));
+            CurrentSourceItemId = _preview.SourceItemId;
+            CurrentTargetItemId = _preview.TargetItemId;
 
             Conflicts.Clear();
             foreach (MergeConflictRowViewModel row in _preview.ConflictFields.Select(field =>
@@ -157,15 +165,6 @@ public sealed class ItemMergePreviewDialogViewModel : ViewModelBase
             MissingFields = _preview.MissingFields;
             TagUnion = _preview.TagUnion;
             DocumentInstancesToTransfer = _preview.DocumentInstancesToTransfer;
-
-            Raise(nameof(MissingFields));
-            Raise(nameof(TagUnion));
-            Raise(nameof(TagUnionText));
-            Raise(nameof(DocumentInstancesToTransfer));
-            Raise(nameof(HasConflicts));
-            Raise(nameof(HasMissingFields));
-            Raise(nameof(HasTags));
-            Raise(nameof(HasDocumentsToTransfer));
         }
         finally
         {

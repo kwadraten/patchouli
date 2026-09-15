@@ -1,5 +1,11 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Avalonia.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.Themes;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -7,58 +13,56 @@ namespace Patchouli.UI.ViewModels.Settings;
 /// <summary>「外观与显示」section: selects the UI color palette and the reading-mode font family
 /// and size. Choices only take effect (and persist) through the header 保存设置 action, like the
 /// other editable sections.</summary>
-public sealed class AppearanceSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewModelBase
 {
     private const string SystemDefaultFontLabel = "系统默认";
     private const double MinReadingFontSize = 10;
     private const double MaxReadingFontSize = 28;
 
     private readonly MainWindowViewModel _main;
-    private PaletteOption _selectedPalette;
     private string _persistedPaletteId;
-    private string _selectedReadingFontFamily;
     private string _persistedFontFamily;
-    private double _readingFontSize;
     private double _persistedFontSize;
     private IReadOnlyList<string>? _readingFontFamilies;
     private bool _isDirty;
+    private bool _isConstructing;
+    private bool _isSyncing;
 
     public AppearanceSettingsViewModel(MainWindowViewModel main)
     {
+        _isConstructing = true;
         _main = main;
         Palettes = Array.AsReadOnly(UiColorPalettes.All.Select(static palette => new PaletteOption(palette))
             .ToArray());
         _persistedPaletteId = UiColorPalettes.ResolveId(main.AppOptions.Ui.PaletteId);
-        _selectedPalette = Palettes.First(option => option.PaletteId == _persistedPaletteId);
+        SelectedPalette = Palettes.First(option => option.PaletteId == _persistedPaletteId);
         _persistedFontFamily = NormalizeFontFamily(main.AppOptions.Ui.ReadingFontFamily);
-        _selectedReadingFontFamily = _persistedFontFamily;
+        SelectedReadingFontFamily = _persistedFontFamily;
         _persistedFontSize = ClampReadingFontSize(main.AppOptions.Ui.ReadingFontSize);
-        _readingFontSize = _persistedFontSize;
+        ReadingFontSize = _persistedFontSize;
+        _isConstructing = false;
     }
 
     public ReadOnlyCollection<PaletteOption> Palettes { get; }
 
-    public PaletteOption SelectedPalette
-    {
-        get => _selectedPalette;
-        set
-        {
-            if (_selectedPalette.PaletteId == value.PaletteId)
-            {
-                return;
-            }
+    [ObservableProperty] public partial PaletteOption SelectedPalette { get; set; } = null!;
 
-            _selectedPalette = value;
-            UpdateDirtyState();
-            Raise();
-            MarkDirty("有未保存的更改");
+    partial void OnSelectedPaletteChanged(PaletteOption value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
         }
+
+        UpdateDirtyState();
+        MarkDirty("有未保存的更改");
     }
 
     /// <summary>Selectable display labels for the reading font family. The first entry is the
     /// localized 「系统默认」 placeholder whose persisted value is the empty string; the rest are
     /// the host's system font family names, de-duplicated and sorted. The list is built lazily on
     /// first access so that constructing the section never touches the Avalonia font manager.</summary>
+    [ExcludeFromDerivedGeneration]
     public IReadOnlyList<string> ReadingFontFamilies
     {
         get
@@ -74,46 +78,54 @@ public sealed class AppearanceSettingsViewModel : SettingsSectionViewModelBase
 
     /// <summary>The persisted font family name for reading mode. An empty string means the system
     /// default font; any other value is a concrete family name.</summary>
-    public string SelectedReadingFontFamily
-    {
-        get => _selectedReadingFontFamily;
-        set
-        {
-            string normalized = NormalizeFontFamily(value);
-            if (string.Equals(_selectedReadingFontFamily, normalized, StringComparison.Ordinal))
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial string SelectedReadingFontFamily { get; set; } = "";
 
-            _selectedReadingFontFamily = normalized;
-            UpdateDirtyState();
-            Raise();
-            MarkDirty("有未保存的更改");
+    partial void OnSelectedReadingFontFamilyChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
         }
+
+        string normalized = NormalizeFontFamily(value);
+        if (!string.Equals(value, normalized, StringComparison.Ordinal))
+        {
+            SelectedReadingFontFamily = normalized;
+            return;
+        }
+
+        UpdateDirtyState();
+        MarkDirty("有未保存的更改");
     }
 
     /// <summary>The reading-mode font size, clamped to the supported [10, 28] range.</summary>
-    public double ReadingFontSize
-    {
-        get => _readingFontSize;
-        set
-        {
-            double clamped = ClampReadingFontSize(value);
-            if (_readingFontSize == clamped)
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial double ReadingFontSize { get; set; }
 
-            _readingFontSize = clamped;
-            UpdateDirtyState();
-            Raise();
-            MarkDirty("有未保存的更改");
+    partial void OnReadingFontSizeChanged(double value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
         }
+
+        double clamped = ClampReadingFontSize(value);
+        if (value != clamped)
+        {
+            ReadingFontSize = clamped;
+            return;
+        }
+
+        UpdateDirtyState();
+        MarkDirty("有未保存的更改");
     }
 
     public override bool SupportsEditing => true;
-    public override bool IsDirty => _isDirty;
-    public override bool CanSave => _isDirty && !IsSaving;
+
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty && !IsSaving;
 
     public override Task LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -131,10 +143,10 @@ public sealed class AppearanceSettingsViewModel : SettingsSectionViewModelBase
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
 
-        bool paletteChanged = _selectedPalette.PaletteId != _persistedPaletteId;
+        bool paletteChanged = SelectedPalette.PaletteId != _persistedPaletteId;
         if (paletteChanged)
         {
-            bool paletteSaved = _main.SaveAppearancePalette(_selectedPalette.PaletteId);
+            bool paletteSaved = _main.SaveAppearancePalette(SelectedPalette.PaletteId);
             if (!paletteSaved)
             {
                 LastError = "无法保存外观设置。";
@@ -145,14 +157,14 @@ public sealed class AppearanceSettingsViewModel : SettingsSectionViewModelBase
                 return Task.CompletedTask;
             }
 
-            _persistedPaletteId = _selectedPalette.PaletteId;
+            _persistedPaletteId = SelectedPalette.PaletteId;
         }
 
-        bool fontChanged = !string.Equals(_selectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal)
-                           || _readingFontSize != _persistedFontSize;
+        bool fontChanged = !string.Equals(SelectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal)
+                           || ReadingFontSize != _persistedFontSize;
         if (fontChanged)
         {
-            bool fontSaved = _main.SaveReadingFont(_selectedReadingFontFamily, _readingFontSize);
+            bool fontSaved = _main.SaveReadingFont(SelectedReadingFontFamily, ReadingFontSize);
             if (!fontSaved)
             {
                 LastError = "无法保存外观设置。";
@@ -163,8 +175,8 @@ public sealed class AppearanceSettingsViewModel : SettingsSectionViewModelBase
                 return Task.CompletedTask;
             }
 
-            _persistedFontFamily = _selectedReadingFontFamily;
-            _persistedFontSize = _readingFontSize;
+            _persistedFontFamily = SelectedReadingFontFamily;
+            _persistedFontSize = ReadingFontSize;
         }
 
         _isDirty = false;
@@ -187,26 +199,34 @@ public sealed class AppearanceSettingsViewModel : SettingsSectionViewModelBase
 
     private void SyncFromPersisted()
     {
-        _persistedPaletteId = UiColorPalettes.ResolveId(_main.AppOptions.Ui.PaletteId);
-        _selectedPalette = Palettes.First(option => option.PaletteId == _persistedPaletteId);
-        _persistedFontFamily = NormalizeFontFamily(_main.AppOptions.Ui.ReadingFontFamily);
-        _selectedReadingFontFamily = _persistedFontFamily;
-        _persistedFontSize = ClampReadingFontSize(_main.AppOptions.Ui.ReadingFontSize);
-        _readingFontSize = _persistedFontSize;
-        _isDirty = false;
-        Raise(nameof(SelectedPalette));
-        Raise(nameof(SelectedReadingFontFamily));
-        Raise(nameof(ReadingFontSize));
-        Raise(nameof(IsDirty));
-        Raise(nameof(CanSave));
+        _isSyncing = true;
+        try
+        {
+            _persistedPaletteId = UiColorPalettes.ResolveId(_main.AppOptions.Ui.PaletteId);
+            SelectedPalette = Palettes.First(option => option.PaletteId == _persistedPaletteId);
+            _persistedFontFamily = NormalizeFontFamily(_main.AppOptions.Ui.ReadingFontFamily);
+            SelectedReadingFontFamily = _persistedFontFamily;
+            _persistedFontSize = ClampReadingFontSize(_main.AppOptions.Ui.ReadingFontSize);
+            ReadingFontSize = _persistedFontSize;
+            _isDirty = false;
+            Raise(nameof(SelectedPalette));
+            Raise(nameof(SelectedReadingFontFamily));
+            Raise(nameof(ReadingFontSize));
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
+        }
+        finally
+        {
+            _isSyncing = false;
+        }
     }
 
     private void UpdateDirtyState()
     {
-        bool paletteDirty = _selectedPalette.PaletteId != _persistedPaletteId;
+        bool paletteDirty = SelectedPalette.PaletteId != _persistedPaletteId;
         bool fontDirty =
-            !string.Equals(_selectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal);
-        bool sizeDirty = _readingFontSize != _persistedFontSize;
+            !string.Equals(SelectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal);
+        bool sizeDirty = ReadingFontSize != _persistedFontSize;
         _isDirty = paletteDirty || fontDirty || sizeDirty;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));

@@ -1,8 +1,14 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
 using System.Text.Json;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Conflicts;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
@@ -13,10 +19,8 @@ public sealed record ConflictDialogResult(
 
 public sealed record ConflictDialogOption(string OptionId, string Label, string Detail);
 
-public sealed class ConflictFieldChoiceViewModel : ViewModelBase
+public sealed partial class ConflictFieldChoiceViewModel : ViewModelBase
 {
-    private string _selectedSide = BiblatexMappedItemMerge.ChoiceIncoming;
-
     public ConflictFieldChoiceViewModel(string fieldKey, string label, string? localValue, string incomingValue)
     {
         FieldKey = fieldKey;
@@ -30,22 +34,10 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
     public string LocalValue { get; }
     public string IncomingValue { get; }
 
-    public string SelectedSide
-    {
-        get => _selectedSide;
-        set
-        {
-            if (_selectedSide == value)
-            {
-                return;
-            }
-
-            _selectedSide = value;
-            Raise();
-            Raise(nameof(KeepLocal));
-            Raise(nameof(UseIncoming));
-        }
-    }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(KeepLocal))]
+    [NotifyPropertyChangedFor(nameof(UseIncoming))]
+    public partial string SelectedSide { get; set; } = BiblatexMappedItemMerge.ChoiceIncoming;
 
     public bool KeepLocal
     {
@@ -254,10 +246,8 @@ public sealed class ConflictFieldChoiceViewModel : ViewModelBase
     }
 }
 
-public sealed class ConflictLinkChoiceViewModel : ViewModelBase
+public sealed partial class ConflictLinkChoiceViewModel : ViewModelBase
 {
-    private ConflictDialogOption? _selectedOption;
-
     public ConflictLinkChoiceViewModel(
         string sourceEntryKey,
         string sourceTitle,
@@ -277,18 +267,10 @@ public sealed class ConflictLinkChoiceViewModel : ViewModelBase
     public string SourceTitle { get; }
     public ObservableCollection<ConflictDialogOption> Options { get; } = new();
 
-    public ConflictDialogOption? SelectedOption
-    {
-        get => _selectedOption;
-        set
-        {
-            _selectedOption = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial ConflictDialogOption? SelectedOption { get; set; }
 }
 
-public sealed class ConflictDialogActionViewModel : ViewModelBase
+public sealed partial class ConflictDialogActionViewModel : ViewModelBase
 {
     private readonly ConflictResolutionDialogViewModel _owner;
 
@@ -318,22 +300,8 @@ public sealed class ConflictDialogActionViewModel : ViewModelBase
     public string Description { get; }
     public bool IsRecommended { get; }
     public bool RequiresOption { get; }
-    private bool _isEnabled;
 
-    public bool IsEnabled
-    {
-        get => _isEnabled;
-        private set
-        {
-            if (_isEnabled == value)
-            {
-                return;
-            }
-
-            _isEnabled = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool IsEnabled { get; private set; }
 
     public AsyncCommand SelectCommand { get; }
 
@@ -343,8 +311,10 @@ public sealed class ConflictDialogActionViewModel : ViewModelBase
     }
 }
 
-public sealed class ConflictResolutionDialogViewModel : ViewModelBase
+public sealed partial class ConflictResolutionDialogViewModel : ViewModelBase
 {
+    private readonly bool _isConstructing;
+
     public ConflictResolutionDialogViewModel()
         : this(new ConflictDescriptor(
             "unknown", ConflictDomain.SnapshotSync, ConflictSeverity.Blocking,
@@ -357,6 +327,7 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
         ConflictDescriptor descriptor,
         IReadOnlyList<ConflictDialogOption>? options = null)
     {
+        _isConstructing = true;
         ConflictCode = descriptor.ConflictCode;
         Title = descriptor.ConflictCode switch
         {
@@ -428,6 +399,18 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
 
         Actions.Add(new ConflictDialogActionViewModel(
             new ConflictAction("leave_unresolved", "暂不处理", "保持冲突未解决。", false), this));
+
+        IObservable<Unit> optionsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => Options.CollectionChanged += h,
+                h => Options.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        optionsChanged
+            .Select(_ => Options.Count > 0)
+            .BindOutput(this, has => HasOptions = has, ImmediateScheduler.Instance, null, true, Options.Count > 0);
+
+        _isConstructing = false;
         RefreshActionAvailability();
     }
 
@@ -445,20 +428,21 @@ public sealed class ConflictResolutionDialogViewModel : ViewModelBase
     public ObservableCollection<ConflictDialogOption> Options { get; } = new();
     public ObservableCollection<ConflictFieldChoiceViewModel> FieldChoices { get; } = new();
     public ObservableCollection<ConflictLinkChoiceViewModel> LinkChoices { get; } = new();
-    public bool HasOptions => Options.Count > 0;
+
+    [ObservableProperty] public partial bool HasOptions { get; private set; }
+
     public bool ShowSnapshotPanels => IsSimpleOptionMode;
 
-    private ConflictDialogOption? _selectedOption;
+    [ObservableProperty] public partial ConflictDialogOption? SelectedOption { get; set; }
 
-    public ConflictDialogOption? SelectedOption
+    partial void OnSelectedOptionChanged(ConflictDialogOption? value)
     {
-        get => _selectedOption;
-        set
+        if (_isConstructing)
         {
-            _selectedOption = value;
-            Raise();
-            RefreshActionAvailability();
+            return;
         }
+
+        RefreshActionAvailability();
     }
 
     public Action<object?>? RequestClose { get; set; }

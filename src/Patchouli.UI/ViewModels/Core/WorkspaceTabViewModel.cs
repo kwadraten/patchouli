@@ -1,44 +1,16 @@
 using System.Windows.Input;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class WorkspaceTabViewModel : ViewModelBase
+public sealed partial class WorkspaceTabViewModel : ViewModelBase
 {
-    private string _title;
-    private string _iconName;
+    [ObservableProperty] public partial string Title { get; set; }
+
+    [ObservableProperty] public partial string IconName { get; set; }
 
     public string TabId { get; }
     public WorkspaceTabKind Kind { get; }
-
-    public string Title
-    {
-        get => _title;
-        set
-        {
-            if (_title == value)
-            {
-                return;
-            }
-
-            _title = value;
-            Raise();
-        }
-    }
-
-    public string IconName
-    {
-        get => _iconName;
-        set
-        {
-            if (_iconName == value)
-            {
-                return;
-            }
-
-            _iconName = value;
-            Raise();
-        }
-    }
 
     public bool IsClosable { get; }
     public ICommand? CloseCommand { get; }
@@ -49,8 +21,8 @@ public sealed class WorkspaceTabViewModel : ViewModelBase
     {
         Kind = kind;
         TabId = tabId;
-        _title = title;
-        _iconName = iconName;
+        Title = title;
+        IconName = iconName;
         IsClosable = isClosable;
         CloseCommand = closeCommand;
         Content = content;

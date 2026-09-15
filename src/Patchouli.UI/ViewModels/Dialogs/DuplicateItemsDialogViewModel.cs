@@ -1,9 +1,15 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.Globalization;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
 using System.Windows.Input;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Ids;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Dialogs;
 
@@ -18,7 +24,7 @@ public enum DuplicateItemsDialogResult
 /// <summary>
 /// A single duplicate pair exposed in the duplicate detection dialog.
 /// </summary>
-public sealed class DuplicateItemPairViewModel : ViewModelBase
+public sealed partial class DuplicateItemPairViewModel : ViewModelBase
 {
     private readonly DuplicateItemPair _pair;
     private readonly IReadOnlyDictionary<ItemId, string> _titles;
@@ -73,7 +79,7 @@ public sealed class DuplicateItemPairViewModel : ViewModelBase
 /// View model for the duplicate item detection dialog. Presents one pair at a time and lets the
 /// user process it through the existing merge preview dialog or skip it.
 /// </summary>
-public sealed class DuplicateItemsDialogViewModel : ViewModelBase
+public sealed partial class DuplicateItemsDialogViewModel : ViewModelBase
 {
     private readonly Func<DuplicateItemPair, Task<bool>> _processPairAsync;
 
@@ -90,13 +96,27 @@ public sealed class DuplicateItemsDialogViewModel : ViewModelBase
 
         Pairs = new ObservableCollection<DuplicateItemPairViewModel>(
             pairs.Select(pair => new DuplicateItemPairViewModel(pair, titles, ProcessCommand, SkipCommand)));
+
+        IObservable<Unit> pairsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => Pairs.CollectionChanged += h,
+                h => Pairs.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        pairsChanged
+            .Select(_ => Pairs.Count > 0)
+            .BindOutput(this, has => HasPairs = has, ImmediateScheduler.Instance, null, true, Pairs.Count > 0);
+
+        pairsChanged
+            .Select(_ => Pairs.Count == 0)
+            .BindOutput(this, no => NoPairs = no, ImmediateScheduler.Instance, null, true, Pairs.Count == 0);
     }
 
     public ObservableCollection<DuplicateItemPairViewModel> Pairs { get; }
 
-    public bool HasPairs => Pairs.Count > 0;
+    [ObservableProperty] public partial bool HasPairs { get; private set; }
 
-    public bool NoPairs => Pairs.Count == 0;
+    [ObservableProperty] public partial bool NoPairs { get; private set; } = true;
 
     public RelayCommand<DuplicateItemPairViewModel> ProcessCommand { get; }
 
@@ -147,9 +167,6 @@ public sealed class DuplicateItemsDialogViewModel : ViewModelBase
     private void RemovePair(DuplicateItemPairViewModel pairViewModel)
     {
         Pairs.Remove(pairViewModel);
-        Raise(nameof(Pairs));
-        Raise(nameof(HasPairs));
-        Raise(nameof(NoPairs));
 
         if (Pairs.Count == 0)
         {

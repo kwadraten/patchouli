@@ -67,13 +67,21 @@ public class AboutViewModel : ViewModelBase
         ThirdPartyLibraries = new ObservableCollection<ThirdPartyLibrary>
         {
             new("Avalonia", "MIT", "https://github.com/AvaloniaUI/Avalonia", openUrlCommand),
+            new("CommunityToolkit.Mvvm", "MIT", "https://github.com/CommunityToolkit/dotnet", openUrlCommand),
+            new("System.Reactive (Rx.NET)", "MIT", "https://github.com/dotnet/reactive", openUrlCommand),
+            new("Lucide", "ISC", "https://github.com/lucide-icons/lucide", openUrlCommand),
             new("Dapper", "Apache-2.0", "https://github.com/DapperLib/Dapper", openUrlCommand),
             new("Microsoft.Data.Sqlite", "MIT", "https://github.com/dotnet/efcore", openUrlCommand),
+            new("SQLitePCLRaw", "Apache-2.0", "https://github.com/ericsink/SQLitePCL.raw", openUrlCommand),
+            new("SQLite", "Public Domain", "https://sqlite.org/", openUrlCommand),
             new("Blake3", "CC0 / Apache-2.0", "https://github.com/BLAKE3-team/BLAKE3", openUrlCommand),
+            new("SkiaSharp", "MIT", "https://github.com/mono/SkiaSharp", openUrlCommand),
             new("PDFiumCore / PDFium", "Apache-2.0 / BSD-3-Clause",
                 "https://github.com/Dtronix/PDFiumCore", openUrlCommand),
+            new("Microsoft.ML.OnnxRuntime", "MIT", "https://github.com/microsoft/onnxruntime", openUrlCommand),
             new("Fsharp.Citeproc", "MIT", "https://github.com/kwadraten/Fsharp.Citeproc", openUrlCommand),
             new("Markdig", "BSD-2-Clause", "https://github.com/xoofx/markdig", openUrlCommand),
+            new("OpenccNetLib", "MIT", "https://github.com/laisuk/OpenccNet", openUrlCommand),
             new("Corvus.Toon.SystemTextJson", "Apache-2.0", "https://github.com/corvus-dotnet/Corvus.JsonSchema",
                 openUrlCommand),
             new("typst/biblatex", "MIT / Apache-2.0", "https://github.com/typst/biblatex",
@@ -86,6 +94,7 @@ public class AboutViewModel : ViewModelBase
                 openUrlCommand),
             new("RapidOCR Models (PP-OCRv6, ModelScope)", "Apache-2.0",
                 "https://www.modelscope.cn/models/RapidAI/RapidOCR", openUrlCommand),
+            new("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid", openUrlCommand),
             new("AvaloniaRichEditor", "MIT",
                 "https://github.com/centwon/AvaloniaRichEditor", openUrlCommand)
         };

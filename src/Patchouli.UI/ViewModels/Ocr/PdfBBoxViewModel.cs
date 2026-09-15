@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
@@ -7,27 +8,14 @@ using Patchouli.Core.Results;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class PdfBBoxViewModel : ViewModelBase
+public sealed partial class PdfBBoxViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private bool _isSelected;
-    private bool _hasOverlapWarning;
-    private bool _hasChildren;
-    private bool _isTreeExpanded = true;
-    private string? _text;
-    private double _normalizedX;
-    private double _normalizedY;
-    private double _normalizedWidth;
-    private double _normalizedHeight;
-    private readonly double _imageWidth;
-    private readonly double _imageHeight;
-    private string _boxType;
-    private int? _headingLevel;
-    private string? _codeLanguage;
-    private string? _assetId;
     private readonly string? _tableHtml;
-    private string? _continuationHeadText;
-    private string? _continuationSourceLabel;
+    private readonly bool _isConstructing;
+
+    public double ImageWidth { get; }
+    public double ImageHeight { get; }
 
     public PdfBBoxViewModel(
         MainWindowViewModel main,
@@ -39,33 +27,36 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         int readingOrder = 0,
         int depth = 0)
     {
+        _isConstructing = true;
         _main = main;
         Workspace = workspace;
         BoxId = box.BoxId;
         ParentBoxId = box.ParentBoxId;
         NextSiblingBoxId = box.NextSiblingBoxId;
         ContinuesFromBoxId = box.ContinuesFromBoxId;
-        _boxType = box.BoxType;
+        BoxType = box.BoxType;
         Payload = box.Payload;
-        _headingLevel = box.HeadingLevel;
-        _codeLanguage = box.CodeLanguage;
+        HeadingLevel = box.HeadingLevel;
+        CodeLanguage = box.CodeLanguage;
         Text = PayloadText(box.Payload);
-        _assetId = (box.Payload as MediaBoxPayload)?.AssetId;
+        AssetId = (box.Payload as MediaBoxPayload)?.AssetId;
         _tableHtml = (box.Payload as TableBoxPayload)?.Html;
         IsSuppressed = box.Suppressed;
-        _imageWidth = imageWidth;
-        _imageHeight = imageHeight;
-        _normalizedX = box.BBox.X;
-        _normalizedY = box.BBox.Y;
-        _normalizedWidth = box.BBox.Width;
-        _normalizedHeight = box.BBox.Height;
+        ImageWidth = imageWidth;
+        ImageHeight = imageHeight;
+        NormalizedX = box.BBox.X;
+        NormalizedY = box.BBox.Y;
+        NormalizedWidth = box.BBox.Width;
+        NormalizedHeight = box.BBox.Height;
         ReadingOrder = readingOrder;
         Depth = depth;
         IsDraft = isDraft;
-        SaveTextCommand = new AsyncCommand(SaveTextAsync);
-        DeleteCommand = new AsyncCommand(DeleteAsync);
-        SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync);
-        JumpToContinuationSourceCommand = new AsyncCommand(JumpToContinuationSourceAsync);
+        SaveTextCommand = new AsyncCommand(SaveTextAsync, () => Workspace.IsEditMode && !IsLogicalPage);
+        DeleteCommand = new AsyncCommand(DeleteAsync, () => Workspace.IsEditMode);
+        SaveBBoxCommand = new AsyncCommand(SaveBBoxAsync, () => Workspace.IsEditMode);
+        JumpToContinuationSourceCommand = new AsyncCommand(JumpToContinuationSourceAsync, () => IsContinuation);
+
+        _isConstructing = false;
     }
 
     public PdfWorkspaceViewModel Workspace { get; }
@@ -76,115 +67,62 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public DocumentBoxId? ContinuesFromBoxId { get; }
     public bool IsContinuation => ContinuesFromBoxId is not null;
 
-    public string? ContinuationHeadText
-    {
-        get => _continuationHeadText;
-        internal set
-        {
-            if (_continuationHeadText == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string? ContinuationHeadText { get; internal set; }
 
-            _continuationHeadText = value;
-            Raise();
-            Raise(nameof(Summary));
-        }
+    partial void OnContinuationHeadTextChanged(string? value)
+    {
+        Raise(nameof(Summary));
     }
 
-    public string? ContinuationSourceLabel
-    {
-        get => _continuationSourceLabel;
-        internal set
-        {
-            if (_continuationSourceLabel == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string? ContinuationSourceLabel { get; internal set; }
 
-            _continuationSourceLabel = value;
-            Raise();
+    public double Left => NormalizedX * ImageWidth;
+
+    public double Top => NormalizedY * ImageHeight;
+
+    public double Width => NormalizedWidth * ImageWidth;
+
+    public double Height => NormalizedHeight * ImageHeight;
+
+    [ObservableProperty] public partial string BoxType { get; set; } = string.Empty;
+
+    partial void OnBoxTypeChanged(string value)
+    {
+        if (!_isConstructing && value == DocumentBoxType.Title && HeadingLevel is null)
+        {
+            HeadingLevel = 1;
         }
+
+        SaveTextCommand?.NotifyCanExecuteChanged();
     }
 
-    public double Left => NormalizedX * _imageWidth;
-    public double Top => NormalizedY * _imageHeight;
-    public double Width => NormalizedWidth * _imageWidth;
-    public double Height => NormalizedHeight * _imageHeight;
+    [ObservableProperty] public partial int? HeadingLevel { get; set; }
 
-    public string BoxType
+    [ObservableProperty] public partial string? CodeLanguage { get; set; }
+
+    public IBrush BoxColor => BoxType switch
     {
-        get => _boxType;
-        set
-        {
-            if (_boxType == value)
-            {
-                return;
-            }
+        DocumentBoxType.Title => Brushes.Blue,
+        DocumentBoxType.Text => Brushes.Green,
+        DocumentBoxType.Table => Brushes.Orange,
+        DocumentBoxType.Image => Brushes.Red,
+        DocumentBoxType.Equation => Brushes.Purple,
+        DocumentBoxType.LogicalPage => Brushes.Teal,
+        _ => Brushes.Gray
+    };
 
-            _boxType = value;
-            if (value == DocumentBoxType.Title && HeadingLevel is null)
-            {
-                HeadingLevel = 1;
-            }
-
-            Raise();
-            Raise(nameof(BoxColor));
-            Raise(nameof(IsLogicalPage));
-            Raise(nameof(IsMedia));
-            Raise(nameof(IsTitle));
-            Raise(nameof(IsCode));
-        }
-    }
-
-    public int? HeadingLevel
-    {
-        get => _headingLevel;
-        set
-        {
-            if (_headingLevel != value)
-            {
-                _headingLevel = value;
-                Raise();
-            }
-        }
-    }
-
-    public string? CodeLanguage
-    {
-        get => _codeLanguage;
-        set
-        {
-            if (_codeLanguage != value)
-            {
-                _codeLanguage = value;
-                Raise();
-            }
-        }
-    }
-
-    public IBrush BoxColor => ColorFor(BoxType);
     public IBrush VisualBoxColor => IsSuppressed ? Brushes.Gray : BoxColor;
+
     public bool IsDraft { get; }
 
-    public string? AssetId
-    {
-        get => _assetId;
-        set
-        {
-            if (_assetId != value)
-            {
-                _assetId = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string? AssetId { get; set; }
 
     public bool IsSuppressed { get; }
     public int ReadingOrder { get; }
     public int Depth { get; }
     public Thickness TreeMargin => new(Depth * 20, 0, 0, 4);
 
+    [ExcludeFromDerivedGeneration]
     public string Summary => IsContinuation
         ? "↳ " + (string.IsNullOrWhiteSpace(ContinuationHeadText)
             ? "（续接区域，文字在源框）"
@@ -198,89 +136,30 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public bool IsTitle => BoxType == DocumentBoxType.Title;
     public bool IsCode => BoxType is DocumentBoxType.Code or DocumentBoxType.Algorithm;
 
-    public bool IsSelected
-    {
-        get => _isSelected;
-        set
-        {
-            if (_isSelected == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool IsSelected { get; set; }
 
-            _isSelected = value;
-            Raise();
-            Raise(nameof(ShowHandles));
-            Raise(nameof(ZIndex));
-        }
+    partial void OnIsSelectedChanged(bool value)
+    {
+        Raise(nameof(ShowHandles));
     }
 
     public int ZIndex => IsSelected ? 1 : 0;
 
-    public bool ShowHandles => IsSelected && Workspace.IsEditMode;
+    [ExcludeFromDerivedGeneration] public bool ShowHandles => IsSelected && Workspace.IsEditMode;
 
-    public bool HasOverlapWarning
-    {
-        get => _hasOverlapWarning;
-        internal set
-        {
-            if (_hasOverlapWarning == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool HasOverlapWarning { get; internal set; }
 
-            _hasOverlapWarning = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial bool HasChildren { get; internal set; }
 
-    public bool HasChildren
-    {
-        get => _hasChildren;
-        internal set
-        {
-            if (_hasChildren == value)
-            {
-                return;
-            }
-
-            _hasChildren = value;
-            Raise();
-        }
-    }
-
-    public bool IsTreeExpanded
-    {
-        get => _isTreeExpanded;
-        internal set
-        {
-            if (_isTreeExpanded == value)
-            {
-                return;
-            }
-
-            _isTreeExpanded = value;
-            Raise();
-            Raise(nameof(TreeChevronAngle));
-        }
-    }
+    [ObservableProperty] public partial bool IsTreeExpanded { get; internal set; } = true;
 
     public double TreeChevronAngle => IsTreeExpanded ? 90 : 0;
 
-    public string? Text
-    {
-        get => _text;
-        set
-        {
-            if (_text == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string? Text { get; set; }
 
-            _text = value;
-            Raise();
-            Raise(nameof(Summary));
-        }
+    partial void OnTextChanged(string? value)
+    {
+        Raise(nameof(Summary));
     }
 
     public AsyncCommand SaveTextCommand { get; }
@@ -288,29 +167,10 @@ public sealed class PdfBBoxViewModel : ViewModelBase
     public AsyncCommand SaveBBoxCommand { get; }
     public AsyncCommand JumpToContinuationSourceCommand { get; }
 
-    public double NormalizedX
-    {
-        get => _normalizedX;
-        set => SetBBoxValue(ref _normalizedX, value, nameof(Left));
-    }
-
-    public double NormalizedY
-    {
-        get => _normalizedY;
-        set => SetBBoxValue(ref _normalizedY, value, nameof(Top));
-    }
-
-    public double NormalizedWidth
-    {
-        get => _normalizedWidth;
-        set => SetBBoxValue(ref _normalizedWidth, value, nameof(Width));
-    }
-
-    public double NormalizedHeight
-    {
-        get => _normalizedHeight;
-        set => SetBBoxValue(ref _normalizedHeight, value, nameof(Height));
-    }
+    [ObservableProperty] public partial double NormalizedX { get; set; }
+    [ObservableProperty] public partial double NormalizedY { get; set; }
+    [ObservableProperty] public partial double NormalizedWidth { get; set; }
+    [ObservableProperty] public partial double NormalizedHeight { get; set; }
 
     private async Task SaveTextAsync()
     {
@@ -428,25 +288,22 @@ public sealed class PdfBBoxViewModel : ViewModelBase
         await Workspace.JumpToContinuationSourceAsync(this);
     }
 
+    internal void NotifyEditModeChanged()
+    {
+        Raise(nameof(ShowHandles));
+        SaveTextCommand.NotifyCanExecuteChanged();
+        DeleteCommand.NotifyCanExecuteChanged();
+        SaveBBoxCommand.NotifyCanExecuteChanged();
+    }
+
     internal void SetCanvasBBox(double left, double top, double width, double height)
     {
-        NormalizedX = Math.Clamp(left / _imageWidth, 0, 1);
-        NormalizedY = Math.Clamp(top / _imageHeight, 0, 1);
-        NormalizedWidth = Math.Clamp(width / _imageWidth, 0.0001, 1 - NormalizedX);
-        NormalizedHeight = Math.Clamp(height / _imageHeight, 0.0001, 1 - NormalizedY);
+        NormalizedX = Math.Clamp(left / ImageWidth, 0, 1);
+        NormalizedY = Math.Clamp(top / ImageHeight, 0, 1);
+        NormalizedWidth = Math.Clamp(width / ImageWidth, 0.0001, 1 - NormalizedX);
+        NormalizedHeight = Math.Clamp(height / ImageHeight, 0.0001, 1 - NormalizedY);
     }
 
-    private void SetBBoxValue(ref double field, double value, string pixelProperty)
-    {
-        if (field.Equals(value))
-        {
-            return;
-        }
-
-        field = value;
-        Raise();
-        Raise(pixelProperty);
-    }
 
     internal static string? PayloadText(DocumentBoxPayload? payload)
     {
@@ -459,20 +316,6 @@ public sealed class PdfBBoxViewModel : ViewModelBase
             CodeBoxPayload value => value.Code,
             MediaBoxPayload value => value.Description,
             _ => null
-        };
-    }
-
-    private static IBrush ColorFor(string boxType)
-    {
-        return boxType switch
-        {
-            DocumentBoxType.Title => Brushes.Blue,
-            DocumentBoxType.Text => Brushes.Green,
-            DocumentBoxType.Table => Brushes.Orange,
-            DocumentBoxType.Image => Brushes.Red,
-            DocumentBoxType.Equation => Brushes.Purple,
-            DocumentBoxType.LogicalPage => Brushes.Teal,
-            _ => Brushes.Gray
         };
     }
 }

@@ -1,3 +1,8 @@
+using System.Collections.Specialized;
+using System.Reactive;
+using System.Reactive.Concurrency;
+using System.Reactive.Linq;
+using System.Reactive.Subjects;
 using Avalonia;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -11,33 +16,41 @@ using Patchouli.Core.Layout;
 using Patchouli.Ocr;
 using System.Linq;
 using Patchouli.Core.Results;
+using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Services;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI;
 using Patchouli.UI.Controls;
 using Patchouli.UI.Reading;
+using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.Host.Composition;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed class PdfWorkspaceViewModel : ViewModelBase
+public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 {
     private readonly MainWindowViewModel _main;
-    private int _pageIndex;
-    private int _pageCount;
+    private bool _isConstructing = true;
     private int _lastNavigationDirection;
-    private CancellationTokenSource? _prefetchCancellation;
-    private int _widthPixels;
-    private int _heightPixels;
+    private readonly Subject<PrefetchRequest> _prefetchSubject = new();
+
+    private readonly record struct PrefetchRequest(
+        HostServices? Services,
+        DocumentInstanceId DocumentInstanceId,
+        FileAssetId? FileAssetId,
+        IReadOnlyList<int> Targets);
+
     private int _renderGeneration;
-    private bool _isEditMode;
-    private bool _isHistoryTabActive;
-    private bool _isSidebarOpen;
-    private PdfWorkspaceTool _activeTool = PdfWorkspaceTool.Select;
+
+    /// <summary>Test seam: when set, intercepts preview page rendering requests so tests can
+    /// simulate slow renders, cancellation, and concurrency without PDFium.</summary>
+    internal Func<PageRenderRequest, CancellationToken, Task<Result<PdfPagePixelBufferLease>>>?
+        PageRenderPreviewHandler { get; set; }
+
     private PdfBBoxViewModel? _selectedBox;
     private DocumentTreeRevisionId? _currentRevisionId;
     private DocumentTreeRevisionId? _draftRevisionId;
-    private PageEditSessionId? _editSessionId;
     private PageId? _currentPageId;
     private IReadOnlyList<DocumentBox> _loadedBoxes = [];
     private IReadOnlyList<Page> _pages = [];
@@ -46,37 +59,79 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _crossPageContinuationSources = [];
 
     private readonly HashSet<DocumentBoxId> _collapsedBoxIds = [];
-    private bool _isDrawing;
     private Point _selectionStartPoint;
-    private NormalizedBBox? _pendingBBox;
-    private string _newBoxText = string.Empty;
-    private string _newBoxType = DocumentBoxType.Text;
-    private int _newHeadingLevel = 1;
-    private string _newCodeLanguage = string.Empty;
-    private DocumentBox? _splitSource;
-    private NormalizedBBox? _splitFirstBBox;
-    private NormalizedBBox? _splitSecondBBox;
-    private string _splitFirstText = string.Empty;
-    private string _splitSecondText = string.Empty;
-    private OcrRegionCandidate? _localOcrCandidate;
     private DocumentBoxId? _localOcrTargetBoxId;
-    private string _localOcrSourceText = string.Empty;
     private DocumentBoxId? _previewSelectedBoxId;
-    private DocumentReadingScene? _readingScene;
-    private DocumentBoxId? _readingSelectedBoxId;
-    private DocumentBox[] _pendingMergeBoxes = [];
-    private string _mergeText = string.Empty;
-    private string _sourceValidationState = SourceValidationStatus.Unverified;
-    private string? _sourceWarning;
     private DocumentTreeRevisionId? _liveCurrentRevisionId;
-    private bool _isViewingHistoricalRevision;
-
-    private bool _isBookReadingMode;
     private CancellationTokenSource? _bookReadingCancellation;
-    private double _bookReadingFontSize;
-    private string _bookReadingFontFamily;
-    private string _bookReadingProgressText = string.Empty;
     private IReadOnlyList<string>? _bookReadingFontFamilies;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PageNumberText))]
+    public partial int PageIndex { get; private set; }
+
+    partial void OnPageIndexChanged(int value)
+    {
+        PreviousPageCommand?.NotifyCanExecuteChanged();
+        NextPageCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(PageNumberText))]
+    public partial int PageCount { get; private set; }
+
+    partial void OnPageCountChanged(int value)
+    {
+        PreviousPageCommand?.NotifyCanExecuteChanged();
+        NextPageCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial int WidthPixels { get; private set; }
+    [ObservableProperty] public partial int HeightPixels { get; private set; }
+
+    [ObservableProperty] public partial PageEditSessionId? EditSessionId { get; private set; }
+
+    partial void OnEditSessionIdChanged(PageEditSessionId? value)
+    {
+        InsertPendingBoxCommand?.NotifyCanExecuteChanged();
+        ConfirmSplitCommand?.NotifyCanExecuteChanged();
+        AcceptLocalOcrCommand?.NotifyCanExecuteChanged();
+        SaveAndExitCommand?.NotifyCanExecuteChanged();
+        CancelEditModeCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial NormalizedBBox? PendingBBox { get; private set; }
+
+    partial void OnPendingBBoxChanged(NormalizedBBox? value)
+    {
+        InsertPendingBoxCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial DocumentBox? SplitSource { get; private set; }
+
+    [ObservableProperty] public partial NormalizedBBox? SplitFirstBBox { get; private set; }
+
+    partial void OnSplitFirstBBoxChanged(NormalizedBBox? value)
+    {
+        ConfirmSplitCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial NormalizedBBox? SplitSecondBBox { get; private set; }
+
+    partial void OnSplitSecondBBoxChanged(NormalizedBBox? value)
+    {
+        ConfirmSplitCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial OcrRegionCandidate? LocalOcrCandidate { get; private set; }
+
+    partial void OnLocalOcrCandidateChanged(OcrRegionCandidate? value)
+    {
+        AcceptLocalOcrCommand?.NotifyCanExecuteChanged();
+    }
+
+    [ObservableProperty] public partial string LocalOcrSourceText { get; private set; } = string.Empty;
+    [ObservableProperty] public partial DocumentBox[] PendingMergeBoxes { get; private set; } = [];
 
     // Reading mode loads a window of pages around the current page and grows it on demand as the
     // reader scrolls. The session keeps every delivered page (so a view recreated on a tab switch
@@ -87,7 +142,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private int _bookReadingStartIndex;
     private int _bookReadingLo;
     private int _bookReadingHi;
-    private bool _bookReadingLoading;
+    private int _bookReadingPlannedLo;
+    private int _bookReadingPlannedHi;
+    private bool _bookReadingInitialWindowPending;
+    private readonly Subject<Func<CancellationToken, Task>> _bookReadingSubject = new();
     private IBookReadingStream? _bookReadingStream;
     private DocumentInstanceId? _bookReadingDocumentInstanceId;
 
@@ -96,23 +154,24 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _main = main;
         Item = item;
         ReadingMediaLoader = new FileAssetMediaImageLoader(main);
-        PreviousPageCommand = new AsyncCommand(PreviousPageAsync);
-        NextPageCommand = new AsyncCommand(NextPageAsync);
+        PreviousPageCommand = new AsyncCommand(PreviousPageAsync, () => !IsEditMode && PageIndex > 0);
+        NextPageCommand =
+            new AsyncCommand(NextPageAsync, () => !IsEditMode && PageCount > 0 && PageIndex < PageCount - 1);
         ReloadCommand = new AsyncCommand(ReloadAsync);
         ZoomInCommand = new AsyncCommand(() =>
         {
             SetZoom(Zoom + 0.1);
             return Task.CompletedTask;
-        });
+        }, () => Zoom < 4.0);
         ZoomOutCommand = new AsyncCommand(() =>
         {
             SetZoom(Zoom - 0.1);
             return Task.CompletedTask;
-        });
+        }, () => Zoom > 0.25);
 
         EnterEditModeCommand = new AsyncCommand(EnterEditModeAsync);
-        SaveAndExitCommand = new AsyncCommand(SaveAndExitAsync);
-        CancelEditModeCommand = new AsyncCommand(CancelEditModeAsync);
+        SaveAndExitCommand = new AsyncCommand(SaveAndExitAsync, () => EditSessionId is not null);
+        CancelEditModeCommand = new AsyncCommand(CancelEditModeAsync, () => EditSessionId is not null);
         SelectToolCommand = new AsyncCommand(() =>
         {
             SetActiveTool(PdfWorkspaceTool.Select);
@@ -128,7 +187,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             SetActiveTool(PdfWorkspaceTool.CreateBox);
             return Task.CompletedTask;
         });
-        InsertPendingBoxCommand = new AsyncCommand(PersistDraftBoxAsync);
+        InsertPendingBoxCommand =
+            new AsyncCommand(PersistDraftBoxAsync, () => EditSessionId is not null && PendingBBox is not null);
         CancelPendingBoxCommand = new AsyncCommand(() =>
         {
             ClearPendingBox();
@@ -136,14 +196,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         });
         RunPendingOcrPrefillCommand = new AsyncCommand(RunPendingOcrPrefillAsync);
         SplitSelectedCommand = new AsyncCommand(SplitSelectedAsync);
-        ConfirmSplitCommand = new AsyncCommand(ConfirmSplitAsync);
+        ConfirmSplitCommand = new AsyncCommand(ConfirmSplitAsync, () => EditSessionId is not null && CanConfirmSplit);
         CancelSplitCommand = new AsyncCommand(() =>
         {
             ClearSplit();
             return Task.CompletedTask;
         });
         RunLocalOcrCommand = new AsyncCommand(RunLocalOcrAsync);
-        AcceptLocalOcrCommand = new AsyncCommand(AcceptLocalOcrAsync);
+        AcceptLocalOcrCommand = new AsyncCommand(AcceptLocalOcrAsync,
+            () => EditSessionId is not null && LocalOcrCandidate is not null);
         RejectLocalOcrCommand = new AsyncCommand(() =>
         {
             ClearLocalOcrCandidate();
@@ -169,57 +230,112 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         IndentSelectedCommand = new AsyncCommand(IndentSelectedAsync);
         OutdentSelectedCommand = new AsyncCommand(OutdentSelectedAsync);
         ToggleSuppressedCommand = new AsyncCommand(ToggleSelectedSuppressedAsync);
-        BoundingBoxes.CollectionChanged += (_, _) => Raise(nameof(HasNoBoundingBoxes));
-        PreviewBlocks.CollectionChanged += (_, _) => Raise(nameof(HasNoPreviewBlocks));
+
+        IObservable<Unit> boundingBoxesChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => BoundingBoxes.CollectionChanged += h,
+                h => BoundingBoxes.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        boundingBoxesChanged
+            .Select(_ => BoundingBoxes.Count == 0)
+            .BindOutput(this, no => HasNoBoundingBoxes = no, ImmediateScheduler.Instance, null, true,
+                BoundingBoxes.Count == 0);
+
+        IObservable<Unit> previewBlocksChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => PreviewBlocks.CollectionChanged += h,
+                h => PreviewBlocks.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        previewBlocksChanged
+            .Select(_ => PreviewBlocks.Count == 0)
+            .BindOutput(this, no => HasNoPreviewBlocks = no, ImmediateScheduler.Instance, null, true,
+                PreviewBlocks.Count == 0);
+
+        IObservable<Unit> pageRevisionsChanged = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                h => PageRevisions.CollectionChanged += h,
+                h => PageRevisions.CollectionChanged -= h)
+            .Select(_ => Unit.Default);
+
+        pageRevisionsChanged
+            .Select(_ => PageRevisions.Count > 0)
+            .BindOutput(this, has => HasPageRevisions = has, ImmediateScheduler.Instance, null, true,
+                PageRevisions.Count > 0);
+
+        Register(_prefetchSubject
+            .Select(request => Observable.FromAsync(async cancellationToken =>
+            {
+                if (request.Services is null || request.Targets.Count == 0)
+                {
+                    return;
+                }
+
+                await PrefetchWindowAsync(request.Services, request.DocumentInstanceId, request.FileAssetId,
+                    request.Targets, cancellationToken);
+            }))
+            .Switch()
+            .Subscribe(
+                _ => { },
+                ex => UnexpectedExceptions.Sink.Report(ex, nameof(PdfWorkspaceViewModel), "PrefetchStream")));
+
+        Register(_bookReadingSubject
+            .Select(operation => Observable.FromAsync(operation))
+            .Concat()
+            .Subscribe(
+                _ => { },
+                ex => UnexpectedExceptions.Sink.Report(ex, nameof(PdfWorkspaceViewModel), "BookReadingStream")));
 
         EnterBookReadingCommand = new AsyncCommand(EnterBookReadingAsync);
         ExitBookReadingCommand = new RelayCommand(_ => ExitBookReading());
         BookReadingResetFontSizeCommand =
             new RelayCommand(_ => BookReadingFontSize = ReadingFontCatalog.DefaultFontSize);
-        _bookReadingFontSize = ReadingFontCatalog.ClampSize(_main.AppOptions.Ui.ReadingFontSize);
-        _bookReadingFontFamily = FamilyToDisplay(_main.AppOptions.Ui.ReadingFontFamily);
+        BookReadingFontSize = ReadingFontCatalog.ClampSize(_main.AppOptions.Ui.ReadingFontSize);
+        BookReadingFontFamily = FamilyToDisplay(_main.AppOptions.Ui.ReadingFontFamily);
+        _isConstructing = false;
     }
 
-    public Bitmap? Image { get; private set; }
+    [ObservableProperty] public partial Bitmap? Image { get; private set; }
     public LibraryItemViewModel Item { get; }
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
-    public bool IsBusy { get; private set; }
-    private string _status = "选择题录后可预览 PDF。";
+    [ObservableProperty] public partial bool IsBusy { get; private set; }
 
-    public string Status
+    [ObservableProperty] public partial string Status { get; set; } = "选择题录后可预览 PDF。";
+
+    partial void OnStatusChanged(string value)
     {
-        get => _status;
-        set
+        if (!string.IsNullOrWhiteSpace(value))
         {
-            if (_status == value)
+            if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不可用", StringComparison.Ordinal) ||
+                value.StartsWith("ERROR", StringComparison.Ordinal))
             {
-                return;
+                _main.ReportError(value);
             }
-
-            _status = value;
-            Raise();
-            if (!string.IsNullOrWhiteSpace(value))
+            else
             {
-                if (value.Contains("失败", StringComparison.Ordinal) || value.Contains("不可用", StringComparison.Ordinal) ||
-                    value.StartsWith("ERROR", StringComparison.Ordinal))
-                {
-                    _main.ReportError(value);
-                }
-                else
-                {
-                    _main.Report(value);
-                }
+                _main.Report(value);
             }
         }
     }
 
-    public string PageNumberText => _pageCount == 0 ? "-" : (_pageIndex + 1).ToString();
-    public string PageTotalText => _pageCount == 0 ? "/ -" : $"/ {_pageCount}";
-    public string ZoomText => $"{Math.Round(Zoom * 100):0}%";
-    public double Zoom { get; private set; } = 1.0;
-    public double ActualWidthPixels => _widthPixels;
-    public double ActualHeightPixels => _heightPixels;
+    [ExcludeFromDerivedGeneration] public string PageNumberText => PageCount == 0 ? "-" : (PageIndex + 1).ToString();
+    public string PageTotalText => PageCount == 0 ? "/ -" : $"/ {PageCount}";
+    [ExcludeFromDerivedGeneration] public string ZoomText => $"{Math.Round(Zoom * 100):0}%";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ZoomText))]
+    public partial double Zoom { get; private set; } = 1.0;
+
+    partial void OnZoomChanged(double value)
+    {
+        ZoomInCommand?.NotifyCanExecuteChanged();
+        ZoomOutCommand?.NotifyCanExecuteChanged();
+    }
+
+    public double ActualWidthPixels => WidthPixels;
+    public double ActualHeightPixels => HeightPixels;
 
     /// <summary>
     /// Last-known source validation state for the currently rendered page (AC16). It stays
@@ -229,96 +345,46 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     /// <see cref="SourceValidationStatus.Current"/>, <see cref="SourceValidationStatus.Changed"/>
     /// or <see cref="SourceValidationStatus.Unavailable"/>.
     /// </summary>
-    public string SourceValidationState
-    {
-        get => _sourceValidationState;
-        private set
-        {
-            if (_sourceValidationState == value)
-            {
-                return;
-            }
-
-            _sourceValidationState = value;
-            Raise();
-            Raise(nameof(IsSourceValidating));
-            Raise(nameof(HasSourceWarning));
-        }
-    }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSourceWarning))]
+    public partial string SourceValidationState { get; private set; } = SourceValidationStatus.Unverified;
 
     /// <summary>True only while a render that may lazily validate the source is in flight.</summary>
-    public bool IsSourceValidating => _sourceValidationState == SourceValidationStatus.Validating;
+    public bool IsSourceValidating => SourceValidationState == SourceValidationStatus.Validating;
 
     /// <summary>Distinct source warning (e.g. source_changed/bbox_basis_stale) for the page.</summary>
-    public string? SourceWarning
-    {
-        get => _sourceWarning;
-        private set
-        {
-            if (_sourceWarning == value)
-            {
-                return;
-            }
-
-            _sourceWarning = value;
-            Raise();
-            Raise(nameof(HasSourceWarning));
-        }
-    }
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSourceWarning))]
+    public partial string? SourceWarning { get; private set; }
 
     /// <summary>True when the source warning is present and validation is not still running.</summary>
+    [ExcludeFromDerivedGeneration]
     public bool HasSourceWarning => !string.IsNullOrWhiteSpace(SourceWarning) && !IsSourceValidating;
 
-    public bool IsEditMode
-    {
-        get => _isEditMode;
-        private set
-        {
-            if (_isEditMode == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool IsEditMode { get; private set; }
 
-            _isEditMode = value;
-            Raise();
+    partial void OnIsEditModeChanged(bool value)
+    {
+        PreviousPageCommand?.NotifyCanExecuteChanged();
+        NextPageCommand?.NotifyCanExecuteChanged();
+        foreach (PdfBBoxViewModel box in BoundingBoxes)
+        {
+            box.NotifyEditModeChanged();
+        }
+
+        foreach (PdfBBoxViewModel box in CandidateBoxes)
+        {
+            box.NotifyEditModeChanged();
         }
     }
 
     /// <summary>True when the view-mode sidebar shows the version-history tab instead of the page preview.</summary>
-    public bool IsHistoryTabActive
-    {
-        get => _isHistoryTabActive;
-        private set
-        {
-            if (_isHistoryTabActive == value)
-            {
-                return;
-            }
-
-            _isHistoryTabActive = value;
-            Raise();
-            Raise(nameof(SidebarTabTitle));
-        }
-    }
+    [ObservableProperty]
+    public partial bool IsHistoryTabActive { get; private set; }
 
     public string SidebarTabTitle => IsHistoryTabActive ? "版本历史" : "页面内容";
 
-    public bool IsViewingHistoricalRevision
-    {
-        get => _isViewingHistoricalRevision;
-        private set
-        {
-            if (_isViewingHistoricalRevision == value)
-            {
-                return;
-            }
-
-            _isViewingHistoricalRevision = value;
-            Raise();
-        }
-    }
-
-    public PageEditSessionId? EditSessionId => _editSessionId;
+    [ObservableProperty] public partial bool IsViewingHistoricalRevision { get; private set; }
 
     public IReadOnlyList<string> NewBoxTypeOptions { get; } =
     [
@@ -338,161 +404,53 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         DocumentBoxType.PageFootnote
     ];
 
-    public bool IsNewBoxPending => _pendingBBox is not null;
-    public bool IsSplitPending => _splitSource is not null;
-    public bool CanConfirmSplit => _splitFirstBBox is not null && _splitSecondBBox is not null;
+    public bool IsNewBoxPending => PendingBBox is not null;
+    public bool IsSplitPending => SplitSource is not null;
+    public bool CanConfirmSplit => SplitFirstBBox is not null && SplitSecondBBox is not null;
 
-    public string SplitStepText => _splitFirstBBox is null
+    public string SplitStepText => SplitFirstBBox is null
         ? "请在页面框出第一个替代区域。"
-        : _splitSecondBBox is null
+        : SplitSecondBBox is null
             ? "请在页面框出第二个替代区域。"
             : "两个区域已就绪；检查两份内容后确认拆分。";
 
-    public bool HasCandidate => _localOcrCandidate is not null;
-    public string LocalOcrSourceText => _localOcrSourceText;
-    public bool IsMergePending => _pendingMergeBoxes.Length > 0;
+    public bool HasCandidate => LocalOcrCandidate is not null;
+    public bool IsMergePending => PendingMergeBoxes.Length > 0;
 
-    public string MergeText
-    {
-        get => _mergeText;
-        set
-        {
-            if (_mergeText != value)
-            {
-                _mergeText = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string MergeText { get; set; } = string.Empty;
 
     public string OcrPresetStatusText => "局部与页面 OCR 使用当前库的 MinerU preset。";
 
-    public string SplitFirstText
-    {
-        get => _splitFirstText;
-        set
-        {
-            if (_splitFirstText != value)
-            {
-                _splitFirstText = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string SplitFirstText { get; set; } = string.Empty;
 
-    public string SplitSecondText
-    {
-        get => _splitSecondText;
-        set
-        {
-            if (_splitSecondText != value)
-            {
-                _splitSecondText = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string SplitSecondText { get; set; } = string.Empty;
 
-    public string NewBoxText
-    {
-        get => _newBoxText;
-        set
-        {
-            if (_newBoxText != value)
-            {
-                _newBoxText = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string NewBoxText { get; set; } = string.Empty;
 
-    public string NewBoxType
-    {
-        get => _newBoxType;
-        set
-        {
-            if (_newBoxType != value)
-            {
-                _newBoxType = value;
-                Raise();
-                Raise(nameof(NewBoxIsTitle));
-                Raise(nameof(NewBoxIsCode));
-            }
-        }
-    }
+    [ObservableProperty] public partial string NewBoxType { get; set; } = DocumentBoxType.Text;
 
     public bool NewBoxIsTitle => NewBoxType == DocumentBoxType.Title;
     public bool NewBoxIsCode => NewBoxType is DocumentBoxType.Code or DocumentBoxType.Algorithm;
 
-    public int NewHeadingLevel
+    [ObservableProperty] public partial int NewHeadingLevel { get; set; } = 1;
+
+    partial void OnNewHeadingLevelChanged(int value)
     {
-        get => _newHeadingLevel;
-        set
+        int clamped = Math.Clamp(value, 1, 6);
+        if (value != clamped)
         {
-            int normalized = Math.Clamp(value, 1, 6);
-            if (_newHeadingLevel != normalized)
-            {
-                _newHeadingLevel = normalized;
-                Raise();
-            }
+            NewHeadingLevel = clamped;
         }
     }
 
-    public string NewCodeLanguage
-    {
-        get => _newCodeLanguage;
-        set
-        {
-            if (_newCodeLanguage != value)
-            {
-                _newCodeLanguage = value;
-                Raise();
-            }
-        }
-    }
+    [ObservableProperty] public partial string NewCodeLanguage { get; set; } = string.Empty;
 
-    public bool IsSidebarOpen
-    {
-        get => _isSidebarOpen;
-        set
-        {
-            if (_isSidebarOpen == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool IsSidebarOpen { get; set; }
 
-            _isSidebarOpen = value;
-            Raise();
-            Raise(nameof(SidebarMaxWidth));
-            Raise(nameof(SidebarMinWidth));
-        }
-    }
+    public double SidebarMaxWidth => IsSidebarOpen ? 800.0 : 0.0;
+    public double SidebarMinWidth => IsSidebarOpen ? 200.0 : 0.0;
 
-    public double SidebarMaxWidth => _isSidebarOpen ? 800.0 : 0.0;
-    public double SidebarMinWidth => _isSidebarOpen ? 200.0 : 0.0;
-    private double _selectionLeft;
-    private double _selectionTop;
-    private double _selectionWidth;
-    private double _selectionHeight;
-
-    public PdfWorkspaceTool ActiveTool
-    {
-        get => _activeTool;
-        private set
-        {
-            if (_activeTool == value)
-            {
-                return;
-            }
-
-            _activeTool = value;
-            Raise();
-            Raise(nameof(IsSelectToolActive));
-            Raise(nameof(IsMarqueeToolActive));
-            Raise(nameof(IsCreateBoxToolActive));
-            Raise(nameof(IsRectToolActive));
-        }
-    }
+    [ObservableProperty] public partial PdfWorkspaceTool ActiveTool { get; private set; } = PdfWorkspaceTool.Select;
 
     public bool IsSelectToolActive => ActiveTool == PdfWorkspaceTool.Select;
     public bool IsMarqueeToolActive => ActiveTool == PdfWorkspaceTool.MarqueeSelect;
@@ -504,83 +462,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         ActiveTool = tool;
     }
 
-    public bool IsDrawing
-    {
-        get => _isDrawing;
-        private set
-        {
-            if (_isDrawing == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool IsDrawing { get; private set; }
 
-            _isDrawing = value;
-            Raise();
-            Raise(nameof(SelectionVisible));
-        }
-    }
+    [ObservableProperty] public partial double SelectionLeft { get; private set; }
 
-    public double SelectionLeft
-    {
-        get => _selectionLeft;
-        private set
-        {
-            if (_selectionLeft == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial double SelectionTop { get; private set; }
 
-            _selectionLeft = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial double SelectionWidth { get; private set; }
 
-    public double SelectionTop
-    {
-        get => _selectionTop;
-        private set
-        {
-            if (_selectionTop == value)
-            {
-                return;
-            }
-
-            _selectionTop = value;
-            Raise();
-        }
-    }
-
-    public double SelectionWidth
-    {
-        get => _selectionWidth;
-        private set
-        {
-            if (_selectionWidth == value)
-            {
-                return;
-            }
-
-            _selectionWidth = value;
-            Raise();
-            Raise(nameof(SelectionVisible));
-        }
-    }
-
-    public double SelectionHeight
-    {
-        get => _selectionHeight;
-        private set
-        {
-            if (_selectionHeight == value)
-            {
-                return;
-            }
-
-            _selectionHeight = value;
-            Raise();
-            Raise(nameof(SelectionVisible));
-        }
-    }
+    [ObservableProperty] public partial double SelectionHeight { get; private set; }
 
     public bool SelectionVisible => (IsDrawing || IsNewBoxPending) && SelectionWidth > 0 && SelectionHeight > 0;
 
@@ -611,41 +501,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     // Visible rows of the edit-mode box tree: BoundingBoxes minus collapsed subtrees.
     public System.Collections.ObjectModel.ObservableCollection<PdfBBoxViewModel> TreeBoxes { get; } = new();
 
-    public bool HasNoBoundingBoxes => BoundingBoxes.Count == 0;
-    public bool HasPageRevisions => PageRevisions.Count > 0;
-    public bool HasNoPreviewBlocks => PreviewBlocks.Count == 0;
+    [ObservableProperty] public partial bool HasNoBoundingBoxes { get; private set; } = true;
+    [ObservableProperty] public partial bool HasPageRevisions { get; private set; }
+    [ObservableProperty] public partial bool HasNoPreviewBlocks { get; private set; } = true;
 
     // Render-ready snapshot of the page content; the sidebar's reading view draws this instead of
     // the per-block MarkdownPreviewBlockViewModel list.
-    public DocumentReadingScene? ReadingScene
-    {
-        get => _readingScene;
-        private set
-        {
-            if (ReferenceEquals(_readingScene, value))
-            {
-                return;
-            }
+    [ObservableProperty] public partial DocumentReadingScene? ReadingScene { get; private set; }
 
-            _readingScene = value;
-            Raise();
-        }
-    }
-
-    public DocumentBoxId? ReadingSelectedBoxId
-    {
-        get => _readingSelectedBoxId;
-        private set
-        {
-            if (_readingSelectedBoxId == value)
-            {
-                return;
-            }
-
-            _readingSelectedBoxId = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial DocumentBoxId? ReadingSelectedBoxId { get; private set; }
 
     // Resolves the reading view's media block asset ids to decoded images (see the loader type).
     public IMediaImageLoader ReadingMediaLoader { get; }
@@ -860,7 +724,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
         }
 
-        if (_pendingBBox is null)
+        if (PendingBBox is null)
         {
             SelectionWidth = 0;
             SelectionHeight = 0;
@@ -869,15 +733,15 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private void ApplyMarqueeSelection(bool additive)
     {
-        if (_widthPixels <= 0 || _heightPixels <= 0)
+        if (WidthPixels <= 0 || HeightPixels <= 0)
         {
             return;
         }
 
-        double x = SelectionLeft / _widthPixels;
-        double y = SelectionTop / _heightPixels;
-        double width = SelectionWidth / _widthPixels;
-        double height = SelectionHeight / _heightPixels;
+        double x = SelectionLeft / WidthPixels;
+        double y = SelectionTop / HeightPixels;
+        double width = SelectionWidth / WidthPixels;
+        double height = SelectionHeight / HeightPixels;
         List<PdfBBoxViewModel> hits = BoundingBoxes.Where(box =>
             (!box.IsLogicalPage ||
              (box.NormalizedX >= x && box.NormalizedY >= y &&
@@ -917,58 +781,54 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private void CreateBBoxFromSelection()
     {
-        if (_draftRevisionId is null || _currentPageId is null || _widthPixels <= 0 || _heightPixels <= 0)
+        if (_draftRevisionId is null || _currentPageId is null || WidthPixels <= 0 || HeightPixels <= 0)
         {
             Status = "请先进入编辑模式并加载页面。";
             return;
         }
 
-        double x = Math.Clamp(SelectionLeft / _widthPixels, 0, 1);
-        double y = Math.Clamp(SelectionTop / _heightPixels, 0, 1);
-        double width = Math.Clamp(SelectionWidth / _widthPixels, 0.0001, 1 - x);
-        double height = Math.Clamp(SelectionHeight / _heightPixels, 0.0001, 1 - y);
-        if (_splitSource is not null)
+        double x = Math.Clamp(SelectionLeft / WidthPixels, 0, 1);
+        double y = Math.Clamp(SelectionTop / HeightPixels, 0, 1);
+        double width = Math.Clamp(SelectionWidth / WidthPixels, 0.0001, 1 - x);
+        double height = Math.Clamp(SelectionHeight / HeightPixels, 0.0001, 1 - y);
+        if (SplitSource is not null)
         {
-            if (_splitFirstBBox is null)
+            if (SplitFirstBBox is null)
             {
-                _splitFirstBBox = new NormalizedBBox(x, y, width, height);
+                SplitFirstBBox = new NormalizedBBox(x, y, width, height);
                 SplitDraftBoxes.Add(new SplitDraftBoxViewModel(
-                    x * _widthPixels, y * _heightPixels, width * _widthPixels, height * _heightPixels, "1"));
+                    x * WidthPixels, y * HeightPixels, width * WidthPixels, height * HeightPixels, "1"));
             }
             else
             {
-                _splitSecondBBox = new NormalizedBBox(x, y, width, height);
+                SplitSecondBBox = new NormalizedBBox(x, y, width, height);
                 SplitDraftBoxes.Add(new SplitDraftBoxViewModel(
-                    x * _widthPixels, y * _heightPixels, width * _widthPixels, height * _heightPixels, "2"));
+                    x * WidthPixels, y * HeightPixels, width * WidthPixels, height * HeightPixels, "2"));
             }
 
-            Raise(nameof(CanConfirmSplit));
-            Raise(nameof(SplitStepText));
             Status = SplitStepText;
             return;
         }
 
-        _pendingBBox = new NormalizedBBox(x, y, width, height);
+        PendingBBox = new NormalizedBBox(x, y, width, height);
         NewBoxText = string.Empty;
         NewBoxType = DocumentBoxType.Text;
         NewHeadingLevel = 1;
         NewCodeLanguage = string.Empty;
-        Raise(nameof(IsNewBoxPending));
-        Raise(nameof(SelectionVisible));
         Status = _loadedBoxes.Count == 0
             ? "填写类型和内容后插入第一个根边界框。"
             : "填写类型和内容后插入到边界框列表末尾。";
-        _ = OpenNewBoxEditorAsync();
+        OpenNewBoxEditorAsync().Observe(nameof(PdfWorkspaceViewModel), nameof(OpenNewBoxEditorAsync));
     }
 
     private async Task PersistDraftBoxAsync()
     {
-        if (_editSessionId is null || _draftRevisionId is null || _currentPageId is null)
+        if (EditSessionId is null || _draftRevisionId is null || _currentPageId is null)
         {
             return;
         }
 
-        if (_pendingBBox is null)
+        if (PendingBBox is null)
         {
             return;
         }
@@ -985,7 +845,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            result = await editor.InsertLogicalPageAsync(_editSessionId.Value, after, _pendingBBox.Value);
+            result = await editor.InsertLogicalPageAsync(EditSessionId.Value, after, PendingBBox.Value);
         }
         else
         {
@@ -996,8 +856,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
 
             result = await editor.DrawAndInsertLeafAsync(
-                _editSessionId.Value,
-                new InsertLeafCommand(null, after, NewBoxType, null, null, _pendingBBox.Value,
+                EditSessionId.Value,
+                new InsertLeafCommand(null, after, NewBoxType, null, null, PendingBBox.Value,
                     CreatePayload(NewBoxType, NewBoxText),
                     NewBoxType == DocumentBoxType.Title ? NewHeadingLevel : null,
                     NewBoxType == DocumentBoxType.Code && !string.IsNullOrWhiteSpace(NewCodeLanguage)
@@ -1055,7 +915,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task RunPendingOcrPrefillAsync()
     {
-        if (_pendingBBox is null || _currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        if (PendingBBox is null || _currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
         {
             Status = "请先框出区域，再运行 OCR 预填。";
             return;
@@ -1072,7 +932,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             Result<OcrRegionCandidate> candidate = await (await _main.ServicesAsync()).Ocr
                 .RecognizeRegionCandidateAsync(
                     DocumentInstanceId.Parse(Item.DocumentInstanceId), presetId.Value, _currentPageId.Value,
-                    _pendingBBox.Value);
+                    PendingBBox.Value);
             if (candidate.IsFailure)
             {
                 Status = $"局部 OCR 预填失败：{candidate.ErrorMessage}";
@@ -1108,7 +968,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task SplitSelectedAsync()
     {
-        if (_editSessionId is null || SelectedBox is null || SelectedBox.IsLogicalPage)
+        if (EditSessionId is null || SelectedBox is null || SelectedBox.IsLogicalPage)
         {
             Status = "请选择一个叶子边界框后再拆分。";
             return;
@@ -1123,20 +983,17 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         string text = SelectedBox.Text ?? string.Empty;
         string[] parts = text.Split(["\r\n\r\n", "\n\n"], StringSplitOptions.None);
-        _splitSource = original;
+        SplitSource = original;
         SplitFirstText = parts.Length > 1 ? parts[0] : text[..(text.Length / 2)];
         SplitSecondText = parts.Length > 1 ? string.Join("\n\n", parts.Skip(1)) : text[(text.Length / 2)..];
         SetActiveTool(PdfWorkspaceTool.CreateBox);
-        Raise(nameof(IsSplitPending));
-        Raise(nameof(CanConfirmSplit));
-        Raise(nameof(SplitStepText));
         Status = SplitStepText;
         await Task.CompletedTask;
     }
 
     private async Task ConfirmSplitAsync()
     {
-        if (_editSessionId is null || _splitSource is null || _splitFirstBBox is null || _splitSecondBBox is null ||
+        if (EditSessionId is null || SplitSource is null || SplitFirstBBox is null || SplitSecondBBox is null ||
             string.IsNullOrWhiteSpace(SplitFirstText) || string.IsNullOrWhiteSpace(SplitSecondText))
         {
             Status = "必须先框出两个替代区域，并分别填写非空内容。";
@@ -1145,10 +1002,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         Result<IReadOnlyList<DocumentBox>> result =
             await (await _main.ServicesAsync()).DocumentTreeEditor.SplitLeafAsync(
-                _editSessionId.Value,
-                new SplitLeafCommand(_splitSource.BoxId, _splitFirstBBox.Value,
-                    CreatePayload(_splitSource.BoxType, SplitFirstText, _splitSource.Payload), _splitSecondBBox.Value,
-                    CreatePayload(_splitSource.BoxType, SplitSecondText, _splitSource.Payload)));
+                EditSessionId.Value,
+                new SplitLeafCommand(SplitSource.BoxId, SplitFirstBBox.Value,
+                    CreatePayload(SplitSource.BoxType, SplitFirstText, SplitSource.Payload), SplitSecondBBox.Value,
+                    CreatePayload(SplitSource.BoxType, SplitSecondText, SplitSource.Payload)));
         if (result.IsFailure)
         {
             Status = $"拆分边界框失败：{result.ErrorMessage}";
@@ -1193,10 +1050,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 return Result.Failure(candidate.ErrorCode!, candidate.ErrorMessage!);
             }
 
-            _localOcrCandidate = candidate.Value;
+            LocalOcrCandidate = candidate.Value;
             _localOcrTargetBoxId = source.BoxId;
-            _localOcrSourceText = PayloadTextFor(source) ?? string.Empty;
-            Raise(nameof(LocalOcrSourceText));
+            LocalOcrSourceText = PayloadTextFor(source) ?? string.Empty;
             CandidateBoxes.Clear();
             CandidateBoxes.Add(new PdfBBoxViewModel(_main, this, new DocumentBox(
                 _draftRevisionId ?? _currentRevisionId ?? DocumentTreeRevisionId.New(),
@@ -1213,13 +1069,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 candidate.Value.HeadingLevel,
                 null,
                 candidate.Value.Confidence,
-                false), _widthPixels, _heightPixels, true));
+                false), WidthPixels, HeightPixels, true));
 
-            Raise(nameof(HasCandidate));
             Status = "局部 OCR 候选结果已生成；这是一个短生命周期的完整内容差异，不会写入识别记录或工作版本。";
             return Result.Success();
         });
-        if (_localOcrCandidate is not null && _localOcrTargetBoxId is { } targetId &&
+        if (LocalOcrCandidate is not null && _localOcrTargetBoxId is { } targetId &&
             BoundingBoxes.FirstOrDefault(box => box.BoxId == targetId) is { } target)
         {
             await OpenBoxEditorAsync(target);
@@ -1228,7 +1083,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task AcceptLocalOcrAsync()
     {
-        if (_editSessionId is null || _localOcrTargetBoxId is null || _localOcrCandidate is null)
+        if (EditSessionId is null || _localOcrTargetBoxId is null || LocalOcrCandidate is null)
         {
             Status = "请先运行局部 OCR 并选择目标叶子边界框。";
             return;
@@ -1242,9 +1097,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         }
 
         Result result = await (await _main.ServicesAsync()).DocumentTreeEditor.AcceptLocalOcrCandidateAsync(
-            _editSessionId.Value, target.BoxId,
-            new LocalOcrCandidate(_localOcrCandidate.BoxType, _localOcrCandidate.Payload,
-                _localOcrCandidate.HeadingLevel));
+            EditSessionId.Value, target.BoxId,
+            new LocalOcrCandidate(LocalOcrCandidate.BoxType, LocalOcrCandidate.Payload,
+                LocalOcrCandidate.HeadingLevel));
         if (result.IsFailure)
         {
             Status = $"接受局部 OCR 候选结果失败：{result.ErrorMessage}";
@@ -1259,11 +1114,9 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private void ClearLocalOcrCandidate()
     {
         CandidateBoxes.Clear();
-        _localOcrCandidate = null;
+        LocalOcrCandidate = null;
         _localOcrTargetBoxId = null;
-        _localOcrSourceText = string.Empty;
-        Raise(nameof(LocalOcrSourceText));
-        Raise(nameof(HasCandidate));
+        LocalOcrSourceText = string.Empty;
     }
 
     private async Task RunLogicalPageOcrAsync()
@@ -1436,20 +1289,17 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private void ClearSplit()
     {
-        _splitSource = null;
-        _splitFirstBBox = null;
-        _splitSecondBBox = null;
+        SplitSource = null;
+        SplitFirstBBox = null;
+        SplitSecondBBox = null;
         SplitDraftBoxes.Clear();
         SplitFirstText = string.Empty;
         SplitSecondText = string.Empty;
-        Raise(nameof(IsSplitPending));
-        Raise(nameof(CanConfirmSplit));
-        Raise(nameof(SplitStepText));
     }
 
     private async Task MergeSelectedAsync()
     {
-        if (_editSessionId is null)
+        if (EditSessionId is null)
         {
             Status = "请先进入编辑模式，再合并边界框。";
             return;
@@ -1490,26 +1340,25 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        _pendingMergeBoxes = mergeBoxes;
+        PendingMergeBoxes = mergeBoxes;
         MergeText = string.Join("\n\n", mergeBoxes.Select(PayloadTextFor)
             .Where(value => !string.IsNullOrWhiteSpace(value)));
-        Raise(nameof(IsMergePending));
         Status = "请检查并编辑合并结果内容，然后显式确认。";
         await Task.CompletedTask;
     }
 
     private async Task ConfirmMergeAsync()
     {
-        if (_editSessionId is null || _pendingMergeBoxes.Length < 2 || string.IsNullOrWhiteSpace(MergeText))
+        if (EditSessionId is null || PendingMergeBoxes.Length < 2 || string.IsNullOrWhiteSpace(MergeText))
         {
             Status = "合并结果必须提供非空内容。";
             return;
         }
 
-        DocumentBox selected = _pendingMergeBoxes[0];
+        DocumentBox selected = PendingMergeBoxes[0];
         Result<DocumentBox> result = await (await _main.ServicesAsync()).DocumentTreeEditor.MergeLeavesAsync(
-            _editSessionId.Value,
-            new MergeLeavesCommand(_pendingMergeBoxes.Select(box => box.BoxId).ToArray(), CreatePayload(
+            EditSessionId.Value,
+            new MergeLeavesCommand(PendingMergeBoxes.Select(box => box.BoxId).ToArray(), CreatePayload(
                 selected.BoxType, MergeText,
                 selected.Payload)));
         if (result.IsFailure)
@@ -1525,14 +1374,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private void ClearMerge()
     {
-        _pendingMergeBoxes = [];
+        PendingMergeBoxes = [];
         MergeText = string.Empty;
-        Raise(nameof(IsMergePending));
     }
 
     private async Task DeleteSelectedAsync()
     {
-        if (!IsEditMode || _editSessionId is not { } sessionId)
+        if (!IsEditMode || EditSessionId is not { } sessionId)
         {
             return;
         }
@@ -1584,13 +1432,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task MoveSelectedAsync(bool down)
     {
-        if (_editSessionId is null || SelectedBoxes.Count == 0)
+        if (EditSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移动的边界框。";
             return;
         }
 
-        PageEditSessionId sessionId = _editSessionId.Value;
+        PageEditSessionId sessionId = EditSessionId.Value;
         HashSet<DocumentBoxId> selectedIds = SelectedBoxes.Select(box => box.BoxId).ToHashSet();
         List<DocumentBoxId?> parents = _loadedBoxes
             .Where(box => selectedIds.Contains(box.BoxId))
@@ -1691,7 +1539,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     internal async Task MoveBoxToAsync(PdfBBoxViewModel movingView, PdfBBoxViewModel targetView, bool insertBefore)
     {
-        if (_editSessionId is null || movingView.BoxId == targetView.BoxId)
+        if (EditSessionId is null || movingView.BoxId == targetView.BoxId)
         {
             return;
         }
@@ -1745,7 +1593,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
 
             Result result = await editor.MoveBoxAsync(
-                _editSessionId.Value, new MoveBoxCommand(moving.BoxId, parent, after));
+                EditSessionId.Value, new MoveBoxCommand(moving.BoxId, parent, after));
             if (result.IsFailure)
             {
                 Status = $"拖放移动失败：{result.ErrorMessage}";
@@ -1784,7 +1632,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     // parent (move up/down, drag) or changes level as a whole group, never both at once.
     private async Task IndentSelectedAsync()
     {
-        if (_editSessionId is null || SelectedBoxes.Count == 0)
+        if (EditSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移入的边界框。";
             return;
@@ -1833,7 +1681,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         foreach (DocumentBox box in selected)
         {
             Result result = await editor.MoveBoxAsync(
-                _editSessionId.Value, new MoveBoxCommand(box.BoxId, newParent.BoxId, after));
+                EditSessionId.Value, new MoveBoxCommand(box.BoxId, newParent.BoxId, after));
             if (result.IsFailure)
             {
                 Status = $"移入边界框失败：{result.ErrorMessage}";
@@ -1849,7 +1697,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task OutdentSelectedAsync()
     {
-        if (_editSessionId is null || SelectedBoxes.Count == 0)
+        if (EditSessionId is null || SelectedBoxes.Count == 0)
         {
             Status = "请先选择要移出的边界框。";
             return;
@@ -1885,7 +1733,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         foreach (DocumentBox box in selected)
         {
             Result result = await editor.MoveBoxAsync(
-                _editSessionId.Value, new MoveBoxCommand(box.BoxId, parentBox.ParentBoxId, after));
+                EditSessionId.Value, new MoveBoxCommand(box.BoxId, parentBox.ParentBoxId, after));
             if (result.IsFailure)
             {
                 Status = $"移出边界框失败：{result.ErrorMessage}";
@@ -1937,12 +1785,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private void ClearPendingBox()
     {
-        _pendingBBox = null;
+        PendingBBox = null;
         NewBoxText = string.Empty;
         SelectionWidth = 0;
         SelectionHeight = 0;
-        Raise(nameof(IsNewBoxPending));
-        Raise(nameof(SelectionVisible));
     }
 
     public void RemoveBBox(PdfBBoxViewModel bbox)
@@ -1964,7 +1810,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public async Task LoadAsync()
     {
-        _pageIndex = 0;
+        PageIndex = 0;
         _lastNavigationDirection = 0;
         _renderGeneration++;
         await RenderCurrentPageAsync();
@@ -1972,17 +1818,18 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     public void Clear()
     {
-        _prefetchCancellation?.Cancel();
-        _prefetchCancellation = null;
-        _ = ReleaseDocumentSessionAsync();
-        PageEditSessionId? sessionId = _editSessionId;
+        _prefetchSubject.OnNext(default);
+        ReleaseDocumentSessionAsync().Observe(nameof(PdfWorkspaceViewModel), nameof(ReleaseDocumentSessionAsync));
+        ExitBookReading();
+        PageEditSessionId? sessionId = EditSessionId;
         Image?.Dispose();
         Image = null;
-        _pageIndex = 0;
-        _pageCount = 0;
-        _widthPixels = 0;
-        _heightPixels = 0;
+        PageIndex = 0;
+        PageCount = 0;
+        WidthPixels = 0;
+        HeightPixels = 0;
         _renderGeneration++;
+        IsBusy = false;
         IsEditMode = false;
         IsViewingHistoricalRevision = false;
         IsSidebarOpen = false;
@@ -2000,7 +1847,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         SelectedBox = null;
         _currentRevisionId = null;
         _draftRevisionId = null;
-        _editSessionId = null;
+        EditSessionId = null;
         _loadedBoxes = [];
         _collapsedBoxIds.Clear();
         ClearSplit();
@@ -2008,11 +1855,24 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         ClearLocalOcrCandidate();
         ClearSourceValidation();
         Status = "选择题录后可预览 PDF。";
-        RaiseAll();
         if (sessionId is not null)
         {
-            _ = DiscardClearedDraftAsync(sessionId.Value);
+            DiscardClearedDraftAsync(sessionId.Value)
+                .Observe(nameof(PdfWorkspaceViewModel), nameof(DiscardClearedDraftAsync));
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !_prefetchSubject.IsDisposed)
+        {
+            Clear();
+            _prefetchSubject.Dispose();
+            _bookReadingSubject.Dispose();
+            _bookReadingInitialWindowPending = false;
+        }
+
+        base.Dispose(disposing);
     }
 
     private async Task PreviousPageAsync()
@@ -2023,12 +1883,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        if (_pageIndex <= 0)
+        if (PageIndex <= 0)
         {
             return;
         }
 
-        _pageIndex--;
+        PageIndex--;
         _lastNavigationDirection = -1;
         await RenderCurrentPageAsync();
     }
@@ -2041,12 +1901,12 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        if (_pageCount > 0 && _pageIndex >= _pageCount - 1)
+        if (PageCount > 0 && PageIndex >= PageCount - 1)
         {
             return;
         }
 
-        _pageIndex++;
+        PageIndex++;
         _lastNavigationDirection = 1;
         await RenderCurrentPageAsync();
     }
@@ -2060,20 +1920,20 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        if (_pageCount <= 0)
+        if (PageCount <= 0)
         {
             return;
         }
 
-        int target = Math.Clamp(pageNumber - 1, 0, _pageCount - 1);
-        if (target == _pageIndex)
+        int target = Math.Clamp(pageNumber - 1, 0, PageCount - 1);
+        if (target == PageIndex)
         {
             Raise(nameof(PageNumberText));
             return;
         }
 
-        _lastNavigationDirection = target > _pageIndex ? 1 : target < _pageIndex ? -1 : 0;
-        _pageIndex = target;
+        _lastNavigationDirection = target > PageIndex ? 1 : target < PageIndex ? -1 : 0;
+        PageIndex = target;
         await RenderCurrentPageAsync();
     }
 
@@ -2087,7 +1947,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         SelectedBox = box;
         IsSidebarOpen = true;
-        Raise(nameof(IsSidebarOpen));
         return true;
     }
 
@@ -2104,8 +1963,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private void SetZoom(double value)
     {
         Zoom = Math.Clamp(value, 0.25, 4.0);
-        Raise(nameof(Zoom));
-        Raise(nameof(ZoomText));
     }
 
     private async Task RenderCurrentPageAsync()
@@ -2113,11 +1970,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         int generation = ++_renderGeneration;
         Image?.Dispose();
         Image = null;
-        _widthPixels = 0;
+        WidthPixels = 0;
         IsBusy = true;
         BeginSourceValidation();
         Status = "正在渲染 PDF 预览...";
-        RaiseAll();
 
         try
         {
@@ -2149,21 +2005,23 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 return;
             }
 
-            _pageCount = pages.Value.Count;
+            PageCount = pages.Value.Count;
             _pages = pages.Value;
-            if (_pageCount == 0)
+            if (PageCount == 0)
             {
                 ClearSourceValidation();
                 Status = "该文档还没有页面记录。";
                 return;
             }
 
-            _pageIndex = Math.Clamp(_pageIndex, 0, _pageCount - 1);
-            Page page = pages.Value[_pageIndex];
+            PageIndex = Math.Clamp(PageIndex, 0, PageCount - 1);
+            Page page = pages.Value[PageIndex];
             _currentPageId = page.PageId;
-            Result<PdfPagePixelBufferLease> preview = await services.PageRenders.RenderPreviewAsync(
-                new PageRenderRequest(documentInstanceId, page.PageId, fileAssetId, 120,
-                    Purpose: PageRenderPurpose.Preview));
+            PageRenderRequest renderRequest = new(documentInstanceId, page.PageId, fileAssetId, 120,
+                Purpose: PageRenderPurpose.Preview);
+            Result<PdfPagePixelBufferLease> preview = PageRenderPreviewHandler is not null
+                ? await PageRenderPreviewHandler(renderRequest, CancellationToken.None)
+                : await services.PageRenders.RenderPreviewAsync(renderRequest);
             if (preview.IsFailure)
             {
                 ApplyPreviewFailure(preview);
@@ -2179,14 +2037,14 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
             using PdfPagePixelBufferLease raster = preview.Value;
             Image = CreateBitmap(raster);
-            _widthPixels = raster.WidthPixels;
-            _heightPixels = raster.HeightPixels;
+            WidthPixels = raster.WidthPixels;
+            HeightPixels = raster.HeightPixels;
 
             BoundingBoxes.Clear();
             PreviewBlocks.Clear();
             ReadingScene = null;
             SelectedBox = null;
-            if (_isEditMode && _draftRevisionId != null)
+            if (IsEditMode && _draftRevisionId != null)
             {
                 await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true);
             }
@@ -2206,7 +2064,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             await LoadPageRevisionsAsync(services, documentInstanceId, page.PageId);
 
             Status =
-                $"{Item.Title} · 第 {_pageIndex + 1}/{_pageCount} 页 · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
+                $"{Item.Title} · 第 {PageIndex + 1}/{PageCount} 页 · {raster.WidthPixels}x{raster.HeightPixels} · {raster.RendererBasisVersion}";
             CompleteSourceValidation(SourceValidationStatus.Current, null);
             SchedulePrefetchAsync(services, documentInstanceId, fileAssetId);
         }
@@ -2220,7 +2078,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             if (generation == _renderGeneration)
             {
                 IsBusy = false;
-                RaiseAll();
             }
         }
     }
@@ -2274,15 +2131,11 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     private void SchedulePrefetchAsync(HostServices services, DocumentInstanceId documentInstanceId,
         FileAssetId? fileAssetId)
     {
-        _prefetchCancellation?.Cancel();
-        _prefetchCancellation?.Dispose();
-        _prefetchCancellation = new CancellationTokenSource();
-        CancellationToken token = _prefetchCancellation.Token;
         // Keep the window ordered and render it serially. Starting all neighbours at once can
         // put low-priority PDFium work ahead of the page the user has just requested. Identical
         // foreground/prefetch requests still merge in PageRenderService's in-flight cache.
-        int[] targets = PrefetchWindow(_pageIndex, _pageCount, _lastNavigationDirection);
-        _ = PrefetchWindowAsync(services, documentInstanceId, fileAssetId, targets, token);
+        int[] targets = PrefetchWindow(PageIndex, PageCount, _lastNavigationDirection);
+        _prefetchSubject.OnNext(new PrefetchRequest(services, documentInstanceId, fileAssetId, targets));
     }
 
     private async Task PrefetchWindowAsync(HostServices services, DocumentInstanceId documentInstanceId,
@@ -2296,9 +2149,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                 await PrefetchPageAsync(services, documentInstanceId, fileAssetId, pageIndex, cancellationToken);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             // A newer page selection owns the next prefetch window.
+        }
+        catch (Exception ex)
+        {
+            UnexpectedExceptions.Sink.Report(ex, nameof(PdfWorkspaceViewModel), nameof(PrefetchWindowAsync));
         }
     }
 
@@ -2307,7 +2164,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     {
         try
         {
-            if (pageIndex < 0 || pageIndex >= _pages.Count || pageIndex == _pageIndex)
+            if (pageIndex < 0 || pageIndex >= _pages.Count || pageIndex == PageIndex)
             {
                 return;
             }
@@ -2431,7 +2288,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         {
             DocumentBox box = item.Box;
             BoundingBoxes.Add(new PdfBBoxViewModel(
-                _main, this, box, _widthPixels, _heightPixels, isDraft, ++readingOrder, item.Depth));
+                _main, this, box, WidthPixels, HeightPixels, isDraft, ++readingOrder, item.Depth));
         }
 
         foreach (PdfBBoxViewModel view in BoundingBoxes)
@@ -2477,7 +2334,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         {
             HostServices services = await _main.ServicesAsync();
             DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-            for (int pageIndex = Math.Min(_pageIndex - 1, _pages.Count - 1);
+            for (int pageIndex = Math.Min(PageIndex - 1, _pages.Count - 1);
                  pageIndex >= 0 && unresolved.Count > 0;
                  pageIndex--)
             {
@@ -2540,7 +2397,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        _pageIndex = target.PageIndex;
+        PageIndex = target.PageIndex;
         await RenderCurrentPageAsync();
         SelectedBox = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == target.HeadBoxId);
     }
@@ -2577,7 +2434,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
                         first.HasOverlapWarning = true;
                         second.HasOverlapWarning = true;
                         OverlapMarkers.Add(new PdfOverlapMarkerViewModel(
-                            first, second, overlap.Intersection, _widthPixels, _heightPixels));
+                            first, second, overlap.Intersection, WidthPixels, HeightPixels));
                     }
                 }
             }
@@ -2649,7 +2506,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         BoundingBoxes.Clear();
         SelectedBox = null;
         await LoadBoxesIntoViewAsync(_draftRevisionId.Value, true);
-        Raise(nameof(HasNoBoundingBoxes));
     }
 
     private async Task LoadPreviewAsync(DocumentTreeRevisionId revisionId)
@@ -2771,7 +2627,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         Result<PageEditSession> session = await services.DocumentTrees.BeginPageEditAsync(docId, _currentPageId.Value);
         if (session.IsSuccess)
         {
-            _editSessionId = session.Value.SessionId;
+            EditSessionId = session.Value.SessionId;
             _draftRevisionId = session.Value.DraftRevisionId;
             IsEditMode = true;
             IsSidebarOpen = true;
@@ -2786,18 +2642,18 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task SaveAndExitAsync()
     {
-        if (_editSessionId is null)
+        if (EditSessionId is null)
         {
             return;
         }
 
         HostServices services = await _main.ServicesAsync();
-        Result<DocumentTreeRevision> res = await services.DocumentTrees.CommitPageEditAsync(_editSessionId.Value);
+        Result<DocumentTreeRevision> res = await services.DocumentTrees.CommitPageEditAsync(EditSessionId.Value);
         if (res.IsSuccess)
         {
             IsEditMode = false;
             _draftRevisionId = null;
-            _editSessionId = null;
+            EditSessionId = null;
             ClearPendingBox();
             ClearSplit();
             ClearLocalOcrCandidate();
@@ -2811,10 +2667,10 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task CancelEditModeAsync()
     {
-        if (_editSessionId is not null)
+        if (EditSessionId is not null)
         {
             Result discarded =
-                await (await _main.ServicesAsync()).DocumentTrees.DiscardPageEditAsync(_editSessionId.Value);
+                await (await _main.ServicesAsync()).DocumentTrees.DiscardPageEditAsync(EditSessionId.Value);
             if (discarded.IsFailure)
             {
                 Status = $"放弃草稿失败：{discarded.ErrorMessage}";
@@ -2824,7 +2680,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
         IsEditMode = false;
         _draftRevisionId = null;
-        _editSessionId = null;
+        EditSessionId = null;
         ClearPendingBox();
         ClearSplit();
         ClearLocalOcrCandidate();
@@ -2860,8 +2716,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         {
             PageRevisions.Add(row);
         }
-
-        Raise(nameof(HasPageRevisions));
     }
 
     private async Task ViewPageRevisionAsync(PageRevisionViewModel revision)
@@ -2928,19 +2782,6 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         Status = $"已恢复到版本 {result.Value.TreeRevisionId}（来源：{result.Value.Source}）。";
     }
 
-    private void RaiseAll()
-    {
-        Raise(nameof(Image));
-        Raise(nameof(HasImage));
-        Raise(nameof(HasNoImage));
-        Raise(nameof(IsBusy));
-        Raise(nameof(Status));
-        Raise(nameof(PageNumberText));
-        Raise(nameof(PageTotalText));
-        Raise(nameof(ActualWidthPixels));
-        Raise(nameof(ActualHeightPixels));
-    }
-
     // ── Whole-book reading mode (B1) ─────────────────────────────────────────────
     // The PDF workspace's secondary "read the whole book" surface. Entering swaps the
     // toolbar+canvas+sidebar layout for a single streaming read-only RichEditor that renders
@@ -2967,6 +2808,13 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     /// the delivery order so page order is preserved without the view tracking block counts.</summary>
     public event Action<BookReadingPage>? BookReadingPageReady;
 
+    /// <summary>Raised on the UI thread when the initial window has been fully delivered (inside
+    /// the serial pipeline, before the prefetch guard lifts) and when <see cref="ReplayBookReading"/>
+    /// finishes, so the view can snap the scroll offset to the start page it has been tracking.
+    /// Anchoring while the guard is still up keeps the trailing layout scroll events from
+    /// cascading backward prefetch requests to page zero.</summary>
+    public event Action? BookReadingAnchorRequested;
+
     /// <summary>Test seam: when set, the workspace builds the reading stream from this factory
     /// instead of constructing a real <see cref="BookReadingStream"/> from HostServices. The
     /// substituted stream ignores the services argument, so a unit test can drive page ordering
@@ -2982,82 +2830,60 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     public RelayCommand ExitBookReadingCommand { get; }
     public RelayCommand BookReadingResetFontSizeCommand { get; }
 
-    public bool IsBookReadingMode
-    {
-        get => _isBookReadingMode;
-        private set
-        {
-            if (_isBookReadingMode == value)
-            {
-                return;
-            }
+    [ObservableProperty] public partial bool IsBookReadingMode { get; private set; }
 
-            _isBookReadingMode = value;
-            Raise();
-        }
-    }
-
-    public string BookReadingProgressText
-    {
-        get => _bookReadingProgressText;
-        private set
-        {
-            if (string.Equals(_bookReadingProgressText, value, StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            _bookReadingProgressText = value;
-            Raise();
-        }
-    }
+    [ObservableProperty] public partial string BookReadingProgressText { get; private set; } = string.Empty;
 
     /// <summary>Live reading font size in points, clamped to [10, 28]. Setting it persists
     /// immediately through <see cref="MainWindowViewModel.SaveReadingFont"/> so the choice
     /// survives a restart, and raises so the view re-stamps the editor runs.</summary>
-    public double BookReadingFontSize
-    {
-        get => _bookReadingFontSize;
-        set
-        {
-            double clamped = ReadingFontCatalog.ClampSize(value);
-            if (Math.Abs(_bookReadingFontSize - clamped) < double.Epsilon)
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial double BookReadingFontSize { get; set; }
 
-            _bookReadingFontSize = clamped;
-            _main.SaveReadingFont(DisplayToPersistedFontFamily(_bookReadingFontFamily), clamped);
-            Raise();
-            Raise(nameof(BookReadingFontSizeText));
+    partial void OnBookReadingFontSizeChanged(double value)
+    {
+        double clamped = ReadingFontCatalog.ClampSize(value);
+        if (Math.Abs(value - clamped) > double.Epsilon)
+        {
+            BookReadingFontSize = clamped;
+            return;
         }
+
+        if (!_isConstructing)
+        {
+            _main.SaveReadingFont(DisplayToPersistedFontFamily(BookReadingFontFamily), clamped);
+        }
+
+        Raise(nameof(BookReadingFontSizeText));
     }
 
-    public string BookReadingFontSizeText => $"{Math.Round(_bookReadingFontSize):0}pt";
+    [ExcludeFromDerivedGeneration] public string BookReadingFontSizeText => $"{Math.Round(BookReadingFontSize):0}pt";
 
     /// <summary>Display label of the selected reading font family. The first entry of
     /// <see cref="BookReadingFontFamilies"/> is <see cref="SystemDefaultReadingFontLabel"/>
     /// and maps to the persisted empty string. Setting it persists immediately.</summary>
-    public string BookReadingFontFamily
-    {
-        get => _bookReadingFontFamily;
-        set
-        {
-            string normalized = (value ?? string.Empty).Trim();
-            if (string.Equals(_bookReadingFontFamily, normalized, StringComparison.Ordinal))
-            {
-                return;
-            }
+    [ObservableProperty]
+    public partial string BookReadingFontFamily { get; set; } = string.Empty;
 
-            _bookReadingFontFamily = normalized;
-            _main.SaveReadingFont(DisplayToPersistedFontFamily(normalized), _bookReadingFontSize);
-            Raise();
+    partial void OnBookReadingFontFamilyChanged(string value)
+    {
+        string normalized = (value ?? string.Empty).Trim();
+        if (value != normalized)
+        {
+            BookReadingFontFamily = normalized;
+            return;
+        }
+
+        if (!_isConstructing)
+        {
+            _main.SaveReadingFont(DisplayToPersistedFontFamily(normalized), BookReadingFontSize);
         }
     }
 
     /// <summary>Picker source for the reading font family: the system-default label first, then
     /// the host's installed font family names de-duplicated and sorted. Built lazily on first
     /// access so the view model constructor never touches the Avalonia font manager.</summary>
+    [ExcludeFromDerivedGeneration]
     public IReadOnlyList<string> BookReadingFontFamilies
     {
         get
@@ -3066,6 +2892,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             return _bookReadingFontFamilies;
         }
     }
+
+    [ExcludeFromDerivedGeneration] internal bool BookReadingInitialWindowPending => _bookReadingInitialWindowPending;
 
     private async Task EnterBookReadingAsync()
     {
@@ -3123,7 +2951,7 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             }
 
             _bookReadingIndices = indices.ToArray();
-            int start = Math.Clamp(BookReadingStartPageOverride ?? _pageIndex, 0, _bookReadingIndices.Length - 1);
+            int start = Math.Clamp(BookReadingStartPageOverride ?? PageIndex, 0, _bookReadingIndices.Length - 1);
             _bookReadingStartIndex = start;
             _bookReadingLo = start;
             _bookReadingHi = start;
@@ -3136,7 +2964,29 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
             List<int> ordered = [start];
             ordered.AddRange(Enumerable.Range(start + 1, Math.Max(0, hi - start)));
             ordered.AddRange(Enumerable.Range(lo, start - lo));
-            await LoadBookReadingPagesAsync(stream, documentInstanceId, ordered, token).ConfigureAwait(true);
+            _bookReadingPlannedLo = lo;
+            _bookReadingPlannedHi = hi;
+            _bookReadingInitialWindowPending = true;
+            try
+            {
+                await EnqueueBookReadingBatchAsync(
+                    stream,
+                    documentInstanceId,
+                    ordered,
+                    token,
+                    () => _bookReadingInitialWindowPending = false,
+                    () => Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (IsBookReadingMode)
+                        {
+                            BookReadingAnchorRequested?.Invoke();
+                        }
+                    }).GetTask()).ConfigureAwait(true);
+            }
+            finally
+            {
+                _bookReadingInitialWindowPending = false;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -3152,54 +3002,29 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
 
     /// <summary>Loads the pages in the caller-supplied order, delivering each to the view as it
     /// finishes. Order is the caller's responsibility: a prepend must not be delivered before the
-    /// page that follows it, or the view cannot compute its insertion offset. A load already in
-    /// flight wins; the caller is expected to retry from a later scroll event.</summary>
+    /// page that follows it, or the view cannot compute its insertion offset. Batches are
+    /// serialized sequentially through Rx Concat so batches never overlap.</summary>
     private async Task LoadBookReadingPagesAsync(
         IBookReadingStream stream,
         DocumentInstanceId documentInstanceId,
         IEnumerable<int> orderedIndices,
         CancellationToken token)
     {
-        if (_bookReadingLoading)
+        foreach (int pageIndex in orderedIndices)
         {
-            return;
-        }
-
-        _bookReadingLoading = true;
-        try
-        {
-            foreach (int pageIndex in orderedIndices)
+            token.ThrowIfCancellationRequested();
+            if (_bookReadingLoaded.Contains(pageIndex))
             {
-                token.ThrowIfCancellationRequested();
-                if (_bookReadingLoaded.Contains(pageIndex))
-                {
-                    continue;
-                }
-
-                BookReadingPage page = await stream.LoadPageAsync(
-                        documentInstanceId, pageIndex, _bookReadingIndices.Length, token)
-                    .ConfigureAwait(true);
-                await DeliverBookReadingPageAsync(page).ConfigureAwait(true);
-                _bookReadingLo = Math.Min(_bookReadingLo, page.PageIndex);
-                _bookReadingHi = Math.Max(_bookReadingHi, page.PageIndex);
+                continue;
             }
-        }
-        finally
-        {
-            _bookReadingLoading = false;
-        }
-    }
 
-    private Task LoadBookReadingRangeAsync(
-        IBookReadingStream stream, DocumentInstanceId documentInstanceId, int lo, int hi, CancellationToken token)
-    {
-        List<int> ordered = [];
-        for (int index = lo; index <= hi; index++)
-        {
-            ordered.Add(index);
+            BookReadingPage page = await stream.LoadPageAsync(
+                    documentInstanceId, pageIndex, _bookReadingIndices.Length, token)
+                .ConfigureAwait(true);
+            await DeliverBookReadingPageAsync(page).ConfigureAwait(true);
+            _bookReadingLo = Math.Min(_bookReadingLo, page.PageIndex);
+            _bookReadingHi = Math.Max(_bookReadingHi, page.PageIndex);
         }
-
-        return LoadBookReadingPagesAsync(stream, documentInstanceId, ordered, token);
     }
 
     private async Task DeliverBookReadingPageAsync(BookReadingPage raw)
@@ -3207,6 +3032,11 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         BookReadingPage page = raw with { IsPrepend = raw.PageIndex < _bookReadingStartIndex };
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
+            if (!IsBookReadingMode)
+            {
+                return;
+            }
+
             _bookReadingDelivered.Add(page);
             _bookReadingLoaded.Add(page.PageIndex);
             BookReadingProgressText = _bookReadingLoaded.Count >= _bookReadingIndices.Length
@@ -3217,55 +3047,121 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
     }
 
     /// <summary>Loads the next window of pages after the highest page delivered so far. Called by
-    /// the view when the reader scrolls near the bottom; a no-op at the end of the book, while a
-    /// load is in flight, or outside reading mode. Never throws: a failed batch sets the status
-    /// line and leaves reading mode usable.</summary>
-    public async Task RequestBookReadingForwardAsync()
+    /// the view when the reader scrolls near the bottom; a no-op at the end of the book, while the
+    /// initial window is loading, or outside reading mode. Requests enqueue onto a serial (Concat)
+    /// pipeline, so batches load one at a time without overlap or loss. Never throws: a failed batch
+    /// sets the status line and leaves reading mode usable.</summary>
+    public Task RequestBookReadingForwardAsync()
     {
-        if (!IsBookReadingMode || _bookReadingLoading || _bookReadingStream is not { } stream ||
+        if (!IsBookReadingMode || _bookReadingInitialWindowPending || _bookReadingStream is not { } stream ||
             _bookReadingDocumentInstanceId is not { } documentInstanceId ||
-            _bookReadingHi >= _bookReadingIndices.Length - 1)
+            _bookReadingPlannedHi >= _bookReadingIndices.Length - 1)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        await RequestBookReadingRangeAsync(stream, documentInstanceId, _bookReadingHi + 1,
-            Math.Min(_bookReadingIndices.Length - 1, _bookReadingHi + BookReadingBatchSize));
+        int lo = _bookReadingPlannedHi + 1;
+        int hi = Math.Min(_bookReadingIndices.Length - 1, _bookReadingPlannedHi + BookReadingBatchSize);
+        _bookReadingPlannedHi = hi;
+
+        List<int> ordered = [];
+        for (int i = lo; i <= hi; i++)
+        {
+            ordered.Add(i);
+        }
+
+        CancellationToken token = _bookReadingCancellation?.Token ?? CancellationToken.None;
+        return EnqueueBookReadingBatchAsync(stream, documentInstanceId, ordered, token);
     }
 
     /// <summary>Loads the window of pages before the lowest page delivered so far. Called by the
-    /// view when the reader scrolls near the top; a no-op at the start of the book, while a load
-    /// is in flight, or outside reading mode.</summary>
-    public async Task RequestBookReadingBackwardAsync()
+    /// view when the reader scrolls near the top; a no-op at the start of the book, while the
+    /// initial window is loading, or outside reading mode. Requests enqueue onto the same serial
+    /// (Concat) pipeline as forward loads.</summary>
+    public Task RequestBookReadingBackwardAsync()
     {
-        if (!IsBookReadingMode || _bookReadingLoading || _bookReadingStream is not { } stream ||
+        if (!IsBookReadingMode || _bookReadingInitialWindowPending || _bookReadingStream is not { } stream ||
             _bookReadingDocumentInstanceId is not { } documentInstanceId ||
-            _bookReadingLo <= 0)
+            _bookReadingPlannedLo <= 0)
         {
-            return;
+            return Task.CompletedTask;
         }
 
-        await RequestBookReadingRangeAsync(stream, documentInstanceId,
-            Math.Max(0, _bookReadingLo - BookReadingBatchSize), _bookReadingLo - 1);
+        int hi = _bookReadingPlannedLo - 1;
+        int lo = Math.Max(0, _bookReadingPlannedLo - BookReadingBatchSize);
+        _bookReadingPlannedLo = lo;
+
+        List<int> ordered = [];
+        for (int i = lo; i <= hi; i++)
+        {
+            ordered.Add(i);
+        }
+
+        CancellationToken token = _bookReadingCancellation?.Token ?? CancellationToken.None;
+        return EnqueueBookReadingBatchAsync(stream, documentInstanceId, ordered, token);
     }
 
-    private async Task RequestBookReadingRangeAsync(
-        IBookReadingStream stream, DocumentInstanceId documentInstanceId, int lo, int hi)
+    private Task EnqueueBookReadingBatchAsync(
+        IBookReadingStream stream,
+        DocumentInstanceId documentInstanceId,
+        IReadOnlyList<int> orderedIndices,
+        CancellationToken callerToken,
+        Action? onCompleted = null,
+        Func<Task>? onSuccessAsync = null)
     {
-        try
+        if (!IsBookReadingMode)
         {
-            CancellationToken token = _bookReadingCancellation?.Token ?? CancellationToken.None;
-            await LoadBookReadingRangeAsync(stream, documentInstanceId, lo, hi, token).ConfigureAwait(true);
+            return Task.CompletedTask;
         }
-        catch (OperationCanceledException)
+
+        TaskCompletionSource tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationToken sessionToken = _bookReadingCancellation?.Token ?? CancellationToken.None;
+
+        _bookReadingSubject.OnNext(async streamToken =>
         {
-            // ExitBookReading cancels the in-flight window; nothing to report to the reader.
-        }
-        catch (Exception exception)
-        {
-            Status = $"阅读模式加载失败：{exception.Message}";
-            _main.ReportError($"阅读模式加载失败：{exception.Message}");
-        }
+            if (!IsBookReadingMode || sessionToken.IsCancellationRequested || callerToken.IsCancellationRequested)
+            {
+                try
+                {
+                    onCompleted?.Invoke();
+                }
+                finally
+                {
+                    tcs.TrySetCanceled();
+                }
+
+                return;
+            }
+
+            using CancellationTokenSource linked =
+                CancellationTokenSource.CreateLinkedTokenSource(streamToken, sessionToken, callerToken);
+            try
+            {
+                await LoadBookReadingPagesAsync(stream, documentInstanceId, orderedIndices, linked.Token)
+                    .ConfigureAwait(true);
+                if (onSuccessAsync is not null)
+                {
+                    await onSuccessAsync().ConfigureAwait(true);
+                }
+
+                onCompleted?.Invoke();
+                tcs.TrySetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                onCompleted?.Invoke();
+                tcs.TrySetCanceled();
+            }
+            catch (Exception ex)
+            {
+                Status = $"阅读模式加载失败：{ex.Message}";
+                _main.ReportError($"阅读模式加载失败：{ex.Message}");
+                onCompleted?.Invoke();
+                tcs.TrySetResult();
+            }
+        });
+
+        return tcs.Task;
     }
 
     /// <summary>Re-raises the start event and every page delivered so far in ascending page
@@ -3284,6 +3180,8 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         {
             BookReadingPageReady?.Invoke(page);
         }
+
+        BookReadingAnchorRequested?.Invoke();
     }
 
     private void ExitBookReading()
@@ -3296,7 +3194,11 @@ public sealed class PdfWorkspaceViewModel : ViewModelBase
         _bookReadingDelivered.Clear();
         _bookReadingLoaded.Clear();
         _bookReadingIndices = [];
-        _bookReadingLoading = false;
+        _bookReadingPlannedLo = 0;
+        _bookReadingPlannedHi = 0;
+        _bookReadingLo = 0;
+        _bookReadingHi = 0;
+        _bookReadingInitialWindowPending = false;
         BookReadingProgressText = string.Empty;
         IsBookReadingMode = false;
     }

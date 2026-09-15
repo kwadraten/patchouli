@@ -1,10 +1,17 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using Patchouli.Ocr;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Host.Composition;
+using Patchouli.Ocr;
+using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
+public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
     private string _token = "";
@@ -20,9 +27,12 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     private string _regionOcrEngine = "";
     private string _persistedRegionOcrEngine = "";
     private bool _isDirty;
+    private bool _isConstructing;
+    private bool _isSyncing;
 
     public OcrProviderSettingsViewModel(MainWindowViewModel main)
     {
+        _isConstructing = true;
         _main = main;
         RemoveMinerUCredentialCommand = new AsyncCommand(RemoveMinerUCredentialAsync);
         _token = "";
@@ -35,65 +45,69 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
         _persistedDocumentOcrEngine = _documentOcrEngine;
         _persistedPageOcrEngine = _pageOcrEngine;
         _persistedRegionOcrEngine = _regionOcrEngine;
+        SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
+            _persistedDocumentOcrEngine, _persistedPageOcrEngine, _persistedRegionOcrEngine);
+        _isConstructing = false;
     }
 
-    public string MinerUTokenInput
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MinerUCredentialStatus))]
+    public partial string MinerUTokenInput { get; set; } = "";
+
+    partial void OnMinerUTokenInputChanged(string value)
     {
-        get => _token;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            if (_token != value)
-            {
-                _token = value;
-                UpdateDirtyState();
-                Raise();
-                Raise(nameof(MinerUCredentialStatus));
-                MarkDirty("有未保存的更改");
-            }
+            return;
         }
+
+        _token = value;
+        UpdateDirtyState();
+        MarkDirty("有未保存的更改");
     }
 
+    [ExcludeFromDerivedGeneration]
     public string MinerUCredentialStatus => string.IsNullOrWhiteSpace(MinerUTokenInput)
         ? "未配置 ProviderCredential"
         : "已配置 ProviderCredential";
 
-    public bool HasPersistedCredential => !string.IsNullOrWhiteSpace(_persistedToken);
+    [ExcludeFromDerivedGeneration] public bool HasPersistedCredential => !string.IsNullOrWhiteSpace(_persistedToken);
 
     public ReadOnlyCollection<string> MinerUModelVersionOptions { get; } =
         Array.AsReadOnly(["vlm", "pipeline"]);
 
-    public string MinerUModelVersion
-    {
-        get => _modelVersion;
-        set
-        {
-            string normalized = NormalizeModelVersion(value);
-            if (_modelVersion == normalized)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string MinerUModelVersion { get; set; } = "vlm";
 
+    partial void OnMinerUModelVersionChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        string normalized = NormalizeModelVersion(value);
+        if (_modelVersion != normalized)
+        {
             _modelVersion = normalized;
             UpdateDirtyState();
-            Raise();
             MarkDirty("有未保存的更改");
         }
     }
 
-    public int MinerUPollingTimeoutSeconds
-    {
-        get => _pollingTimeoutSeconds;
-        set
-        {
-            int clamped = Math.Max(30, Math.Min(value, 3600));
-            if (_pollingTimeoutSeconds == clamped)
-            {
-                return;
-            }
+    [ObservableProperty] public partial int MinerUPollingTimeoutSeconds { get; set; }
 
+    partial void OnMinerUPollingTimeoutSecondsChanged(int value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        int clamped = Math.Max(30, Math.Min(value, 3600));
+        if (_pollingTimeoutSeconds != clamped)
+        {
             _pollingTimeoutSeconds = clamped;
             UpdateDirtyState();
-            Raise();
             MarkDirty("有未保存的更改");
         }
     }
@@ -103,66 +117,68 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     public string PreferredOcrProviderName => "MinerU";
     public string PreferredOcrProviderType => "云端 OCR/版面解析";
 
-    public ObservableCollection<OcrEngineOption> AvailableEngines { get; } = new();
+    [ExcludeFromDerivedGeneration] public ObservableCollection<OcrEngineOption> AvailableEngines { get; } = new();
 
-    public string SelectedDocumentEngine
+    [ObservableProperty] public partial string SelectedDocumentEngine { get; set; } = "";
+
+    partial void OnSelectedDocumentEngineChanged(string value)
     {
-        get => _documentOcrEngine;
-        set
+        if (_isConstructing || _isSyncing)
         {
-            string normalized = NormalizeEngineId(value);
-            if (_documentOcrEngine == normalized)
-            {
-                return;
-            }
+            return;
+        }
 
+        string normalized = NormalizeEngineId(value);
+        if (_documentOcrEngine != normalized)
+        {
             _documentOcrEngine = normalized;
             UpdateDirtyState();
-            Raise();
             MarkDirty("有未保存的更改");
         }
     }
 
-    public string SelectedPageEngine
-    {
-        get => _pageOcrEngine;
-        set
-        {
-            string normalized = NormalizeEngineId(value);
-            if (_pageOcrEngine == normalized)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string SelectedPageEngine { get; set; } = "";
 
+    partial void OnSelectedPageEngineChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        string normalized = NormalizeEngineId(value);
+        if (_pageOcrEngine != normalized)
+        {
             _pageOcrEngine = normalized;
             UpdateDirtyState();
-            Raise();
             MarkDirty("有未保存的更改");
         }
     }
 
-    public string SelectedRegionEngine
-    {
-        get => _regionOcrEngine;
-        set
-        {
-            string normalized = NormalizeEngineId(value);
-            if (_regionOcrEngine == normalized)
-            {
-                return;
-            }
+    [ObservableProperty] public partial string SelectedRegionEngine { get; set; } = "";
 
+    partial void OnSelectedRegionEngineChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        string normalized = NormalizeEngineId(value);
+        if (_regionOcrEngine != normalized)
+        {
             _regionOcrEngine = normalized;
             UpdateDirtyState();
-            Raise();
             MarkDirty("有未保存的更改");
         }
     }
 
     public AsyncCommand RemoveMinerUCredentialCommand { get; }
     public override bool SupportsEditing => true;
-    public override bool IsDirty => _isDirty;
-    public override bool CanSave => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
+
+    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty;
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
@@ -193,22 +209,9 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
 
     public override Task DiscardAsync()
     {
-        _token = _persistedToken;
-        _modelVersion = _persistedModelVersion;
-        _pollingTimeoutSeconds = _persistedPollingTimeoutSeconds;
-        _documentOcrEngine = _persistedDocumentOcrEngine;
-        _pageOcrEngine = _persistedPageOcrEngine;
-        _regionOcrEngine = _persistedRegionOcrEngine;
+        SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
+            _persistedDocumentOcrEngine, _persistedPageOcrEngine, _persistedRegionOcrEngine);
         _isDirty = false;
-        Raise(nameof(MinerUTokenInput));
-        Raise(nameof(MinerUModelVersion));
-        Raise(nameof(MinerUPollingTimeoutSeconds));
-        Raise(nameof(MinerUCredentialStatus));
-        Raise(nameof(SelectedDocumentEngine));
-        Raise(nameof(SelectedPageEngine));
-        Raise(nameof(SelectedRegionEngine));
-        Raise(nameof(IsDirty));
-        Raise(nameof(CanSave));
         SaveState = SettingsSaveState.Clean;
         Status = "已放弃更改";
         return Task.CompletedTask;
@@ -216,28 +219,17 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
 
     internal void LoadPersistedToken(string token)
     {
-        _token = token;
         _persistedToken = token;
-        _modelVersion = NormalizeModelVersion(_main.AppOptions.MinerU.ModelVersion);
-        _persistedModelVersion = _modelVersion;
-        _pollingTimeoutSeconds = _main.AppOptions.MinerU.PollingTimeoutSeconds;
-        _persistedPollingTimeoutSeconds = _pollingTimeoutSeconds;
+        _persistedModelVersion = NormalizeModelVersion(_main.AppOptions.MinerU.ModelVersion);
+        _persistedPollingTimeoutSeconds = _main.AppOptions.MinerU.PollingTimeoutSeconds;
         LoadEnginesFromSettings(_main.AppOptions.OcrEngines);
         _persistedDocumentOcrEngine = _documentOcrEngine;
         _persistedPageOcrEngine = _pageOcrEngine;
         _persistedRegionOcrEngine = _regionOcrEngine;
+        SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
+            _persistedDocumentOcrEngine, _persistedPageOcrEngine, _persistedRegionOcrEngine);
         _isDirty = false;
         LastError = null;
-        Raise(nameof(MinerUTokenInput));
-        Raise(nameof(MinerUModelVersion));
-        Raise(nameof(MinerUPollingTimeoutSeconds));
-        Raise(nameof(MinerUCredentialStatus));
-        Raise(nameof(HasPersistedCredential));
-        Raise(nameof(SelectedDocumentEngine));
-        Raise(nameof(SelectedPageEngine));
-        Raise(nameof(SelectedRegionEngine));
-        Raise(nameof(IsDirty));
-        Raise(nameof(CanSave));
         SaveState = SettingsSaveState.Saved;
         Status = "已保存";
     }
@@ -293,11 +285,8 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
         SaveState = SettingsSaveState.Saved;
         ValidationState = SettingsValidationState.Valid;
         Status = "已保存";
-        Raise(nameof(SelectedDocumentEngine));
-        Raise(nameof(SelectedPageEngine));
-        Raise(nameof(SelectedRegionEngine));
-        Raise(nameof(IsDirty));
-        Raise(nameof(CanSave));
+        Raise(nameof(HasPersistedCredential));
+        UpdateDirtyState();
     }
 
     private async Task RemoveMinerUCredentialAsync()
@@ -332,16 +321,19 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
         if (!AvailableEngines.Any(option => option.EngineId == _documentOcrEngine))
         {
             _documentOcrEngine = AvailableEngines[0].EngineId;
+            SelectedDocumentEngine = _documentOcrEngine;
         }
 
         if (!AvailableEngines.Any(option => option.EngineId == _pageOcrEngine))
         {
             _pageOcrEngine = AvailableEngines[0].EngineId;
+            SelectedPageEngine = _pageOcrEngine;
         }
 
         if (!AvailableEngines.Any(option => option.EngineId == _regionOcrEngine))
         {
             _regionOcrEngine = AvailableEngines[0].EngineId;
+            SelectedRegionEngine = _regionOcrEngine;
         }
     }
 
@@ -360,6 +352,27 @@ public sealed class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
     {
         SaveState = SettingsSaveState.Dirty;
         Status = message;
+    }
+
+    private void SyncState(string token, string modelVersion, int pollingTimeout, string docEngine, string pageEngine,
+        string regionEngine)
+    {
+        _isSyncing = true;
+        _token = token;
+        MinerUTokenInput = token;
+        _modelVersion = modelVersion;
+        MinerUModelVersion = modelVersion;
+        _pollingTimeoutSeconds = pollingTimeout;
+        MinerUPollingTimeoutSeconds = pollingTimeout;
+        _documentOcrEngine = docEngine;
+        SelectedDocumentEngine = docEngine;
+        _pageOcrEngine = pageEngine;
+        SelectedPageEngine = pageEngine;
+        _regionOcrEngine = regionEngine;
+        SelectedRegionEngine = regionEngine;
+        _isSyncing = false;
+        UpdateDirtyState();
+        Raise(nameof(HasPersistedCredential));
     }
 
     private static string NormalizeModelVersion(string? value)

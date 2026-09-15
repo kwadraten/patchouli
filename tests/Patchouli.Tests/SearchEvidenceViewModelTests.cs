@@ -93,11 +93,23 @@ public sealed class SearchEvidenceViewModelTests : IDisposable
         MainWindowViewModel vm = CreateMainWindow();
         SearchFilterRowViewModel row = vm.SearchEvidence.FilterRows[0];
 
+        List<string> searchPropertyChanges = new();
+        List<string> rowPropertyChanges = new();
+        vm.SearchEvidence.PropertyChanged += (_, e) => searchPropertyChanges.Add(e.PropertyName!);
+        row.PropertyChanged += (_, e) => rowPropertyChanges.Add(e.PropertyName!);
+
         vm.SearchEvidence.Query = "双向同步";
         row.Value.Should().Be("双向同步");
+        searchPropertyChanges.Should().Contain(nameof(SearchEvidenceViewModel.Query));
+        rowPropertyChanges.Should().Contain(nameof(SearchFilterRowViewModel.Value));
+
+        searchPropertyChanges.Clear();
+        rowPropertyChanges.Clear();
 
         row.Value = "从行到查询";
         vm.SearchEvidence.Query.Should().Be("从行到查询");
+        searchPropertyChanges.Should().Contain(nameof(SearchEvidenceViewModel.Query));
+        rowPropertyChanges.Should().Contain(nameof(SearchFilterRowViewModel.Value));
     }
 
     [Fact]
