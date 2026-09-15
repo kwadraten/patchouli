@@ -15,7 +15,8 @@ if (args.Contains("--version", StringComparer.Ordinal))
 
 try
 {
-    ParseGlobalArguments(args, out bool json, out string mcpUrl, out string? mcpToken, out IReadOnlyList<string> rest);
+    ParseGlobalArguments(args, out bool json, out string mcpUrl, out bool mcpUrlWasExplicitlySet,
+        out string? mcpToken, out string? databasePath, out IReadOnlyList<string> rest);
     if (rest.Count == 0)
     {
         Console.Error.WriteLine("patchouli-cli: a command is required (find, fetch, put, cite).");
@@ -32,6 +33,11 @@ try
             ? await Console.In.ReadToEndAsync()
             : await File.ReadAllTextAsync(call.PutSourcePath!);
         call = CliArguments.WithContent(call, content);
+    }
+
+    if (!mcpUrlWasExplicitlySet)
+    {
+        (mcpUrl, mcpToken) = await RuntimeHostResolver.DiscoverOrLaunchAsync(databasePath, mcpToken);
     }
 
     McpHttpClient client = new(mcpUrl, mcpToken);
@@ -73,11 +79,14 @@ catch (OperationCanceledException)
 }
 
 static void ParseGlobalArguments(
-    IReadOnlyList<string> args, out bool json, out string mcpUrl, out string? mcpToken, out IReadOnlyList<string> rest)
+    IReadOnlyList<string> args, out bool json, out string mcpUrl, out bool mcpUrlWasExplicitlySet,
+    out string? mcpToken, out string? databasePath, out IReadOnlyList<string> rest)
 {
     json = false;
     mcpUrl = CliArguments.DefaultMcpUrl;
+    mcpUrlWasExplicitlySet = false;
     mcpToken = null;
+    databasePath = null;
     List<string> remaining = [];
     bool commandSeen = false;
     for (int index = 0; index < args.Count; index++)
@@ -94,6 +103,7 @@ static void ParseGlobalArguments(
             }
 
             mcpUrl = args[++index];
+            mcpUrlWasExplicitlySet = true;
         }
         else if (!commandSeen && string.Equals(args[index], "--mcp-token", StringComparison.Ordinal))
         {
@@ -103,6 +113,15 @@ static void ParseGlobalArguments(
             }
 
             mcpToken = args[++index];
+        }
+        else if (!commandSeen && string.Equals(args[index], "--db", StringComparison.Ordinal))
+        {
+            if (index + 1 >= args.Count)
+            {
+                throw new CliUsageException("the --db option requires a path.");
+            }
+
+            databasePath = args[++index];
         }
         else if (!commandSeen && args[index].StartsWith("--", StringComparison.Ordinal))
         {
@@ -121,7 +140,7 @@ static void ParseGlobalArguments(
 static void PrintUsage()
 {
     Console.Error.WriteLine(
-        "patchouli-cli [--json] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite> [arguments]");
+        "patchouli-cli [--json] [--db <runtime.sqlite>] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite> [arguments]");
     Console.Error.WriteLine(
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
     Console.Error.WriteLine(
@@ -133,7 +152,7 @@ static void PrintUsage()
     Console.Error.WriteLine("  put <uri> --from <path>|--stdin");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
     Console.Error.WriteLine(
-        "Global options: --json (unified JSON envelope), --mcp-url <url>, --mcp-token <token>, --version, --help");
+        "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(
         "The CLI is a thin client of the local MCP HTTP host; it never opens the library database directly.");
     Console.Error.WriteLine(

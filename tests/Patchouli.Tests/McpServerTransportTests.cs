@@ -551,12 +551,11 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
-    public void Standalone_mcp_program_wires_csl_services()
+    public void Standalone_mcp_program_uses_the_shared_headless_runtime()
     {
         string source = File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.McpServer", "Program.cs"));
-        // CSL services (CslStyleStore/CslRenderer/CslItemMapper) are composed inside HostServices;
-        // the standalone server must build HostServices and run it through McpServerHost.
-        source.Should().Contain("HostServices").And.Contain("McpServerHost")
+        // The shared headless runtime owns HostServices, McpServerHost, and the per-Library lease.
+        source.Should().Contain("HeadlessRuntimeHost.RunAsync")
             .And.NotContain("ShellSidecarHost");
     }
 

@@ -8,4 +8,8 @@
       <_Parameter1>Patchouli.Tests</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\Patchouli.Host\Patchouli.Host.csproj" />
+  </ItemGroup>
 </Project>

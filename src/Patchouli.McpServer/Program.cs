@@ -18,6 +18,7 @@ using Patchouli.Infrastructure.Search;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 
 if (args.Contains("--help"))
@@ -48,65 +49,9 @@ if (args.Contains("--seed-uuid-chain-fixture", StringComparer.Ordinal))
     return;
 }
 
-UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
-{
-    string context = operation is null ? boundary : $"{boundary}/{operation}";
-    Console.Error.WriteLine(
-        McpOutputSanitizer.Sanitize($"Unexpected error in {context}:{Environment.NewLine}{exception}"));
-});
-
-try
-{
-    static void ReportUnexpected(Exception exception, string operation)
-    {
-        Console.Error.WriteLine(
-            McpOutputSanitizer.Sanitize($"Unexpected error in {operation}:{Environment.NewLine}{exception}"));
-    }
-
-    Console.Error.WriteLine("[mcp-server] starting database initialization");
-    string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-        "Patchouli", "settings.json");
-    HostServices services = await HostServices.CreateAsync(
-        options.Value.DatabasePath,
-        settingsPath: settingsPath,
-        reportUnexpectedException: (exception, boundary, operation) =>
-            ReportUnexpected(exception, operation is null ? boundary : $"{boundary}/{operation}"));
-    Console.Error.WriteLine("[mcp-server] database initialization complete");
-
-    McpServerSettings effectiveSettings = services.Settings.Mcp;
-    if (options.Value.PortWasExplicitlySet)
-    {
-        effectiveSettings = effectiveSettings with { Port = options.Value.Port };
-    }
-
-    await using McpServerHost host = new(services, (exception, boundary, operation) =>
-        ReportUnexpected(exception, operation is null ? boundary : $"{boundary}/{operation}"));
-    host.StatusChanged += (_, args) =>
-    {
-        if (args.Status == McpServerHostStatus.Error)
-        {
-            Console.Error.WriteLine(McpOutputSanitizer.Sanitize(args.Detail));
-        }
-    };
-    bool unexpectedFailure = false;
-    host.ExceptionReported += (_, _) => unexpectedFailure = true;
-
-    await host.StartAsync(effectiveSettings);
-    if (!host.IsRunning)
-    {
-        Environment.ExitCode = unexpectedFailure ? 1 : 0;
-        return;
-    }
-
-    Console.Error.WriteLine($"[mcp-server] listening on loopback port {effectiveSettings.Port}");
-    await host.WaitForShutdownAsync();
-    Console.Error.WriteLine("[mcp-server] server stopped");
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine(McpOutputSanitizer.Sanitize(ex.ToString()));
-    Environment.ExitCode = 1;
-}
+Environment.ExitCode = await HeadlessRuntimeHost.RunAsync(
+    options.Value.DatabasePath,
+    options.Value.PortWasExplicitlySet ? options.Value.Port : null);
 
 static async Task SeedFixtureAsync(string databasePath)
 {

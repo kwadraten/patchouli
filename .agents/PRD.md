@@ -105,8 +105,10 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 #### 2.1.4 响应式 UI 与单一宿主数据源
 
+- 采用 [ADR 0033](adr/0033-ui-reactivity-three-layer-model.md) 的三层响应式模型：DerivedPropertyGenerator 处理同实例同步派生属性；System.Reactive (Rx) 处理跨对象、集合、异步与时序状态；CommunityToolkit.Mvvm 处理可变 VM 状态与命令。
+- 保证严格的一致性更新：Rx 的 `Throttle` 或 `Debounce` 后接 `Switch`，非丢弃提交流使用 `Buffer` 后接合并 ID 与 `Concat`。
 - UI、MCP 与 CLI 的一致性以 ADR `0024` 的单一 Library runtime host 为边界。UI 与 MCP 复用宿主内部同一套查询、投影、revision 和写入服务；CLI 仍是本地 MCP HTTP 瘦客户端，不得直连 SQLite 或新增第二套领域数据源。
-- 所有改变 protocol-visible canonical 状态的成功写入经宿主写服务提交后发布类型化 `resource-changed` 通知。书库列表、打开的题录、CSL 样式、OCR 队列与 PDF 工作台订阅相关变更并增量刷新，不以固定周期轮询作为主要一致性机制；FTS rebuild、预取和运行时缓存维护只发布内部状态，不伪造 Library commit。
+- 所有改变 protocol-visible canonical 状态的成功写入经宿主写服务提交后发布类型化 `resource-changed` 通知。书库列表、打开的题录、CSL 样式、OCR 队列与 PDF 工作台订阅相关变更并增量刷新，正常 Desktop 不轮询（仅在异常恢复时显式轮询）；FTS rebuild、预取和运行时缓存维护只发布内部状态，不伪造 Library commit。
 - 变更通知只在事务成功后发出，并携带足以定位受影响资源的信息；订阅者不得在通知处理期间同步执行长数据库查询。OCR 运行进度事件与 protocol-visible Library commit 通知是不同事件，不能提前暴露未 commit 的 working 内容。
 - MCP 不增加服务端推送式撤回或远程 cache invalidation。外部 MCP/CLI 调用者仍通过 `meta.library_revision`、`RESULT_SET_MAY_HAVE_CHANGED` 和 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE` 观察变化。
 

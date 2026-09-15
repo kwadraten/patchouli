@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Threading;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Host.Lifecycle;
 using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.UI;
@@ -10,6 +11,21 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if (args.Contains("--headless", StringComparer.Ordinal))
+        {
+            try
+            {
+                string databasePath = RequiredOption(args, "--db");
+                int? port = OptionalPort(args);
+                return HeadlessRuntimeHost.RunAsync(databasePath, port).GetAwaiter().GetResult();
+            }
+            catch (ArgumentException exception)
+            {
+                Console.Error.WriteLine($"Patchouli headless host: {exception.Message}");
+                return 2;
+            }
+        }
+
         UnexpectedExceptions.Configure(new PlatformAppPaths());
         UnexpectedExceptionReporter.Configure((exception, boundary, operation) =>
             UnexpectedExceptions.Sink.Report(exception, boundary, operation));
@@ -107,5 +123,32 @@ internal static class Program
         return AppBuilder.Configure(() => new App { Coordinator = coordinator })
             .UsePlatformDetect()
             .LogToTrace();
+    }
+
+    private static string RequiredOption(string[] args, string name)
+    {
+        int index = Array.IndexOf(args, name);
+        if (index < 0 || index == args.Length - 1 || string.IsNullOrWhiteSpace(args[index + 1]))
+        {
+            throw new ArgumentException($"{name} requires a value.");
+        }
+
+        return args[index + 1];
+    }
+
+    private static int? OptionalPort(string[] args)
+    {
+        int index = Array.IndexOf(args, "--port");
+        if (index < 0)
+        {
+            return null;
+        }
+
+        if (index == args.Length - 1 || !int.TryParse(args[index + 1], out int port) || port is < 1 or > 65535)
+        {
+            throw new ArgumentException("--port requires an integer from 1 through 65535.");
+        }
+
+        return port;
     }
 }

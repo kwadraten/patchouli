@@ -83,8 +83,15 @@ additionally raise `ExternalChangeDetected` so the UI can tell cross-process edi
 own commits.
 
 
-## Document ownership and implementation gaps
+## UI Layer
+
+`src/Patchouli.UI` manages the desktop application state using a three-layer reactivity model ([ADR 0033](adr/0033-ui-reactivity-three-layer-model.md)):
+- **DerivedPropertyGenerator**: Generates notifications for static, synchronous, same-instance property dependencies.
+- **System.Reactive**: Handles time, async, collection, cross-object, and event relations.
+- **CommunityToolkit.Mvvm**: Handles mutable VM state and commands.
+
+## Document ownership and remaining implementation gaps
 
 Keep completed feature summaries at the top of PRD; retain open scope and acceptance budgets below. Durable vocabulary and UI semantics belong in CONTEXT, protocol details in mcp-protocol, architectural choices in ADR, and performance reproduction instructions in perf. Link to the owning document instead of repeating completed acceptance tables.
 
-The shared composition layer and current cross-process revision monitor described above are implemented behavior. They do **not** complete ADR `0024`'s one-host-per-Library target: automatic CLI discovery/headless launch/desktop takeover remains PRD V3-T1 work. Polling plus full cache reload also falls short of V3-T7's subscription-driven incremental refresh target. Keep these gaps explicit until implemented; do not interpret this description as superseding either decision.
+The shared composition layer and ADR `0024` one-host-per-Library target are implemented. A device-local lifetime lock keyed before SQLite open by the canonical database path elects exactly one Desktop or Headless owner; an atomic discovery record publishes the live process identity, Library ID and MCP endpoint, and the authenticated local lifecycle channel performs Desktop takeover. Normal UI, CLI and MCP writes therefore share the in-process revision event path. `LibraryRevisionMonitor` remains available for explicit abnormal external-write recovery, but the Desktop no longer starts its polling loop during normal operation. Full incremental cache invalidation remains V3-T7 work.

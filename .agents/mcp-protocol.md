@@ -2,7 +2,7 @@
 
 本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品进度见 [PRD](PRD.md)。选择理由见 [ADR 0024](adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](adr/0028-versioned-uri-evidence.md) 为准。
 
-实现状态（2026-09-10）：结构化四工具、CLI HTTP 客户端、TOON/JSON 与有限写入已落地。下文的宿主自动发现、自启 headless、互斥与桌面接管仍是目标契约，不能当作现有能力；由 PRD V3-T1 跟踪。回归义务不等于本次已经执行验收。
+实现状态（2026-09-12）：结构化四工具、CLI HTTP 客户端、TOON/JSON、有限写入，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地。回归义务继续约束后续改动。
 
 **定位**：`patchouli-cli` — access an academic literature library powered by patchouli.net
 

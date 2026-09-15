@@ -11,7 +11,7 @@ public sealed partial class MainWindow : Window
     private bool _exitConfirmed;
 
     public MainWindow()
-        : this(new MainWindowViewModel(autoStartMcpServer: true))
+        : this(new MainWindowViewModel(autoStartMcpServer: true, enforceRuntimeHostOwnership: true))
     {
     }
 

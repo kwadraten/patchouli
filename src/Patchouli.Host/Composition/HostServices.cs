@@ -499,4 +499,11 @@ public sealed class HostServices
 
         return services;
     }
+
+    /// <summary>Quiesces background work before a runtime-host ownership lease is released.</summary>
+    public async Task ShutdownAsync()
+    {
+        LibraryRevisionMonitor.Stop();
+        await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+    }
 }
