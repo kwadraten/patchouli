@@ -47,6 +47,12 @@ public sealed partial class PdfWorkspacePage : UserControl
     private readonly SortedList<int, int> _bookReadingPrependedBlockCounts = new();
     private readonly BookReadingPageMap _bookReadingPageMap = new();
 
+    // Real measured Y of the reading session's start page: recorded when the start page is
+    // appended, then pushed down by every prepend. The page map cannot be used for this — its
+    // start offset includes the empty document's own height, which broke the old compensation
+    // condition. The workspace asks the view to snap here once the initial window settles.
+    private double? _bookReadingAnchorY;
+
     public PdfWorkspacePage()
     {
         InitializeComponent();
@@ -89,6 +95,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         {
             _workspace.BookReadingStarted -= OnBookReadingStarted;
             _workspace.BookReadingPageReady -= OnBookReadingPageReady;
+            _workspace.BookReadingAnchorRequested -= OnBookReadingAnchorRequested;
             _workspace.PropertyChanged -= OnBookReadingPropertyChanged;
         }
 
@@ -97,6 +104,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         {
             _workspace.BookReadingStarted += OnBookReadingStarted;
             _workspace.BookReadingPageReady += OnBookReadingPageReady;
+            _workspace.BookReadingAnchorRequested += OnBookReadingAnchorRequested;
             _workspace.PropertyChanged += OnBookReadingPropertyChanged;
             if (_workspace.IsBookReadingMode)
             {
@@ -551,6 +559,7 @@ public sealed partial class PdfWorkspacePage : UserControl
         _bookReadingPrependedPages.Clear();
         _bookReadingPrependedBlockCounts.Clear();
         _bookReadingPageMap.Clear();
+        _bookReadingAnchorY = null;
         BookReadingBadgeRail.Children.Clear();
         if (_workspace is null)
         {
@@ -562,6 +571,21 @@ public sealed partial class PdfWorkspacePage : UserControl
         ApplyBookReadingFontSize();
         BookReadingScroller.Offset = Vector.Zero;
         BookReadingEditor.InvalidateMeasure();
+    }
+
+    // Snaps the scroll offset to the start page the view has been measuring since it arrived.
+    // Raised when the initial window settles (before the prefetch guard lifts) and after a
+    // replay, which is what finally keeps trailing layout scroll events from cascading backward
+    // prefetches to page zero while the offset sits at the document top.
+    private void OnBookReadingAnchorRequested()
+    {
+        if (_workspace is null || _bookReadingAnchorY is not { } anchorY)
+        {
+            return;
+        }
+
+        BookReadingEditor.UpdateLayout();
+        BookReadingScroller.Offset = new Vector(0, anchorY);
     }
 
     private void OnBookReadingPageReady(BookReadingPage page)
@@ -595,6 +619,7 @@ public sealed partial class PdfWorkspacePage : UserControl
             // pending measure first so the recorded page start is the real document height.
             BookReadingEditor.UpdateLayout();
             _bookReadingPageMap.RecordAppend(page.PageIndex, BookReadingEditor.DesiredSize.Height);
+            _bookReadingAnchorY ??= BookReadingEditor.DesiredSize.Height;
             document.Blocks.AddRange(parsed.Blocks);
             BookReadingEditor.InvalidateMeasure();
             UpdateBookReadingBadges();
@@ -630,9 +655,15 @@ public sealed partial class PdfWorkspacePage : UserControl
         double delta = BookReadingEditor.DesiredSize.Height - heightBefore;
         double insertY = _bookReadingPageMap.GetInsertY(page.PageIndex);
         _bookReadingPageMap.RecordPrepend(page.PageIndex, insertY, delta);
-        if (delta > 0 && insertY <= offsetBefore)
+        // Prepended blocks always land at or above the viewport top, so always compensate. The
+        // old insertY <= offsetBefore condition never fired during initial anchoring: the start
+        // page's recorded Y includes the empty document's own height (102px), so it compared
+        // greater than the zero offset and the offset stayed pinned to the document top while
+        // backward prefetches cascaded to page zero.
+        if (delta > 0)
         {
             BookReadingScroller.Offset = new Vector(0, offsetBefore + delta);
+            _bookReadingAnchorY += delta;
         }
 
         UpdateBookReadingBadges();
@@ -729,6 +760,8 @@ public sealed partial class PdfWorkspacePage : UserControl
             return;
         }
 
+        // The rebuild re-flows every page, so the measured start-page anchor no longer applies.
+        _bookReadingAnchorY = null;
         BookReadingEditor.UpdateLayout();
         double extentBefore = BookReadingEditor.DesiredSize.Height;
         double scrollRatio = extentBefore > 0 ? BookReadingScroller.Offset.Y / extentBefore : 0;
