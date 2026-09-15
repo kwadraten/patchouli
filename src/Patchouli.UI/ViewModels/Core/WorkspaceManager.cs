@@ -115,6 +115,9 @@ public sealed class WorkspaceManager
         if (tab.Content is PdfWorkspaceViewModel pdf)
         {
             pdf.Clear();
+            pdf.Dispose();
         }
+
+        tab.Dispose();
     }
 }
