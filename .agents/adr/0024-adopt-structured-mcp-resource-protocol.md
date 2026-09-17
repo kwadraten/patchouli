@@ -1,10 +1,10 @@
 # Adopt the Structured MCP Resource Protocol
 
-Status: accepted (2026-07-31); amended 2026-08-01; supersedes ADR `0022` for production MCP
+Status: accepted (2026-07-31); amended 2026-08-01 and 2026-09-15; supersedes ADR `0022` for production MCP
 
 ## Current contract and superseding decisions
 
-The normative parameter/response specification formerly in PRD §3.4 now lives in [mcp-protocol.md](../mcp-protocol.md). ADR `0028` supersedes historical `?evref=`/EvidenceRef consumption mentioned below with `?rev=&box=` versioned page URIs; ADR `0027` defines working/committed history. The four tools and HTTP CLI are implemented, including limited `put`. Automatic headless launch, per-Library host ownership and desktop takeover are implemented through a canonical-database-path lifetime lock, validated device-local discovery record, and authenticated local takeover channel.
+The normative parameter/response specification formerly in PRD §3.4 now lives in [mcp-protocol.md](../mcp-protocol.md). ADR `0028` supersedes historical `?evref=`/EvidenceRef consumption mentioned below with `?rev=&box=` versioned page URIs; ADR `0027` defines working/committed history. ADR `0034` adds a fourth VFS root, `patchouli://translations/`, for box-derived page translations and amends the discovery tree described below. The four tools and HTTP CLI are implemented, including limited `put`. Automatic headless launch, per-Library host ownership and desktop takeover are implemented through a canonical-database-path lifetime lock, validated device-local discovery record, and authenticated local takeover channel.
 
 ## Context
 
@@ -80,7 +80,8 @@ lifecycle command (for example `serve-mcp`) is separate from the four resource
 verbs and is not an MCP tool.
 
 The production discovery tree is limited to `patchouli://items/`,
-`patchouli://texts/`, and `patchouli://csl-styles/`. It has no discoverable
+`patchouli://texts/`, `patchouli://csl-styles/`, and `patchouli://translations/`
+(the last of which was added by ADR `0034`). It has no discoverable
 evidence root. A text page URI is
 `patchouli://texts/{document-instance-id}/page-{page-index}.md`, where
 `page-index` is the stable, one-based physical PDF page number within that

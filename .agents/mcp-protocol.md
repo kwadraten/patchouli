@@ -54,19 +54,25 @@ RESOURCE TREE
   patchouli://texts/{document-instance-id}/page-{page-index}.md
   patchouli://texts/{document-instance-id}/page-{page-index}.md?rev={tree-revision-id}&box={box-id}
 
+  patchouli://translations/
+  patchouli://translations/{document-instance-id}/
+  patchouli://translations/{document-instance-id}/page-{page-index}.md
+
   patchouli://csl-styles/
   patchouli://csl-styles/{style-id}.csl
 
   patchouli://library.toon
 ```
 
-无参数 `find` 是 VFS 根目录发现，返回 `/items`、`/texts`、`/csl-styles` 三个 directory 条目与 `/library.toon` 这一个 file 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/library.yml`、`/collections`、`profiles` 或其他虚拟 skill 文件；集合与标签只通过 `patchouli://library.toon` 投影暴露，没有独立的 collection URI 或 VFS 目录。Evidence 仅通过 text page URI 的 `?rev={tree-revision-id}&box={box-id}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
+无参数 `find` 是 VFS 根目录发现，返回 `/items`、`/texts`、`/translations`、`/csl-styles` 四个 directory 条目与 `/library.toon` 这一个 file 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/library.yml`、`/collections`、`profiles` 或其他虚拟 skill 文件；集合与标签只通过 `patchouli://library.toon` 投影暴露，没有独立的 collection URI 或 VFS 目录。Evidence 仅通过 text page URI 的 `?rev={tree-revision-id}&box={box-id}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
 
 `patchouli://library.toon` 是固定单例，内容始终包含 `library_id` 与 `display_name`；当设备本地 MCP 设置 `ExposeLibraryTags` / `ExposeLibraryCollections` 开启（默认开启）时，分别追加按名称/标签排序的 `tags` 与 `collections` 数组，并带 item count。`collections` 包含空集合；标签按 ordinal 排序。该投影由生产 TOON encoder 输出，MCP 设置页的回显预览使用已保存设置调用同一投影（未保存草稿不影响预览），因此预览与实际输出不会漂移。`patchouli://library.toon` 是只读资源，任何 `put` 返回 `PERMISSION_DENIED`。集合是只读关系：MCP 不能创建、重命名、解散集合，也不能改成员。
 
 `ExposeLibraryTags` / `ExposeLibraryCollections` 是设备本地的暴露策略，而不是数据作用域。关闭标签暴露时，`library.toon` 不返回 `tags`，Item 的 BibLaTeX `keywords` 不再输出，agent `put` 保留既有标签并忽略传入 keywords，且 `tag` 过滤返回 `PERMISSION_DENIED`。关闭集合暴露时，`library.toon` 不返回 `collections`，且 `collection_id` 过滤返回 `PERMISSION_DENIED`。固定的 `library_id` 与 `display_name` 永不被隐藏。
 
 `page-index` 是指定 DocumentInstance 内与物理 PDF 页对应的**一基**页码。DocumentInstance 的物理页顺序稳定，不因 UI、CLI 或 MCP 的访问而重排；因此 `page-1.md` 是人类报告和程序调用共用的第一页。`?rev=&box=` 是 evidence 的规范消费形式：服务在 `fetch` 或 `cite` 消费它时必须验证 `tree_revision_id`/`box_id` 实际归属所声明的 DocumentInstance 和 page；不存在或不归属时返回 `NOT_FOUND`，不得把其他页面的 evidence 作为成功结果返回。
+
+`patchouli://translations/` 是页面翻译的派生资源树，形态与 `texts/` 一一对应并共享同一套一基物理页码。目录条目携带翻译进度：`patchouli://translations/` 返回每个 DocumentInstance 的 `page_count`、`translated_page_count`、`partial_page_count`、`untranslated_page_count`、`stale_page_count`；`patchouli://translations/{document-instance-id}/` 返回每页的 `translation_status`（`untranslated`/`partial`/`translated`/`stale`）与 `translated_box_count`/`total_box_count`。翻译不是独立事实，而是当前 committed Box Tree 的派生数据：任何内容变更都会产生新 revision，页面上一次写入的翻译因而变为 `stale`，读取时先做懒重对齐（保留 `box_id` 与源 payload 均未变的行，删除过期行）。`patchouli://translations/{document-instance-id}/page-{page-index}.md` 是整页翻译 markdown，**可读可写**：`put` 要求提交内容与当前原文 markdown 的结构逐块一一对应（标题级别、块类型、表格行列、代码/公式围栏、逻辑页分隔），文本自由；校验失败返回 `INVALID_CONTENT` 与结构化 `translation_errors` 清单，且不写入。没有翻译的页面 `fetch` 返回 `NOT_FOUND` 并在消息中指向 `patchouli://texts/{document-instance-id}/page-{page-index}.md` 原文。翻译树不暴露 bbox、不触发 OCR、不重建索引、不返回本地路径，也不引入翻译引擎；语言选择与翻译质量由外部 agent 负责。设计依据见 ADR `0034`。
 
 TOON 使用 MIT `Corvus.Toon.SystemTextJson` NuGet 包作为唯一编码/解码实现，并遵循 TOON specification **v3.0**；不得维护自定义 TOON parser 或 encoder。协议编码固定使用 UTF-8/LF、`ToonWriterOptions` 的字面 TAB delimiter 与 `KeyFolding=Off`；默认 uniform entries 使用 TOON v3 tabular form，声明的 `[N]` 必须与实际行数一致。`text/toon` 是其媒体类型。本资源发现与格式决策已由 ADR `0024` 的 2026-08-01 修订同步；后续改变 URI 根、evidence 消费形式、TOON 库或默认编码时，必须同时更新本契约、ADR 与运行时契约。
 
@@ -147,9 +153,11 @@ DETAILED RESULTS (--long)
 
 | `--in` scope | 无 QUERY | 普通 QUERY | `--literal` | 可用 `--where` |
 |---|---|---|---|---|
-| `patchouli://` | 仅发现四个根条目；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
+| `patchouli://` | 仅发现五个根条目；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
 | `patchouli://items/` | 浏览题录资源 | 题名、作者、identifier 元数据搜索 | 相同字段的直接字面匹配 | `item_type`、`item_status`、`primary_document_ocr_index_status`、`citable`、`tag`、`collection_id` |
 | `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个命中 SearchUnit 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_id`、`item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
+| `patchouli://translations/` | 浏览文档级翻译进度投影 | document title 大小写不敏感包含匹配 | 相同字段的直接字面匹配 | `item_id`、`item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
+| `patchouli://translations/{document-id}/` | 浏览该 document 的页面清单与每页翻译状态 | page label 大小写不敏感包含匹配 | 相同字段的直接字面匹配 | 同上，作用于所属 document |
 | `patchouli://csl-styles/` | 浏览 CSL style 资源 | style id、display name 搜索 | 相同字段的直接字面匹配 | `style_enabled` |
 | 已知 file URI | 当作单资源 scope 返回该 entry，并返回 `FILE_URI_SINGLETON_SCOPE` | 仅在该资源的矩阵内搜索字段上匹配，并返回同一 warning | 相同的单资源直接字面匹配 | 使用其所属 scope 的 filter 键（item file URI 因此接受 `tag` 与 `collection_id`） |
 
@@ -157,7 +165,7 @@ DETAILED RESULTS (--long)
 
 `--where` 每个 clause 在**第一个** `=` 分割，余下的 `=` 全部属于 value；发生此归一化时返回 `WHERE_VALUE_CONTAINS_EQUALS`。同一 key 重复出现时按 CLI 常见的最后一项覆盖先前项，而不是 AND/OR；发生覆盖时返回 `DUPLICATE_WHERE_KEY_LAST_WINS`。这些 warning 只说明输入被隐式处理，不改变成功响应或 exit/error code。
 
-默认列表是导航视图，不返回 `path`、`kind`、`label`、`revision`、`writable`、匹配片段、关系字段、状态字段或能力字段。`meta` 与 `continuation` 是导航协议，不属于 entry 详细字段，始终返回；`message` 仅在有 warning 或 error 时出现。CLI 普通输出和 MCP 默认文本结果均为 TOON；CLI `--json` 和 MCP `format=json` 可以选择 JSON，但不会隐式返回详细字段。`format=json` 是 agent 批量读取、爬取或交给其他编程语言处理时的等价回退格式：它必须完整表达相同的统一外壳、entry projection、分页、message 与 error 语义，调用方无需解析 TOON。格式选择只改变编码，不改变 query、filter、权限、返回字段或默认/详细投影。MCP 以 `detail=long` 选择与 CLI `--long` 相同的详细投影。
+默认列表是导航视图，不返回 `path`、`kind`、`label`、`revision`、`writable`、匹配片段、关系字段或能力字段。翻译目录是唯一例外：`patchouli://translations/` 的文档条目必须带翻译进度计数，`patchouli://translations/{document-id}/` 的页面条目必须带 `translation_status` 与 box 计数，因为“哪些页面仍需翻译”就是该 scope 的导航信息。`meta` 与 `continuation` 是导航协议，不属于 entry 详细字段，始终返回；`message` 仅在有 warning 或 error 时出现。CLI 普通输出和 MCP 默认文本结果均为 TOON；CLI `--json` 和 MCP `format=json` 可以选择 JSON，但不会隐式返回详细字段。`format=json` 是 agent 批量读取、爬取或交给其他编程语言处理时的等价回退格式：它必须完整表达相同的统一外壳、entry projection、分页、message 与 error 语义，调用方无需解析 TOON。格式选择只改变编码，不改变 query、filter、权限、返回字段或默认/详细投影。MCP 以 `detail=long` 选择与 CLI `--long` 相同的详细投影。
 
 **TOON 确定性 profile**：TOON 和 JSON 先共享同一份严格类型化的 JSON data model，再编码为各自文本。`Corvus.Toon.SystemTextJson` 是唯一的 encoder/strict decoder；它按 TOON v3 词法规则对 string 进行引用和 escape，数值 string、enum 与 bare token 均不得通过自定义字符串后处理改变语义。协议固定 UTF-8/LF、literal TAB 与 `KeyFolding=Off`；`integer`/`number` 保持 JSON number 类型，`boolean` 为无引号小写 `true`/`false`，null 为无引号 `null`。升级依赖或改变 profile 必须提高协议 revision，并以 JSON↔TOON round-trip 与逐字 golden fixture 验证。
 
@@ -170,13 +178,14 @@ DETAILED RESULTS (--long)
 ```toon
 meta:
   library_revision: "lib:42"
-  domain_total: 4
-  filtered_total: 4
-  shown_total: 4
+  domain_total: 5
+  filtered_total: 5
+  shown_total: 5
 continuation: null
-entries[4	]{uri	title	type}:
+entries[5	]{uri	title	type}:
   "patchouli://items/"	"/items"	"directory"
   "patchouli://texts/"	"/texts"	"directory"
+  "patchouli://translations/"	"/translations"	"directory"
   "patchouli://csl-styles/"	"/csl-styles"	"directory"
   "patchouli://library.toon"	"/library.toon"	"file"
 ```
@@ -202,6 +211,8 @@ CANONICAL REPRESENTATIONS
   text document URI    Document outline, owning item link, and page links
   text page URI        Canonical Markdown and owning item/document link
   text page ?rev=&box= URI  Versioned evidence text, source mapping, and owning item link
+  translation document URI  Page list with per-page translation status
+  translation page URI  Compiled whole-page translated Markdown plus translation status
   style URI            CSL XML
 
 BEHAVIOUR
@@ -234,9 +245,11 @@ MCP INPUT
 WRITABLE
   patchouli://items/*.bib        (includes general items, mapped to @misc)
   patchouli://csl-styles/*.csl
+  patchouli://translations/*/page-*.md
 
 READ-ONLY
   patchouli://texts/**
+  patchouli://translations/ 和 patchouli://translations/*/ 目录（只能浏览，不能 `put`）
 
 BEHAVIOUR
   put replaces exactly one resource.
@@ -246,6 +259,13 @@ BEHAVIOUR
   put validates the complete replacement before writing.
   put commits the replacement atomically.
   put has no --base option and does not use optimistic concurrency.
+  For patchouli://translations/*/page-*.md, the replacement must be structurally identical
+  to the current source page Markdown (same block sequence, heading levels, table shapes,
+  code/math fences, and logical-page separators); only the text may change. A mismatch fails
+  with INVALID_CONTENT and a structured translation_errors list and writes nothing.
+  Fetching a translation page that has no translation returns NOT_FOUND and names the
+  source page patchouli://texts/{document-id}/page-{index}.md; the read → translate → put
+  loop is discoverable from that error alone.
   Concurrent valid replacements are serialized by commit order; the last successfully
   committed complete replacement becomes the current resource.
   put never accepts a partial or truncated fetch result as a complete replacement.
@@ -401,7 +421,7 @@ Exit / error codes：
 | 5 | RESERVED | v3 `put` 不使用 base revision，也不返回 revision conflict |
 | 6 | INVALID_CONTENT | BibLaTeX 或 CSL 校验失败 |
 | 7 | RESPONSE_TRUNCATED | 响应超过安全大小上限，已返回显式 partial 内容 |
-| 8 | UNAVAILABLE | Patchouli 服务不可用 |
+| 8 | UNAVAILABLE | Patchouli 服务不可用；CLI 诊断必须引导用户确认所选 Library 可打开、runtime host 正在运行，并检查 MCP bind、端口、防火墙与 token 设置，不得只透传 socket 异常或“连接被拒绝” |
 | 9 | NOT_CITABLE | 资源存在，但无法解析为可渲染的引用目标 |
 | 10 | DEADLINE_EXCEEDED | 宿主在请求 deadline 前未能完成；不返回 timeout 导致的 partial data |
 | 11 | CANCELLED | 调用方取消且宿主在原子提交前停止了操作；不产生写入 |
@@ -442,10 +462,10 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC7 | 超过 `limit_bytes` 的 fetch 返回安全边界内的 partial 内容、`complete=false`/`truncated=true`、continuation 或 next range，以及 `RESPONSE_TRUNCATED`；不得静默呈现为完整内容 |
 | V3-AC8 | Document、Page、Evidence 的资源响应暴露所属 Item 关系；`citable` 与 cite 实际接受的 URI 类型一致；document/page cite 验证关系后成功解析 |
 | V3-AC9 | 多 URI fetch 与多 REF cite 采用逐项结果语义；单项失败不丢弃同一请求中的成功结果，并对实际使用的 CSL style 返回 effective style |
-| V3-AC10 | 裸 `find` 仅返回 `/items`、`/texts`、`/csl-styles` 三个 VFS 根 directory 与 `/library.toon` 一个根 file 条目；不存在 `/collections` 等集合/标签根、旧 `AGENTS.md`、`library.yml`、evidence 根和 shell 入口均不可发现或访问 |
+| V3-AC10 | 裸 `find` 仅返回 `/items`、`/texts`、`/translations`、`/csl-styles` 四个 VFS 根 directory 与 `/library.toon` 一个根 file 条目；不存在 `/collections` 等集合/标签根、旧 `AGENTS.md`、`library.yml`、evidence 根和 shell 入口均不可发现或访问 |
 | V3-AC11 | 经 UI、CLI 或 MCP 成功写入的宿主写服务均发出资源变更通知；连接到该宿主的桌面书库列表、打开的题录编辑器和 CSL 样式视图无需重启即可显示最新数据 |
-| V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，干净成功不返回 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
-| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable` |
+| V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`（`patchouli://translations/` 与其 document 目录例外，见 ADR `0034`：它们必须携带翻译进度/状态）；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，干净成功不返回 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
+| V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据（翻译目录条目例外，见 ADR `0034`）；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable` |
 | V3-AC14 | `find` 对声明支持的 scope/query/`--literal`/filter 执行搜索或过滤，严格遵循 scope × flag 合法矩阵；不支持的组合返回 `INVALID_ARGUMENT`，不以成功空数组代替 |
 | V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行四个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
 | V3-AC16 | MCP `format=json` 与 CLI `--json` 为批量机器处理返回等价 JSON；无需解析 TOON，且三种编码均使用相同的 `meta`、`continuation`、可选 `message`、`entries` schema。格式切换不改变默认/详细投影、字段、分页、warning 或 error 语义 |
