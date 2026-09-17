@@ -539,6 +539,7 @@
                         <MenuFlyout>
                           <MenuItem Header="页面内容" Command="{Binding ShowContentTabCommand}" />
                           <MenuItem Header="版本历史" Command="{Binding ShowHistoryTabCommand}" />
+                          <MenuItem Header="翻译" Command="{Binding ShowTranslationTabCommand}" />
                         </MenuFlyout>
                       </Button.Flyout>
                       <lucide:Lucide Icon="ChevronDown" Width="14" Height="14"
@@ -559,7 +560,7 @@
               </Border>
               <Grid Grid.Row="1">
                 <!-- Tab: page content -->
-                <Grid IsVisible="{Binding !IsHistoryTabActive}">
+                <Grid IsVisible="{Binding IsContentTabActive}">
                   <ScrollViewer x:Name="PreviewScrollViewer">
                     <controls:DocumentReadingView x:Name="ReadingView"
                                                   Scene="{Binding ReadingScene}"
@@ -571,6 +572,21 @@
                   <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
                              IsVisible="{Binding HasNoPreviewBlocks}" />
+                </Grid>
+
+                <!-- Tab: translation (same reading surface; source-map box ids match the page content) -->
+                <Grid IsVisible="{Binding IsTranslationTabActive}">
+                  <ScrollViewer>
+                    <controls:DocumentReadingView x:Name="TranslationReadingView"
+                                                  Scene="{Binding TranslationScene}"
+                                                  SelectedBoxId="{Binding ReadingSelectedBoxId}"
+                                                  MediaLoader="{Binding ReadingMediaLoader}"
+                                                  SelectionAccentBrush="{DynamicResource PrimaryBrush}"
+                                                  Margin="16" />
+                  </ScrollViewer>
+                  <TextBlock Text="本页尚无翻译" HorizontalAlignment="Center" VerticalAlignment="Center"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
+                             IsVisible="{Binding HasNoTranslation}" />
                 </Grid>
 
                 <!-- Tab: version history (graph | commit | description | date) -->
@@ -719,7 +735,7 @@
       <!-- Reading toolbar -->
       <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="12,0"
               Background="{DynamicResource SurfaceContainerLowBrush}">
-        <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto">
+        <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto,Auto">
           <ComboBox x:Name="BookReadingFontComboBox"
                     ItemsSource="{Binding BookReadingFontFamilies}"
                     SelectedItem="{Binding BookReadingFontFamily, Mode=TwoWay}"
@@ -739,7 +755,17 @@
           <TextBlock Grid.Column="2" Text="{Binding BookReadingProgressText}" FontSize="12"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center"
                      Margin="12,0" />
-          <Button Grid.Column="4" Command="{Binding ExitBookReadingCommand}"
+          <ToggleButton Grid.Column="4" Classes="ToolbarToggle"
+                        IsChecked="{Binding IsTranslationCompareVisible, Mode=OneWay}"
+                        Command="{Binding ToggleTranslationCompareCommand}"
+                        VerticalAlignment="Center" Margin="0,0,8,0"
+                        ToolTip.Tip="在右侧显示译文，与原文分屏对照">
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <lucide:Lucide Icon="Copy" Width="14" Height="14" />
+              <TextBlock Text="对照翻译" FontSize="12" />
+            </StackPanel>
+          </ToggleButton>
+          <Button Grid.Column="5" Command="{Binding ExitBookReadingCommand}"
                   Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
                   VerticalAlignment="Center"
                   ToolTip.Tip="退出阅读模式，返回 PDF 查看模式">
@@ -751,17 +777,30 @@
         </Grid>
       </Border>
 
-      <!-- Reading area: a read-only RichEditor streamed page by page inside a vertical scroller.
-           The left rail carries one page-number badge per page, aligned with the page's first
-           block (positions tracked by the code-behind through BookReadingPageMap). -->
-      <ScrollViewer x:Name="BookReadingScroller" Grid.Row="1"
-                    HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
-                    Background="{DynamicResource SurfaceBrush}">
-        <Grid ColumnDefinitions="72,*">
-          <Canvas x:Name="BookReadingBadgeRail" VerticalAlignment="Top" />
-          <are:RichEditor x:Name="BookReadingEditor" Grid.Column="1" IsReadOnly="True" Margin="24,16,24,16" />
-        </Grid>
-      </ScrollViewer>
+      <!-- Reading area: two read-only RichEditor streams split by a draggable divider. The left
+           pane carries one page-number badge per page in its rail, aligned with the page's first
+           block (positions tracked by the code-behind through BookReadingPageMap). The right pane
+           is collapsed to zero width while compare is off, so the source pane fills the surface
+           exactly as the single-pane reader did. -->
+      <Grid x:Name="BookReadingSplitGrid" Grid.Row="1" ColumnDefinitions="*,0,0">
+        <ScrollViewer x:Name="BookReadingScroller" Grid.Column="0"
+                      HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                      Background="{DynamicResource SurfaceBrush}">
+          <Grid ColumnDefinitions="72,*">
+            <Canvas x:Name="BookReadingBadgeRail" VerticalAlignment="Top" />
+            <are:RichEditor x:Name="BookReadingEditor" Grid.Column="1" IsReadOnly="True" Margin="24,16,24,16" />
+          </Grid>
+        </ScrollViewer>
+        <GridSplitter x:Name="BookReadingSplitter" Grid.Column="1" Width="4"
+                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                      ResizeDirection="Columns"
+                      Background="{DynamicResource OutlineVariantBrush}" />
+        <ScrollViewer x:Name="BookTranslationScroller" Grid.Column="2"
+                      HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                      Background="{DynamicResource SurfaceBrush}">
+          <are:RichEditor x:Name="BookTranslationEditor" IsReadOnly="True" Margin="24,16,24,16" />
+        </ScrollViewer>
+      </Grid>
     </Grid>
   </Grid>
 </UserControl>

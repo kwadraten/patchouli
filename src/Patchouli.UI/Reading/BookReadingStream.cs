@@ -23,6 +23,11 @@ public sealed class BookReadingStream : IBookReadingStream
     private readonly Func<DocumentTreeRevisionId, bool, CancellationToken, bool, Task<Result<CompiledMarkdown>>>
         _compilePageMarkdown;
 
+    // Translations are fetched alongside the source so the compare pane can render a page the
+    // moment it arrives; the service is cached, so this does not re-read the database per page.
+    private readonly Func<DocumentInstanceId, PageId, CancellationToken, Task<TranslatedPageMarkdown?>>
+        _getPageTranslation;
+
     // Page list cache: LoadPageAsync runs once per page, so re-listing the whole document for
     // every page would multiply the database round-trips by the window size. A stream instance
     // lives for one reading session, so a stale list is not a concern.
@@ -34,19 +39,22 @@ public sealed class BookReadingStream : IBookReadingStream
         _listPages = services.Pages.ListPagesAsync;
         _getCurrentRevision = services.DocumentTrees.GetCurrentRevisionAsync;
         _compilePageMarkdown = services.DocumentMarkdown.CompilePageMarkdownAsync;
+        _getPageTranslation = services.PageTranslations.GetPageTranslationAsync;
     }
 
-    // Seam for tests: the three host calls the stream actually depends on, so a test can drive
-    // placeholders and cancellation without composing a whole HostServices graph.
+    // Seam for tests: the host calls the stream actually depends on, so a test can drive
+    // placeholders, translations and cancellation without composing a whole HostServices graph.
     internal BookReadingStream(
         Func<DocumentInstanceId, CancellationToken, Task<Result<IReadOnlyList<Page>>>> listPages,
         Func<DocumentInstanceId, PageId, CancellationToken, Task<Result<DocumentTreeRevision>>> getCurrentRevision,
         Func<DocumentTreeRevisionId, bool, CancellationToken, bool, Task<Result<CompiledMarkdown>>>
-            compilePageMarkdown)
+            compilePageMarkdown,
+        Func<DocumentInstanceId, PageId, CancellationToken, Task<TranslatedPageMarkdown?>>? getPageTranslation = null)
     {
         _listPages = listPages;
         _getCurrentRevision = getCurrentRevision;
         _compilePageMarkdown = compilePageMarkdown;
+        _getPageTranslation = getPageTranslation ?? ((_, _, _) => Task.FromResult<TranslatedPageMarkdown?>(null));
     }
 
     public async Task<IReadOnlyList<int>> ListPageIndicesAsync(
@@ -88,11 +96,14 @@ public sealed class BookReadingStream : IBookReadingStream
         Result<CompiledMarkdown> compiled = await _compilePageMarkdown(
                 revision.Value.TreeRevisionId, false, cancellationToken, true)
             .ConfigureAwait(false);
+        TranslatedPageMarkdown? translation =
+            await _getPageTranslation(page.DocumentInstanceId, page.PageId, cancellationToken).ConfigureAwait(false);
         string html = compiled.IsFailure
             ? BookReadingHtml.CompilePlaceholderHtml(pageIndex, pageCount)
             : BookReadingHtml.CompilePageHtml(compiled.Value, pageIndex, pageCount);
         // IsPrepend is the view model's call; the stream only reports page content.
-        return new BookReadingPage(pageIndex, pageCount, false, html);
+        return new BookReadingPage(
+            pageIndex, pageCount, false, html, BookReadingHtml.CompileTranslationHtml(translation));
     }
 
     // Returns null when the page list cannot be read; only a successful list is cached.

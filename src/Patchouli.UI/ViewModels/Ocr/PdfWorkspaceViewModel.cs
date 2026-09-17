@@ -62,6 +62,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     private Point _selectionStartPoint;
     private DocumentBoxId? _localOcrTargetBoxId;
     private DocumentBoxId? _previewSelectedBoxId;
+    private int _translationLoadGeneration;
+    private string? _translationMarkdown;
     private DocumentTreeRevisionId? _liveCurrentRevisionId;
     private CancellationTokenSource? _bookReadingCancellation;
     private IReadOnlyList<string>? _bookReadingFontFamilies;
@@ -151,6 +153,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     public PdfWorkspaceViewModel(MainWindowViewModel main, LibraryItemViewModel item)
     {
+        using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
         Item = item;
         ReadingMediaLoader = new FileAssetMediaImageLoader(main);
@@ -215,8 +218,11 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         RunCurrentPageOcrCommand = new AsyncCommand(RunCurrentPageOcrAsync);
         RunDocumentOcrCommand = new AsyncCommand(RunDocumentOcrAsync);
         CopyMarkdownCommand = new AsyncCommand(CopyMarkdownAsync);
-        ShowContentTabCommand = new RelayCommand(_ => IsHistoryTabActive = false);
-        ShowHistoryTabCommand = new RelayCommand(_ => IsHistoryTabActive = true);
+        ShowContentTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.Content);
+        ShowHistoryTabCommand = new RelayCommand(_ => ActiveSidebarTab = SidebarTab.History);
+        ShowTranslationTabCommand = new AsyncCommand(ShowTranslationTabAsync);
+        ToggleTranslationCompareCommand =
+            new RelayCommand(_ => IsTranslationCompareVisible = !IsTranslationCompareVisible);
         MergeSelectedCommand = new AsyncCommand(MergeSelectedAsync);
         ConfirmMergeCommand = new AsyncCommand(ConfirmMergeAsync);
         CancelMergeCommand = new AsyncCommand(() =>
@@ -378,11 +384,23 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         }
     }
 
-    /// <summary>True when the view-mode sidebar shows the version-history tab instead of the page preview.</summary>
+    /// <summary>
+    /// View-mode sidebar tab. This enum is the single source of truth for the sidebar surface; the
+    /// boolean projections below only let the view bind visibility without an equality converter.
+    /// </summary>
     [ObservableProperty]
-    public partial bool IsHistoryTabActive { get; private set; }
+    public partial SidebarTab ActiveSidebarTab { get; private set; }
 
-    public string SidebarTabTitle => IsHistoryTabActive ? "版本历史" : "页面内容";
+    public bool IsContentTabActive => ActiveSidebarTab == SidebarTab.Content;
+    public bool IsHistoryTabActive => ActiveSidebarTab == SidebarTab.History;
+    public bool IsTranslationTabActive => ActiveSidebarTab == SidebarTab.Translation;
+
+    public string SidebarTabTitle => ActiveSidebarTab switch
+    {
+        SidebarTab.History => "版本历史",
+        SidebarTab.Translation => "翻译",
+        _ => "页面内容"
+    };
 
     [ObservableProperty] public partial bool IsViewingHistoricalRevision { get; private set; }
 
@@ -510,6 +528,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     [ObservableProperty] public partial DocumentReadingScene? ReadingScene { get; private set; }
 
     [ObservableProperty] public partial DocumentBoxId? ReadingSelectedBoxId { get; private set; }
+
+    // Render-ready snapshot of the page's translation, or null when the page has no translation
+    // (or none has loaded yet); the sidebar shows its placeholder while this is null.
+    [ObservableProperty] public partial DocumentReadingScene? TranslationScene { get; private set; }
+
+    public bool HasNoTranslation => TranslationScene is null;
 
     // Resolves the reading view's media block asset ids to decoded images (see the loader type).
     public IMediaImageLoader ReadingMediaLoader { get; }
@@ -659,6 +683,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     public AsyncCommand CopyMarkdownCommand { get; }
     public RelayCommand ShowContentTabCommand { get; }
     public RelayCommand ShowHistoryTabCommand { get; }
+    public AsyncCommand ShowTranslationTabCommand { get; }
+    public RelayCommand ToggleTranslationCompareCommand { get; }
     public AsyncCommand MergeSelectedCommand { get; }
     public AsyncCommand ConfirmMergeCommand { get; }
     public AsyncCommand CancelMergeCommand { get; }
@@ -1843,6 +1869,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         _crossPageContinuationSources.Clear();
         _pages = [];
         PreviewBlocks.Clear();
+        ResetTranslationState();
         ReadingScene = null;
         SelectedBox = null;
         _currentRevisionId = null;
@@ -2042,6 +2069,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
             BoundingBoxes.Clear();
             PreviewBlocks.Clear();
+            ResetTranslationState();
             ReadingScene = null;
             SelectedBox = null;
             if (IsEditMode && _draftRevisionId != null)
@@ -2301,6 +2329,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         await UpdateOverlapWarningsAsync(revisionId);
         await UpdateContinuationLinksAsync();
         await LoadPreviewAsync(revisionId);
+        if (!isDraft && !IsViewingHistoricalRevision)
+        {
+            // Translations are derived from the live (HEAD) tree only: an edit draft and a
+            // historical preview both leave the translation tab showing its placeholder.
+            await LoadTranslationAsync();
+        }
     }
 
     private async Task UpdateContinuationLinksAsync()
@@ -2546,6 +2580,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     private async Task CopyMarkdownAsync()
     {
+        if (ActiveSidebarTab == SidebarTab.Translation)
+        {
+            await CopyTranslationMarkdownAsync();
+            return;
+        }
+
         DocumentTreeRevisionId? revisionId = IsEditMode ? _draftRevisionId : _currentRevisionId;
         if (revisionId is null)
         {
@@ -2571,6 +2611,65 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         {
             Status = $"复制 Markdown 失败：{exception.Message}";
         }
+    }
+
+    private async Task ShowTranslationTabAsync()
+    {
+        ActiveSidebarTab = SidebarTab.Translation;
+        await LoadTranslationAsync();
+    }
+
+    private async Task CopyTranslationMarkdownAsync()
+    {
+        if (string.IsNullOrEmpty(_translationMarkdown))
+        {
+            Status = "本页尚无翻译可复制。";
+            return;
+        }
+
+        try
+        {
+            await _main.Clipboard.SetTextAsync(_translationMarkdown);
+            Status = "已复制当前页面译文 Markdown。";
+        }
+        catch (Exception exception)
+        {
+            Status = $"复制 Markdown 失败：{exception.Message}";
+        }
+    }
+
+    // Compiles the page's translated markdown into the same reading scene shape as the source
+    // preview, so the source map's box ids keep the click-to-select link with the canvas.
+    private async Task LoadTranslationAsync()
+    {
+        int generation = ++_translationLoadGeneration;
+        TranslationScene = null;
+        _translationMarkdown = null;
+        if (IsEditMode || _currentPageId is not { } pageId ||
+            string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        {
+            return;
+        }
+
+        HostServices services = await _main.ServicesAsync();
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
+        TranslatedPageMarkdown? translation =
+            await services.PageTranslations.GetPageTranslationAsync(documentInstanceId, pageId);
+        if (generation != _translationLoadGeneration || translation is null)
+        {
+            return;
+        }
+
+        _translationMarkdown = translation.Markdown;
+        MarkdownDocumentModel model = services.Markdown.Parse(translation.Markdown);
+        TranslationScene = DocumentReadingSceneBuilder.Build(model, translation.SourceMap, _loadedBoxes);
+    }
+
+    private void ResetTranslationState()
+    {
+        _translationLoadGeneration++;
+        TranslationScene = null;
+        _translationMarkdown = null;
     }
 
     private static string MarkdownFor(MarkdownBlock block, string markdown)
@@ -2734,6 +2833,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         BoundingBoxes.Clear();
         PreviewBlocks.Clear();
+        ResetTranslationState();
         ReadingScene = null;
         SelectedBox = null;
         IsViewingHistoricalRevision = true;
@@ -2833,6 +2933,12 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     [ObservableProperty] public partial bool IsBookReadingMode { get; private set; }
 
     [ObservableProperty] public partial string BookReadingProgressText { get; private set; } = string.Empty;
+
+    /// <summary>Whether reading mode shows the translation pane beside the source pane. Off by
+    /// default, so the single-pane reading surface is byte-for-byte the pre-compare behavior;
+    /// toggling it on splits the view and the view syncs the panes by page.</summary>
+    [ObservableProperty]
+    public partial bool IsTranslationCompareVisible { get; private set; }
 
     /// <summary>Live reading font size in points, clamped to [10, 28]. Setting it persists
     /// immediately through <see cref="MainWindowViewModel.SaveReadingFont"/> so the choice

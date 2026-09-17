@@ -32,4 +32,24 @@ public static class BookReadingHtml
     {
         return "<p><i>本页尚未识别文字。</i></p>";
     }
+
+    // Projects a page's translated markdown through the same pipeline as the source page, so the
+    // two panes render identically structured fragments. A page with no translation (or an empty
+    // compiled one) renders as a placeholder rather than a blank column.
+    public static string CompileTranslationHtml(TranslatedPageMarkdown? translation)
+    {
+        if (translation is null || string.IsNullOrWhiteSpace(translation.Markdown))
+        {
+            return CompileUntranslatedHtml();
+        }
+
+        return Markdown.ToHtml(translation.Markdown, Pipeline);
+    }
+
+    // Fragment for a page that has no translation yet; keeps the compare pane continuous so the
+    // reader can see at a glance that nothing has been translated for this page.
+    public static string CompileUntranslatedHtml()
+    {
+        return "<p><i>本页尚无翻译。</i></p>";
+    }
 }

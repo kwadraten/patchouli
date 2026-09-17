@@ -3,10 +3,18 @@ using Patchouli.Core.Ids;
 namespace Patchouli.UI.Reading;
 
 // One page of the whole-book reading stream. Html is the page's compiled content only (see
-// BookReadingHtml); the view shows page boundaries as badges in its left rail. The view model
-// decides the delivery order (the page the user was viewing first, then the surrounding window)
-// and sets IsPrepend for pages that arrive after pages with a higher index but belong above them.
-public sealed record BookReadingPage(int PageIndex, int PageCount, bool IsPrepend, string Html);
+// BookReadingHtml) and TranslationHtml is the page's compiled translation, with a placeholder
+// when the page has no translation; the view shows page boundaries as badges in its left rail.
+// Both fragments carry no page anchor. The view model decides the delivery order (the page the
+// user was viewing first, then the surrounding window) and sets IsPrepend for pages that arrive
+// after pages with a higher index but belong above them. TranslationHtml defaults to null so a
+// stream that does not supply translations stays source-only.
+public sealed record BookReadingPage(
+    int PageIndex,
+    int PageCount,
+    bool IsPrepend,
+    string Html,
+    string? TranslationHtml = null);
 
 // Loads a whole document instance's committed page content as HTML, one page at a time, so the
 // reading mode can render a window around the current page instead of waiting for a full-book

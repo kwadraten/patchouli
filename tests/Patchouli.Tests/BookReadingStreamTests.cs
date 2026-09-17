@@ -128,6 +128,60 @@ public sealed class BookReadingStreamTests
     }
 
     [Fact]
+    public async Task Loads_the_compiled_translation_beside_the_source()
+    {
+        DocumentTreeRevisionId revision = DocumentTreeRevisionId.New();
+        BookReadingStream stream = CreateStream(
+            CreatePages(0, 1),
+            getTranslation: (_, _, _) => Task.FromResult<TranslatedPageMarkdown?>(
+                new TranslatedPageMarkdown("翻译后的正文", [],
+                    new PageTranslationStatus(1, 1, [], revision, true))));
+
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
+
+        page.Html.Should().Contain("识别后的正文");
+        page.TranslationHtml.Should().Contain("<p>翻译后的正文</p>");
+        page.TranslationHtml.Should().NotContain("本页尚无翻译。");
+    }
+
+    [Fact]
+    public async Task Uses_placeholder_translation_html_when_the_page_has_no_translation()
+    {
+        BookReadingStream stream = CreateStream(
+            CreatePages(0, 1),
+            getTranslation: (_, _, _) => Task.FromResult<TranslatedPageMarkdown?>(null));
+
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
+
+        page.TranslationHtml.Should().Be("<p><i>本页尚无翻译。</i></p>");
+    }
+
+    [Fact]
+    public async Task Defaults_to_placeholder_translation_html_when_translations_are_not_supplied()
+    {
+        BookReadingStream stream = CreateStream(CreatePages(0, 1));
+
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
+
+        page.TranslationHtml.Should().Be("<p><i>本页尚无翻译。</i></p>");
+    }
+
+    [Fact]
+    public async Task Uses_placeholder_translation_html_for_an_empty_compiled_translation()
+    {
+        DocumentTreeRevisionId revision = DocumentTreeRevisionId.New();
+        BookReadingStream stream = CreateStream(
+            CreatePages(0, 1),
+            getTranslation: (_, _, _) => Task.FromResult<TranslatedPageMarkdown?>(
+                new TranslatedPageMarkdown("   ", [],
+                    new PageTranslationStatus(0, 0, [], revision, true))));
+
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
+
+        page.TranslationHtml.Should().Be("<p><i>本页尚无翻译。</i></p>");
+    }
+
+    [Fact]
     public async Task Throws_without_touching_the_document_when_the_token_is_already_cancelled()
     {
         bool listCalled = false;
@@ -260,7 +314,8 @@ public sealed class BookReadingStreamTests
         IReadOnlyList<Page> pages,
         Func<Page, Result<DocumentTreeRevision>>? getRevision = null,
         Func<Page, Result<CompiledMarkdown>>? compile = null,
-        Func<DocumentInstanceId, CancellationToken, Task<Result<IReadOnlyList<Page>>>>? listPages = null)
+        Func<DocumentInstanceId, CancellationToken, Task<Result<IReadOnlyList<Page>>>>? listPages = null,
+        Func<DocumentInstanceId, PageId, CancellationToken, Task<TranslatedPageMarkdown?>>? getTranslation = null)
     {
         Dictionary<PageId, DocumentTreeRevision> revisions = pages.ToDictionary(
             page => page.PageId,
@@ -285,6 +340,7 @@ public sealed class BookReadingStreamTests
                 : getRevision(pages.Single(page => page.PageId == pageId))),
             (revisionId, _, _, _) => Task.FromResult(compile is null
                 ? Result<CompiledMarkdown>.Success(new CompiledMarkdown("识别后的正文", [], []))
-                : compile(pagesByRevision[revisionId])));
+                : compile(pagesByRevision[revisionId])),
+            getTranslation);
     }
 }

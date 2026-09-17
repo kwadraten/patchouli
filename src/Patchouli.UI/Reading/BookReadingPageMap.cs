@@ -58,6 +58,26 @@ public sealed class BookReadingPageMap
         return _startOffsets.TryGetValue(pageIndex, out startY);
     }
 
+    /// <summary>Returns the page whose first block is the last one at or above
+    /// <paramref name="offsetY"/> — i.e. the page containing the viewport top. Offsets never
+    /// share a value and increase with page index, so this is the page a scroll position is
+    /// reading. Returns null when no page has been recorded yet.</summary>
+    public int? GetPageAt(double offsetY)
+    {
+        int? pageIndex = null;
+        double best = double.NegativeInfinity;
+        foreach ((int index, double start) in _startOffsets)
+        {
+            if (start <= offsetY && start > best)
+            {
+                best = start;
+                pageIndex = index;
+            }
+        }
+
+        return pageIndex;
+    }
+
     /// <summary>Returns the smallest start offset among recorded pages whose index is greater
     /// than <paramref name="pageIndex"/> — i.e. the offset of the page that directly follows it
     /// in visual order. This is where a prepended page must be inserted (just above its
