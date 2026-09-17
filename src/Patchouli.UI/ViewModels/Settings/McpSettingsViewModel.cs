@@ -103,7 +103,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
         GenerateTokenCommand = new AsyncCommand(GenerateTokenAsync);
         StartMcpCommand = new AsyncCommand(StartMcpAsync);
-        StopMcpCommand = new AsyncCommand(StopMcpAsync);
+        StopMcpCommand = new AsyncCommand(StopMcpAsync, () => _main.CanStopMcpServer);
         SaveAndRestartCommand = new AsyncCommand(SaveAndRestartAsync);
         AddCliToPathCommand = new AsyncCommand(AddCliToPathAsync);
         RemoveCliFromPathCommand = new AsyncCommand(RemoveCliFromPathAsync);
@@ -331,6 +331,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     [ExcludeFromDerivedGeneration] public string McpStatusText => _main.McpStatusText;
 
     [ExcludeFromDerivedGeneration] public bool McpServerRunning => _main.McpServerRunning;
+
+    [ExcludeFromDerivedGeneration] public bool CanStopMcpServer => _main.CanStopMcpServer;
 
     [ObservableProperty] public partial string CliStatusText { get; private set; } = "patchouli-cli 未检测到（未随应用安装）";
 

@@ -138,7 +138,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         return Task.CompletedTask;
     }
 
-    public override Task SaveAsync()
+    public override async Task SaveAsync()
     {
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
@@ -146,7 +146,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         bool paletteChanged = SelectedPalette.PaletteId != _persistedPaletteId;
         if (paletteChanged)
         {
-            bool paletteSaved = _main.SaveAppearancePalette(SelectedPalette.PaletteId);
+            bool paletteSaved = await _main.SaveAppearancePaletteAsync(SelectedPalette.PaletteId);
             if (!paletteSaved)
             {
                 LastError = "无法保存外观设置。";
@@ -154,7 +154,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
                 Status = "保存失败";
                 Raise(nameof(IsDirty));
                 Raise(nameof(CanSave));
-                return Task.CompletedTask;
+                return;
             }
 
             _persistedPaletteId = SelectedPalette.PaletteId;
@@ -164,7 +164,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
                            || ReadingFontSize != _persistedFontSize;
         if (fontChanged)
         {
-            bool fontSaved = _main.SaveReadingFont(SelectedReadingFontFamily, ReadingFontSize);
+            bool fontSaved = await _main.SaveReadingFontImmediatelyAsync(SelectedReadingFontFamily, ReadingFontSize);
             if (!fontSaved)
             {
                 LastError = "无法保存外观设置。";
@@ -172,7 +172,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
                 Status = "保存失败";
                 Raise(nameof(IsDirty));
                 Raise(nameof(CanSave));
-                return Task.CompletedTask;
+                return;
             }
 
             _persistedFontFamily = SelectedReadingFontFamily;
@@ -186,7 +186,6 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         Status = "已保存";
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
-        return Task.CompletedTask;
     }
 
     public override Task DiscardAsync()

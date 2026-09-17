@@ -283,7 +283,8 @@
                                Foreground="{DynamicResource OnSurfaceBrush}" />
                   </StackPanel>
                   <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                    <Button Content="停止" Command="{Binding StopMcpCommand}" />
+                    <Button Content="停止" Command="{Binding StopMcpCommand}"
+                            ToolTip.Tip="桌面宿主持有资料库期间必须保持 MCP endpoint 可用，以便 patchouli-cli 连接。" />
                     <Button Content="启动" Command="{Binding StartMcpCommand}" Classes="Primary" />
                   </StackPanel>
                 </Grid>

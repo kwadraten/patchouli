@@ -163,7 +163,7 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
             runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
         }
 
-        SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with
+        SettingsSaveResult saved = await _main.UpdateAppOptionsAsync(_main.AppOptions with
         {
             Runtime = runtime,
             FileScanning = new FileScanningAppSettings(patterns)

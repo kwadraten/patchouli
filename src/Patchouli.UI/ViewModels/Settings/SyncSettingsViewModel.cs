@@ -121,9 +121,9 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
     [ExcludeFromDerivedGeneration]
     public ObservableCollection<SyncSettingScopeRowViewModel> SettingScopeRows => _settingScopeRows;
 
-    [ExcludeFromDerivedGeneration] public string SnapshotOperationStateText => _main.Snapshot.OperationStateText;
+    [ExcludeFromDerivedGeneration] public string SnapshotOperationStateText => _main.GetSnapshotOperationStateText();
 
-    [ExcludeFromDerivedGeneration] public string SnapshotOperationMessage => _main.Snapshot.OperationMessage;
+    [ExcludeFromDerivedGeneration] public string SnapshotOperationMessage => _main.GetSnapshotOperationMessage();
 
     public override bool SupportsEditing => true;
 
@@ -202,7 +202,7 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         bool syncMetadataLookup = savedDraft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
         bool persistedSyncMetadataLookup = _persisted.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
         SettingsSaveResult result = syncMetadataLookup == persistedSyncMetadataLookup
-            ? _main.UpdateAppOptions(_main.AppOptions with { Sync = savedDraft })
+            ? await _main.UpdateAppOptionsAsync(_main.AppOptions with { Sync = savedDraft }, "Sync")
             : await _main.SetMetadataLookupSyncEnabledAsync(syncMetadataLookup, savedDraft);
 
         if (result.IsSuccess)

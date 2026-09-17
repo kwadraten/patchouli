@@ -596,11 +596,13 @@ public sealed record PatchouliAppSettings(
     {
         string? temporaryPath = null;
         SemaphoreSlim? writeGate = null;
+        bool acquired = false;
         try
         {
             string path = ResolvePath(settingsPath);
             writeGate = SettingsFileWriteCoordinator.ForPath(path);
             writeGate.Wait();
+            acquired = true;
             AppPathGuard.ValidateMutablePath(path);
             string? directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(directory))
@@ -763,7 +765,238 @@ public sealed record PatchouliAppSettings(
                 }
             }
 
-            writeGate?.Release();
+            if (acquired)
+            {
+                writeGate?.Release();
+            }
+        }
+    }
+
+    public async Task<SettingsSaveResult> SaveFieldLevelAsync(
+        string? settingsPath = null,
+        IReadOnlySet<string>? dirtyFields = null,
+        CancellationToken cancellationToken = default)
+    {
+        string? temporaryPath = null;
+        SemaphoreSlim? writeGate = null;
+        bool acquired = false;
+        try
+        {
+            string path = ResolvePath(settingsPath);
+            writeGate = SettingsFileWriteCoordinator.ForPath(path);
+            await writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            acquired = true;
+            AppPathGuard.ValidateMutablePath(path);
+            string? directory = Path.GetDirectoryName(path);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            JsonObject root;
+            try
+            {
+                if (File.Exists(path))
+                {
+                    string existingText = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+                    root = JsonNode.Parse(existingText) is JsonObject existing ? existing : new JsonObject();
+                }
+                else
+                {
+                    root = new JsonObject();
+                }
+            }
+            catch (JsonException)
+            {
+                root = new JsonObject();
+            }
+
+            bool saveAll = dirtyFields == null || dirtyFields.Count == 0;
+
+            if (saveAll || dirtyFields!.Contains("Runtime") || dirtyFields!.Contains("Patchouli"))
+            {
+                root["Patchouli"] = JsonSerializer.SerializeToNode(new
+                {
+                    Runtime.RuntimeDatabasePath,
+                    Runtime.DefaultSyncRoot,
+                    Runtime.DefaultStagingRoot,
+                    Runtime.LogDirectory,
+                    Runtime.FileSearchRoot,
+                    Runtime.RememberLastDatabase,
+                    Runtime.UseMockOcrOnly
+                });
+            }
+
+            if (saveAll || dirtyFields!.Contains("MinerU"))
+            {
+                root["MinerU"] = JsonSerializer.SerializeToNode(new
+                {
+                    MinerU.BaseUrl,
+                    MinerU.ModelVersion,
+                    MinerU.IsOcr,
+                    MinerU.EnableTable,
+                    MinerU.EnableFormula,
+                    MinerU.PollingTimeoutSeconds
+                });
+            }
+
+            if (saveAll || dirtyFields!.Contains("Credentials"))
+            {
+                if (root["Credentials"] is null)
+                {
+                    root["Credentials"] = JsonSerializer.SerializeToNode(new
+                    {
+                        SchemaVersion = 1,
+                        Providers = Credentials.Providers
+                    });
+                }
+            }
+
+            if (saveAll || dirtyFields!.Contains("Sync"))
+            {
+                SyncAppSettings syncToWrite = Sync;
+                try
+                {
+                    JsonNode? persistedSync = root["Sync"];
+                    SnapshotSyncLocalState? existingSnapshotState =
+                        persistedSync?["SnapshotState"]?.Deserialize<SnapshotSyncLocalState>();
+                    if (existingSnapshotState is not null &&
+                        (syncToWrite.SnapshotState is null ||
+                         existingSnapshotState.UpdatedAt > syncToWrite.SnapshotState.UpdatedAt))
+                    {
+                        syncToWrite = syncToWrite with { SnapshotState = existingSnapshotState };
+                    }
+
+                    DeviceRootBindingAppSettings[] existingBindings =
+                        persistedSync?["DeviceBindings"] is JsonArray array
+                            ? ReadDeviceBindings(array).ToArray()
+                            : [];
+                    if (existingBindings.Length > 0)
+                    {
+                        foreach (DeviceRootBindingAppSettings existing in existingBindings)
+                        {
+                            DeviceRootBindingAppSettings? incoming = syncToWrite.Bindings.FirstOrDefault(binding =>
+                                binding.Matches(existing.LibraryId, existing.RootKind, existing.LogicalRootId,
+                                    existing.DeviceId));
+                            if (incoming is null)
+                            {
+                                syncToWrite = syncToWrite.WithDeviceBinding(existing);
+                                continue;
+                            }
+
+                            if (existing.SnapshotState is not null &&
+                                (incoming.SnapshotState is null ||
+                                 existing.SnapshotState.UpdatedAt > incoming.SnapshotState.UpdatedAt))
+                            {
+                                syncToWrite =
+                                    syncToWrite.WithDeviceBinding(incoming with
+                                    {
+                                        SnapshotState = existing.SnapshotState
+                                    });
+                            }
+                        }
+                    }
+                }
+                catch (JsonException)
+                {
+                }
+
+                root["Sync"] = JsonSerializer.SerializeToNode(syncToWrite);
+            }
+
+            if (saveAll || dirtyFields!.Contains("Mcp"))
+            {
+                long existingMcpRevision = 0;
+                if (root["Mcp"]?["Revision"] is JsonValue revisionNode)
+                {
+                    _ = revisionNode.TryGetValue(out existingMcpRevision);
+                }
+
+                if (Mcp.Revision >= existingMcpRevision)
+                {
+                    root["Mcp"] = JsonSerializer.SerializeToNode(Mcp);
+                }
+            }
+
+            if (saveAll || dirtyFields!.Contains("Ui"))
+            {
+                root["Ui"] = JsonSerializer.SerializeToNode(new
+                {
+                    Ui.LibraryGridVisibleColumns,
+                    Ui.LibraryGridColumnWidths,
+                    Ui.LibraryGridColumnOrder,
+                    Ui.ShowLibraryLeftSidebar,
+                    Ui.ShowLibraryRightSidebar,
+                    Ui.PaletteId,
+                    Ui.ReadingFontFamily,
+                    Ui.ReadingFontSize
+                });
+            }
+
+            if (saveAll || dirtyFields!.Contains("MetadataLookup"))
+            {
+                if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
+                {
+                    root.Remove("MetadataLookup");
+                }
+                else
+                {
+                    root["MetadataLookup"] = JsonSerializer.SerializeToNode(new { MetadataLookup.Sources });
+                }
+            }
+
+            if (saveAll || dirtyFields!.Contains("FileScanning"))
+            {
+                root["FileScanning"] = JsonSerializer.SerializeToNode(new { FileScanning.ExclusionPatterns });
+            }
+
+            if (saveAll || dirtyFields!.Contains("OcrEngines"))
+            {
+                root["OcrEngines"] = JsonSerializer.SerializeToNode(new
+                {
+                    OcrEngines.DocumentOcrEngine,
+                    OcrEngines.PageOcrEngine,
+                    OcrEngines.RegionOcrEngine
+                });
+            }
+
+            temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
+            await File.WriteAllTextAsync(temporaryPath,
+                    root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
+                .ConfigureAwait(false);
+            File.Move(temporaryPath, path, true);
+            temporaryPath = null;
+            return SettingsSaveResult.Success;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SecurityException
+                                              or InvalidOperationException)
+        {
+            string code = exception switch
+            {
+                UnauthorizedAccessException or SecurityException => "settings_access_denied",
+                InvalidOperationException => "settings_path_rejected",
+                _ => "settings_io_failed"
+            };
+            return new SettingsSaveResult(false, code, exception.Message, "user_settings", exception is IOException);
+        }
+        finally
+        {
+            if (temporaryPath is not null && File.Exists(temporaryPath))
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    _ = exception;
+                }
+            }
+
+            if (acquired)
+            {
+                writeGate?.Release();
+            }
         }
     }
 
