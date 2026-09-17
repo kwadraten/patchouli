@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using Patchouli.Host.Lifecycle;
 
 namespace Patchouli.Cli;
 
@@ -16,15 +17,20 @@ internal sealed record CliToolResponse(string Text, bool IsError, int ExitCode);
 /// Thin local MCP HTTP client. It speaks JSON-RPC over the host's <c>/mcp</c> endpoint and
 /// never touches a SQLite database or a second domain implementation.
 /// </summary>
-internal sealed class McpHttpClient
+internal sealed class McpHttpClient : IDisposable
 {
     private const int RequestTimeoutSeconds = 130;
     private readonly HttpClient _http;
     private string? _sessionId;
 
     public McpHttpClient(string endpoint, string? token)
+        : this(endpoint, token, new HttpClientHandler())
     {
-        _http = new HttpClient
+    }
+
+    internal McpHttpClient(string endpoint, string? token, HttpMessageHandler handler)
+    {
+        _http = new HttpClient(handler)
             { BaseAddress = new Uri(endpoint), Timeout = TimeSpan.FromSeconds(RequestTimeoutSeconds) };
         if (!string.IsNullOrWhiteSpace(token))
         {
@@ -39,14 +45,37 @@ internal sealed class McpHttpClient
             jsonrpc = "2.0",
             id = 0,
             method = "initialize",
-            @params = new { protocolVersion = "2025-06-18" }
+            @params = new { protocolVersion = RuntimeHostCoordinator.ProtocolVersion }
         }, cancellationToken);
         using (document)
         {
-            if (document.RootElement.TryGetProperty("result", out _))
+            JsonElement root = document.RootElement;
+            if (root.TryGetProperty("error", out JsonElement error))
             {
-                _sessionId = sessionId;
+                string detail = error.TryGetProperty("message", out JsonElement errorMessage) &&
+                                errorMessage.ValueKind == JsonValueKind.String
+                    ? errorMessage.GetString() ?? "unknown initialization error"
+                    : "unknown initialization error";
+                throw new CliUnavailableException($"the host rejected MCP initialization: {Truncate(detail, 200)}");
             }
+
+            if (!root.TryGetProperty("result", out JsonElement result))
+            {
+                throw new CliUnavailableException("the host returned an invalid MCP initialization response.");
+            }
+
+            string? negotiatedVersion = result.TryGetProperty("protocolVersion", out JsonElement version) &&
+                                        version.ValueKind == JsonValueKind.String
+                ? version.GetString()
+                : null;
+            if (!string.Equals(negotiatedVersion, RuntimeHostCoordinator.ProtocolVersion,
+                    StringComparison.Ordinal))
+            {
+                throw new CliUnavailableException(
+                    $"the host negotiated unsupported MCP protocol version '{negotiatedVersion ?? "unknown"}'.");
+            }
+
+            _sessionId = sessionId;
         }
     }
 
@@ -105,32 +134,50 @@ internal sealed class McpHttpClient
             message.Headers.Add("Mcp-Session-Id", _sessionId);
         }
 
-        using HttpResponseMessage response = await _http.SendAsync(message, cancellationToken);
-        if ((int)response.StatusCode == StatusCodes.PayloadTooLarge)
+        HttpResponseMessage response;
+        try
         {
-            throw new CliOverLimitException();
+            response = await _http.SendAsync(message, cancellationToken);
         }
-
-        if (!response.IsSuccessStatusCode)
+        catch (HttpRequestException exception)
         {
-            string detail = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new CliUnavailableException(
-                $"the host returned HTTP {(int)response.StatusCode}: {Truncate(detail, 200)}");
+                $"could not connect to the runtime host at {_http.BaseAddress}.", exception);
         }
-
-        string body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(body))
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new CliUnavailableException("the host returned an empty response.");
+            throw new CliUnavailableException(
+                $"the runtime host at {_http.BaseAddress} did not respond before the deadline.", exception);
         }
 
-        string? sessionId = null;
-        if (response.Headers.TryGetValues("Mcp-Session-Id", out IEnumerable<string>? values))
+        using (response)
         {
-            sessionId = values.FirstOrDefault();
-        }
+            if ((int)response.StatusCode == StatusCodes.PayloadTooLarge)
+            {
+                throw new CliOverLimitException();
+            }
 
-        return (JsonDocument.Parse(body), sessionId);
+            if (!response.IsSuccessStatusCode)
+            {
+                string detail = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw new CliUnavailableException(
+                    $"the host returned HTTP {(int)response.StatusCode}: {Truncate(detail, 200)}");
+            }
+
+            string body = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(body))
+            {
+                throw new CliUnavailableException("the host returned an empty response.");
+            }
+
+            string? sessionId = null;
+            if (response.Headers.TryGetValues("Mcp-Session-Id", out IEnumerable<string>? values))
+            {
+                sessionId = values.FirstOrDefault();
+            }
+
+            return (JsonDocument.Parse(body), sessionId);
+        }
     }
 
     public static string ExtractText(JsonElement result)
@@ -210,6 +257,11 @@ internal sealed class McpHttpClient
     {
         public const int PayloadTooLarge = 413;
     }
+
+    public void Dispose()
+    {
+        _http.Dispose();
+    }
 }
 
 /// <summary>Raised when the host rejects the request as too large (HTTP 413) before invoking a tool.</summary>
@@ -224,10 +276,17 @@ internal sealed class CliOverLimitException : Exception
 /// <summary>Raised when the local host cannot be reached or returns a non-success HTTP status.</summary>
 internal sealed class CliUnavailableException : Exception
 {
-    public CliUnavailableException(string message)
-        : base(message)
+    internal const string Guidance =
+        "Check that Patchouli can open the selected Library, that its runtime host is running, " +
+        "and that MCP bind, port, firewall, and token settings permit the connection.";
+
+    public CliUnavailableException(string detail, Exception? innerException = null)
+        : base($"{detail} {Guidance}", innerException)
     {
+        Detail = detail;
     }
+
+    public string Detail { get; }
 }
 
 /// <summary>Exit codes shared with the host's PRD error table.</summary>

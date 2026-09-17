@@ -35,21 +35,28 @@ try
         call = CliArguments.WithContent(call, content);
     }
 
+    McpHttpClient client;
     if (!mcpUrlWasExplicitlySet)
     {
-        (mcpUrl, mcpToken) = await RuntimeHostResolver.DiscoverOrLaunchAsync(databasePath, mcpToken);
+        client = await RuntimeHostResolver.ConnectAsync(databasePath, mcpToken);
     }
-
-    McpHttpClient client = new(mcpUrl, mcpToken);
-    await client.InitializeAsync();
-    CliToolResponse response = await client.CallToolAsync(call.Tool, call.Arguments);
-    Console.Write(response.Text);
-    if (response.Text.Length == 0 || !response.Text.EndsWith("\n", StringComparison.Ordinal))
+    else
     {
-        Console.WriteLine();
+        client = new McpHttpClient(mcpUrl, mcpToken);
+        await client.InitializeAsync();
     }
 
-    return response.ExitCode;
+    using (client)
+    {
+        CliToolResponse response = await client.CallToolAsync(call.Tool, call.Arguments);
+        Console.Write(response.Text);
+        if (response.Text.Length == 0 || !response.Text.EndsWith("\n", StringComparison.Ordinal))
+        {
+            Console.WriteLine();
+        }
+
+        return response.ExitCode;
+    }
 }
 catch (CliUsageException exception)
 {
@@ -69,12 +76,14 @@ catch (CliUnavailableException exception)
 }
 catch (JsonException)
 {
-    Console.Error.WriteLine("patchouli-cli: the host returned a malformed response.");
+    Console.Error.WriteLine(
+        $"patchouli-cli: the host returned a malformed response. {CliUnavailableException.Guidance}");
     return CliExitCode.Unavailable;
 }
 catch (OperationCanceledException)
 {
-    Console.Error.WriteLine("patchouli-cli: the host did not respond before the deadline.");
+    Console.Error.WriteLine(
+        $"patchouli-cli: the host did not respond before the deadline. {CliUnavailableException.Guidance}");
     return CliExitCode.Unavailable;
 }
 
@@ -149,12 +158,19 @@ static void PrintUsage()
     Console.Error.WriteLine("    Library projection: patchouli://library.toon");
     Console.Error.WriteLine(
         "    Evidence URIs: patchouli://texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>]");
+    Console.Error.WriteLine(
+        "    Translations: patchouli://translations/, patchouli://translations/<document-id>/, or patchouli://translations/<document-id>/page-<index>.md");
     Console.Error.WriteLine("  put <uri> --from <path>|--stdin");
+    Console.Error.WriteLine(
+        "    Writable: patchouli://items/<id>.bib, patchouli://csl-styles/<id>.csl, patchouli://translations/<document-id>/page-<index>.md");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
     Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(
         "The CLI is a thin client of the local MCP HTTP host; it never opens the library database directly.");
+    Console.Error.WriteLine(
+        "Without --mcp-url, the CLI discovers the selected Library host and starts Patchouli headlessly when needed.");
+    Console.Error.WriteLine($"UNAVAILABLE: {CliUnavailableException.Guidance}");
     Console.Error.WriteLine(
         "A clean success response has no message field; message is only present for warnings or errors.");
 }

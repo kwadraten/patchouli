@@ -66,6 +66,21 @@ public sealed class RuntimeHostCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Incompatible_protocol_record_is_not_discoverable()
+    {
+        string database = Path.Combine(_root, "protocol.sqlite");
+        await using RuntimeHostLease lease = RuntimeHostCoordinator.TryAcquire(
+            database, RuntimeHostKind.Desktop, _root)!;
+        RuntimeHostDiscoveryRecord published = await lease.PublishAsync(
+            Guid.NewGuid().ToString("D"), "http://localhost:4536/mcp");
+        RuntimeHostDiscoveryRecord incompatible = published with { ProtocolVersion = "1900-01-01" };
+        string recordPath = Path.Combine(_root, lease.PathKey + ".json");
+        await File.WriteAllTextAsync(recordPath, JsonSerializer.Serialize(incompatible));
+
+        (await RuntimeHostCoordinator.ReadAsync(database, _root)).Should().BeNull();
+    }
+
+    [Fact]
     public async Task Authenticated_headless_takeover_releases_before_desktop_acquires()
     {
         string database = Path.Combine(_root, "takeover.sqlite");

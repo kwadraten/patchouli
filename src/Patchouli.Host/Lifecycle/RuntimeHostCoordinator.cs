@@ -147,7 +147,9 @@ public static class RuntimeHostCoordinator
                 FileShare.ReadWrite | FileShare.Delete);
             RuntimeHostDiscoveryRecord? record = await JsonSerializer.DeserializeAsync<RuntimeHostDiscoveryRecord>(
                 stream, JsonOptions, cancellationToken);
-            if (record is null || record.Version != DiscoveryVersion || record.PathKey != pathKey ||
+            if (record is null || record.Version != DiscoveryVersion ||
+                !string.Equals(record.ProtocolVersion, ProtocolVersion, StringComparison.Ordinal) ||
+                record.PathKey != pathKey ||
                 !PathEquals(record.DatabasePath, canonicalPath) || !IsCurrentProcess(record))
             {
                 return null;

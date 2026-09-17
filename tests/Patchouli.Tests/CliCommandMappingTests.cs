@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Patchouli.Cli;
+using Patchouli.Host.Lifecycle;
 
 namespace Patchouli.Tests;
 
@@ -208,5 +209,56 @@ public sealed class CliCommandMappingTests
     {
         const string text = "message:\n  error: INVALID_ARGUMENT [code 2]: uri must be a patchouli URI";
         McpHttpClient.ExtractExitCode(text, true).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Transport_failure_is_reported_as_guided_unavailable_error()
+    {
+        using McpHttpClient client = new(
+            "http://127.0.0.1:4536/mcp",
+            null,
+            new StubHttpMessageHandler(_ => throw new HttpRequestException("connection refused")));
+
+        // ReSharper disable once AccessToDisposedClosure -- the delegate is awaited inside the
+        // `using` scope, so the client is never used after disposal.
+        Func<Task> act = () => client.InitializeAsync();
+
+        CliUnavailableException error = (await act.Should().ThrowAsync<CliUnavailableException>()).Which;
+        error.Message.Should().Contain("could not connect to the runtime host")
+            .And.Contain("Check that Patchouli can open the selected Library")
+            .And.NotContain("connection refused");
+    }
+
+    [Fact]
+    public async Task Initialize_rejects_an_incompatible_protocol_version()
+    {
+        const string body =
+            "{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"protocolVersion\":\"1900-01-01\"}}";
+        using McpHttpClient client = new(
+            "http://127.0.0.1:4536/mcp",
+            null,
+            new StubHttpMessageHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(body)
+            }));
+
+        // ReSharper disable once AccessToDisposedClosure -- the delegate is awaited inside the
+        // `using` scope, so the client is never used after disposal.
+        Func<Task> act = () => client.InitializeAsync();
+
+        (await act.Should().ThrowAsync<CliUnavailableException>()).Which.Message.Should()
+            .Contain("unsupported MCP protocol version '1900-01-01'")
+            .And.Contain(CliUnavailableException.Guidance);
+    }
+
+    private sealed class StubHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> respond)
+        : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(respond(request));
+        }
     }
 }
