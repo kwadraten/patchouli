@@ -1,13 +1,22 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$Version = "0.3.5"
+    [string]$Version = "0.3.5",
+    [switch]$Smoke
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $publishDir = Join-Path $root "artifacts\publish\$Runtime"
 $installerDir = Join-Path $root "artifacts\installer"
+$productionAppId = "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"
+$smokeAppId = "{{E3F7D819-616F-4A16-B65C-17C78FDE024E}"
+$appId = if ($Smoke) { $smokeAppId } else { $productionAppId }
+$outputBaseFilename = if ($Smoke) {
+    "Patchouli.Net-$Version-$Runtime-smoke-setup"
+} else {
+    "Patchouli.Net-$Version-$Runtime-setup"
+}
 $iscc = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe"
@@ -76,9 +85,10 @@ if (-not (Test-Path -LiteralPath $helperSource)) {
 Copy-Item -LiteralPath $helperSource -Destination (Join-Path $publishDir $helperName) -Force
 
 $iss = Join-Path $root "packaging\windows\Patchouli.Net.iss"
-& $iscc "/DSourceDir=$publishDir" "/DOutputDir=$installerDir" "/DAppVersion=$Version" $iss
+& $iscc "/DSourceDir=$publishDir" "/DOutputDir=$installerDir" "/DAppVersion=$Version" `
+    "/DAppId=$appId" "/DOutputBaseFilename=$outputBaseFilename" $iss
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE." }
 
-$installer = Join-Path $installerDir "Patchouli.Net-$Version-$Runtime-setup.exe"
+$installer = Join-Path $installerDir "$outputBaseFilename.exe"
 if (-not (Test-Path -LiteralPath $installer)) { throw "Installer was not created at '$installer'." }
 $installer

@@ -166,6 +166,32 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
+    public void Windows_smoke_package_uses_an_isolated_installer_identity()
+    {
+        string script = File.ReadAllText(TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"));
+        string iss = File.ReadAllText(TestPaths.FromRepositoryRoot("packaging", "windows", "Patchouli.Net.iss"));
+
+        script.Should().Contain("[switch]$Smoke")
+            .And.Contain("$productionAppId")
+            .And.Contain("$smokeAppId")
+            .And.Contain("/DAppId=$appId")
+            .And.Contain("$Runtime-smoke-setup");
+        iss.Should().Contain("AppId={#AppId}")
+            .And.Contain("UsePreviousAppDir=yes");
+
+        string productionAppId = ExtractPowerShellAssignment(script, "$productionAppId");
+        string smokeAppId = ExtractPowerShellAssignment(script, "$smokeAppId");
+        smokeAppId.Should().NotBe(productionAppId);
+    }
+
+    private static string ExtractPowerShellAssignment(string script, string variable)
+    {
+        string line = script.Split('\n', StringSplitOptions.TrimEntries)
+            .Single(candidate => candidate.StartsWith(variable + " =", StringComparison.Ordinal));
+        return line[(line.IndexOf('"') + 1)..line.LastIndexOf('"')];
+    }
+
+    [Fact]
     public void Csl_runtime_uses_managed_fsharp_citeproc_and_keeps_rust_tool_conventions()
     {
         string packages = File.ReadAllText(TestPaths.FromRepositoryRoot("Directory.Packages.props"));

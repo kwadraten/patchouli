@@ -7,23 +7,30 @@
 #ifndef AppVersion
   #define AppVersion "0.3.5"
 #endif
+#ifndef AppId
+  #define AppId "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"
+#endif
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "Patchouli.Net-" + AppVersion + "-win-x64-setup"
+#endif
 
 #define AppName "Patchouli.Net"
 #define AppPublisher "Patchouli.Net"
 #define AppExeName "Patchouli.UI.exe"
 
 [Setup]
-AppId={{DCBB7F21-2751-4C90-A9B4-9459523CFF70}
+AppId={#AppId}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\{#AppName}
+UsePreviousAppDir=yes
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\..\LICENSE
 OutputDir={#OutputDir}
-OutputBaseFilename=Patchouli.Net-{#AppVersion}-win-x64-setup
+OutputBaseFilename={#OutputBaseFilename}
 SetupIconFile=..\..\src\Patchouli.UI\Assets\AppIcon.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 ArchitecturesAllowed=x64compatible
