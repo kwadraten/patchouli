@@ -48,6 +48,7 @@ public sealed partial class SnapshotViewModel : ViewModelBase
 
     public SnapshotViewModel(MainWindowViewModel main)
     {
+        using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
         RefreshCommand = new AsyncCommand(RefreshAsync);
         PublishCommand = new AsyncCommand(PublishAsync);
@@ -188,7 +189,14 @@ public sealed partial class SnapshotViewModel : ViewModelBase
 
     public async Task RefreshAsync()
     {
-        Result<SnapshotSyncStatus> result = await (await _main.ServicesAsync()).SnapshotSync.GetStatusAsync();
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
+        Result<SnapshotSyncStatus> result = await services.SnapshotSync.GetStatusAsync();
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
         if (result.IsSuccess)
         {
             _status = result.Value;
@@ -206,42 +214,62 @@ public sealed partial class SnapshotViewModel : ViewModelBase
 
     private async Task PublishAsync()
     {
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             Result<SnapshotPublishResult> result = await _main.ModalOperations.RunAsync(
                 new ModalOperationOptions("发布到同步目录", "正在创建并验证快照。", true),
-                async context =>
-                    await (await _main.ServicesAsync()).SnapshotSync.PublishAsync(context.CancellationToken));
+                async context => await services.SnapshotSync.PublishAsync(context.CancellationToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             OperationMessage = result.IsSuccess
                 ? "快照已发布到同步目录。"
                 : DescribeFailure(result);
-            await RefreshAfterOperationAsync("publish_snapshot", result.IsSuccess);
+            await RefreshAfterOperationAsync("publish_snapshot", result.IsSuccess, services, libraryGeneration);
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
-            OperationMessage = "操作已取消。";
-            await RefreshAfterCancellationAsync("publish_snapshot");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                OperationMessage = "操作已取消。";
+                await RefreshAfterCancellationAsync("publish_snapshot", services, libraryGeneration);
+            }
         }
     }
 
     private async Task ExportAsync()
     {
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             Result<SnapshotExportResult> result = await _main.ModalOperations.RunAsync(
                 new ModalOperationOptions("导出快照包", "正在创建可移动的目录快照包。", true),
-                async context => await (await _main.ServicesAsync()).SnapshotSync.ExportAsync(
+                async context => await services.SnapshotSync.ExportAsync(
                     new SnapshotExportRequest(ExportDestinationDirectory),
                     context.CancellationToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             OperationMessage = result.IsSuccess
                 ? "快照目录包已导出，同步目录内容未受影响。"
                 : DescribeFailure(result);
-            await RefreshAfterOperationAsync("export_snapshot_package", result.IsSuccess);
+            await RefreshAfterOperationAsync("export_snapshot_package", result.IsSuccess, services,
+                libraryGeneration);
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
-            OperationMessage = "操作已取消。";
-            await RefreshAfterCancellationAsync("export_snapshot_package");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                OperationMessage = "操作已取消。";
+                await RefreshAfterCancellationAsync("export_snapshot_package", services, libraryGeneration);
+            }
         }
     }
 
@@ -260,12 +288,19 @@ public sealed partial class SnapshotViewModel : ViewModelBase
 
     private async Task InspectAsync(SnapshotIncomingRequest request, string title, string operation)
     {
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             Result<SnapshotIncomingPlan> result = await _main.ModalOperations.RunAsync(
                 new ModalOperationOptions(title, "正在验证并检查传入内容。", true),
-                async context => await (await _main.ServicesAsync()).SnapshotSync.InspectIncomingAsync(request,
+                async context => await services.SnapshotSync.InspectIncomingAsync(request,
                     context.CancellationToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             if (result.IsSuccess)
             {
                 _incoming = result.Value;
@@ -282,12 +317,15 @@ public sealed partial class SnapshotViewModel : ViewModelBase
                 OperationMessage = DescribeFailure(result);
             }
 
-            await RefreshAfterOperationAsync(operation, result.IsSuccess);
+            await RefreshAfterOperationAsync(operation, result.IsSuccess, services, libraryGeneration);
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
-            OperationMessage = "操作已取消。";
-            await RefreshAfterCancellationAsync(operation);
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                OperationMessage = "操作已取消。";
+                await RefreshAfterCancellationAsync(operation, services, libraryGeneration);
+            }
         }
     }
 
@@ -300,13 +338,20 @@ public sealed partial class SnapshotViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             Result<SnapshotApplyResult> result = await _main.ModalOperations.RunAsync(
                 new ModalOperationOptions("应用快照内容", "正在验证并应用传入内容。", true),
-                async context => await (await _main.ServicesAsync()).SnapshotSync.ApplyAsync(
+                async context => await services.SnapshotSync.ApplyAsync(
                     _contentPlan with { IsExplicitlyConfirmed = ConfirmApply },
                     context.CancellationToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             if (result.IsSuccess)
             {
                 ClearIncomingPlan();
@@ -318,12 +363,15 @@ public sealed partial class SnapshotViewModel : ViewModelBase
                 OperationMessage = DescribeFailure(result);
             }
 
-            await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess);
+            await RefreshAfterOperationAsync("apply_snapshot_plan", result.IsSuccess, services, libraryGeneration);
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
-            OperationMessage = "操作已取消。";
-            await RefreshAfterCancellationAsync("apply_snapshot_plan");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                OperationMessage = "操作已取消。";
+                await RefreshAfterCancellationAsync("apply_snapshot_plan", services, libraryGeneration);
+            }
         }
     }
 
@@ -336,13 +384,20 @@ public sealed partial class SnapshotViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             Result result = await _main.ModalOperations.RunAsync(
                 new ModalOperationOptions("丢弃传入快照", "正在清理已检查的传入内容。", true),
-                async context => await (await _main.ServicesAsync()).SnapshotSync.DiscardIncomingAsync(
+                async context => await services.SnapshotSync.DiscardIncomingAsync(
                     _contentPlan,
                     context.CancellationToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             if (result.IsSuccess)
             {
                 ClearIncomingPlan();
@@ -353,12 +408,16 @@ public sealed partial class SnapshotViewModel : ViewModelBase
                 OperationMessage = DescribeFailure(result);
             }
 
-            await RefreshAfterOperationAsync("discard_snapshot_branch", result.IsSuccess);
+            await RefreshAfterOperationAsync("discard_snapshot_branch", result.IsSuccess, services,
+                libraryGeneration);
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
-            OperationMessage = "操作已取消。";
-            await RefreshAfterCancellationAsync("discard_snapshot_branch");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                OperationMessage = "操作已取消。";
+                await RefreshAfterCancellationAsync("discard_snapshot_branch", services, libraryGeneration);
+            }
         }
     }
 
@@ -371,15 +430,22 @@ public sealed partial class SnapshotViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         try
         {
             Result<string> result = await _main.ModalOperations.RunAsync(
                 new ModalOperationOptions("保留传入副本", "正在创建独立资料库副本并清理传入内容。", true),
                 async context =>
-                    await (await _main.ServicesAsync()).SnapshotSync.KeepIncomingAsSeparateLibraryCopyAsync(
+                    await services.SnapshotSync.KeepIncomingAsSeparateLibraryCopyAsync(
                         _contentPlan,
                         IncomingCopyDestinationPath,
                         context.CancellationToken));
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             if (result.IsSuccess)
             {
                 ClearIncomingPlan();
@@ -390,12 +456,16 @@ public sealed partial class SnapshotViewModel : ViewModelBase
                 OperationMessage = DescribeFailure(result);
             }
 
-            await RefreshAfterOperationAsync("keep_snapshot_branch_copy", result.IsSuccess);
+            await RefreshAfterOperationAsync("keep_snapshot_branch_copy", result.IsSuccess, services,
+                libraryGeneration);
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
-            OperationMessage = "操作已取消。";
-            await RefreshAfterCancellationAsync("keep_snapshot_branch_copy");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                OperationMessage = "操作已取消。";
+                await RefreshAfterCancellationAsync("keep_snapshot_branch_copy", services, libraryGeneration);
+            }
         }
     }
 
@@ -408,16 +478,23 @@ public sealed partial class SnapshotViewModel : ViewModelBase
             return;
         }
 
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         while (FindNextExecutableContentConflict() is { } conflict)
         {
-            HostServices services = await _main.ServicesAsync();
             SnapshotContentConflictActionExecutor executor = new(services.SnapshotSync, _contentPlan,
                 conflict.ConflictCode);
             Result<ConflictResolutionResult> resolution = await _main.ResolveConflictAsync(conflict, executor);
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             if (resolution.IsFailure)
             {
                 OperationMessage = DescribeFailure(resolution);
-                await RefreshAfterOperationAsync("resolve_snapshot_content_conflict", false);
+                await RefreshAfterOperationAsync("resolve_snapshot_content_conflict", false, services,
+                    libraryGeneration);
                 return;
             }
 
@@ -434,25 +511,48 @@ public sealed partial class SnapshotViewModel : ViewModelBase
         OperationMessage = BlockingConflictCount == 0
             ? "内容冲突已处理。请重新确认后再应用传入内容。"
             : "仍有未支持的阻塞冲突，暂不能应用传入内容。";
-        await RefreshAfterOperationAsync("resolve_snapshot_content_conflict", BlockingConflictCount == 0);
+        await RefreshAfterOperationAsync("resolve_snapshot_content_conflict", BlockingConflictCount == 0, services,
+            libraryGeneration);
     }
 
-    private async Task RefreshAfterOperationAsync(string operation, bool succeeded)
+    private async Task RefreshAfterOperationAsync(
+        string operation,
+        bool succeeded,
+        HostServices services,
+        int libraryGeneration)
     {
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
         await _main.LogOperationAsync(operation,
             succeeded ? "Snapshot sync operation completed." : "Snapshot sync operation failed.");
-        await RefreshStatusAsync();
+        await RefreshStatusAsync(services, libraryGeneration);
     }
 
-    private async Task RefreshAfterCancellationAsync(string operation)
+    private async Task RefreshAfterCancellationAsync(
+        string operation,
+        HostServices services,
+        int libraryGeneration)
     {
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
         await _main.LogOperationAsync(operation, "Snapshot sync operation cancelled.");
-        await RefreshStatusAsync();
+        await RefreshStatusAsync(services, libraryGeneration);
     }
 
-    private async Task RefreshStatusAsync()
+    private async Task RefreshStatusAsync(HostServices services, int libraryGeneration)
     {
-        Result<SnapshotSyncStatus> status = await (await _main.ServicesAsync()).SnapshotSync.GetStatusAsync();
+        Result<SnapshotSyncStatus> status = await services.SnapshotSync.GetStatusAsync();
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
         if (status.IsSuccess)
         {
             _status = status.Value;
@@ -460,6 +560,14 @@ public sealed partial class SnapshotViewModel : ViewModelBase
 
         RaiseStatus();
         RaiseIncoming();
+    }
+
+    internal void DetachLibraryContext()
+    {
+        _status = null;
+        ClearIncomingPlan();
+        OperationMessage = "等待运行数据库打开。";
+        RaiseStatus();
     }
 
     private void RaiseStatus()

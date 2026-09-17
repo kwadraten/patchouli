@@ -15,8 +15,13 @@ internal static class ReactiveUiFlow
         Func<CancellationToken, Task> operation,
         Action<Exception> reportError)
     {
-        return source
-            .Throttle(throttle, timingScheduler)
+        // Throttle(TimeSpan.Zero) still schedules a timer callback. Skip it entirely for
+        // immediate flows so their loading feedback and work begin in the same UI turn.
+        IObservable<Unit> pacedSource = throttle > TimeSpan.Zero
+            ? source.Throttle(throttle, timingScheduler)
+            : source;
+
+        return pacedSource
             .ObserveOn(uiScheduler)
             .Select(_ => Observable.FromAsync(cancellationToken =>
                 RunSafelyAsync(operation, reportError, cancellationToken)))

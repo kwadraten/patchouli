@@ -7,6 +7,7 @@ using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using System.Text.Json;
 using CommunityToolkit.Mvvm.ComponentModel;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
@@ -20,7 +21,7 @@ namespace Patchouli.UI.ViewModels;
 
 public sealed partial class SearchEvidenceViewModel : ViewModelBase
 {
-    private static readonly TimeSpan DefaultSearchThrottle = TimeSpan.FromMilliseconds(50);
+    private static readonly TimeSpan DefaultSearchThrottle = TimeSpan.Zero;
 
     private readonly MainWindowViewModel _main;
     private readonly IScheduler _timingScheduler;
@@ -70,11 +71,13 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
     [ObservableProperty] public partial bool IsSearching { get; private set; }
 
-    public IReadOnlyList<SearchModeOption> ModeOptions { get; } =
+    public static IReadOnlyList<SearchModeOption> AvailableModeOptions { get; } =
     [
         new(SearchMode.Bibliographic, "元数据筛选", "在书库题录元数据范围内筛选"),
         new(SearchMode.FullText, "全文搜索", "在 OCR 全文索引中检索")
     ];
+
+    public IReadOnlyList<SearchModeOption> ModeOptions => AvailableModeOptions;
 
     public SearchEvidenceViewModel(MainWindowViewModel m)
         : this(
@@ -92,6 +95,7 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         IScheduler uiScheduler,
         TimeSpan? searchThrottle = null)
     {
+        using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(m.ActivityTracker);
         _main = m;
         _timingScheduler = timingScheduler;
         _uiScheduler = uiScheduler;
@@ -103,10 +107,16 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         RebuildCommand = new AsyncCommand(async () =>
         {
             HostServices s = await _main.ServicesAsync();
+            int libraryGeneration = _main.LibraryGeneration;
             Result a = await s.SearchUnits.RebuildForDocumentInstanceAsync(
                 Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
             Result b = await s.SearchIndex.RebuildFtsForDocumentInstanceAsync(
                 Patchouli.Core.Ids.DocumentInstanceId.Parse(DocumentInstanceId));
+            if (!_main.IsCurrentLibraryContext(s, libraryGeneration))
+            {
+                return;
+            }
+
             Output = a.IsSuccess && b.IsSuccess ? "搜索单元和 FTS 已重建。" : $"ERROR {a.ErrorCode ?? b.ErrorCode}";
             await _main.LogOperationAsync("rebuild_search_fts", Output);
         });
@@ -542,22 +552,27 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
 
     private async Task ExecuteSearchAsync(CancellationToken cancellationToken)
     {
+        using IActivityScope activity =
+            _main.ActivityTracker.BeginScope("搜索", HostActivityKind.UiCommand, "查询与投影结果");
         int searchId = Interlocked.Increment(ref _activeSearchId);
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
         IsSearching = true;
         try
         {
             if (IsBibliographicMode)
             {
-                await SearchBibliographicAsync(cancellationToken);
+                await SearchBibliographicAsync(services, libraryGeneration, cancellationToken);
             }
             else
             {
-                await SearchFullTextAsync(cancellationToken);
+                await SearchFullTextAsync(services, libraryGeneration, cancellationToken);
             }
         }
         finally
         {
-            if (Volatile.Read(ref _activeSearchId) == searchId)
+            if (Volatile.Read(ref _activeSearchId) == searchId &&
+                _main.IsCurrentLibraryContext(services, libraryGeneration))
             {
                 IsSearching = false;
             }
@@ -610,7 +625,10 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         }
     }
 
-    private async Task SearchBibliographicAsync(CancellationToken cancellationToken)
+    private async Task SearchBibliographicAsync(
+        HostServices services,
+        int libraryGeneration,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         BibliographicItemSearch request = BuildBibliographicSearch();
@@ -619,6 +637,11 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             await RunOnUiThreadAsync(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+                {
+                    return;
+                }
+
                 ClearResults();
                 Output = "";
                 RaiseResultProperties();
@@ -627,7 +650,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             return;
         }
 
-        HostServices services = await _main.ServicesAsync();
         cancellationToken.ThrowIfCancellationRequested();
         Result<IReadOnlyList<LibraryItemRow>> result = await Task.Run(() =>
             services.LibraryItems.SearchRowsAsync(request, cancellationToken), cancellationToken);
@@ -638,6 +660,11 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             await RunOnUiThreadAsync(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+                {
+                    return;
+                }
+
                 ClearResults();
                 IndexStatus = "";
                 AffectedScopesSummary = "";
@@ -658,6 +685,11 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         await RunOnUiThreadAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             BibliographicResults.Clear();
             foreach (LibraryItemViewModel item in items)
             {
@@ -676,7 +708,10 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         }, cancellationToken);
     }
 
-    private async Task SearchFullTextAsync(CancellationToken cancellationToken)
+    private async Task SearchFullTextAsync(
+        HostServices services,
+        int libraryGeneration,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (string.IsNullOrWhiteSpace(Query))
@@ -684,6 +719,11 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             await RunOnUiThreadAsync(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+                {
+                    return;
+                }
+
                 ClearResults();
                 Output = "";
                 RaiseResultProperties();
@@ -707,7 +747,6 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             }
         }
 
-        HostServices services = await _main.ServicesAsync();
         cancellationToken.ThrowIfCancellationRequested();
 
         Result<SearchResultPage> r = await Task.Run(() => services.Search.SearchLibraryAsync(
@@ -719,6 +758,11 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
             await RunOnUiThreadAsync(() =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+                {
+                    return;
+                }
+
                 ClearResults();
                 IndexStatus = "";
                 AffectedScopesSummary = "";
@@ -775,6 +819,11 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
         await RunOnUiThreadAsync(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (!_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                return;
+            }
+
             SearchUnits.Clear();
             foreach (string unit in units)
             {
@@ -799,6 +848,18 @@ public sealed partial class SearchEvidenceViewModel : ViewModelBase
                 ? $"搜索完成：{hits.Count} 条题录命中，索引状态={IndexStatus}。"
                 : $"搜索完成：没有命中结果，索引状态={IndexStatus}。");
         }, cancellationToken);
+    }
+
+    internal void DetachLibraryContext()
+    {
+        Interlocked.Increment(ref _activeSearchId);
+        IsSearching = false;
+        ClearResults();
+        Output = "";
+        IndexStatus = "";
+        AffectedScopesSummary = "";
+        EstimatedTotalText = "";
+        RaiseResultProperties();
     }
 
     private Task JumpToHitAsync(SearchMatchedUnitViewModel unit)

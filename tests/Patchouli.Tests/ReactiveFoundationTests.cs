@@ -14,6 +14,30 @@ namespace Patchouli.Tests;
 public sealed class ReactiveFoundationTests
 {
     [Fact]
+    public void Latest_flow_with_zero_throttle_starts_without_advancing_timing_scheduler()
+    {
+        TestScheduler timingScheduler = new();
+        Subject<Unit> requests = new();
+        int operationCount = 0;
+        using IDisposable subscription = ReactiveUiFlow.SubscribeLatest(
+            requests,
+            TimeSpan.Zero,
+            timingScheduler,
+            ImmediateScheduler.Instance,
+            _ =>
+            {
+                operationCount++;
+                return Task.CompletedTask;
+            },
+            _ => { });
+
+        requests.OnNext(Unit.Default);
+
+        operationCount.Should().Be(1);
+        timingScheduler.Clock.Should().Be(0);
+    }
+
+    [Fact]
     public void Latest_flow_throttles_requests_and_switches_away_from_stale_work()
     {
         TestScheduler scheduler = new();

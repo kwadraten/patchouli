@@ -149,10 +149,12 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         pdf.IsSourceValidating.Should().BeFalse();
         pdf.HasSourceWarning.Should().BeTrue();
 
-        // IsHistoryTabActive -> SidebarTabTitle
+        // ActiveSidebarTab -> SidebarTabTitle
         pdf.SidebarTabTitle.Should().Be("页面内容");
-        SetProperty(pdf, nameof(pdf.IsHistoryTabActive), true);
+        SetProperty(pdf, nameof(pdf.ActiveSidebarTab), SidebarTab.History);
         pdf.SidebarTabTitle.Should().Be("版本历史");
+        SetProperty(pdf, nameof(pdf.ActiveSidebarTab), SidebarTab.Translation);
+        pdf.SidebarTabTitle.Should().Be("翻译");
 
         // IsSidebarOpen -> SidebarMaxWidth, SidebarMinWidth
         pdf.SidebarMaxWidth.Should().Be(0.0);
@@ -181,6 +183,49 @@ public sealed class PdfWorkspaceReactivityTests : IDisposable
         SetProperty(pdf, nameof(pdf.PendingBBox), (NormalizedBBox?)null);
         pdf.IsNewBoxPending.Should().BeFalse();
         pdf.SelectionVisible.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Sidebar_tab_commands_select_content_history_and_translation()
+    {
+        PdfWorkspaceViewModel pdf = CreateWorkspace();
+
+        pdf.ActiveSidebarTab.Should().Be(SidebarTab.Content);
+        pdf.IsContentTabActive.Should().BeTrue();
+        pdf.IsHistoryTabActive.Should().BeFalse();
+        pdf.IsTranslationTabActive.Should().BeFalse();
+        pdf.SidebarTabTitle.Should().Be("页面内容");
+
+        pdf.ShowHistoryTabCommand.Execute(null);
+        pdf.ActiveSidebarTab.Should().Be(SidebarTab.History);
+        pdf.IsHistoryTabActive.Should().BeTrue();
+        pdf.IsContentTabActive.Should().BeFalse();
+        pdf.SidebarTabTitle.Should().Be("版本历史");
+
+        pdf.ShowContentTabCommand.Execute(null);
+        pdf.ActiveSidebarTab.Should().Be(SidebarTab.Content);
+        pdf.IsContentTabActive.Should().BeTrue();
+
+        await pdf.ShowTranslationTabCommand.ExecuteAsync();
+        pdf.ActiveSidebarTab.Should().Be(SidebarTab.Translation);
+        pdf.IsTranslationTabActive.Should().BeTrue();
+        pdf.IsContentTabActive.Should().BeFalse();
+        pdf.IsHistoryTabActive.Should().BeFalse();
+        pdf.SidebarTabTitle.Should().Be("翻译");
+        pdf.HasNoTranslation.Should().BeTrue("no page is loaded, so the translation tab shows its placeholder");
+        pdf.TranslationScene.Should().BeNull();
+    }
+
+    [Fact]
+    public void Translation_compare_toggle_flips_the_reading_pane_visibility()
+    {
+        PdfWorkspaceViewModel pdf = CreateWorkspace();
+
+        pdf.IsTranslationCompareVisible.Should().BeFalse("compare mode is off by default");
+        pdf.ToggleTranslationCompareCommand.Execute(null);
+        pdf.IsTranslationCompareVisible.Should().BeTrue();
+        pdf.ToggleTranslationCompareCommand.Execute(null);
+        pdf.IsTranslationCompareVisible.Should().BeFalse();
     }
 
     [Fact]
