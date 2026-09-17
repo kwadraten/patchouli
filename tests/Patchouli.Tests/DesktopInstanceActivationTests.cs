@@ -10,6 +10,28 @@ namespace Patchouli.Tests;
 public sealed class DesktopInstanceActivationTests
 {
     [Fact]
+    public async Task Closing_tray_enabled_window_hides_it_without_closing()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(() =>
+        {
+            MainWindow window = new(new MainWindowViewModel(), true);
+            bool closed = false;
+            window.Closed += (_, _) => closed = true;
+
+            window.Show();
+            window.Close();
+
+            window.IsVisible.Should().BeFalse();
+            closed.Should().BeFalse();
+
+            window.RequestExit();
+            closed.Should().BeTrue();
+            return true;
+        }, CancellationToken.None);
+    }
+
+    [Fact]
     public async Task Activation_shows_hidden_window()
     {
         using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
@@ -159,7 +181,10 @@ public sealed class DesktopInstanceActivationTests
 
     // macOS caps Unix domain socket paths at 104 chars; the temp directory alone
     // takes ~50 and .NET prepends "CoreFxPipe_", so test pipe names stay short.
-    private static string NewPipeName() => $"pt.{Guid.NewGuid():N}"[..19];
+    private static string NewPipeName()
+    {
+        return $"pt.{Guid.NewGuid():N}"[..19];
+    }
 
     private sealed class FakeCoordinator : IDesktopInstanceCoordinator
     {

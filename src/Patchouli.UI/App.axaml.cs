@@ -18,19 +18,16 @@ public sealed partial class App : Application
         AvaloniaXamlLoader.Load(this);
     }
 
-    public override async void OnFrameworkInitializationCompleted()
+    public override void OnFrameworkInitializationCompleted()
     {
-        MainWindow? mainWindow = null;
-        bool initialized = false;
         try
         {
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
-                mainWindow = new MainWindow();
+                MainWindow mainWindow = new();
                 desktop.MainWindow = mainWindow;
                 SubscribeToActivation(mainWindow);
-                await mainWindow.ShowFirstRunIfNeededAsync(false);
-                initialized = true;
+                mainWindow.StartStartupAfterFirstFrame();
             }
         }
         catch (Exception exception)
@@ -44,10 +41,6 @@ public sealed partial class App : Application
         finally
         {
             base.OnFrameworkInitializationCompleted();
-            if (initialized)
-            {
-                mainWindow?.StartMcpServerInBackground();
-            }
         }
     }
 
@@ -85,5 +78,32 @@ public sealed partial class App : Application
         }
 
         window.Activate();
+    }
+
+    private void OnTrayIconClicked(object? sender, EventArgs e)
+    {
+        ShowMainWindow();
+    }
+
+    private void OnOpenFromTrayClick(object? sender, EventArgs e)
+    {
+        ShowMainWindow();
+    }
+
+    private void OnExitFromTrayClick(object? sender, EventArgs e)
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { MainWindow: MainWindow mainWindow })
+        {
+            ActivateWindow(mainWindow);
+            mainWindow.RequestExit();
+        }
+    }
+
+    private void ShowMainWindow()
+    {
+        if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime { MainWindow: { } mainWindow })
+        {
+            ActivateWindow(mainWindow);
+        }
     }
 }

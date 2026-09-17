@@ -23,4 +23,20 @@
       <converters:VersionSourceConverter x:Key="VersionSourceConverter" />
     </ResourceDictionary>
   </Application.Resources>
+
+  <TrayIcon.Icons>
+    <TrayIcons>
+      <TrayIcon Icon="/Assets/AppIcon.ico"
+                ToolTipText="Patchouli.Net"
+                Clicked="OnTrayIconClicked">
+        <TrayIcon.Menu>
+          <NativeMenu>
+            <NativeMenuItem Header="打开 Patchouli.Net" Click="OnOpenFromTrayClick" />
+            <NativeMenuItemSeparator />
+            <NativeMenuItem Header="退出" Click="OnExitFromTrayClick" />
+          </NativeMenu>
+        </TrayIcon.Menu>
+      </TrayIcon>
+    </TrayIcons>
+  </TrayIcon.Icons>
 </Application>
