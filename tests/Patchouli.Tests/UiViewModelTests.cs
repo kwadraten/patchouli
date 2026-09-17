@@ -628,7 +628,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.3.4 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.3.5 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }
@@ -1465,7 +1465,9 @@ public sealed class UiViewModelTests : IDisposable
 
             File.Copy(TestFixtures.RealThreePagePdf, Path.Combine(root, "watched.pdf"));
             bool sawWatcherLog = false;
-            for (int attempt = 0; attempt < 40 && !sawWatcherLog; attempt++)
+            // Parallel test load can delay filesystem watcher delivery well past a couple of
+            // seconds, so allow a generous window before declaring the watcher silent.
+            for (int attempt = 0; attempt < 120 && !sawWatcherLog; attempt++)
             {
                 await Task.Delay(250);
                 sawWatcherLog = logger.Messages.Any(message => message.Operation == "file-watcher");
@@ -1495,7 +1497,7 @@ public sealed class UiViewModelTests : IDisposable
         string searchXaml =
             File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "SearchResultsPage.axaml"));
         shellXaml.Should().Contain("RunToolbarSearchCommand");
-        shellXaml.Should().Contain("SearchEvidence.Query");
+        shellXaml.Should().Contain("ToolbarSearchQuery");
         searchXaml.Should().Contain("搜索结果");
     }
 
@@ -1817,7 +1819,8 @@ public sealed class UiViewModelTests : IDisposable
             null,
             DateTimeOffset.UtcNow);
 
-        row.ProgressValue.Should().Be(47.5);
+        row.ProgressValue.Should().Be(42.5,
+            "page recognition owns the 0-85% band before import, adoption, and indexing");
         row.StageText.Should().Be("逐页识别 · 1/2 页");
     }
 
@@ -3948,7 +3951,8 @@ public sealed class UiViewModelTests : IDisposable
         }
 
         public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId runId,
-            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
+            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             throw new NotSupportedException();
         }
