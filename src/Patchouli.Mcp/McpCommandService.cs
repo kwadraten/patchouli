@@ -290,16 +290,23 @@ public sealed class McpCommandService
         }
 
         McpUriKind kind = parsed.Value.Kind;
-        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence or McpUriKind.Library)
+        if (kind is McpUriKind.Document or McpUriKind.Page or McpUriKind.Evidence or McpUriKind.Library
+            or McpUriKind.TranslationsScope or McpUriKind.TranslationDocument)
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.PermissionDenied,
-                $"'{request.Uri}' is read-only; only items/*.bib and csl-styles/*.csl can be replaced.");
+                $"'{request.Uri}' is read-only; only items/*.bib, csl-styles/*.csl, and " +
+                "translations/{document-id}/page-{page-index}.md can be replaced.");
+        }
+
+        if (kind == McpUriKind.TranslationPage)
+        {
+            return await PutTranslationAsync(request, parsed.Value, cancellationToken);
         }
 
         if (kind is not (McpUriKind.Item or McpUriKind.Style))
         {
             return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.InvalidArgument,
-                "Only item and csl-style resources can be put.");
+                "Only item, csl-style, and translation page resources can be put.");
         }
 
         Result<McpLibraryStateResponse> beforeWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
@@ -329,6 +336,66 @@ public sealed class McpCommandService
             McpEnvelope<McpPutMeta, McpPutResult>.Create(new McpPutMeta(newRevision), [putResult],
                 message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
         return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
+    }
+
+    private async Task<McpCommandResult<McpPutMeta, McpPutResult>> PutTranslationAsync(McpPutRequest request,
+        McpUriParseResult target, CancellationToken cancellationToken)
+    {
+        DocumentInstanceId documentId = target.DocumentId!.Value;
+        int pageIndex = target.PageIndex!.Value;
+        Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(documentId, cancellationToken);
+        if (outline.IsFailure)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(
+                McpErrorMappings.ToReadError(outline.ErrorCode),
+                outline.ErrorMessage ?? outline.ErrorCode ?? "Document was not found.");
+        }
+
+        McpDocumentPageRef? pageRef = outline.Value.Pages.FirstOrDefault(page => page.PageIndex + 1 == pageIndex);
+        if (pageRef is null)
+        {
+            return McpCommandResult<McpPutMeta, McpPutResult>.Fail(McpErrorCode.NotFound,
+                $"Page '{pageIndex}' does not exist in document '{documentId}'.");
+        }
+
+        Result<McpLibraryStateResponse> beforeWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
+        string baseRevision = beforeWrite.IsSuccess ? beforeWrite.Value.LibraryRevision : "lib:0";
+        Result<McpPutResponse> result = await _write.PutPageTranslationAsync(
+            request.Uri, documentId, pageRef.PageId, request.Content ?? string.Empty, cancellationToken);
+        if (result.IsFailure)
+        {
+            McpErrorCode code = McpErrorMappings.ToWriteError(result.ErrorCode);
+            string detail = result.ErrorMessage ?? result.ErrorCode ?? "Put failed.";
+            McpPutResult rejected = new(
+                request.Uri,
+                "translation_page",
+                false,
+                Encoding.UTF8.GetByteCount(request.Content ?? string.Empty),
+                ExtractTranslationErrors(result.Details));
+            McpEnvelope<McpPutMeta, McpPutResult> failed = McpEnvelope<McpPutMeta, McpPutResult>.Create(
+                new McpPutMeta(baseRevision), [rejected],
+                message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
+            return McpCommandResult<McpPutMeta, McpPutResult>.Partial(failed, code, detail);
+        }
+
+        Result<McpLibraryStateResponse> afterWrite = await _read.GetCurrentLibraryStateAsync(cancellationToken);
+        string newRevision = afterWrite.IsSuccess ? afterWrite.Value.LibraryRevision : baseRevision;
+        McpPutResult putResult = new(request.Uri, result.Value.ResourceType, result.Value.Committed,
+            result.Value.ContentBytes);
+        IReadOnlyList<string> warnings = result.Value.Warnings ?? [];
+        McpEnvelope<McpPutMeta, McpPutResult> envelope = McpEnvelope<McpPutMeta, McpPutResult>.Create(
+            new McpPutMeta(newRevision), [putResult],
+            message: warnings.Count == 0 ? null : new McpMessage(null, warnings));
+        return McpCommandResult<McpPutMeta, McpPutResult>.Ok(envelope);
+    }
+
+    private static IReadOnlyList<McpTranslationStructureError>? ExtractTranslationErrors(
+        IResultFailureDetails? details)
+    {
+        return details is TranslationStructureFailureDetails failure
+            ? failure.Errors.Select(error => new McpTranslationStructureError(
+                error.BlockIndex, error.Expected, error.Actual)).ToArray()
+            : null;
     }
 
     public async Task<McpCommandResult<McpCiteMeta, McpCitationResult>> CiteAsync(McpCiteRequest request,
@@ -465,6 +532,8 @@ public sealed class McpCommandService
             McpUriKind.Page => await FetchPageAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Style => await FetchStyleAsync(parsed.Value, range, limitBytes, state, cancellationToken),
             McpUriKind.Evidence => await FetchEvidenceAsync(parsed.Value, range, limitBytes, state,
+                cancellationToken),
+            McpUriKind.TranslationPage => await FetchTranslationAsync(parsed.Value, range, limitBytes, state,
                 cancellationToken),
             McpUriKind.Library => await FetchLibraryAsync(range, limitBytes, state, cancellationToken),
             _ => FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument,
@@ -707,6 +776,64 @@ public sealed class McpCommandService
         Result<ItemId> owner = await _read.GetItemIdForDocumentAsync(documentId, cancellationToken);
         string? itemUri = owner.IsSuccess ? McpResourceUris.ItemUri(owner.Value) : null;
         return FitTextEntry(uri, "evidence", itemUri, content, limitBytes, state.LibraryRevision);
+    }
+
+    private async Task<McpFetchResult> FetchTranslationAsync(McpUriParseResult target, string? range, int limitBytes,
+        McpLibraryStateResponse state, CancellationToken cancellationToken)
+    {
+        DocumentInstanceId documentId = target.DocumentId!.Value;
+        int pageIndex = target.PageIndex!.Value;
+        string uri = McpResourceUris.TranslationPageUri(documentId, pageIndex);
+
+        Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(documentId, cancellationToken);
+        if (outline.IsFailure)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(outline.ErrorCode),
+                    outline.ErrorMessage ?? outline.ErrorCode ?? "Document was not found."), limitBytes);
+        }
+
+        McpDocumentPageRef? pageRef = outline.Value.Pages.FirstOrDefault(page =>
+            page.PageIndex + 1 == pageIndex);
+        if (pageRef is null)
+        {
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorCode.NotFound,
+                    $"Page '{pageIndex}' does not exist in document '{documentId}'."), limitBytes);
+        }
+
+        Result<McpPageTranslationResponse> translation = await _read.GetPageTranslationAsync(
+            new McpPageTranslationRequest(documentId, pageRef.PageId), cancellationToken);
+        if (translation.IsFailure)
+        {
+            if (string.Equals(translation.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal))
+            {
+                return FailedFetch(uri,
+                    McpToolError.From(McpErrorCode.NotFound,
+                        $"Page {pageIndex} of document {documentId} has no translation yet. " +
+                        $"Fetch the source page at patchouli://texts/{documentId}/page-{pageIndex}.md, " +
+                        $"translate it, and put the complete result back to {uri}."), limitBytes);
+            }
+
+            return FailedFetch(uri,
+                McpToolError.From(McpErrorMappings.ToReadError(translation.ErrorCode),
+                    translation.ErrorMessage ?? translation.ErrorCode ?? "Page translation was not found."),
+                limitBytes);
+        }
+
+        string? rangeError = ValidateRange(range, "lines");
+        if (rangeError is not null)
+        {
+            return FailedFetch(uri, McpToolError.From(McpErrorCode.InvalidArgument, rangeError), limitBytes);
+        }
+
+        string? itemUri = outline.Value.ItemId is null
+            ? null
+            : McpResourceUris.ItemUri(outline.Value.ItemId.Value);
+        string content = ApplyLines(translation.Value.Markdown, range, "lines");
+        McpFetchResult fitted =
+            FitTextEntry(uri, "translation_page", itemUri, content, limitBytes, state.LibraryRevision);
+        return fitted with { Translation = translation.Value.Status };
     }
 
     private static string BuildEvidenceContent(EvidencePageText evidence)
@@ -967,6 +1094,48 @@ public sealed class McpCommandService
                 return new FindPage(entries, continuation, page.Value.DomainTotal, page.Value.FilteredTotal);
             }
 
+            case McpUriKind.TranslationsScope:
+            {
+                Result<McpBrowseTranslationPage> page = await _read.BrowseTranslationsAsync(offset, limit, null, where,
+                    cancellationToken);
+                if (page.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(page.ErrorCode),
+                        page.ErrorMessage ?? page.ErrorCode ?? "Browse translations failed.");
+                }
+
+                List<object> entries = page.Value.Rows.Select(BuildTranslationDocumentEntry).Cast<object>().ToList();
+                string? continuation = page.Value.HasMore
+                    ? EncodeCursor(scopeUri, null, false, where, offset + entries.Count, null)
+                    : null;
+                return new FindPage(entries, continuation, page.Value.DomainTotal, page.Value.FilteredTotal);
+            }
+
+            case McpUriKind.TranslationDocument:
+            {
+                Result<McpTranslationOutlineResponse> outline = await _read.GetTranslationOutlineAsync(
+                    scope.DocumentId!.Value, null, cancellationToken);
+                if (outline.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(outline.ErrorCode),
+                        outline.ErrorMessage ?? outline.ErrorCode ?? "Translation outline was not found.");
+                }
+
+                bool keep = await MatchesResourceWhereAsync(outline.Value.ItemId, scope.DocumentId.Value,
+                    outline.Value.ItemId is not null, where, cancellationToken);
+                if (!keep)
+                {
+                    return new FindPage([], null, 0, 0);
+                }
+
+                object[] all = outline.Value.Pages.Select(BuildTranslationPageEntry).Cast<object>().ToArray();
+                object[] entries = all.Skip(offset).Take(limit).ToArray();
+                string? continuation = offset + entries.Length < all.Length
+                    ? EncodeCursor(scopeUri, null, false, where, offset + entries.Length, null)
+                    : null;
+                return new FindPage(entries, continuation, all.Length, all.Length);
+            }
+
             default:
                 return FindPage.Failed(McpErrorCode.InvalidArgument, "Unsupported browse scope.");
         }
@@ -1051,6 +1220,50 @@ public sealed class McpCommandService
             case McpUriKind.StylesScope:
                 return await SearchStylesAsync(query, literal, limit, cursor?.Offset ?? 0, where, longMode,
                     cancellationToken);
+
+            case McpUriKind.TranslationsScope:
+            {
+                int skip = cursor?.Offset ?? 0;
+                Result<McpBrowseTranslationPage> page = await _read.BrowseTranslationsAsync(skip, limit, query, where,
+                    cancellationToken);
+                if (page.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(page.ErrorCode),
+                        page.ErrorMessage ?? page.ErrorCode ?? "Search translations failed.");
+                }
+
+                List<object> entries = page.Value.Rows.Select(BuildTranslationDocumentEntry).Cast<object>().ToList();
+                string? continuation = page.Value.HasMore
+                    ? EncodeCursor(scopeUri, query, literal, where, skip + entries.Count, null)
+                    : null;
+                return new FindPage(entries, continuation, page.Value.DomainTotal, page.Value.FilteredTotal);
+            }
+
+            case McpUriKind.TranslationDocument:
+            {
+                Result<McpTranslationOutlineResponse> outline = await _read.GetTranslationOutlineAsync(
+                    scope.DocumentId!.Value, query, cancellationToken);
+                if (outline.IsFailure)
+                {
+                    return FindPage.Failed(McpErrorMappings.ToReadError(outline.ErrorCode),
+                        outline.ErrorMessage ?? outline.ErrorCode ?? "Translation outline was not found.");
+                }
+
+                bool keep = await MatchesResourceWhereAsync(outline.Value.ItemId, scope.DocumentId.Value,
+                    outline.Value.ItemId is not null, where, cancellationToken);
+                if (!keep)
+                {
+                    return new FindPage([], null, 0, 0);
+                }
+
+                object[] all = outline.Value.Pages.Select(BuildTranslationPageEntry).Cast<object>().ToArray();
+                int skip = cursor?.Offset ?? 0;
+                object[] entries = all.Skip(skip).Take(limit).ToArray();
+                string? continuation = skip + entries.Length < all.Length
+                    ? EncodeCursor(scopeUri, query, literal, where, skip + entries.Length, null)
+                    : null;
+                return new FindPage(entries, continuation, all.Length, all.Length);
+            }
 
             default:
                 return FindPage.Failed(McpErrorCode.InvalidArgument, "Unsupported search scope.");
@@ -1237,6 +1450,40 @@ public sealed class McpCommandService
                     OcrIndexStatus: ocrIndexStatus);
             }
 
+            case McpUriKind.TranslationPage:
+            {
+                DocumentInstanceId documentId = target.DocumentId!.Value;
+                int pageIndex = target.PageIndex!.Value;
+                Result<McpDocumentOutlineResponse> outline = await _read.GetDocumentOutlineAsync(documentId,
+                    cancellationToken);
+                if (outline.IsFailure)
+                {
+                    return null;
+                }
+
+                McpDocumentPageRef? page = outline.Value.Pages.FirstOrDefault(candidate =>
+                    candidate.PageIndex + 1 == pageIndex);
+                if (page is null)
+                {
+                    return null;
+                }
+
+                Result<McpPageTranslationResponse> translation = await _read.GetPageTranslationAsync(
+                    new McpPageTranslationRequest(documentId, page.PageId), cancellationToken);
+                SingletonResource document = await BuildDocumentSingletonAsync(outline.Value, cancellationToken);
+                return document with
+                {
+                    Uri = McpResourceUris.TranslationPageUri(documentId, pageIndex),
+                    Type = "file",
+                    DocumentId = documentId,
+                    TranslationStatus = translation.IsSuccess
+                        ? TranslationStatusName(translation.Value.Status)
+                        : McpTranslationStatus.Untranslated,
+                    TranslatedBoxCount = translation.IsSuccess ? translation.Value.Status.TranslatedBoxCount : 0,
+                    TotalBoxCount = translation.IsSuccess ? translation.Value.Status.TotalBoxCount : 0
+                };
+            }
+
             case McpUriKind.Library:
             {
                 Result<McpLibraryProjection> projection = await _read.GetLibraryProjectionAsync(
@@ -1292,17 +1539,32 @@ public sealed class McpCommandService
     {
         return singleton.IsLibrary
             ? new McpLibraryLongEntry(singleton.Uri, singleton.Title, singleton.Type)
-            : singleton.StyleEnabled is { } styleEnabled
-                ? new McpStyleLongEntry(singleton.Uri, singleton.Title, singleton.Type, styleEnabled)
-                : singleton.DocumentId is not null
-                    ? new McpTextLongEntry(singleton.Uri, singleton.Title, singleton.Type, singleton.ItemUri,
-                        singleton.ItemStatus, singleton.DocumentStatus ?? "missing_source",
-                        singleton.SourceStatus ?? "unavailable",
-                        PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable)
-                    : new McpItemLongEntry(singleton.Uri, singleton.Title, singleton.Type,
-                        singleton.ItemStatus ?? "unset",
-                        PrimaryDocumentOcrIndexState.FromValue(singleton.PrimaryDocumentOcrIndexStatus).Value,
-                        singleton.Citable);
+            : singleton.TranslationStatus is not null
+                ? new McpTranslationPageEntry(singleton.Uri, singleton.Title, singleton.Type,
+                    singleton.TranslationStatus, singleton.TranslatedBoxCount, singleton.TotalBoxCount)
+                : singleton.StyleEnabled is { } styleEnabled
+                    ? new McpStyleLongEntry(singleton.Uri, singleton.Title, singleton.Type, styleEnabled)
+                    : singleton.DocumentId is not null
+                        ? new McpTextLongEntry(singleton.Uri, singleton.Title, singleton.Type, singleton.ItemUri,
+                            singleton.ItemStatus, singleton.DocumentStatus ?? "missing_source",
+                            singleton.SourceStatus ?? "unavailable",
+                            PrimaryDocumentOcrIndexState.FromValue(singleton.OcrIndexStatus).Value, singleton.Citable)
+                        : new McpItemLongEntry(singleton.Uri, singleton.Title, singleton.Type,
+                            singleton.ItemStatus ?? "unset",
+                            PrimaryDocumentOcrIndexState.FromValue(singleton.PrimaryDocumentOcrIndexStatus).Value,
+                            singleton.Citable);
+    }
+
+    private static string TranslationStatusName(McpTranslationStatusProjection status)
+    {
+        if (status.TranslatedBoxCount <= 0)
+        {
+            return McpTranslationStatus.Untranslated;
+        }
+
+        return status.TranslatedBoxCount >= status.TotalBoxCount
+            ? McpTranslationStatus.Translated
+            : McpTranslationStatus.Partial;
     }
 
     private static object BuildItemEntry(McpBrowseItemRow row, bool longMode)
@@ -1353,6 +1615,27 @@ public sealed class McpCommandService
         }
 
         return new McpStyleLongEntry(uri, style.DisplayName, "file", style.Enabled);
+    }
+
+    private static object BuildTranslationDocumentEntry(McpTranslationDocumentRow row)
+    {
+        return new McpTranslationDocumentEntry(
+            McpResourceUris.TranslationDocumentUri(row.DocumentInstanceId),
+            row.Title ?? row.DocumentInstanceId.ToString(),
+            "directory",
+            row.PageCount,
+            row.TranslatedPageCount,
+            row.PartialPageCount,
+            row.UntranslatedPageCount,
+            row.StalePageCount);
+    }
+
+    private static object BuildTranslationPageEntry(McpTranslationPageRow row)
+    {
+        int oneBased = row.PageIndex + 1;
+        string title = string.IsNullOrWhiteSpace(row.PageLabel) ? $"page {oneBased}" : row.PageLabel!;
+        return new McpTranslationPageEntry(row.Uri, title, "file", row.Status, row.TranslatedBoxCount,
+            row.TotalBoxCount);
     }
 
     private static object BuildEvidenceEntry(McpSearchPageResult page, McpMatchedUnit unit,
@@ -1527,6 +1810,7 @@ public sealed class McpCommandService
         [
             new("patchouli://items/", "/items", "directory"),
             new("patchouli://texts/", "/texts", "directory"),
+            new("patchouli://translations/", "/translations", "directory"),
             new("patchouli://csl-styles/", "/csl-styles", "directory"),
             new(McpResourceUris.LibraryUri(), "/library.toon", "file")
         ];
@@ -1610,6 +1894,12 @@ public sealed class McpCommandService
                     "item_id", "item_type", "item_status", "document_status", "source_status", "ocr_index_status",
                     "citable"
                 },
+            McpUriKind.TranslationsScope or McpUriKind.TranslationDocument or McpUriKind.TranslationPage =>
+                new[]
+                {
+                    "item_id", "item_type", "item_status", "document_status", "source_status", "ocr_index_status",
+                    "citable"
+                },
             McpUriKind.StylesScope or McpUriKind.Style => new[] { "style_enabled" },
             _ => null
         };
@@ -1632,7 +1922,7 @@ public sealed class McpCommandService
     private static bool IsFileScope(McpUriKind kind)
     {
         return kind is McpUriKind.Item or McpUriKind.Document or McpUriKind.Page or McpUriKind.Style
-            or McpUriKind.Evidence or McpUriKind.Library;
+            or McpUriKind.Evidence or McpUriKind.TranslationPage or McpUriKind.Library;
     }
 
     private static IReadOnlyList<McpWhereClause>? NormalizeWhere(IReadOnlyList<McpWhereClause>? where,
@@ -1855,7 +2145,10 @@ public sealed class McpCommandService
         bool? StyleEnabled = null,
         string PrimaryDocumentOcrIndexStatus = "no_primary_document",
         string OcrIndexStatus = "no_ocr",
-        bool IsLibrary = false);
+        bool IsLibrary = false,
+        string? TranslationStatus = null,
+        int TranslatedBoxCount = 0,
+        int TotalBoxCount = 0);
 
     private sealed record FindPage(
         IReadOnlyList<object> Entries,

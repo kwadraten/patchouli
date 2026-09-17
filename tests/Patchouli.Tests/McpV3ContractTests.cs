@@ -35,6 +35,10 @@ public sealed class McpV3ContractTests
     [InlineData(
         "patchouli://texts/10000000-0000-0000-0000-000000000001/page-7.md?rev=20000000-0000-0000-0000-000000000001&box=30000000-0000-0000-0000-000000000001",
         McpUriKind.Evidence)]
+    [InlineData("patchouli://translations/", McpUriKind.TranslationsScope)]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/", McpUriKind.TranslationDocument)]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md",
+        McpUriKind.TranslationPage)]
     [InlineData("patchouli://csl-styles/", McpUriKind.StylesScope)]
     [InlineData("patchouli://csl-styles/apa.csl", McpUriKind.Style)]
     public void Resource_uris_parse_the_v3_tree(string uri, McpUriKind expectedKind)
@@ -61,6 +65,15 @@ public sealed class McpV3ContractTests
     [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001")]
     [InlineData("patchouli://items/00000000-0000-0000-0000-000000000001.bib/")]
     [InlineData("patchouli://?evref=x")]
+    [InlineData("patchouli://translations")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-0.md")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1")]
+    [InlineData(
+        "patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md?rev=20000000-0000-0000-0000-000000000001")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md?foo=bar")]
+    [InlineData("patchouli://translations/not-a-guid/page-1.md")]
+    [InlineData("patchouli://translations/10000000-0000-0000-0000-000000000001/pages/1.md")]
     public void Legacy_and_malformed_uris_are_rejected(string uri)
     {
         McpResourceUris.Parse(uri).IsFailure.Should().BeTrue();
@@ -125,6 +138,24 @@ public sealed class McpV3ContractTests
         McpResourceUris.StyleUri("apa").Should().Be("patchouli://csl-styles/apa.csl");
         McpResourceUris.DocumentUri(DocumentId).Should().Be(
             "patchouli://texts/10000000-0000-0000-0000-000000000001/");
+    }
+
+    [Fact]
+    public void Translation_uris_use_the_writable_translations_scope()
+    {
+        McpResourceUris.TranslationsScopeUri().Should().Be("patchouli://translations/");
+        McpResourceUris.TranslationDocumentUri(DocumentId).Should().Be(
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/");
+        McpResourceUris.TranslationPageUri(DocumentId, 1).Should().Be(
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-1.md");
+        McpResourceUris.TranslationPageUri(DocumentId, 12).Should().Be(
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-12.md");
+
+        Result<McpUriParseResult> parsed = McpResourceUris.Parse(
+            "patchouli://translations/10000000-0000-0000-0000-000000000001/page-7.md");
+        parsed.Value.Kind.Should().Be(McpUriKind.TranslationPage);
+        parsed.Value.DocumentId.Should().Be(DocumentId);
+        parsed.Value.PageIndex.Should().Be(7);
     }
 
     [Fact]

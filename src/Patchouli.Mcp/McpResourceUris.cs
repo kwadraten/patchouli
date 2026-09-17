@@ -9,9 +9,12 @@ public enum McpUriKind
     ItemsScope,
     TextsScope,
     StylesScope,
+    TranslationsScope,
     Item,
     Document,
     Page,
+    TranslationDocument,
+    TranslationPage,
     Style,
     Evidence,
     Library
@@ -28,9 +31,11 @@ public sealed record McpUriParseResult(
 
 /// <summary>
 /// Parses and builds the v3 patchouli:// resource tree shared by MCP and the CLI:
-/// items/, texts/, and csl-styles/. Evidence is only consumed through a text page
-/// URI's ?rev= and &amp;box= query parameters. Legacy documents/, styles/, and evidence/
-/// roots are rejected, and legacy ?evref= queries are rejected with a clear error.
+/// items/, texts/, csl-styles/, and translations/. Evidence is only consumed through a
+/// text page URI's ?rev= and &amp;box= query parameters. Legacy documents/, styles/, and
+/// evidence/ roots are rejected, and legacy ?evref= queries are rejected with a clear error.
+/// The translations/ root mirrors texts/ but addresses the derived per-box translations of a
+/// page: page-{N}.md is the whole-page translated markdown and is readable and writable.
 /// </summary>
 public static class McpResourceUris
 {
@@ -79,6 +84,22 @@ public static class McpResourceUris
         return treeRevisionId is not null
             ? $"{uri}?rev={treeRevisionId}"
             : $"{uri}?box={boxId}";
+    }
+
+    /// <summary>Builds the canonical page URI of the derived translation resource tree.</summary>
+    public static string TranslationPageUri(DocumentInstanceId documentId, int pageIndex)
+    {
+        return $"{Prefix}translations/{documentId}/page-{pageIndex}.md";
+    }
+
+    public static string TranslationDocumentUri(DocumentInstanceId documentId)
+    {
+        return $"{Prefix}translations/{documentId}/";
+    }
+
+    public static string TranslationsScopeUri()
+    {
+        return $"{Prefix}translations/";
     }
 
     public static string StyleUri(string styleId)
@@ -133,9 +154,10 @@ public static class McpResourceUris
         {
             "items" => ParseItemUri(uri, segments),
             "texts" => ParseTextsUri(uri, segments, query),
+            "translations" => ParseTranslationsUri(uri, segments, query),
             "csl-styles" => ParseCslStylesUri(uri, segments, query),
             "documents" or "styles" or "evidence" => Invalid(uri,
-                $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, and csl-styles."),
+                $"The '{segments[0]}' scope was removed; the v3 resource tree exposes only items, texts, translations, and csl-styles."),
             _ => Invalid(uri, $"Unknown resource scope '{segments[0]}'.")
         };
     }
@@ -216,6 +238,43 @@ public static class McpResourceUris
 
         return Invalid(uri, "Text URIs must be patchouli://texts/{document-id}/ or " +
                             "patchouli://texts/{document-id}/page-{page-index}.md.");
+    }
+
+    private static Result<McpUriParseResult> ParseTranslationsUri(string uri, string[] segments, string? query)
+    {
+        // patchouli://translations/ or patchouli://translations/{id}/ or
+        // patchouli://translations/{id}/page-{page-index}.md
+        if (segments.Length == 2 && segments[0] == "translations" && segments[1].Length == 0)
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(McpUriKind.TranslationsScope))
+                : Invalid(uri, "The translations scope does not accept query parameters.");
+        }
+
+        // Document URI: exactly translations/{id}/ (trailing slash -> final empty segment).
+        if (segments.Length == 3 && segments[2].Length == 0 && TryParseGuid(segments[1], out Guid documentId))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.TranslationDocument, DocumentId: new DocumentInstanceId(documentId)))
+                : Invalid(uri, "Translation document URIs do not accept query parameters.");
+        }
+
+        // Page URI: translations/{id}/page-{index}.md; translations are always HEAD-derived and
+        // therefore carry no versioned evidence query.
+        if (segments.Length == 3 && TryParseGuid(segments[1], out Guid documentIdForPage) &&
+            TryParsePageIndex(segments[2], out int pageIndex))
+        {
+            return query is null
+                ? Result<McpUriParseResult>.Success(new McpUriParseResult(
+                    McpUriKind.TranslationPage,
+                    DocumentId: new DocumentInstanceId(documentIdForPage),
+                    PageIndex: pageIndex))
+                : Invalid(uri, "Translation page URIs do not accept query parameters.");
+        }
+
+        return Invalid(uri, "Translation URIs must be patchouli://translations/{document-id}/ or " +
+                            "patchouli://translations/{document-id}/page-{page-index}.md.");
     }
 
     private static Result<McpUriParseResult> ParseCslStylesUri(string uri, string[] segments, string? query)

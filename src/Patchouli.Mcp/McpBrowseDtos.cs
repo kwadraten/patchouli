@@ -65,3 +65,52 @@ public sealed record McpDocumentOutlineResponse(
     string? Revision,
     IReadOnlyList<McpDocumentPageRef> Pages,
     ItemId? ItemId = null);
+
+/// <summary>
+/// Progress projection for one DocumentInstance in the <c>patchouli://translations/</c>
+/// directory. Counts are evaluated against each page's current committed tree revision, so a
+/// page counts as stale whenever its stored translation rows predate that revision.
+/// </summary>
+public sealed record McpTranslationDocumentRow(
+    DocumentInstanceId DocumentInstanceId,
+    string? Title,
+    ItemId? ItemId,
+    int PageCount,
+    int TranslatedPageCount,
+    int PartialPageCount,
+    int UntranslatedPageCount,
+    int StalePageCount);
+
+public sealed record McpBrowseTranslationPage(
+    IReadOnlyList<McpTranslationDocumentRow> Rows,
+    bool HasMore,
+    int DomainTotal = 0,
+    int FilteredTotal = 0);
+
+/// <summary>
+/// One page inside a translation document directory. <see cref="Status"/> is one of
+/// <see cref="McpTranslationStatus"/>; counts describe the current committed revision.
+/// </summary>
+public sealed record McpTranslationPageRow(
+    PageId PageId,
+    string? PageLabel,
+    int PageIndex,
+    int TranslatedBoxCount,
+    int TotalBoxCount,
+    string Status,
+    string Uri);
+
+public sealed record McpTranslationOutlineResponse(
+    DocumentInstanceId DocumentInstanceId,
+    string? Title,
+    IReadOnlyList<McpTranslationPageRow> Pages,
+    ItemId? ItemId = null);
+
+/// <summary>Stable per-page translation status names shared by browse and fetch.</summary>
+public static class McpTranslationStatus
+{
+    public const string Untranslated = "untranslated";
+    public const string Partial = "partial";
+    public const string Translated = "translated";
+    public const string Stale = "stale";
+}

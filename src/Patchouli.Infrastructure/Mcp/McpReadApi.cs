@@ -28,6 +28,7 @@ public sealed class McpReadApi : IMcpReadApi
     private readonly IMarkdownEngine _markdown;
     private readonly IDocumentMarkdownCompiler _markdownCompiler;
     private readonly ICompiledMarkdownCache _compiledMarkdownCache;
+    private readonly IPageTranslationService? _pageTranslations;
 
     /// <summary>Safe, content-free counters for the shared compiled-markdown read cache.</summary>
     public CompiledMarkdownCacheMetrics CompiledMarkdownCacheMetrics => _compiledMarkdownCache.Metrics;
@@ -36,7 +37,8 @@ public sealed class McpReadApi : IMcpReadApi
         IPageCoordinateService? coordinates = null,
         ICslStyleStore? cslStyleStore = null, ICslRenderer? cslRenderer = null,
         IMarkdownEngine? markdown = null, IDocumentMarkdownCompiler? markdownCompiler = null,
-        ICompiledMarkdownCache? compiledMarkdownCache = null)
+        ICompiledMarkdownCache? compiledMarkdownCache = null,
+        IPageTranslationService? pageTranslations = null)
     {
         _connectionFactory = connectionFactory;
         _searchService = searchService;
@@ -44,6 +46,7 @@ public sealed class McpReadApi : IMcpReadApi
         _cslStyleStore = cslStyleStore;
         _cslRenderer = cslRenderer;
         _markdown = markdown ?? new MarkdigMarkdownEngine();
+        _pageTranslations = pageTranslations;
         _compiledMarkdownCache = compiledMarkdownCache ??
                                  (markdownCompiler as CachedDocumentMarkdownCompiler)?.Cache ??
                                  new CompiledMarkdownCache();
@@ -710,6 +713,221 @@ public sealed class McpReadApi : IMcpReadApi
         }
     }
 
+    public async Task<Result<McpBrowseTranslationPage>> BrowseTranslationsAsync(int skip, int limit, string? query,
+        IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (skip < 0 || limit < 1)
+            {
+                return Result<McpBrowseTranslationPage>.Failure(AppErrorCodes.ValidationFailed,
+                    "skip must be non-negative and limit must be positive.");
+            }
+
+            DocumentFilter filter = BuildDocumentBrowseFilter(where);
+            string queryClause = string.IsNullOrWhiteSpace(query)
+                ? string.Empty
+                : " and instr(lower(coalesce(d.title, '')), lower(@Query)) > 0";
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            int domainTotal = await connection.ExecuteScalarAsync<int>(
+                "select count(1) from document_instances;");
+            Dictionary<string, object> countParameters = new(filter.Parameters, StringComparer.Ordinal);
+            if (queryClause.Length > 0)
+            {
+                countParameters["Query"] = query!;
+            }
+
+            int filteredTotal = await connection.ExecuteScalarAsync<int>(
+                $"select count(1) from ({DocumentBrowseProjection}) d{filter.Sql}{queryClause};", countParameters);
+            Dictionary<string, object> pageParameters = new(countParameters, StringComparer.Ordinal)
+            {
+                ["Limit"] = limit,
+                ["Skip"] = skip
+            };
+            IReadOnlyList<TranslationDocumentRow> rows = (await connection.QueryAsync<TranslationDocumentRow>(
+                $$"""
+                  select d.document_instance_id, d.title, d.item_id,
+                         coalesce(prog.page_count, 0) as page_count,
+                         coalesce(prog.translated_page_count, 0) as translated_page_count,
+                         coalesce(prog.aligned_page_count, 0) as aligned_page_count,
+                         coalesce(prog.stale_page_count, 0) as stale_page_count
+                  from ({{DocumentBrowseProjection}}) d
+                  left join ({{TranslationProgressProjection}}) prog
+                         on prog.document_instance_id = d.document_instance_id
+                  {{filter.Sql}}{{queryClause}}
+                  order by d.created_at desc, d.document_instance_id
+                  limit @Limit offset @Skip;
+                  """, pageParameters)).ToArray();
+            return Result<McpBrowseTranslationPage>.Success(new McpBrowseTranslationPage(
+                rows.Select(row => new McpTranslationDocumentRow(
+                    DocumentInstanceId.Parse(row.DocumentInstanceId), row.Title, ParseOptionalItemId(row.ItemId),
+                    row.PageCount,
+                    row.TranslatedPageCount,
+                    Math.Max(0, row.AlignedPageCount - row.TranslatedPageCount),
+                    Math.Max(0, row.PageCount - row.AlignedPageCount - row.StalePageCount),
+                    row.StalePageCount)).ToArray(),
+                skip + rows.Count < filteredTotal,
+                domainTotal,
+                filteredTotal));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpBrowseTranslationPage>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpTranslationOutlineResponse>> GetTranslationOutlineAsync(
+        DocumentInstanceId documentInstanceId, string? query = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
+            await connection.OpenAsync(cancellationToken);
+            DocumentOwnerRow? owner = await connection.QuerySingleOrDefaultAsync<DocumentOwnerRow>(
+                "select title, item_id as ItemId from document_instances where document_instance_id = @Id;",
+                new { Id = documentInstanceId.ToString() });
+            if (owner is null || owner.Title is null)
+            {
+                return Result<McpTranslationOutlineResponse>.Failure(AppErrorCodes.NotFound,
+                    "Document was not found.");
+            }
+
+            string queryClause = string.IsNullOrWhiteSpace(query)
+                ? string.Empty
+                : " and instr(lower(coalesce(p.page_label, '')), lower(@Query)) > 0";
+            IReadOnlyList<TranslationPageRow> rows = (await connection.QueryAsync<TranslationPageRow>(
+                $$"""
+                  select p.page_id as PageId, p.page_label as PageLabel, p.page_index as PageIndex,
+                         cr.tree_revision_id as CurrentRevisionId,
+                         ptr.source_tree_revision_id as SourceRevisionId,
+                         coalesce(tb.translated_boxes, 0) as TranslatedBoxCount,
+                         coalesce(bc.total_boxes, 0) as TotalBoxCount
+                  from pages p
+                  left join (select page_id, tree_revision_id from document_tree_revisions
+                             where status = 'committed' and is_current = 1) cr on cr.page_id = p.page_id
+                  left join page_translations ptr on ptr.page_id = p.page_id
+                  left join (select page_id, count(1) as translated_boxes
+                             from translation_boxes group by page_id) tb on tb.page_id = p.page_id
+                  left join (select b.page_id, count(1) as total_boxes
+                             from document_boxes b
+                             join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+                             where r.status = 'committed' and r.is_current = 1
+                               and (b.box_type <> 'logical_page' or b.payload_json is not null)
+                             group by b.page_id) bc on bc.page_id = p.page_id
+                  where p.document_instance_id = @Id{{queryClause}}
+                  order by p.page_index;
+                  """,
+                new { Id = documentInstanceId.ToString(), Query = query ?? string.Empty })).ToArray();
+            return Result<McpTranslationOutlineResponse>.Success(new McpTranslationOutlineResponse(
+                documentInstanceId, owner.Title,
+                rows.Select(row => new McpTranslationPageRow(
+                    PageId.Parse(row.PageId), row.PageLabel, row.PageIndex, row.TranslatedBoxCount,
+                    row.TotalBoxCount,
+                    TranslationStatusFor(row.SourceRevisionId, row.CurrentRevisionId, row.TranslatedBoxCount,
+                        row.TotalBoxCount),
+                    McpResourceUris.TranslationPageUri(documentInstanceId, row.PageIndex + 1))).ToArray(),
+                ParseOptionalItemId(owner.ItemId)));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpTranslationOutlineResponse>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    public async Task<Result<McpPageTranslationResponse>> GetPageTranslationAsync(
+        McpPageTranslationRequest request, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (_pageTranslations is null)
+            {
+                return Result<McpPageTranslationResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+                    "Page translation support is not configured.");
+            }
+
+            Result<McpDocumentOutlineResponse> outline = await GetDocumentOutlineAsync(request.DocumentInstanceId,
+                cancellationToken);
+            if (outline.IsFailure)
+            {
+                return Result<McpPageTranslationResponse>.Failure(outline.ErrorCode!, outline.ErrorMessage!);
+            }
+
+            McpDocumentPageRef? pageRef = outline.Value.Pages.FirstOrDefault(page => page.PageId == request.PageId);
+            if (pageRef is null)
+            {
+                return Result<McpPageTranslationResponse>.Failure(AppErrorCodes.NotFound,
+                    $"Page '{request.PageId}' does not belong to document '{request.DocumentInstanceId}'.");
+            }
+
+            TranslatedPageMarkdown? translated = await _pageTranslations.GetPageTranslationAsync(
+                request.DocumentInstanceId, request.PageId, cancellationToken);
+            if (translated is null)
+            {
+                return Result<McpPageTranslationResponse>.Failure(AppErrorCodes.NotFound,
+                    $"Page '{request.PageId}' has no translation yet.");
+            }
+
+            return Result<McpPageTranslationResponse>.Success(new McpPageTranslationResponse(
+                request.PageId, request.DocumentInstanceId, pageRef.PageLabel, pageRef.PageIndex,
+                translated.Markdown, translated.Status.SourceTreeRevisionId, Project(translated.Status)));
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.mcp-read-api"))
+        {
+            return Result<McpPageTranslationResponse>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {ex.Message}");
+        }
+    }
+
+    private static McpTranslationStatusProjection Project(PageTranslationStatus status)
+    {
+        return new McpTranslationStatusProjection(
+            status.TranslatedBoxCount,
+            status.TotalBoxCount,
+            status.StaleBoxIds.Select(boxId => boxId.ToString()).ToArray(),
+            status.SourceTreeRevisionId.ToString(),
+            status.IsCurrent);
+    }
+
+    private static string TranslationStatusFor(string? sourceRevisionId, string? currentRevisionId,
+        int translatedBoxCount, int totalBoxCount)
+    {
+        if (sourceRevisionId is null)
+        {
+            return McpTranslationStatus.Untranslated;
+        }
+
+        if (currentRevisionId is null ||
+            !string.Equals(sourceRevisionId, currentRevisionId, StringComparison.Ordinal))
+        {
+            return McpTranslationStatus.Stale;
+        }
+
+        if (translatedBoxCount <= 0)
+        {
+            return McpTranslationStatus.Untranslated;
+        }
+
+        return translatedBoxCount >= totalBoxCount
+            ? McpTranslationStatus.Translated
+            : McpTranslationStatus.Partial;
+    }
+
     public async Task<Result<McpDocumentOutlineResponse>> GetDocumentOutlineAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
@@ -1301,6 +1519,43 @@ public sealed class McpReadApi : IMcpReadApi
          left join file_assets fa on fa.file_asset_id = di.file_asset_id
          """;
 
+    /// <summary>
+    /// Per-document translation progress aggregates. A page is aligned when its stored rows
+    /// already track the page's current committed revision; it is stale when that revision has
+    /// moved on (any content change produces a new revision id, so no payload hashing is needed
+    /// here). Fully translated pages are the aligned pages whose row count covers every current
+    /// content box.
+    /// </summary>
+    private static string TranslationProgressProjection =>
+        """
+        select p.document_instance_id,
+               count(1) as page_count,
+               sum(case when ptr.source_tree_revision_id is not null and cr.tree_revision_id is not null
+                             and ptr.source_tree_revision_id = cr.tree_revision_id then 1 else 0 end)
+                   as aligned_page_count,
+               sum(case when ptr.source_tree_revision_id is not null
+                             and (cr.tree_revision_id is null
+                                  or ptr.source_tree_revision_id <> cr.tree_revision_id)
+                        then 1 else 0 end) as stale_page_count,
+               sum(case when ptr.source_tree_revision_id is not null and cr.tree_revision_id is not null
+                             and ptr.source_tree_revision_id = cr.tree_revision_id
+                             and tb.translated_boxes > 0 and tb.translated_boxes >= bc.total_boxes
+                        then 1 else 0 end) as translated_page_count
+        from pages p
+        left join (select page_id, tree_revision_id from document_tree_revisions
+                   where status = 'committed' and is_current = 1) cr on cr.page_id = p.page_id
+        left join page_translations ptr on ptr.page_id = p.page_id
+        left join (select page_id, count(1) as translated_boxes
+                   from translation_boxes group by page_id) tb on tb.page_id = p.page_id
+        left join (select b.page_id, count(1) as total_boxes
+                   from document_boxes b
+                   join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+                   where r.status = 'committed' and r.is_current = 1
+                     and (b.box_type <> 'logical_page' or b.payload_json is not null)
+                   group by b.page_id) bc on bc.page_id = p.page_id
+        group by p.document_instance_id
+        """;
+
     private static ItemFilter BuildItemBrowseFilter(IReadOnlyList<McpWhereClause>? where)
     {
         List<string> clauses = new();
@@ -1476,5 +1731,27 @@ public sealed class McpReadApi : IMcpReadApi
         public string PageId { get; set; } = "";
         public string? PageLabel { get; set; }
         public int PageIndex { get; set; }
+    }
+
+    private sealed class TranslationDocumentRow
+    {
+        public string DocumentInstanceId { get; set; } = "";
+        public string? ItemId { get; set; }
+        public string? Title { get; set; }
+        public int PageCount { get; set; }
+        public int TranslatedPageCount { get; set; }
+        public int AlignedPageCount { get; set; }
+        public int StalePageCount { get; set; }
+    }
+
+    private sealed class TranslationPageRow
+    {
+        public string PageId { get; set; } = "";
+        public string? PageLabel { get; set; }
+        public int PageIndex { get; set; }
+        public string? CurrentRevisionId { get; set; }
+        public string? SourceRevisionId { get; set; }
+        public int TranslatedBoxCount { get; set; }
+        public int TotalBoxCount { get; set; }
     }
 }

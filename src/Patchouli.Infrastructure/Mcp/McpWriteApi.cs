@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Csl;
 using Patchouli.Core.Results;
@@ -14,12 +15,47 @@ public sealed class McpWriteApi : IMcpWriteApi
     private readonly IItemService _items;
     private readonly IBiblatexHelperClient _biblatex;
     private readonly ICslStyleStore _styles;
+    private readonly IPageTranslationService? _pageTranslations;
 
-    public McpWriteApi(IItemService items, IBiblatexHelperClient biblatex, ICslStyleStore styles)
+    public McpWriteApi(IItemService items, IBiblatexHelperClient biblatex, ICslStyleStore styles,
+        IPageTranslationService? pageTranslations = null)
     {
         _items = items;
         _biblatex = biblatex;
         _styles = styles;
+        _pageTranslations = pageTranslations;
+    }
+
+    public async Task<Result<McpPutResponse>> PutPageTranslationAsync(
+        string uri,
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        string content,
+        CancellationToken cancellationToken = default)
+    {
+        if (_pageTranslations is null)
+        {
+            return Result<McpPutResponse>.Failure(AppErrorCodes.UnsupportedOperation,
+                "Page translation support is not configured.");
+        }
+
+        Result<PageTranslationStatus> result = await _pageTranslations.PutPageTranslationAsync(
+            documentInstanceId, pageId, content ?? string.Empty, cancellationToken);
+        if (result.IsFailure)
+        {
+            return Result<McpPutResponse>.Failure(
+                result.ErrorCode!, result.ErrorMessage!, result.Conflicts, result.Details);
+        }
+
+        IReadOnlyList<string> warnings = result.Value.TranslatedBoxCount < result.Value.TotalBoxCount
+            ? new[]
+            {
+                $"TRANSLATION_INCOMPLETE: {result.Value.TranslatedBoxCount} of " +
+                $"{result.Value.TotalBoxCount} content boxes now have translations; the rest still render their source text."
+            }
+            : [];
+        return Result<McpPutResponse>.Success(new McpPutResponse(
+            uri, "translation_page", true, ContentBytes(content ?? string.Empty), warnings));
     }
 
     public async Task<Result<McpPutResponse>> PutAsync(

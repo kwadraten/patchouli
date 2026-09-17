@@ -64,6 +64,38 @@ public sealed record McpStyleLongEntry(
     bool StyleEnabled);
 
 /// <summary>
+/// Translation-directory entry for one document. The progress counters are scope-specific and
+/// intentionally present in the default projection: the whole point of browsing
+/// <c>patchouli://translations/</c> is to find pages that still need translation work.
+/// </summary>
+public sealed record McpTranslationDocumentEntry(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("page_count")]
+    int PageCount,
+    [property: JsonPropertyName("translated_page_count")]
+    int TranslatedPageCount,
+    [property: JsonPropertyName("partial_page_count")]
+    int PartialPageCount,
+    [property: JsonPropertyName("untranslated_page_count")]
+    int UntranslatedPageCount,
+    [property: JsonPropertyName("stale_page_count")]
+    int StalePageCount);
+
+/// <summary>Translation-directory entry for one page, including its current status.</summary>
+public sealed record McpTranslationPageEntry(
+    [property: JsonPropertyName("uri")] string Uri,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("translation_status")]
+    string TranslationStatus,
+    [property: JsonPropertyName("translated_box_count")]
+    int TranslatedBoxCount,
+    [property: JsonPropertyName("total_box_count")]
+    int TotalBoxCount);
+
+/// <summary>
 /// Long projection of the fixed <c>patchouli://library.toon</c> singleton. It carries only the
 /// universal entry fields because library identity, tags, and collections are already the
 /// resource content returned by <c>fetch</c>; it is never an Item projection.
@@ -99,7 +131,10 @@ public sealed record McpFetchResult(
     string? Continuation,
     [property: JsonPropertyName("next_range")]
     string? NextRange,
-    [property: JsonPropertyName("error")] string? Error);
+    [property: JsonPropertyName("error")] string? Error,
+    [property: JsonPropertyName("translation")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    McpTranslationStatusProjection? Translation = null);
 
 public sealed record McpCiteRequest(
     IReadOnlyList<string> Refs,
@@ -139,7 +174,10 @@ public sealed record McpPutResult(
     [property: JsonPropertyName("committed")]
     bool Committed,
     [property: JsonPropertyName("content_bytes")]
-    int ContentBytes);
+    int ContentBytes,
+    [property: JsonPropertyName("translation_errors")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpTranslationStructureError>? TranslationErrors = null);
 
 /// <summary>Stable warning names rendered as compact terminal-style message lines.</summary>
 public static class McpWarningCodes

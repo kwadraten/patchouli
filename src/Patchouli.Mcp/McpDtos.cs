@@ -140,6 +140,43 @@ public sealed record McpPageBlock(
     bool Suppressed,
     NormalizedBBox? BBox);
 
+/// <summary>Request for the derived translation of one page.</summary>
+public sealed record McpPageTranslationRequest(DocumentInstanceId DocumentInstanceId, PageId PageId);
+
+/// <summary>
+/// Translation progress of one page projected for agents. <see cref="StaleBoxIds"/> lists the
+/// content boxes of the current revision that still render their source text, so an agent can
+/// translate exactly those boxes next.
+/// </summary>
+public sealed record McpTranslationStatusProjection(
+    [property: JsonPropertyName("translated_box_count")]
+    int TranslatedBoxCount,
+    [property: JsonPropertyName("total_box_count")]
+    int TotalBoxCount,
+    [property: JsonPropertyName("stale_box_ids")]
+    IReadOnlyList<string> StaleBoxIds,
+    [property: JsonPropertyName("source_tree_revision_id")]
+    string SourceTreeRevisionId,
+    [property: JsonPropertyName("current")]
+    bool IsCurrent);
+
+public sealed record McpPageTranslationResponse(
+    PageId PageId,
+    DocumentInstanceId DocumentInstanceId,
+    string? PageLabel,
+    int PageIndex,
+    string Markdown,
+    DocumentTreeRevisionId TreeRevisionId,
+    McpTranslationStatusProjection Status);
+
+/// <summary>One structural mismatch between a submitted translation and its source page.</summary>
+public sealed record McpTranslationStructureError(
+    [property: JsonPropertyName("block_index")]
+    int BlockIndex,
+    [property: JsonPropertyName("expected")]
+    string Expected,
+    [property: JsonPropertyName("actual")] string Actual);
+
 public sealed record McpSearchContextRequest(
     SearchUnitId SearchUnitId,
     int Before = 2,

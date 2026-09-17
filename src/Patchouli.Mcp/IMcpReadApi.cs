@@ -54,6 +54,30 @@ public interface IMcpReadApi
     Task<Result<McpBrowseStylePage>> BrowseStylesAsync(int skip, int limit,
         IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Browses the derived <c>patchouli://translations/</c> directory. Each row carries the
+    /// translation progress of one document against its pages' current committed revisions.
+    /// When <paramref name="query"/> is present it filters document titles case-insensitively.
+    /// </summary>
+    Task<Result<McpBrowseTranslationPage>> BrowseTranslationsAsync(int skip, int limit, string? query,
+        IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the page list of one document with each page's translation status. The page order
+    /// and labels match <see cref="GetDocumentOutlineAsync"/>; <paramref name="query"/> filters
+    /// page labels case-insensitively.
+    /// </summary>
+    Task<Result<McpTranslationOutlineResponse>> GetTranslationOutlineAsync(
+        DocumentInstanceId documentInstanceId, string? query = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the compiled whole-page translation. A page without any translation fails with
+    /// <see cref="AppErrorCodes.NotFound"/> so callers can point the agent at the source page.
+    /// </summary>
+    Task<Result<McpPageTranslationResponse>> GetPageTranslationAsync(McpPageTranslationRequest request,
+        CancellationToken cancellationToken = default);
+
     Task<Result<McpDocumentOutlineResponse>> GetDocumentOutlineAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 

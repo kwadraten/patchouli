@@ -1,3 +1,5 @@
+using Patchouli.Core.Documents;
+using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
 
 namespace Patchouli.Mcp;
@@ -21,5 +23,18 @@ public interface IMcpWriteApi
 {
     Task<Result<McpPutResponse>> PutAsync(
         McpPutRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces the full derived translation of one page. The submitted markdown must be
+    /// structurally identical to the page's current source markdown; on mismatch the failure
+    /// carries <see cref="TranslationStructureFailureDetails"/> describing every block mismatch.
+    /// Replaces the page's rows atomically and has no base-revision precondition.
+    /// </summary>
+    Task<Result<McpPutResponse>> PutPageTranslationAsync(
+        string uri,
+        DocumentInstanceId documentInstanceId,
+        PageId pageId,
+        string content,
         CancellationToken cancellationToken = default);
 }
