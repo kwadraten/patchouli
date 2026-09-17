@@ -12,7 +12,7 @@ using Patchouli.Infrastructure.Database;
 
 namespace Patchouli.Infrastructure.Documents;
 
-public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEditor
+public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEditor, ITransactionalDocumentTreeService
 {
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
@@ -294,11 +294,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             });
     }
 
-    private async Task<Result<DocumentTreeRevision>> CommitWorkingRevisionInTransactionAsync(
+    public async Task<Result<DocumentTreeRevision>> CommitWorkingRevisionInTransactionAsync(
         SqliteConnection connection,
         DbTransaction transaction,
         DocumentTreeRevisionId workingRevisionId,
-        DocumentCommitId? commitId)
+        DocumentCommitId? commitId = null,
+        CancellationToken cancellationToken = default)
     {
         DocumentTreeRevisionRow? row = await GetRevisionRowAsync(connection, transaction, workingRevisionId);
         if (row is null || row.Status != DocumentTreeRevisionStatus.Working)
@@ -348,6 +349,30 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         });
     }
 
+    public async Task<Result<IReadOnlyList<DocumentTreeRevision>>> CommitWorkingRevisionsInTransactionAsync(
+        SqliteConnection connection,
+        DbTransaction transaction,
+        IReadOnlyList<DocumentTreeRevisionId> workingRevisionIds,
+        DocumentCommitId? commitId = null,
+        CancellationToken cancellationToken = default)
+    {
+        List<DocumentTreeRevision> committed = new(workingRevisionIds.Count);
+        foreach (DocumentTreeRevisionId revisionId in workingRevisionIds)
+        {
+            Result<DocumentTreeRevision> result = await CommitWorkingRevisionInTransactionAsync(
+                connection, transaction, revisionId, commitId, cancellationToken).ConfigureAwait(false);
+            if (result.IsFailure)
+            {
+                return Result<IReadOnlyList<DocumentTreeRevision>>.Failure(
+                    result.ErrorCode!, result.ErrorMessage!, result.Conflicts);
+            }
+
+            committed.Add(result.Value);
+        }
+
+        return Result<IReadOnlyList<DocumentTreeRevision>>.Success(committed);
+    }
+
     public Task<Result<DocumentCommit>> CreateDocumentCommitAsync(
         DocumentInstanceId documentInstanceId,
         string source,
@@ -362,16 +387,17 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
         return InTransactionAsync(
             (connection, transaction) => CreateDocumentCommitInTransactionAsync(
-                connection, transaction, documentInstanceId, source.Trim(), message),
+                connection, transaction, documentInstanceId, source.Trim(), message, cancellationToken),
             cancellationToken);
     }
 
-    private async Task<Result<DocumentCommit>> CreateDocumentCommitInTransactionAsync(
+    public async Task<Result<DocumentCommit>> CreateDocumentCommitInTransactionAsync(
         SqliteConnection connection,
         DbTransaction transaction,
         DocumentInstanceId documentInstanceId,
         string source,
-        string? message)
+        string? message = null,
+        CancellationToken cancellationToken = default)
     {
         Result document = await ValidateDocumentInstanceAsync(connection, transaction, documentInstanceId);
         if (document.IsFailure)

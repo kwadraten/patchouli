@@ -29,7 +29,26 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
             return Result<CompiledMarkdown>.Failure(boxesResult.ErrorCode!, boxesResult.ErrorMessage!);
         }
 
-        IReadOnlyList<DocumentBox> boxes = boxesResult.Value;
+        return Result<CompiledMarkdown>.Success(DocumentMarkdownRenderer.Render(
+            boxesResult.Value, _markdown, includeSuppressed, includeComplexTableHtml, null));
+    }
+}
+
+/// <summary>
+/// Walks a page's box tree and renders markdown with a source map back to box ids. The renderer
+/// is shared by the document compiler and the translation compiler: callers may supply a
+/// <c>fragmentOverride</c> that substitutes a box's rendered fragment (for example a translated
+/// payload) while boxes returning <c>null</c> fall back to their source rendering.
+/// </summary>
+internal static class DocumentMarkdownRenderer
+{
+    public static CompiledMarkdown Render(
+        IReadOnlyList<DocumentBox> boxes,
+        IMarkdownEngine markdown,
+        bool includeSuppressed,
+        bool includeComplexTableHtml,
+        Func<DocumentBox, string?>? fragmentOverride)
+    {
         List<MarkdownDiagnostic> diagnostics = new();
         List<PendingMap> maps = new();
         StringBuilder output = new();
@@ -46,25 +65,27 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
                 }
 
                 AppendSubtree(output, maps, diagnostics, boxes, roots[index], includeSuppressed,
-                    includeComplexTableHtml);
+                    includeComplexTableHtml, fragmentOverride);
             }
         }
         else
         {
             foreach (DocumentBox box in roots)
             {
-                AppendSubtree(output, maps, diagnostics, boxes, box, includeSuppressed, includeComplexTableHtml);
+                AppendSubtree(output, maps, diagnostics, boxes, box, includeSuppressed, includeComplexTableHtml,
+                    fragmentOverride);
             }
         }
 
-        string markdown = output.ToString().TrimEnd();
-        MarkdownDocumentModel document = _markdown.Parse(markdown);
+        string compiledMarkdown = output.ToString().TrimEnd();
+        MarkdownDocumentModel document = markdown.Parse(compiledMarkdown);
+        MarkdownBlock[] documentBlocks = document.Blocks.ToArray();
         MarkdownSourceMapEntry[] sourceMap = maps.Select(map =>
         {
-            int firstNode = document.Blocks.ToList().FindIndex(block => Intersects(block, map));
+            int firstNode = Array.FindIndex(documentBlocks, block => Intersects(block, map));
             int nodeCount = firstNode < 0
                 ? 0
-                : document.Blocks.Skip(firstNode).TakeWhile(block => Intersects(block, map)).Count();
+                : documentBlocks.Skip(firstNode).TakeWhile(block => Intersects(block, map)).Count();
             return new MarkdownSourceMapEntry(
                 map.BoxId,
                 map.Start,
@@ -72,7 +93,34 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
                 Math.Max(0, firstNode),
                 nodeCount);
         }).ToArray();
-        return Result<CompiledMarkdown>.Success(new CompiledMarkdown(markdown, sourceMap, diagnostics, document));
+        return new CompiledMarkdown(compiledMarkdown, sourceMap, diagnostics, document);
+    }
+
+    public static string? CompileBoxFragment(DocumentBox box, bool includeComplexTableHtml)
+    {
+        return box.Payload switch
+        {
+            TextBoxPayload text when box.BoxType == DocumentBoxType.Title =>
+                $"{new string('#', box.HeadingLevel ?? 1)} {text.Markdown.Trim()}",
+            TextBoxPayload text => text.Markdown,
+            EquationBoxPayload equation => $"$$\n{equation.Latex.Trim()}\n$$",
+            ListBoxPayload list => list.Markdown,
+            TableBoxPayload table => includeComplexTableHtml && table.Markdown.Trim() == "[Table]" &&
+                                     !string.IsNullOrWhiteSpace(table.Html)
+                ? table.Html
+                : table.Markdown,
+            CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
+            MediaBoxPayload media => CompileMedia(box.BoxType, media),
+            null when box.BoxType == DocumentBoxType.LogicalPage => null,
+            _ => null
+        };
+    }
+
+    public static string CompileCode(string code, string? language)
+    {
+        int longestRun = LongestBacktickRun(code);
+        string fence = new('`', Math.Max(3, longestRun + 1));
+        return $"{fence}{language}\n{code.TrimEnd()}\n{fence}";
     }
 
     private static void AppendBox(
@@ -81,14 +129,15 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         List<MarkdownDiagnostic> diagnostics,
         DocumentBox box,
         bool includeSuppressed,
-        bool includeComplexTableHtml)
+        bool includeComplexTableHtml,
+        Func<DocumentBox, string?>? fragmentOverride)
     {
         if (box.Suppressed && !includeSuppressed)
         {
             return;
         }
 
-        string? fragment = CompileBox(box, diagnostics, includeComplexTableHtml);
+        string? fragment = fragmentOverride?.Invoke(box) ?? CompileBox(box, diagnostics, includeComplexTableHtml);
         if (string.IsNullOrWhiteSpace(fragment))
         {
             return;
@@ -111,12 +160,14 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         IReadOnlyList<DocumentBox> boxes,
         DocumentBox box,
         bool includeSuppressed,
-        bool includeComplexTableHtml)
+        bool includeComplexTableHtml,
+        Func<DocumentBox, string?>? fragmentOverride)
     {
-        AppendBox(output, maps, diagnostics, box, includeSuppressed, includeComplexTableHtml);
+        AppendBox(output, maps, diagnostics, box, includeSuppressed, includeComplexTableHtml, fragmentOverride);
         foreach (DocumentBox child in DocumentBoxProjection.Siblings(boxes, box.BoxId))
         {
-            AppendSubtree(output, maps, diagnostics, boxes, child, includeSuppressed, includeComplexTableHtml);
+            AppendSubtree(output, maps, diagnostics, boxes, child, includeSuppressed, includeComplexTableHtml,
+                fragmentOverride);
         }
     }
 
@@ -135,29 +186,13 @@ public sealed class DocumentMarkdownCompiler : IDocumentMarkdownCompiler
         List<MarkdownDiagnostic> diagnostics,
         bool includeComplexTableHtml)
     {
-        return box.Payload switch
+        string? fragment = CompileBoxFragment(box, includeComplexTableHtml);
+        if (fragment is null && box.Payload is not null && box.BoxType != DocumentBoxType.LogicalPage)
         {
-            TextBoxPayload text when box.BoxType == DocumentBoxType.Title =>
-                $"{new string('#', box.HeadingLevel ?? 1)} {text.Markdown.Trim()}",
-            TextBoxPayload text => text.Markdown,
-            EquationBoxPayload equation => $"$$\n{equation.Latex.Trim()}\n$$",
-            ListBoxPayload list => list.Markdown,
-            TableBoxPayload table => includeComplexTableHtml && table.Markdown.Trim() == "[Table]" &&
-                                     !string.IsNullOrWhiteSpace(table.Html)
-                ? table.Html
-                : table.Markdown,
-            CodeBoxPayload code => CompileCode(code.Code, box.CodeLanguage),
-            MediaBoxPayload media => CompileMedia(box.BoxType, media),
-            null when box.BoxType == DocumentBoxType.LogicalPage => null,
-            _ => AddPayloadDiagnostic(box, diagnostics)
-        };
-    }
+            return AddPayloadDiagnostic(box, diagnostics);
+        }
 
-    private static string CompileCode(string code, string? language)
-    {
-        int longestRun = LongestBacktickRun(code);
-        string fence = new('`', Math.Max(3, longestRun + 1));
-        return $"{fence}{language}\n{code.TrimEnd()}\n{fence}";
+        return fragment;
     }
 
     private static string CompileMedia(string boxType, MediaBoxPayload media)
