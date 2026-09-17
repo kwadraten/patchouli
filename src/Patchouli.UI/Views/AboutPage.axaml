@@ -37,6 +37,9 @@
                     <Grid ColumnDefinitions="*, Auto">
                       <StackPanel Grid.Column="0" VerticalAlignment="Center">
                         <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="15" />
+                        <TextBlock Text="{Binding Author, StringFormat='作者：\{0\}'}" FontSize="13"
+                                   IsVisible="{Binding Author, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                         <TextBlock Text="{Binding License, StringFormat='许可证：\{0\}'}" FontSize="13"
                                    Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                       </StackPanel>

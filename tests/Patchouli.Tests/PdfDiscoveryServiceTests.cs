@@ -1,4 +1,6 @@
 using FluentAssertions;
+using System.Collections.Concurrent;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Infrastructure.Workflows;
 using Patchouli.Core.Files;
 using Patchouli.Core.Import;
@@ -8,6 +10,34 @@ namespace Patchouli.Tests;
 
 public sealed class PdfDiscoveryServiceTests
 {
+    [Fact]
+    public async Task Scan_activity_uses_host_lifetime_and_closes_when_the_old_host_is_cancelled()
+    {
+        string dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"pdfscan-host-{Guid.NewGuid():N}"))
+            .FullName;
+        using HostActivityTracker tracker = new(TimeSpan.Zero);
+        using CancellationTokenSource hostLifetime = new();
+        BlockingDirectoryAdapter adapter = new();
+        PdfDiscoveryService service = new(new FileSearchRootAccess(adapter), tracker, hostLifetime.Token);
+
+        try
+        {
+            Task<PdfScanResult> scan = service.ScanDirectoryAsync(Selected(dir));
+            await adapter.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            tracker.Current.Items.Should().ContainSingle(item => item.Kind == HostActivityKind.Scanning);
+
+            hostLifetime.Cancel();
+            PdfScanResult result = await scan;
+
+            result.ScanStatus.Should().Be(FileSearchRootScanStatuses.Cancelled);
+            tracker.Current.IsBusy.Should().BeFalse();
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     [Fact]
     public async Task ScanDirectoryAsync_returns_only_pdfs()
     {
@@ -169,6 +199,25 @@ public sealed class PdfDiscoveryServiceTests
             CancellationToken cancellationToken)
         {
             throw new OperationCanceledException(cancellationToken);
+        }
+
+        public ValueTask<NativeFileMaterialization> MaterializeFileAsync(string path,
+            CancellationToken cancellationToken)
+        {
+            return ValueTask.FromResult(new NativeFileMaterialization(true));
+        }
+    }
+
+    private sealed class BlockingDirectoryAdapter : INativeFileAccessAdapter
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask<NativeDirectoryResolution> ResolveDirectoryAsync(string path,
+            CancellationToken cancellationToken)
+        {
+            Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("The host cancellation should stop directory resolution.");
         }
 
         public ValueTask<NativeFileMaterialization> MaterializeFileAsync(string path,

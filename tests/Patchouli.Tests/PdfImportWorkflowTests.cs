@@ -1,7 +1,9 @@
 using Dapper;
 using FluentAssertions;
+using System.Collections.Concurrent;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Import;
 using Patchouli.Core.Results;
@@ -18,6 +20,36 @@ namespace Patchouli.Tests;
 
 public sealed class PdfImportWorkflowTests
 {
+    [Fact]
+    public async Task ImportPdf_reports_import_activity_until_database_results_are_committed()
+    {
+        await using ImportContext context = await CreateContextAsync();
+        using HostActivityTracker tracker = new(TimeSpan.Zero);
+        ConcurrentQueue<HostActivityItem> observed = new();
+        tracker.Changed += (_, snapshot) =>
+        {
+            foreach (HostActivityItem item in snapshot.Items)
+            {
+                observed.Enqueue(item);
+            }
+        };
+        PdfImportWorkflow workflow = context.CreateWorkflow(new PdfMetadataReader(), tracker);
+        string pdf = TestFixtures.CopyRealThreePagePdfTo(Path.GetTempPath(), $"activity-{Guid.NewGuid():N}.pdf");
+
+        try
+        {
+            PdfImportResult result = await workflow.ImportPdfAsync(new PdfImportRequest(pdf, "Activity", null, null));
+
+            result.Success.Should().BeTrue(result.ErrorMessage);
+            observed.Should().ContainSingle(item => item.Kind == HostActivityKind.Import);
+            tracker.Current.IsBusy.Should().BeFalse();
+        }
+        finally
+        {
+            File.Delete(pdf);
+        }
+    }
+
     [Fact]
     public async Task ImportPdf_imports_real_fixture_pdf_and_creates_all_pages()
     {
@@ -130,7 +162,9 @@ public sealed class PdfImportWorkflowTests
                 new ItemService(database.ConnectionFactory, library, clock));
         }
 
-        public PdfImportWorkflow CreateWorkflow(IPdfMetadataReader metadataReader)
+        public PdfImportWorkflow CreateWorkflow(
+            IPdfMetadataReader metadataReader,
+            IHostActivityTracker? activityTracker = null)
         {
             return new PdfImportWorkflow(
                 new FileAssetService(Database.ConnectionFactory, Library, Clock),
@@ -139,7 +173,8 @@ public sealed class PdfImportWorkflowTests
                 new PageService(Database.ConnectionFactory, Clock),
                 metadataReader,
                 Clock,
-                ItemTypeInference);
+                ItemTypeInference,
+                activityTracker);
         }
 
         public ValueTask DisposeAsync()

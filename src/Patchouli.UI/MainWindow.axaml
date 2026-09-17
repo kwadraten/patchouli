@@ -7,6 +7,7 @@
         xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
         xmlns:csl="using:Patchouli.UI.ViewModels.Csl"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        xmlns:controls="using:Patchouli.UI.Controls"
         x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
         Title="Patchouli.Net" Icon="/Assets/AppIcon.ico" Background="{DynamicResource SurfaceBrush}">
@@ -165,9 +166,9 @@
             </Style>
           </StackPanel.Styles>
           <ComboBox x:Name="SearchModeCombo" Width="100" Height="24" FontSize="12" VerticalContentAlignment="Center"
-                    ItemsSource="{Binding SearchEvidence.ModeOptions}"
-                    SelectedItem="{Binding SearchEvidence.SelectedMode}"
-                    ToolTip.Tip="{Binding SearchEvidence.SelectedMode.Hint}">
+                    ItemsSource="{Binding ToolbarSearchModeOptions}"
+                    SelectedItem="{Binding ToolbarSearchMode}"
+                    ToolTip.Tip="{Binding ToolbarSearchMode.Hint}">
             <ComboBox.ItemTemplate>
               <DataTemplate x:DataType="local:SearchModeOption">
                 <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center" />
@@ -179,7 +180,7 @@
           <TextBox Width="220" Height="24" FontSize="12" CornerRadius="0" BorderThickness="0"
                    Background="Transparent"
                    PlaceholderText="搜索文献库或输入 patchouli:// URI..."
-                   IsEnabled="{Binding IsSearchEnabled}" Text="{Binding SearchEvidence.Query}"
+                   IsEnabled="{Binding IsSearchEnabled}" Text="{Binding ToolbarSearchQuery}"
                    VerticalContentAlignment="Center" KeyDown="OnToolbarSearchKeyDown">
             <TextBox.InnerLeftContent>
               <lucide:Lucide Icon="Search" Width="12" Height="12" StrokeBrush="{DynamicResource OnSurfaceVariantBrush}"
@@ -232,15 +233,24 @@
     </Grid>
 
     <Border Grid.Row="2" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">
-      <Grid ColumnDefinitions="*,Auto">
-        <TextBlock Text="{Binding Status}" Classes="statusBar" FontSize="12" VerticalAlignment="Center">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <controls:CatStatusIndicator x:Name="CatIndicator"
+                                     Grid.Column="0"
+                                     Margin="0,0,8,0"
+                                     VerticalAlignment="Center"
+                                     IsBusy="{Binding IsActivityBusy}"
+                                     ActivitySummary="{Binding ActivitySummary}"
+                                     SleepReason="{Binding ActivityReason}"
+                                     StatusText="{Binding ActivityDescription}"
+                                     Foreground="{DynamicResource InverseOnSurfaceBrush}" />
+        <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="statusBar" FontSize="12" VerticalAlignment="Center">
           <Classes.error>
             <MultiBinding Converter="{x:Static BoolConverters.Or}">
               <Binding Path="StatusIsError" />
             </MultiBinding>
           </Classes.error>
         </TextBlock>
-        <Button Grid.Column="1" Background="Transparent" BorderThickness="0" Padding="6,2" VerticalAlignment="Center">
+        <Button Grid.Column="2" Background="Transparent" BorderThickness="0" Padding="6,2" VerticalAlignment="Center">
           <Button.Styles>
             <Style Selector="FlyoutPresenter">
               <Setter Property="Background" Value="#2E2E2E" />

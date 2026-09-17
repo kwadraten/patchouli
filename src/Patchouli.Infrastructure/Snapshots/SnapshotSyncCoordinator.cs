@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Conflicts;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -24,23 +25,31 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
     private readonly ISnapshotBranchInspectionService _branchInspection;
     private readonly ISnapshotSyncBindingStore _bindings;
     private readonly IClock _clock;
+    private readonly IHostActivityTracker? _activityTracker;
+    private readonly CancellationToken _hostLifetime;
 
     public SnapshotSyncCoordinator(
         ISnapshotPublisher publisher,
         ISnapshotImporter importer,
         ISnapshotBranchInspectionService branchInspection,
         ISnapshotSyncBindingStore bindings,
-        IClock clock)
+        IClock clock,
+        IHostActivityTracker? activityTracker = null,
+        CancellationToken hostLifetime = default)
     {
         _publisher = publisher;
         _importer = importer;
         _branchInspection = branchInspection;
         _bindings = bindings;
         _clock = clock;
+        _activityTracker = activityTracker;
+        _hostLifetime = hostLifetime;
     }
 
     public async Task<Result<SnapshotSyncStatus>> GetStatusAsync(CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         Result<SnapshotSyncBinding> binding = await _bindings.GetBindingAsync(cancellationToken);
         if (binding.IsFailure)
         {
@@ -100,6 +109,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
 
     public async Task<Result<SnapshotPublishResult>> PublishAsync(CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         Result<SnapshotSyncBinding> resolved = await _bindings.GetBindingAsync(cancellationToken);
         if (resolved.IsFailure)
         {
@@ -122,6 +133,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             await RecordFailureAsync(binding, rootMappings.ErrorMessage!, cancellationToken);
             return Result<SnapshotPublishResult>.Failure(rootMappings.ErrorCode!, rootMappings.ErrorMessage!);
         }
+
+        using IActivityScope? activity = BeginSyncActivity("发布快照");
 
         SemaphoreSlim gate = RootLocks.GetOrAdd(Path.GetFullPath(binding.SyncRoot), _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
@@ -179,6 +192,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         SnapshotExportRequest request,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         if (string.IsNullOrWhiteSpace(request.DestinationDirectory))
         {
             return Result<SnapshotExportResult>.Failure(AppErrorCodes.ValidationFailed,
@@ -205,6 +220,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             return Result<SnapshotExportResult>.Failure(AppErrorCodes.ValidationFailed,
                 "Snapshot package destination must not already exist.");
         }
+
+        using IActivityScope? activity = BeginSyncActivity("导出快照包");
 
         if (PathsOverlap(destination, binding.RuntimeDatabasePath) || PathsOverlap(destination, binding.StagingRoot) ||
             (!string.IsNullOrWhiteSpace(binding.SyncRoot) && PathsOverlap(destination, binding.SyncRoot)))
@@ -294,6 +311,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         SnapshotIncomingRequest request,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         Result<SnapshotSyncBinding> resolved = await _bindings.GetBindingAsync(cancellationToken);
         if (resolved.IsFailure)
         {
@@ -307,6 +326,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             await RecordFailureAsync(binding, valid.ErrorMessage!, cancellationToken);
             return Result<SnapshotIncomingPlan>.Failure(valid.ErrorCode!, valid.ErrorMessage!, details: valid.Details);
         }
+
+        using IActivityScope? activity = BeginSyncActivity("检查传入快照");
 
         try
         {
@@ -422,6 +443,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         SnapshotContentResolutionPlan plan,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         if (!plan.IsExplicitlyConfirmed)
         {
             return Result<SnapshotApplyResult>.Failure("requires_confirmation",
@@ -440,6 +463,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         {
             return Result<SnapshotApplyResult>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
         }
+
+        using IActivityScope? activity = BeginSyncActivity("应用快照");
 
         try
         {
@@ -509,6 +534,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         SnapshotContentResolutionPlan plan,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
+        using IActivityScope? activity = BeginSyncActivity("丢弃传入快照");
         try
         {
             Result discarded = await _branchInspection.DiscardBranchAsync(plan.BranchImportPlan.SourceBranch,
@@ -529,11 +557,15 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         string destinationPath,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         if (string.IsNullOrWhiteSpace(destinationPath))
         {
             return Result<string>.Failure(AppErrorCodes.ValidationFailed,
                 "Choose a destination for the separate library copy.");
         }
+
+        using IActivityScope? activity = BeginSyncActivity("保留传入快照副本");
 
         try
         {
@@ -571,6 +603,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         ConflictActionSelection selection,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation = LinkCancellation(cancellationToken);
+        cancellationToken = linkedCancellation.Token;
         Result<SnapshotSyncBinding> resolved = await _bindings.GetBindingAsync(cancellationToken);
         if (resolved.IsFailure)
         {
@@ -583,6 +617,8 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
         {
             return Result<SnapshotContentResolutionPlan>.Failure(valid.ErrorCode!, valid.ErrorMessage!);
         }
+
+        using IActivityScope? activity = BeginSyncActivity("解决快照冲突");
 
         try
         {
@@ -617,6 +653,16 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             return Result<SnapshotContentResolutionPlan>.Failure(AppErrorCodes.DatabaseError,
                 $"Snapshot conflict resolution failed: {exception.Message}");
         }
+    }
+
+    private IActivityScope? BeginSyncActivity(string detail)
+    {
+        return _activityTracker?.BeginScope("同步资料库", HostActivityKind.Sync, detail);
+    }
+
+    private CancellationTokenSource LinkCancellation(CancellationToken cancellationToken)
+    {
+        return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
     }
 
     private async Task<Result<string>> ResolveIncomingManifestAsync(

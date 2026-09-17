@@ -1,5 +1,6 @@
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
@@ -18,6 +19,8 @@ public sealed class PdfImportWorkflow
     private readonly IPdfMetadataReader _pdfMetadataReader;
     private readonly IClock _clock;
     private readonly IItemTypeInferenceService? _itemTypeInferenceService;
+    private readonly IHostActivityTracker? _activityTracker;
+    private readonly CancellationToken _hostLifetime;
 
     public PdfImportWorkflow(
         IFileAssetService fileAssetService,
@@ -26,7 +29,9 @@ public sealed class PdfImportWorkflow
         IPageService pageService,
         IPdfMetadataReader pdfMetadataReader,
         IClock clock,
-        IItemTypeInferenceService? itemTypeInferenceService = null)
+        IItemTypeInferenceService? itemTypeInferenceService = null,
+        IHostActivityTracker? activityTracker = null,
+        CancellationToken hostLifetime = default)
     {
         _fileAssetService = fileAssetService;
         _itemService = itemService;
@@ -35,12 +40,17 @@ public sealed class PdfImportWorkflow
         _pdfMetadataReader = pdfMetadataReader;
         _clock = clock;
         _itemTypeInferenceService = itemTypeInferenceService;
+        _activityTracker = activityTracker;
+        _hostLifetime = hostLifetime;
     }
 
     public async Task<PdfImportResult> ImportPdfAsync(
         PdfImportRequest request,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
+        cancellationToken = linkedCancellation.Token;
         if (!File.Exists(request.PdfPath))
         {
             return new PdfImportResult(false, "PDF file was not found at the specified path.", null, null, null, null);
@@ -53,6 +63,11 @@ public sealed class PdfImportWorkflow
         {
             return new PdfImportResult(false, "Could not determine page count for this PDF.", null, null, null, null);
         }
+
+        using IActivityScope? activity = _activityTracker?.BeginScope(
+            "导入 PDF",
+            HostActivityKind.Import,
+            Path.GetFileName(request.PdfPath));
 
         Result<FileAsset> fileAssetResult =
             await _fileAssetService.RegisterFileAsync(request.PdfPath, cancellationToken);

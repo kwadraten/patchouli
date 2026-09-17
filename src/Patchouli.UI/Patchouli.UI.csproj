@@ -39,6 +39,13 @@
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
     <AvaloniaResource Include="Assets\AppIcon.ico" />
     <AvaloniaResource Include="Assets\Lucide\*.svg" />
+    <AvaloniaResource Include="Assets\CatWalk\*.svg" />
+    <AvaloniaResource Include="Assets\CatWalk\LICENSE" />
+    <AvaloniaResource Include="Assets\CatWalk\NOTICE" />
+    <AvaloniaResource Include="Assets\CatWalk\SOURCE" />
     <EmbeddedResource Include="..\..\LICENSE" Link="LICENSE" />
+    <EmbeddedResource Include="Assets\CatWalk\LICENSE" Link="Assets\CatWalk\LICENSE" />
+    <EmbeddedResource Include="Assets\CatWalk\NOTICE" Link="Assets\CatWalk\NOTICE" />
+    <EmbeddedResource Include="Assets\CatWalk\SOURCE" Link="Assets\CatWalk\SOURCE" />
   </ItemGroup>
 </Project>

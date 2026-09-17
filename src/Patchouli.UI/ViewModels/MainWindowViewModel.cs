@@ -33,6 +33,7 @@ using Patchouli.Ocr;
 using Patchouli.Core.Search;
 using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Settings;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Import;
 using Patchouli.Host.Lifecycle;
@@ -55,7 +56,7 @@ using Dialogs;
 using Views;
 using Services;
 
-public sealed partial class MainWindowViewModel : ViewModelBase
+public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
 {
     private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
     private readonly IScheduler _timingScheduler;
@@ -81,9 +82,20 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private readonly bool _autoStartMcpServer;
     private readonly bool _enforceRuntimeHostOwnership;
     private PatchouliAppSettings _settings;
+    private readonly IAppSettingsStore _settingsStore;
+    private readonly IHostActivityTracker _activityTracker;
+    private readonly bool _ownsActivityTracker;
+    private IDisposable? _activitySubscription;
     private readonly string? _settingsPath;
     private int _libraryGeneration;
     private bool _queryRewriteEnabledPersisted = true;
+    private bool _synchronizingToolbarSearch;
+    private SettingsViewModel? _settingsViewModel;
+    private LibraryViewModel? _libraryViewModel;
+    private BibliographyViewModel? _bibliographyViewModel;
+    private FileDocumentViewModel? _fileDocumentViewModel;
+    private OcrQueueViewModel? _ocrQueueViewModel;
+    private SearchEvidenceViewModel? _searchEvidenceViewModel;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -99,7 +111,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     partial void OnRuntimeDatabasePathChanged(string value)
     {
-        Settings?.NotifyRuntimeDatabasePathChanged();
+        _settingsViewModel?.NotifyRuntimeDatabasePathChanged();
         OpenDatabaseCommand?.NotifyCanExecuteChanged();
     }
 
@@ -122,6 +134,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public bool McpServerRunning => _mcpHost?.IsRunning == true;
 
+    [ExcludeFromDerivedGeneration] public bool CanStopMcpServer => !_enforceRuntimeHostOwnership;
+
     [ExcludeFromDerivedGeneration] public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
 
     [ObservableProperty] public partial string McpStatusDetail { get; private set; } = "等待运行数据库打开。";
@@ -141,13 +155,23 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public int LibraryGeneration => Volatile.Read(ref _libraryGeneration);
 
+    internal bool IsCurrentLibraryContext(HostServices services, int generation)
+    {
+        return generation == LibraryGeneration && ReferenceEquals(services, _services);
+    }
+
     public IClipboardService Clipboard { get; }
     public IFilePickerService FilePicker { get; }
     public IDialogService Dialogs { get; }
     public IModalOperationRunner ModalOperations { get; }
     public IAppLogger Logger { get; }
     public LibraryShellViewModel Shell { get; }
-    public SettingsViewModel Settings { get; }
+
+    [ExcludeFromDerivedGeneration]
+    public SettingsViewModel Settings =>
+        _settingsViewModel ??= CreateSettingsViewModel();
+
+    [ExcludeFromDerivedGeneration] public bool HasDirtySettings => _settingsViewModel?.HasDirtySections == true;
 
     [ObservableProperty] public partial FirstRunViewModel FirstRun { get; private set; }
 
@@ -190,11 +214,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 return;
             }
 
-            if (!UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryLeftSidebar = value } })
-                    .IsSuccess)
-            {
-                return;
-            }
+            UpdateAppOptionsDeferred(
+                _settings with { Ui = _settings.Ui with { ShowLibraryLeftSidebar = value } }, "Ui");
 
             // Manual Raise notifies ShowLibraryLeftSidebarPreference property change to trigger UI update and downstream generator derivation for IsLibraryLeftSidebarVisible.
             Raise();
@@ -212,11 +233,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 return;
             }
 
-            if (!UpdateAppOptions(_settings with { Ui = _settings.Ui with { ShowLibraryRightSidebar = value } })
-                    .IsSuccess)
-            {
-                return;
-            }
+            UpdateAppOptionsDeferred(
+                _settings with { Ui = _settings.Ui with { ShowLibraryRightSidebar = value } }, "Ui");
 
             // Manual Raise notifies ShowLibraryRightSidebarPreference property change to trigger UI update and downstream generator derivation for IsLibraryRightSidebarVisible.
             Raise();
@@ -272,7 +290,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     [ObservableProperty] public partial string PdfTabTitle { get; private set; } = "";
 
-    public LibraryViewModel Library { get; }
+    [ExcludeFromDerivedGeneration]
+    public LibraryViewModel Library =>
+        _libraryViewModel ??= CreateWithActivityTracker(() => new LibraryViewModel(this));
 
     [ExcludeFromDerivedGeneration]
     public PdfWorkspaceViewModel PdfWorkspace =>
@@ -283,13 +303,61 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public ItemEditorViewModel ItemEditor => GetWorkspaceContent<ItemEditorViewModel>(WorkspaceTabKind.ItemEditor) ??
                                              throw new InvalidOperationException("Item editor tab is not open.");
 
-    public BibliographyViewModel Bibliography { get; }
-    public FileDocumentViewModel FileDocument { get; }
-    public OcrQueueViewModel OcrQueue { get; }
-    public SearchEvidenceViewModel SearchEvidence { get; }
-    public McpPreviewViewModel McpPreview { get; }
-    public SnapshotViewModel Snapshot { get; }
-    public AboutViewModel About { get; }
+    [ExcludeFromDerivedGeneration]
+    public BibliographyViewModel Bibliography =>
+        _bibliographyViewModel ??= CreateWithActivityTracker(() => new BibliographyViewModel(this));
+
+    [ExcludeFromDerivedGeneration]
+    public FileDocumentViewModel FileDocument =>
+        _fileDocumentViewModel ??= CreateWithActivityTracker(() => new FileDocumentViewModel(this));
+
+    [ExcludeFromDerivedGeneration]
+    public OcrQueueViewModel OcrQueue =>
+        _ocrQueueViewModel ??= CreateWithActivityTracker(() => new OcrQueueViewModel(this));
+
+    [ExcludeFromDerivedGeneration]
+    public SearchEvidenceViewModel SearchEvidence =>
+        _searchEvidenceViewModel ??= CreateSearchEvidenceViewModel();
+
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<SearchModeOption> ToolbarSearchModeOptions => SearchEvidenceViewModel.AvailableModeOptions;
+
+    [ObservableProperty] public partial string ToolbarSearchQuery { get; set; } = "";
+
+    [ObservableProperty]
+    public partial SearchModeOption ToolbarSearchMode { get; set; } = SearchEvidenceViewModel.AvailableModeOptions[1];
+
+    partial void OnToolbarSearchQueryChanged(string value)
+    {
+        if (!_synchronizingToolbarSearch && _searchEvidenceViewModel is { } search)
+        {
+            search.Query = value;
+        }
+    }
+
+    partial void OnToolbarSearchModeChanged(SearchModeOption value)
+    {
+        if (!_synchronizingToolbarSearch && _searchEvidenceViewModel is { } search)
+        {
+            search.SelectedMode = value;
+        }
+    }
+
+    private McpPreviewViewModel? _mcpPreview;
+
+    [ExcludeFromDerivedGeneration]
+    public McpPreviewViewModel McpPreview =>
+        _mcpPreview ??= CreateWithActivityTracker(() => new McpPreviewViewModel(this));
+
+    private SnapshotViewModel? _snapshot;
+
+    [ExcludeFromDerivedGeneration] public SnapshotViewModel Snapshot => _snapshot ??= CreateSnapshotViewModel();
+
+    private AboutViewModel? _about;
+
+    [ExcludeFromDerivedGeneration]
+    public AboutViewModel About => _about ??= CreateWithActivityTracker(() => new AboutViewModel(this));
+
     public AsyncCommand OpenDatabaseCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
     public AsyncCommand ShowLibraryCommand { get; }
@@ -338,26 +406,81 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     public UiCommandDescriptor CopyBiblatexDescriptor { get; }
 
     [ExcludeFromDerivedGeneration] public PatchouliAppSettings AppOptions => _settings;
+    [ExcludeFromDerivedGeneration] public IAppSettingsStore SettingsStore => _settingsStore;
+    [ExcludeFromDerivedGeneration] public IHostActivityTracker ActivityTracker => _activityTracker;
+
+    [ObservableProperty] public partial bool IsActivityBusy { get; private set; }
+    [ObservableProperty] public partial string? ActivitySummary { get; private set; }
+    [ObservableProperty] public partial string? ActivityReason { get; private set; }
+    [ObservableProperty] public partial string ActivityDescription { get; private set; } = "空闲";
+
+    private void UpdateActivitySnapshot(HostActivitySnapshot snapshot)
+    {
+        IsActivityBusy = snapshot.IsBusy;
+        ActivitySummary = snapshot.ActiveSummary;
+        ActivityReason = snapshot.IsBusy ? null : snapshot.SleepReason;
+        ActivityDescription = FormatActivityDescription(snapshot);
+    }
+
+    public static string FormatActivityDescription(HostActivitySnapshot snapshot)
+    {
+        if (snapshot.IsBusy)
+        {
+            return string.IsNullOrWhiteSpace(snapshot.ActiveSummary)
+                ? "运行中"
+                : $"运行中: {snapshot.ActiveSummary}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.SleepReason))
+        {
+            return $"等待中: {snapshot.SleepReason}";
+        }
+
+        return "空闲";
+    }
+
+    public void UpdateAppOptionsDeferred(Func<PatchouliAppSettings, PatchouliAppSettings> updater,
+        string? fieldCategory = "Ui")
+    {
+        ArgumentNullException.ThrowIfNull(updater);
+        _settings = updater(_settings);
+        _settingsStore.Update(_ => _settings, fieldCategory);
+    }
+
+    public void UpdateAppOptionsDeferred(PatchouliAppSettings settings, string? fieldCategory = "Ui")
+    {
+        UpdateAppOptionsDeferred(_ => settings, fieldCategory);
+    }
 
     public SettingsSaveResult UpdateAppOptions(PatchouliAppSettings settings)
     {
-        SettingsSaveResult saved = settings.Save(_settingsPath);
-        if (!saved.IsSuccess)
-        {
-            return saved;
-        }
+        ApplyAppOptions(settings);
+        _settingsStore.Update(_ => settings);
+        return SettingsSaveResult.Success;
+    }
 
+    public async Task<SettingsSaveResult> UpdateAppOptionsAsync(
+        PatchouliAppSettings settings,
+        string? fieldCategory = null,
+        CancellationToken cancellationToken = default)
+    {
+        ApplyAppOptions(settings);
+        _settingsStore.Update(_ => settings, fieldCategory);
+        return await _settingsStore.SaveImmediatelyAsync(cancellationToken);
+    }
+
+    private void ApplyAppOptions(PatchouliAppSettings settings)
+    {
         _settings = settings;
-        _services?.UpdateMetadataLookupPreferences(_settings.MetadataLookup);
-        _services?.UpdateFileScanExclusions(_settings.FileScanning);
-        return saved;
+        _services?.UpdateMetadataLookupPreferences(settings.MetadataLookup);
+        _services?.UpdateFileScanExclusions(settings.FileScanning);
     }
 
     public async Task<SettingsSaveResult> SaveMetadataLookupSettingsAsync(MetadataLookupAppSettings metadataLookup)
     {
         if (!HasAnyMetadataLookupSyncEnabled())
         {
-            return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
+            return await UpdateAppOptionsAsync(_settings with { MetadataLookup = metadataLookup }, "MetadataLookup");
         }
 
         HostServices services = await ServicesAsync();
@@ -369,7 +492,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
         if (!_settings.Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup, library.Value.LibraryId))
         {
-            return UpdateAppOptions(_settings with { MetadataLookup = metadataLookup });
+            return await UpdateAppOptionsAsync(_settings with { MetadataLookup = metadataLookup }, "MetadataLookup");
         }
 
         MetadataLookupAppSettings normalized = MetadataLookupAppSettings.MergeWithDefaults(metadataLookup.Sources);
@@ -377,7 +500,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             LibrarySettingKeys.MetadataLookup,
             normalized,
             _settings.Sync.DeviceId,
-            _ => Task.FromResult(UpdateAppOptions(_settings with { MetadataLookup = normalized })),
+            _ => UpdateAppOptionsAsync(_settings with { MetadataLookup = normalized }, "MetadataLookup"),
             services.UpdateMetadataLookupPreferences);
     }
 
@@ -420,7 +543,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                 LibrarySettingKeys.MetadataLookup,
                 normalized,
                 _settings.Sync.DeviceId,
-                _ => Task.FromResult(UpdateAppOptions(_settings with { Sync = nextSync })),
+                _ => UpdateAppOptionsAsync(_settings with { Sync = nextSync }, "Sync"),
                 services.UpdateMetadataLookupPreferences);
         }
 
@@ -428,16 +551,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             LibrarySettingKeys.MetadataLookup,
             currentlyEnabled,
             _settings.MetadataLookup,
-            (materialized, _) => Task.FromResult(UpdateAppOptions(_settings with
+            (materialized, _) => UpdateAppOptionsAsync(_settings with
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources),
                 Sync = nextSync
-            })),
+            }, null),
             materialized => services.UpdateMetadataLookupPreferences(
                 MetadataLookupAppSettings.MergeWithDefaults(materialized.Sources)));
     }
 
-    private void PersistRuntimeDatabasePathIfEnabled()
+    private async Task PersistRuntimeDatabasePathIfEnabledAsync()
     {
         if (!_settings.Runtime.RememberLastDatabase)
         {
@@ -451,14 +574,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        UpdateAppOptions(_settings with { Runtime = _settings.Runtime with { RuntimeDatabasePath = normalizedPath } });
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { Runtime = _settings.Runtime with { RuntimeDatabasePath = normalizedPath } }, "Runtime");
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存运行数据库路径。");
+        }
     }
 
     public MainWindowViewModel(IClipboardService? clipboard = null, IAppLogger? logger = null,
         IDialogService? dialogs = null, bool autoStartMcpServer = false, int mcpPort = McpServerOptions.DefaultPort,
         string? settingsPath = null, IModalOperationRunner? modalOperations = null,
         IFilePickerService? filePicker = null, bool enforceRuntimeHostOwnership = false,
-        IScheduler? timingScheduler = null, IScheduler? uiScheduler = null)
+        IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
+        IAppSettingsStore? settingsStore = null,
+        IHostActivityTracker? activityTracker = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
@@ -470,6 +600,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         _settingsPath = settingsPath;
         SettingsLoadFailure? settingsLoadFailure = null;
         _settings = PatchouliAppSettings.Load(settingsPath, failure => settingsLoadFailure ??= failure);
+        _settingsStore = settingsStore ?? new AppSettingsStore(settingsPath, _settings);
+        _activityTracker = activityTracker ?? new HostActivityTracker();
+        _ownsActivityTracker = activityTracker is null;
+        using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(_activityTracker);
+        UpdateActivitySnapshot(_activityTracker.Current);
+        _activitySubscription = _activityTracker.SnapshotStream
+            .ObserveOn(_uiScheduler)
+            .Subscribe(UpdateActivitySnapshot);
+        Register(_activitySubscription);
         if (settingsLoadFailure is not null)
         {
             Status = settingsLoadFailure.ErrorMessage;
@@ -492,16 +631,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                         : _settings.Sync.SyncRootId
                 }
             };
-            SettingsSaveResult identitySaved = initializedSettings.Save(_settingsPath);
-            if (identitySaved.IsSuccess)
-            {
-                _settings = initializedSettings;
-            }
-            else
-            {
-                Status = identitySaved.ErrorMessage ?? "无法保存本机设备身份。";
-                StatusIsError = true;
-            }
+            _settings = initializedSettings;
+            _settingsStore.Update(_ => initializedSettings, "Sync");
         }
 
         ThemePaletteApplier.Apply(_settings.Ui.PaletteId);
@@ -520,16 +651,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         Layout = new WorkspaceLayoutViewModel();
         Workspace = new WorkspaceManager(Layout);
         Shell = new LibraryShellViewModel(this);
-        Settings = new SettingsViewModel(this);
-        Library = new LibraryViewModel(this);
-        Bibliography = new BibliographyViewModel(this);
-        FileDocument = new FileDocumentViewModel(this);
-        OcrQueue = new OcrQueueViewModel(this);
-        SearchEvidence = new SearchEvidenceViewModel(this);
-        Register(SearchEvidence);
-        McpPreview = new McpPreviewViewModel(this);
-        Snapshot = new SnapshotViewModel(this);
-        About = new AboutViewModel(this);
+
         Shell.MinerUToken = "";
 
         IDisposable queryRewriteSub = _queryRewriteRequests
@@ -671,34 +793,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             }, exception => UnexpectedExceptions.Sink.Report(exception, "layout-inspector-pane"));
         Register(inspectorPaneSub);
 
-        IObservable<EventPattern<PropertyChangedEventArgs>> snapshotChanges =
-            Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
-                h => Snapshot.PropertyChanged += h,
-                h => Snapshot.PropertyChanged -= h);
-
-        IDisposable snapshotSub = snapshotChanges
-            .ObserveOn(_uiScheduler)
-            .Subscribe(e =>
-            {
-                if (e.EventArgs.PropertyName is null or
-                    nameof(SnapshotViewModel.OperationStateText) or
-                    nameof(SnapshotViewModel.OperationMessage))
-                {
-                    Settings.SyncSettings.NotifySnapshotStateChanged();
-                }
-
-                if (e.EventArgs.PropertyName is null or
-                    nameof(SnapshotViewModel.OperationStateText) or
-                    nameof(SnapshotViewModel.OperationState))
-                {
-                    RefreshSyncDescriptors();
-                }
-            }, exception => UnexpectedExceptions.Sink.Report(exception, "snapshot-property-changed"));
-        Register(snapshotSub);
-
         OpenDatabaseCommand = new AsyncCommand(async () =>
         {
-            if (Settings.HasDirtySections)
+            if (HasDirtySettings)
             {
                 ReportError("设置有未保存的更改，请先保存或放弃后再切换数据库。");
                 return;
@@ -718,16 +815,20 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                     string epochs = exception.SchemaVersions.Count == 0
                         ? "未知"
                         : string.Join("、", exception.SchemaVersions.Order());
-                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.4 支持的数据库 schema epoch（{epochs}）。" +
-                                "0.3.4 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.5 支持的数据库 schema epoch（{epochs}）。" +
+                                "0.3.5 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                     return;
                 }
 
                 StartupLoadingStatus = "正在同步元数据查找设置…";
                 await RefreshSyncedMetadataLookupAsync(services);
-                await Settings.ReloadCleanSectionsAsync();
+                if (_settingsViewModel is { } settings)
+                {
+                    await settings.ReloadCleanSectionsAsync();
+                }
+
                 await RefreshQueryRewriteEnabledAsync(services);
-                PersistRuntimeDatabasePathIfEnabled();
+                await PersistRuntimeDatabasePathIfEnabledAsync();
                 StartupLoadingStatus = "正在恢复 MinerU 凭据…";
                 await LoadPersistedMinerUTokenAsync();
                 StartupLoadingStatus = "正在刷新文件搜索路径…";
@@ -842,6 +943,103 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             new UiCommandDescriptor("biblatex.copy", "复制 BibLaTeX", CopyBiblatexCommand);
     }
 
+    public Task<bool> SaveDirtySettingsAsync()
+    {
+        return _settingsViewModel?.SaveAllDirtySectionsAsync() ?? Task.FromResult(true);
+    }
+
+    private T CreateWithActivityTracker<T>(Func<T> factory)
+    {
+        using IDisposable activityTracker = AsyncCommand.UseActivityTracker(_activityTracker);
+        return factory();
+    }
+
+    private SettingsViewModel CreateSettingsViewModel()
+    {
+        SettingsViewModel settings = CreateWithActivityTracker(() => new SettingsViewModel(this));
+        settings.OcrProviderSettings.LoadPersistedToken(Shell.MinerUToken);
+        return settings;
+    }
+
+    private SearchEvidenceViewModel CreateSearchEvidenceViewModel()
+    {
+        SearchEvidenceViewModel search =
+            CreateWithActivityTracker(() => new SearchEvidenceViewModel(this));
+        _synchronizingToolbarSearch = true;
+        try
+        {
+            search.Query = ToolbarSearchQuery;
+            search.SelectedMode = ToolbarSearchMode;
+        }
+        finally
+        {
+            _synchronizingToolbarSearch = false;
+        }
+
+        PropertyChangedEventHandler handler = (_, args) =>
+        {
+            if (args.PropertyName is not (nameof(SearchEvidenceViewModel.Query) or
+                nameof(SearchEvidenceViewModel.SelectedMode)))
+            {
+                return;
+            }
+
+            _synchronizingToolbarSearch = true;
+            try
+            {
+                ToolbarSearchQuery = search.Query;
+                ToolbarSearchMode = search.SelectedMode;
+            }
+            finally
+            {
+                _synchronizingToolbarSearch = false;
+            }
+        };
+        search.PropertyChanged += handler;
+        Register(Disposable.Create(() => search.PropertyChanged -= handler));
+        Register(search);
+        return search;
+    }
+
+    private SnapshotViewModel CreateSnapshotViewModel()
+    {
+        SnapshotViewModel snapshot = CreateWithActivityTracker(() => new SnapshotViewModel(this));
+        IObservable<EventPattern<PropertyChangedEventArgs>> snapshotChanges =
+            Observable.FromEventPattern<PropertyChangedEventHandler, PropertyChangedEventArgs>(
+                h => snapshot.PropertyChanged += h,
+                h => snapshot.PropertyChanged -= h);
+        IDisposable snapshotSub = snapshotChanges
+            .ObserveOn(_uiScheduler)
+            .Subscribe(e =>
+            {
+                if (e.EventArgs.PropertyName is null or
+                    nameof(SnapshotViewModel.OperationStateText) or
+                    nameof(SnapshotViewModel.OperationMessage))
+                {
+                    _settingsViewModel?.SyncSettings.NotifySnapshotStateChanged();
+                }
+
+                if (e.EventArgs.PropertyName is null or
+                    nameof(SnapshotViewModel.OperationStateText) or
+                    nameof(SnapshotViewModel.OperationState))
+                {
+                    RefreshSyncDescriptors();
+                }
+            }, exception => UnexpectedExceptions.Sink.Report(exception, "snapshot-property-changed"));
+        Register(snapshotSub);
+        return snapshot;
+    }
+
+    internal string GetSnapshotOperationStateText()
+    {
+        return _snapshot?.OperationStateText ?? "尚未打开同步中心";
+    }
+
+    internal string GetSnapshotOperationMessage()
+    {
+        return _snapshot?.OperationMessage ?? "同步中心尚未检查同步目录。";
+    }
+
     public async Task<HostServices> ServicesAsync(bool startMcpServer = true)
     {
         if (_services is not null)
@@ -856,27 +1054,44 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     public async Task RunStartupAsync(bool startMcpServer)
     {
+        using IActivityScope startupActivity =
+            _activityTracker.BeginScope("启动", HostActivityKind.Startup, "初始化运行环境");
         IsStartupLoadingVisible = true;
         StartupLoadingStatus = "正在启动…";
         try
         {
+            if (_settingsStore.IsDirty)
+            {
+                SettingsSaveResult pendingSettings = await _settingsStore.SaveImmediatelyAsync();
+                if (!pendingSettings.IsSuccess)
+                {
+                    ReportError(pendingSettings.ErrorMessage ?? "无法保存启动设置。");
+                }
+            }
+
             HostServices services = await CreateOwnedHostServicesAsync();
             SetServices(services);
             StartupLoadingStatus = "正在同步元数据查找设置…";
+            startupActivity.UpdateDetail(StartupLoadingStatus);
             await RefreshSyncedMetadataLookupAsync(services);
             StartupLoadingStatus = "正在恢复 MinerU 凭据…";
+            startupActivity.UpdateDetail(StartupLoadingStatus);
             await LoadPersistedMinerUTokenAsync();
             StartupLoadingStatus = "正在加载查询重写设置…";
+            startupActivity.UpdateDetail(StartupLoadingStatus);
             await RefreshQueryRewriteEnabledAsync(services);
             StartupLoadingStatus = "正在刷新文件搜索路径…";
+            startupActivity.UpdateDetail(StartupLoadingStatus);
             await RefreshSidebarPathsAsync();
             if (startMcpServer && _autoStartMcpServer)
             {
                 StartupLoadingStatus = "正在启动 MCP 服务器…";
+                startupActivity.UpdateDetail(StartupLoadingStatus);
                 await StartMcpServerAsync(services);
             }
 
             StartupLoadingStatus = "正在加载资料库内容…";
+            startupActivity.UpdateDetail(StartupLoadingStatus);
             Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
             if (library.IsFailure)
             {
@@ -1137,7 +1352,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             // Collection catalog changes reach already-open advanced searches and editors through
             // the same committed change-set flow: options/catalogs reload in place while staged
             // editor selections are preserved.
-            await SearchEvidence.ReloadFilterOptionsAsync();
+            if (_searchEvidenceViewModel is { } search)
+            {
+                await search.ReloadFilterOptionsAsync();
+            }
+
             foreach (ItemEditorViewModel editor in OpenTabs.Select(tab => tab.Content)
                          .OfType<ItemEditorViewModel>())
             {
@@ -1184,7 +1403,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
         _settings = _settings with { MetadataLookup = synced.Value };
         services.UpdateMetadataLookupPreferences(synced.Value);
-        Settings.MetadataLookupSettings.ReloadFromEffectiveSettingsIfClean(synced.Value);
+        _settingsViewModel?.MetadataLookupSettings.ReloadFromEffectiveSettingsIfClean(synced.Value);
     }
 
     /// <summary>Loads the per-library 搜索重写 switch without persisting it back to the service.</summary>
@@ -1323,7 +1542,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         Action<int?, int?, string, string?>? progress = null,
         string trigger = FileSearchRootWatcherService.ManualTrigger)
     {
-        await ServicesAsync();
+        HostServices services = await ServicesAsync();
+        int libraryGeneration = LibraryGeneration;
         FileSearchRootWatcherService watcher = _fileSearchRootWatcher ??
                                                throw new InvalidOperationException("文件搜索根监视服务不可用。");
         // The service raises its completion events synchronously on the rescan thread before
@@ -1353,6 +1573,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             {
                 result = await watcher.RescanFileSearchRootsAsync(completionMessage, cancellationToken, progress,
                     trigger);
+            }
+
+            if (!IsCurrentLibraryContext(services, libraryGeneration) ||
+                !ReferenceEquals(watcher, _fileSearchRootWatcher))
+            {
+                return result;
             }
 
             if (capture.Failed is { } failed)
@@ -1468,6 +1694,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     private async Task RebuildSearchIndexAsync()
     {
         HostServices services = await ServicesAsync();
+        int libraryGeneration = LibraryGeneration;
         try
         {
             await ModalOperations.RunAsync(
@@ -1520,7 +1747,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase
                         throw;
                     }
                 });
-            Report("本地 FTS 搜索索引已重建。");
+            if (IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                Report("本地 FTS 搜索索引已重建。");
+            }
         }
         catch (OperationCanceledException exception) when (exception.CancellationToken.IsCancellationRequested)
         {
@@ -1533,15 +1763,64 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         _fileSearchRootWatcher?.RefreshWatchers(roots);
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        await ShutdownAsync();
+    }
+
     public async Task ShutdownAsync()
     {
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
         Shell.Dispose();
-        await StopMcpServerAsync();
+        await StopMcpServerAsync(allowRuntimeHostShutdown: true);
         StopLibraryRevisionMonitor();
         await StopHostServicesAsync();
         await ReleaseRuntimeHostAsync();
+        await DisposeSettingsStoreAsync();
+        DisposeActivityTracker();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            DisposeActivityTracker();
+        }
+
+        base.Dispose(disposing);
+    }
+
+    private async Task DisposeSettingsStoreAsync()
+    {
+        if (_settingsStore is not null)
+        {
+            try
+            {
+                await _settingsStore.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                UnexpectedExceptions.Sink.Report(ex, "app-settings-store", "dispose");
+            }
+        }
+    }
+
+    private void DisposeActivityTracker()
+    {
+        _activitySubscription?.Dispose();
+        _activitySubscription = null;
+        if (_ownsActivityTracker && _activityTracker is IDisposable trackerDisposable)
+        {
+            try
+            {
+                trackerDisposable.Dispose();
+            }
+            catch (Exception ex)
+            {
+                UnexpectedExceptions.Sink.Report(ex, "activity-tracker", "dispose");
+            }
+        }
     }
 
     private async Task StopFileSearchRootWatchersAsync()
@@ -1572,8 +1851,19 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             });
     }
 
-    public async Task StopMcpServerAsync(string detail = "MCP HTTP 服务已停止。")
+    public async Task StopMcpServerAsync(
+        string detail = "MCP HTTP 服务已停止。",
+        bool allowRuntimeHostShutdown = false)
     {
+        if (!allowRuntimeHostShutdown && _enforceRuntimeHostOwnership && _runtimeHostLease is not null)
+        {
+            SetMcpStatus(
+                McpServerRunning ? "MCP: 运行中" : "MCP: 错误",
+                "桌面宿主持有资料库期间必须保持 MCP endpoint 可用，以便 patchouli-cli 连接。",
+                McpServerRunning ? Brushes.LimeGreen : Brushes.OrangeRed);
+            return;
+        }
+
         if (_mcpHost is not null)
         {
             await _mcpHost.StopAsync(detail);
@@ -1594,7 +1884,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
-        await _mcpHost.RestartAsync(detail);
+        await _mcpHost.StopAsync(detail);
+        await StartMcpServerAsync(_services!);
+        if (!_mcpHost.IsRunning)
+        {
+            throw new InvalidOperationException("MCP Server 未能重启。请检查状态栏中的错误详情。");
+        }
     }
 
     /// <summary>
@@ -1603,22 +1898,24 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     /// </summary>
     public async Task BeginLibrarySwitchAsync(string detail = "正在切换资料库。")
     {
-        await StopMcpServerAsync(detail);
+        Interlocked.Increment(ref _libraryGeneration);
+        Raise(nameof(LibraryGeneration));
+        DetachLibraryChangeNotifications();
+        _searchEvidenceViewModel?.DetachLibraryContext();
+        _ocrQueueViewModel?.DetachLibraryContext();
+        _snapshot?.DetachLibraryContext();
+        await StopMcpServerAsync(detail, true);
         await StopFileSearchRootWatchersAsync();
         StopLibraryRevisionMonitor();
-        DetachLibraryChangeNotifications();
         await StopHostServicesAsync();
         DetachHostServices();
         _services = null;
         await ReleaseRuntimeHostAsync();
-        Interlocked.Increment(ref _libraryGeneration);
         _queryRewriteEnabledPersisted = false;
         ApplyQueryRewriteEnabled(false);
-        Settings.NotifyLibraryContextChanged();
+        _settingsViewModel?.NotifyLibraryContextChanged();
         // Manual Raise: HasOpenRuntimeDatabase derives from lifecycle field _services being cleared.
         Raise(nameof(HasOpenRuntimeDatabase));
-        // Manual Raise: LibraryGeneration is an atomic volatile generation counter incremented on database close.
-        Raise(nameof(LibraryGeneration));
         DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
         RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
         RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
@@ -1697,7 +1994,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             SettingsFilePath,
             CreateMigrationProgress(),
             reportUnexpectedException: ReportUnexpectedException,
-            startupProgress: CreateStartupStageProgress());
+            startupProgress: CreateStartupStageProgress(),
+            activityTracker: _activityTracker);
     }
 
     private async Task StopHostServicesAsync()
@@ -1924,14 +2222,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             return false;
         }
 
-        SettingsSaveResult settingsSaved = UpdateAppOptions(_settings with
+        SettingsSaveResult settingsSaved = await UpdateAppOptionsAsync(_settings with
         {
             MinerU = _settings.MinerU with
             {
                 ModelVersion = modelVersion,
                 PollingTimeoutSeconds = pollingTimeoutSeconds
             }
-        });
+        }, "MinerU");
         if (!settingsSaved.IsSuccess)
         {
             ReportError(settingsSaved.ErrorMessage ?? "无法保存 MinerU 模型设置。");
@@ -1940,7 +2238,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
         Shell.MinerUToken = trimmed;
         FirstRun.MinerUToken = trimmed;
-        Settings.OcrProviderSettings.LoadPersistedToken(trimmed);
+        _settingsViewModel?.OcrProviderSettings.LoadPersistedToken(trimmed);
         Report("MinerU 凭据已保存。");
         return true;
     }
@@ -1953,14 +2251,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             return false;
         }
 
-        SettingsSaveResult settingsSaved = UpdateAppOptions(_settings with
+        SettingsSaveResult settingsSaved = await UpdateAppOptionsAsync(_settings with
         {
             MinerU = _settings.MinerU with
             {
                 ModelVersion = modelVersion,
                 PollingTimeoutSeconds = pollingTimeoutSeconds
             }
-        });
+        }, "MinerU");
         if (!settingsSaved.IsSuccess)
         {
             ReportError(settingsSaved.ErrorMessage ?? "无法保存 MinerU 模型设置。");
@@ -1993,23 +2291,29 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             }
         }
 
-        SettingsSaveResult saved = UpdateAppOptions(_settings with { OcrEngines = engines });
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { OcrEngines = engines }, "OcrEngines");
         if (!saved.IsSuccess)
         {
             ReportError(saved.ErrorMessage ?? "无法保存 OCR 引擎设置。");
             return false;
         }
 
-        Settings.OcrProviderSettings.LoadPersistedToken(await GetPersistedMinerUTokenAsync());
+        if (_settingsViewModel is { } settings)
+        {
+            settings.OcrProviderSettings.LoadPersistedToken(await GetPersistedMinerUTokenAsync());
+        }
+
         Report("OCR 引擎选择已保存。");
         return true;
     }
 
     /// <summary>Persists the selected UI palette and applies it to the live theme brushes.</summary>
-    public bool SaveAppearancePalette(string paletteId)
+    public async Task<bool> SaveAppearancePaletteAsync(string paletteId)
     {
         string resolved = UiColorPalettes.ResolveId(paletteId);
-        SettingsSaveResult saved = UpdateAppOptions(_settings with { Ui = _settings.Ui with { PaletteId = resolved } });
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { Ui = _settings.Ui with { PaletteId = resolved } }, "Ui");
         if (!saved.IsSuccess)
         {
             ReportError(saved.ErrorMessage ?? "无法保存外观配色设置。");
@@ -2028,8 +2332,17 @@ public sealed partial class MainWindowViewModel : ViewModelBase
     {
         string family = (fontFamily ?? string.Empty).Trim();
         double size = Math.Clamp(fontSize, 10, 28);
-        SettingsSaveResult saved = UpdateAppOptions(
-            _settings with { Ui = _settings.Ui with { ReadingFontFamily = family, ReadingFontSize = size } });
+        UpdateAppOptionsDeferred(
+            _settings with { Ui = _settings.Ui with { ReadingFontFamily = family, ReadingFontSize = size } }, "Ui");
+        return true;
+    }
+
+    public async Task<bool> SaveReadingFontImmediatelyAsync(string fontFamily, double fontSize)
+    {
+        string family = (fontFamily ?? string.Empty).Trim();
+        double size = Math.Clamp(fontSize, 10, 28);
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { Ui = _settings.Ui with { ReadingFontFamily = family, ReadingFontSize = size } }, "Ui");
         if (!saved.IsSuccess)
         {
             ReportError(saved.ErrorMessage ?? "无法保存阅读字体设置。");
@@ -2064,7 +2377,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         _settings = PatchouliAppSettings.Load(SettingsFilePath);
         Shell.MinerUToken = "";
         FirstRun.MinerUToken = "";
-        Settings.OcrProviderSettings.LoadPersistedToken("");
+        _settingsViewModel?.OcrProviderSettings.LoadPersistedToken("");
         Report("MinerU 凭据已移除。");
         return true;
     }
@@ -2074,7 +2387,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
         string token = await GetPersistedMinerUTokenAsync();
         Shell.MinerUToken = token;
         FirstRun.MinerUToken = token;
-        Settings.OcrProviderSettings.LoadPersistedToken(token);
+        _settingsViewModel?.OcrProviderSettings.LoadPersistedToken(token);
     }
 
     private static IDialogService CreateDialogService()
@@ -2274,7 +2587,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private async Task RunToolbarSearchAsync()
     {
-        PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(SearchEvidence.Query);
+        PatchouliNavigationParseResult navigation = PatchouliUriNavigationParser.ParseInput(ToolbarSearchQuery);
         if (navigation.HasProtocolPrefix)
         {
             if (navigation.Target is null)
@@ -2287,16 +2600,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase
             return;
         }
 
+        SearchEvidenceViewModel search = SearchEvidence;
         await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search", true,
-            () => SearchEvidence);
-        await SearchEvidence.SearchCommand.ExecuteAsync();
+            () => search);
+        await search.SearchCommand.ExecuteAsync();
     }
 
     private async Task OpenAdvancedSearchAsync()
     {
+        SearchEvidenceViewModel search = SearchEvidence;
         await ActivateTabAsync(WorkspaceTabKind.SearchResults, "SearchResults", "搜索结果", "Search", true,
-            () => SearchEvidence);
-        await SearchEvidence.OpenAdvancedSearchCommand.ExecuteAsync();
+            () => search);
+        await search.OpenAdvancedSearchCommand.ExecuteAsync();
     }
 
     public async Task NavigateToSearchHitAsync(string versionedUri)
@@ -2496,7 +2811,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private void RefreshSyncDescriptors()
     {
-        bool busy = Snapshot.OperationState is SnapshotSyncOperationState.Validating
+        bool busy = _snapshot?.OperationState is SnapshotSyncOperationState.Validating
             or SnapshotSyncOperationState.Publishing
             or SnapshotSyncOperationState.Exporting
             or SnapshotSyncOperationState.CheckingIncoming
@@ -2708,9 +3023,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase
 
     private Task CloseSettingsTabAsync()
     {
-        if (Settings.HasDirtySections)
+        if (_settingsViewModel?.HasDirtySections == true)
         {
-            Settings.GlobalStatus = "设置有未保存的更改；请先保存或放弃后再关闭设置。";
+            _settingsViewModel.GlobalStatus = "设置有未保存的更改；请先保存或放弃后再关闭设置。";
             return Task.CompletedTask;
         }
 

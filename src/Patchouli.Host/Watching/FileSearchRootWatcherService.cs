@@ -162,9 +162,17 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
         Action<int?, int?, string, string?>? progress = null,
         string trigger = ManualTrigger)
     {
+        using CancellationTokenSource linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _services.LifetimeToken);
+        cancellationToken = linkedCancellation.Token;
         await _fileSearchRootRescanGate.WaitAsync(cancellationToken);
         try
         {
+            using IActivityScope? activity = _services.ActivityTracker?.BeginScope(
+                "扫描文件搜索根",
+                HostActivityKind.Scanning,
+                trigger == FileWatcherTrigger ? "文件变化触发" : "手动扫描");
             Result<FileSearchRootRescanSummary> result = await Task.Run(
                 () => RescanFileSearchRootsCoreAsync(completionMessage, cancellationToken, progress, trigger),
                 cancellationToken);

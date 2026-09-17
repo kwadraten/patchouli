@@ -21,4 +21,9 @@ using Patchouli.Core.Search;
 
 namespace Patchouli.UI.ViewModels;
 
-public sealed record ThirdPartyLibrary(string Name, string License, string Url, RelayCommand OpenUrlCommand);
+public sealed record ThirdPartyLibrary(
+    string Name,
+    string License,
+    string Url,
+    RelayCommand OpenUrlCommand,
+    string? Author = null);

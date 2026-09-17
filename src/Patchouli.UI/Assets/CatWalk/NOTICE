@@ -1,0 +1,18 @@
+CatWalk Enhanced
+This component includes SVG animation assets from CatWalk Enhanced:
+- my-active-0-symbolic.svg
+- my-active-1-symbolic.svg
+- my-active-2-symbolic.svg
+- my-active-3-symbolic.svg
+- my-active-4-symbolic.svg
+- my-idle-symbolic.svg
+
+Authors:
+- BLADR-ONE (Rafael - Matei Ureche)
+- Yuri Saurov (Original CatWalk author)
+
+License: GNU General Public License v3.0 or later (GPL-3.0+)
+Upstream Repository: https://github.com/BLADR-ONE/CatWalk-Enhanced-Plasmoid
+Pinned Commit: 0e20cec96c7e5e390623a80aed6302c2f1b8c7ee
+
+See the accompanying LICENSE file for the full text of the GNU General Public License v3.0.

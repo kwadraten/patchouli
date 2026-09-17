@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Patchouli.Core.Diagnostics;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
 
@@ -122,5 +123,65 @@ public sealed class AsyncCommandExceptionTests
         command.NotifyCanExecuteChanged();
 
         invoked.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_tracks_activity_until_the_result_is_published()
+    {
+        HostActivityTracker tracker = new(TimeSpan.Zero);
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        AsyncCommand command = new(async () =>
+        {
+            tracker.Current.IsBusy.Should().BeTrue();
+            await release.Task;
+        }, operation: "tracked-explicit-command", activityTracker: tracker);
+
+        Task execution = command.ExecuteAsync();
+
+        tracker.Current.IsBusy.Should().BeTrue();
+        tracker.Current.Items.Should().ContainSingle(item =>
+            item.Kind == HostActivityKind.UiCommand && item.Detail == "tracked-explicit-command");
+        release.TrySetResult();
+        await execution;
+        tracker.Current.IsBusy.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ICommand_execute_uses_the_same_activity_scope_and_cleans_it_after_failure()
+    {
+        HostActivityTracker tracker = new(TimeSpan.Zero);
+        TaskCompletionSource<Exception> reported = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        RecordingUnexpectedExceptionSink sink = new((exception, _, _) => reported.TrySetResult(exception));
+        AsyncCommand command = new(
+            () =>
+            {
+                tracker.Current.IsBusy.Should().BeTrue();
+                return Task.FromException(new InvalidOperationException("boom"));
+            },
+            unexpectedExceptions: sink,
+            operation: "tracked-button-command",
+            activityTracker: tracker);
+
+        command.Execute(null);
+
+        await reported.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await command.ExecutionTask!.WaitAsync(TimeSpan.FromSeconds(5));
+        tracker.Current.IsBusy.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Nested_explicit_commands_share_one_correlated_activity_item()
+    {
+        HostActivityTracker tracker = new(TimeSpan.Zero);
+        AsyncCommand child = new(() =>
+        {
+            tracker.Current.Items.Should().ContainSingle();
+            return Task.CompletedTask;
+        }, operation: "child-command", activityTracker: tracker);
+        AsyncCommand parent = new(() => child.ExecuteAsync(), operation: "parent-command", activityTracker: tracker);
+
+        await parent.ExecuteAsync();
+
+        tracker.Current.IsBusy.Should().BeFalse();
     }
 }

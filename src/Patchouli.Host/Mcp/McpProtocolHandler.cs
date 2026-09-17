@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
@@ -19,12 +20,16 @@ public sealed class McpProtocolHandler
     private readonly McpServerSettings _settings;
     private readonly Action<Exception, string>? _unexpectedException;
     private readonly Func<object, string> _toonEncoder;
+    private readonly IHostActivityTracker? _activityTracker;
+    private readonly CancellationToken _hostLifetime;
 
     public McpProtocolHandler(IMcpReadApi api, IMcpWriteApi writes, IBiblatexImportService biblatex,
         IItemService items, IVersionedEvidenceReader evidenceReader, SqliteConnectionFactory db,
         McpServerSettings? settings = null,
         Action<Exception, string>? unexpectedException = null,
-        Func<object, string>? toonEncoder = null)
+        Func<object, string>? toonEncoder = null,
+        IHostActivityTracker? activityTracker = null,
+        CancellationToken hostLifetime = default)
     {
         _readApi = api;
         _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader,
@@ -39,13 +44,17 @@ public sealed class McpProtocolHandler
         };
         _unexpectedException = unexpectedException;
         _toonEncoder = toonEncoder ?? McpCommandService.DefaultToonEncoder;
+        _activityTracker = activityTracker;
+        _hostLifetime = hostLifetime;
     }
 
     public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db,
         McpServerSettings? settings = null, Action<Exception, string>? unexpectedException = null,
-        Func<object, string>? toonEncoder = null)
+        Func<object, string>? toonEncoder = null, IHostActivityTracker? activityTracker = null,
+        CancellationToken hostLifetime = default)
         : this(api, new UnavailableWriteApi(), new UnavailableBiblatexImportService(), new UnavailableItemService(),
-            new UnavailableVersionedEvidenceReader(), db, settings, unexpectedException, toonEncoder)
+            new UnavailableVersionedEvidenceReader(), db, settings, unexpectedException, toonEncoder, activityTracker,
+            hostLifetime)
     {
     }
 
@@ -56,6 +65,9 @@ public sealed class McpProtocolHandler
 
     public async Task<string> HandleAsync(string line, string? sessionId, CancellationToken ct = default)
     {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(ct, _hostLifetime);
+        ct = linkedCancellation.Token;
         string id = "null";
         try
         {
@@ -80,6 +92,9 @@ public sealed class McpProtocolHandler
                 return string.Empty;
             }
 
+            using IActivityScope? activity = string.Equals(method, "tools/call", StringComparison.Ordinal)
+                ? _activityTracker?.BeginScope("MCP/Agent 请求", HostActivityKind.Mcp, DescribeToolCall(pars))
+                : null;
             object result = method switch
             {
                 "initialize" => Initialize(pars),
@@ -116,6 +131,19 @@ public sealed class McpProtocolHandler
             McpToolError error = McpToolError.From(McpErrorCode.Internal, null, correlationId);
             return await ToolCallErrorAsync(id, "unknown", error, ct);
         }
+    }
+
+    private static string DescribeToolCall(JsonElement parameters)
+    {
+        if (parameters.ValueKind == JsonValueKind.Object &&
+            parameters.TryGetProperty("name", out JsonElement name) &&
+            name.ValueKind == JsonValueKind.String &&
+            !string.IsNullOrWhiteSpace(name.GetString()))
+        {
+            return name.GetString()!;
+        }
+
+        return "调用工具";
     }
 
     private static object Initialize(JsonElement parameters)
@@ -180,7 +208,8 @@ public sealed class McpProtocolHandler
                 {
                     ["uris"] = ToolSchemaProperty.Array(
                         "Resource URIs: library.toon, items/<id>.bib, texts/<document-id>/, texts/<document-id>/page-<index>.md, " +
-                        "texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>] or csl-styles/<id>.csl.",
+                        "texts/<document-id>/page-<index>.md?rev=<tree-revision-id>[&box=<box-id>], " +
+                        "translations/<document-id>/, translations/<document-id>/page-<index>.md or csl-styles/<id>.csl.",
                         ToolSchemaProperty.String("Resource URI.")),
                     ["range"] = ToolSchemaProperty.String("Optional text slice: lines:S-E or pages:S-E."),
                     ["limit_bytes"] = ToolSchemaProperty.Integer(
@@ -189,12 +218,13 @@ public sealed class McpProtocolHandler
                 }),
             new ToolDefinition(
                 "patchouli.put",
-                "Replace one existing writable item bibliography or CSL style resource atomically.",
+                "Replace one existing writable item bibliography, CSL style, or page translation resource atomically.",
                 ["uri", "content"],
                 new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
                 {
                     ["uri"] = ToolSchemaProperty.String(
-                        "Writable resource URI: items/<id>.bib or csl-styles/<id>.csl."),
+                        "Writable resource URI: items/<id>.bib, csl-styles/<id>.csl, or " +
+                        "translations/<document-id>/page-<index>.md."),
                     ["content"] = ToolSchemaProperty.String("Complete replacement content."),
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
                 },
@@ -681,6 +711,13 @@ public sealed class McpProtocolHandler
     {
         public Task<Result<McpPutResponse>> PutAsync(McpPutRequest request,
             CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<McpPutResponse>.Failure(McpErrorCodes.ToolUnavailable,
+                "Writable protocol support is unavailable."));
+        }
+
+        public Task<Result<McpPutResponse>> PutPageTranslationAsync(string uri, DocumentInstanceId documentInstanceId,
+            PageId pageId, string content, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<McpPutResponse>.Failure(McpErrorCodes.ToolUnavailable,
                 "Writable protocol support is unavailable."));

@@ -6,6 +6,7 @@ using Patchouli.Host.Composition;
 using Patchouli.Host.Mcp;
 using Patchouli.Mcp;
 using Patchouli.McpServer;
+using Patchouli.UI.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace Patchouli.Host.Lifecycle;
@@ -26,24 +27,30 @@ public static class HeadlessRuntimeHost
             return 8;
         }
 
+        UnexpectedExceptions.Configure(new UI.PlatformAppPaths());
+
         static void ReportUnexpected(Exception exception, string boundary, string? operation)
         {
             string context = operation is null ? boundary : $"{boundary}/{operation}";
+            string errorId = UnexpectedExceptions.Sink.Report(exception, boundary, operation);
             Console.Error.WriteLine(McpOutputSanitizer.Sanitize(
-                $"Unexpected error in {context}:{Environment.NewLine}{exception}"));
+                $"Unexpected error in {context} (error id {errorId}); review the Patchouli host log."));
         }
 
         UnexpectedExceptionReporter.Configure(ReportUnexpected);
         using PosixSignalRegistration? hangup = OperatingSystem.IsWindows()
             ? null
             : PosixSignalRegistration.Create(PosixSignal.SIGHUP, context => context.Cancel = true);
+        using HostActivityTracker activityTracker = new();
+        HostServices? services = null;
         try
         {
             string settingsPath = new UI.PlatformAppPaths().Resolve().UserSettingsPath;
-            HostServices services = await HostServices.CreateAsync(
+            services = await HostServices.CreateAsync(
                 lease.DatabasePath,
                 settingsPath: settingsPath,
-                reportUnexpectedException: ReportUnexpected);
+                reportUnexpectedException: ReportUnexpected,
+                activityTracker: activityTracker);
 
             Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync(cancellationToken);
             if (library.IsFailure)
@@ -104,6 +111,13 @@ public static class HeadlessRuntimeHost
         {
             ReportUnexpected(exception, "headless-host", "run");
             return 1;
+        }
+        finally
+        {
+            if (services is not null)
+            {
+                await services.ShutdownAsync();
+            }
         }
     }
 }

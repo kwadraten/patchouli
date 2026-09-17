@@ -235,7 +235,7 @@ public sealed class McpServerHost : IAsyncDisposable
 
         McpProtocolHandler handler = new(_services.Mcp, _services.McpWrites, _services.BiblatexImport,
             _services.Items, _services.VersionedEvidenceReader, _services.ConnectionFactory, serverSettings,
-            ReportMcpException);
+            ReportMcpException, activityTracker: _services.ActivityTracker, hostLifetime: _services.LifetimeToken);
         McpHttpServer server = new(handler, serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnServerConnectionCountsChanged;
         try

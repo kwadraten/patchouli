@@ -27,6 +27,7 @@ using Patchouli.Infrastructure.Coordinates;
 using Patchouli.Infrastructure.Conflicts;
 using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
+using Patchouli.Infrastructure.Documents.Translations;
 using Patchouli.Infrastructure.Files;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
@@ -61,6 +62,7 @@ public sealed class HostServices
 
     private readonly OcrRunEngine _ocrEngine;
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
@@ -71,9 +73,11 @@ public sealed class HostServices
         _metadataLookupPreferences = [];
 
     private HostServices(string runtimeDatabasePath, PatchouliAppSettings settings, string settingsPath,
-        IAppLogger logger, Action<Exception, string, string?>? reportUnexpectedException = null)
+        IAppLogger logger, Action<Exception, string, string?>? reportUnexpectedException = null,
+        IHostActivityTracker? activityTracker = null)
     {
         _reportUnexpectedException = reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
+        ActivityTracker = activityTracker;
         RuntimeDatabasePath = runtimeDatabasePath;
         Settings = settings;
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
@@ -120,7 +124,8 @@ public sealed class HostServices
         FileResolution = new FileResolutionService(ConnectionFactory, Library, Clock,
             blockingOperations: BlockingOperations, rootAccess: FileSearchRootAccess, rootBindings: rootBindings);
         BiblatexHelper = new BiblatexHelperClient();
-        BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents);
+        BiblatexImport = new BiblatexImportService(BiblatexHelper, Items, Files, Documents, activityTracker,
+            LifetimeToken);
         ConflictActions = new ConflictActionExecutorRegistry(
         [
             new FileConflictActionExecutor(FileResolution, ConflictCode.FileRelocationMultipleCandidates),
@@ -137,6 +142,16 @@ public sealed class HostServices
         Overlaps = new OverlapProjectionService();
         DocumentMarkdown = new CachedDocumentMarkdownCompiler(
             new DocumentMarkdownCompiler(DocumentTrees, Markdown), CompiledMarkdownCache);
+        PageTranslationCache pageTranslationCache = new();
+        PageTranslations = new PageTranslationService(
+            ConnectionFactory,
+            DocumentTrees,
+            DocumentMarkdown,
+            Markdown,
+            new CachedPageTranslationCompiler(
+                new PageTranslationCompiler(ConnectionFactory, DocumentTrees, Markdown), pageTranslationCache),
+            pageTranslationCache,
+            Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
         OcrAdapterRegistry adapterRegistry = new();
@@ -170,7 +185,7 @@ public sealed class HostServices
         PageCoordinates = new PageCoordinateService(ConnectionFactory, SourceFingerprintValidation);
         SearchUnitBuilder searchUnitBuilder = new(ConnectionFactory, Clock, Markdown);
         SearchUnits = searchUnitBuilder;
-        SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock);
+        SearchIndex = new SearchIndexRebuilder(ConnectionFactory, Clock, activityTracker, LifetimeToken);
         OcrDocumentTreeImporter ocrTreeImporter = new(DocumentTrees);
         SearchProfileService searchProfiles = new(ConnectionFactory, Library, Clock, new OpenccTextConverter());
         SearchProfiles = searchProfiles;
@@ -187,7 +202,7 @@ public sealed class HostServices
             configuration => (MinerUClientFactoryOverride ?? CreateMinerUClient)(configuration),
             OcrStorage.MinerUWorkDirectory,
             fileResolution: FileResolution, fileMaterialization: FileSearchRootAccess, revisions: LibraryRevisions);
-        OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex);
+        OcrQueueTaskExecutor ocrQueueExecutor = new(_ocrEngine, SearchUnits, SearchIndex, activityTracker);
         OcrQueueScheduler ocrQueueScheduler = new(
             async cancellationToken =>
             {
@@ -199,14 +214,15 @@ public sealed class HostServices
             Clock,
             ocrQueueExecutor,
             loopErrorLogger: exception =>
-                _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"));
+                _reportUnexpectedException(exception, "ocr-scheduler", "scheduler-loop"),
+            activityTracker: activityTracker);
         Ocr = new QueuedOcrRunCoordinator(ocrQueueScheduler, _ocrEngine);
         LogicalPageOcr = new LogicalPageOcrService(Ocr, DocumentTrees);
         McpSettings = new McpServerSettingsService(settingsPath, Clock, BlockingOperations);
         Mcp = new McpReadApi(
             ConnectionFactory, Search, PageCoordinates, CslStore, CslRenderer, Markdown, DocumentMarkdown,
-            CompiledMarkdownCache);
-        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore);
+            CompiledMarkdownCache, PageTranslations);
+        McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations);
         CliPath = new CliPathService();
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
@@ -218,18 +234,23 @@ public sealed class HostServices
             SnapshotImporter,
             BranchInspection,
             snapshotSyncSettingsStore,
-            Clock);
+            Clock,
+            activityTracker,
+            LifetimeToken);
         PurgeItems =
             new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions);
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
         PdfMetadata = new PdfMetadataReader();
-        PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess);
-        PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference);
+        PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess, activityTracker, LifetimeToken);
+        PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference,
+            activityTracker, LifetimeToken);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
     }
 
     public string RuntimeDatabasePath { get; }
+    public IHostActivityTracker? ActivityTracker { get; }
+    public CancellationToken LifetimeToken => _lifetimeCancellation.Token;
     public PatchouliAppSettings Settings { get; }
     public SqliteConnectionFactory ConnectionFactory { get; }
     public IClock Clock { get; }
@@ -272,6 +293,7 @@ public sealed class HostServices
     public IOverlapProjectionService Overlaps { get; }
     public ICompiledMarkdownCache CompiledMarkdownCache { get; }
     public IDocumentMarkdownCompiler DocumentMarkdown { get; }
+    public IPageTranslationService PageTranslations { get; }
     public IOcrPresetService OcrPresets { get; }
     public IOcrModelPathValidator ModelPathValidator { get; }
     public IOcrAdapterRegistry OcrAdapters { get; }
@@ -420,7 +442,7 @@ public sealed class HostServices
     public static async Task<HostServices> CreateAsync(string path, PatchouliAppSettings? settings = null,
         string? settingsPath = null, IProgress<MigrationProgress>? migrationProgress = null,
         IAppLogger? logger = null, Action<Exception, string, string?>? reportUnexpectedException = null,
-        IProgress<StartupStage>? startupProgress = null)
+        IProgress<StartupStage>? startupProgress = null, IHostActivityTracker? activityTracker = null)
     {
         Action<Exception, string, string?> reportUnexpected =
             reportUnexpectedException ?? FallbackUnexpectedExceptionReporter;
@@ -441,7 +463,7 @@ public sealed class HostServices
         }
 
         startupProgress?.Report(StartupStage.ComposingServices);
-        HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected);
+        HostServices services = new(path, settings, settingsPath, startupLogger, reportUnexpected, activityTracker);
 
         // Dapper runs synchronous I/O under the covers; offload the whole blocking DB bootstrap
         // onto the thread pool so the UI thread stays responsive while the loading page is shown.
@@ -503,7 +525,9 @@ public sealed class HostServices
     /// <summary>Quiesces background work before a runtime-host ownership lease is released.</summary>
     public async Task ShutdownAsync()
     {
+        _lifetimeCancellation.Cancel();
         LibraryRevisionMonitor.Stop();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
+        ConnectionFactory.ClearPools();
     }
 }

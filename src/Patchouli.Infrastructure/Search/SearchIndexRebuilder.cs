@@ -3,6 +3,7 @@ using System.Text;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
@@ -15,16 +16,28 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
     private const int FtsWriteBatchSize = 500;
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
+    private readonly IHostActivityTracker? _activityTracker;
+    private readonly CancellationToken _hostLifetime;
 
-    public SearchIndexRebuilder(SqliteConnectionFactory connectionFactory, IClock clock)
+    public SearchIndexRebuilder(SqliteConnectionFactory connectionFactory, IClock clock,
+        IHostActivityTracker? activityTracker = null, CancellationToken hostLifetime = default)
     {
         _connectionFactory = connectionFactory;
         _clock = clock;
+        _activityTracker = activityTracker;
+        _hostLifetime = hostLifetime;
     }
 
     public async Task<Result> RebuildFtsForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
+        cancellationToken = linkedCancellation.Token;
+        using IActivityScope? activity = _activityTracker?.BeginScope(
+            "重建搜索索引",
+            HostActivityKind.Indexing,
+            $"文档 {documentInstanceId}");
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
@@ -71,6 +84,13 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
 
     public async Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
+        cancellationToken = linkedCancellation.Token;
+        using IActivityScope? activity = _activityTracker?.BeginScope(
+            "重建搜索索引",
+            HostActivityKind.Indexing,
+            "整个资料库");
         try
         {
             await using SqliteConnection connection = _connectionFactory.CreateConnection();

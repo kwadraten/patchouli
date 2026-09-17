@@ -2,6 +2,7 @@ using System.Text.Json;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Results;
@@ -15,17 +16,23 @@ public sealed class BiblatexImportService : IBiblatexImportService
     private readonly IItemService _items;
     private readonly IFileAssetService _files;
     private readonly IDocumentInstanceService _documents;
+    private readonly IHostActivityTracker? _activityTracker;
+    private readonly CancellationToken _hostLifetime;
 
     public BiblatexImportService(
         IBiblatexHelperClient helper,
         IItemService items,
         IFileAssetService files,
-        IDocumentInstanceService documents)
+        IDocumentInstanceService documents,
+        IHostActivityTracker? activityTracker = null,
+        CancellationToken hostLifetime = default)
     {
         _helper = helper;
         _items = items;
         _files = files;
         _documents = documents;
+        _activityTracker = activityTracker;
+        _hostLifetime = hostLifetime;
     }
 
     public Task<Result<IReadOnlyList<BiblatexEntryDto>>> ParseTextAsync(
@@ -89,6 +96,13 @@ public sealed class BiblatexImportService : IBiblatexImportService
         string? bibFileDirectory,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
+        cancellationToken = linkedCancellation.Token;
+        using IActivityScope? activity = _activityTracker?.BeginScope(
+            "导入 BibLaTeX",
+            HostActivityKind.Import,
+            source.SourceEntryKey);
         List<string> created = [];
         List<string> updated = [];
         List<BiblatexFileSkip> skips = [];
@@ -199,6 +213,9 @@ public sealed class BiblatexImportService : IBiblatexImportService
         string? bibFileDirectory,
         CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
+        cancellationToken = linkedCancellation.Token;
         if (plan.HasCandidates)
         {
             if (linkChoices is null || !ValidateLinkChoices(plan, linkChoices))
@@ -208,6 +225,11 @@ public sealed class BiblatexImportService : IBiblatexImportService
                     "Batch link choices are incomplete.");
             }
         }
+
+        using IActivityScope? activity = _activityTracker?.BeginScope(
+            "批量导入 BibLaTeX",
+            HostActivityKind.Import,
+            $"{plan.Groups.Count} 条题录");
 
         List<string> created = [];
         List<string> updated = [];

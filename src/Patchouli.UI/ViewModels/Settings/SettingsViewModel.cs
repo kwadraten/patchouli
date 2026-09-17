@@ -19,6 +19,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     public SettingsViewModel(MainWindowViewModel main)
     {
+        using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
         AppearanceSettings = new AppearanceSettingsViewModel(main);
         LibrarySettings = new LibrarySettingsViewModel(main);

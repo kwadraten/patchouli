@@ -1,6 +1,8 @@
 using System.Net.Sockets;
+using System.Collections.Concurrent;
 using FluentAssertions;
 using System.Text.Json;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Results;
@@ -12,6 +14,36 @@ namespace Patchouli.Tests;
 
 public sealed class McpServerTransportTests
 {
+    [Fact]
+    public async Task Tool_calls_are_tracked_but_protocol_handshake_is_not_activity()
+    {
+        using HostActivityTracker tracker = new(TimeSpan.Zero);
+        ConcurrentQueue<HostActivityItem> observed = new();
+        tracker.Changed += (_, snapshot) =>
+        {
+            foreach (HostActivityItem item in snapshot.Items)
+            {
+                observed.Enqueue(item);
+            }
+        };
+        McpProtocolHandler handler = new(
+            new FakeApi(),
+            new SqliteConnectionFactory(Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".sqlite")),
+            activityTracker: tracker);
+
+        await handler.HandleAsync("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+        observed.Should().BeEmpty();
+
+        await handler.HandleAsync(
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":" +
+            "{\"name\":\"patchouli.find\",\"arguments\":{}}}");
+
+        observed.Should().ContainSingle(item =>
+            item.Kind == HostActivityKind.Mcp && item.Detail == "patchouli.find");
+        tracker.Current.IsBusy.Should().BeFalse();
+        tracker.Current.Items.Should().BeEmpty();
+    }
+
     [Fact]
     public void Sanitizer_redacts_paths_file_urls_cache_and_secrets()
     {
@@ -184,15 +216,15 @@ public sealed class McpServerTransportTests
         envelope.RootElement.TryGetProperty("message", out _).Should().BeFalse();
         JsonElement meta = envelope.RootElement.GetProperty("meta");
         meta.GetProperty("library_revision").GetString().Should().Be("lib:1");
-        meta.GetProperty("domain_total").GetInt32().Should().Be(4);
-        meta.GetProperty("shown_total").GetInt32().Should().Be(4);
+        meta.GetProperty("domain_total").GetInt32().Should().Be(5);
+        meta.GetProperty("shown_total").GetInt32().Should().Be(5);
         JsonElement[] entries = envelope.RootElement.GetProperty("entries").EnumerateArray().ToArray();
-        entries.Should().HaveCount(4);
+        entries.Should().HaveCount(5);
         entries.Select(e => e.GetProperty("uri").GetString())
-            .Should().Equal("patchouli://items/", "patchouli://texts/", "patchouli://csl-styles/",
-                "patchouli://library.toon");
-        entries.Take(3).Should().OnlyContain(e => e.GetProperty("type").GetString() == "directory");
-        entries[3].GetProperty("type").GetString().Should().Be("file");
+            .Should().Equal("patchouli://items/", "patchouli://texts/", "patchouli://translations/",
+                "patchouli://csl-styles/", "patchouli://library.toon");
+        entries.Take(4).Should().OnlyContain(e => e.GetProperty("type").GetString() == "directory");
+        entries[4].GetProperty("type").GetString().Should().Be("file");
         envelope.RootElement.GetProperty("continuation").ValueKind.Should().Be(JsonValueKind.Null);
         ToolIsError(response).Should().BeFalse();
     }
@@ -785,6 +817,25 @@ public sealed class McpServerTransportTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<ItemId>.Failure("fake", "x"));
+        }
+
+        public Task<Result<McpBrowseTranslationPage>> BrowseTranslationsAsync(int skip, int limit, string? query,
+            IReadOnlyList<McpWhereClause>? where = null, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<McpBrowseTranslationPage>.Failure("fake", "x"));
+        }
+
+        public Task<Result<McpTranslationOutlineResponse>> GetTranslationOutlineAsync(
+            DocumentInstanceId documentInstanceId, string? query = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<McpTranslationOutlineResponse>.Failure("fake", "x"));
+        }
+
+        public Task<Result<McpPageTranslationResponse>> GetPageTranslationAsync(
+            McpPageTranslationRequest request, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<McpPageTranslationResponse>.Failure("fake", "x"));
         }
     }
 }

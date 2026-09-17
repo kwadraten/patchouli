@@ -1,0 +1,18 @@
+Source: CatWalk Enhanced
+Upstream URL: https://github.com/BLADR-ONE/CatWalk-Enhanced-Plasmoid
+Fixed Commit: 0e20cec96c7e5e390623a80aed6302c2f1b8c7ee
+License: GPL-3.0+
+Authors: BLADR-ONE, Yuri Saurov
+
+Asset Files:
+- contents/images/my-active-0-symbolic.svg -> Assets/CatWalk/my-active-0-symbolic.svg
+- contents/images/my-active-1-symbolic.svg -> Assets/CatWalk/my-active-1-symbolic.svg
+- contents/images/my-active-2-symbolic.svg -> Assets/CatWalk/my-active-2-symbolic.svg
+- contents/images/my-active-3-symbolic.svg -> Assets/CatWalk/my-active-3-symbolic.svg
+- contents/images/my-active-4-symbolic.svg -> Assets/CatWalk/my-active-4-symbolic.svg
+- contents/images/my-idle-symbolic.svg   -> Assets/CatWalk/my-idle-symbolic.svg
+- LICENSE                                -> Assets/CatWalk/LICENSE
+
+Description:
+Enhanced CPU cat monitor with dynamic spacing and animation. Fork of CatWalk by Yuri Saurov.
+The SVG files are included verbatim without modification.

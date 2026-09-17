@@ -1,5 +1,7 @@
 using Dapper;
 using FluentAssertions;
+using System.Collections.Concurrent;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Conflicts;
@@ -642,6 +644,15 @@ public sealed class SnapshotTests
             "device-a",
             SnapshotSyncLocalState.NotConfigured));
         FixedClock clock = new(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
+        using HostActivityTracker tracker = new(TimeSpan.Zero);
+        ConcurrentQueue<HostActivityItem> observed = new();
+        tracker.Changed += (_, snapshot) =>
+        {
+            foreach (HostActivityItem item in snapshot.Items)
+            {
+                observed.Enqueue(item);
+            }
+        };
         SnapshotSyncCoordinator coordinator = new(
             c.Publisher,
             c.Importer,
@@ -650,11 +661,14 @@ public sealed class SnapshotTests
                 c.Database.ConnectionFactory,
                 new LibraryIdentityService(c.Database.ConnectionFactory, clock)),
             bindings,
-            clock);
+            clock,
+            tracker);
 
         Result<SnapshotPublishResult> published = await coordinator.PublishAsync();
 
         published.IsSuccess.Should().BeTrue();
+        observed.Should().ContainSingle(item => item.Kind == HostActivityKind.Sync && item.Detail == "发布快照");
+        tracker.Current.IsBusy.Should().BeFalse();
         bindings.State.OperationState.Should().Be(SnapshotSyncOperationState.Published);
         bindings.State.LastPublishedSnapshotId.Should().Be(published.Value.SnapshotId);
         bindings.State.LineageSnapshotId.Should().Be(published.Value.SnapshotId);
