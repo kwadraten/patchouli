@@ -213,7 +213,7 @@
     <Grid Grid.Column="1">
       <DataGrid x:Name="LibraryGrid" ItemsSource="{Binding Items}" SelectedItem="{Binding SelectedItem}"
                 SelectionMode="Extended" SelectionChanged="OnDataGridSelectionChanged"
-                CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="True"
+                CanUserReorderColumns="True" CanUserResizeColumns="True" CanUserSortColumns="False"
                 IsReadOnly="True" GridLinesVisibility="Horizontal" DoubleTapped="OnDataGridDoubleTapped"
                 Loaded="OnDataGridLoaded"
                 RowBackground="Transparent" BorderThickness="0"
@@ -318,6 +318,12 @@
                               Width="150" />
         </DataGrid.Columns>
       </DataGrid>
+      <Border HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Padding="12,6"
+              CornerRadius="6" Background="{DynamicResource SurfaceContainerHighBrush}"
+              IsVisible="{Binding IsLoadingMoreItems}">
+        <TextBlock Text="正在加载更多题录…" FontSize="12"
+                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+      </Border>
     </Grid>
     <!-- Column 2: Details Inspector (Width 340 when visible) -->
     <Border Grid.Column="2" Width="340" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1,0,0,0"

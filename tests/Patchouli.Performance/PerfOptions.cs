@@ -171,7 +171,7 @@ public sealed record PerfOptions(
             iterations = 5;
         }
 
-        int items = requestedItems ?? (isFull ? 100 : 20);
+        int items = requestedItems ?? (isFull ? 1000 : 20);
         int pagesPerItem = requestedPagesPerItem ?? (isFull ? 8 : 3);
         int boxesPerPage = requestedBoxesPerPage ?? (isFull ? 25 : 8);
 
@@ -239,8 +239,8 @@ public sealed record PerfOptions(
           --profile <smoke|full>       Fixture scale. smoke (default) is small enough to run in
                                        normal tests and CI; full targets a designated runner and can
                                        be scaled with --items / --pages-per-item / --boxes-per-page
-                                       (defaults: 100, 8, 25).
-          --items <n>                  Fixture item count (default 20 for smoke, 100 for full).
+                                       (defaults: 1000, 8, 25).
+          --items <n>                  Fixture item count (default 20 for smoke, 1000 for full).
           --pages-per-item <n>         Pages per item (default 3 for smoke, 8 for full).
           --boxes-per-page <n>         Boxes per page (default 8 for smoke, 25 for full).
           --iterations <n>             Samples per operation (default 5, minimum 3).

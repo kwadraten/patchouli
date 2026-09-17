@@ -10,7 +10,7 @@ public sealed class UiPerfProbeTests
     public async Task Probe_measures_real_ui_framework_rows_and_heartbeat_on_the_dispatcher()
     {
         PerfOptions options = PerfOptions.Parse(
-            ["--profile", "smoke", "--ui", "--items", "10", "--pages-per-item", "6", "--boxes-per-page", "5"]);
+            ["--profile", "smoke", "--ui", "--items", "120", "--pages-per-item", "1", "--boxes-per-page", "25"]);
 
         UiPerfResult? result = await UiPerfProbe.RunAsync(options, TestPaths.MigrationsDirectory,
             CancellationToken.None);
@@ -21,7 +21,8 @@ public sealed class UiPerfProbeTests
         result.InteractiveFrameworkHotMs.Should().BeGreaterThan(0);
         result.FirstLibraryRowsColdMs.Should().BeGreaterThan(0);
         result.FirstLibraryRowsHotMs.Should().BeGreaterThan(0);
-        result.FirstLibraryRowCount.Should().Be(10);
+        result.FirstLibraryRowCount.Should().Be(120,
+            "the UI fixture must not silently cap the requested list size at 100 rows");
         result.HeartbeatSamples.Should().BeGreaterThanOrEqualTo(2,
             "the adoption window must span at least two 100 ms heartbeats");
         result.HeartbeatMaxGapMs.Should().BeGreaterThanOrEqualTo(0);

@@ -13,6 +13,7 @@ namespace Patchouli.UI.Views;
 public sealed partial class LibraryPage : UserControl
 {
     private LibraryShellViewModel? _shell;
+    private ScrollViewer? _libraryScrollViewer;
     private bool _syncingSelection;
     private bool _isAttached;
 
@@ -76,6 +77,7 @@ public sealed partial class LibraryPage : UserControl
     {
         _isAttached = false;
         UnsubscribeFromShell();
+        DetachLibraryScrollViewer();
         foreach (DataGridColumn? column in LibraryGrid.Columns)
         {
             column.PropertyChanged -= OnColumnPropertyChanged;
@@ -164,6 +166,48 @@ public sealed partial class LibraryPage : UserControl
         }
 
         _restoringColumns = false;
+        AttachLibraryScrollViewer();
+    }
+
+    private void AttachLibraryScrollViewer()
+    {
+        ScrollViewer? scrollViewer = LibraryGrid.GetVisualDescendants().OfType<ScrollViewer>().FirstOrDefault();
+        if (ReferenceEquals(scrollViewer, _libraryScrollViewer))
+        {
+            return;
+        }
+
+        DetachLibraryScrollViewer();
+        _libraryScrollViewer = scrollViewer;
+        if (_libraryScrollViewer is not null)
+        {
+            _libraryScrollViewer.ScrollChanged += OnLibraryScrollChanged;
+        }
+    }
+
+    private void DetachLibraryScrollViewer()
+    {
+        if (_libraryScrollViewer is not null)
+        {
+            _libraryScrollViewer.ScrollChanged -= OnLibraryScrollChanged;
+            _libraryScrollViewer = null;
+        }
+    }
+
+    private void OnLibraryScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        if (sender is not ScrollViewer scrollViewer || _shell is not { HasMoreItems: true })
+        {
+            return;
+        }
+
+        double extent = scrollViewer.Extent.Height;
+        if (extent <= 0 || (scrollViewer.Offset.Y + scrollViewer.Viewport.Height) / extent < 0.75)
+        {
+            return;
+        }
+
+        _shell.LoadNextPageAsync().Observe("library-pagination", "prefetch-next-page");
     }
 
     private void OnColumnPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)

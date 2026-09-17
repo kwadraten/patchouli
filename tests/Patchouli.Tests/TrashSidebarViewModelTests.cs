@@ -143,6 +143,7 @@ public sealed class TrashSidebarViewModelTests : IDisposable
 
                 viewModel.Shell.Sidebar.SelectedSection = viewModel.Shell.Sidebar.Sections[1];
                 await viewModel.Shell.RefreshItemsAsync();
+                await WaitUntilAsync(() => viewModel.Shell.Items.Count == 1);
                 LibraryItemViewModel item = viewModel.Shell.Items.Should().ContainSingle().Subject;
                 viewModel.Shell.SetSelectedItems(new[] { item });
 

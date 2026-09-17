@@ -29,7 +29,8 @@ namespace Patchouli.UI.ViewModels;
 
 public sealed partial class LibraryShellViewModel : ViewModelBase
 {
-    private static readonly TimeSpan TagSelectionThrottle = TimeSpan.FromMilliseconds(200);
+    internal const int LibraryPageSize = 100;
+    private static readonly TimeSpan TagSelectionThrottle = TimeSpan.FromMilliseconds(30);
     private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
     private static readonly TimeSpan SidebarEventThrottle = TimeSpan.Zero;
     private readonly MainWindowViewModel _main;
@@ -39,6 +40,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     private readonly Subject<Unit> _tagReconcileRequests = new();
     private readonly Subject<Unit> _collectionReconcileRequests = new();
     private readonly SerialDisposable _revisionSubscription = new();
+    private CancellationTokenSource _pagingSession = new();
+    private LibraryPageQuery? _pageQuery;
+    private LibraryItemCursor? _nextPageCursor;
+    private int _pageLoadInFlight;
+    private int _pagingGeneration;
     private ItemId? _pendingInspectorItemId;
     private ILibraryRevisionService? _observedLibraryRevisions;
 
@@ -268,6 +274,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             // The main window detaches before switching databases: cancel any metadata batch in
             // flight so its completion cannot refresh the grid or editors against the next Library.
             CancelMetadataBatchForLibrarySwitch();
+            Interlocked.Increment(ref _pagingGeneration);
+            _pagingSession.Cancel();
+            _pageQuery = null;
+            _nextPageCursor = null;
+            HasMoreItems = false;
             _observedLibraryRevisions = null;
             return;
         }
@@ -334,6 +345,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     [ObservableProperty] public partial string MinerUToken { get; set; } = "";
 
     [ObservableProperty] public partial bool IsBusy { get; set; }
+
+    [ObservableProperty] public partial bool HasMoreItems { get; private set; }
+
+    [ObservableProperty] public partial bool IsLoadingMoreItems { get; private set; }
+
+    [ExcludeFromDerivedGeneration] public int LoadedItemCount => Items.Count;
 
     private static ItemId? ParseItemIdOrNull(string? itemId)
     {
@@ -533,14 +550,11 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         Dictionary<string, bool> columns = new(_main.AppOptions.Ui.LibraryGridVisibleColumns,
             StringComparer.Ordinal);
         columns[key] = value;
-        SettingsSaveResult saved = _main.UpdateAppOptions(_main.AppOptions with
+        _main.UpdateAppOptionsDeferred(_main.AppOptions with
         {
             Ui = _main.AppOptions.Ui with { LibraryGridVisibleColumns = columns }
-        });
-        if (saved.IsSuccess)
-        {
-            Raise($"Show{key}Column");
-        }
+        }, "Ui");
+        Raise($"Show{key}Column");
     }
 
     public bool TryGetColumnWidth(string key, out double width)
@@ -563,10 +577,10 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         Dictionary<string, double> widths = new(_main.AppOptions.Ui.LibraryGridColumnWidths,
             StringComparer.Ordinal);
         widths[key] = width;
-        _main.UpdateAppOptions(_main.AppOptions with
+        _main.UpdateAppOptionsDeferred(_main.AppOptions with
         {
             Ui = _main.AppOptions.Ui with { LibraryGridColumnWidths = widths }
-        });
+        }, "Ui");
     }
 
     public void SetColumnOrder(string key, int order)
@@ -579,10 +593,10 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         Dictionary<string, int> orders = new(_main.AppOptions.Ui.LibraryGridColumnOrder,
             StringComparer.Ordinal);
         orders[key] = order;
-        _main.UpdateAppOptions(_main.AppOptions with
+        _main.UpdateAppOptionsDeferred(_main.AppOptions with
         {
             Ui = _main.AppOptions.Ui with { LibraryGridColumnOrder = orders }
-        });
+        }, "Ui");
     }
 
     public Task RefreshItemsAsync()
@@ -592,129 +606,260 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
     private async Task RefreshItemsCoreAsync(CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        string? primaryItemId = SelectedItem?.ItemId;
-        HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
-        HostServices services = await _main.ServicesAsync();
-        // Microsoft.Data.Sqlite executes synchronously under the async facade, so the database
-        // reads run on a thread-pool thread to keep scope switching responsive.
-        Result<LibraryMetadata> library = await Task.Run(
-            () => services.Library.GetCurrentLibraryAsync(cancellationToken),
-            cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        if (library.IsSuccess && LibraryName != library.Value.DisplayName)
+        int pagingGeneration = Interlocked.Increment(ref _pagingGeneration);
+        CancellationTokenSource nextPagingSession = new();
+        CancellationTokenSource previousPagingSession = Interlocked.Exchange(ref _pagingSession, nextPagingSession);
+        previousPagingSession.Cancel();
+        previousPagingSession.Dispose();
+        using CancellationTokenSource refreshCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, nextPagingSession.Token);
+        CancellationToken refreshToken = refreshCancellation.Token;
+        try
         {
-            LibraryName = library.Value.DisplayName;
-            _main.RaiseLibraryTitleChanged();
-        }
+            refreshToken.ThrowIfCancellationRequested();
+            string? primaryItemId = SelectedItem?.ItemId;
+            HashSet<string> selectedItemIds =
+                SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
+            HostServices services = await _main.ServicesAsync();
+            // Microsoft.Data.Sqlite executes synchronously under the async facade, so the database
+            // reads run on a thread-pool thread to keep scope switching responsive.
+            Result<LibraryMetadata> library = await Task.Run(
+                () => services.Library.GetCurrentLibraryAsync(refreshToken),
+                refreshToken);
+            refreshToken.ThrowIfCancellationRequested();
 
-        bool isTrashScope = Sidebar.SelectedScope == LibrarySidebarScope.Trash;
-        IReadOnlyList<string>? requiredTags = null;
-        CollectionId? requiredCollectionId = null;
-        if (!isTrashScope)
-        {
-            Result<IReadOnlyList<Collection>> collections =
-                await Task.Run(() => services.Collections.ListCollectionsAsync(cancellationToken), cancellationToken);
-            if (collections.IsFailure)
+            bool isTrashScope = Sidebar.SelectedScope == LibrarySidebarScope.Trash;
+            IReadOnlyList<string> requiredTags = isTrashScope ? [] : Sidebar.GetSelectedTagNames();
+            CollectionId? requiredCollectionId = isTrashScope ? null : Sidebar.SelectedCollection?.CollectionId;
+            IReadOnlyList<Collection> refreshedCollections = [];
+            IReadOnlyList<string> pinnedTags = [];
+            IReadOnlyList<TagInfo> refreshedTags = [];
+            int refreshedUntaggedCount = 0;
+            if (!isTrashScope)
             {
-                throw new InvalidOperationException(collections.ErrorMessage);
+                Result<IReadOnlyList<Collection>> collections =
+                    await Task.Run(() => services.Collections.ListCollectionsAsync(refreshToken), refreshToken);
+                if (collections.IsFailure)
+                {
+                    throw new InvalidOperationException(collections.ErrorMessage);
+                }
+
+                refreshToken.ThrowIfCancellationRequested();
+                refreshedCollections = collections.Value;
+                if (requiredCollectionId is { } selectedCollectionId &&
+                    !refreshedCollections.Any(collection => collection.CollectionId == selectedCollectionId))
+                {
+                    requiredCollectionId = null;
+                }
+
+                pinnedTags = await Task.Run(
+                    () => LoadPinnedTagsAsync(services, refreshToken),
+                    refreshToken);
+                Result<IReadOnlyList<TagInfo>> tags = await Task.Run(
+                    () => services.Tags.ListTagsAsync(refreshToken), refreshToken);
+                Result<int> untaggedCount = await Task.Run(
+                    () => services.LibraryItems.CountUntaggedItemsAsync(refreshToken), refreshToken);
+                if (tags.IsFailure || untaggedCount.IsFailure)
+                {
+                    throw new InvalidOperationException(tags.ErrorMessage ?? untaggedCount.ErrorMessage);
+                }
+
+                refreshToken.ThrowIfCancellationRequested();
+                refreshedTags = tags.Value;
+                refreshedUntaggedCount = untaggedCount.Value;
             }
 
-            Sidebar.LoadCollections(collections.Value);
-            Raise(nameof(HasCollections));
-            requiredCollectionId = Sidebar.SelectedCollection?.CollectionId;
+            bool noTagSelected = !isTrashScope && Sidebar.IsNoTagSelected;
+            HashSet<ItemId>? collectionMemberIds = null;
+            if (requiredCollectionId is { } collectionId)
+            {
+                Result<IReadOnlyList<ItemId>> members =
+                    await services.Collections.GetCollectionItemIdsAsync(collectionId, refreshToken);
+                if (members.IsFailure)
+                {
+                    throw new InvalidOperationException(members.ErrorMessage);
+                }
 
-            IReadOnlyList<string> pinnedTags = await Task.Run(
-                () => LoadPinnedTagsAsync(services, cancellationToken),
-                cancellationToken);
-            await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags, cancellationToken);
-            Sidebar.ApplyPinnedOrder(pinnedTags);
-            requiredTags = Sidebar.GetSelectedTagNames();
+                collectionMemberIds = members.Value.ToHashSet();
+            }
+
+            LibraryPageQuery pageQuery = new(
+                isTrashScope,
+                noTagSelected,
+                requiredTags.ToArray(),
+                collectionMemberIds,
+                _main.LibraryGeneration,
+                pagingGeneration);
+            LibraryVisiblePage page = await Task.Run(
+                () => FetchVisiblePageAsync(services, pageQuery, null, refreshToken), refreshToken);
+
+            refreshToken.ThrowIfCancellationRequested();
+            if (pagingGeneration != Volatile.Read(ref _pagingGeneration) ||
+                pageQuery.LibraryGeneration != _main.LibraryGeneration)
+            {
+                return;
+            }
+
+            if (library.IsSuccess && LibraryName != library.Value.DisplayName)
+            {
+                LibraryName = library.Value.DisplayName;
+                _main.RaiseLibraryTitleChanged();
+            }
+
+            if (!isTrashScope)
+            {
+                Sidebar.LoadCollections(refreshedCollections);
+                Raise(nameof(HasCollections));
+                Sidebar.LoadTags(refreshedTags, refreshedUntaggedCount, pinnedTags);
+                Sidebar.ApplyPinnedOrder(pinnedTags);
+            }
+
+            List<LibraryItemViewModel> refreshedItems = page.Rows.Select(CreateItemViewModel).ToList();
+            Dictionary<string, LibraryItemViewModel> existingById =
+                Items.ToDictionary(item => item.ItemId, StringComparer.Ordinal);
+            for (int index = 0; index < refreshedItems.Count; index++)
+            {
+                LibraryItemViewModel replacement = refreshedItems[index];
+                if (existingById.TryGetValue(replacement.ItemId, out LibraryItemViewModel? existing))
+                {
+                    existing.ApplyRow(page.Rows[index]);
+                    refreshedItems[index] = existing;
+                }
+            }
+
+            Items = new ObservableCollection<LibraryItemViewModel>(refreshedItems);
+            RecentItems = new ObservableCollection<string>(isTrashScope ? [] : page.Rows.Select(row => row.Title));
+            RecentDocuments = new ObservableCollection<string>(isTrashScope
+                ? []
+                : page.Rows.Where(row => !string.IsNullOrWhiteSpace(row.LinkedFileName))
+                    .Select(row => row.LinkedFileName!));
+            _pageQuery = pageQuery;
+            _nextPageCursor = page.NextCursor;
+            HasMoreItems = page.HasMore;
+
+            Raise(nameof(Items));
+            Raise(nameof(LoadedItemCount));
+            Raise(nameof(RecentItems));
+            Raise(nameof(RecentDocuments));
+
+            // Publish the new Items collection before restoring the selection. The DataGrid selection
+            // model only accepts items that belong to its current ItemsSource, and the ItemsSource
+            // binding still points at the previous collection until the notification above is processed.
+            SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
+            SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
+                                                 pagingGeneration != Volatile.Read(ref _pagingGeneration))
+        {
+            // A newer scope/filter refresh or a database switch owns publication now.
+        }
+    }
+
+    public async Task LoadNextPageAsync()
+    {
+        if (!HasMoreItems || _pageQuery is null || _nextPageCursor is null ||
+            Interlocked.CompareExchange(ref _pageLoadInFlight, 1, 0) != 0)
+        {
+            return;
         }
 
-        bool noTagSelected = !isTrashScope && Sidebar.IsNoTagSelected;
-
-        // The row-to-view-model mapping is pure CPU work proportional to library size; run it
-        // together with the query on a thread-pool thread, then swap the collections in one
-        // reset notification each instead of per-item add notifications. Non-trash scopes read
-        // the in-memory LibraryItemCache snapshot; the trash scope still queries SQLite directly.
-        (List<LibraryItemViewModel> Items, List<string> RecentItems, List<string> RecentDocuments) refreshed =
-            await Task.Run(async () =>
+        IsLoadingMoreItems = true;
+        LibraryPageQuery query = _pageQuery;
+        LibraryItemCursor cursor = _nextPageCursor;
+        CancellationToken cancellationToken = _pagingSession.Token;
+        try
+        {
+            HostServices services = await _main.ServicesAsync();
+            LibraryVisiblePage page = await Task.Run(
+                () => FetchVisiblePageAsync(services, query, cursor, cancellationToken), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!ReferenceEquals(query, _pageQuery) ||
+                query.PagingGeneration != Volatile.Read(ref _pagingGeneration) ||
+                query.LibraryGeneration != _main.LibraryGeneration)
             {
-                IReadOnlyList<LibraryItemRow> rows;
-                if (isTrashScope)
+                return;
+            }
+
+            HashSet<string> presentIds = Items.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
+            foreach (LibraryItemRow row in page.Rows)
+            {
+                if (!presentIds.Add(row.ItemId.ToString()))
                 {
-                    Result<IReadOnlyList<LibraryItemRow>> rowsResult =
-                        await services.LibraryItems.ListTrashedRowsAsync(cancellationToken);
-                    if (rowsResult.IsFailure)
-                    {
-                        throw new InvalidOperationException(rowsResult.ErrorMessage);
-                    }
-
-                    rows = rowsResult.Value;
-                }
-                else
-                {
-                    // Reload the snapshot so a full refresh always reflects the latest committed
-                    // state (same cost as the previous direct ListRowsAsync query); the cache
-                    // still gives LoadTagsAsync and the tag queries a consistent in-memory view.
-                    Result refreshResult = await services.LibraryItemCache.RefreshAsync(cancellationToken);
-                    if (refreshResult.IsFailure)
-                    {
-                        throw new InvalidOperationException(refreshResult.ErrorMessage);
-                    }
-
-                    rows = noTagSelected
-                        ? services.LibraryItemCache.QueryUntagged()
-                        : services.LibraryItemCache.QueryByTags(requiredTags);
-
-                    if (requiredCollectionId is { } collectionId)
-                    {
-                        Result<IReadOnlyList<ItemId>> members =
-                            await services.Collections.GetCollectionItemIdsAsync(collectionId, cancellationToken);
-                        if (members.IsFailure)
-                        {
-                            throw new InvalidOperationException(members.ErrorMessage);
-                        }
-
-                        HashSet<ItemId> memberIds = members.Value.ToHashSet();
-                        rows = rows.Where(row => memberIds.Contains(row.ItemId)).ToArray();
-                    }
+                    continue;
                 }
 
-                List<LibraryItemViewModel> items = new();
-                List<string> recentItems = new();
-                List<string> recentDocuments = new();
-                foreach (LibraryItemRow row in rows)
+                Items.Add(CreateItemViewModel(row));
+                if (!query.IsTrashScope)
                 {
-                    items.Add(CreateItemViewModel(row));
-                    if (!isTrashScope)
+                    RecentItems.Add(row.Title);
+                    if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
                     {
-                        recentItems.Add(row.Title);
-                        if (!string.IsNullOrWhiteSpace(row.LinkedFileName))
-                        {
-                            recentDocuments.Add(row.LinkedFileName);
-                        }
+                        RecentDocuments.Add(row.LinkedFileName);
                     }
                 }
+            }
 
-                return (items, recentItems, recentDocuments);
-            }, cancellationToken);
+            _nextPageCursor = page.NextCursor;
+            HasMoreItems = page.HasMore;
+            Raise(nameof(LoadedItemCount));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        finally
+        {
+            IsLoadingMoreItems = false;
+            Interlocked.Exchange(ref _pageLoadInFlight, 0);
+        }
+    }
 
-        cancellationToken.ThrowIfCancellationRequested();
-        Items = new ObservableCollection<LibraryItemViewModel>(refreshed.Items);
-        RecentItems = new ObservableCollection<string>(refreshed.RecentItems);
-        RecentDocuments = new ObservableCollection<string>(refreshed.RecentDocuments);
+    private static async Task<LibraryVisiblePage> FetchVisiblePageAsync(
+        HostServices services,
+        LibraryPageQuery query,
+        LibraryItemCursor? after,
+        CancellationToken cancellationToken)
+    {
+        List<LibraryItemRow> visibleRows = new(LibraryPageSize);
+        LibraryItemCursor? sourceCursor = after;
+        bool sourceHasMore;
+        do
+        {
+            int sourceLimit = LibraryPageSize - visibleRows.Count;
+            Result<LibraryItemPage> result = query.IsTrashScope
+                ? await services.LibraryItems.ListTrashedRowsAsync(
+                    sourceLimit, sourceCursor, cancellationToken)
+                : await services.LibraryItems.ListRowsAsync(
+                    sourceLimit,
+                    sourceCursor,
+                    query.RequiredTags.Count == 0 ? null : query.RequiredTags,
+                    cancellationToken);
+            if (result.IsFailure)
+            {
+                throw new InvalidOperationException(result.ErrorMessage);
+            }
 
-        Raise(nameof(Items));
-        Raise(nameof(RecentItems));
-        Raise(nameof(RecentDocuments));
+            LibraryItemPage sourcePage = result.Value;
+            foreach (LibraryItemRow row in sourcePage.Rows)
+            {
+                if (query.NoTagSelected && row.Tags is { Count: > 0 })
+                {
+                    continue;
+                }
 
-        // Publish the new Items collection before restoring the selection. The DataGrid selection
-        // model only accepts items that belong to its current ItemsSource, and the ItemsSource
-        // binding still points at the previous collection until the notification above is processed.
-        SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId) ?? Items.FirstOrDefault();
-        SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
+                if (query.CollectionMemberIds is not null && !query.CollectionMemberIds.Contains(row.ItemId))
+                {
+                    continue;
+                }
+
+                visibleRows.Add(row);
+            }
+
+            LibraryItemCursor? previousCursor = sourceCursor;
+            sourceCursor = sourcePage.NextCursor;
+            sourceHasMore = sourcePage.HasMore && sourceCursor is not null && sourceCursor != previousCursor;
+        } while (visibleRows.Count < LibraryPageSize && sourceHasMore);
+
+        return new LibraryVisiblePage(visibleRows, sourceCursor, sourceHasMore);
     }
 
     private async Task<IReadOnlyList<string>> LoadPinnedTagsAsync(
@@ -1417,7 +1562,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     /// Reloads the sidebar tag list after a committed changeset and re-evaluates the active tag
     /// filter so the grid follows tag edits published by write services (add/remove/rename/merge).
     /// Pin state and selection survive the reload; a selected tag that no longer exists is dropped
-    /// by <see cref="LibrarySidebarViewModel.LoadTagsAsync"/>, and the filter re-run then reflects
+    /// by <see cref="LibrarySidebarViewModel.LoadTags"/>, and the filter re-run then reflects
     /// the surviving selection. The pipeline discards stale runs when commits arrive faster than
     /// the reload completes by cancelling the superseded run's token.
     /// </summary>
@@ -1430,12 +1575,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }
 
         HostServices services = await _main.ServicesAsync();
-        // The commit is already visible in SQLite; refresh the in-memory snapshot here as well
-        // (the revision monitor refreshes it independently) so tag counts and the tag filter
-        // query observe this commit regardless of event-handler ordering.
-        Result refreshResult = await Task.Run(() => services.LibraryItemCache.RefreshAsync(), cancellationToken);
+        Result<IReadOnlyList<TagInfo>> tags = await Task.Run(
+            () => services.Tags.ListTagsAsync(cancellationToken), cancellationToken);
+        Result<int> untaggedCount = await Task.Run(
+            () => services.LibraryItems.CountUntaggedItemsAsync(cancellationToken), cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        if (refreshResult.IsFailure)
+        if (tags.IsFailure || untaggedCount.IsFailure)
         {
             return;
         }
@@ -1444,7 +1589,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         cancellationToken.ThrowIfCancellationRequested();
 
         bool filterWasActive = Sidebar.IsNoTagSelected || Sidebar.GetSelectedTagNames().Count > 0;
-        await Sidebar.LoadTagsAsync(services.LibraryItemCache, pinnedTags, cancellationToken);
+        Sidebar.LoadTags(tags.Value, untaggedCount.Value, pinnedTags);
         Sidebar.ApplyPinnedOrder(pinnedTags);
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -1495,59 +1640,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Re-runs the active tag filter against the refreshed cache snapshot and patches the grid
-    /// collection in place: rows that stopped matching are removed, rows that started matching
-    /// are inserted in created_at order, and the current grid selection is preserved for items
-    /// that survived the re-filter (the selected item is cleared when it no longer matches).
+    /// Re-runs the active tag filter through the same keyset-paged first-screen path. This keeps a
+    /// committed tag change from expanding the grid back to the cache's complete row snapshot.
     /// </summary>
     private async Task ApplyTagFilterMembershipAsync(CancellationToken cancellationToken)
     {
-        bool noTagSelected = Sidebar.IsNoTagSelected;
-        IReadOnlyList<string> requiredTags = Sidebar.GetSelectedTagNames();
-        HostServices services = await _main.ServicesAsync();
-        IReadOnlyList<LibraryItemRow> matching = await Task.Run(() =>
-            noTagSelected
-                ? services.LibraryItemCache.QueryUntagged()
-                : services.LibraryItemCache.QueryByTags(requiredTags), cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-
-        await DispatcherTasks.RunAsync(() =>
-        {
-            Dictionary<string, LibraryItemRow> matchingById = matching.ToDictionary(
-                row => row.ItemId.ToString(),
-                StringComparer.Ordinal);
-            string? primaryItemId = SelectedItem?.ItemId;
-            HashSet<string> selectedItemIds = SelectedItems.Select(item => item.ItemId)
-                .ToHashSet(StringComparer.Ordinal);
-
-            for (int index = Items.Count - 1; index >= 0; index--)
-            {
-                if (matchingById.TryGetValue(Items[index].ItemId, out LibraryItemRow? row))
-                {
-                    Items[index].ApplyRow(row);
-                }
-                else
-                {
-                    Items.RemoveAt(index);
-                }
-            }
-
-            HashSet<string> presentIds = Items.Select(item => item.ItemId)
-                .ToHashSet(StringComparer.Ordinal);
-            foreach (LibraryItemRow row in matching)
-            {
-                if (presentIds.Add(row.ItemId.ToString()))
-                {
-                    InsertItemByCreatedAt(CreateItemViewModel(row));
-                }
-            }
-
-            SelectedItem = primaryItemId is null
-                ? null
-                : Items.FirstOrDefault(item => item.ItemId == primaryItemId);
-            SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
-            return Task.CompletedTask;
-        });
+        await RefreshItemsCoreAsync(cancellationToken);
     }
 
     private LibraryItemViewModel CreateItemViewModel(LibraryItemRow row)
@@ -2041,7 +2139,34 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         Raise(nameof(StatusText));
         Raise(nameof(LibraryName));
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            CancellationTokenSource pagingSession =
+                Interlocked.Exchange(ref _pagingSession, new CancellationTokenSource());
+            pagingSession.Cancel();
+            pagingSession.Dispose();
+            _pagingSession.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
 }
+
+internal sealed record LibraryPageQuery(
+    bool IsTrashScope,
+    bool NoTagSelected,
+    IReadOnlyList<string> RequiredTags,
+    HashSet<ItemId>? CollectionMemberIds,
+    int LibraryGeneration,
+    int PagingGeneration);
+
+internal sealed record LibraryVisiblePage(
+    IReadOnlyList<LibraryItemRow> Rows,
+    LibraryItemCursor? NextCursor,
+    bool HasMore);
 
 internal sealed record MetadataLookupOutcome(
     bool IsSuccess,

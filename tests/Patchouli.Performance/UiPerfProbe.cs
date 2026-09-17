@@ -79,11 +79,11 @@ public static class UiPerfProbe
         try
         {
             CountingConnectionFactory seedDatabase = new(databasePath);
-            // The startup probe only needs enough data to exercise the first-screen read path.
-            // The heartbeat below independently stages/adopts the requested total Box count in one
-            // document transaction, avoiding a misleading 10,000-page fixture setup at 500k scale.
+            // Seed the requested item count so the UI probe measures the real list scale instead of
+            // silently capping the fixture at 100 rows. The heartbeat below independently stages/adopts
+            // the requested total Box count in one document transaction.
             await PerformanceFixture.SeedAsync(
-                seedDatabase, migrationsDirectory, options.Seed, Math.Min(options.Items, 100), 1, 1,
+                seedDatabase, migrationsDirectory, options.Seed, options.Items, 1, 1,
                 cancellationToken);
             SqliteConnection.ClearAllPools();
             WriteSettings(settingsPath, databasePath, root);
@@ -166,8 +166,15 @@ public static class UiPerfProbe
         MainWindow window = new(viewModel);
         window.Show();
         await window.ShowFirstRunIfNeededAsync(false);
-        int rowCount = viewModel.Shell.Items.Count;
         long stop = Stopwatch.GetTimestamp();
+        // The shell pages its list, so the requested fixture scale only becomes visible after
+        // draining the remaining keyset pages. The first-screen timing above stays untouched.
+        while (viewModel.Shell.HasMoreItems)
+        {
+            await viewModel.Shell.LoadNextPageAsync();
+        }
+
+        int rowCount = viewModel.Shell.Items.Count;
         window.Close();
         await StopServicesAsync(viewModel);
         return (ElapsedMs(start, stop), rowCount);

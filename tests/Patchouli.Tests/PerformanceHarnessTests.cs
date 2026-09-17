@@ -255,7 +255,7 @@ public sealed class PerformanceHarnessTests
         smoke.BoxesPerPage.Should().Be(8);
 
         PerfOptions full = PerfOptions.Parse(["--profile", "full"]);
-        full.Items.Should().Be(100);
+        full.Items.Should().Be(1000);
         full.PagesPerItem.Should().Be(8);
         full.BoxesPerPage.Should().Be(25);
 

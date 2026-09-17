@@ -148,11 +148,9 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
 
     public bool IsCollectionAreaVisible => IsActiveSelected;
 
-    [ExcludeFromDerivedGeneration]
-    public bool HasCollections => Collections.Count > 0;
+    [ExcludeFromDerivedGeneration] public bool HasCollections => Collections.Count > 0;
 
-    [ExcludeFromDerivedGeneration]
-    public bool NoCollections => Collections.Count == 0;
+    [ExcludeFromDerivedGeneration] public bool NoCollections => Collections.Count == 0;
 
     public AsyncCommand SelectActiveCommand { get; }
 
@@ -160,8 +158,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
 
     public AsyncCommand CreateCollectionCommand { get; }
 
-    [ObservableProperty]
-    public partial ObservableCollection<TagListItemViewModel> Tags { get; private set; } = new();
+    [ObservableProperty] public partial ObservableCollection<TagListItemViewModel> Tags { get; private set; } = new();
 
     /// <summary>
     /// The collection catalog, exposed as one stable instance so bindings survive a reload. A new
@@ -252,7 +249,14 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
     {
         await cache.EnsureLoadedAsync(cancellationToken);
         TagCountsSnapshot counts = cache.GetTagCounts();
-        IReadOnlyList<TagInfo> tags = counts.Tags;
+        LoadTags(counts.Tags, counts.UntaggedCount, pinnedTags);
+    }
+
+    public void LoadTags(
+        IReadOnlyList<TagInfo> tags,
+        int untaggedCount,
+        IReadOnlyList<string> pinnedTags)
+    {
         HashSet<string> pinnedSet = new(pinnedTags, StringComparer.Ordinal);
         HashSet<string> previouslySelected = _selectedTags
             .Where(item => !item.IsNoTagEntry)
@@ -266,7 +270,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
             nextTags.Add(CreateTagItem(tag.Name, tag.Count, pinnedSet.Contains(tag.Name)));
         }
 
-        TagListItemViewModel noTagItem = CreateNoTagItem(counts.UntaggedCount);
+        TagListItemViewModel noTagItem = CreateNoTagItem(untaggedCount);
         noTagItem.IsSelected = noTagWasSelected;
 
         // Preserve selected state on ordinary tags.
@@ -491,8 +495,9 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
             return;
         }
 
-        TagListItemViewModel? noTag = Tags.FirstOrDefault(t => t.IsNoTagEntry);
-        List<TagListItemViewModel> ordinary = Tags.Where(t => !t.IsNoTagEntry).ToList();
+        TagListItemViewModel[] snapshot = Tags.OfType<TagListItemViewModel>().ToArray();
+        TagListItemViewModel? noTag = snapshot.FirstOrDefault(t => t.IsNoTagEntry);
+        List<TagListItemViewModel> ordinary = snapshot.Where(t => !t.IsNoTagEntry).ToList();
         foreach (TagListItemViewModel item in ordinary)
         {
             item.IsPinned = pinnedTags.Contains(item.Name, StringComparer.Ordinal);
@@ -519,8 +524,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
             .ToArray();
     }
 
-    [ExcludeFromDerivedGeneration]
-    public bool IsNoTagSelected => _selectedTags.Any(item => item.IsNoTagEntry);
+    [ExcludeFromDerivedGeneration] public bool IsNoTagSelected => _selectedTags.Any(item => item.IsNoTagEntry);
 
     public void ClearTagSelection()
     {
