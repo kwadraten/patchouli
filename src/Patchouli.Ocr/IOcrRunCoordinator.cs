@@ -44,7 +44,8 @@ public interface IOcrRunCoordinator
     Task<Result> HideOcrRunAsync(OcrRunId runId, CancellationToken cancellationToken = default);
 
     Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId runId,
-        IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default);
+        IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default,
+        IProgress<OcrTaskStageProgress>? progress = null);
 
     Task<Result<OcrRun>> GetRunAsync(OcrRunId runId, CancellationToken cancellationToken = default);
 

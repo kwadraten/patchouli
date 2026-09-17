@@ -269,6 +269,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
 
             HostServices services = await main.ServicesAsync();
             IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+            await scheduler.PauseAsync(OcrPauseScope.Global);
 
             Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
                 DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
@@ -331,6 +332,7 @@ public sealed class OcrQueueReactivityTests : IDisposable
 
         HostServices services = await main.ServicesAsync();
         IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+        await scheduler.PauseAsync(OcrPauseScope.Global);
 
         Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
             DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
@@ -390,5 +392,76 @@ public sealed class OcrQueueReactivityTests : IDisposable
 
         // Because it was disposed, queue.ActiveTaskRows remained untouched (not refreshed)
         queue.ActiveTaskRows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Refresh_supports_multiple_tasks_with_same_document_instance_id_without_throwing()
+    {
+        string path = _settings.CreateDatabasePath("ui-ocr-multi-tasks-same-doc");
+        MainWindowViewModel main = WithRuntimeDatabasePath(CreateMainWindow(), path);
+        await main.OpenDatabaseCommand.ExecuteAsync();
+        await main.Library.CreateCommand.ExecuteAsync();
+
+        HostServices services = await main.ServicesAsync();
+        IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+        await scheduler.PauseAsync(OcrPauseScope.Global);
+
+        DocumentInstanceId docId = DocumentInstanceId.New();
+        Result<OcrQueueTask> task1 = await scheduler.EnqueueMockPagesAsync(
+            docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        Result<OcrQueueTask> task2 = await scheduler.EnqueueMockPagesAsync(
+            docId, OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+
+        task1.IsSuccess.Should().BeTrue();
+        task2.IsSuccess.Should().BeTrue();
+
+        OcrQueueViewModel queue = main.OcrQueue;
+        Func<Task> act = () => queue.RefreshAsync();
+        await act.Should().NotThrowAsync();
+
+        queue.ActiveTaskRows.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public void TaskViewModel_never_displays_100_percent_progress_before_succeeded()
+    {
+        MainWindowViewModel main = CreateMainWindow();
+        OcrQueueViewModel queue = main.OcrQueue;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        OcrQueueTask runningTask = CreateTask(OcrQueueTaskState.Running);
+        OcrQueueProgress pageProgress100 = new(10, 10, 0, 0);
+
+        OcrQueueTaskViewModel vm = new(runningTask, "Doc", queue, pageProgress100, null, null, now);
+        vm.ProgressValue.Should().Be(99.0);
+
+        // Even with fraction = 1.0 during Indexing stage
+        OcrTaskProgressReport indexingStage = new(runningTask.TaskId, OcrTaskStage.Indexing, 1.0, null);
+        vm.Update(runningTask, "Doc", pageProgress100, indexingStage, null, now);
+        vm.ProgressValue.Should().Be(99.0);
+
+        // When succeeded, progress reaches 100
+        OcrQueueTask succeededTask = runningTask with { State = OcrQueueTaskState.Succeeded };
+        vm.Update(succeededTask, "Doc", pageProgress100, null, now, now);
+        vm.ProgressValue.Should().Be(100.0);
+    }
+
+    [Fact]
+    public void TaskViewModel_displays_adopting_and_indexing_stage_labels()
+    {
+        MainWindowViewModel main = CreateMainWindow();
+        OcrQueueViewModel queue = main.OcrQueue;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        OcrQueueTask runningTask = CreateTask(OcrQueueTaskState.Running);
+
+        OcrQueueTaskViewModel vm = new(runningTask, "Doc", queue, null, null, null, now);
+
+        OcrTaskProgressReport adoptingStage = new(runningTask.TaskId, OcrTaskStage.Adopting, 0.5, "pages:2/5");
+        vm.Update(runningTask, "Doc", null, adoptingStage, null, now);
+        vm.StageText.Should().Be("采纳结果 · 2/5 页");
+
+        OcrTaskProgressReport indexingStage = new(runningTask.TaskId, OcrTaskStage.Indexing, 0.5, null);
+        vm.Update(runningTask, "Doc", null, indexingStage, null, now);
+        vm.StageText.Should().Be("更新索引");
     }
 }

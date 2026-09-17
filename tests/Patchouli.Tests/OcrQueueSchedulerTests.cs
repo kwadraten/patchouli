@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
@@ -9,6 +10,69 @@ namespace Patchouli.Tests;
 
 public sealed class OcrQueueSchedulerTests
 {
+    [Fact]
+    public async Task Activity_tracker_distinguishes_ready_paused_and_cancelled_queue_work()
+    {
+        using HostActivityTracker tracker = new();
+        OcrQueueScheduler scheduler = new(
+            LibraryId.New(),
+            new FixedClock(DateTimeOffset.UtcNow),
+            new FakeExecutor(),
+            activityTracker: tracker);
+
+        Result<OcrQueueTask> queued = await scheduler.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+
+        tracker.Current.IsBusy.Should().BeTrue("ready queued OCR is immediately schedulable");
+        tracker.Current.ActiveSummary.Should().Contain("等待调度");
+
+        await scheduler.PauseAsync(OcrPauseScope.Global);
+        tracker.Current.IsBusy.Should().BeFalse();
+        tracker.Current.IsSleeping.Should().BeTrue();
+        tracker.Current.SleepReason.Should().Contain("OCR 队列已暂停");
+
+        await scheduler.ResumeAsync(OcrPauseScope.Global);
+        tracker.Current.IsBusy.Should().BeTrue();
+
+        await scheduler.CancelTaskAsync(queued.Value.TaskId);
+        tracker.Current.Items.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Activity_tracker_sleeps_during_delayed_retry_and_manual_block()
+    {
+        using HostActivityTracker tracker = new();
+        FakeExecutor executor = new()
+            { Result = new OcrQueueExecutionResult(false, false, "network_timeout", "temporary") };
+        OcrQueueScheduler scheduler = new(
+            LibraryId.New(),
+            new FixedClock(DateTimeOffset.UtcNow),
+            executor,
+            activityTracker: tracker);
+        Result<OcrQueueTask> transient = await scheduler.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+
+        await scheduler.RunOneSchedulingTickAsync();
+        await WaitForStateAsync(scheduler, transient.Value.TaskId, OcrQueueTaskState.Queued);
+
+        tracker.Current.IsSleeping.Should().BeTrue();
+        tracker.Current.SleepReason.Should().Contain("重试");
+
+        executor.Result = new OcrQueueExecutionResult(false, false, "missing_executable", "install it");
+        Result<OcrQueueTask> blocked = await scheduler.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await WaitForStateAsync(scheduler, blocked.Value.TaskId, OcrQueueTaskState.Blocked);
+
+        tracker.Current.IsSleeping.Should().BeTrue();
+        tracker.Current.SleepReason.Should().Contain("需要人工处理");
+
+        Result<OcrQueueTask> retry = await scheduler.RetryTaskAsync(blocked.Value.TaskId);
+        retry.IsSuccess.Should().BeTrue(retry.ErrorMessage);
+        tracker.Current.IsBusy.Should().BeTrue("the manual retry is ready for immediate dispatch");
+        tracker.Current.Items.Should().NotContain(item => item.Id == $"ocr:{blocked.Value.TaskId}");
+    }
+
     [Fact]
     public async Task Enqueue_task_kinds_create_queued_tasks()
     {
@@ -197,6 +261,83 @@ public sealed class OcrQueueSchedulerTests
         retried.Value.Dpi.Should().Be(original.Value.Dpi);
         retried.Value.RegionBBox.Should().Be(original.Value.RegionBBox);
         retried.Value.CommitOnCompletion.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Retry_preserves_RunId_when_pages_succeeded_without_failures()
+    {
+        OcrRunId runId = OcrRunId.New();
+        FakeExecutor executor = new()
+        {
+            Result = new OcrQueueExecutionResult(false, false, "adopt_error", "adopt failed",
+                runId, 3, 0)
+        };
+        OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
+        Result<OcrQueueTask> original = await scheduler.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New(), PageId.New(), PageId.New()],
+            OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await scheduler.WaitForIdleAsync();
+
+        Result<OcrQueueTask> failed = await scheduler.GetTaskAsync(original.Value.TaskId);
+        failed.Value.State.Should().Be(OcrQueueTaskState.Failed);
+        failed.Value.RunId.Should().Be(runId);
+
+        Result<OcrQueueTask> retried = await scheduler.RetryTaskAsync(original.Value.TaskId);
+        retried.IsSuccess.Should().BeTrue(retried.ErrorMessage);
+        retried.Value.RunId.Should().Be(runId);
+        retried.Value.RetryOfTaskId.Should().Be(original.Value.TaskId);
+    }
+
+    [Fact]
+    public async Task Retry_clears_RunId_when_page_failures_exist()
+    {
+        OcrRunId runId = OcrRunId.New();
+        FakeExecutor executor = new()
+        {
+            Result = new OcrQueueExecutionResult(false, false, "ocr_error", "page failed",
+                runId, 1, 2)
+        };
+        OcrQueueScheduler scheduler = Create(new FixedClock(DateTimeOffset.UtcNow), executor);
+        Result<OcrQueueTask> original = await scheduler.EnqueueMockPagesAsync(
+            DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New(), PageId.New(), PageId.New()],
+            OcrQueuePriority.UserStartedDocument);
+        await scheduler.RunOneSchedulingTickAsync();
+        await scheduler.WaitForIdleAsync();
+
+        Result<OcrQueueTask> failed = await scheduler.GetTaskAsync(original.Value.TaskId);
+        failed.Value.State.Should().Be(OcrQueueTaskState.Failed);
+        failed.Value.RunId.Should().Be(runId);
+
+        Result<OcrQueueTask> retried = await scheduler.RetryTaskAsync(original.Value.TaskId);
+        retried.IsSuccess.Should().BeTrue(retried.ErrorMessage);
+        retried.Value.RunId.Should().BeNull();
+    }
+
+    [Fact]
+    public void ReportProgress_throttles_per_task_not_globally()
+    {
+        OcrQueueScheduler scheduler = Create(out _);
+        List<OcrQueueChangedEventArgs> events = [];
+        scheduler.Changed += (_, e) => events.Add(e);
+
+        OcrQueueTaskId taskA = OcrQueueTaskId.New();
+        OcrQueueTaskId taskB = OcrQueueTaskId.New();
+
+        System.Reflection.MethodInfo onProgress = typeof(OcrQueueScheduler).GetMethod(
+            "OnProgress",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        onProgress.Invoke(scheduler, [new OcrTaskProgressReport(taskA, OcrTaskStage.Recognizing, 0.1, null)]);
+        events.Should().HaveCount(1);
+
+        // Immediate subsequent report for Task A is throttled (<200ms)
+        onProgress.Invoke(scheduler, [new OcrTaskProgressReport(taskA, OcrTaskStage.Recognizing, 0.2, null)]);
+        events.Should().HaveCount(1);
+
+        // Report for Task B is NOT throttled by Task A
+        onProgress.Invoke(scheduler, [new OcrTaskProgressReport(taskB, OcrTaskStage.Recognizing, 0.1, null)]);
+        events.Should().HaveCount(2);
     }
 
     [Fact]
@@ -676,7 +817,8 @@ public sealed class OcrQueueSchedulerTests
         }
 
         public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId r,
-            IReadOnlyList<PageId>? pages = null, CancellationToken c = default)
+            IReadOnlyList<PageId>? pages = null, CancellationToken c = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             return Task.FromResult(Result<OcrCandidateCommit>.Failure("not_found", "test"));
         }
@@ -799,7 +941,7 @@ public sealed class OcrQueueSchedulerTests
         }
 
         public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId r, IReadOnlyList<PageId>? p = null,
-            CancellationToken c = default)
+            CancellationToken c = default, IProgress<OcrTaskStageProgress>? progress = null)
         {
             return Task.FromResult(Result<OcrCandidateCommit>.Failure("not_found", "test"));
         }

@@ -590,9 +590,10 @@ public sealed class MinerUPageRegionRunTests
         }
 
         public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId runId,
-            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default)
+            IReadOnlyList<PageId>? selectedPages = null, CancellationToken cancellationToken = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
-            return _engine.CommitCandidateRunAsync(runId, selectedPages, cancellationToken);
+            return _engine.CommitCandidateRunAsync(runId, selectedPages, cancellationToken, progress);
         }
 
         public Task<Result<OcrRun>> GetRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)

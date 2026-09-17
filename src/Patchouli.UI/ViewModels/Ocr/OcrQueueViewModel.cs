@@ -44,6 +44,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         IScheduler uiScheduler,
         TimeSpan? refreshThrottle = null)
     {
+        using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
         _timingScheduler = timingScheduler;
         _uiScheduler = uiScheduler;
@@ -387,29 +388,59 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     public async Task RefreshAsync()
     {
-        IOcrQueueScheduler? queue = await GetQueueAsync();
-        if (queue is null)
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
+        Result<IOcrQueueScheduler> queueResult = await services.GetOcrQueueAsync();
+        if (queueResult.IsFailure || !_main.IsCurrentLibraryContext(services, libraryGeneration))
         {
+            if (queueResult.IsFailure)
+            {
+                _main.ReportError($"OCR 队列不可用：{queueResult.ErrorMessage}");
+            }
+
             return;
         }
 
+        IOcrQueueScheduler queue = queueResult.Value;
+        SubscribeQueue(queue);
         Result<OcrQueueStatus> status = await queue.GetQueueStatusAsync();
-        HostServices services = await _main.ServicesAsync();
         Result<IOcrQueueRowService> rowService = await services.GetOcrQueueRowsAsync();
         Result<IReadOnlyList<OcrQueueRow>> rows = rowService.IsSuccess
             ? await rowService.Value.ListRowsAsync(true)
             : Result<IReadOnlyList<OcrQueueRow>>.Failure(rowService.ErrorCode!, rowService.ErrorMessage!);
         if (status.IsFailure || rows.IsFailure)
         {
-            _main.ReportError($"读取队列状态失败：{status.ErrorMessage ?? rows.ErrorMessage}");
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                _main.ReportError($"读取队列状态失败：{status.ErrorMessage ?? rows.ErrorMessage}");
+            }
+
             return;
         }
 
-        Dictionary<string, string> titles = rows.Value.ToDictionary(
-            static row => row.Task.DocumentInstanceId.ToString(),
-            static row => row.ItemTitle,
-            StringComparer.Ordinal);
-        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress = rows.Value
+        if (!_main.IsCurrentLibraryContext(services, libraryGeneration) ||
+            !ReferenceEquals(queue, _subscribedQueue))
+        {
+            return;
+        }
+
+        Dictionary<string, string> titles = new(StringComparer.Ordinal);
+        foreach (OcrQueueRow row in rows.Value)
+        {
+            titles[row.Task.DocumentInstanceId.ToString()] = row.ItemTitle;
+        }
+
+        Dictionary<OcrQueueTaskId, OcrQueueRow> uniqueRows = new();
+        foreach (OcrQueueRow row in rows.Value)
+        {
+            if (!uniqueRows.TryGetValue(row.TaskId, out OcrQueueRow? existing) ||
+                row.Task.UpdatedAt >= existing.Task.UpdatedAt)
+            {
+                uniqueRows[row.TaskId] = row;
+            }
+        }
+
+        Dictionary<OcrQueueTaskId, OcrQueueProgress> progress = uniqueRows.Values
             .Where(static row => row.PageProgress is not null)
             .ToDictionary(static row => row.TaskId, static row => row.PageProgress!);
 
@@ -422,7 +453,7 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
         List<OcrQueueTask> active = [];
         List<OcrQueueTask> finished = [];
-        foreach (OcrQueueTask task in rows.Value.Select(static row => row.Task))
+        foreach (OcrQueueTask task in uniqueRows.Values.Select(static row => row.Task))
         {
             (IsActiveState(task.State) ? active : finished).Add(task);
         }
@@ -445,13 +476,17 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
         HashSet<string> pausedScopes)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        HashSet<string> incomingTaskIds = new(tasks.Select(t => t.TaskId.ToString()), StringComparer.Ordinal);
         for (int i = collection.Count - 1; i >= 0; i--)
         {
-            if (tasks.All(task => task.TaskId.ToString() != collection[i].TaskId))
+            if (!incomingTaskIds.Contains(collection[i].TaskId))
             {
                 collection.RemoveAt(i);
             }
         }
+
+        Dictionary<string, OcrQueueTaskViewModel> existingMap =
+            collection.ToDictionary(row => row.TaskId, StringComparer.Ordinal);
 
         for (int i = 0; i < tasks.Count; i++)
         {
@@ -465,43 +500,49 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
             DateTimeOffset? finishedAt = queue.GetTaskFinishedAt(task.TaskId);
             bool isPaused = pausedScopes.Contains($"task:{taskId}");
 
-            int existingIndex = -1;
-            for (int j = 0; j < collection.Count; j++)
+            if (existingMap.TryGetValue(taskId, out OcrQueueTaskViewModel? existingRow))
             {
-                if (collection[j].TaskId == taskId)
-                {
-                    existingIndex = j;
-                    break;
-                }
-            }
+                existingRow.Update(task, title, pageProgress, stage, finishedAt, now);
+                existingRow.IsPaused = isPaused;
 
-            if (existingIndex < 0)
-            {
-                collection.Insert(Math.Min(i, collection.Count),
-                    new OcrQueueTaskViewModel(task, title, this, pageProgress, stage, finishedAt, now)
-                    {
-                        IsPaused = isPaused
-                    });
+                if (i < collection.Count && ReferenceEquals(collection[i], existingRow))
+                {
+                    continue;
+                }
+
+                int currentIdx = collection.IndexOf(existingRow);
+                if (currentIdx != i && currentIdx >= 0)
+                {
+                    collection.Move(currentIdx, Math.Min(i, collection.Count - 1));
+                }
             }
             else
             {
-                collection[existingIndex].Update(task, title, pageProgress, stage, finishedAt, now);
-                collection[existingIndex].IsPaused = isPaused;
-                if (existingIndex != i)
-                {
-                    collection.Move(existingIndex, i);
-                }
+                OcrQueueTaskViewModel newRow =
+                    new(task, title, this, pageProgress, stage, finishedAt, now)
+                    {
+                        IsPaused = isPaused
+                    };
+                collection.Insert(Math.Min(i, collection.Count), newRow);
+                existingMap[taskId] = newRow;
             }
         }
     }
 
     private async Task<IOcrQueueScheduler?> GetQueueAsync()
     {
-        Result<IOcrQueueScheduler> serviceResult = await (await _main.ServicesAsync()).GetOcrQueueAsync();
+        HostServices services = await _main.ServicesAsync();
+        int libraryGeneration = _main.LibraryGeneration;
+        Result<IOcrQueueScheduler> serviceResult = await services.GetOcrQueueAsync();
         if (serviceResult.IsSuccess)
         {
-            SubscribeQueue(serviceResult.Value);
-            return serviceResult.Value;
+            if (_main.IsCurrentLibraryContext(services, libraryGeneration))
+            {
+                SubscribeQueue(serviceResult.Value);
+                return serviceResult.Value;
+            }
+
+            return null;
         }
 
         _main.ReportError($"OCR 队列不可用：{serviceResult.ErrorMessage}");
@@ -550,49 +591,77 @@ public sealed partial class OcrQueueViewModel : ViewModelBase
 
     private void OnQueueChanged(object? sender, OcrQueueChangedEventArgs e)
     {
+        if (sender is not null && !ReferenceEquals(sender, _subscribedQueue))
+        {
+            return;
+        }
+
+        int libraryGeneration = _main.LibraryGeneration;
         if (e.Task?.State == OcrQueueTaskState.Succeeded)
         {
-            PostStatus(() => _main.Report("OCR 完成，搜索索引已更新。"));
-            RefreshAffectedItemsAsync(e.Task).Observe("ocr-queue-ui", "refresh-items-after-success");
+            PostStatus(libraryGeneration, () => _main.Report("OCR 完成，搜索索引已更新。"));
+            RefreshAffectedItemsAsync(e.Task, libraryGeneration).Observe("ocr-queue-ui", "refresh-items-after-success");
         }
         else if (e.Task?.State is OcrQueueTaskState.Failed or OcrQueueTaskState.Blocked)
         {
             string message = e.Task.LastErrorMessage ?? "OCR 任务失败。";
-            PostStatus(() =>
+            PostStatus(libraryGeneration, () =>
             {
                 _main.ReportError(message);
                 _main.Shell.ApplyOcrQueueTerminalState(e.Task);
             });
-            RefreshAffectedItemsAsync(e.Task).Observe("ocr-queue-ui", "refresh-items-after-failure");
+            RefreshAffectedItemsAsync(e.Task, libraryGeneration).Observe("ocr-queue-ui", "refresh-items-after-failure");
         }
         else if (e.Task?.State == OcrQueueTaskState.Cancelled)
         {
-            PostStatus(() => _main.Shell.ApplyOcrQueueTerminalState(e.Task));
+            PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueTerminalState(e.Task));
         }
         else if (e.Task?.State == OcrQueueTaskState.Running)
         {
-            PostStatus(() => _main.Shell.ApplyOcrQueueRunningState(e.Task));
+            PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueRunningState(e.Task));
         }
 
         ScheduleRefresh();
     }
 
-    private async Task RefreshAffectedItemsAsync(OcrQueueTask task)
+    private async Task RefreshAffectedItemsAsync(OcrQueueTask task, int libraryGeneration)
     {
+        if (_main.LibraryGeneration != libraryGeneration)
+        {
+            return;
+        }
+
         await DispatcherTasks.RunAsync(() => _main.Shell.ApplyDocumentChangeSetAsync([task.DocumentInstanceId]));
-        PostStatus(() => _main.Shell.ApplyOcrQueueTerminalState(task));
+        PostStatus(libraryGeneration, () => _main.Shell.ApplyOcrQueueTerminalState(task));
     }
 
-    private static void PostStatus(Action update)
+    private void PostStatus(int libraryGeneration, Action update)
     {
+        void UpdateIfCurrent()
+        {
+            if (_main.LibraryGeneration == libraryGeneration)
+            {
+                update();
+            }
+        }
+
         if (Dispatcher.UIThread.CheckAccess())
         {
-            update();
+            UpdateIfCurrent();
         }
         else
         {
-            Dispatcher.UIThread.Post(update);
+            Dispatcher.UIThread.Post(UpdateIfCurrent);
         }
+    }
+
+    internal void DetachLibraryContext()
+    {
+        _queueSubscription.Disposable = null;
+        _subscribedQueue = null;
+        ActiveTaskRows.Clear();
+        FinishedTaskRows.Clear();
+        StatusSummary = "等待运行数据库打开。";
     }
 
     private void ScheduleRefresh()
@@ -767,10 +836,10 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
             return 100;
         }
 
+        double value;
         if (stage is not null)
         {
             (double floor, double ceiling) = StageBand(stage.Stage);
-            double value;
             if (stage.Fraction is { } fraction)
             {
                 value = floor + (ceiling - floor) * Math.Clamp(fraction, 0, 1);
@@ -782,13 +851,16 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
                 double creep = 1 - Math.Exp(-elapsedSeconds / 30.0);
                 value = floor + (ceiling - floor) * 0.9 * creep;
             }
-
-            return Math.Min(stage.Stage == OcrTaskStage.Importing ? 99 : 95, value);
+        }
+        else
+        {
+            int total = pageProgress?.Total > 0 ? pageProgress.Total : Math.Max(1, task.PageIds.Count);
+            int done = pageProgress?.Succeeded ?? task.CompletedPageCount;
+            value = 100.0 * done / total;
         }
 
-        int total = pageProgress?.Total > 0 ? pageProgress.Total : Math.Max(1, task.PageIds.Count);
-        int done = pageProgress?.Succeeded ?? task.CompletedPageCount;
-        return Math.Min(95, 100.0 * done / total);
+        // Before Succeeded, progress must never show 100.
+        return Math.Min(99.0, value);
     }
 
     private string BuildStageText(OcrQueueTask task, OcrQueueProgress? pageProgress,
@@ -805,6 +877,7 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         string? detail = stage.Stage switch
         {
             OcrTaskStage.Recognizing => FormatPageDetail(stage.Detail),
+            OcrTaskStage.Adopting => FormatPageDetail(stage.Detail),
             OcrTaskStage.Uploading => FormatChunkDetail(stage.Detail),
             OcrTaskStage.WaitingCloud => FormatWaitingDetail(stage.Detail, now),
             OcrTaskStage.Downloading => FormatBytesDetail(stage.Detail),
@@ -892,11 +965,13 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
         return stage switch
         {
             OcrTaskStage.Preparing => (0, 5),
-            OcrTaskStage.Recognizing => (0, 95),
+            OcrTaskStage.Recognizing => (0, 85),
             OcrTaskStage.Uploading => (5, 30),
             OcrTaskStage.WaitingCloud => (30, 80),
-            OcrTaskStage.Downloading => (80, 95),
-            OcrTaskStage.Importing => (95, 100),
+            OcrTaskStage.Downloading => (80, 90),
+            OcrTaskStage.Importing => (90, 94),
+            OcrTaskStage.Adopting => (94, 97),
+            OcrTaskStage.Indexing => (97, 99.5),
             _ => (0, 5)
         };
     }
@@ -911,6 +986,8 @@ public sealed partial class OcrQueueTaskViewModel : ViewModelBase
             OcrTaskStage.WaitingCloud => "等待云端",
             OcrTaskStage.Downloading => "下载结果",
             OcrTaskStage.Importing => "导入数据库",
+            OcrTaskStage.Adopting => "采纳结果",
+            OcrTaskStage.Indexing => "更新索引",
             _ => stage
         };
     }

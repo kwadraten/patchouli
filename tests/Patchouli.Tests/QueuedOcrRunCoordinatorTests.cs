@@ -368,7 +368,8 @@ public sealed class QueuedOcrRunCoordinatorTests
         }
 
         public Task<Result<OcrCandidateCommit>> CommitCandidateRunAsync(OcrRunId r,
-            IReadOnlyList<PageId>? pages = null, CancellationToken c = default)
+            IReadOnlyList<PageId>? pages = null, CancellationToken c = default,
+            IProgress<OcrTaskStageProgress>? progress = null)
         {
             Calls.Add("adopt");
             return Task.FromResult(Result<OcrCandidateCommit>.Success(

@@ -67,6 +67,8 @@ public static class OcrTaskStage
     public const string WaitingCloud = "waiting_cloud";
     public const string Downloading = "downloading";
     public const string Importing = "importing";
+    public const string Adopting = "adopting";
+    public const string Indexing = "indexing";
 }
 
 public sealed record OcrQueueTask(
@@ -212,4 +214,6 @@ public interface IOcrQueueScheduler
     OcrTaskProgressReport? GetTaskProgress(OcrQueueTaskId taskId);
     DateTimeOffset? GetTaskFinishedAt(OcrQueueTaskId taskId);
     void ClearFinishedTasks();
+    void UpdateLimits(OcrQueueLimits limits);
+    void WakeScheduler();
 }
