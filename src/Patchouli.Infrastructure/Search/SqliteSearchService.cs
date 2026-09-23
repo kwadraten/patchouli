@@ -12,6 +12,7 @@ namespace Patchouli.Infrastructure.Search;
 public sealed class SqliteSearchService : ISearchService
 {
     private const int MatchedUnitsPerPage = 5;
+    private const string ExactContainsFunction = "patchouli_exact_contains";
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IQueryRewriter? _rewriter;
 
@@ -32,7 +33,7 @@ public sealed class SqliteSearchService : ISearchService
         try
         {
             SearchRewritePlan? plan = null;
-            if (_rewriter is not null)
+            if (_rewriter is not null && !request.DisableQueryRewrite)
             {
                 await using SqliteConnection planConnection = _connectionFactory.CreateReadConnection();
                 await planConnection.OpenAsync(cancellationToken);
@@ -81,13 +82,38 @@ public sealed class SqliteSearchService : ISearchService
 
             int pageSize = Math.Clamp(request.PageSize <= 0 ? 20 : request.PageSize, 1, 100);
             int offset = DecodeCursor(request.Cursor);
-            IReadOnlyList<string> queries = plan?.ExpandedQueries ?? [request.Query];
-            string match = string.Join(" OR ", queries.Select(BuildFtsQuery).Distinct(StringComparer.Ordinal));
+            string[] queries = (plan?.ExpandedQueries ?? [request.Query])
+                .Select(query => query.Trim())
+                .Where(query => query.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            string[] ftsQueries = queries
+                .Select(BuildFtsQuery)
+                .Where(query => query is not null)
+                .Cast<string>()
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            bool useFtsCandidates = ftsQueries.Length == queries.Length;
+            string match = string.Join(" OR ", ftsQueries.Select(query => $"({query})"));
+            string candidateSource = useFtsCandidates
+                ? "from search_units_fts f join search_units su on su.unit_id = f.unit_id"
+                : "from search_units su";
+            string candidatePredicate = useFtsCandidates ? "search_units_fts match @Match" : "1 = 1";
+            string exactPredicate = string.Join(" OR ",
+                queries.Select((_, index) => $"{ExactContainsFunction}(su.resolved_text, @ExactQuery{index})"));
+            connection.CreateFunction<string, string, bool>(ExactContainsFunction,
+                static (text, query) => text.Contains(query, StringComparison.OrdinalIgnoreCase),
+                true);
             (string filterSql, Dictionary<string, object?> filterParameters) =
                 LibraryItemQueryService.BuildFilterSql(request.ItemFilters ?? Array.Empty<BibliographicSearchFilter>(),
                     "ItemFilter");
             DynamicParameters pageParameters = new();
-            pageParameters.Add("Match", match);
+            if (useFtsCandidates)
+            {
+                pageParameters.Add("Match", match);
+            }
+
+            AddExactQueryParameters(pageParameters, queries);
             pageParameters.Add("Status", SearchUnitStatus.Current);
             pageParameters.Add("DocumentInstanceId", request.DocumentInstanceId?.ToString());
             pageParameters.Add("IncludeDeprecated", request.IncludeDeprecatedInstances ? 1 : 0);
@@ -102,12 +128,12 @@ public sealed class SqliteSearchService : ISearchService
                 $"""
                  with matched_pages as (
                      select su.page_id as PageId, min(p.page_index) as PageIndex, count(*) as MatchCount
-                     from search_units_fts f
-                     join search_units su on su.unit_id = f.unit_id
+                     {candidateSource}
                      join pages p on p.page_id = su.page_id
                      join document_instances di on di.document_instance_id = su.document_instance_id
                      join items i on i.item_id = di.item_id
-                     where search_units_fts match @Match
+                     where {candidatePredicate}
+                       and ({exactPredicate})
                        and su.status = @Status
                        and (@DocumentInstanceId is null or su.document_instance_id = @DocumentInstanceId)
                        and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
@@ -127,31 +153,37 @@ public sealed class SqliteSearchService : ISearchService
             List<SearchPageResult> results = new();
             foreach (PageHitRow page in selectedPages)
             {
+                DynamicParameters unitParameters = new();
+                if (useFtsCandidates)
+                {
+                    unitParameters.Add("Match", match);
+                }
+
+                AddExactQueryParameters(unitParameters, queries);
+                unitParameters.Add("PageId", page.PageId);
+                unitParameters.Add("Status", SearchUnitStatus.Current);
+                unitParameters.Add("Limit", MatchedUnitsPerPage + 1);
                 UnitHitRow[] matchedRows = (await connection.QueryAsync<UnitHitRow>(
-                    """
-                    select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
-                           su.resolved_text as Text, su.box_type as BoxType,
-                           su.ordinal as Ordinal, su.tree_revision_id as TreeRevisionId,
-                           i.item_id as ItemId, i.title as ItemTitle, di.document_instance_id as DocumentInstanceId,
-                           p.page_label as PageLabel, p.page_index as PageIndex
-                    from search_units_fts f
-                    join search_units su on su.unit_id = f.unit_id
-                    join pages p on p.page_id = su.page_id
-                    join document_instances di on di.document_instance_id = su.document_instance_id
-                    join items i on i.item_id = di.item_id
-                    where search_units_fts match @Match
-                      and su.page_id = @PageId
-                      and su.status = @Status
-                      and i.deleted_at is null
-                      and i.merged_into_item_id is null
-                    order by su.ordinal, su.unit_id
-                    limit @Limit;
-                    """,
-                    new
-                    {
-                        Match = match, PageId = page.PageId, Status = SearchUnitStatus.Current,
-                        Limit = MatchedUnitsPerPage + 1
-                    })).ToArray();
+                    $"""
+                     select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
+                            su.resolved_text as Text, su.box_type as BoxType,
+                            su.ordinal as Ordinal, su.tree_revision_id as TreeRevisionId,
+                            i.item_id as ItemId, i.title as ItemTitle, di.document_instance_id as DocumentInstanceId,
+                            p.page_label as PageLabel, p.page_index as PageIndex
+                     {candidateSource}
+                     join pages p on p.page_id = su.page_id
+                     join document_instances di on di.document_instance_id = su.document_instance_id
+                     join items i on i.item_id = di.item_id
+                     where {candidatePredicate}
+                       and ({exactPredicate})
+                       and su.page_id = @PageId
+                       and su.status = @Status
+                       and i.deleted_at is null
+                       and i.merged_into_item_id is null
+                     order by su.ordinal, su.unit_id
+                     limit @Limit;
+                     """,
+                    unitParameters)).ToArray();
                 UnitHitRow first = matchedRows.First();
                 results.Add(new SearchPageResult(
                     ItemId.Parse(first.ItemId),
@@ -240,16 +272,24 @@ public sealed class SqliteSearchService : ISearchService
         return row?.ToStatus();
     }
 
-    private static string BuildFtsQuery(string query)
+    private static string? BuildFtsQuery(string query)
     {
         string raw = query.Trim();
         string[] tokens = SearchTextAnalyzer.BuildQueryTokens(raw).Select(QuoteFts).ToArray();
         if (tokens.Length == 0)
         {
-            return QuoteFts(raw);
+            return null;
         }
 
-        return string.Join(" OR ", tokens.Distinct(StringComparer.Ordinal));
+        return string.Join(" AND ", tokens.Distinct(StringComparer.Ordinal));
+    }
+
+    private static void AddExactQueryParameters(DynamicParameters parameters, IReadOnlyList<string> queries)
+    {
+        for (int index = 0; index < queries.Count; index++)
+        {
+            parameters.Add($"ExactQuery{index}", queries[index]);
+        }
     }
 
     private static string QuoteFts(string value)

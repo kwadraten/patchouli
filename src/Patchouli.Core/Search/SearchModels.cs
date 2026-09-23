@@ -35,7 +35,8 @@ public sealed record SearchRequest(
     string? ProfileAlias = null,
     bool PreviewRewriteOnly = false,
     bool IncludeRewritePlan = true,
-    IReadOnlyList<BibliographicSearchFilter>? ItemFilters = null);
+    IReadOnlyList<BibliographicSearchFilter>? ItemFilters = null,
+    bool DisableQueryRewrite = false);
 
 public sealed record SearchPageResult(
     ItemId ItemId,

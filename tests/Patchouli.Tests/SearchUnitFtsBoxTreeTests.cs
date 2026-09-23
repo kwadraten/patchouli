@@ -7,11 +7,14 @@ using Patchouli.Core.Layout;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Mcp;
 using Patchouli.Infrastructure.Migrations;
 using Patchouli.Infrastructure.Search;
 using Patchouli.Core.Search;
+using Patchouli.Mcp;
 
 namespace Patchouli.Tests;
 
@@ -99,6 +102,61 @@ public sealed class SearchUnitFtsBoxTreeTests
         noMatch.Results.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Ui_and_mcp_full_text_search_return_only_complete_ordered_query_matches()
+    {
+        await using Context context = await Context.CreateAsync();
+        string supplementaryCjk = "\U00020000";
+        string[] texts =
+        [
+            "机器保养手册",
+            "器材目录",
+            "学术笔记",
+            "习题集",
+            "机器视觉",
+            "学习方法",
+            "机器学习综述",
+            "an English archive only",
+            "中文 archive",
+            "a C language primer",
+            "a C++ handbook",
+            "separator --- marker",
+            $"rare {supplementaryCjk} glyph"
+        ];
+        DocumentTreeRevision revision = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId,
+            context.Page.PageId,
+            texts.Select((text, ordinal) => new DocumentBoxSeed(null, null, ordinal, DocumentBoxType.Text, null, null,
+                new NormalizedBBox(.1, .05 + ordinal * .05, .8, .04), new TextBoxPayload(text))).ToArray(),
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(revision.TreeRevisionId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+        await context.Index.RebuildFtsForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+
+        SearchResultPage cjk = (await context.Search.SearchLibraryAsync(new SearchRequest("机器学习"))).Value;
+        SearchResultPage mixed = (await context.Search.SearchLibraryAsync(new SearchRequest("中文 archive"))).Value;
+        SearchResultPage punctuation = (await context.Search.SearchLibraryAsync(new SearchRequest("C++"))).Value;
+        SearchResultPage punctuationOnly = (await context.Search.SearchLibraryAsync(new SearchRequest("---"))).Value;
+        SearchResultPage supplementary =
+            (await context.Search.SearchLibraryAsync(new SearchRequest(supplementaryCjk))).Value;
+        McpReadApi mcp = new(context.ConnectionFactory, context.Search);
+        McpSearchLibraryResponse mcpResult =
+            (await mcp.SearchLibraryAsync(new McpSearchLibraryRequest("机器学习"))).Value;
+
+        cjk.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal("机器学习综述");
+        mixed.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal("中文 archive");
+        punctuation.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal("a C++ handbook");
+        punctuationOnly.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal("separator --- marker");
+        supplementary.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal($"rare {supplementaryCjk} glyph");
+        mcpResult.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal("机器学习综述");
+    }
+
     private sealed class Context : IAsyncDisposable
     {
         private readonly TemporarySqliteDatabase _database;
@@ -133,6 +191,7 @@ public sealed class SearchUnitFtsBoxTreeTests
         public ISearchUnitBuilder Units { get; }
         public ISearchIndexRebuilder Index { get; }
         public ISearchService Search { get; }
+        public SqliteConnectionFactory ConnectionFactory => _database.ConnectionFactory;
 
         public static async Task<Context> CreateAsync()
         {

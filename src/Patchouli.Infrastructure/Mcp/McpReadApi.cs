@@ -63,7 +63,8 @@ public sealed class McpReadApi : IMcpReadApi
         Result<SearchResultPage> search = await _searchService.SearchLibraryAsync(
             new SearchRequest(request.Query, request.DocumentInstanceId, request.PageSize, request.Cursor,
                 ProfileId: request.ProfileId, ProfileAlias: request.ProfileAlias,
-                PreviewRewriteOnly: request.PreviewRewriteOnly, IncludeRewritePlan: request.IncludeRewritePlan),
+                PreviewRewriteOnly: request.PreviewRewriteOnly, IncludeRewritePlan: request.IncludeRewritePlan,
+                DisableQueryRewrite: request.DisableQueryRewrite),
             cancellationToken);
         if (search.IsFailure)
         {

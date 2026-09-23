@@ -1169,7 +1169,7 @@ public sealed class McpCommandService
             case McpUriKind.TextsScope:
             {
                 McpSearchLibraryRequest searchRequest = new(query, limit,
-                    cursor?.SearchCursor, IncludeRewritePlan: false);
+                    cursor?.SearchCursor, IncludeRewritePlan: false, DisableQueryRewrite: literal);
                 Result<McpSearchLibraryResponse> search = await _read.SearchLibraryAsync(searchRequest,
                     cancellationToken);
                 if (search.IsFailure)
@@ -1201,11 +1201,6 @@ public sealed class McpCommandService
 
                     foreach (McpMatchedUnit unit in page.MatchedUnits)
                     {
-                        if (literal && !unit.Text.Contains(query, StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue;
-                        }
-
                         entries.Add(BuildEvidenceEntry(page, unit, projection, longMode));
                     }
                 }

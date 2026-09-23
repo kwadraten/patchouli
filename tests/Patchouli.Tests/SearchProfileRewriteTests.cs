@@ -188,6 +188,10 @@ public sealed class SearchProfileRewriteTests
             new McpSearchLibraryRequest("臺灣", ProfileId: profile.Value.ProfileId));
         rewritten.Value.Results.Should().ContainSingle();
         rewritten.Value.RewritePlan!.ExpandedQueries.Should().Contain("台湾");
+        Result<McpSearchLibraryResponse> literal = await mcp.SearchLibraryAsync(
+            new McpSearchLibraryRequest("臺灣", ProfileId: profile.Value.ProfileId, DisableQueryRewrite: true));
+        literal.Value.Results.Should().BeEmpty();
+        literal.Value.RewritePlan.Should().BeNull();
 
         await ctx.Profiles.SetRewriteEnabledAsync(false);
         Result<McpSearchLibraryResponse> disabled = await mcp.SearchLibraryAsync(

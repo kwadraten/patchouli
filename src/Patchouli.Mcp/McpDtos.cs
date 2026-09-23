@@ -13,7 +13,8 @@ public sealed record McpSearchLibraryRequest(
     SearchProfileId? ProfileId = null,
     string? ProfileAlias = null,
     bool IncludeRewritePlan = true,
-    bool PreviewRewriteOnly = false);
+    bool PreviewRewriteOnly = false,
+    bool DisableQueryRewrite = false);
 
 public sealed record McpSearchLibraryResponse(
     IReadOnlyList<McpSearchPageResult> Results,
