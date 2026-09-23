@@ -3,24 +3,53 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
+using System.Reactive;
+using System.Reactive.Concurrency;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
+using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.ViewModels.Core;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
 public sealed partial class SettingsViewModel : ViewModelBase
 {
+    private static readonly TimeSpan AutoSaveThrottle = TimeSpan.FromMilliseconds(800);
+
+    // Defensive bound for the follow-up passes that drain edits made while a save is in flight.
+    private const int MaxAutoSavePasses = 4;
+
     private readonly MainWindowViewModel _main;
+    private readonly IScheduler _timingScheduler;
+    private readonly IScheduler _uiScheduler;
+    private readonly Subject<Unit> _autoSaveTriggers = new();
+    private readonly SemaphoreSlim _autoSaveGate = new(1, 1);
+    private IDisposable? _autoSaveSubscription;
+    private bool _isAutoSaving;
     private bool _isRoutingCommand;
     private Task _activeSectionLoad = Task.CompletedTask;
 
     public SettingsViewModel(MainWindowViewModel main)
+        : this(
+            main,
+            TaskPoolScheduler.Default,
+            SynchronizationContext.Current is { } synchronizationContext
+                ? new SynchronizationContextScheduler(synchronizationContext)
+                : CurrentThreadScheduler.Instance)
+    {
+    }
+
+    internal SettingsViewModel(MainWindowViewModel main, IScheduler timingScheduler, IScheduler uiScheduler)
     {
         using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
+        _timingScheduler = timingScheduler;
+        _uiScheduler = uiScheduler;
+        Register(_autoSaveTriggers);
         AppearanceSettings = new AppearanceSettingsViewModel(main);
         LibrarySettings = new LibrarySettingsViewModel(main);
         McpSettings = new McpSettingsViewModel(main);
@@ -42,7 +71,11 @@ public sealed partial class SettingsViewModel : ViewModelBase
                         handler => ((INotifyPropertyChanged)section).PropertyChanged += handler,
                         handler => ((INotifyPropertyChanged)section).PropertyChanged -= handler)))
             .Subscribe(
-                _ => RaiseActiveSectionState(),
+                _ =>
+                {
+                    RaiseActiveSectionState();
+                    RequestAutoSave();
+                },
                 ex => UnexpectedExceptions.Sink.Report(ex, "settings-section-property-changed",
                     nameof(SettingsViewModel)));
 
@@ -50,18 +83,20 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
         Categories = new ObservableCollection<NavCategoryViewModel>
         {
+            new("外观与显示", "Palette", AppearanceSettings),
             new("库与本机路径", "Database", LibrarySettings),
-            new("同步与快照", "Cloud", SyncSettings),
-            new("MCP 服务与安全", "Server", McpSettings),
+            new("本地文件", "FolderOpen", LocalFileManagement),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
             new("元数据来源", "Search", MetadataLookupSettings),
             new("搜索重写", "Filter", SearchRewriteSettings),
-            new("本地文件", "FolderOpen", LocalFileManagement),
-            new("外观与显示", "Palette", AppearanceSettings)
+            new("MCP 服务与安全", "Server", McpSettings),
+            new("同步与快照", "Cloud", SyncSettings)
         };
 
         ActiveCategory = Categories.First();
 
+        // Kept as the manual unified entry points for tests and non-view hosts; the settings
+        // page persists edits through the auto-save pipeline instead of binding these.
         SaveCommand = new AsyncCommand(SaveAllSectionsAsync);
 
         DiscardCommand = new AsyncCommand(DiscardAllSectionsAsync);
@@ -82,8 +117,8 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     partial void OnActiveCategoryChanged(NavCategoryViewModel value)
     {
-        // Unsaved drafts stay in memory when switching sections; the header save/discard
-        // acts on all dirty sections at once.
+        // Drafts stay in memory while the debounced auto-save drains them; switching sections
+        // never blocks and never discards.
         RaiseActiveSectionState();
         _activeSectionLoad = SectionOf(value)?.LoadAsync() ?? Task.CompletedTask;
         _activeSectionLoad.Observe(nameof(SettingsViewModel), nameof(ISettingsSection.LoadAsync));
@@ -107,7 +142,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public bool ShowSaveControls => SectionOf(ActiveCategory)?.SupportsEditing == true;
 
-    /// <summary>The header save commits every dirty section in one action.</summary>
+    /// <summary>The unified save command commits every dirty section in one action.</summary>
     [ExcludeFromDerivedGeneration]
     public bool CanSaveAll => HasDirtySections &&
                               Categories.Select(SectionOf)
@@ -116,9 +151,37 @@ public sealed partial class SettingsViewModel : ViewModelBase
                                   .All(section => section.SupportsEditing && section.CanSave) &&
                               !_isRoutingCommand;
 
-    /// <summary>The header discard reverts every dirty section in one action.</summary>
+    /// <summary>The unified discard command reverts every dirty section in one action.</summary>
     [ExcludeFromDerivedGeneration]
     public bool CanDiscardAll => HasDirtySections && !_isRoutingCommand;
+
+    /// <summary>
+    /// Starts the debounced auto-save pipeline (idempotent). The settings page view activates it
+    /// when it attaches, so every edit persists automatically; hosts without the view (tests)
+    /// keep the manual save/discard commands and nothing is persisted implicitly.
+    /// </summary>
+    public void EnableAutoSave()
+    {
+        if (_autoSaveSubscription is not null)
+        {
+            return;
+        }
+
+        _autoSaveSubscription = ReactiveUiFlow.SubscribeLatest(
+            _autoSaveTriggers,
+            AutoSaveThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            AutoSaveDirtySectionsAsync,
+            ex => UnexpectedExceptions.Sink.Report(ex, nameof(SettingsViewModel),
+                nameof(AutoSaveDirtySectionsAsync)));
+        Register(_autoSaveSubscription);
+
+        if (HasDirtySections)
+        {
+            _autoSaveTriggers.OnNext(Unit.Default);
+        }
+    }
 
     public Task WaitForActiveSectionLoadAsync()
     {
@@ -184,6 +247,51 @@ public sealed partial class SettingsViewModel : ViewModelBase
         Raise(nameof(HasDirtySections));
         RaiseActiveSectionState();
         return true;
+    }
+
+    /// <summary>Feeds the debounced auto-save trigger from section changes. Events raised by the
+    /// save pass itself are suppressed so a failed save is not immediately retried; the next user
+    /// edit re-arms the pipeline.</summary>
+    private void RequestAutoSave()
+    {
+        if (_autoSaveSubscription is not null && !_isAutoSaving && HasDirtySections)
+        {
+            _autoSaveTriggers.OnNext(Unit.Default);
+        }
+    }
+
+    /// <summary>Drains all dirty sections after the throttle window. Edits made while a pass is
+    /// running are picked up by the next pass; a failed pass reports through
+    /// <see cref="GlobalStatus"/> and stops without retrying.</summary>
+    private async Task AutoSaveDirtySectionsAsync(CancellationToken cancellationToken)
+    {
+        await _autoSaveGate.WaitAsync(CancellationToken.None);
+        try
+        {
+            _isAutoSaving = true;
+            for (int pass = 0;
+                 pass < MaxAutoSavePasses && !cancellationToken.IsCancellationRequested && HasDirtySections;
+                 pass++)
+            {
+                try
+                {
+                    if (!await SaveAllDirtySectionsAsync())
+                    {
+                        break;
+                    }
+                }
+                catch (Exception exception)
+                {
+                    GlobalStatus = $"自动保存失败：{exception.Message}";
+                    break;
+                }
+            }
+        }
+        finally
+        {
+            _isAutoSaving = false;
+            _autoSaveGate.Release();
+        }
     }
 
     private async Task SaveAllSectionsAsync()

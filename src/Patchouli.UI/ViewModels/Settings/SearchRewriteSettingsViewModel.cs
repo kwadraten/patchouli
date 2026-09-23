@@ -17,7 +17,7 @@ namespace Patchouli.UI.ViewModels.Settings;
 /// <summary>
 /// Editable query-rewrite rule table for the current library. Global rules (<c>ProfileId</c> is null)
 /// and per-profile rules are displayed together. The enabled checkbox is dirty-tracked like every
-/// other table cell and is committed by the shared settings save command.
+/// other table cell and is persisted automatically with the rest of the table.
 /// </summary>
 public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionViewModelBase
 {

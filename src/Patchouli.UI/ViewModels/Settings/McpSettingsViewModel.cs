@@ -108,6 +108,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         AddCliToPathCommand = new AsyncCommand(AddCliToPathAsync);
         RemoveCliFromPathCommand = new AsyncCommand(RemoveCliFromPathAsync);
         RefreshLibraryPreviewCommand = new AsyncCommand(RefreshLibraryPreviewAsync);
+        CopyEndpointCommand = new AsyncCommand(CopyEndpointAsync);
 
         SyncFromSettings(_settings);
         _isConstructing = false;
@@ -344,6 +345,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     public AsyncCommand SaveAndRestartCommand { get; }
     public AsyncCommand AddCliToPathCommand { get; }
     public AsyncCommand RemoveCliFromPathCommand { get; }
+    public AsyncCommand CopyEndpointCommand { get; }
     public override bool SupportsEditing => true;
 
     [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
@@ -397,6 +399,20 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
     private Task StopMcpAsync()
     {
         return _main.StopMcpServerAsync("用户手动停止");
+    }
+
+    private async Task CopyEndpointAsync()
+    {
+        try
+        {
+            await _main.Clipboard.SetTextAsync(McpEndpoint);
+            _main.Report("MCP 服务地址已复制到剪贴板。");
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(McpSettingsViewModel), "CopyEndpoint");
+            _main.ReportError($"复制 MCP 地址失败：{exception.Message}");
+        }
     }
 
     private async Task AddCliToPathAsync()

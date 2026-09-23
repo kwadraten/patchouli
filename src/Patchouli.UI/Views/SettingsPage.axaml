@@ -34,17 +34,9 @@
     <!-- Content Area -->
     <Grid Grid.Column="1" RowDefinitions="Auto,*">
       <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="32,16">
-        <Grid ColumnDefinitions="*,Auto">
-          <StackPanel Spacing="4" VerticalAlignment="Center">
-            <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
-          </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Content="放弃更改" Command="{Binding DiscardCommand}" Height="32" Classes="Danger"
-                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanDiscardAll}" />
-            <Button Content="保存设置" Command="{Binding SaveCommand}" Height="32" Classes="Primary"
-                    IsVisible="{Binding ShowSaveControls}" IsEnabled="{Binding CanSaveAll}" />
-          </StackPanel>
-        </Grid>
+        <StackPanel Spacing="4" VerticalAlignment="Center">
+          <TextBlock Text="{Binding ActiveCategory.Title}" FontSize="24" FontWeight="SemiBold" />
+        </StackPanel>
       </Border>
 
       <ScrollViewer Grid.Row="1">
@@ -54,11 +46,6 @@
             <!-- Appearance Settings -->
             <DataTemplate DataType="settings:AppearanceSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <StackPanel Spacing="6">
-                  <TextBlock Text="外观与显示" FontSize="24" FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceBrush}" />
-                </StackPanel>
-
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
                     <TextBlock Text="配色方案" Classes="CardTitle" />
@@ -92,7 +79,7 @@
                       <Border Width="40" Height="24" CornerRadius="4" Background="{Binding SelectedPalette.TextBrush}"
                               ToolTip.Tip="正文文字" />
                     </StackPanel>
-                    <TextBlock Text="以上修改需要点击顶部「保存设置」后生效。" FontSize="11"
+                    <TextBlock Text="修改会自动保存并实时生效。" FontSize="11"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
@@ -118,11 +105,6 @@
             <!-- Library Settings -->
             <DataTemplate DataType="settings:LibrarySettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <StackPanel Spacing="6">
-                  <TextBlock Text="库信息与路径" FontSize="24" FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceBrush}" />
-                </StackPanel>
-
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
                     <TextBlock Text="路径信息" Classes="CardTitle" />
@@ -141,7 +123,7 @@
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                     <TextBox Text="{Binding ExclusionPatternsText}" AcceptsReturn="True" MinHeight="120"
                              FontFamily="Consolas, Menlo, monospace" />
-                    <TextBlock Text="以上修改需要点击顶部「保存设置」后生效。" FontSize="11"
+                    <TextBlock Text="修改会自动保存并实时生效。" FontSize="11"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
@@ -171,7 +153,7 @@
                         </DataTemplate>
                       </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                    <TextBlock Text="以上操作立即生效，不受「放弃更改」影响。" FontSize="11"
+                    <TextBlock Text="以上操作立即生效。" FontSize="11"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   </StackPanel>
                 </Border>
@@ -180,7 +162,6 @@
 
             <DataTemplate DataType="settings:SyncSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <TextBlock Text="同步与快照" FontSize="24" FontWeight="SemiBold" />
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
                     <TextBlock Text="本机同步绑定" Classes="CardTitle" />
@@ -277,28 +258,25 @@
             <!-- MCP Settings -->
             <DataTemplate DataType="settings:McpSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                  <StackPanel Spacing="6">
-                    <TextBlock Text="MCP 服务与安全" FontSize="24" FontWeight="SemiBold"
-                               Foreground="{DynamicResource OnSurfaceBrush}" />
-                  </StackPanel>
-                  <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                    <Button Content="停止" Command="{Binding StopMcpCommand}"
-                            ToolTip.Tip="桌面宿主持有资料库期间必须保持 MCP endpoint 可用，以便 patchouli-cli 连接。" />
-                    <Button Content="启动" Command="{Binding StartMcpCommand}" Classes="Primary" />
-                  </StackPanel>
-                </Grid>
-
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="运行状态" Classes="CardTitle" />
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="运行状态" Classes="CardTitle" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <Button Content="停止" Command="{Binding StopMcpCommand}"
+                                ToolTip.Tip="桌面宿主持有资料库期间必须保持 MCP endpoint 可用，以便 patchouli-cli 连接。" />
+                        <Button Content="启动" Command="{Binding StartMcpCommand}" Classes="Primary" />
+                      </StackPanel>
+                    </Grid>
                     <TextBlock Text="{Binding McpStatusText}" FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-                    <TextBlock Text="结构化资源协议：find / fetch / put / cite；put 仅允许带 base revision 替换已有题录 .bib 或 CSL .csl。"
-                               FontSize="12" TextWrapping="Wrap"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                      <TextBlock Text="{Binding McpEndpoint, StringFormat='端点：\{0\}'}" FontSize="12"
+                                 VerticalAlignment="Center"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                      <Button Grid.Column="1" Content="复制" Command="{Binding CopyEndpointCommand}"
+                              ToolTip.Tip="复制端点到剪贴板" Padding="10,2" />
+                    </Grid>
                     <Border Background="{DynamicResource ErrorContainerBrush}"
                             BorderBrush="{DynamicResource ErrorBrush}" BorderThickness="1" CornerRadius="4"
                             Padding="12" IsVisible="{Binding RequiresReload}">
@@ -416,13 +394,6 @@
             <!-- OCR Settings -->
             <DataTemplate DataType="settings:OcrProviderSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                  <StackPanel Spacing="6">
-                    <TextBlock Text="OCR 引擎" FontSize="24" FontWeight="SemiBold"
-                               Foreground="{DynamicResource OnSurfaceBrush}" />
-                  </StackPanel>
-                </Grid>
-
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
                     <TextBlock Text="OCR 通用配置" Classes="CardTitle" />
@@ -503,19 +474,15 @@
             <!-- Local File Management -->
             <DataTemplate DataType="settings:LocalFileManagementSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                  <StackPanel Spacing="6">
-                    <TextBlock Text="本地文件管理" FontSize="24" FontWeight="SemiBold"
-                               Foreground="{DynamicResource OnSurfaceBrush}" />
-                    <TextBlock Text="管理 OCR 模型文件与运行时产生的临时文件。删除的模型可重新下载。"
-                               FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                  </StackPanel>
-                  <Button Grid.Column="1" Content="刷新" Command="{Binding RefreshCommand}" VerticalAlignment="Top" />
-                </Grid>
+                <TextBlock Text="管理 OCR 模型文件与运行时产生的临时文件。删除的模型可重新下载。"
+                           FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
                 <Border Classes="Card">
                   <StackPanel Spacing="12">
-                    <TextBlock Text="托管位置" Classes="CardTitle" />
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock Text="托管位置" Classes="CardTitle" />
+                      <Button Grid.Column="1" Content="刷新" Command="{Binding RefreshCommand}" />
+                    </Grid>
                     <ItemsControl ItemsSource="{Binding Locations}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="settings:ManagedLocationViewModel">
@@ -559,23 +526,18 @@
             <!-- Metadata Lookup Settings -->
             <DataTemplate DataType="settings:MetadataLookupSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                  <StackPanel Spacing="6">
-                    <TextBlock Text="元数据来源" FontSize="24" FontWeight="SemiBold"
-                               Foreground="{DynamicResource OnSurfaceBrush}" />
-                    <TextBlock Text="按顺序尝试已启用的来源。更专业的国家、地区和学科来源默认优先。" FontSize="12"
-                               Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                  </StackPanel>
-                  <Button Grid.Column="1" Content="恢复默认" Command="{Binding RestoreDefaultsCommand}"
-                          VerticalAlignment="Top" />
-                </Grid>
+                <TextBlock Text="按顺序尝试已启用的来源。更专业的国家、地区和学科来源默认优先。" FontSize="12"
+                           Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
                 <Border Classes="Card">
                   <StackPanel Spacing="12">
                     <Grid ColumnDefinitions="*,Auto">
                       <TextBlock Classes="CardTitle" Text="来源优先级" />
-                      <TextBlock Grid.Column="1" Text="{Binding Status}" FontSize="12"
-                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center" />
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="{Binding Status}" FontSize="12" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                        <Button Content="恢复默认" Command="{Binding RestoreDefaultsCommand}" />
+                      </StackPanel>
                     </Grid>
                     <ItemsControl ItemsSource="{Binding Sources}">
                       <ItemsControl.ItemTemplate>
@@ -602,14 +564,10 @@
 
             <!-- Search Rewrite Settings -->
             <DataTemplate DataType="settings:SearchRewriteSettingsViewModel">
-              <StackPanel Spacing="20" MaxWidth="1040">
-                <StackPanel Spacing="6">
-                  <TextBlock Text="搜索重写" FontSize="24" FontWeight="SemiBold"
-                             Foreground="{DynamicResource OnSurfaceBrush}" />
-                  <TextBlock
-                    Text="为当前资料库维护查询重写规则；「全局」规则对所有搜索配置生效，其余规则仅在对应配置下生效。表格内容和启用复选框都由顶部「保存设置」提交；「预览」按需构建重写计划，不受「启用查询重写」开关影响。"
-                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                </StackPanel>
+              <StackPanel Spacing="20" MaxWidth="720">
+                <TextBlock
+                  Text="为当前资料库维护查询重写规则；「全局」规则对所有搜索配置生效，其余规则仅在对应配置下生效。表格内容和启用复选框的修改都会自动保存并实时生效；「预览」按需构建重写计划，不受「启用查询重写」开关影响。"
+                  FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
                 <Border Classes="Card">
                   <StackPanel Spacing="12">
@@ -679,7 +637,7 @@
                                   <ColumnDefinition SharedSizeGroup="RewriteDelete" Width="Auto" />
                                 </Grid.ColumnDefinitions>
                                 <CheckBox Grid.Column="0" IsChecked="{Binding Enabled}" VerticalAlignment="Center"
-                                          ToolTip.Tip="启用状态会随「保存设置」提交" />
+                                          ToolTip.Tip="启用状态修改后自动保存并生效" />
                                 <ComboBox Grid.Column="1" ItemsSource="{Binding RuleTypeOptions}"
                                           SelectedItem="{Binding SelectedRuleType}"
                                           DisplayMemberBinding="{Binding Label}" />

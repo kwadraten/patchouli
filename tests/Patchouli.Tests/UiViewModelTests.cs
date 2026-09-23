@@ -389,7 +389,7 @@ public sealed class UiViewModelTests : IDisposable
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "库与本机路径", "同步与快照", "MCP 服务与安全", "OCR 引擎", "元数据来源", "搜索重写", "本地文件", "外观与显示");
+            "外观与显示", "库与本机路径", "本地文件", "OCR 引擎", "元数据来源", "搜索重写", "MCP 服务与安全", "同步与快照");
         vm.Settings.Categories.Select(category => category.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
@@ -3324,7 +3324,8 @@ public sealed class UiViewModelTests : IDisposable
 
             await vm.CloseSettingsTabCommand.ExecuteAsync();
             vm.ShowSettingsTab.Should().BeFalse();
-            libraryCategory.Should().BeSameAs(vm.Settings.Categories.First());
+            libraryCategory.Should()
+                .BeSameAs(vm.Settings.Categories.Single(category => category.IconName == "Database"));
         }
         finally
         {

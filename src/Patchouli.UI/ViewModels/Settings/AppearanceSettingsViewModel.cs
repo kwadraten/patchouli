@@ -11,8 +11,8 @@ using Patchouli.UI.Themes;
 namespace Patchouli.UI.ViewModels.Settings;
 
 /// <summary>「外观与显示」section: selects the UI color palette and the reading-mode font family
-/// and size. Choices only take effect (and persist) through the header 保存设置 action, like the
-/// other editable sections.</summary>
+/// and size. Once the settings page is open, edits persist automatically through the debounced
+/// auto-save pipeline, like the other editable sections.</summary>
 public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewModelBase
 {
     private const string SystemDefaultFontLabel = "系统默认";
