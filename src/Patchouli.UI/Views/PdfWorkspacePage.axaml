@@ -36,13 +36,33 @@
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Padding" Value="6" />
     </Style>
+    <!-- Fluent's disabled state only recolors string content; toolbar icons and text carry
+         explicit theme brushes, so fade the whole control to grey out chrome and content. -->
+    <Style Selector="Button.ToolbarButton:disabled">
+      <Setter Property="Opacity" Value="0.4" />
+    </Style>
     <Style Selector="ToggleButton.ToolbarToggle">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Padding" Value="6" />
     </Style>
+    <Style Selector="ToggleButton.ToolbarToggle:disabled">
+      <Setter Property="Opacity" Value="0.4" />
+    </Style>
     <Style Selector="ToggleButton.ToolbarToggle:checked">
       <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+    </Style>
+    <!-- The Fluent ControlTheme paints the checked template part with the system accent; that
+         triggered value beats the control Background via TemplateBinding, so the checked
+         chrome is re-themed at the template-part level (hover included). -->
+    <Style Selector="ToggleButton.ToolbarToggle:checked /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+    </Style>
+    <Style Selector="ToggleButton.ToolbarToggle:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource PrimaryContainerBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
     </Style>
     <Style Selector="Border.BBox">
       <Setter Property="BorderThickness" Value="2" />
@@ -203,18 +223,14 @@
               <TextBlock Text="阅读模式" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
             </StackPanel>
           </Button>
-          <Button IsVisible="{Binding IsEditMode}" ToolTip.Tip="{Binding OcrPresetStatusText}">
+          <!-- One-click page OCR: RunCurrentPageOcrCommand already plans logical pages when the
+               current revision has them and falls back to the whole physical page otherwise. -->
+          <Button IsVisible="{Binding IsEditMode}" Command="{Binding RunCurrentPageOcrCommand}"
+                  ToolTip.Tip="{Binding OcrPresetStatusText}">
             <StackPanel Orientation="Horizontal" Spacing="4">
               <lucide:Lucide Icon="ScanText" Width="14" Height="14" />
               <TextBlock Text="OCR" FontSize="12" />
             </StackPanel>
-            <Button.Flyout>
-              <MenuFlyout>
-                <MenuItem Header="本页 OCR" Command="{Binding RunCurrentPageOcrCommand}" />
-                <MenuItem Header="逻辑页 OCR" Command="{Binding RunLogicalPageOcrCommand}" />
-                <MenuItem Header="文档级 OCR" Command="{Binding RunDocumentOcrCommand}" />
-              </MenuFlyout>
-            </Button.Flyout>
           </Button>
           <Button Command="{Binding EnterEditModeCommand}" IsVisible="{Binding !IsEditMode}" Background="Transparent">
             <StackPanel Orientation="Horizontal" Spacing="4">

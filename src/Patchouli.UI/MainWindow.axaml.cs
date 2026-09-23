@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Platform;
 using Avalonia.Threading;
 using Patchouli.UI.Controls;
 using Patchouli.UI.ViewModels;
@@ -16,6 +17,7 @@ public sealed partial class MainWindow : Window
     private bool _exitRequested;
     private bool _startupScheduled;
     private CatStatusIndicator? _catIndicator;
+    private DispatcherTimer? _geometryClampDebounce;
 
     private CatStatusIndicator? CatIndicatorControl =>
         _catIndicator ??= this.FindControl<CatStatusIndicator>("CatIndicator");
@@ -37,6 +39,7 @@ public sealed partial class MainWindow : Window
         _viewModel = viewModel;
         DataContext = _viewModel;
         InitializeComponent();
+        Opened += OnFirstOpened;
         if (CatIndicatorControl is { } cat)
         {
             cat.IsWindowMinimized = WindowState == WindowState.Minimized;
@@ -51,6 +54,14 @@ public sealed partial class MainWindow : Window
             if (CatIndicatorControl is { } cat)
             {
                 cat.IsWindowMinimized = WindowState == WindowState.Minimized;
+            }
+
+            if (WindowState == WindowState.Normal
+                && change.GetOldValue<WindowState>() == WindowState.Maximized)
+            {
+                Dispatcher.UIThread.Post(
+                    () => ClampToWorkingArea(false),
+                    DispatcherPriority.Background);
             }
         }
     }
@@ -81,6 +92,126 @@ public sealed partial class MainWindow : Window
     {
         Opened -= OnOpened;
         ScheduleStartup();
+    }
+
+    private void OnFirstOpened(object? sender, EventArgs e)
+    {
+        Opened -= OnFirstOpened;
+        Screens.Changed += OnScreensChanged;
+        PositionChanged += OnPositionChanged;
+        Resized += OnWindowResized;
+        // Position/ScreenFromWindow are not final inside Opened itself (the OS applies
+        // cascade placement afterwards), so clamp once the placement has settled.
+        Dispatcher.UIThread.Post(
+            () => ClampToWorkingArea(true),
+            DispatcherPriority.Loaded);
+    }
+
+    private void OnScreensChanged(object? sender, EventArgs e)
+    {
+        ClampToWorkingArea(false);
+    }
+
+    private void OnPositionChanged(object? sender, PixelPointEventArgs e)
+    {
+        ScheduleGeometryClamp();
+    }
+
+    private void OnWindowResized(object? sender, WindowResizedEventArgs e)
+    {
+        ScheduleGeometryClamp();
+    }
+
+    private void ScheduleGeometryClamp()
+    {
+        if (WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        _geometryClampDebounce ??= new DispatcherTimer(
+            TimeSpan.FromMilliseconds(600),
+            DispatcherPriority.Background,
+            OnGeometryClampDebounceTick);
+        _geometryClampDebounce.Stop();
+        _geometryClampDebounce.Start();
+    }
+
+    private void OnGeometryClampDebounceTick(object? sender, EventArgs e)
+    {
+        _geometryClampDebounce?.Stop();
+        ClampToWorkingArea(false);
+    }
+
+    private void ClampToWorkingArea(bool recenter)
+    {
+        // The default Width/Height exceed small screens (e.g. 820 DIP on a 672 DIP
+        // working area), pushing the fixed 28 px status bar row behind the taskbar.
+        // WorkingArea/Position are physical pixels while Width/Height are DIPs, so
+        // convert via Scaling.
+        if (WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        // Posted/deferred invocations can land after the window is closed (headless
+        // tests dispose the platform impl right after Opened); there is nothing to
+        // clamp then.
+        Screen? screen;
+        try
+        {
+            screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        if (screen is null)
+        {
+            return;
+        }
+
+        const double margin = 40;
+        double scaling = screen.Scaling > 0 ? screen.Scaling : 1;
+        PixelRect workingArea = screen.WorkingArea;
+        double maxWidth = Math.Max(margin * 2, workingArea.Width / scaling - margin * 2);
+        double maxHeight = Math.Max(margin * 2, workingArea.Height / scaling - margin * 2);
+        double targetWidth = Math.Min(Width, maxWidth);
+        double targetHeight = Math.Min(Height, maxHeight);
+
+        if (targetWidth < MinWidth)
+        {
+            MinWidth = targetWidth;
+        }
+
+        if (targetHeight < MinHeight)
+        {
+            MinHeight = targetHeight;
+        }
+
+        Width = targetWidth;
+        Height = targetHeight;
+
+        // Position works in physical pixels of the whole frame, which is larger than
+        // the client area by the border/title bar (e.g. ~14x45 DIP on Windows).
+        Size frameExtra = FrameSize is { } frame
+            ? new Size(Math.Max(0, frame.Width - Width), Math.Max(0, frame.Height - Height))
+            : new Size(14, 45);
+        int windowWidth = (int)Math.Ceiling((targetWidth + frameExtra.Width) * scaling);
+        int windowHeight = (int)Math.Ceiling((targetHeight + frameExtra.Height) * scaling);
+        int maxX = workingArea.X + Math.Max(0, workingArea.Width - windowWidth);
+        int maxY = workingArea.Y + Math.Max(0, workingArea.Height - windowHeight);
+        int x = recenter
+            ? workingArea.X + Math.Max(0, (workingArea.Width - windowWidth) / 2)
+            : Math.Clamp(Position.X, workingArea.X, Math.Max(workingArea.X, maxX));
+        int y = recenter
+            ? workingArea.Y + Math.Max(0, (workingArea.Height - windowHeight) / 2)
+            : Math.Clamp(Position.Y, workingArea.Y, Math.Max(workingArea.Y, maxY));
+        if (x != Position.X || y != Position.Y)
+        {
+            Position = new PixelPoint(x, y);
+        }
     }
 
     private void ScheduleStartup()

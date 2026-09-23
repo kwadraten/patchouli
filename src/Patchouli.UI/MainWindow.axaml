@@ -10,6 +10,7 @@
         xmlns:controls="using:Patchouli.UI.Controls"
         x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
+        WindowStartupLocation="CenterScreen"
         Title="Patchouli.Net" Icon="/Assets/AppIcon.ico" Background="{DynamicResource SurfaceBrush}">
 
   <Window.DataTemplates>
@@ -163,6 +164,19 @@
             </Style>
             <Style Selector="ComboBox#SearchModeCombo /template/ Border#Background">
               <Setter Property="BorderThickness" Value="0" />
+            </Style>
+            <!-- Dropdown selection uses the app palette instead of the Fluent accent blue. -->
+            <Style Selector="ComboBox#SearchModeCombo ComboBoxItem:selected /template/ ContentPresenter">
+              <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+              <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+            </Style>
+            <Style Selector="ComboBox#SearchModeCombo ComboBoxItem:selected:pointerover /template/ ContentPresenter">
+              <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+              <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+            </Style>
+            <Style Selector="ComboBox#SearchModeCombo ComboBoxItem:selected:pressed /template/ ContentPresenter">
+              <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+              <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
             </Style>
           </StackPanel.Styles>
           <ComboBox x:Name="SearchModeCombo" Width="100" Height="24" FontSize="12" VerticalContentAlignment="Center"
