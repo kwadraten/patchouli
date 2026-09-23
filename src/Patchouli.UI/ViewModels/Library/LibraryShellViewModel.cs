@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
@@ -33,12 +34,14 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
     private static readonly TimeSpan TagSelectionThrottle = TimeSpan.FromMilliseconds(30);
     private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
     private static readonly TimeSpan SidebarEventThrottle = TimeSpan.Zero;
+    private static readonly TimeSpan CollectionMembershipThrottle = TimeSpan.FromMilliseconds(50);
     private readonly MainWindowViewModel _main;
     private readonly IScheduler _timingScheduler = TaskPoolScheduler.Default;
     private readonly IScheduler _uiScheduler;
     private readonly Subject<Unit> _selectionChangedRequests = new();
     private readonly Subject<Unit> _tagReconcileRequests = new();
     private readonly Subject<Unit> _collectionReconcileRequests = new();
+    private readonly Subject<Unit> _collectionMembershipRefreshRequests = new();
     private readonly SerialDisposable _revisionSubscription = new();
     private CancellationTokenSource _pagingSession = new();
     private LibraryPageQuery? _pageQuery;
@@ -58,7 +61,8 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         Inspector = new ItemInspectorViewModel(
             async () => (await _main.ServicesAsync()).Items,
             async () => (await _main.ServicesAsync()).Tags,
-            async () => (await _main.ServicesAsync()).ItemTypeProfiles);
+            async () => (await _main.ServicesAsync()).ItemTypeProfiles,
+            async () => (await _main.ServicesAsync()).Collections);
         Register(Sidebar);
         Register(Inspector);
         Register(_revisionSubscription);
@@ -77,6 +81,9 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
                     {
                         Raise(nameof(CollectionContextItems));
                         Raise(nameof(HasCollections));
+                        // LoadCollections replaces the collection item instances, so the context-menu
+                        // membership checkmarks must be recomputed for the new view models.
+                        _collectionMembershipRefreshRequests.OnNext(Unit.Default);
                     }
                 },
                 exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-sidebar-watch")));
@@ -176,6 +183,12 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             .Select(_ => SelectedItems.Count == 2)
             .BindOutput(this, canMerge => CanMergeSelectedItems = canMerge, ImmediateScheduler.Instance, null, true,
                 false);
+        // The "add to collection" submenu checkmarks follow the batch selection; pushing the
+        // change into a latest-wins pipeline keeps rapid selection shifts from stacking queries.
+        Register(selectedItemsChanged
+            .Subscribe(
+                _ => _collectionMembershipRefreshRequests.OnNext(Unit.Default),
+                exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-membership-trigger")));
 
         // Committed-change reconciles reload sidebar state from a fresh snapshot; a latest-wins
         // pipeline discards stale runs when commits arrive faster than the reload completes.
@@ -193,6 +206,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             _uiScheduler,
             ReconcileCollectionsAfterCommittedChangeAsync,
             exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-reconcile")));
+        // Membership checkmarks in the item context menu are latest-wins: a superseded run is
+        // cancelled instead of racing the newer selection against N member-list queries.
+        Register(ReactiveUiFlow.SubscribeLatest(
+            _collectionMembershipRefreshRequests,
+            CollectionMembershipThrottle,
+            _timingScheduler,
+            _uiScheduler,
+            RefreshCollectionMembershipAsync,
+            exception => UnexpectedExceptions.Sink.Report(exception, "library-shell-collection-membership")));
 
         RemoveSelectedItemsFromCurrentCollectionCommand =
             new AsyncCommand(RemoveSelectedItemsFromCurrentCollectionAsync);
@@ -208,6 +230,13 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         RestoreSelectedItemsCommand = new AsyncCommand(RestoreSelectedItemsAsync);
         PurgeSelectedItemsCommand = new AsyncCommand(PurgeSelectedItemsAsync);
         QuickFillOcrCommand = new AsyncCommand(RunQuickFillOcrAsync);
+
+        // Sorting is a UI-layer concern: the persisted key selects one of the grid columns (empty
+        // means "database order", i.e. created_at descending), and unknown/stale keys are dropped.
+        SortColumnKey = IsSortableColumnKey(_main.AppOptions.Ui.LibraryGridSortColumn)
+            ? _main.AppOptions.Ui.LibraryGridSortColumn
+            : "";
+        SortDescending = SortColumnKey.Length > 0 && _main.AppOptions.Ui.LibraryGridSortDescending;
     }
 
     private void RegisterSequentialSidebarEvent<TEventArgs>(
@@ -599,6 +628,251 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }, "Ui");
     }
 
+    // ---------- Grid sorting (UI layer only; the database query keeps ordering by created_at) ----------
+
+    // Column Tag values eligible for sorting; "" means the grid is not sorted.
+    private static readonly string[] SortableColumnKeys =
+        ["ItemType", "Year", "Author", "Title", "Source", "Status", "Pages", "File"];
+
+    public string SortColumnKey { get; private set; } = "";
+
+    public bool SortDescending { get; private set; }
+
+    private static bool IsSortableColumnKey(string key)
+    {
+        return SortableColumnKeys.Contains(key, StringComparer.Ordinal);
+    }
+
+    /// <summary>Header click cycle: unsorted -> ascending -> descending -> ascending; switching
+    /// columns always starts at ascending.</summary>
+    public void ApplyColumnSort(string columnKey)
+    {
+        if (!IsSortableColumnKey(columnKey))
+        {
+            return;
+        }
+
+        if (SortColumnKey == columnKey)
+        {
+            SortDescending = !SortDescending;
+        }
+        else
+        {
+            SortColumnKey = columnKey;
+            SortDescending = false;
+        }
+
+        PersistSortState();
+        ResortLoadedItems();
+    }
+
+    /// <summary>Header double-click drops the sort and restores the created_at descending order.</summary>
+    public void ClearColumnSort()
+    {
+        if (SortColumnKey.Length == 0)
+        {
+            return;
+        }
+
+        SortColumnKey = "";
+        SortDescending = false;
+        PersistSortState();
+        ResortLoadedItems();
+    }
+
+    private void PersistSortState()
+    {
+        _main.UpdateAppOptionsDeferred(_main.AppOptions with
+        {
+            Ui = _main.AppOptions.Ui with
+            {
+                LibraryGridSortColumn = SortColumnKey,
+                LibraryGridSortDescending = SortDescending
+            }
+        }, "Ui");
+    }
+
+    private bool HasActiveSort => SortColumnKey.Length > 0;
+
+    private void SortRefreshedItems(List<LibraryItemViewModel> items)
+    {
+        if (!HasActiveSort)
+        {
+            return;
+        }
+
+        items.Sort(CreateSortComparison(SortDescending));
+    }
+
+    private void ResortLoadedItems()
+    {
+        string? primaryItemId = SelectedItem?.ItemId;
+        HashSet<string> selectedItemIds =
+            SelectedItems.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
+        List<LibraryItemViewModel> sorted = Items.ToList();
+        sorted.Sort(HasActiveSort
+            ? CreateSortComparison(SortDescending)
+            : CreatedAtDescendingComparison);
+        Items = new ObservableCollection<LibraryItemViewModel>(sorted);
+        Raise(nameof(Items));
+        SelectedItem = Items.FirstOrDefault(item => item.ItemId == primaryItemId);
+        SetSelectedItems(Items.Where(item => selectedItemIds.Contains(item.ItemId)));
+    }
+
+    private static readonly Comparison<LibraryItemViewModel> CreatedAtDescendingComparison = (a, b) =>
+    {
+        // created_at is ISO-8601 UTC, so ordinal comparison matches time order; ItemId keeps the
+        // order deterministic when two rows share a timestamp.
+        int result = string.CompareOrdinal(b.CreatedAt, a.CreatedAt);
+        return result != 0 ? result : string.CompareOrdinal(b.ItemId, a.ItemId);
+    };
+
+    private Comparison<LibraryItemViewModel> CreateSortComparison(bool descending)
+    {
+        Comparison<LibraryItemViewModel> primary = SortColumnKey switch
+        {
+            "ItemType" => (a, b) =>
+                CompareDisplayText(CslItemTypeDisplayNames.For(a.ItemType),
+                    CslItemTypeDisplayNames.For(b.ItemType), descending),
+            "Year" => (a, b) => CompareYear(a, b, descending),
+            "Author" => (a, b) => CompareDisplayText(a.Authors, b.Authors, descending),
+            "Title" => (a, b) => CompareDisplayText(a.Title, b.Title, descending),
+            "Source" => (a, b) => CompareDisplayText(a.SourceText, b.SourceText, descending),
+            "Status" => (a, b) => CompareDisplayText(a.OcrIndexStateLabel, b.OcrIndexStateLabel, descending),
+            "Pages" => (a, b) => ComparePageCount(a, b, descending),
+            "File" => (a, b) =>
+            {
+                int result = string.Compare(a.SourcePath, b.SourcePath,
+                    StringComparison.OrdinalIgnoreCase);
+                return descending ? -result : result;
+            },
+            _ => static (a, b) => 0
+        };
+
+        return (a, b) =>
+        {
+            int result = primary(a, b);
+            // Deterministic fallback so rows with equal keys keep a stable, reproducible order.
+            return result != 0 ? result : CreatedAtDescendingComparison(a, b);
+        };
+    }
+
+    private static int CompareDisplayText(string? a, string? b, bool descending)
+    {
+        int result = string.Compare(a, b, StringComparison.CurrentCulture);
+        return descending ? -result : result;
+    }
+
+    private static int CompareYear(LibraryItemViewModel a, LibraryItemViewModel b, bool descending)
+    {
+        bool hasA = TryParseYear(a.Year, out int yearA);
+        bool hasB = TryParseYear(b.Year, out int yearB);
+        if (hasA && hasB)
+        {
+            int result = yearA.CompareTo(yearB);
+            return descending ? -result : result;
+        }
+
+        // Unparseable or empty years sink to the bottom in both directions.
+        return hasA ? -1 : hasB ? 1 : 0;
+    }
+
+    private static bool TryParseYear(string? year, out int value)
+    {
+        return int.TryParse(year?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
+    }
+
+    private static int ComparePageCount(LibraryItemViewModel a, LibraryItemViewModel b, bool descending)
+    {
+        bool hasA = a.PageCount > 0;
+        bool hasB = b.PageCount > 0;
+        if (hasA && hasB)
+        {
+            int result = a.PageCount.CompareTo(b.PageCount);
+            return descending ? -result : result;
+        }
+
+        return hasA ? -1 : hasB ? 1 : 0;
+    }
+
+    private int FindSortedInsertIndex(LibraryItemViewModel item)
+    {
+        Comparison<LibraryItemViewModel> comparison = CreateSortComparison(SortDescending);
+        int low = 0;
+        int high = Items.Count;
+        while (low < high)
+        {
+            int mid = low + ((high - low) >> 1);
+            if (comparison(Items[mid], item) <= 0)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid;
+            }
+        }
+
+        return low;
+    }
+
+    /// <summary>Inserts a committed (new or re-appearing) row at the position dictated by the
+    /// active sort, or by created_at when the grid is unsorted.</summary>
+    private void InsertItemByCurrentOrder(LibraryItemViewModel item)
+    {
+        if (!HasActiveSort)
+        {
+            InsertItemByCreatedAt(item);
+            return;
+        }
+
+        Items.Insert(FindSortedInsertIndex(item), item);
+    }
+
+    /// <summary>Refreshes the "add to collection" submenu checkmarks: a collection is checked when
+    /// every selected item belongs to it, and nothing is checked without a selection.</summary>
+    private async Task RefreshCollectionMembershipAsync(CancellationToken cancellationToken)
+    {
+        ObservableCollection<CollectionListItemViewModel> collections = Sidebar.Collections;
+        if (collections.Count == 0)
+        {
+            return;
+        }
+
+        LibraryItemViewModel[] selected = SelectedItems.ToArray();
+        HashSet<CollectionId> containingCollections = new();
+        if (selected.Length > 0)
+        {
+            HostServices services = await _main.ServicesAsync();
+            HashSet<string> selectedIds =
+                selected.Select(item => item.ItemId).ToHashSet(StringComparer.Ordinal);
+            foreach (CollectionListItemViewModel collection in collections)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                Result<IReadOnlyList<ItemId>> members = await Task.Run(
+                    () => services.Collections.GetCollectionItemIdsAsync(collection.CollectionId,
+                        cancellationToken),
+                    cancellationToken);
+                if (members.IsSuccess &&
+                    selectedIds.IsSubsetOf(members.Value.Select(id => id.ToString())))
+                {
+                    containingCollections.Add(collection.CollectionId);
+                }
+            }
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        await DispatcherTasks.RunAsync(() =>
+        {
+            foreach (CollectionListItemViewModel collection in collections)
+            {
+                collection.ContainsSelection = containingCollections.Contains(collection.CollectionId);
+            }
+
+            return Task.CompletedTask;
+        });
+    }
+
     public Task RefreshItemsAsync()
     {
         return RefreshItemsCoreAsync(CancellationToken.None);
@@ -727,6 +1001,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
                 }
             }
 
+            SortRefreshedItems(refreshedItems);
             Items = new ObservableCollection<LibraryItemViewModel>(refreshedItems);
             RecentItems = new ObservableCollection<string>(isTrashScope ? [] : page.Rows.Select(row => row.Title));
             RecentDocuments = new ObservableCollection<string>(isTrashScope
@@ -788,7 +1063,18 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
                     continue;
                 }
 
-                Items.Add(CreateItemViewModel(row));
+                LibraryItemViewModel addedItem = CreateItemViewModel(row);
+                if (HasActiveSort)
+                {
+                    // The already-loaded rows are in sort order, so each new row lands at its
+                    // sorted position and the whole list stays ordered.
+                    Items.Insert(FindSortedInsertIndex(addedItem), addedItem);
+                }
+                else
+                {
+                    Items.Add(addedItem);
+                }
+
                 if (!query.IsTrashScope)
                 {
                     RecentItems.Add(row.Title);
@@ -1448,7 +1734,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             }
             else
             {
-                InsertItemByCreatedAt(CreateItemViewModel(row));
+                InsertItemByCurrentOrder(CreateItemViewModel(row));
             }
 
             if (selectedItemId is not null &&

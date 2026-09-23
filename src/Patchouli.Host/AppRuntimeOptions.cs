@@ -349,7 +349,9 @@ public sealed record UiPreferences(
     bool ShowLibraryRightSidebar = true,
     string PaletteId = UiColorPalettes.DefaultPaletteId,
     string ReadingFontFamily = "",
-    double ReadingFontSize = 14)
+    double ReadingFontSize = 14,
+    string LibraryGridSortColumn = "",
+    bool LibraryGridSortDescending = false)
 {
     public const double DefaultReadingFontSize = 14;
 
@@ -547,7 +549,11 @@ public sealed record PatchouliAppSettings(
                     ReadBool(ui, "ShowLibraryRightSidebar", defaults.Ui.ShowLibraryRightSidebar),
                     ReadString(ui, "PaletteId", defaults.Ui.PaletteId),
                     ReadString(ui, "ReadingFontFamily", defaults.Ui.ReadingFontFamily),
-                    ReadDouble(ui, "ReadingFontSize", defaults.Ui.ReadingFontSize)))
+                    ReadDouble(ui, "ReadingFontSize", defaults.Ui.ReadingFontSize),
+                    ReadString(ui, "LibraryGridSortColumn",
+                        defaults.Ui.LibraryGridSortColumn),
+                    ReadBool(ui, "LibraryGridSortDescending",
+                        defaults.Ui.LibraryGridSortDescending)))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
@@ -715,7 +721,9 @@ public sealed record PatchouliAppSettings(
                 Ui.ShowLibraryRightSidebar,
                 Ui.PaletteId,
                 Ui.ReadingFontFamily,
-                Ui.ReadingFontSize
+                Ui.ReadingFontSize,
+                Ui.LibraryGridSortColumn,
+                Ui.LibraryGridSortDescending
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -929,7 +937,9 @@ public sealed record PatchouliAppSettings(
                     Ui.ShowLibraryRightSidebar,
                     Ui.PaletteId,
                     Ui.ReadingFontFamily,
-                    Ui.ReadingFontSize
+                    Ui.ReadingFontSize,
+                    Ui.LibraryGridSortColumn,
+                    Ui.LibraryGridSortDescending
                 });
             }
 

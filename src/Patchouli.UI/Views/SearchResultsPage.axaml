@@ -127,6 +127,65 @@
                   Loaded="OnBibliographicGridLoaded"
                   RowBackground="Transparent" BorderThickness="0"
                   Background="{DynamicResource SurfaceContainerLowestBrush}">
+          <!-- Commands live on MainWindowViewModel.Shell (shared with the library page), so the
+               code-behind supplies the shell from the window DataContext and syncs its selection
+               imperatively on right-click. -->
+          <DataGrid.ContextMenu>
+            <ContextMenu x:Name="BibliographicContextMenu" x:CompileBindings="False">
+              <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
+                        IsEnabled="{Binding IsSingleSelectionOrNone}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="合并条目" Command="{Binding MergeSelectedItemsCommand}"
+                        IsEnabled="{Binding CanMergeSelectedItems}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="检测重复题录"
+                        Command="{Binding DetectDuplicatesCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="获取所选题录元数据"
+                        Command="{Binding LookupMetadataBatchCommand}"
+                        IsEnabled="{Binding HasBatchSelection}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="取消批量获取元数据"
+                        Command="{Binding CancelMetadataBatchCommand}"
+                        IsVisible="{Binding IsMetadataBatchBusy}" />
+              <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"
+                        IsEnabled="{Binding HasCollections}" ItemsSource="{Binding CollectionContextItems}"
+                        x:CompileBindings="False">
+                <MenuItem.ItemTemplate>
+                  <DataTemplate x:DataType="vm:CollectionListItemViewModel">
+                    <TextBlock Text="{Binding Name}" />
+                  </DataTemplate>
+                </MenuItem.ItemTemplate>
+                <MenuItem.Styles>
+                  <Style Selector="MenuItem MenuItem">
+                    <Setter Property="Command" Value="{Binding AddToSelectionCommand}" />
+                    <Setter Property="IsChecked" Value="{Binding ContainsSelection}" />
+                  </Style>
+                </MenuItem.Styles>
+              </MenuItem>
+              <MenuItem Header="从当前集合移除"
+                        Command="{Binding RemoveSelectedItemsFromCurrentCollectionCommand}"
+                        IsVisible="{Binding HasSelectedCollectionFilter}" />
+              <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
+                        Command="{Binding CopyCslBibliographyDescriptor}"
+                        ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="{Binding ExportItemDescriptor.Label}"
+                        Command="{Binding ExportItemDescriptor}"
+                        ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="删除" Command="{Binding DeleteSelectedItemsCommand}"
+                        IsVisible="{Binding Sidebar.IsActiveSelected}" />
+              <MenuItem Header="还原" Command="{Binding RestoreSelectedItemsCommand}"
+                        IsVisible="{Binding Sidebar.IsTrashSelected}" />
+              <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
+                        IsVisible="{Binding Sidebar.IsTrashSelected}" />
+            </ContextMenu>
+          </DataGrid.ContextMenu>
           <DataGrid.Columns>
             <DataGridTextColumn Header="题录类型" Tag="ItemType"
                                 Binding="{Binding ItemType, Converter={StaticResource ItemTypeDisplayConverter}}"

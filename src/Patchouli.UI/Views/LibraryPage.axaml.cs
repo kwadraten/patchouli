@@ -1,12 +1,14 @@
 using Avalonia.Controls;
 using Avalonia;
 using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Linq;
 using Patchouli.UI.ViewModels;
 using Avalonia.VisualTree;
 using Patchouli.UI.Diagnostics;
 using Avalonia.Input;
 using Patchouli.Core.Bibliography;
+using Avalonia.Controls.DataGridSorting;
 
 namespace Patchouli.UI.Views;
 
@@ -20,6 +22,10 @@ public sealed partial class LibraryPage : UserControl
     public LibraryPage()
     {
         InitializeComponent();
+        // ProDataGrid's default sorting adapter rewrites the collection view's SortDescriptions
+        // whenever a column SortDirection changes. The shell sorts the loaded view models itself,
+        // so keep the sorting model (header arrows) but never let it reorder the view.
+        LibraryGrid.SortingAdapterFactory = new IndicatorOnlySortingAdapterFactory();
         LibraryGrid.AddHandler(PointerPressedEvent, OnDataGridPointerPressed,
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
         LibraryGrid.AddHandler(PointerMovedEvent, OnDataGridPointerMoved,
@@ -30,6 +36,19 @@ public sealed partial class LibraryPage : UserControl
 
     private async void OnDataGridDoubleTapped(object? sender, TappedEventArgs e)
     {
+        // A double-click on a column header clears the sort; only row double-clicks open the PDF.
+        if (e.Source is Control source &&
+            source.FindAncestorOfType<DataGridColumnHeader>() is not null)
+        {
+            if (DataContext is LibraryShellViewModel shell)
+            {
+                shell.ClearColumnSort();
+                SyncColumnSortIndicators(shell);
+            }
+
+            return;
+        }
+
         if (DataContext is LibraryShellViewModel { Sidebar.IsTrashSelected: true })
         {
             return;
@@ -166,7 +185,25 @@ public sealed partial class LibraryPage : UserControl
         }
 
         _restoringColumns = false;
+        SyncColumnSortIndicators(shell);
         AttachLibraryScrollViewer();
+    }
+
+    private void SyncColumnSortIndicators(LibraryShellViewModel shell)
+    {
+        foreach (DataGridColumn? column in LibraryGrid.Columns)
+        {
+            if (ColumnKey(column) is { } key && key == shell.SortColumnKey)
+            {
+                column.SortDirection = shell.SortDescending
+                    ? ListSortDirection.Descending
+                    : ListSortDirection.Ascending;
+            }
+            else
+            {
+                column.SortDirection = null;
+            }
+        }
     }
 
     private void AttachLibraryScrollViewer()
@@ -450,6 +487,21 @@ public sealed partial class LibraryPage : UserControl
             return;
         }
 
+        // Left-click on a column header cycles the UI sort. Headers must not become row-drag
+        // sources, so this branch returns before any drag bookkeeping runs.
+        if (source.FindAncestorOfType<DataGridColumnHeader>() is { } columnHeader)
+        {
+            if (columnHeader.OwningColumn is { } column &&
+                ColumnKey(column) is { } sortKey &&
+                e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+            {
+                shell.ApplyColumnSort(sortKey);
+                SyncColumnSortIndicators(shell);
+            }
+
+            return;
+        }
+
         DataGridRow? row = source.FindAncestorOfType<DataGridRow>();
         if (row?.DataContext is not LibraryItemViewModel item)
         {
@@ -563,5 +615,35 @@ public sealed partial class LibraryPage : UserControl
         DataTransfer data = new();
         data.Add(DataTransferItem.CreateText(TagDragPrefix + tagName));
         return data;
+    }
+
+    // Keeps ProDataGrid's sorting model (and therefore the header sort arrows) alive while
+    // suppressing the adapter's default behavior of rewriting the collection view's
+    // SortDescriptions; the shell reorders the loaded items itself.
+    private sealed class IndicatorOnlySortingAdapterFactory : IDataGridSortingAdapterFactory
+    {
+        public DataGridSortingAdapter Create(DataGrid grid, ISortingModel model)
+        {
+            return new IndicatorOnlySortingAdapter(model, () => grid.Columns);
+        }
+    }
+
+    private sealed class IndicatorOnlySortingAdapter : DataGridSortingAdapter
+    {
+        public IndicatorOnlySortingAdapter(
+            ISortingModel model,
+            Func<IEnumerable<DataGridColumn>> columnProvider)
+            : base(model, columnProvider)
+        {
+        }
+
+        protected override bool TryApplyModelToView(
+            IReadOnlyList<SortingDescriptor> descriptors,
+            IReadOnlyList<SortingDescriptor> previousDescriptors,
+            out bool changed)
+        {
+            changed = false;
+            return true;
+        }
     }
 }

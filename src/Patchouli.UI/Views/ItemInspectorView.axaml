@@ -105,6 +105,43 @@
             </Border>
           </DataTemplate>
 
+          <!-- Collections card: read-only chips naming the collections that hold the item -->
+          <DataTemplate DataType="vm:InspectorCollectionsSectionViewModel">
+            <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="4"
+                    Background="{DynamicResource SurfaceContainerLowestBrush}">
+              <Grid RowDefinitions="Auto,*">
+                <Border Background="{DynamicResource SurfaceContainerHighBrush}" Padding="12,8"
+                        CornerRadius="3,3,0,0"
+                        BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1">
+                  <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                             Foreground="{DynamicResource OnSurfaceBrush}" />
+                </Border>
+                <StackPanel Grid.Row="1" Margin="12,10" Spacing="8">
+                  <TextBlock Text="无" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                             HorizontalAlignment="Center" Margin="0,4"
+                             IsVisible="{Binding HasNoCollections}" />
+                  <ItemsControl ItemsSource="{Binding Collections}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:InspectorCollectionViewModel">
+                        <Border Background="{DynamicResource SurfaceContainerHighBrush}" CornerRadius="12"
+                                Padding="10,4" BorderThickness="0" Margin="0,0,6,6">
+                          <TextBlock Text="{Binding Name}" FontSize="12"
+                                     Foreground="{DynamicResource OnSurfaceBrush}" VerticalAlignment="Center" />
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Grid>
+            </Border>
+          </DataTemplate>
+
         </ItemsControl.DataTemplates>
       </ItemsControl>
     </StackPanel>

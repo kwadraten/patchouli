@@ -36,6 +36,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
 {
     private LibrarySidebarSectionViewModel _selectedSection;
     private readonly List<TagListItemViewModel> _selectedTags = new();
+    private IReadOnlyList<string> _pinnedTags = [];
     private bool _silentCollectionSelection;
 
     public LibrarySidebarViewModel()
@@ -257,6 +258,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
         int untaggedCount,
         IReadOnlyList<string> pinnedTags)
     {
+        _pinnedTags = pinnedTags.ToArray();
         HashSet<string> pinnedSet = new(pinnedTags, StringComparer.Ordinal);
         HashSet<string> previouslySelected = _selectedTags
             .Where(item => !item.IsNoTagEntry)
@@ -480,6 +482,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
             }
         }
 
+        ReorderTags();
         Raise(nameof(SelectedTags));
         TagSelectionChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -490,6 +493,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
     /// </summary>
     public void ApplyPinnedOrder(IReadOnlyList<string> pinnedTags)
     {
+        _pinnedTags = pinnedTags.ToArray();
         if (Tags.Count == 0)
         {
             return;
@@ -534,6 +538,7 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
             tag.IsSelected = false;
         }
 
+        ReorderTags();
         Raise(nameof(SelectedTags));
         TagSelectionChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -579,6 +584,29 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
         };
     }
 
+    /// <summary>
+    /// Reapplies <see cref="SortTags"/> to the live list so toggling selection immediately moves
+    /// the activated tags to the top without losing their state; the "无标签" entry keeps its
+    /// fixed position at the tail.
+    /// </summary>
+    private void ReorderTags()
+    {
+        if (Tags.Count == 0)
+        {
+            return;
+        }
+
+        TagListItemViewModel[] snapshot = Tags.OfType<TagListItemViewModel>().ToArray();
+        TagListItemViewModel? noTag = snapshot.FirstOrDefault(t => t.IsNoTagEntry);
+        List<TagListItemViewModel> ordinary = snapshot.Where(t => !t.IsNoTagEntry).ToList();
+        List<TagListItemViewModel> sorted = SortTags(ordinary, _pinnedTags);
+        Tags = new ObservableCollection<TagListItemViewModel>(sorted);
+        if (noTag is not null)
+        {
+            Tags.Add(noTag);
+        }
+    }
+
     private static List<TagListItemViewModel> SortTags(
         IReadOnlyList<TagListItemViewModel> tags,
         IReadOnlyList<string> pinnedTags)
@@ -587,10 +615,16 @@ public sealed partial class LibrarySidebarViewModel : ViewModelBase
             .Select((name, index) => (name, index))
             .ToDictionary(pair => pair.name, pair => pair.index, StringComparer.Ordinal);
 
+        // Selected entries float to the top (ordered by name among themselves) so they stay one
+        // click away for deselection; everything below keeps the pinned-then-count ordering.
         return tags
-            .OrderByDescending(item => pinnedIndex.TryGetValue(item.Name, out int index) ? -index : int.MinValue)
-            .ThenByDescending(item => item.Count)
-            .ThenBy(item => item.Name, StringComparer.Ordinal)
+            .Where(item => item.IsSelected)
+            .OrderBy(item => item.Name, StringComparer.Ordinal)
+            .Concat(tags
+                .Where(item => !item.IsSelected)
+                .OrderByDescending(item => pinnedIndex.TryGetValue(item.Name, out int index) ? -index : int.MinValue)
+                .ThenByDescending(item => item.Count)
+                .ThenBy(item => item.Name, StringComparer.Ordinal))
             .ToList();
     }
 }

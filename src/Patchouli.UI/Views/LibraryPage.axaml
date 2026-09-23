@@ -250,6 +250,8 @@
               </MenuItem.ItemTemplate>
               <MenuItem.Styles>
                 <Style Selector="MenuItem MenuItem">
+                  <Setter Property="ToggleType" Value="CheckBox" />
+                  <Setter Property="IsChecked" Value="{Binding ContainsSelection, Mode=OneWay}" />
                   <Setter Property="Command" Value="{Binding AddToSelectionCommand}" />
                 </Style>
               </MenuItem.Styles>

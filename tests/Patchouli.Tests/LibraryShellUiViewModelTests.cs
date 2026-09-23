@@ -343,7 +343,8 @@ public sealed class LibraryShellUiViewModelTests : IDisposable
         return new ItemInspectorViewModel(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(new FakeProfileService()));
+            () => Task.FromResult<ICslItemTypeProfileService>(new FakeProfileService()),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
     }
 
     private static LibraryItemViewModel CreateItem(string itemId, string title)
@@ -613,6 +614,63 @@ public sealed class LibraryShellUiViewModelTests : IDisposable
         }
 
         public Task<Result> ValidateItemTypeAsync(string itemType, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    private sealed class FakeCollectionService : ICollectionService
+    {
+        public Task<Result<IReadOnlyList<Collection>>> ListCollectionsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<Collection>>.Success(Array.Empty<Collection>()));
+        }
+
+        public Task<Result<Collection>> CreateCollectionAsync(string name,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result<Collection>> RenameCollectionAsync(CollectionId collectionId, string name,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> DissolveCollectionAsync(CollectionId collectionId,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> AddItemsAsync(CollectionId collectionId, IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> RemoveItemsAsync(CollectionId collectionId, IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> SetItemCollectionsAsync(ItemId itemId, IReadOnlyList<CollectionId> collectionIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result<IReadOnlyList<CollectionId>>> GetItemCollectionIdsAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<CollectionId>>.Success(Array.Empty<CollectionId>()));
+        }
+
+        public Task<Result<IReadOnlyList<ItemId>>> GetCollectionItemIdsAsync(CollectionId collectionId,
+            CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException();
         }

@@ -24,14 +24,15 @@ public sealed partial class CollectionListItemViewModel : ViewModelBase
     public string Name { get; }
     public int ItemCount { get; }
 
-    [ObservableProperty]
-    public partial bool IsSelected { get; set; }
+    [ObservableProperty] public partial bool IsSelected { get; set; }
 
-    [ExcludeFromDerivedGeneration]
-    public string CountText => ItemCount > 0 ? ItemCount.ToString() : "";
+    // Checked state in the "add to collection" context submenu: true when every currently
+    // selected library item is already a member of this collection.
+    [ObservableProperty] public partial bool ContainsSelection { get; set; }
 
-    [ExcludeFromDerivedGeneration]
-    public bool HasCount => ItemCount > 0;
+    [ExcludeFromDerivedGeneration] public string CountText => ItemCount > 0 ? ItemCount.ToString() : "";
+
+    [ExcludeFromDerivedGeneration] public bool HasCount => ItemCount > 0;
 
     public AsyncCommand RenameCommand { get; }
 

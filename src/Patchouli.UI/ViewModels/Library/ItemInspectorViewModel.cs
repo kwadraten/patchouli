@@ -26,6 +26,7 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
     private readonly Func<Task<IItemService>> _itemServiceFactory;
     private readonly Func<Task<IItemTagService>> _tagServiceFactory;
     private readonly Func<Task<ICslItemTypeProfileService>> _profileServiceFactory;
+    private readonly Func<Task<ICollectionService>> _collectionServiceFactory;
     private readonly Subject<Unit> _loadRequests = new();
     private ItemId? _currentItemId;
     private ItemId? _latestLoadId;
@@ -35,16 +36,21 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
     public ItemInspectorViewModel(
         Func<Task<IItemService>> itemServiceFactory,
         Func<Task<IItemTagService>> tagServiceFactory,
-        Func<Task<ICslItemTypeProfileService>> profileServiceFactory)
+        Func<Task<ICslItemTypeProfileService>> profileServiceFactory,
+        Func<Task<ICollectionService>> collectionServiceFactory)
     {
         _itemServiceFactory = itemServiceFactory;
         _tagServiceFactory = tagServiceFactory;
         _profileServiceFactory = profileServiceFactory;
+        _collectionServiceFactory = collectionServiceFactory;
         Groups = new ObservableCollection<InspectorGroupViewModel>();
         Tags = new ObservableCollection<InspectorTagViewModel>();
+        Collections = new ObservableCollection<InspectorCollectionViewModel>();
         Sections = new ObservableCollection<object>();
         TagsSection = new InspectorTagsSectionViewModel(this);
+        CollectionsSection = new InspectorCollectionsSectionViewModel(this);
         Register(TagsSection);
+        Register(CollectionsSection);
         AddTagCommand = new AsyncCommand(AddTagAsync);
         ToggleTagEditorCommand = new RelayCommand(_ => IsTagEditorOpen = !IsTagEditorOpen);
         IScheduler uiScheduler = SynchronizationContext.Current is { } synchronizationContext
@@ -69,10 +75,16 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
     public ObservableCollection<InspectorGroupViewModel> Groups { get; }
     public ObservableCollection<InspectorTagViewModel> Tags { get; }
 
-    /// <summary>Display-ordered inspector cards: 基本信息, the tags section, then the remaining field groups.</summary>
+    /// <summary>The collections holding the currently loaded item, ordered by collection name.</summary>
+    public ObservableCollection<InspectorCollectionViewModel> Collections { get; }
+
+    /// <summary>Display-ordered inspector cards: 基本信息, the tags section, the collections section,
+    /// then the remaining field groups.</summary>
     public ObservableCollection<object> Sections { get; }
 
     internal InspectorTagsSectionViewModel TagsSection { get; }
+
+    internal InspectorCollectionsSectionViewModel CollectionsSection { get; }
 
     [ObservableProperty] public partial string NewTagName { get; set; } = "";
 
@@ -115,6 +127,33 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
         if (result.IsSuccess)
         {
             await LoadAsync(_currentItemId.Value);
+        }
+    }
+
+    private async Task LoadCollectionsAsync(ItemId itemId, CancellationToken cancellationToken)
+    {
+        Collections.Clear();
+        ICollectionService collectionService = await Task.Run(_collectionServiceFactory, cancellationToken);
+        Result<IReadOnlyList<CollectionId>> membership =
+            await Task.Run(() => collectionService.GetItemCollectionIdsAsync(itemId, cancellationToken),
+                cancellationToken);
+        if (membership.IsFailure || membership.Value.Count == 0)
+        {
+            return;
+        }
+
+        Result<IReadOnlyList<Collection>> catalog =
+            await Task.Run(() => collectionService.ListCollectionsAsync(cancellationToken), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (catalog.IsFailure)
+        {
+            return;
+        }
+
+        HashSet<CollectionId> memberOf = membership.Value.ToHashSet();
+        foreach (Collection collection in catalog.Value.Where(c => memberOf.Contains(c.CollectionId)))
+        {
+            Collections.Add(new InspectorCollectionViewModel(collection.Name));
         }
     }
 
@@ -210,9 +249,11 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
         IsTagEditorOpen = false;
         Groups.Clear();
         Tags.Clear();
+        Collections.Clear();
         Sections.Clear();
         _currentItemId = null;
         Raise(nameof(Tags));
+        Raise(nameof(Collections));
         Raise(nameof(Sections));
     }
 
@@ -228,6 +269,8 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
         {
             Tags.Add(new InspectorTagViewModel(tag, RemoveTagAsync));
         }
+
+        await LoadCollectionsAsync(metadata.ItemId, cancellationToken);
 
         ICslItemTypeProfileService profileService = await Task.Run(_profileServiceFactory, cancellationToken);
         Result<CslItemTypeProfile> profileResult =
@@ -369,7 +412,8 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
 
         Raise(nameof(Groups));
 
-        // Card order in the view: 基本信息 first, then the tags section, then the remaining groups.
+        // Card order in the view: 基本信息 first, then the tags and collections sections, then
+        // the remaining groups.
         Sections.Clear();
         if (Groups.Count > 0)
         {
@@ -377,6 +421,7 @@ public sealed partial class ItemInspectorViewModel : ViewModelBase
         }
 
         Sections.Add(TagsSection);
+        Sections.Add(CollectionsSection);
         foreach (InspectorGroupViewModel group in Groups.Skip(1))
         {
             Sections.Add(group);
@@ -527,6 +572,30 @@ public sealed class InspectorTagsSectionViewModel : ViewModelBase
 }
 
 /// <summary>
+/// The collections card in the inspector's section flow; exposes the parent's collection state to
+/// its data template and forwards the parent's change notifications for the bound properties.
+/// </summary>
+public sealed class InspectorCollectionsSectionViewModel : ViewModelBase
+{
+    private readonly ItemInspectorViewModel _parent;
+
+    public InspectorCollectionsSectionViewModel(ItemInspectorViewModel parent)
+    {
+        _parent = parent;
+        // Forwarding subscription is owned by this section and cleaned up when it is disposed.
+        Register(Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                handler => _parent.Collections.CollectionChanged += handler,
+                handler => _parent.Collections.CollectionChanged -= handler)
+            .Subscribe(_ => Raise(nameof(HasNoCollections))));
+    }
+
+    public string Title => "集合";
+    public ObservableCollection<InspectorCollectionViewModel> Collections => _parent.Collections;
+    public bool HasNoCollections => Collections.Count == 0;
+}
+
+/// <summary>
 /// A single editable tag chip shown in the item inspector.
 /// </summary>
 public sealed class InspectorTagViewModel : ViewModelBase
@@ -539,6 +608,19 @@ public sealed class InspectorTagViewModel : ViewModelBase
 
     public string Name { get; }
     public AsyncCommand RemoveCommand { get; }
+}
+
+/// <summary>
+/// A single read-only collection chip shown in the item inspector.
+/// </summary>
+public sealed class InspectorCollectionViewModel : ViewModelBase
+{
+    public InspectorCollectionViewModel(string name)
+    {
+        Name = name;
+    }
+
+    public string Name { get; }
 }
 
 /// <summary>

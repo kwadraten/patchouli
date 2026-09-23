@@ -18,7 +18,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
 
         await inspector.LoadAsync(itemId);
 
@@ -43,7 +44,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
 
         await inspector.LoadAsync(itemId);
 
@@ -62,7 +64,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
 
         await inspector.LoadAsync(itemId);
 
@@ -81,7 +84,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
 
         await inspector.LoadAsync(itemId);
 
@@ -99,7 +103,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
         await inspector.LoadAsync(itemId);
 
         await inspector.LoadAsync(null);
@@ -122,7 +127,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
 
         await inspector.LoadAsync(itemId);
 
@@ -183,7 +189,8 @@ public sealed class ItemInspectorViewModelTests
         ItemInspectorViewModel inspector = new(
             () => Task.FromResult<IItemService>(itemService),
             () => Task.FromResult<IItemTagService>(new FakeTagService()),
-            () => Task.FromResult<ICslItemTypeProfileService>(profileService));
+            () => Task.FromResult<ICslItemTypeProfileService>(profileService),
+            () => Task.FromResult<ICollectionService>(new FakeCollectionService()));
 
         await inspector.LoadAsync(itemId);
 
@@ -476,6 +483,63 @@ public sealed class ItemInspectorViewModelTests
         }
 
         public Task<Result> ValidateItemTypeAsync(string itemType, CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    private sealed class FakeCollectionService : ICollectionService
+    {
+        public Task<Result<IReadOnlyList<Collection>>> ListCollectionsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<Collection>>.Success(Array.Empty<Collection>()));
+        }
+
+        public Task<Result<Collection>> CreateCollectionAsync(string name,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result<Collection>> RenameCollectionAsync(CollectionId collectionId, string name,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> DissolveCollectionAsync(CollectionId collectionId,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> AddItemsAsync(CollectionId collectionId, IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> RemoveItemsAsync(CollectionId collectionId, IReadOnlyList<ItemId> itemIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result> SetItemCollectionsAsync(ItemId itemId, IReadOnlyList<CollectionId> collectionIds,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotImplementedException();
+        }
+
+        public Task<Result<IReadOnlyList<CollectionId>>> GetItemCollectionIdsAsync(ItemId itemId,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<CollectionId>>.Success(Array.Empty<CollectionId>()));
+        }
+
+        public Task<Result<IReadOnlyList<ItemId>>> GetCollectionItemIdsAsync(CollectionId collectionId,
+            CancellationToken cancellationToken = default)
         {
             throw new NotImplementedException();
         }
