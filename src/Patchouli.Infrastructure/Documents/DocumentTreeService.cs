@@ -14,6 +14,8 @@ namespace Patchouli.Infrastructure.Documents;
 
 public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEditor, ITransactionalDocumentTreeService
 {
+    private const int StoredTreeValidationBatchSize = 500;
+
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
     private readonly DocumentTreeValidator _validator;
@@ -43,30 +45,54 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
             // Only committed revisions are externally visible and immutable.
             // Working revisions are transient and legacy rows are ignored entirely.
-            IEnumerable<DocumentTreeRevisionRow> committedRows = await connection.QueryAsync<DocumentTreeRevisionRow>(
-                SelectRevisionSql + " where status = 'committed' order by tree_revision_id;");
-            foreach (DocumentTreeRevisionRow revisionRow in committedRows)
+            DocumentTreeRevisionRow[] committedRows = (await connection.QueryAsync<DocumentTreeRevisionRow>(
+                    new CommandDefinition(
+                        SelectRevisionSql + " where status = 'committed' order by tree_revision_id;",
+                        cancellationToken: cancellationToken)))
+                .ToArray();
+            foreach (DocumentTreeRevisionRow[] revisionBatch in committedRows.Chunk(StoredTreeValidationBatchSize))
             {
-                DocumentTreeRevision revision = revisionRow.ToRevision();
-                Result validation = _validator.Validate(
-                    revision,
-                    await GetBoxesAsync(connection, null, revision.TreeRevisionId));
-                if (validation.IsFailure)
+                cancellationToken.ThrowIfCancellationRequested();
+                string[] revisionIds = revisionBatch.Select(row => row.TreeRevisionId).ToArray();
+                Dictionary<string, DocumentBox[]> boxesByRevision = (await connection.QueryAsync<DocumentBoxRow>(
+                        new CommandDefinition(
+                            SelectBoxesSql + " where tree_revision_id in @RevisionIds;",
+                            new { RevisionIds = revisionIds },
+                            cancellationToken: cancellationToken)))
+                    .GroupBy(row => row.TreeRevisionId, StringComparer.Ordinal)
+                    .ToDictionary(
+                        group => group.Key,
+                        group => InDocumentOrder(group.Select(row => row.ToBox()).ToArray()),
+                        StringComparer.Ordinal);
+
+                foreach (DocumentTreeRevisionRow revisionRow in revisionBatch)
                 {
-                    return validation;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    DocumentTreeRevision revision = revisionRow.ToRevision();
+                    DocumentBox[] boxes = boxesByRevision.TryGetValue(revisionRow.TreeRevisionId,
+                        out DocumentBox[]? revisionBoxes)
+                        ? revisionBoxes ?? []
+                        : [];
+                    Result validation = _validator.Validate(revision, boxes);
+                    if (validation.IsFailure)
+                    {
+                        return validation;
+                    }
                 }
             }
 
             int currentConflictCount = await connection.ExecuteScalarAsync<int>(
-                """
-                select count(1) from (
-                    select document_instance_id, page_id
-                    from document_tree_revisions
-                    where is_current = 1
-                    group by document_instance_id, page_id
-                    having count(1) > 1
-                );
-                """);
+                new CommandDefinition(
+                    """
+                    select count(1) from (
+                        select document_instance_id, page_id
+                        from document_tree_revisions
+                        where is_current = 1
+                        group by document_instance_id, page_id
+                        having count(1) > 1
+                    );
+                    """,
+                    cancellationToken: cancellationToken));
             if (currentConflictCount > 0)
             {
                 return Result.Failure(
@@ -75,10 +101,12 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
             }
 
             int nonCommittedCurrentCount = await connection.ExecuteScalarAsync<int>(
-                """
-                select count(1) from document_tree_revisions
-                where is_current = 1 and status <> 'committed';
-                """);
+                new CommandDefinition(
+                    """
+                    select count(1) from document_tree_revisions
+                    where is_current = 1 and status <> 'committed';
+                    """,
+                    cancellationToken: cancellationToken));
             if (nonCommittedCurrentCount > 0)
             {
                 return Result.Failure(

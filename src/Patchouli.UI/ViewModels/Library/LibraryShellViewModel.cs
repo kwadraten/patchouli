@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
@@ -2303,27 +2303,16 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }
 
         HostServices services = await _main.ServicesAsync();
-        List<ItemPurgeDependencyReport> reports = new();
-        List<string> reportFailures = new();
-        foreach (LibraryItemViewModel item in SelectedItems.ToArray())
+        Result<IReadOnlyList<ItemPurgeDependencyReport>> reportResult =
+            await services.PurgeItems.BuildPurgeReportsAsync(
+                SelectedItems.Select(item => ItemId.Parse(item.ItemId)).ToArray());
+        if (reportResult.IsFailure)
         {
-            Result<ItemPurgeDependencyReport> report =
-                await services.PurgeItems.BuildPurgeReportAsync(ItemId.Parse(item.ItemId));
-            if (report.IsFailure)
-            {
-                reportFailures.Add($"{item.Title}：{report.ErrorMessage}");
-            }
-            else
-            {
-                reports.Add(report.Value);
-            }
-        }
-
-        if (reportFailures.Count > 0)
-        {
-            _main.ReportError($"无法生成删除报告：{string.Join("；", reportFailures)}");
+            _main.ReportError($"无法生成删除报告：{reportResult.ErrorMessage}");
             return;
         }
+
+        IReadOnlyList<ItemPurgeDependencyReport> reports = reportResult.Value;
 
         if (reports.Any(report => report.HasActiveOcr))
         {
@@ -2348,7 +2337,7 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
             return;
         }
 
-        ScheduleFileAssetGc(services);
+        ScheduleFileAssetGc(services, reports.SelectMany(report => report.FileAssetIds).Distinct().ToArray());
     }
 
     private async Task RestoreSelectedItemsAsync()
@@ -2367,14 +2356,15 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
         }
     }
 
-    private static void ScheduleFileAssetGc(HostServices services)
+    private static void ScheduleFileAssetGc(HostServices services, IReadOnlyList<FileAssetId> fileAssetIds)
     {
 #pragma warning disable CS4014
         Task.Run(async () =>
         {
             try
             {
-                await services.FileAssetGc.RunAsync(new FileAssetGcOptions(TimeSpan.FromSeconds(2)));
+                await services.FileAssetGc.RunCandidatesAsync(fileAssetIds,
+                    new FileAssetGcOptions(TimeSpan.FromSeconds(2)));
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {

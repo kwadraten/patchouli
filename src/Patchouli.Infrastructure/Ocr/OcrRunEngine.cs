@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Data.Common;
 using System.Text.Json;
 using Dapper;
@@ -174,7 +174,12 @@ public sealed class OcrRunEngine : IOcrRunEngine
                 select pr.working_tree_revision_id
                 from ocr_page_results pr
                 join ocr_runs r on pr.ocr_run_id = r.ocr_run_id
-                where (r.state in (@Pending, @Running) or pr.state in (@Pending, @Processing))
+                where r.state in (@Pending, @Running)
+                  and pr.working_tree_revision_id is not null
+                union
+                select pr.working_tree_revision_id
+                from ocr_page_results pr
+                where pr.state in (@Pending, @Processing)
                   and pr.working_tree_revision_id is not null
                 union
                 select r.output_tree_revision_id

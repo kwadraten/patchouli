@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Text.Json;
 using Dapper;
 using Patchouli.Core;
@@ -10,6 +11,7 @@ using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Hashing;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Infrastructure.Search;
 using Microsoft.Data.Sqlite;
 
 namespace Patchouli.Infrastructure.Snapshots;
@@ -48,6 +50,18 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         "search_settings",
         "library_setting_records"
     ];
+
+    private static readonly HashSet<string> LocalSnapshotTables =
+    [
+        "search_units_fts",
+        "fts_row_map",
+        "fts_cache_state",
+        "item_tag_memberships",
+        "file_asset_payload_refs",
+        "local_maintenance_state"
+    ];
+
+    private static readonly string[] SnapshotSchemaTables = ["schema_migrations"];
 
     private static readonly string[][] DataShardTableGroups =
     [
@@ -96,16 +110,19 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
         string currentPath = Path.Combine(syncRoot, "current.json");
         SnapshotCurrentPointer? current = await ReadJsonAsync<SnapshotCurrentPointer>(currentPath, cancellationToken);
+        string? sourceSnapshotPath = null;
 
         try
         {
-            string libraryId = await ReadLibraryIdAsync(runtimePath);
+            await CheckpointAsync(runtimePath);
+            sourceSnapshotPath = Path.Combine(Path.GetTempPath(), $"patchouli-snapshot-{Guid.NewGuid():N}.sqlite");
+            await BackupDatabaseAsync(runtimePath, sourceSnapshotPath);
+            await ValidateDatabaseSchemaAsync(sourceSnapshotPath);
+            string libraryId = await ReadLibraryIdAsync(sourceSnapshotPath);
             long generation = current is null ? 1 : current.LogicalGeneration + 1;
             string snapshotId = Guid.NewGuid().ToString("D");
 
-            await CheckpointAsync(runtimePath);
-            await ValidateDatabaseSchemaAsync(runtimePath);
-            IReadOnlyList<SnapshotShard> shards = await CreateDataShardsAsync(runtimePath, syncRoot, snapshotId,
+            IReadOnlyList<SnapshotShard> shards = await CreateDataShardsAsync(sourceSnapshotPath, syncRoot, snapshotId,
                 NormalizeTargetShardSize(request.TargetShardSizeBytes),
                 LibrarySettingCatalog.NormalizeSnapshotKeys(request.EnabledSettingKeys));
             foreach (SnapshotShard shard in shards)
@@ -120,7 +137,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             SnapshotManifest manifest = new(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId,
                 AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), shards,
                 Array.Empty<SnapshotShard>(),
-                await Blake3FileAsync(runtimePath), request.Notes);
+                await Blake3FileAsync(sourceSnapshotPath), request.Notes);
             string manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
             SnapshotCurrentPointer pointer = new(snapshotId, Path.Combine("manifests", $"{snapshotId}.json"), libraryId,
@@ -137,6 +154,13 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         {
             return Result<SnapshotPublishResult>.Failure(AppErrorCodes.DatabaseError,
                 $"Snapshot publish failed: {ex.Message}");
+        }
+        finally
+        {
+            if (sourceSnapshotPath is not null)
+            {
+                DeleteDatabaseFiles(sourceSnapshotPath);
+            }
         }
     }
 
@@ -160,6 +184,145 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         await source.OpenAsync();
         await target.OpenAsync();
         source.BackupDatabase(target);
+    }
+
+    private static async Task CreateShardDatabaseAsync(
+        string sourceSnapshotPath,
+        string targetPath,
+        IReadOnlyCollection<string>? includedTables,
+        IReadOnlyDictionary<string, RowIdRange>? rowRanges)
+    {
+        if (File.Exists(targetPath))
+        {
+            File.Delete(targetPath);
+        }
+
+        await using SqliteConnection
+            connection = new(BuildConnectionString(targetPath, SqliteOpenMode.ReadWriteCreate));
+        await connection.OpenAsync();
+        await connection.ExecuteAsync("pragma foreign_keys = off;");
+        await connection.ExecuteAsync(
+            "attach database @SourcePath as snapshot_source;",
+            new { SourcePath = sourceSnapshotPath });
+
+        await using DbTransaction transaction = await connection.BeginTransactionAsync();
+        int applicationId = await connection.ExecuteScalarAsync<int>("pragma snapshot_source.application_id;");
+        int userVersion = await connection.ExecuteScalarAsync<int>("pragma snapshot_source.user_version;");
+        HashSet<string> shadowTableNames = (await connection.QueryAsync<string>(
+                new CommandDefinition(
+                    "select name from pragma_table_list where schema = 'snapshot_source' and type = 'shadow';",
+                    transaction: transaction)))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        SchemaObjectRow[] schemaObjects = (await connection.QueryAsync<SchemaObjectRow>(
+            new CommandDefinition(
+                """
+                select type as Type, name as Name, sql as Sql
+                from snapshot_source.sqlite_schema
+                where sql is not null
+                  and name not like 'sqlite_%'
+                order by case type
+                    when 'table' then 0
+                    when 'index' then 1
+                    when 'trigger' then 2
+                    when 'view' then 3
+                    else 4
+                end, name;
+                """,
+                transaction: transaction))).ToArray();
+
+        foreach (SchemaObjectRow schemaObject in schemaObjects.Where(item => item.Type == "table"))
+        {
+            // Creating an FTS5 virtual table creates its shadow tables. They appear in
+            // sqlite_schema as ordinary tables, so skip their DDL to avoid collisions.
+            if (shadowTableNames.Contains(schemaObject.Name))
+            {
+                continue;
+            }
+
+            await connection.ExecuteAsync(schemaObject.Sql, transaction: transaction);
+        }
+
+        IEnumerable<string> tablesToCopy = DataTables
+            .Where(table => includedTables is null || table == "library_metadata" || includedTables.Contains(table))
+            .Concat(SnapshotSchemaTables)
+            .Where(table => !LocalSnapshotTables.Contains(table))
+            .Distinct(StringComparer.OrdinalIgnoreCase);
+        foreach (string table in tablesToCopy)
+        {
+            if (!schemaObjects.Any(item => item.Type == "table" &&
+                                           string.Equals(item.Name, table, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            string quotedTable = QuoteIdentifier(table);
+            string tableLiteral = table.Replace("'", "''", StringComparison.Ordinal);
+            ShardTableColumn[] columns = (await connection.QueryAsync<ShardTableColumn>(
+                    new CommandDefinition(
+                        $"pragma snapshot_source.table_xinfo('{tableLiteral}');",
+                        transaction: transaction)))
+                .Where(column => column.Hidden == 0)
+                .ToArray();
+            if (columns.Length == 0)
+            {
+                continue;
+            }
+
+            string columnList = string.Join(", ", columns.Select(column => QuoteIdentifier(column.Name)));
+            RowIdRange? requestedRange = null;
+            if (rowRanges is not null && rowRanges.TryGetValue(table, out RowIdRange range))
+            {
+                requestedRange = range;
+            }
+
+            string rangeClause = requestedRange is null
+                ? string.Empty
+                : "where source_rows.rowid >= @MinRowId and source_rows.rowid <= @MaxRowId order by source_rows.rowid";
+            object? parameters = requestedRange is { } selectedRange
+                ? new { selectedRange.MinRowId, selectedRange.MaxRowId }
+                : null;
+            string sourceRows = rangeClause.Length == 0
+                ? $"select {columnList} from snapshot_source.{quotedTable};"
+                : $"select {columnList} from snapshot_source.{quotedTable} as source_rows {rangeClause};";
+            await connection.ExecuteAsync(new CommandDefinition(
+                $"insert into main.{quotedTable} ({columnList}) {sourceRows}",
+                parameters,
+                transaction,
+                cancellationToken: default));
+        }
+
+        foreach (SchemaObjectRow schemaObject in schemaObjects.Where(item => item.Type != "table"))
+        {
+            await connection.ExecuteAsync(schemaObject.Sql, transaction: transaction);
+        }
+
+        await connection.ExecuteAsync($"pragma main.application_id = {applicationId};", transaction: transaction);
+        await connection.ExecuteAsync($"pragma main.user_version = {userVersion};", transaction: transaction);
+        await transaction.CommitAsync();
+        await connection.ExecuteAsync("detach database snapshot_source;");
+        await connection.ExecuteAsync("pragma foreign_keys = on;");
+    }
+
+    private static string QuoteIdentifier(string identifier)
+    {
+        return $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
+    }
+
+    private static void DeleteDatabaseFiles(string databasePath)
+    {
+        foreach (string path in new[]
+                 {
+                     databasePath,
+                     $"{databasePath}-wal",
+                     $"{databasePath}-shm",
+                     $"{databasePath}-journal"
+                 })
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     public static async Task ClearLocalFtsCacheAsync(string shardPath)
@@ -213,21 +376,23 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
     }
 
     private static async Task<IReadOnlyList<SnapshotShard>> CreateDataShardsAsync(
-        string runtimePath,
+        string sourceSnapshotPath,
         string syncRoot,
         string snapshotId,
         long targetShardSizeBytes,
         IReadOnlyCollection<string> enabledSettingKeys)
     {
-        if (new FileInfo(runtimePath).Length <= targetShardSizeBytes)
+        if (new FileInfo(sourceSnapshotPath).Length <= targetShardSizeBytes)
         {
             string shardId = Guid.NewGuid().ToString("D");
-            string shardFile = $"{shardId}.sqlite";
-            string shardPath = Path.Combine(syncRoot, "shards", shardFile);
-            await BackupDatabaseAsync(runtimePath, shardPath);
-            await PrepareDataShardAsync(shardPath, null, enabledSettingKeys: enabledSettingKeys);
-            SnapshotShard shard = new(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length,
-                await Blake3FileAsync(shardPath), "data", true);
+            SnapshotShard shard = await CreatePreparedDataShardAsync(
+                sourceSnapshotPath,
+                syncRoot,
+                shardId,
+                "data",
+                null,
+                null,
+                enabledSettingKeys);
             return [await ReuseExistingImmutableShardAsync(syncRoot, shard)];
         }
 
@@ -236,14 +401,17 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         {
             string[] tableGroup = DataShardTableGroups[i];
             string shardId = $"{snapshotId}_data_{i + 1:D2}";
-            string shardFile = $"{shardId}.sqlite";
-            string shardPath = Path.Combine(syncRoot, "shards", shardFile);
-            await BackupDatabaseAsync(runtimePath, shardPath);
-            await PrepareDataShardAsync(shardPath, tableGroup, enabledSettingKeys: enabledSettingKeys);
+            SnapshotShard shard = await CreatePreparedDataShardAsync(
+                sourceSnapshotPath,
+                syncRoot,
+                shardId,
+                $"data:{i + 1:D2}",
+                tableGroup,
+                null,
+                enabledSettingKeys);
+            string shardPath = Path.Combine(syncRoot, shard.FileName);
             if (await HasAnyRowsAsync(shardPath, tableGroup) || i == 0)
             {
-                SnapshotShard shard = new(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length,
-                    await Blake3FileAsync(shardPath), $"data:{i + 1:D2}", true);
                 if (shard.SizeBytes <= targetShardSizeBytes)
                 {
                     shards.Add(await ReuseExistingImmutableShardAsync(syncRoot, shard));
@@ -251,7 +419,7 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 else
                 {
                     File.Delete(shardPath);
-                    await AddTableSplitShardsAsync(shards, runtimePath, syncRoot, snapshotId, i + 1, tableGroup,
+                    await AddTableSplitShardsAsync(shards, sourceSnapshotPath, syncRoot, snapshotId, i + 1, tableGroup,
                         targetShardSizeBytes, i == 0, enabledSettingKeys);
                 }
             }
@@ -264,7 +432,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         return shards;
     }
 
-    private static async Task AddTableSplitShardsAsync(List<SnapshotShard> shards, string runtimePath, string syncRoot,
+    private static async Task AddTableSplitShardsAsync(List<SnapshotShard> shards, string sourceSnapshotPath,
+        string syncRoot,
         string snapshotId, int groupOrdinal, IReadOnlyList<string> tableGroup, long targetShardSizeBytes,
         bool forceFirst, IReadOnlyCollection<string> enabledSettingKeys)
     {
@@ -272,14 +441,14 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         for (int tableIndex = 0; tableIndex < tableGroup.Count; tableIndex++)
         {
             string table = tableGroup[tableIndex];
-            long rowCount = await CountRowsAsync(runtimePath, table, null);
+            long rowCount = await CountRowsAsync(sourceSnapshotPath, table, null);
             if (rowCount == 0 && !(forceFirst && !addedAny))
             {
                 continue;
             }
 
             string tableShardId = $"{snapshotId}_data_{groupOrdinal:D2}_{tableIndex + 1:D2}";
-            SnapshotShard tableShard = await CreatePreparedDataShardAsync(runtimePath, syncRoot, tableShardId,
+            SnapshotShard tableShard = await CreatePreparedDataShardAsync(sourceSnapshotPath, syncRoot, tableShardId,
                 $"data:{groupOrdinal:D2}:{tableIndex + 1:D2}", [table], null, enabledSettingKeys);
             if (tableShard.SizeBytes <= targetShardSizeBytes || rowCount <= 1)
             {
@@ -289,13 +458,15 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             }
 
             File.Delete(Path.Combine(syncRoot, tableShard.FileName));
-            await AddRowSplitShardsAsync(shards, runtimePath, syncRoot, snapshotId, groupOrdinal, tableIndex + 1, table,
+            await AddRowSplitShardsAsync(shards, sourceSnapshotPath, syncRoot, snapshotId, groupOrdinal, tableIndex + 1,
+                table,
                 rowCount, tableShard.SizeBytes, targetShardSizeBytes, enabledSettingKeys);
             addedAny = true;
         }
     }
 
-    private static async Task AddRowSplitShardsAsync(List<SnapshotShard> shards, string runtimePath, string syncRoot,
+    private static async Task AddRowSplitShardsAsync(List<SnapshotShard> shards, string sourceSnapshotPath,
+        string syncRoot,
         string snapshotId, int groupOrdinal, int tableOrdinal, string table, long rowCount, long tableShardSizeBytes,
         long targetShardSizeBytes, IReadOnlyCollection<string> enabledSettingKeys)
     {
@@ -303,17 +474,18 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             Math.Max(2, (long)Math.Ceiling(tableShardSizeBytes / (double)targetShardSizeBytes)));
         while (true)
         {
-            IReadOnlyList<RowIdRange> ranges = await CreateRowIdRangesAsync(runtimePath, table, chunkCount);
+            IReadOnlyList<RowIdRange> ranges = await CreateRowIdRangesAsync(sourceSnapshotPath, table, chunkCount,
+                rowCount);
             List<SnapshotShard> created = new();
             bool needsMoreSplitting = false;
             for (int i = 0; i < ranges.Count; i++)
             {
                 string shardId = $"{snapshotId}_data_{groupOrdinal:D2}_{tableOrdinal:D2}_{i + 1:D4}";
-                SnapshotShard shard = await CreatePreparedDataShardAsync(runtimePath, syncRoot, shardId,
+                SnapshotShard shard = await CreatePreparedDataShardAsync(sourceSnapshotPath, syncRoot, shardId,
                     $"data:{groupOrdinal:D2}:{tableOrdinal:D2}:{i + 1:D4}", [table],
                     new Dictionary<string, RowIdRange> { [table] = ranges[i] }, enabledSettingKeys);
                 created.Add(shard);
-                long chunkRows = await CountRowsAsync(runtimePath, table, ranges[i]);
+                long chunkRows = await CountRowsAsync(sourceSnapshotPath, table, ranges[i]);
                 if (shard.SizeBytes > targetShardSizeBytes && chunkRows > 1 && chunkCount < rowCount)
                 {
                     needsMoreSplitting = true;
@@ -350,14 +522,14 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         }
     }
 
-    private static async Task<SnapshotShard> CreatePreparedDataShardAsync(string runtimePath, string syncRoot,
-        string shardId, string kind, IReadOnlyCollection<string> includedTables,
+    private static async Task<SnapshotShard> CreatePreparedDataShardAsync(string sourceSnapshotPath, string syncRoot,
+        string shardId, string kind, IReadOnlyCollection<string>? includedTables,
         IReadOnlyDictionary<string, RowIdRange>? rowRanges, IReadOnlyCollection<string> enabledSettingKeys)
     {
         string shardFile = $"{shardId}.sqlite";
         string shardPath = Path.Combine(syncRoot, "shards", shardFile);
-        await BackupDatabaseAsync(runtimePath, shardPath);
-        await PrepareDataShardAsync(shardPath, includedTables, rowRanges, enabledSettingKeys);
+        await CreateShardDatabaseAsync(sourceSnapshotPath, shardPath, includedTables, rowRanges);
+        await PrepareDataShardAsync(shardPath, includedTables, enabledSettingKeys);
         return new SnapshotShard(shardId, Path.Combine("shards", shardFile), new FileInfo(shardPath).Length,
             await Blake3FileAsync(shardPath), kind, true);
     }
@@ -402,8 +574,9 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
         return candidate;
     }
 
-    private static async Task PrepareDataShardAsync(string shardPath, IReadOnlyCollection<string>? includedTables,
-        IReadOnlyDictionary<string, RowIdRange>? rowRanges = null,
+    private static async Task PrepareDataShardAsync(
+        string shardPath,
+        IReadOnlyCollection<string>? includedTables,
         IReadOnlyCollection<string>? enabledSettingKeys = null)
     {
         await using (SqliteConnection
@@ -424,20 +597,6 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                     await connection.ExecuteAsync($"delete from {table};");
                 }
             }
-
-            if (rowRanges is not null)
-            {
-                foreach (KeyValuePair<string, RowIdRange> range in rowRanges)
-                {
-                    if (await TableExistsAsync(connection, range.Key))
-                    {
-                        await connection.ExecuteAsync(
-                            $"delete from {range.Key} where rowid < @MinRowId or rowid > @MaxRowId;",
-                            new { range.Value.MinRowId, range.Value.MaxRowId });
-                    }
-                }
-            }
-
 
             if (await TableExistsAsync(connection, "search_units_fts"))
             {
@@ -552,12 +711,14 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
             new { range.Value.MinRowId, range.Value.MaxRowId });
     }
 
-    private static async Task<IReadOnlyList<RowIdRange>> CreateRowIdRangesAsync(string databasePath, string table,
-        long chunkCount)
+    private static async Task<IReadOnlyList<RowIdRange>> CreateRowIdRangesAsync(
+        string databasePath,
+        string table,
+        long chunkCount,
+        long rowCount)
     {
         await using SqliteConnection connection = new(BuildConnectionString(databasePath, SqliteOpenMode.ReadOnly));
         await connection.OpenAsync();
-        long rowCount = await connection.ExecuteScalarAsync<long>($"select count(1) from {table};");
         if (rowCount == 0)
         {
             return [];
@@ -565,25 +726,44 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
 
         chunkCount = Math.Clamp(chunkCount, 1, rowCount);
         long rowsPerChunk = (long)Math.Ceiling(rowCount / (double)chunkCount);
-        List<long> starts = new();
-        for (long offset = 0L; offset < rowCount; offset += rowsPerChunk)
-        {
-            long rowId = await connection.ExecuteScalarAsync<long>(
-                $"select rowid from {table} order by rowid limit 1 offset @Offset;", new { Offset = offset });
-            starts.Add(rowId);
-        }
-
         List<RowIdRange> ranges = new();
-        for (int i = 0; i < starts.Count; i++)
+        long? lastRowId = null;
+        long remainingRows = rowCount;
+        while (remainingRows > 0)
         {
-            long max = i + 1 < starts.Count ? starts[i + 1] - 1 : long.MaxValue;
-            ranges.Add(new RowIdRange(starts[i], max));
+            long take = Math.Min(rowsPerChunk, remainingRows);
+            string rangeClause = lastRowId.HasValue ? "where rowid > @LastRowId" : string.Empty;
+            long[] rowIds = (await connection.QueryAsync<long>(
+                    $"select rowid from {QuoteIdentifier(table)} {rangeClause} order by rowid limit @Take;",
+                    new { LastRowId = lastRowId, Take = take }))
+                .ToArray();
+            if (rowIds.Length == 0)
+            {
+                break;
+            }
+
+            ranges.Add(new RowIdRange(rowIds[0], rowIds[^1]));
+            lastRowId = rowIds[^1];
+            remainingRows -= rowIds.Length;
         }
 
         return ranges;
     }
 
     private readonly record struct RowIdRange(long MinRowId, long MaxRowId);
+
+    private sealed class SchemaObjectRow
+    {
+        public string Type { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string Sql { get; set; } = string.Empty;
+    }
+
+    private sealed class ShardTableColumn
+    {
+        public string Name { get; set; } = string.Empty;
+        public int Hidden { get; set; }
+    }
 
     private sealed class SettingRecordRow
     {
@@ -939,6 +1119,7 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 await MergeDataShardIntoStagingAsync(stagingPath, shardPath, cancellationToken);
             }
 
+            await RebuildLocalSnapshotProjectionsAsync(stagingPath, cancellationToken);
             await SnapshotPublisher.ValidateDatabaseSchemaAsync(stagingPath);
             SqliteConnectionFactory stagingFactory = new(stagingPath);
             DocumentTreeService trees = new(stagingFactory, new SystemClock(), new MarkdigMarkdownEngine());
@@ -998,6 +1179,75 @@ public sealed class SnapshotImporter : ISnapshotImporter
             return Result<SnapshotImportResult>.Failure(AppErrorCodes.DatabaseError,
                 $"Snapshot import failed: {exception.Message}");
         }
+    }
+
+    private static async Task RebuildLocalSnapshotProjectionsAsync(
+        string stagingPath,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(
+            SnapshotPublisher.BuildConnectionString(stagingPath, SqliteOpenMode.ReadWriteCreate));
+        await connection.OpenAsync(cancellationToken);
+        await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        if (await SnapshotPublisher.TableExistsAsync(connection, "search_units_fts"))
+        {
+            await SearchFtsCacheWriter.InvalidateAsync(connection, transaction, cancellationToken);
+        }
+
+        if (await SnapshotPublisher.TableExistsAsync(connection, "local_maintenance_state"))
+        {
+            await connection.ExecuteAsync("delete from local_maintenance_state;", transaction: transaction);
+        }
+
+        if (await SnapshotPublisher.TableExistsAsync(connection, "item_tag_memberships"))
+        {
+            await connection.ExecuteAsync("delete from item_tag_memberships;", transaction: transaction);
+            await connection.ExecuteAsync(
+                """
+                insert into item_tag_memberships (item_id, ordinal, tag, library_id, is_active)
+                select i.item_id, cast(t.key as integer), t.value, i.library_id,
+                       i.deleted_at is null and i.merged_into_item_id is null
+                from items i,
+                     json_each(case when json_valid(i.tags_json) then i.tags_json else '[]' end) t
+                where json_type(case when json_valid(i.tags_json) then i.tags_json else '[]' end) = 'array'
+                  and t.type = 'text';
+                """,
+                transaction: transaction);
+        }
+
+        if (await SnapshotPublisher.TableExistsAsync(connection, "file_asset_payload_refs"))
+        {
+            await connection.ExecuteAsync("delete from file_asset_payload_refs;", transaction: transaction);
+            await connection.ExecuteAsync(
+                """
+                insert or ignore into file_asset_payload_refs (tree_revision_id, box_id, file_asset_id)
+                select
+                    b.tree_revision_id,
+                    b.box_id,
+                    case
+                        when json_valid(b.payload_json) then lower(coalesce(
+                            json_extract(b.payload_json, '$.assetId'),
+                            json_extract(b.payload_json, '$.AssetId')))
+                    end
+                from document_boxes b
+                join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
+                where r.status in ('working', 'committed')
+                  and case
+                      when json_valid(b.payload_json) then coalesce(
+                          json_type(b.payload_json, '$.assetId'),
+                          json_type(b.payload_json, '$.AssetId'))
+                  end = 'text'
+                  and case
+                      when json_valid(b.payload_json) then coalesce(
+                          json_extract(b.payload_json, '$.assetId'),
+                          json_extract(b.payload_json, '$.AssetId'))
+                  end <> '';
+                """,
+                transaction: transaction);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static async Task MergeDataShardIntoStagingAsync(string stagingPath, string shardPath,

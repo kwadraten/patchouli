@@ -25,7 +25,7 @@
 - 搜索（V3-T8）：元数据/全文双模式、AND 高级筛选、平铺题录与分组片段结果、证据跳转；全文筛选下推 `SearchRequest.ItemFilters`，MCP texts scope 支持 `item_id`。见 [领域文档](CONTEXT.md)。
 - 本地 OCR（V3-T9）：NDL koten、RapidOCR 与 NDLOCR-Lite 的 C# ONNX 管线、按需模型下载、文档/页面/区域引擎选择、本地模型与 OCR 临时文件管理；见 [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) / [0031](adr/0031-native-rapidocr-onnx-port.md) / [0032](adr/0032-ndlocr-lite-onnx-port.md)。更多 provider 仍属 V3-T3。
 - 文档版本（V3-T6 / V3-T10）：统一 working/committed、原地 commit、文档级 DocumentCommit、页面/文档历史与恢复、版本谱系 UI、versioned URI；见 [ADR 0027](adr/0027-unified-working-copy-and-immutable-revision-model.md) / [0028](adr/0028-versioned-uri-evidence.md)。不包含题录/样式版本或 diff。
-- 性能（V3-T7 已实现部分）：共享 Host 组合层、首屏/查询与 OCR 批量路径优化、PDF viewing session/缓存、性能烟测及 UI 探针；完整规模预算和订阅式增量刷新仍须收口。基准入口见 [perf/README](perf/README.md)。
+- 性能（V3-T7 已实现部分）：共享 Host 组合层、首屏/查询与 OCR 批量路径优化、PDF viewing session/缓存、性能烟测及 UI 探针；本地变更已按范围增量刷新，完整规模预算仍须收口。基准入口见 `tests/Patchouli.Performance`。
 - 桌面补充：单实例与本地激活（[ADR 0029](adr/0029-ui-single-instance-and-local-activation.md)）、可选配色、BibLaTeX 自定义字段往返与验证警告。
 
 实现追溯：MCP `0076558` / `2415ec4`，书库 `74337b4` / `4b62176`，搜索 `a3f3108`，OCR `1e22357` / `edd7c11`，版本 `28a71ec` / `c9de557`，性能与宿主 `4d0649c` / `da18c9b` / `6ba2ea5`。这些提交供历史追溯，长期规则以链接文档为准。
@@ -73,7 +73,7 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 **状态**：P0；已有优化实现与性能基准，尚未据完整验收矩阵确认完成。该任务优先于其他尚未开始的 v3 体验增强任务，但不得以削弱 Document Tree、working/commit 生命周期、versioned evidence URI、快照或 MCP 契约为代价换取表面速度。持久化模型重设计已由 ADR `0027`/`0028` 决策并转入 V3-T10，不再是 V3-T7 的阻塞后续项。
 
-当前实现入口见 [perf/README](perf/README.md) 与 [domain.md](domain.md)。当前跨进程 revision monitor 仍轮询且全量重载缓存，与下文 AC5 的目标有差距；共享 Host 组合层不等于独占宿主接管已完成。以下保留未关闭任务的目标约束与验收预算，不将所有条款宣称为未实现。
+当前实现入口见 `tests/Patchouli.Performance` 与 [domain.md](domain.md)。本地 revision 事件按变更范围刷新缓存；外部写入恢复可显式启用轮询并完整刷新缓存。共享 Host 组合层不等于独占宿主接管已完成。以下保留未关闭任务的目标约束与验收预算，不将所有条款宣称为未实现。
 
 #### 2.1.1 问题与目标
 
@@ -353,6 +353,6 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 | NDL 本地 OCR 与文件管理 | [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) / [0031](adr/0031-native-rapidocr-onnx-port.md) / [0032](adr/0032-ndlocr-lite-onnx-port.md) |
 | 统一版本模型、versioned URI | ADR [0027](adr/0027-unified-working-copy-and-immutable-revision-model.md) / [0028](adr/0028-versioned-uri-evidence.md) |
 | 题录删除、合并、GC 与快照冲突 | [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md) |
-| 性能 fixture、运行方式与基准限制 | [perf/README.md](perf/README.md) |
+| 性能 fixture、运行方式与基准限制 | `tests/Patchouli.Performance` 与 `scripts/run-perf.ps1` |
 
 已完成能力的新行为约束写入相应领域文档/契约；改变架构决策时更新 ADR。PRD 只保留顶部能力摘要与尚未关闭的产品范围，避免再次堆积已交付的需求和验收表。

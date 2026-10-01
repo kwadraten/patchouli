@@ -1,4 +1,4 @@
-using FluentAssertions;
+﻿using FluentAssertions;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
@@ -153,6 +153,47 @@ public sealed class LibraryItemCacheTests
         context.Cache.QueryUntagged().Should().ContainSingle().Which.ItemId.Should().Be(first.Value.ItemId);
         context.Cache.GetTagCounts().UntaggedCount.Should().Be(1);
         context.Cache.GetTagCounts().Tags.Should().Contain(tag => tag.Name == "fresh" && tag.Count == 1);
+    }
+
+    [Fact]
+    public async Task Scoped_refresh_updates_tags_and_trash_without_reloading_unrelated_items()
+    {
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> first = await context.Items.CreateItemAsync("book", "First");
+        Result<ItemMetadata> second = await context.Items.CreateItemAsync("book", "Second");
+        await context.Cache.EnsureLoadedAsync();
+        await context.Tags.AddTagsToItemsAsync([first.Value.ItemId], ["fresh"]);
+        await context.Tags.AddTagsToItemsAsync([second.Value.ItemId], ["outside"]);
+        LibraryChangeSet changes = LibraryChangeSet.Empty with { ItemIds = [first.Value.ItemId] };
+
+        Result refreshed = await context.Cache.ApplyChangesAsync(changes);
+
+        refreshed.IsSuccess.Should().BeTrue(refreshed.ErrorMessage);
+        context.Cache.QueryByTags(["fresh"]).Should().ContainSingle();
+        context.Cache.QueryByTags(["outside"]).Should().BeEmpty("only the published scope is read");
+        context.Cache.GetTagCounts().UntaggedCount.Should().Be(1);
+        await context.Items.DeleteItemsAsync([first.Value.ItemId]);
+        await context.Cache.ApplyChangesAsync(changes);
+        context.Cache.QueryByTags(null).Should().ContainSingle().Which.ItemId.Should().Be(second.Value.ItemId);
+        context.Cache.GetTagCounts().Tags.Should().BeEmpty();
+        await context.Items.RestoreItemsAsync([first.Value.ItemId]);
+        await context.Cache.ApplyChangesAsync(changes);
+        context.Cache.QueryByTags(["fresh"]).Should().ContainSingle();
+        context.Cache.GetTagCounts().UntaggedCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Scoped_refresh_preserves_SQLite_tag_order_for_non_ASCII_case()
+    {
+        await using TestContext context = await CreateContextAsync();
+        Result<ItemMetadata> item = await context.Items.CreateItemAsync("book", "Tags");
+        await context.Tags.AddTagsToItemsAsync([item.Value.ItemId], ["É", "ä", "a", "A", "𐀀", ""]);
+        await context.Cache.EnsureLoadedAsync();
+        await context.Tags.AddTagsToItemsAsync([item.Value.ItemId], ["new"]);
+        await context.Cache.ApplyChangesAsync(LibraryChangeSet.Empty with { ItemIds = [item.Value.ItemId] });
+        Result<IReadOnlyList<TagInfo>> sqlTags = await context.Tags.ListTagsAsync();
+        context.Cache.GetTagCounts().Tags.Select(tag => tag.Name)
+            .Should().Equal(sqlTags.Value.Select(tag => tag.Name));
     }
 
     private static async Task<TestContext> CreateContextAsync()

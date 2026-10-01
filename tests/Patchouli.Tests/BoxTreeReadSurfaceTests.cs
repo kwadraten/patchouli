@@ -1,4 +1,6 @@
+﻿using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
@@ -89,5 +91,107 @@ public sealed class BoxTreeReadSurfaceTests
         McpPageBlock matchedBlock = blocks.Single(block => block.BoxId == matched.BoxId);
         matchedBlock.TreeRevisionId.Should().Be(committed.TreeRevisionId);
         matchedBlock.BBox.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Mcp_document_and_page_reads_use_scoped_indexes_with_unrelated_page_data()
+    {
+        await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
+        await new MigrationRunner(database.ConnectionFactory, TestPaths.MigrationsDirectory).RunAsync();
+        LibraryIdentityService libraries = new(database.ConnectionFactory, clock);
+        await libraries.CreateLibraryAsync("Scoped MCP reads");
+        ItemService items = new(database.ConnectionFactory, libraries, clock);
+        ItemMetadata targetItem = (await items.CreateItemAsync("document", "Empty target")).Value;
+        ItemMetadata unrelatedItem = (await items.CreateItemAsync("document", "Unrelated pages")).Value;
+        DocumentInstanceService documents = new(database.ConnectionFactory, clock);
+        DocumentInstance targetDocument = (await documents.AttachDocumentInstanceAsync(
+            targetItem.ItemId, null, DocumentInstanceType.PrimaryScan)).Value;
+        DocumentInstance unrelatedDocument = (await documents.AttachDocumentInstanceAsync(
+            unrelatedItem.ItemId, null, DocumentInstanceType.PrimaryScan)).Value;
+        Infrastructure.Layout.PageService pages = new(database.ConnectionFactory, clock);
+        Page targetPage = (await pages.CreatePageAsync(targetDocument.DocumentInstanceId, 0, "target", null, null,
+            0, CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
+        DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
+        DocumentTreeRevision targetRevision = (await trees.BeginWorkingRevisionAsync(
+            targetDocument.DocumentInstanceId,
+            targetPage.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Header, null, null,
+                    new NormalizedBBox(.1, .02, .8, .05), new TextBoxPayload("suppressed only"), Suppressed: true)
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await trees.CommitWorkingRevisionAsync(targetRevision.TreeRevisionId);
+
+        const int unrelatedPageCount = 128;
+        for (int index = 0; index < unrelatedPageCount; index++)
+        {
+            Page page = (await pages.CreatePageAsync(unrelatedDocument.DocumentInstanceId, index, $"{index + 1}",
+                null, null, 0, CoordinateBasis.NormalizedPage, null, null, "test", null)).Value;
+            DocumentTreeRevision revision = (await trees.BeginWorkingRevisionAsync(
+                unrelatedDocument.DocumentInstanceId,
+                page.PageId,
+                [
+                    new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                        new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload($"unrelated page {index}"))
+                ],
+                DocumentTreeRevisionSource.Import)).Value;
+            (await trees.CommitWorkingRevisionAsync(revision.TreeRevisionId)).IsSuccess.Should().BeTrue();
+        }
+
+        MarkdigMarkdownEngine markdown = new();
+        SqliteSearchService search = new(database.ConnectionFactory);
+        McpReadApi mcp = new(database.ConnectionFactory, search,
+            markdownCompiler: new DocumentMarkdownCompiler(trees, markdown));
+        McpDocumentStatusResponse status = (await mcp.GetDocumentStatusAsync(targetDocument.DocumentInstanceId)).Value;
+        McpPageTextResponse text = (await mcp.GetPageTextAsync(new McpPageTextRequest(targetPage.PageId))).Value;
+
+        status.HasCurrentLayout.Should().BeTrue();
+        status.HasOcrText.Should().BeFalse();
+        text.TreeRevisionId.Should().Be(targetRevision.TreeRevisionId);
+
+        await using SqliteConnection connection = database.ConnectionFactory.CreateReadConnection();
+        await connection.OpenAsync();
+        string[] statusPlan = (await connection.QueryAsync<PlanRow>(
+                """
+                explain query plan
+                select exists (
+                    select 1
+                    from document_tree_revisions r
+                    where r.document_instance_id = @DocumentId
+                      and r.status = 'committed' and r.is_current = 1
+                      and exists (
+                          select 1 from document_boxes b
+                          where b.document_instance_id = @DocumentId
+                            and b.tree_revision_id = r.tree_revision_id
+                            and b.suppressed = 0 and b.payload_json is not null
+                      )
+                );
+                """,
+                new { DocumentId = targetDocument.DocumentInstanceId.ToString() }))
+            .Select(row => row.Detail)
+            .ToArray();
+        statusPlan.Should().Contain(detail => detail.Contains("SEARCH r", StringComparison.Ordinal));
+        statusPlan.Should().Contain(detail => detail.Contains("SEARCH b", StringComparison.Ordinal));
+
+        string[] pagePlan = (await connection.QueryAsync<PlanRow>(
+                """
+                explain query plan
+                select tree_revision_id
+                from document_tree_revisions
+                where page_id = @PageId and status = 'committed' and is_current = 1
+                order by committed_at desc, tree_revision_id desc
+                limit 1;
+                """,
+                new { PageId = targetPage.PageId.ToString() }))
+            .Select(row => row.Detail)
+            .ToArray();
+        pagePlan.Should().Contain(detail =>
+            detail.Contains("idx_document_tree_revisions_page_status_current", StringComparison.Ordinal));
+    }
+
+    public sealed class PlanRow
+    {
+        public string Detail { get; set; } = "";
     }
 }

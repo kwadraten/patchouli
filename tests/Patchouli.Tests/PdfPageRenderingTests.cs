@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
@@ -488,6 +488,10 @@ public sealed class PdfPageRenderingTests
                 "039_search_settings_rewrite_enabled.sql",
                 "040_create_collections.sql",
                 "041_create_page_translations.sql",
+                "042_index_scoped_reads_and_foreign_keys.sql",
+                "043_create_fts_row_map.sql",
+                "044_project_document_box_file_asset_refs.sql",
+                "045_project_item_tags.sql",
                 "046_track_local_maintenance.sql");
     }
 

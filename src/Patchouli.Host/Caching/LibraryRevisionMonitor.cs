@@ -1,4 +1,4 @@
-using Patchouli.Core.Diagnostics;
+﻿using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 
@@ -10,8 +10,9 @@ namespace Patchouli.Host.Caching;
 /// <see cref="ILibraryRevisionService.ChangeCommitted"/>; a polling loop compares
 /// <see cref="ILibraryRevisionService.GetCurrentRevisionAsync"/> against the last observed
 /// revision only when a caller explicitly enables abnormal external-write recovery. The desktop
-/// does not start that loop during normal operation. Any detected change triggers a full cache
-/// reload. The monitor never auto-starts; call <see cref="Start"/> explicitly for recovery.
+/// does not start that loop during normal operation. Local changes refresh their item scopes;
+/// external changes reload the cache. The monitor never auto-starts; call <see cref="Start"/>
+/// explicitly for recovery.
 /// </summary>
 public sealed class LibraryRevisionMonitor : IDisposable
 {
@@ -31,6 +32,9 @@ public sealed class LibraryRevisionMonitor : IDisposable
     private CancellationTokenSource? _pollCts;
     private Task? _pollLoop;
     private bool _disposed;
+    private LibraryChangeSet? _pendingChanges;
+    private bool _pendingFullReload;
+    private bool _refreshScheduled;
 
     /// <summary>-1 until the first revision read establishes a baseline.</summary>
     private long _lastKnownRevision = -1;
@@ -126,16 +130,84 @@ public sealed class LibraryRevisionMonitor : IDisposable
     // refresh is scheduled fire-and-forget; the gate serializes it against poll-triggered refreshes.
     private void OnChangeCommitted(object? sender, LibraryRevisionCommittedEventArgs eventArgs)
     {
+        bool schedule;
         lock (_gate)
         {
             if (_disposed)
             {
                 return;
             }
+
+            LibraryChangeSet changes = eventArgs.ChangeSet;
+            long knownRevision = Interlocked.Read(ref _lastKnownRevision);
+            // A skipped revision may belong to another process and has no local ID scope.
+            _pendingFullReload |= changes.IsEmpty || knownRevision < 0 ||
+                                  changes.NewRevision > knownRevision + 1;
+            _pendingChanges = _pendingChanges is null ? changes : MergeChanges(_pendingChanges, changes);
+            schedule = !_refreshScheduled;
+            _refreshScheduled = true;
+            Interlocked.Exchange(ref _lastKnownRevision,
+                Math.Max(Interlocked.Read(ref _lastKnownRevision), changes.NewRevision));
         }
 
-        Interlocked.Exchange(ref _lastKnownRevision, eventArgs.ChangeSet.NewRevision);
-        _ = RefreshAsync(false);
+        if (schedule)
+        {
+            _ = Task.Run(RefreshPendingChangesAsync);
+        }
+    }
+
+    private async Task RefreshPendingChangesAsync()
+    {
+        int failures = 0;
+        while (true)
+        {
+            LibraryChangeSet? changes;
+            bool reload;
+            lock (_gate)
+            {
+                changes = _pendingChanges;
+                reload = _pendingFullReload;
+                if (_disposed || (changes is null && !reload))
+                {
+                    _refreshScheduled = false;
+                    return;
+                }
+
+                _pendingChanges = null;
+                _pendingFullReload = false;
+            }
+
+            bool refreshed = await RefreshAsync(false, reload ? null : changes);
+            if (refreshed)
+            {
+                failures = 0;
+            }
+            else if (++failures >= 3)
+            {
+                lock (_gate)
+                {
+                    _refreshScheduled = false;
+                }
+
+                // Preserve the full-reload flag for the next poll or local event.
+                return;
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250));
+            }
+        }
+    }
+
+    private static LibraryChangeSet MergeChanges(LibraryChangeSet first, LibraryChangeSet second)
+    {
+        return new LibraryChangeSet(Math.Max(first.NewRevision, second.NewRevision),
+            first.ItemIds.Concat(second.ItemIds).Distinct().ToArray(),
+            first.DocumentInstanceIds.Concat(second.DocumentInstanceIds).Distinct().ToArray(),
+            first.StyleIds.Concat(second.StyleIds).Distinct(StringComparer.Ordinal).ToArray(),
+            first.PageIds.Concat(second.PageIds).Distinct().ToArray(),
+            first.OcrRunIds.Concat(second.OcrRunIds).Distinct().ToArray(),
+            first.CollectionIds.Concat(second.CollectionIds).Distinct().ToArray());
     }
 
     private async Task PollLoopAsync(CancellationToken cancellationToken)
@@ -179,20 +251,40 @@ public sealed class LibraryRevisionMonitor : IDisposable
         long lastKnown = Interlocked.Read(ref _lastKnownRevision);
         if (lastKnown < 0)
         {
-            Interlocked.Exchange(ref _lastKnownRevision, revision.Value);
+            AdvanceKnownRevision(revision.Value);
+            await RefreshAsync(false);
             return;
         }
 
-        if (revision.Value == lastKnown)
+        bool retry;
+        lock (_gate)
+        {
+            retry = _pendingFullReload && !_refreshScheduled;
+            if (retry)
+            {
+                _pendingFullReload = false;
+            }
+        }
+
+        if (revision.Value <= lastKnown && !retry)
         {
             return;
         }
 
-        Interlocked.Exchange(ref _lastKnownRevision, revision.Value);
-        await RefreshAsync(true);
+        AdvanceKnownRevision(revision.Value);
+        await RefreshAsync(revision.Value > lastKnown);
     }
 
-    private async Task RefreshAsync(bool isExternal)
+    private void AdvanceKnownRevision(long revision)
+    {
+        lock (_gate)
+        {
+            Interlocked.Exchange(ref _lastKnownRevision,
+                Math.Max(Interlocked.Read(ref _lastKnownRevision), revision));
+        }
+    }
+
+    private async Task<bool> RefreshAsync(bool isExternal, LibraryChangeSet? changes = null)
     {
         try
         {
@@ -200,7 +292,7 @@ public sealed class LibraryRevisionMonitor : IDisposable
         }
         catch (ObjectDisposedException)
         {
-            return;
+            return false;
         }
 
         try
@@ -209,14 +301,50 @@ public sealed class LibraryRevisionMonitor : IDisposable
             {
                 if (_disposed)
                 {
-                    return;
+                    return false;
                 }
             }
 
-            Result result = await _cache.RefreshAsync();
+            Result result;
+            if (changes is null)
+            {
+                Result<long> before = await _revisions.GetCurrentRevisionAsync();
+                result = before.IsFailure
+                    ? Result.Failure(before.ErrorCode!, before.ErrorMessage!)
+                    : await _cache.RefreshAsync();
+                if (result.IsSuccess)
+                {
+                    Result<long> after = await _revisions.GetCurrentRevisionAsync();
+                    if (after.IsFailure)
+                    {
+                        result = Result.Failure(after.ErrorCode!, after.ErrorMessage!);
+                    }
+                    else if (before.Value != after.Value)
+                    {
+                        // Rows and aggregate counts are separate reads. A concurrent commit
+                        // requires a full retry before subsequent deltas can adjust these counts.
+                        result = Result.Failure(AppErrorCodes.InvalidState,
+                            "Library changed during cache refresh; retrying.");
+                    }
+                    else
+                    {
+                        AdvanceKnownRevision(after.Value);
+                    }
+                }
+            }
+            else
+            {
+                result = await _cache.ApplyChangesAsync(changes);
+            }
+
             if (result.IsFailure)
             {
-                return;
+                lock (_gate)
+                {
+                    _pendingFullReload = true;
+                }
+
+                return false;
             }
 
             if (isExternal)
@@ -225,10 +353,17 @@ public sealed class LibraryRevisionMonitor : IDisposable
             }
 
             CacheRefreshed?.Invoke(this, EventArgs.Empty);
+            return true;
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "host.library-revision-monitor", "cache-refresh"))
         {
+            lock (_gate)
+            {
+                _pendingFullReload = true;
+            }
+
+            return false;
         }
         finally
         {

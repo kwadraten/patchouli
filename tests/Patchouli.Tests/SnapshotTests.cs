@@ -309,6 +309,54 @@ public sealed class SnapshotTests
     }
 
     [Fact]
+    public async Task Publish_excludes_local_projection_data_and_import_rebuilds_canonical_projections()
+    {
+        await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();
+        FileAssetId referencedAssetId = FileAssetId.New();
+        await using (SqliteConnection runtime = c.OpenRuntime())
+        {
+            await runtime.ExecuteAsync("update items set tags_json = '[\"snapshot-tag\",\"snapshot-tag\"]';");
+            await runtime.ExecuteAsync(
+                "insert into local_maintenance_state (task_id, completed_at) values ('local-only', '2026-01-01T00:00:00Z');");
+        }
+
+        DocumentTreeService trees = new(c.Database.ConnectionFactory, c.Clock, new MarkdigMarkdownEngine());
+        DocumentTreeRevision working = (await trees.BeginWorkingRevisionAsync(
+            c.DocumentInstanceId,
+            c.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Image, null, null,
+                    new NormalizedBBox(.1, .1, .5, .5),
+                    new MediaBoxPayload(referencedAssetId.ToString(), "snapshot reference"))
+            ],
+            DocumentTreeRevisionSource.ManualEdit)).Value;
+        await trees.CommitWorkingRevisionAsync(working.TreeRevisionId);
+
+        Result<SnapshotPublishResult> published = await c.PublishAsync();
+        await using (SqliteConnection shard = OpenShard(c.SyncRoot, published.Value.Shards.Single()))
+        {
+            (await shard.ExecuteScalarAsync<int>("select count(1) from item_tag_memberships;")).Should().Be(0);
+            (await shard.ExecuteScalarAsync<int>("select count(1) from file_asset_payload_refs;")).Should().Be(0);
+            (await shard.ExecuteScalarAsync<int>("select count(1) from fts_row_map;")).Should().Be(0);
+            (await shard.ExecuteScalarAsync<int>("select count(1) from fts_cache_state;")).Should().Be(0);
+            (await shard.ExecuteScalarAsync<int>("select count(1) from local_maintenance_state;")).Should().Be(0);
+        }
+
+        Result<SnapshotImportResult> imported = await c.ImportAsync(published.Value.ManifestPath);
+        imported.IsSuccess.Should().BeTrue(imported.ErrorMessage);
+        await using SqliteConnection staging = OpenSqlite(imported.Value.StagingDatabasePath!);
+        await staging.OpenAsync();
+        (await staging.ExecuteScalarAsync<int>(
+            "select count(1) from item_tag_memberships where tag = 'snapshot-tag';")).Should().Be(2);
+        (await staging.ExecuteScalarAsync<int>(
+            "select count(1) from file_asset_payload_refs where file_asset_id = @AssetId;",
+            new { AssetId = referencedAssetId.ToString() })).Should().Be(1);
+        (await staging.ExecuteScalarAsync<int>("select count(1) from fts_row_map;")).Should().Be(0);
+        (await staging.ExecuteScalarAsync<int>("select count(1) from fts_cache_state;")).Should().Be(0);
+        (await staging.ExecuteScalarAsync<int>("select count(1) from local_maintenance_state;")).Should().Be(0);
+    }
+
+    [Fact]
     public async Task PublishSnapshot_excludes_working_revisions_and_their_boxes()
     {
         await using SnapshotTestContext c = await SnapshotTestContext.CreateAsync();

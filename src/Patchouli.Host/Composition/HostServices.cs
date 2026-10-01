@@ -241,7 +241,8 @@ public sealed class HostServices
         PurgeItems =
             new ItemPurgeService(ConnectionFactory, Clock, Library, snapshotSyncSettingsStore, LibraryRevisions);
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
-        PdfMetadata = new PdfMetadataReader();
+        PdfMetadataReader pdfMetadata = new();
+        PdfMetadata = pdfMetadata;
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess, activityTracker, LifetimeToken);
         PdfImport = new PdfImportWorkflow(
             new ImportBatchWriter(ConnectionFactory, LibraryRevisions),
@@ -480,6 +481,21 @@ public sealed class HostServices
         {
             startupProgress?.Report(StartupStage.ApplyingMigrations);
             await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+
+            Result ftsCache = await services.SearchIndex.EnsureCacheAsync();
+            if (ftsCache.IsFailure)
+            {
+                try
+                {
+                    await startupLogger.LogAsync("search-index",
+                        ftsCache.ErrorMessage ?? "FTS cache initialization failed.");
+                }
+                catch (Exception exception)
+                {
+                    reportUnexpected(exception, "operation-log", "search-index-cache");
+                }
+            }
+
             if (services.FileResolution is FileResolutionService fileResolution)
             {
                 startupProgress?.Report(StartupStage.AdoptingRootBindings);
@@ -512,22 +528,6 @@ public sealed class HostServices
                     reportUnexpected(exception, "operation-log", "ocr-reconcile");
                 }
             }
-        });
-
-        startupProgress?.Report(StartupStage.StartingOcrQueue);
-        await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
-
-        startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
-        await services.ApplySyncedMetadataLookupAsync(settings);
-        try
-        {
-            await startupLogger.LogAsync("migration", "Pending migrations completed.");
-        }
-        catch (Exception exception)
-        {
-            reportUnexpected(exception, "operation-log", "migration");
-        }
-
 
             try
             {
@@ -548,6 +548,22 @@ public sealed class HostServices
                                                   "import-residue-gc"))
             {
             }
+        });
+
+        startupProgress?.Report(StartupStage.StartingOcrQueue);
+        await ((QueuedOcrRunCoordinator)services.Ocr).Queue.StartAsync();
+
+        startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
+        await services.ApplySyncedMetadataLookupAsync(settings);
+        try
+        {
+            await startupLogger.LogAsync("migration", "Pending migrations completed.");
+        }
+        catch (Exception exception)
+        {
+            reportUnexpected(exception, "operation-log", "migration");
+        }
+
         return services;
     }
 

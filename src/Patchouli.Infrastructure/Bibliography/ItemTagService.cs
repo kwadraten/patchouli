@@ -1,4 +1,4 @@
-using System.Data.Common;
+﻿using System.Data.Common;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
@@ -29,13 +29,11 @@ public sealed class ItemTagService : IItemTagService
             await connection.OpenAsync(cancellationToken);
             IEnumerable<TagCountRow> rows = await connection.QueryAsync<TagCountRow>(
                 """
-                select value as Name, count(*) as Count
-                from items, json_each(tags_json)
-                where deleted_at is null
-                  and merged_into_item_id is null
-                  and json_type(tags_json) = 'array'
-                group by value
-                order by value collate nocase;
+                select tag as Name, count(*) as Count
+                from item_tag_memberships
+                where is_active = 1
+                group by tag
+                order by tag collate nocase;
                 """);
             return Result<IReadOnlyList<TagInfo>>.Success(
                 rows.Select(row => new TagInfo(row.Name, row.Count)).ToArray());
@@ -128,6 +126,7 @@ public sealed class ItemTagService : IItemTagService
         }
 
         return await MutateAllActiveAsync(
+            normalizedOld,
             existing => RenameInPlace(existing, normalizedOld, normalizedNew),
             cancellationToken);
     }
@@ -146,6 +145,7 @@ public sealed class ItemTagService : IItemTagService
         }
 
         return await MutateAllActiveAsync(
+            normalizedSource,
             existing => MergeInPlace(existing, normalizedSource, normalizedTarget),
             cancellationToken);
     }
@@ -161,6 +161,7 @@ public sealed class ItemTagService : IItemTagService
         }
 
         return await MutateAllActiveAsync(
+            normalized,
             existing => existing.Where(t => !string.Equals(t, normalized, StringComparison.Ordinal)).ToArray(),
             cancellationToken);
     }
@@ -381,6 +382,7 @@ public sealed class ItemTagService : IItemTagService
     }
 
     private async Task<Result> MutateAllActiveAsync(
+        string matchingTag,
         Func<IReadOnlyList<string>, IReadOnlyList<string>> transform,
         CancellationToken cancellationToken)
     {
@@ -397,9 +399,10 @@ public sealed class ItemTagService : IItemTagService
                 from items
                 where deleted_at is null
                   and merged_into_item_id is null
-                  and json_type(tags_json) = 'array';
+                  and item_id in (select item_id from item_tag_memberships where tag = @Tag and is_active = 1);
                 """,
-                transaction: transaction);
+                new { Tag = matchingTag },
+                transaction);
 
             List<ItemId> affectedItemIds = new();
             foreach (ItemTagRow row in rows)

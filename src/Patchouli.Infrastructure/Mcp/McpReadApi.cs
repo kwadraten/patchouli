@@ -180,15 +180,22 @@ public sealed class McpReadApi : IMcpReadApi
                     "Document instance was not found.");
             }
 
-            int currentRevisionCount = await connection.ExecuteScalarAsync<int>(
-                "select count(1) from document_tree_revisions where document_instance_id = @Id and status = 'committed' and is_current = 1;",
-                new { Id = documentInstanceId.ToString() });
-            bool hasText = currentRevisionCount > 0 && await connection.ExecuteScalarAsync<int>(
+            bool hasCurrentRevision = await connection.ExecuteScalarAsync<int>(
+                "select exists (select 1 from document_tree_revisions where document_instance_id = @Id and status = 'committed' and is_current = 1);",
+                new { Id = documentInstanceId.ToString() }) > 0;
+            bool hasText = hasCurrentRevision && await connection.ExecuteScalarAsync<int>(
                 """
-                select count(1) from document_boxes b
-                join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
-                where b.document_instance_id = @Id and r.status = 'committed' and r.is_current = 1
-                  and b.suppressed = 0 and b.payload_json is not null;
+                select exists (
+                    select 1
+                    from document_tree_revisions r
+                    where r.document_instance_id = @Id
+                      and r.status = 'committed' and r.is_current = 1
+                      and exists (
+                          select 1 from document_boxes b
+                          where b.document_instance_id = @Id and b.tree_revision_id = r.tree_revision_id
+                            and b.suppressed = 0 and b.payload_json is not null
+                      )
+                );
                 """,
                 new { Id = documentInstanceId.ToString() }) > 0;
             string? indexStatus = await connection.ExecuteScalarAsync<string?>(
@@ -207,7 +214,7 @@ public sealed class McpReadApi : IMcpReadApi
                 "select status from document_instances where document_instance_id = @Id;",
                 new { Id = documentInstanceId.ToString() }) ?? "missing_source";
             return Result<McpDocumentStatusResponse>.Success(new McpDocumentStatusResponse(documentInstanceId, hasText,
-                currentRevisionCount > 0, indexStatus == SearchIndexStatusValue.Current,
+                hasCurrentRevision, indexStatus == SearchIndexStatusValue.Current,
                 sourceStatus ?? "unavailable", warning, documentStatus));
         }
         catch (OperationCanceledException)
@@ -243,7 +250,9 @@ public sealed class McpReadApi : IMcpReadApi
             string? revisionId = await connection.ExecuteScalarAsync<string?>(
                 """
                 select tree_revision_id from document_tree_revisions
-                where page_id = @PageId and status = 'committed' and is_current = 1;
+                where page_id = @PageId and status = 'committed' and is_current = 1
+                order by committed_at desc, tree_revision_id desc
+                limit 1;
                 """,
                 new { PageId = request.PageId.ToString() });
             if (revisionId is null)
@@ -726,21 +735,29 @@ public sealed class McpReadApi : IMcpReadApi
             }
 
             DocumentFilter filter = BuildDocumentBrowseFilter(where);
-            string queryClause = string.IsNullOrWhiteSpace(query)
+            string queryPredicate = string.IsNullOrWhiteSpace(query)
                 ? string.Empty
-                : " and instr(lower(coalesce(d.title, '')), lower(@Query)) > 0";
+                : "instr(lower(coalesce(d.title, '')), lower(@Query)) > 0";
+            string selectionFilterSql = filter.Sql;
+            if (queryPredicate.Length > 0)
+            {
+                selectionFilterSql += selectionFilterSql.Length == 0
+                    ? $" where {queryPredicate}"
+                    : $" and {queryPredicate}";
+            }
+
             await using SqliteConnection connection = _connectionFactory.CreateReadConnection();
             await connection.OpenAsync(cancellationToken);
             int domainTotal = await connection.ExecuteScalarAsync<int>(
                 "select count(1) from document_instances;");
             Dictionary<string, object> countParameters = new(filter.Parameters, StringComparer.Ordinal);
-            if (queryClause.Length > 0)
+            if (queryPredicate.Length > 0)
             {
                 countParameters["Query"] = query!;
             }
 
             int filteredTotal = await connection.ExecuteScalarAsync<int>(
-                $"select count(1) from ({DocumentBrowseProjection}) d{filter.Sql}{queryClause};", countParameters);
+                $"select count(1) from ({DocumentBrowseProjection}) d{selectionFilterSql};", countParameters);
             Dictionary<string, object> pageParameters = new(countParameters, StringComparer.Ordinal)
             {
                 ["Limit"] = limit,
@@ -748,17 +765,71 @@ public sealed class McpReadApi : IMcpReadApi
             };
             IReadOnlyList<TranslationDocumentRow> rows = (await connection.QueryAsync<TranslationDocumentRow>(
                 $$"""
-                  select d.document_instance_id, d.title, d.item_id,
+                  with target_documents as materialized (
+                      select d.document_instance_id, d.title, d.item_id, d.created_at
+                      from ({{DocumentBrowseProjection}}) d{{selectionFilterSql}}
+                      order by d.created_at desc, d.document_instance_id
+                      limit @Limit offset @Skip
+                  ),
+                  target_pages as materialized (
+                      select td.document_instance_id, p.page_id
+                      from target_documents td
+                      join pages p on p.document_instance_id = td.document_instance_id
+                  ),
+                  current_revisions as (
+                      select r.page_id, r.tree_revision_id
+                      from target_pages tp
+                      join document_tree_revisions r on r.page_id = tp.page_id
+                      where r.status = 'committed' and r.is_current = 1
+                  ),
+                  translated_box_counts as (
+                      select tp.page_id, count(tb.page_id) as translated_boxes
+                      from target_pages tp
+                      left join translation_boxes tb on tb.page_id = tp.page_id
+                      group by tp.page_id
+                  ),
+                  current_box_counts as (
+                      select tp.page_id, count(b.box_id) as total_boxes
+                      from target_pages tp
+                      join current_revisions cr on cr.page_id = tp.page_id
+                      join document_boxes b on b.page_id = tp.page_id
+                                           and b.tree_revision_id = cr.tree_revision_id
+                      where b.box_type <> 'logical_page' or b.payload_json is not null
+                      group by tp.page_id
+                  ),
+                  progress as (
+                      select td.document_instance_id,
+                             count(tp.page_id) as page_count,
+                             sum(case when ptr.source_tree_revision_id is not null
+                                           and cr.tree_revision_id is not null
+                                           and ptr.source_tree_revision_id = cr.tree_revision_id
+                                      then 1 else 0 end) as aligned_page_count,
+                             sum(case when ptr.source_tree_revision_id is not null
+                                           and (cr.tree_revision_id is null
+                                                or ptr.source_tree_revision_id <> cr.tree_revision_id)
+                                      then 1 else 0 end) as stale_page_count,
+                             sum(case when ptr.source_tree_revision_id is not null
+                                           and cr.tree_revision_id is not null
+                                           and ptr.source_tree_revision_id = cr.tree_revision_id
+                                           and tb.translated_boxes > 0
+                                           and tb.translated_boxes >= bc.total_boxes
+                                      then 1 else 0 end) as translated_page_count
+                      from target_documents td
+                      left join target_pages tp on tp.document_instance_id = td.document_instance_id
+                      left join current_revisions cr on cr.page_id = tp.page_id
+                      left join page_translations ptr on ptr.page_id = tp.page_id
+                      left join translated_box_counts tb on tb.page_id = tp.page_id
+                      left join current_box_counts bc on bc.page_id = tp.page_id
+                      group by td.document_instance_id
+                  )
+                  select td.document_instance_id, td.title, td.item_id,
                          coalesce(prog.page_count, 0) as page_count,
                          coalesce(prog.translated_page_count, 0) as translated_page_count,
                          coalesce(prog.aligned_page_count, 0) as aligned_page_count,
                          coalesce(prog.stale_page_count, 0) as stale_page_count
-                  from ({{DocumentBrowseProjection}}) d
-                  left join ({{TranslationProgressProjection}}) prog
-                         on prog.document_instance_id = d.document_instance_id
-                  {{filter.Sql}}{{queryClause}}
-                  order by d.created_at desc, d.document_instance_id
-                  limit @Limit offset @Skip;
+                  from target_documents td
+                  left join progress prog on prog.document_instance_id = td.document_instance_id
+                  order by td.created_at desc, td.document_instance_id;
                   """, pageParameters)).ToArray();
             return Result<McpBrowseTranslationPage>.Success(new McpBrowseTranslationPage(
                 rows.Select(row => new McpTranslationDocumentRow(
@@ -805,24 +876,42 @@ public sealed class McpReadApi : IMcpReadApi
                 : " and instr(lower(coalesce(p.page_label, '')), lower(@Query)) > 0";
             IReadOnlyList<TranslationPageRow> rows = (await connection.QueryAsync<TranslationPageRow>(
                 $$"""
+                  with target_pages as materialized (
+                      select page_id, page_label, page_index
+                      from pages
+                      where document_instance_id = @Id{{queryClause}}
+                  ),
+                  current_revisions as (
+                      select r.page_id, r.tree_revision_id
+                      from target_pages tp
+                      join document_tree_revisions r on r.page_id = tp.page_id
+                      where r.status = 'committed' and r.is_current = 1
+                  ),
+                  translated_box_counts as (
+                      select tp.page_id, count(tb.page_id) as translated_boxes
+                      from target_pages tp
+                      left join translation_boxes tb on tb.page_id = tp.page_id
+                      group by tp.page_id
+                  ),
+                  current_box_counts as (
+                      select tp.page_id, count(b.box_id) as total_boxes
+                      from target_pages tp
+                      join current_revisions cr on cr.page_id = tp.page_id
+                      join document_boxes b on b.page_id = tp.page_id
+                                           and b.tree_revision_id = cr.tree_revision_id
+                      where b.box_type <> 'logical_page' or b.payload_json is not null
+                      group by tp.page_id
+                  )
                   select p.page_id as PageId, p.page_label as PageLabel, p.page_index as PageIndex,
                          cr.tree_revision_id as CurrentRevisionId,
                          ptr.source_tree_revision_id as SourceRevisionId,
                          coalesce(tb.translated_boxes, 0) as TranslatedBoxCount,
                          coalesce(bc.total_boxes, 0) as TotalBoxCount
-                  from pages p
-                  left join (select page_id, tree_revision_id from document_tree_revisions
-                             where status = 'committed' and is_current = 1) cr on cr.page_id = p.page_id
+                  from target_pages p
+                  left join current_revisions cr on cr.page_id = p.page_id
                   left join page_translations ptr on ptr.page_id = p.page_id
-                  left join (select page_id, count(1) as translated_boxes
-                             from translation_boxes group by page_id) tb on tb.page_id = p.page_id
-                  left join (select b.page_id, count(1) as total_boxes
-                             from document_boxes b
-                             join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
-                             where r.status = 'committed' and r.is_current = 1
-                               and (b.box_type <> 'logical_page' or b.payload_json is not null)
-                             group by b.page_id) bc on bc.page_id = p.page_id
-                  where p.document_instance_id = @Id{{queryClause}}
+                  left join translated_box_counts tb on tb.page_id = p.page_id
+                  left join current_box_counts bc on bc.page_id = p.page_id
                   order by p.page_index;
                   """,
                 new { Id = documentInstanceId.ToString(), Query = query ?? string.Empty })).ToArray();
@@ -1072,14 +1161,11 @@ public sealed class McpReadApi : IMcpReadApi
             {
                 tags = (await connection.QueryAsync<LibraryTagRow>(
                         """
-                        select value as Tag, count(*) as ItemCount
-                        from items, json_each(tags_json)
-                        where items.library_id = @LibraryId
-                          and deleted_at is null
-                          and merged_into_item_id is null
-                          and json_type(tags_json) = 'array'
-                        group by value
-                        order by value collate binary;
+                        select tag as Tag, count(*) as ItemCount
+                        from item_tag_memberships
+                        where library_id = @LibraryId and is_active = 1
+                        group by tag
+                        order by tag collate binary;
                         """,
                         new { LibraryId = library.LibraryId }))
                     .Select(row => new McpLibraryTag(row.Tag, (int)row.ItemCount)).ToArray();
@@ -1184,7 +1270,9 @@ public sealed class McpReadApi : IMcpReadApi
             string? revisionId = await connection.ExecuteScalarAsync<string?>(
                 """
                 select tree_revision_id from document_tree_revisions
-                where page_id = @PageId and status = 'committed' and is_current = 1;
+                where page_id = @PageId and status = 'committed' and is_current = 1
+                order by committed_at desc, tree_revision_id desc
+                limit 1;
                 """,
                 new { PageId = pageId.ToString() });
             if (revisionId is null)
@@ -1520,43 +1608,6 @@ public sealed class McpReadApi : IMcpReadApi
          left join file_assets fa on fa.file_asset_id = di.file_asset_id
          """;
 
-    /// <summary>
-    /// Per-document translation progress aggregates. A page is aligned when its stored rows
-    /// already track the page's current committed revision; it is stale when that revision has
-    /// moved on (any content change produces a new revision id, so no payload hashing is needed
-    /// here). Fully translated pages are the aligned pages whose row count covers every current
-    /// content box.
-    /// </summary>
-    private static string TranslationProgressProjection =>
-        """
-        select p.document_instance_id,
-               count(1) as page_count,
-               sum(case when ptr.source_tree_revision_id is not null and cr.tree_revision_id is not null
-                             and ptr.source_tree_revision_id = cr.tree_revision_id then 1 else 0 end)
-                   as aligned_page_count,
-               sum(case when ptr.source_tree_revision_id is not null
-                             and (cr.tree_revision_id is null
-                                  or ptr.source_tree_revision_id <> cr.tree_revision_id)
-                        then 1 else 0 end) as stale_page_count,
-               sum(case when ptr.source_tree_revision_id is not null and cr.tree_revision_id is not null
-                             and ptr.source_tree_revision_id = cr.tree_revision_id
-                             and tb.translated_boxes > 0 and tb.translated_boxes >= bc.total_boxes
-                        then 1 else 0 end) as translated_page_count
-        from pages p
-        left join (select page_id, tree_revision_id from document_tree_revisions
-                   where status = 'committed' and is_current = 1) cr on cr.page_id = p.page_id
-        left join page_translations ptr on ptr.page_id = p.page_id
-        left join (select page_id, count(1) as translated_boxes
-                   from translation_boxes group by page_id) tb on tb.page_id = p.page_id
-        left join (select b.page_id, count(1) as total_boxes
-                   from document_boxes b
-                   join document_tree_revisions r on r.tree_revision_id = b.tree_revision_id
-                   where r.status = 'committed' and r.is_current = 1
-                     and (b.box_type <> 'logical_page' or b.payload_json is not null)
-                   group by b.page_id) bc on bc.page_id = p.page_id
-        group by p.document_instance_id
-        """;
-
     private static ItemFilter BuildItemBrowseFilter(IReadOnlyList<McpWhereClause>? where)
     {
         List<string> clauses = new();
@@ -1582,7 +1633,8 @@ public sealed class McpReadApi : IMcpReadApi
                     parameters["PrimaryDocumentOcrIndexStatus"] = clause.Value;
                     break;
                 case "tag":
-                    clauses.Add("exists (select 1 from json_each(items.tags_json) where value = @Tag)");
+                    clauses.Add("items.item_id in (select item_id from item_tag_memberships " +
+                                "where tag = @Tag and is_active = 1)");
                     parameters["Tag"] = clause.Value.Trim();
                     break;
                 case "collection_id":

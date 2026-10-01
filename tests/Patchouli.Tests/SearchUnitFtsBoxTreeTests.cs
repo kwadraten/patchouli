@@ -1,4 +1,6 @@
+using Dapper;
 using FluentAssertions;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
@@ -83,6 +85,42 @@ public sealed class SearchUnitFtsBoxTreeTests
         SearchResultPage unfiltered = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken"))).Value;
         unfiltered.Results.Should().HaveCount(2);
 
+        SearchResultPage scoped = (await context.Search.SearchLibraryAsync(
+            new SearchRequest("sharedtoken", context.SecondDocument.DocumentInstanceId))).Value;
+        scoped.Results.Should().ContainSingle().Which.DocumentInstanceId
+            .Should().Be(context.SecondDocument.DocumentInstanceId);
+
+        await using (SqliteConnection connection = context.ConnectionFactory.CreateReadConnection())
+        {
+            await connection.OpenAsync();
+            string[] plan = (await connection.QueryAsync<PlanRow>(
+                    """
+                    explain query plan
+                    select su.unit_id
+                    from search_units_fts
+                    join fts_row_map fm on fm.fts_row_id = search_units_fts.rowid
+                    join search_units su on su.unit_id = fm.unit_id
+                    where search_units_fts match @Match
+                      and search_units_fts.rowid in (
+                          select fts_row_id from fts_row_map
+                          where document_instance_id = @DocumentInstanceId
+                      )
+                      and su.document_instance_id = @DocumentInstanceId
+                      and su.status = @Status;
+                    """,
+                    new
+                    {
+                        Match = "\"sharedtoken\"",
+                        DocumentInstanceId = context.SecondDocument.DocumentInstanceId.ToString(),
+                        Status = SearchUnitStatus.Current
+                    }))
+                .Select(row => row.Detail)
+                .ToArray();
+            plan.Should().Contain(detail => detail.Contains("VIRTUAL TABLE INDEX", StringComparison.Ordinal));
+            plan.Should().Contain(detail =>
+                detail.Contains("idx_fts_row_map_document_instance_id", StringComparison.Ordinal));
+        }
+
         SearchResultPage byTitle = (await context.Search.SearchLibraryAsync(new SearchRequest("sharedtoken")
         {
             ItemFilters = [new BibliographicSearchFilter(BibliographicSearchFilterKeys.Title, "second")]
@@ -155,6 +193,104 @@ public sealed class SearchUnitFtsBoxTreeTests
             .Should().Equal($"rare {supplementaryCjk} glyph");
         mcpResult.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
             .Should().Equal("机器学习综述");
+    }
+
+    [Fact]
+    public async Task Punctuation_fallback_keeps_exact_substring_matches_inside_document_scope()
+    {
+        await using Context context = await Context.CreateAsync();
+        DocumentTreeRevision first = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId,
+            context.Page.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("first --- marker")),
+                new DocumentBoxSeed(null, null, 1, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .2, .8, .1), new TextBoxPayload("first -- near miss"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(first.TreeRevisionId);
+        DocumentTreeRevision second = (await context.Trees.BeginWorkingRevisionAsync(
+            context.SecondDocument.DocumentInstanceId,
+            context.SecondPage.PageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(.1, .1, .8, .1), new TextBoxPayload("second --- marker"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(second.TreeRevisionId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.SecondDocument.DocumentInstanceId);
+        await context.Index.RebuildFtsForLibraryAsync();
+
+        SearchResultPage all = (await context.Search.SearchLibraryAsync(new SearchRequest("---"))).Value;
+        SearchResultPage scoped = (await context.Search.SearchLibraryAsync(
+            new SearchRequest("---", context.Document.DocumentInstanceId))).Value;
+
+        all.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().BeEquivalentTo("first --- marker", "second --- marker");
+        scoped.Results.SelectMany(page => page.MatchedUnits).Select(unit => unit.Text)
+            .Should().Equal("first --- marker");
+    }
+
+    [Fact]
+    public async Task Search_context_returns_only_requested_neighbors_from_a_large_page()
+    {
+        await using Context context = await Context.CreateAsync();
+        const int targetOrdinal = 256;
+        const int unitCount = 513;
+        DocumentTreeRevision revision = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId,
+            context.Page.PageId,
+            Enumerable.Range(0, unitCount).Select(ordinal => new DocumentBoxSeed(
+                null, null, ordinal, DocumentBoxType.Text, null, null,
+                new NormalizedBBox(.1, .01 + ordinal * .0009, .8, .0008),
+                new TextBoxPayload(ordinal == targetOrdinal
+                    ? "left targetcontextmarker right"
+                    : $"page neighbor {ordinal:D3}"))).ToArray(),
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(revision.TreeRevisionId);
+        await context.Units.RebuildForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+        await context.Index.RebuildFtsForDocumentInstanceAsync(context.Document.DocumentInstanceId);
+
+        SearchResultPage target = (await context.Search.SearchLibraryAsync(
+            new SearchRequest("targetcontextmarker"))).Value;
+        SearchUnitId targetId = target.Results.Single().MatchedUnits.Single().UnitId;
+        IReadOnlyList<SearchMatchedUnit> contextUnits =
+            (await context.Search.GetSearchResultContextAsync(targetId, 2, 3)).Value;
+
+        contextUnits.Select(unit => unit.Text).Should().Equal(
+            "page neighbor 254", "page neighbor 255", "left targetcontextmarker right",
+            "page neighbor 257", "page neighbor 258", "page neighbor 259");
+        contextUnits.Select(unit => unit.IsMatch).Should().Equal(false, false, true, false, false, false);
+
+        await using SqliteConnection connection = context.ConnectionFactory.CreateReadConnection();
+        await connection.OpenAsync();
+        string[] plan = (await connection.QueryAsync<PlanRow>(
+                """
+                explain query plan
+                select unit_id as UnitId
+                from search_units
+                where page_id = @PageId
+                  and tree_revision_id = @RevisionId
+                  and status = @Status
+                  and (ordinal, unit_id) < (@Ordinal, @UnitId)
+                order by ordinal desc, unit_id desc
+                limit @Limit;
+                """,
+                new
+                {
+                    PageId = context.Page.PageId.ToString(),
+                    RevisionId = revision.TreeRevisionId.ToString(),
+                    Status = SearchUnitStatus.Current,
+                    Ordinal = targetOrdinal,
+                    UnitId = targetId.ToString(),
+                    Limit = 2
+                }))
+            .Select(row => row.Detail)
+            .ToArray();
+        plan.Should().Contain(detail =>
+            detail.Contains("idx_search_units_page_revision_status_order", StringComparison.Ordinal));
     }
 
     private sealed class Context : IAsyncDisposable
@@ -231,5 +367,10 @@ public sealed class SearchUnitFtsBoxTreeTests
         {
             return _database.DisposeAsync();
         }
+    }
+
+    public sealed class PlanRow
+    {
+        public string Detail { get; set; } = "";
     }
 }

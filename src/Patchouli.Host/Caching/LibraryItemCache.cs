@@ -1,6 +1,8 @@
+﻿using System.Text;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
+using Patchouli.Core.Ids;
 
 namespace Patchouli.Host.Caching;
 
@@ -16,6 +18,8 @@ public sealed class LibraryItemCache
     private readonly ILibraryItemQueryService _libraryItems;
     private readonly IItemTagService _tags;
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
+    private static readonly IComparer<string> TagNameOrder = Comparer<string>.Create(CompareTagNames);
     private Snapshot? _snapshot;
 
     public LibraryItemCache(ILibraryItemQueryService libraryItems, IItemTagService tags)
@@ -43,6 +47,148 @@ public sealed class LibraryItemCache
 
     /// <summary>Reloads rows and tag counts from the database and atomically swaps the snapshot.</summary>
     public async Task<Result> RefreshAsync(CancellationToken cancellationToken = default)
+    {
+        await _refreshGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await RefreshCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _refreshGate.Release();
+        }
+    }
+
+    /// <summary>Refreshes only the identified bibliographic resources. Changes without a
+    /// recoverable item scope retain the full reload used for external writes.</summary>
+    public async Task<Result> ApplyChangesAsync(LibraryChangeSet changes,
+        CancellationToken cancellationToken = default)
+    {
+        await _refreshGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (!IsLoaded || changes.IsEmpty ||
+                (changes.ItemIds.Count == 0 && changes.DocumentInstanceIds.Count == 0 &&
+                 (changes.PageIds.Count > 0 || changes.OcrRunIds.Count > 0)))
+            {
+                return await RefreshCoreAsync(cancellationToken);
+            }
+
+            HashSet<ItemId> itemIds = changes.ItemIds.ToHashSet();
+            if (changes.DocumentInstanceIds.Count > 0)
+            {
+                HashSet<DocumentInstanceId> documentIds = changes.DocumentInstanceIds.ToHashSet();
+                itemIds.UnionWith(GetSnapshot().Rows.Where(row => row.DocumentInstanceId is { } id &&
+                                                                  documentIds.Contains(id)).Select(row => row.ItemId));
+                Result<IReadOnlyList<ItemId>> owners =
+                    await _libraryItems.GetItemIdsByDocumentInstanceIdsAsync(changes.DocumentInstanceIds,
+                        cancellationToken);
+                if (owners.IsFailure)
+                {
+                    return Result.Failure(owners.ErrorCode!, owners.ErrorMessage!);
+                }
+
+                itemIds.UnionWith(owners.Value);
+            }
+
+            if (itemIds.Count == 0)
+            {
+                // Style and collection-only changes do not alter this read model.
+                return Result.Success();
+            }
+
+            // Large imports use a controlled reload instead of an unbounded SQL IN parameter list.
+            if (itemIds.Count > 500)
+            {
+                return await RefreshCoreAsync(cancellationToken);
+            }
+
+            Result<IReadOnlyList<LibraryItemRow>> updated =
+                await _libraryItems.GetRowsByIdsAsync(itemIds, cancellationToken);
+            if (updated.IsFailure)
+            {
+                return Result.Failure(updated.ErrorCode!, updated.ErrorMessage!);
+            }
+
+            Snapshot previous = GetSnapshot();
+            Dictionary<ItemId, LibraryItemRow> rows = previous.Rows.ToDictionary(row => row.ItemId);
+            Dictionary<string, int> counts = previous.Tags.ToDictionary(tag => tag.Name, tag => tag.Count,
+                StringComparer.Ordinal);
+            int untagged = previous.UntaggedCount;
+            foreach (ItemId itemId in itemIds)
+            {
+                if (rows.Remove(itemId, out LibraryItemRow? oldRow))
+                {
+                    AdjustCounts(oldRow, -1);
+                }
+            }
+
+            foreach (LibraryItemRow row in updated.Value)
+            {
+                rows[row.ItemId] = row;
+                AdjustCounts(row, 1);
+            }
+
+            LibraryItemRow[] ordered = rows.Values.OrderByDescending(row => row.CreatedAt, StringComparer.Ordinal)
+                .ThenByDescending(row => row.ItemId.ToString(), StringComparer.Ordinal).ToArray();
+            TagInfo[] tags = counts.Where(pair => pair.Value > 0)
+                .OrderBy(pair => pair.Key, TagNameOrder)
+                .ThenBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => new TagInfo(pair.Key, pair.Value)).ToArray();
+            lock (_gate)
+            {
+                _snapshot = new Snapshot(ordered, tags, untagged);
+            }
+
+            return Result.Success();
+
+            void AdjustCounts(LibraryItemRow row, int adjustment)
+            {
+                if (row.Tags is null || row.Tags.Count == 0)
+                {
+                    untagged += adjustment;
+                    return;
+                }
+
+                foreach (string tag in row.Tags)
+                {
+                    counts[tag] = counts.GetValueOrDefault(tag) + adjustment;
+                }
+            }
+        }
+        finally
+        {
+            _refreshGate.Release();
+        }
+    }
+
+    private static int CompareTagNames(string left, string right)
+    {
+        // SQLite NOCASE folds ASCII letters only and otherwise compares Unicode scalar values.
+        StringRuneEnumerator leftRunes = left.EnumerateRunes();
+        StringRuneEnumerator rightRunes = right.EnumerateRunes();
+        while (true)
+        {
+            bool hasLeft = leftRunes.MoveNext();
+            bool hasRight = rightRunes.MoveNext();
+            if (!hasLeft || !hasRight)
+            {
+                return hasLeft ? 1 : hasRight ? -1 : 0;
+            }
+
+            int leftValue = leftRunes.Current.Value;
+            int rightValue = rightRunes.Current.Value;
+            leftValue = leftValue is >= 'A' and <= 'Z' ? leftValue + 32 : leftValue;
+            rightValue = rightValue is >= 'A' and <= 'Z' ? rightValue + 32 : rightValue;
+            int comparison = leftValue.CompareTo(rightValue);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+        }
+    }
+
+    private async Task<Result> RefreshCoreAsync(CancellationToken cancellationToken)
     {
         Result<IReadOnlyList<LibraryItemRow>> rowsResult =
             await _libraryItems.ListRowsAsync(cancellationToken: cancellationToken);

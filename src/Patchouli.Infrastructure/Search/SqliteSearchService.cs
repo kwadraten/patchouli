@@ -96,9 +96,17 @@ public sealed class SqliteSearchService : ISearchService
             bool useFtsCandidates = ftsQueries.Length == queries.Length;
             string match = string.Join(" OR ", ftsQueries.Select(query => $"({query})"));
             string candidateSource = useFtsCandidates
-                ? "from search_units_fts f join search_units su on su.unit_id = f.unit_id"
+                ? "from search_units_fts join fts_row_map fm on fm.fts_row_id = search_units_fts.rowid " +
+                  "join search_units su on su.unit_id = fm.unit_id"
                 : "from search_units su";
             string candidatePredicate = useFtsCandidates ? "search_units_fts match @Match" : "1 = 1";
+            string ftsDocumentScopePredicate = useFtsCandidates && request.DocumentInstanceId is not null
+                ? "and search_units_fts.rowid in " +
+                  "(select fts_row_id from fts_row_map where document_instance_id = @DocumentInstanceId)"
+                : string.Empty;
+            string documentScopePredicate = request.DocumentInstanceId is null
+                ? string.Empty
+                : "and su.document_instance_id = @DocumentInstanceId";
             string exactPredicate = string.Join(" OR ",
                 queries.Select((_, index) => $"{ExactContainsFunction}(su.resolved_text, @ExactQuery{index})"));
             connection.CreateFunction<string, string, bool>(ExactContainsFunction,
@@ -115,7 +123,11 @@ public sealed class SqliteSearchService : ISearchService
 
             AddExactQueryParameters(pageParameters, queries);
             pageParameters.Add("Status", SearchUnitStatus.Current);
-            pageParameters.Add("DocumentInstanceId", request.DocumentInstanceId?.ToString());
+            if (request.DocumentInstanceId is not null)
+            {
+                pageParameters.Add("DocumentInstanceId", request.DocumentInstanceId.ToString());
+            }
+
             pageParameters.Add("IncludeDeprecated", request.IncludeDeprecatedInstances ? 1 : 0);
             pageParameters.Add("Limit", pageSize + 1);
             pageParameters.Add("Offset", offset);
@@ -133,9 +145,10 @@ public sealed class SqliteSearchService : ISearchService
                      join document_instances di on di.document_instance_id = su.document_instance_id
                      join items i on i.item_id = di.item_id
                      where {candidatePredicate}
+                       {ftsDocumentScopePredicate}
                        and ({exactPredicate})
                        and su.status = @Status
-                       and (@DocumentInstanceId is null or su.document_instance_id = @DocumentInstanceId)
+                       {documentScopePredicate}
                        and (@IncludeDeprecated = 1 or di.status <> 'deprecated')
                        and i.deleted_at is null
                        and i.merged_into_item_id is null
@@ -160,6 +173,11 @@ public sealed class SqliteSearchService : ISearchService
                 }
 
                 AddExactQueryParameters(unitParameters, queries);
+                if (request.DocumentInstanceId is not null)
+                {
+                    unitParameters.Add("DocumentInstanceId", request.DocumentInstanceId.ToString());
+                }
+
                 unitParameters.Add("PageId", page.PageId);
                 unitParameters.Add("Status", SearchUnitStatus.Current);
                 unitParameters.Add("Limit", MatchedUnitsPerPage + 1);
@@ -175,9 +193,11 @@ public sealed class SqliteSearchService : ISearchService
                      join document_instances di on di.document_instance_id = su.document_instance_id
                      join items i on i.item_id = di.item_id
                      where {candidatePredicate}
+                       {ftsDocumentScopePredicate}
                        and ({exactPredicate})
                        and su.page_id = @PageId
                        and su.status = @Status
+                       {documentScopePredicate}
                        and i.deleted_at is null
                        and i.merged_into_item_id is null
                      order by su.ordinal, su.unit_id
@@ -230,27 +250,59 @@ public sealed class SqliteSearchService : ISearchService
 
             before = Math.Clamp(before, 0, 10);
             after = Math.Clamp(after, 0, 10);
-            UnitHitRow[] siblings = (await connection.QueryAsync<UnitHitRow>(
+            DynamicParameters contextParameters = new();
+            contextParameters.Add("UnitId", row.UnitId);
+            contextParameters.Add("Status", SearchUnitStatus.Current);
+            contextParameters.Add("Before", before);
+            contextParameters.Add("After", after);
+            UnitHitRow[] contextRows = (await connection.QueryAsync<UnitHitRow>(
                 """
-                select unit_id as UnitId, page_id as PageId, box_id as BoxId, resolved_text as Text, box_type as BoxType,
-                       ordinal as Ordinal, tree_revision_id as TreeRevisionId
-                from search_units
-                where page_id = @PageId
-                  and tree_revision_id = @RevisionId
-                  and status = @Status
-                order by ordinal, unit_id;
+                with target as materialized (
+                    select unit_id as UnitId, page_id as PageId, box_id as BoxId,
+                           resolved_text as Text, box_type as BoxType, ordinal as Ordinal,
+                           tree_revision_id as TreeRevisionId
+                    from search_units
+                    where unit_id = @UnitId and status = @Status
+                ),
+                before_units as (
+                    select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
+                           su.resolved_text as Text, su.box_type as BoxType, su.ordinal as Ordinal,
+                           su.tree_revision_id as TreeRevisionId
+                    from target t
+                    join search_units su on su.page_id = t.PageId
+                                        and su.tree_revision_id = t.TreeRevisionId
+                                        and su.status = @Status
+                    where (su.ordinal, su.unit_id) < (t.Ordinal, t.UnitId)
+                    order by su.ordinal desc, su.unit_id desc
+                    limit @Before
+                ),
+                after_units as (
+                    select su.unit_id as UnitId, su.page_id as PageId, su.box_id as BoxId,
+                           su.resolved_text as Text, su.box_type as BoxType, su.ordinal as Ordinal,
+                           su.tree_revision_id as TreeRevisionId
+                    from target t
+                    join search_units su on su.page_id = t.PageId
+                                        and su.tree_revision_id = t.TreeRevisionId
+                                        and su.status = @Status
+                    where (su.ordinal, su.unit_id) > (t.Ordinal, t.UnitId)
+                    order by su.ordinal, su.unit_id
+                    limit @After
+                )
+                select UnitId, PageId, BoxId, Text, BoxType, Ordinal, TreeRevisionId
+                from (
+                    select * from before_units
+                    union all
+                    select * from target
+                    union all
+                    select * from after_units
+                )
+                order by Ordinal, UnitId;
                 """,
-                new { row.PageId, RevisionId = row.TreeRevisionId, Status = SearchUnitStatus.Current })).ToArray();
-            int index = Array.FindIndex(siblings, s => s.UnitId == row.UnitId);
-            if (index < 0)
-            {
-                return Result<IReadOnlyList<SearchMatchedUnit>>.Success(Array.Empty<SearchMatchedUnit>());
-            }
-
-            int start = Math.Max(0, index - before);
-            int end = Math.Min(siblings.Length - 1, index + after);
-            return Result<IReadOnlyList<SearchMatchedUnit>>.Success(siblings[start..(end + 1)]
-                .Select(s => s.ToMatchedUnit(s.UnitId == row.UnitId)).ToArray());
+                contextParameters)).ToArray();
+            SearchMatchedUnit[] context = contextRows
+                .Select(unit => unit.ToMatchedUnit(unit.UnitId == row.UnitId))
+                .ToArray();
+            return Result<IReadOnlyList<SearchMatchedUnit>>.Success(context);
         }
         catch (OperationCanceledException)
         {

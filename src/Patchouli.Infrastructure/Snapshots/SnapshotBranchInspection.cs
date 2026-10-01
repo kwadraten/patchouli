@@ -164,13 +164,6 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         }
 
         SnapshotManifest? manifest = validation.Value.Manifest;
-        Result treeValidation = await ValidateStagedTreesAsync(imported.Value.StagingDatabasePath, cancellationToken);
-        if (treeValidation.IsFailure)
-        {
-            return Result<SnapshotBranchInspectionInfo>.Failure(treeValidation.ErrorCode!, treeValidation.ErrorMessage!,
-                treeValidation.Conflicts);
-        }
-
         bool mismatch = !string.Equals(manifest.LibraryId, local.Value.LibraryId.ToString(),
             StringComparison.OrdinalIgnoreCase);
         return Result<SnapshotBranchInspectionInfo>.Success(new SnapshotBranchInspectionInfo(

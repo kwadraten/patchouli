@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
@@ -270,7 +270,7 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
                     break;
                 case BibliographicSearchFilterKeys.Tag:
                     clauses.Add(
-                        $"exists (select 1 from json_each(i.tags_json) where value = @{name})");
+                        $"i.item_id in (select tm.item_id from item_tag_memberships tm where tm.tag = @{name})");
                     parameters[name] = filter.Value.Trim();
                     break;
                 case BibliographicSearchFilterKeys.CollectionId:
@@ -740,11 +740,13 @@ public sealed class LibraryItemQueryService : ILibraryItemQueryService
         }
 
         return """
-               and (
-                   select count(distinct value)
-                   from json_each(i.tags_json)
-                   where value in @RequiredTags
-               ) = @RequiredTagCount
+               and i.item_id in (
+                   select item_id
+                   from item_tag_memberships
+                   where tag in @RequiredTags
+                   group by item_id
+                   having count(distinct tag) = @RequiredTagCount
+               )
                """;
     }
 

@@ -76,11 +76,39 @@ public sealed class FileAssetGcServiceTests
     {
         await using Ctx c = await Ctx.Create();
         FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
-        await c.AttachDocumentBoxPayloadAsync(fileAssetId);
+        await c.AttachDocumentBoxPayloadAsync(fileAssetId, uppercaseAssetId: true);
 
         IReadOnlyList<FileAssetGcCandidate> candidates = await c.Gc.PreviewAsync();
 
         candidates.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Preview_tracks_working_and_committed_document_box_payload_references()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        DocumentTreeRevisionId revisionId = await c.AttachDocumentBoxPayloadAsync(fileAssetId, "working");
+
+        (await c.Gc.PreviewAsync()).Should().BeEmpty();
+
+        await c.SetPayloadRevisionStatusAsync(revisionId, "discarded");
+        (await c.Gc.PreviewAsync()).Should().ContainSingle()
+            .Which.FileAssetId.Should().Be(fileAssetId);
+
+        await c.SetPayloadRevisionStatusAsync(revisionId, "committed");
+        (await c.Gc.PreviewAsync()).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Preview_does_not_treat_incidental_payload_text_as_an_asset_reference()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId fileAssetId = await c.CreateAvailableFileAssetAsync();
+        await c.AttachDocumentBoxPayloadAsync(fileAssetId, includeAssetId: false);
+
+        (await c.Gc.PreviewAsync()).Should().ContainSingle()
+            .Which.FileAssetId.Should().Be(fileAssetId);
     }
 
     [Fact]
@@ -112,6 +140,24 @@ public sealed class FileAssetGcServiceTests
         (await c.CountAsync("file_assets")).Should().Be(0);
         (await c.CountAsync("known_file_locations")).Should().Be(0);
         c.Logger.Logs.Should().Contain(log => log.Contains("deleted", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task RunCandidates_deletes_only_the_requested_orphan_assets()
+    {
+        await using Ctx c = await Ctx.Create();
+        FileAssetId selectedId = await c.CreateAvailableFileAssetAsync();
+        FileAssetId otherId = await c.CreateAvailableFileAssetWithContentAsync("other orphan");
+
+        FileAssetGcResult result = await c.Gc.RunCandidatesAsync([selectedId], new FileAssetGcOptions());
+
+        result.Deleted.Should().Equal(selectedId);
+        result.Failed.Should().BeEmpty();
+        (await c.CountAsync("file_assets")).Should().Be(1);
+        await using SqliteConnection connection = c.Database.ConnectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        (await connection.ExecuteScalarAsync<string>(
+            "select file_asset_id from file_assets limit 1;")).Should().Be(otherId.ToString());
     }
 
     [Fact]
@@ -401,7 +447,11 @@ public sealed class FileAssetGcServiceTests
                 });
         }
 
-        public async Task AttachDocumentBoxPayloadAsync(FileAssetId fileAssetId)
+        public async Task<DocumentTreeRevisionId> AttachDocumentBoxPayloadAsync(
+            FileAssetId fileAssetId,
+            string status = "committed",
+            bool includeAssetId = true,
+            bool uppercaseAssetId = false)
         {
             Result<ItemMetadata> item = await Items.CreateItemAsync("book", "Payload Holder");
             item.IsSuccess.Should().BeTrue();
@@ -411,7 +461,12 @@ public sealed class FileAssetGcServiceTests
             PageId pageId = PageId.New();
             DocumentTreeRevisionId revisionId = DocumentTreeRevisionId.New();
             DocumentBoxId boxId = DocumentBoxId.New();
-            string payload = $"{{\"assetId\":\"{fileAssetId}\",\"description\":\"test\"}}";
+            string payloadAssetId = uppercaseAssetId
+                ? fileAssetId.ToString().ToUpperInvariant()
+                : fileAssetId.ToString();
+            string payload = includeAssetId
+                ? $"{{\"assetId\":\"{payloadAssetId}\",\"description\":\"test\"}}"
+                : $"{{\"description\":\"{fileAssetId}\"}}";
 
             await using SqliteConnection connection = Database.ConnectionFactory.CreateConnection();
             await connection.OpenAsync();
@@ -474,10 +529,10 @@ public sealed class FileAssetGcServiceTests
                     @DocumentId,
                     @PageId,
                     'manual_edit',
-                    'committed',
-                    1,
+                    @Status,
+                    @IsCurrent,
                     @Now,
-                    @Now
+                    @CommittedAt
                 );
 
                 insert into document_boxes (
@@ -515,8 +570,29 @@ public sealed class FileAssetGcServiceTests
                     RevisionId = revisionId.ToString(),
                     BoxId = boxId.ToString(),
                     Payload = payload,
-                    Now = now
+                    Status = status,
+                    IsCurrent = status == "committed" ? 1 : 0,
+                    Now = now,
+                    CommittedAt = status == "committed" ? now : null
                 });
+
+            return revisionId;
+        }
+
+        public async Task SetPayloadRevisionStatusAsync(DocumentTreeRevisionId revisionId, string status)
+        {
+            string now = Clock.UtcNow.ToString("O");
+            await using SqliteConnection connection = Database.ConnectionFactory.CreateConnection();
+            await connection.OpenAsync();
+            await connection.ExecuteAsync(
+                """
+                update document_tree_revisions
+                set status = @Status,
+                    committed_at = case when @Status = 'committed' then @Now else committed_at end,
+                    is_current = case when @Status = 'committed' then 1 else 0 end
+                where tree_revision_id = @RevisionId;
+                """,
+                new { Status = status, Now = now, RevisionId = revisionId.ToString() });
         }
 
         public async Task PublishSnapshotAsync()

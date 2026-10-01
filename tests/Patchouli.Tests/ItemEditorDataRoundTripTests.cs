@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
@@ -306,6 +306,7 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
             editor.HasUnsavedChanges.Should().BeFalse();
 
             // Guard condition 3: Clean editor with newRevision > LoadedRevision reloads and updates LoadedRevision
+            long revisionBeforeUpdate = editor.LoadedRevision;
             Result<ItemMetadata> updatedInDb = await services.Items.UpdateItemAsync(
                 created.Value.ItemId,
                 new UpdateItemRequest(
@@ -316,7 +317,8 @@ public sealed class ItemEditorDataRoundTripTests : IDisposable
 
             Result<long> latestRevision = await services.LibraryRevisions.GetCurrentRevisionAsync();
             latestRevision.IsSuccess.Should().BeTrue(latestRevision.ErrorMessage);
-            latestRevision.Value.Should().BeGreaterThan(editor.LoadedRevision);
+            // The committed event may already have refreshed this editor before this read completes.
+            latestRevision.Value.Should().BeGreaterThan(revisionBeforeUpdate);
 
             await main.RefreshOpenItemEditorsAsync([created.Value.ItemId], latestRevision.Value);
             titleShortField = editor.Fields.Single(field => field.Key == "TitleShort");

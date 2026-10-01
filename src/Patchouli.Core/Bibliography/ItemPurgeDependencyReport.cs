@@ -11,4 +11,7 @@ public sealed record ItemPurgeDependencyReport(
     int SnapshotCount,
     bool HasActiveOcr,
     bool HasOcrCandidates,
-    bool HasWorking);
+    bool HasWorking)
+{
+    public IReadOnlyList<FileAssetId> FileAssetIds { get; init; } = [];
+}

@@ -98,6 +98,8 @@ public interface ISearchDirtyMarker
 
 public interface ISearchIndexRebuilder
 {
+    Task<Results.Result> EnsureCacheAsync(CancellationToken cancellationToken = default);
+
     Task<Results.Result> RebuildFtsForDocumentInstanceAsync(DocumentInstanceId documentInstanceId,
         CancellationToken cancellationToken = default);
 

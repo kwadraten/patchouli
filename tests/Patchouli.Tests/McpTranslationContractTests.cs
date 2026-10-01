@@ -49,6 +49,25 @@ public sealed class McpTranslationContractTests
     }
 
     [Fact]
+    public async Task Translation_progress_paging_keeps_global_filter_sort_and_counts_with_unrelated_pages()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(8,
+            12);
+
+        McpBrowseTranslationPage result = (await fixture.Read.BrowseTranslationsAsync(
+            2, 3, "Unrelated")).Value;
+
+        result.DomainTotal.Should().Be(9);
+        result.FilteredTotal.Should().Be(8);
+        result.HasMore.Should().BeTrue();
+        result.Rows.Select(row => row.Title).Should().Equal("Unrelated 5", "Unrelated 4", "Unrelated 3");
+        result.Rows.Should().OnlyContain(row => row.PageCount == 12
+                                                && row.TranslatedPageCount == 0
+                                                && row.UntranslatedPageCount == 12
+                                                && row.StalePageCount == 0);
+    }
+
+    [Fact]
     public async Task Translation_document_projects_each_page_status()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
@@ -177,7 +196,8 @@ public sealed class McpTranslationContractTests
             PageId untranslatedPageId,
             string firstPageSource,
             PageTranslationService translations,
-            McpCommandService commands)
+            McpCommandService commands,
+            McpReadApi read)
         {
             _database = database;
             DocumentId = documentId;
@@ -186,6 +206,7 @@ public sealed class McpTranslationContractTests
             FirstPageSource = firstPageSource;
             Translations = translations;
             Commands = commands;
+            Read = read;
         }
 
         public DocumentInstanceId DocumentId { get; }
@@ -194,8 +215,10 @@ public sealed class McpTranslationContractTests
         public string FirstPageSource { get; }
         public PageTranslationService Translations { get; }
         public McpCommandService Commands { get; }
+        public McpReadApi Read { get; }
 
-        public static async Task<Fixture> CreateAsync()
+        public static async Task<Fixture> CreateAsync(int unrelatedDocumentCount = 0,
+            int pagesPerUnrelatedDocument = 0)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
@@ -220,6 +243,30 @@ public sealed class McpTranslationContractTests
                 new TextBoxSeed(1, "Beta text"));
             await CommitAsync(trees, document.DocumentInstanceId, second.PageId,
                 new TextBoxSeed(0, "Gamma text"));
+
+            if (unrelatedDocumentCount > 0 && pagesPerUnrelatedDocument > 0)
+            {
+                for (int documentIndex = 0; documentIndex < unrelatedDocumentCount; documentIndex++)
+                {
+                    ItemMetadata unrelatedItem = (await items.CreateItemAsync("book",
+                        $"Unrelated {documentIndex}")).Value;
+                    FixedClock documentClock = new(DateTimeOffset.Parse("2026-02-01T00:00:00Z")
+                        .AddDays(documentIndex));
+                    DocumentInstance unrelatedDocument = (await new DocumentInstanceService(
+                        database.ConnectionFactory, documentClock).AttachDocumentInstanceAsync(
+                        unrelatedItem.ItemId, null, DocumentInstanceType.PrimaryScan,
+                        $"Unrelated {documentIndex}", true)).Value;
+
+                    for (int pageIndex = 0; pageIndex < pagesPerUnrelatedDocument; pageIndex++)
+                    {
+                        Page unrelatedPage = (await pages.CreatePageAsync(unrelatedDocument.DocumentInstanceId,
+                            pageIndex, $"{pageIndex + 1}", null, null, 0, CoordinateBasis.NormalizedPage,
+                            null, null, "test", null)).Value;
+                        await CommitAsync(trees, unrelatedDocument.DocumentInstanceId, unrelatedPage.PageId,
+                            new TextBoxSeed(0, $"unrelated text {documentIndex} {pageIndex}"));
+                    }
+                }
+            }
 
             DocumentMarkdownCompiler markdownCompiler = new(trees, markdown);
             DocumentTreeRevision firstRevision = (await trees.GetCurrentRevisionAsync(
@@ -249,7 +296,7 @@ public sealed class McpTranslationContractTests
                 database.ConnectionFactory, library, trees, markdownCompiler);
             McpCommandService commands = new(read, writes, biblatex, items, evidenceReader);
             return new Fixture(database, document.DocumentInstanceId, first.PageId, second.PageId,
-                firstSource, translations, commands);
+                firstSource, translations, commands, read);
         }
 
         public string TranslateFirstPage(string marker)

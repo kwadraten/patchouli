@@ -57,7 +57,8 @@ If output contradicts an existing ADR under `.agents/adr/`, surface it explicitl
 
 - **Composition root** — `Composition/HostServices` constructs and wires every domain service
   (identity, revisions, items, tags, files, OCR, snapshots, MCP APIs) over one
-  `SqliteConnectionFactory`, runs migrations, and exposes the service fleet to consumers. Both
+  `SqliteConnectionFactory`, runs migrations and startup maintenance (OCR run
+  reconciliation, import-residue GC), and exposes the service fleet to consumers. Both
   hosts build it; nothing else should hand-wire domain services.
 - **File watching** — `Watching/FileSearchRootWatcherService` owns the `FileSystemWatcher` fleet
   for configured FileSearchRoots plus the debounced rescan/import pipeline.
@@ -65,10 +66,13 @@ If output contradicts an existing ADR under `.agents/adr/`, surface it explicitl
   and shutdown, surfacing status and failures through events (`McpHttpServer` and
   `McpProtocolHandler` live here).
 - **Import orchestration** — `Import/LibraryImportOrchestrator` sequences multi-step import
-  workflows without UI coupling.
+  workflows without UI coupling. PDF import commits atomically per book with per-page
+  failure placeholders (ADR `0035`).
 - **Item cache and revision monitor** — `Caching/LibraryItemCache` is the in-memory first-screen
   read snapshot (tag filtering, untagged queries, sidebar tag counts);
-  `Caching/LibraryRevisionMonitor` keeps it current.
+  `Caching/LibraryRevisionMonitor` merges local change scopes and refreshes affected items.
+  Unknown or skipped revisions and external writes force a full refresh; failures retry without
+  treating an unrefreshed cache as current.
 
 Rule: runtime logic belongs in `Patchouli.Host`, not in ViewModels. ViewModels subscribe to the
 host's services and marshal events to the UI dispatcher; they never own watchers, timers, server

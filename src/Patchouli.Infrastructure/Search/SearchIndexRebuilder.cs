@@ -1,5 +1,4 @@
 using System.Data.Common;
-using System.Text;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Ids;
@@ -13,7 +12,6 @@ namespace Patchouli.Infrastructure.Search;
 
 public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
 {
-    private const int FtsWriteBatchSize = 500;
     private readonly SqliteConnectionFactory _connectionFactory;
     private readonly IClock _clock;
     private readonly IHostActivityTracker? _activityTracker;
@@ -43,16 +41,17 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
-            await connection.ExecuteAsync("delete from search_units_fts where document_instance_id = @Id;",
-                new { Id = documentInstanceId.ToString() }, tx);
-            IEnumerable<UnitRow> units = await connection.QueryAsync<UnitRow>(
+            await SearchFtsCacheWriter.EnsureReadyAsync(connection, tx, cancellationToken);
+            await SearchFtsCacheWriter.DeleteForDocumentInstancesAsync(
+                connection, tx, [documentInstanceId.ToString()], cancellationToken);
+            IEnumerable<SearchFtsUnitRow> units = await connection.QueryAsync<SearchFtsUnitRow>(
                 "select unit_id as UnitId, document_instance_id as DocumentInstanceId, page_id as PageId, resolved_text as ResolvedText from search_units where document_instance_id = @Id and status = @Status and length(trim(resolved_text)) > 0;",
                 new { Id = documentInstanceId.ToString(), Status = SearchUnitStatus.Current },
                 tx);
-            foreach (UnitRow[] chunk in units.Chunk(FtsWriteBatchSize))
+            foreach (SearchFtsUnitRow[] chunk in units.Chunk(500))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await InsertFtsBatchAsync(connection, tx, chunk);
+                await SearchFtsCacheWriter.InsertBatchAsync(connection, tx, chunk, cancellationToken);
             }
 
             await tx.CommitAsync(cancellationToken);
@@ -82,6 +81,34 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
         }
     }
 
+    public async Task<Result> EnsureCacheAsync(CancellationToken cancellationToken = default)
+    {
+        using CancellationTokenSource linkedCancellation =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _hostLifetime);
+        cancellationToken = linkedCancellation.Token;
+        try
+        {
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            await SearchFtsCacheWriter.EnsureReadyAsync(connection, transaction, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return Result.Success();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                              exception,
+                                              "infrastructure.search-index-rebuilder"))
+        {
+            await SetIndexUnavailableAsync(SearchIndexScopeType.Library, "current", exception.Message,
+                cancellationToken);
+            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+        }
+    }
+
     public async Task<Result> RebuildFtsForLibraryAsync(CancellationToken cancellationToken = default)
     {
         using CancellationTokenSource linkedCancellation =
@@ -96,16 +123,7 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
             await using SqliteConnection connection = _connectionFactory.CreateConnection();
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction tx = await connection.BeginTransactionAsync(cancellationToken);
-            await connection.ExecuteAsync("delete from search_units_fts;", transaction: tx);
-            IEnumerable<UnitRow> units = await connection.QueryAsync<UnitRow>(
-                "select unit_id as UnitId, document_instance_id as DocumentInstanceId, page_id as PageId, resolved_text as ResolvedText from search_units where status = @Status and length(trim(resolved_text)) > 0;",
-                new { Status = SearchUnitStatus.Current },
-                tx);
-            foreach (UnitRow[] chunk in units.Chunk(FtsWriteBatchSize))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                await InsertFtsBatchAsync(connection, tx, chunk);
-            }
+            await SearchFtsCacheWriter.RebuildAllAsync(connection, tx, cancellationToken);
 
             await tx.CommitAsync(cancellationToken);
 
@@ -160,42 +178,5 @@ public sealed class SearchIndexRebuilder : ISearchIndexRebuilder
     internal static string BuildIndexText(string canonicalText)
     {
         return SearchTextAnalyzer.BuildIndexText(canonicalText);
-    }
-
-    private static Task InsertFtsBatchAsync(SqliteConnection connection,
-        DbTransaction tx, IReadOnlyList<UnitRow> chunk)
-    {
-        StringBuilder values = new();
-        Dictionary<string, object?> parameters = new();
-        for (int i = 0; i < chunk.Count; i++)
-        {
-            UnitRow unit = chunk[i];
-            if (i > 0)
-            {
-                values.Append(',');
-            }
-
-            values.Append("(@p").Append(i).Append("UnitId,@p").Append(i).Append("DocId,@p").Append(i)
-                .Append("PageId,@p").Append(i).Append("Text)");
-            string prefix = "p" + i;
-            parameters[prefix + "UnitId"] = unit.UnitId;
-            parameters[prefix + "DocId"] = unit.DocumentInstanceId;
-            parameters[prefix + "PageId"] = unit.PageId;
-            parameters[prefix + "Text"] = BuildIndexText(unit.ResolvedText);
-        }
-
-        return connection.ExecuteAsync(
-            "insert into search_units_fts (unit_id, document_instance_id, page_id, resolved_text) values " +
-            values,
-            parameters,
-            tx);
-    }
-
-    private sealed class UnitRow
-    {
-        public string UnitId { get; set; } = "";
-        public string DocumentInstanceId { get; set; } = "";
-        public string PageId { get; set; } = "";
-        public string ResolvedText { get; set; } = "";
     }
 }
