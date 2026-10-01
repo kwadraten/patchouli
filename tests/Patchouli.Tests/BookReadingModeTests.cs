@@ -4,6 +4,7 @@ using Avalonia.Headless;
 using FluentAssertions;
 using Patchouli.Core.Ids;
 using Patchouli.Host.Composition;
+using Patchouli.Reading;
 using Patchouli.UI;
 using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels;
@@ -576,6 +577,7 @@ public sealed class BookReadingModeTests : IDisposable
             window.Content = recreatedView;
             window.Measure(new Size(1280, 900));
             window.Arrange(new Rect(0, 0, 1280, 900));
+            window.UpdateLayout();
 
             ScrollViewer scroller = recreatedView.FindControl<ScrollViewer>("BookReadingScroller")!;
             scroller.Offset.Y.Should().BeGreaterThan(500,
@@ -618,11 +620,13 @@ public sealed class BookReadingModeTests : IDisposable
             CancellationToken cancellationToken = default)
         {
             RequestedPages.Add(pageIndex);
-            string html = tallPages
-                ? string.Concat(Enumerable.Range(0, 80).Select(line => $"<p>page {pageIndex} line {line}</p>"))
-                : $"<p>page {pageIndex}</p>";
+            int lineCount = tallPages ? 80 : 1;
+            ReadingBlock[] blocks = Enumerable.Range(0, lineCount)
+                .Select(line => new ReadingBlock(null, "paragraph", 0, $"page {pageIndex} line {line}",
+                    PageIndex: pageIndex))
+                .ToArray();
             return Task.FromResult(new BookReadingPage(
-                pageIndex, pageCountValue, false, html));
+                pageIndex, pageCountValue, false, new ReadingScene(blocks)));
         }
     }
 
@@ -646,8 +650,11 @@ public sealed class BookReadingModeTests : IDisposable
             RequestedPages.Add(pageIndex);
             FirstPageRequested.TrySetResult(true);
             await unblockTask.WaitAsync(cancellationToken);
-            return new BookReadingPage(
-                pageIndex, pageCountValue, false, $"<p>page {pageIndex}</p>");
+            ReadingScene scene = new(
+            [
+                new ReadingBlock(null, "paragraph", 0, $"page {pageIndex}", PageIndex: pageIndex)
+            ]);
+            return new BookReadingPage(pageIndex, pageCountValue, false, scene);
         }
     }
 }

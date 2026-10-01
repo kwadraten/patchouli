@@ -86,8 +86,9 @@
 
                 <Border Classes="Card">
                   <StackPanel Spacing="10">
-                    <TextBlock Text="阅读模式字体" Classes="CardTitle" />
-                    <TextBlock Text="全书阅读模式的正文字体与字号，保存后立即生效。" FontSize="12"
+                    <TextBlock Text="阅读模式" Classes="CardTitle" />
+                    <TextBlock Text="全书阅读模式的正文字体、字号与对照翻译布局，保存后立即生效。对照翻译布局：并排对照为左右两栏；段落下方将译文显示在原文段落之下（类似沉浸式翻译）。"
+                               FontSize="12"
                                Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
                     <ComboBox ItemsSource="{Binding ReadingFontFamilies}"
                               SelectedItem="{Binding SelectedReadingFontFamily}"
@@ -96,6 +97,12 @@
                       <TextBlock Text="字号" VerticalAlignment="Center" />
                       <NumericUpDown Value="{Binding ReadingFontSize}" Minimum="10" Maximum="28"
                                      Increment="1" Width="100" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <TextBlock Text="对照翻译布局" VerticalAlignment="Center" />
+                      <ComboBox ItemsSource="{Binding ReadingCompareModes}"
+                                SelectedItem="{Binding SelectedReadingCompareMode}"
+                                MinWidth="140" HorizontalAlignment="Left" />
                     </StackPanel>
                   </StackPanel>
                 </Border>
@@ -160,13 +167,6 @@
               </StackPanel>
             </DataTemplate>
 
-            <DataTemplate DataType="settings:SyncSettingsViewModel">
-              <StackPanel Spacing="20" MaxWidth="720">
-                <Border Classes="Card">
-                  <StackPanel Spacing="10">
-                    <TextBlock Text="本机同步绑定" Classes="CardTitle" />
-                    <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
-                    <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
             <!-- Import Settings -->
             <DataTemplate DataType="settings:ImportSettingsViewModel">
               <StackPanel Spacing="20" MaxWidth="720">
@@ -190,6 +190,13 @@
               </StackPanel>
             </DataTemplate>
 
+            <DataTemplate DataType="settings:SyncSettingsViewModel">
+              <StackPanel Spacing="20" MaxWidth="720">
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
+                    <TextBlock Text="本机同步绑定" Classes="CardTitle" />
+                    <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
+                    <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
                     <controls:PathPickerTextBox Path="{Binding SyncRoot}" PickerMode="Folder"
                                                 DialogTitle="选择本机同步目录" PlaceholderText="本机同步目录" />
                     <TextBlock Text="{Binding SnapshotOperationStateText, StringFormat='最近同步状态：{0}'}"

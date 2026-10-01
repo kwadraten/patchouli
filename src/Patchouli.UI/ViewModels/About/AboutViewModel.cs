@@ -95,8 +95,6 @@ public class AboutViewModel : ViewModelBase
             new("RapidOCR Models (PP-OCRv6, ModelScope)", "Apache-2.0",
                 "https://www.modelscope.cn/models/RapidAI/RapidOCR", openUrlCommand),
             new("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid", openUrlCommand),
-            new("AvaloniaRichEditor", "MIT",
-                "https://github.com/centwon/AvaloniaRichEditor", openUrlCommand),
             new("CatWalk Enhanced", "GPL-3.0+",
                 "https://github.com/BLADR-ONE/CatWalk-Enhanced-Plasmoid/tree/0e20cec96c7e5e390623a80aed6302c2f1b8c7ee",
                 openUrlCommand, "BLADR-ONE, Yuri Saurov")

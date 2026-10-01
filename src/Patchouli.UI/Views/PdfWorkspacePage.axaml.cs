@@ -7,10 +7,9 @@ using Avalonia.Interactivity;
 using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
-using AvaloniaRichEditor.Controls;
-using AvaloniaRichEditor.Documents;
-using AvaloniaRichEditor.Formatters;
 using Patchouli.Core.Ids;
+using Patchouli.UI.Diagnostics;
+using Patchouli.Reading;
 using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels;
 
@@ -19,6 +18,7 @@ namespace Patchouli.UI.Views;
 public sealed partial class PdfWorkspacePage : UserControl
 {
     private PdfWorkspaceViewModel? _workspace;
+    private bool _workspaceEventsSubscribed;
     private PdfBBoxViewModel? _draggedBBox;
     private Point _dragStart;
     private double _dragLeft;
@@ -39,28 +39,25 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private Vector _panStartOffset;
 
-    // Reading-mode page rail: per-page HTML cache (so a font change can rebuild the document and
-    // re-measure page offsets), the set of pages that arrived as front-inserts, the block count
-    // each front-inserted page contributed (so a new batch lands in page order regardless of how
-    // many batches arrived), and the page-index → vertical-offset map feeding badges.
-    private readonly SortedDictionary<int, string> _bookReadingHtmlCache = new();
-    private readonly HashSet<int> _bookReadingPrependedPages = [];
-    private readonly SortedList<int, int> _bookReadingPrependedBlockCounts = new();
-    private readonly BookReadingPageMap _bookReadingPageMap = new();
+    // Reading-mode page rail: the streamed pages cached by index (source + translation scenes),
+    // so a font change or compare toggle rebuilds the combined reading document in page order. The
+    // ReadingView renders one concatenated scene; page boundaries are pinned as badges in the left
+    // rail at the measured top of each page's first block (see UpdateBookReadingBadges).
+    private readonly SortedDictionary<int, ReadingScene> _bookReadingSourceScenes = new();
+    private readonly SortedDictionary<int, ReadingScene?> _bookReadingTranslationScenes = new();
 
-    // The translation pane keeps its own copy of the same bookkeeping: a translated page has a
-    // different height than its source, so the source offsets cannot locate a page in this pane.
-    // The HTML cache fills even while the pane is hidden so toggling compare on is a local rebuild.
-    private readonly SortedDictionary<int, string> _bookTranslationHtmlCache = new();
-    private readonly HashSet<int> _bookTranslationPrependedPages = [];
-    private readonly SortedList<int, int> _bookTranslationPrependedBlockCounts = new();
-    private readonly BookReadingPageMap _bookTranslationPageMap = new();
-
-    // Real measured Y of the reading session's start page: recorded when the start page is
-    // appended, then pushed down by every prepend. The page map cannot be used for this — its
-    // start offset includes the empty document's own height, which broke the old compensation
-    // condition. The workspace asks the view to snap here once the initial window settles.
+    // Real measured Y of the reading session's start page: recorded from the measured page offsets
+    // after the initial window settles, so the reader opens on the page it started from rather than
+    // the top of the book. The workspace asks the view to snap here once the window settles.
     private double? _bookReadingAnchorY;
+
+    // When true, the next measured layout applies _bookReadingAnchorY to the scroller. Kept
+    // pending across replay/initial delivery until the ReadingView has been measured at a real width.
+    private bool _bookReadingAnchorPending;
+
+    // Lazy, bounded page-image cache for whole-book media blocks: renders each page's pixel buffer
+    // on demand and keeps only the visible page plus one neighbour on either side.
+    private BookReadingImageSource? _bookReadingImages;
 
     public PdfWorkspacePage()
     {
@@ -72,6 +69,9 @@ public sealed partial class PdfWorkspacePage : UserControl
         PdfScrollViewer.AddHandler(PointerWheelChangedEvent, OnScrollPointerWheelChanged,
             RoutingStrategies.Tunnel);
         BookReadingScroller.ScrollChanged += OnBookReadingScrollChanged;
+        BookReadingScroller.LayoutUpdated += OnBookReadingScrollerLayoutUpdated;
+        BookReadingView.Measured += OnBookReadingViewMeasured;
+        BookReadingView.EditSelectionRequested += OnBookReadingEditSelectionRequested;
     }
 
     private void OnBBoxContextRequested(object? sender, ContextRequestedEventArgs e)
@@ -101,34 +101,74 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
-        if (_workspace is not null)
-        {
-            _workspace.BookReadingStarted -= OnBookReadingStarted;
-            _workspace.BookReadingPageReady -= OnBookReadingPageReady;
-            _workspace.BookReadingAnchorRequested -= OnBookReadingAnchorRequested;
-            _workspace.PropertyChanged -= OnBookReadingPropertyChanged;
-        }
-
+        UnsubscribeWorkspaceEvents();
         _workspace = DataContext as PdfWorkspaceViewModel;
-        if (_workspace is not null)
+        SubscribeWorkspaceEvents();
+        if (VisualRoot is not null)
         {
-            _workspace.BookReadingStarted += OnBookReadingStarted;
-            _workspace.BookReadingPageReady += OnBookReadingPageReady;
-            _workspace.BookReadingAnchorRequested += OnBookReadingAnchorRequested;
-            _workspace.PropertyChanged += OnBookReadingPropertyChanged;
-            if (_workspace.IsBookReadingMode)
-            {
-                // The view was recreated after reading mode had already started (e.g. a tab switch
-                // back). The start/page events fired before this subscription existed, so ask the
-                // workspace to replay what it has delivered.
-                _workspace.ReplayBookReading();
-            }
+            ReplayBookReadingIfNeeded();
         }
     }
 
-    private void OnReadingBlockClicked(object? sender, DocumentBoxId? boxId)
+    private void SubscribeWorkspaceEvents()
     {
-        _workspace?.SelectReadingBlock(boxId);
+        if (_workspaceEventsSubscribed || _workspace is null)
+        {
+            return;
+        }
+
+        _workspace.BookReadingStarted += OnBookReadingStarted;
+        _workspace.BookReadingPageReady += OnBookReadingPageReady;
+        _workspace.BookReadingAnchorRequested += OnBookReadingAnchorRequested;
+        _workspace.PropertyChanged += OnBookReadingPropertyChanged;
+        _workspaceEventsSubscribed = true;
+    }
+
+    private void ReplayBookReadingIfNeeded()
+    {
+        if (_workspace is { IsBookReadingMode: true })
+        {
+            // The view was recreated after reading mode had already started (e.g. a tab switch
+            // back). The start/page events fired before this subscription existed, so ask the
+            // workspace to replay what it has delivered.
+            _workspace.ReplayBookReading();
+        }
+    }
+
+    private void UnsubscribeWorkspaceEvents()
+    {
+        if (!_workspaceEventsSubscribed || _workspace is null)
+        {
+            return;
+        }
+
+        _workspace.BookReadingStarted -= OnBookReadingStarted;
+        _workspace.BookReadingPageReady -= OnBookReadingPageReady;
+        _workspace.BookReadingAnchorRequested -= OnBookReadingAnchorRequested;
+        _workspace.PropertyChanged -= OnBookReadingPropertyChanged;
+        _workspaceEventsSubscribed = false;
+    }
+
+    /// <inheritdoc/>
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        SubscribeWorkspaceEvents();
+        ReplayBookReadingIfNeeded();
+    }
+
+    /// <inheritdoc/>
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        UnsubscribeWorkspaceEvents();
+        _bookReadingImages?.Dispose();
+        _bookReadingImages = null;
+    }
+
+    private void OnReadingBlockClicked(object? sender, ReadingBlockActivation activation)
+    {
+        _workspace?.SelectReadingBlock(activation.BoxId);
     }
 
     private void OnBBoxPointerPressed(object? sender, PointerPressedEventArgs e)
@@ -563,51 +603,84 @@ public sealed partial class PdfWorkspacePage : UserControl
         }
     }
 
+
     private void OnBookReadingStarted()
     {
-        _bookReadingHtmlCache.Clear();
-        _bookReadingPrependedPages.Clear();
-        _bookReadingPrependedBlockCounts.Clear();
-        _bookReadingPageMap.Clear();
+        _bookReadingSourceScenes.Clear();
+        _bookReadingTranslationScenes.Clear();
         _bookReadingAnchorY = null;
-        _bookTranslationHtmlCache.Clear();
-        _bookTranslationPrependedPages.Clear();
-        _bookTranslationPrependedBlockCounts.Clear();
-        _bookTranslationPageMap.Clear();
+        _bookReadingAnchorPending = true;
         BookReadingBadgeRail.Children.Clear();
         if (_workspace is null)
         {
             return;
         }
 
-        BookReadingEditor.LoadHtml(string.Empty);
-        BookTranslationEditor.LoadHtml(string.Empty);
-        ApplyBookReadingFontFamily();
-        ApplyBookReadingFontSize();
+        _bookReadingImages?.Dispose();
+        _bookReadingImages = new BookReadingImageSource(_workspace.RenderBookReadingPageAsync);
+        BookReadingView.SourceScene = ReadingScene.Empty;
+        BookReadingView.TranslationScene = null;
+        BookReadingView.ImageSource = _bookReadingImages;
         BookReadingScroller.Offset = Vector.Zero;
-        BookTranslationScroller.Offset = Vector.Zero;
-        BookReadingEditor.InvalidateMeasure();
-        BookTranslationEditor.InvalidateMeasure();
-        // The compare toggle may have been left on from a previous session; reflect its column
-        // layout before the first page arrives so the two panes never overlap.
+        ApplyBookReadingFont();
         ApplyTranslationCompareVisibility();
+        BookReadingView.InvalidateMeasure();
     }
 
     // Snaps the scroll offset to the start page the view has been measuring since it arrived.
     // Raised when the initial window settles (before the prefetch guard lifts) and after a
-    // replay, which is what finally keeps trailing layout scroll events from cascading backward
-    // prefetches to page zero while the offset sits at the document top.
+    // replay. The actual offset is applied as soon as the ReadingView has been measured at a
+    // real width; until then the request stays pending and ScrollChanged retries after layout.
     private void OnBookReadingAnchorRequested()
     {
-        if (_workspace is null || _bookReadingAnchorY is not { } anchorY)
+        _bookReadingAnchorPending = true;
+        TryApplyBookReadingAnchor();
+    }
+
+    private void OnBookReadingScrollerLayoutUpdated(object? sender, EventArgs e)
+    {
+        TryApplyBookReadingAnchor();
+    }
+
+    private void OnBookReadingViewMeasured(object? sender, EventArgs e)
+    {
+        TryApplyBookReadingAnchor();
+        // Badge positions derive from the measured block tops, so re-pin them after every reflow:
+        // a view recreated by a tab switch first measures at the fallback width, and media image
+        // loads change block heights after the initial pass — both would leave stale badges.
+        UpdateBookReadingBadges();
+    }
+
+    // Computes the start page's measured top and scrolls there. No-op while the ReadingView has
+    // no real width yet (e.g. a recreated view before its first layout pass).
+    private void TryApplyBookReadingAnchor()
+    {
+        if (!_bookReadingAnchorPending || _workspace is null)
         {
             return;
         }
 
-        BookReadingEditor.UpdateLayout();
-        BookReadingScroller.Offset = new Vector(0, anchorY);
+        if (!_bookReadingSourceScenes.ContainsKey(_workspace.BookReadingStartPageForBadge))
+        {
+            return;
+        }
+
+        if (BookReadingView.Bounds.Width <= 0)
+        {
+            // Wait for the first real layout; OnBookReadingScrollChanged retries when the
+            // ScrollViewer measures the recreated view.
+            return;
+        }
+
+        _bookReadingAnchorY = GetBookReadingPageTop(_workspace.BookReadingStartPageForBadge);
+        BookReadingScroller.Offset = new Vector(0, _bookReadingAnchorY ?? 0);
+        _bookReadingAnchorPending = false;
     }
 
+    // A streamed page is cached by index and the whole reading document is reassembled in page
+    // order (source and translation together). The ReadingView lays out one concatenated scene, so
+    // arrival order — append or prepend — no longer drives block surgery; the sorted cache keeps
+    // page order regardless of how batches arrive.
     private void OnBookReadingPageReady(BookReadingPage page)
     {
         if (_workspace is null)
@@ -615,171 +688,104 @@ public sealed partial class PdfWorkspacePage : UserControl
             return;
         }
 
-        // Cache the translation even while its pane is hidden, so toggling compare on rebuilds
-        // from what has already streamed instead of reloading it.
-        _bookTranslationHtmlCache[page.PageIndex] = ResolveTranslationHtml(page);
-
-        FlowDocument? document = BookReadingEditor.Document;
-        if (document is null)
-        {
-            BookReadingEditor.LoadHtml(string.Empty);
-            document = BookReadingEditor.Document;
-        }
-
-        if (document is null)
-        {
-            return;
-        }
-
-        _bookReadingHtmlCache[page.PageIndex] = page.Html;
-        FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(page.Html);
-        // Stamp the current reading size on the incoming page so pages arriving after a
-        // mid-stream font-size change match the rest of the document.
-        ReadingFontCatalog.ApplyFontSize(parsed, _workspace.BookReadingFontSize);
-
-        if (!page.IsPrepend)
-        {
-            // Pages after the start page: append at the bottom in arrival order. Settle the
-            // pending measure first so the recorded page start is the real document height.
-            BookReadingEditor.UpdateLayout();
-            _bookReadingPageMap.RecordAppend(page.PageIndex, BookReadingEditor.DesiredSize.Height);
-            _bookReadingAnchorY ??= BookReadingEditor.DesiredSize.Height;
-            document.Blocks.AddRange(parsed.Blocks);
-            BookReadingEditor.InvalidateMeasure();
-        }
-        else
-        {
-            // Earlier pages: front-insert preserving page order. Each page lands right after every
-            // already-prepended page with a lower index, so page order holds no matter how the pages
-            // were batched. Settle the pending measure first: appended pages only invalidate, so
-            // without a layout pass heightBefore (and therefore the recorded insertion delta) could be
-            // stale.
-            BookReadingEditor.UpdateLayout();
-            double heightBefore = BookReadingEditor.DesiredSize.Height;
-            double offsetBefore = BookReadingScroller.Offset.Y;
-            int insertAt = _bookReadingPrependedBlockCounts
-                .Where(entry => entry.Key < page.PageIndex)
-                .Sum(entry => entry.Value);
-            int blockCount = parsed.Blocks.Count;
-            foreach (Block block in parsed.Blocks)
-            {
-                document.Blocks.Insert(insertAt, block);
-                insertAt++;
-            }
-
-            _bookReadingPrependedBlockCounts[page.PageIndex] = blockCount;
-            _bookReadingPrependedPages.Add(page.PageIndex);
-            BookReadingEditor.InvalidateMeasure();
-            BookReadingEditor.UpdateLayout();
-
-            // Keep the reading position stable: the inserted blocks sit above the viewport, so push
-            // the scroll offset down by the amount the editor just grew. The insertion point comes
-            // from the already-recorded page that follows this one in visual order.
-            double delta = BookReadingEditor.DesiredSize.Height - heightBefore;
-            double insertY = _bookReadingPageMap.GetInsertY(page.PageIndex);
-            _bookReadingPageMap.RecordPrepend(page.PageIndex, insertY, delta);
-            // Prepended blocks always land at or above the viewport top, so always compensate. The
-            // old insertY <= offsetBefore condition never fired during initial anchoring: the start
-            // page's recorded Y includes the empty document's own height (102px), so it compared
-            // greater than the zero offset and the offset stayed pinned to the document top while
-            // backward prefetches cascaded to page zero.
-            if (delta > 0)
-            {
-                BookReadingScroller.Offset = new Vector(0, offsetBefore + delta);
-                _bookReadingAnchorY += delta;
-            }
-        }
-
-        UpdateBookReadingBadges();
-        if (_workspace.IsTranslationCompareVisible)
-        {
-            InsertBookTranslationPage(page);
-            SyncBookTranslationScroll();
-        }
+        _bookReadingSourceScenes[page.PageIndex] = page.Source;
+        _bookReadingTranslationScenes[page.PageIndex] = page.Translation;
+        RebuildBookReadingDocument();
     }
 
-    // Mirrors the source pane's append/prepend bookkeeping for the translation pane. A translated
-    // page is a different height than its source, so the pane has its own page map and block
-    // counts; the source offsets cannot locate a page here.
-    private void InsertBookTranslationPage(BookReadingPage page)
+    // Rebuilds the combined source/translation scenes from the sorted per-page cache and re-measures
+    // page offsets for the badge rail. Preserves the reading position across the re-flow unless the
+    // session anchor is still pending (the initial window). Runs on every delivered page, on font
+    // changes and on compare toggles.
+    private void RebuildBookReadingDocument()
     {
         if (_workspace is null)
         {
             return;
         }
 
-        FlowDocument? document = BookTranslationEditor.Document;
-        if (document is null)
+        double extentBefore = BookReadingView.DesiredSize.Height;
+        double scrollRatio = extentBefore > 0 ? BookReadingScroller.Offset.Y / extentBefore : 0;
+
+        (ReadingScene sourceScene, ReadingScene? translationScene) = BookReadingDocument.Assemble(
+            _bookReadingSourceScenes, _bookReadingTranslationScenes, _workspace.IsTranslationCompareVisible);
+        BookReadingView.SourceScene = sourceScene;
+        // The translation column exists only while the compare toggle is on and at least one
+        // page carried a translation; otherwise the view stays single-column.
+        BookReadingView.TranslationScene = translationScene;
+        BookReadingView.InvalidateMeasure();
+
+        double extent = BookReadingView.DesiredSize.Height;
+        if (!_bookReadingAnchorPending && extent > 0 && scrollRatio > 0)
         {
-            BookTranslationEditor.LoadHtml(string.Empty);
-            document = BookTranslationEditor.Document;
+            // Preserve the visible reading position across re-flows (font changes, compare
+            // toggles, and page batches delivered after the session anchor is in place).
+            BookReadingScroller.Offset = new Vector(0, scrollRatio * extent);
         }
 
-        if (document is null)
-        {
-            return;
-        }
-
-        FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(_bookTranslationHtmlCache[page.PageIndex]);
-        ReadingFontCatalog.ApplyFontSize(parsed, _workspace.BookReadingFontSize);
-
-        if (!page.IsPrepend)
-        {
-            BookTranslationEditor.UpdateLayout();
-            _bookTranslationPageMap.RecordAppend(page.PageIndex, BookTranslationEditor.DesiredSize.Height);
-            document.Blocks.AddRange(parsed.Blocks);
-            BookTranslationEditor.InvalidateMeasure();
-            return;
-        }
-
-        BookTranslationEditor.UpdateLayout();
-        double heightBefore = BookTranslationEditor.DesiredSize.Height;
-        int insertAt = _bookTranslationPrependedBlockCounts
-            .Where(entry => entry.Key < page.PageIndex)
-            .Sum(entry => entry.Value);
-        int blockCount = parsed.Blocks.Count;
-        foreach (Block block in parsed.Blocks)
-        {
-            document.Blocks.Insert(insertAt, block);
-            insertAt++;
-        }
-
-        _bookTranslationPrependedBlockCounts[page.PageIndex] = blockCount;
-        _bookTranslationPrependedPages.Add(page.PageIndex);
-        BookTranslationEditor.InvalidateMeasure();
-        BookTranslationEditor.UpdateLayout();
-        double delta = BookTranslationEditor.DesiredSize.Height - heightBefore;
-        _bookTranslationPageMap.RecordPrepend(
-            page.PageIndex, _bookTranslationPageMap.GetInsertY(page.PageIndex), delta);
+        UpdateBookReadingBadges();
     }
 
-    // The stream sends a placeholder for untranslated pages, but a substituted stream (tests) may
-    // send nothing; resolve to the placeholder so the compare pane never shows an empty page.
-    private static string ResolveTranslationHtml(BookReadingPage page)
+    // Measured top of a page's first block in the scroller's content space, or 0 when the page has
+    // not streamed yet. The reading view sits at Margin.Top inside that content, so a view-local
+    // block top only becomes a scroll offset (and a rail position) after that margin is added.
+    private double GetBookReadingPageTop(int pageIndex)
     {
-        return string.IsNullOrWhiteSpace(page.TranslationHtml)
-            ? BookReadingHtml.CompileUntranslatedHtml()
-            : page.TranslationHtml;
+        foreach (ReadingMeasuredBlock block in BookReadingView.GetMeasuredBlocks())
+        {
+            if (block.BlockIndex >= 0 && block.PageIndex == pageIndex)
+            {
+                return ContentTop(block.Bounds.Top);
+            }
+        }
+
+        return 0;
     }
 
-    // Mirrors the source pane's reading position: the page under the source viewport top is found
-    // through the source page map, then the translation pane scrolls to that page's first block
-    // through its own page map. Pages stream into both panes together, so both maps normally know
-    // the page; one still measuring is skipped until the next scroll event.
-    private void SyncBookTranslationScroll()
+    // The reading content's coordinate space: the reading view's own space shifted by its top
+    // margin. Both the badge rail and the scroll anchor use it.
+    private double ContentTop(double viewLocalTop)
     {
-        if (_workspace is not { IsBookReadingMode: true, IsTranslationCompareVisible: true })
+        return BookReadingView.Margin.Top + viewLocalTop;
+    }
+
+    // Pins one badge per streamed page in the left rail, aligned with the page's first block. The
+    // rail is part of the scroller's content, so badges scroll with the text and keep that
+    // block-level alignment at any scroll offset. Clicking a badge leaves reading mode and opens
+    // that page in the PDF workbench.
+    private void UpdateBookReadingBadges()
+    {
+        BookReadingBadgeRail.Children.Clear();
+        HashSet<int> placed = [];
+        double contentBottom = 0;
+        foreach (ReadingMeasuredBlock block in BookReadingView.GetMeasuredBlocks())
         {
-            return;
+            contentBottom = Math.Max(contentBottom, block.Bounds.Bottom);
+            if (block.Column != ReadingColumnRole.Source || block.PageIndex < 0 ||
+                !placed.Add(block.PageIndex))
+            {
+                continue;
+            }
+
+            int pageIndex = block.PageIndex;
+            int pageNumber = pageIndex + 1;
+            Button badge = new()
+            {
+                Classes = { "PageBadge" },
+                Content = $"第 {pageNumber} 页",
+                Tag = pageIndex
+            };
+            ToolTip.SetTip(badge, $"退出阅读模式并跳转到第 {pageNumber} 页");
+            badge.Click += OnBookReadingBadgeClick;
+            Canvas.SetLeft(badge, 10);
+            Canvas.SetTop(badge, ContentTop(block.Bounds.Top));
+            BookReadingBadgeRail.Children.Add(badge);
         }
 
-        if (_bookReadingPageMap.GetPageAt(BookReadingScroller.Offset.Y) is not { } pageIndex ||
-            !_bookTranslationPageMap.TryGetStart(pageIndex, out double startY))
-        {
-            return;
-        }
-
-        BookTranslationScroller.Offset = new Vector(0, startY);
+        // Height comes from the measured blocks, not DesiredSize: this runs inside the view's own
+        // measure pass (via Measured), where DesiredSize still holds the previous layout's value.
+        BookReadingBadgeRail.Height = BookReadingView.Margin.Top + contentBottom +
+                                      BookReadingView.Margin.Bottom;
     }
 
     // Pulls the next page window when the reader nears either end of the loaded range. Prefetch
@@ -789,6 +795,16 @@ public sealed partial class PdfWorkspacePage : UserControl
     {
         if (_workspace is not { IsBookReadingMode: true } workspace)
         {
+            return;
+        }
+
+        TryApplyBookReadingAnchor();
+
+        if (_bookReadingAnchorPending)
+        {
+            // The reading position is not anchored yet; a scroll event at the document top is
+            // just the first layout of a recreated view. Prefetch decisions must wait until the
+            // anchor is applied so backward batches are not requested from offset zero.
             return;
         }
 
@@ -810,7 +826,31 @@ public sealed partial class PdfWorkspacePage : UserControl
             _ = workspace.RequestBookReadingBackwardAsync();
         }
 
-        SyncBookTranslationScroll();
+        // Track the page at the viewport centre so the media cache keeps only the pages being read.
+        workspace.BookReadingVisiblePage = GetBookReadingPageAt(offsetY + viewport / 2);
+    }
+
+    // The page whose first block is the last one at or above <paramref name="offsetY"/>.
+    private int GetBookReadingPageAt(double offsetY)
+    {
+        int page = -1;
+        double best = double.NegativeInfinity;
+        foreach (ReadingMeasuredBlock block in BookReadingView.GetMeasuredBlocks())
+        {
+            if (block.Column != ReadingColumnRole.Source || block.PageIndex < 0)
+            {
+                continue;
+            }
+
+            double top = ContentTop(block.Bounds.Top);
+            if (top <= offsetY && top > best)
+            {
+                best = top;
+                page = block.PageIndex;
+            }
+        }
+
+        return page < 0 ? 0 : page;
     }
 
     private void OnBookReadingPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -822,29 +862,28 @@ public sealed partial class PdfWorkspacePage : UserControl
 
         switch (e.PropertyName)
         {
-            case nameof(PdfWorkspaceViewModel.BookReadingFontSize):
-                ApplyBookReadingFontSize();
+            case nameof(PdfWorkspaceViewModel.IsBookReadingMode):
+                if (!_workspace.IsBookReadingMode)
+                {
+                    _bookReadingImages?.Dispose();
+                    _bookReadingImages = null;
+                }
+
                 break;
+            case nameof(PdfWorkspaceViewModel.BookReadingFontSize):
             case nameof(PdfWorkspaceViewModel.BookReadingFontFamily):
-                ApplyBookReadingFontFamily();
+                ApplyBookReadingFont();
                 break;
             case nameof(PdfWorkspaceViewModel.IsTranslationCompareVisible):
+            case nameof(PdfWorkspaceViewModel.BookReadingCompareMode):
                 ApplyTranslationCompareVisibility();
                 break;
         }
     }
 
-    private void ApplyBookReadingFontSize()
-    {
-        if (_workspace is null)
-        {
-            return;
-        }
-
-        RebuildBookReadingDocument();
-    }
-
-    private void ApplyBookReadingFontFamily()
+    // Font family/size changes re-flow the reading surface; the ReadingView owns the text layout,
+    // so the view only re-stamps the properties and re-measures page offsets for the badges.
+    private void ApplyBookReadingFont()
     {
         if (_workspace is null)
         {
@@ -852,177 +891,78 @@ public sealed partial class PdfWorkspacePage : UserControl
         }
 
         string family = _workspace.BookReadingFontFamily;
-        FontFamily resolved =
+        BookReadingView.FontFamily =
             string.IsNullOrWhiteSpace(family) ||
             string.Equals(family, PdfWorkspaceViewModel.SystemDefaultReadingFontLabel, StringComparison.Ordinal)
                 ? FontFamily.Default
                 : new FontFamily(family);
-        BookReadingEditor.DefaultFontFamily = resolved;
-        BookTranslationEditor.DefaultFontFamily = resolved;
+        BookReadingView.FontSize = _workspace.BookReadingFontSize;
         RebuildBookReadingDocument();
     }
 
-    // Calls the shared rebuild for the translation pane when compare is on. Kept separate from the
-    // source rebuild because this pane has no badge rail and follows the source pane's scroll.
-    private void RebuildBookTranslationDocument()
-    {
-        if (_workspace is null)
-        {
-            return;
-        }
-
-        RebuildEditorDocument(
-            BookTranslationEditor,
-            _bookTranslationPageMap,
-            _bookTranslationHtmlCache,
-            _bookTranslationPrependedPages,
-            _bookTranslationPrependedBlockCounts,
-            _workspace.BookReadingFontSize);
-    }
-
-    // Collapsing the translation column to zero width is what keeps the single-pane behavior
-    // identical while compare is off: the source pane is then the only star column and fills the
-    // surface. Turning compare on rebuilds the translation document from the HTML cached for the
-    // pages delivered so far (pages that streamed while the pane was hidden were never inserted),
-    // then aligns both panes on the current page.
+    // The compare toggle and layout mode feed the scene assembly (the translation column is
+    // gated on the toggle), so both changes go through a full document rebuild.
     private void ApplyTranslationCompareVisibility()
     {
-        bool visible = _workspace?.IsTranslationCompareVisible == true;
-        // The source column is reset to a star on every toggle so a split ratio dragged earlier
-        // cannot leave the source pane narrower than the viewport after compare is turned off.
-        BookReadingSplitGrid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
-        BookReadingSplitGrid.ColumnDefinitions[1].Width = visible ? new GridLength(4) : new GridLength(0);
-        BookReadingSplitGrid.ColumnDefinitions[2].Width =
-            visible ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-        BookReadingSplitter.IsVisible = visible;
-        BookTranslationScroller.IsVisible = visible;
-        if (!visible || _workspace is null)
-        {
-            return;
-        }
-
-        RebuildBookTranslationDocument();
-        BookReadingEditor.UpdateLayout();
-        SyncBookTranslationScroll();
-    }
-
-    // Font family/size changes re-flow the whole document, invalidating every recorded page
-    // offset. With no block-geometry API on the editor, the only exact way to recover the badge
-    // positions is to rebuild from the cached per-page HTML and re-measure page by page. Each
-    // page forces a layout, so this is O(pages²) in measure work — acceptable for an explicit
-    // user action, but it must never run per streamed page.
-    private void RebuildBookReadingDocument()
-    {
         if (_workspace is null)
         {
             return;
         }
 
-        if (_bookReadingHtmlCache.Count == 0)
-        {
-            BookReadingEditor.InvalidateMeasure();
-            return;
-        }
-
-        // The rebuild re-flows every page, so the measured start-page anchor no longer applies.
-        _bookReadingAnchorY = null;
-        BookReadingEditor.UpdateLayout();
-        double extentBefore = BookReadingEditor.DesiredSize.Height;
-        double scrollRatio = extentBefore > 0 ? BookReadingScroller.Offset.Y / extentBefore : 0;
-
-        RebuildEditorDocument(
-            BookReadingEditor,
-            _bookReadingPageMap,
-            _bookReadingHtmlCache,
-            _bookReadingPrependedPages,
-            _bookReadingPrependedBlockCounts,
-            _workspace.BookReadingFontSize);
-
-        BookReadingEditor.UpdateLayout();
-        double extent = BookReadingEditor.DesiredSize.Height;
-        if (extent > 0 && scrollRatio > 0)
-        {
-            BookReadingScroller.Offset = new Vector(0, scrollRatio * extent);
-        }
-
-        UpdateBookReadingBadges();
-        if (_workspace.IsTranslationCompareVisible)
-        {
-            RebuildBookTranslationDocument();
-            SyncBookTranslationScroll();
-        }
+        BookReadingView.CompareMode = _workspace.BookReadingCompareMode;
+        RebuildBookReadingDocument();
     }
 
-    // Rebuilds one pane's document from its cached per-page HTML, re-measuring page by page to
-    // recover the page offsets a re-flow invalidates. Each page forces a layout, so this is
-    // O(pages²) in measure work — acceptable for an explicit font action or a compare toggle, but
-    // it must never run per streamed page.
-    private static void RebuildEditorDocument(
-        RichEditor editor,
-        BookReadingPageMap pageMap,
-        SortedDictionary<int, string> htmlCache,
-        HashSet<int> prependedPages,
-        SortedList<int, int> prependedBlockCounts,
-        double fontSize)
-    {
-        editor.LoadHtml(string.Empty);
-        FlowDocument? document = editor.Document;
-        if (document is null)
-        {
-            return;
-        }
-
-        pageMap.Clear();
-        prependedBlockCounts.Clear();
-        foreach ((int pageIndex, string html) in htmlCache)
-        {
-            FlowDocument parsed = HtmlDocumentFormatter.ParseHtml(html);
-            ReadingFontCatalog.ApplyFontSize(parsed, fontSize);
-            int blockCount = parsed.Blocks.Count;
-            editor.UpdateLayout();
-            pageMap.RecordAppend(pageIndex, editor.DesiredSize.Height);
-            document.Blocks.AddRange(parsed.Blocks);
-            editor.InvalidateMeasure();
-            if (prependedPages.Contains(pageIndex))
-            {
-                prependedBlockCounts[pageIndex] = blockCount;
-            }
-        }
-    }
-
-    // Pins one badge per streamed page in the left rail, aligned with the page's first block.
-    // The rail shares the editor's scroll content, so badges scroll with the text. Clicking a
-    // badge leaves reading mode and opens that page in the PDF workbench.
-    private void UpdateBookReadingBadges()
-    {
-        BookReadingBadgeRail.Children.Clear();
-        Thickness editorMargin = BookReadingEditor.Margin;
-        foreach ((int pageIndex, double startY) in _bookReadingPageMap.StartOffsets)
-        {
-            int pageNumber = pageIndex + 1;
-            Button badge = new()
-            {
-                Classes = { "PageBadge" },
-                Content = $"第 {pageNumber} 页",
-                Tag = pageIndex
-            };
-            ToolTip.SetTip(badge, $"退出阅读模式并跳转到第 {pageNumber} 页");
-            badge.Click += OnBookReadingBadgeClick;
-            Canvas.SetLeft(badge, 10);
-            Canvas.SetTop(badge, editorMargin.Top + startY);
-            BookReadingBadgeRail.Children.Add(badge);
-        }
-
-        BookReadingBadgeRail.Height = editorMargin.Top + BookReadingEditor.DesiredSize.Height + editorMargin.Bottom;
-    }
-
-    private async void OnBookReadingBadgeClick(object? sender, RoutedEventArgs e)
+    private void OnBookReadingBadgeClick(object? sender, RoutedEventArgs e)
     {
         if (_workspace is null || sender is not Button { Tag: int pageIndex })
         {
             return;
         }
 
-        await _workspace.ExitBookReadingToPageAsync(pageIndex);
+        _ = ExitBookReadingToPageAsync(pageIndex);
+    }
+
+    private async Task ExitBookReadingToPageAsync(int pageIndex)
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _workspace.ExitBookReadingToPageAsync(pageIndex);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(PdfWorkspacePage),
+                nameof(ExitBookReadingToPageAsync));
+        }
+    }
+
+    private void OnBookReadingEditSelectionRequested(object? sender, ReadingEditSelectionRequest request)
+    {
+        _ = EditBookReadingSelectionAsync(request);
+    }
+
+    // 编辑选中文本: leaves reading mode, enters edit mode on the page owning the first selected
+    // box and opens that box in the editor dialog.
+    private async Task EditBookReadingSelectionAsync(ReadingEditSelectionRequest request)
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _workspace.EditBookReadingSelectionAsync(request.BoxIds, request.PageIndex);
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(PdfWorkspacePage),
+                nameof(EditBookReadingSelectionAsync));
+        }
     }
 }

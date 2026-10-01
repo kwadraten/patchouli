@@ -168,21 +168,39 @@ public sealed class PdfWorkspaceLayoutTests
             "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
 
         xaml.Should().NotContain("<TextBlock Text=\"{Binding Kind}\"");
-        xaml.Should().Contain("<controls:DocumentReadingView");
-        xaml.Should().Contain("Scene=\"{Binding ReadingScene}\"");
+        xaml.Should().Contain("<reading:ReadingView");
+        xaml.Should().Contain("SourceScene=\"{Binding ReadingScene}\"");
         xaml.Should().Contain("SelectedBoxId=\"{Binding ReadingSelectedBoxId}\"");
-        xaml.Should().Contain("Text=\"复制 Markdown\"");
-        xaml.Should().Contain("Command=\"{Binding CopyMarkdownCommand}\"");
+        // Page markdown is copied through the reading surface's own selection (Ctrl+C / 复制), so
+        // the sidebar header carries no 复制 Markdown button.
+        xaml.Should().NotContain("复制 Markdown");
         xaml.Should().Contain("Classes.selected=\"{Binding IsSelected}\"");
         xaml.Should().Contain("x:Name=\"PdfScrollViewer\"");
         xaml.Should().Contain("x:Name=\"PreviewScrollViewer\"");
         viewModel.Should().Contain("_previewSelectedBoxId = _selectedBox?.BoxId")
             .And.Contain("block.IsSelected = block.BoxId == _previewSelectedBoxId")
-            .And.Contain("ReadingScene = DocumentReadingSceneBuilder.Build(")
+            .And.Contain("ReadingScene = ReadingSceneBuilder.Build(")
             .And.Contain("RunCurrentPageOcrCommand")
             .And.Contain("CopyMarkdownCommand")
             .And.Contain("LocalOcrSourceText")
             .And.NotContain("CandidateBoxes[0]");
+    }
+
+    [Fact]
+    public void PdfWorkspace_reading_page_rail_is_inside_the_scroller_so_badges_keep_block_alignment()
+    {
+        string xaml =
+            File.ReadAllText(TestPaths.FromRepositoryRoot("src", "Patchouli.UI", "Views", "PdfWorkspacePage.axaml"));
+
+        int scroller = xaml.IndexOf("x:Name=\"BookReadingScroller\"", StringComparison.Ordinal);
+        int rail = xaml.IndexOf("x:Name=\"BookReadingBadgeRail\"", StringComparison.Ordinal);
+        int view = xaml.IndexOf("x:Name=\"BookReadingView\"", StringComparison.Ordinal);
+
+        scroller.Should().BeGreaterThanOrEqualTo(0);
+        rail.Should().BeGreaterThan(scroller,
+            "the badge rail must be part of the scroller content, otherwise the badges stay at their " +
+            "first measured offsets while the text scrolls and stop lining up with their blocks");
+        view.Should().BeGreaterThan(rail, "the rail keeps the page gutter to the left of the reading view");
     }
 
     [Fact]
@@ -225,7 +243,7 @@ public sealed class PdfWorkspaceLayoutTests
         string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
 
-        int start = xaml.IndexOf("<controls:DocumentReadingView", StringComparison.Ordinal);
+        int start = xaml.IndexOf("<reading:ReadingView", StringComparison.Ordinal);
 
         start.Should().BeGreaterThanOrEqualTo(0);
         string readingView = xaml[start..xaml.IndexOf("/>", start)];

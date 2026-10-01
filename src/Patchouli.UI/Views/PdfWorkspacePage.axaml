@@ -2,8 +2,7 @@
              xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:lucide="using:Patchouli.Lucide.Avalonia"
-             xmlns:controls="using:Patchouli.UI.Controls"
-             xmlns:are="clr-namespace:AvaloniaRichEditor.Controls;assembly=AvaloniaRichEditor"
+             xmlns:reading="using:Patchouli.Reading"
              xmlns:vm="using:Patchouli.UI.ViewModels"
              x:DataType="vm:PdfWorkspaceViewModel" Focusable="True" KeyDown="OnWorkspaceKeyDown">
   <UserControl.Resources>
@@ -562,28 +561,18 @@
                                      StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
                     </Button>
                   </StackPanel>
-                  <Button Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center"
-                          Command="{Binding CopyMarkdownCommand}"
-                          Background="Transparent" IsVisible="{Binding !IsHistoryTabActive}"
-                          ToolTip.Tip="复制当前页面的规范 Markdown">
-                    <StackPanel Orientation="Horizontal" Spacing="4">
-                      <lucide:Lucide Icon="Copy" Width="14" Height="14"
-                                     StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
-                      <TextBlock Text="复制 Markdown" FontSize="12" />
-                    </StackPanel>
-                  </Button>
                 </Grid>
               </Border>
               <Grid Grid.Row="1">
                 <!-- Tab: page content -->
                 <Grid IsVisible="{Binding IsContentTabActive}">
                   <ScrollViewer x:Name="PreviewScrollViewer">
-                    <controls:DocumentReadingView x:Name="ReadingView"
-                                                  Scene="{Binding ReadingScene}"
-                                                  SelectedBoxId="{Binding ReadingSelectedBoxId}"
-                                                  MediaLoader="{Binding ReadingMediaLoader}"
-                                                  SelectionAccentBrush="{DynamicResource PrimaryBrush}"
-                                                  Margin="16" />
+                    <reading:ReadingView x:Name="ReadingView"
+                                         SourceScene="{Binding ReadingScene}"
+                                         SelectedBoxId="{Binding ReadingSelectedBoxId}"
+                                         ImageSource="{Binding ReadingImages}"
+                                         SelectionAccentBrush="{DynamicResource PrimaryBrush}"
+                                         Margin="16" />
                   </ScrollViewer>
                   <TextBlock Text="空" HorizontalAlignment="Center" VerticalAlignment="Center"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
@@ -593,12 +582,12 @@
                 <!-- Tab: translation (same reading surface; source-map box ids match the page content) -->
                 <Grid IsVisible="{Binding IsTranslationTabActive}">
                   <ScrollViewer>
-                    <controls:DocumentReadingView x:Name="TranslationReadingView"
-                                                  Scene="{Binding TranslationScene}"
-                                                  SelectedBoxId="{Binding ReadingSelectedBoxId}"
-                                                  MediaLoader="{Binding ReadingMediaLoader}"
-                                                  SelectionAccentBrush="{DynamicResource PrimaryBrush}"
-                                                  Margin="16" />
+                    <reading:ReadingView x:Name="TranslationReadingView"
+                                         SourceScene="{Binding TranslationScene}"
+                                         SelectedBoxId="{Binding ReadingSelectedBoxId}"
+                                         ImageSource="{Binding ReadingImages}"
+                                         SelectionAccentBrush="{DynamicResource PrimaryBrush}"
+                                         Margin="16" />
                   </ScrollViewer>
                   <TextBlock Text="本页尚无翻译" HorizontalAlignment="Center" VerticalAlignment="Center"
                              Foreground="{DynamicResource OnSurfaceVariantBrush}" Opacity="0.6"
@@ -771,16 +760,18 @@
           <TextBlock Grid.Column="2" Text="{Binding BookReadingProgressText}" FontSize="12"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" VerticalAlignment="Center"
                      Margin="12,0" />
-          <ToggleButton Grid.Column="4" Classes="ToolbarToggle"
-                        IsChecked="{Binding IsTranslationCompareVisible, Mode=OneWay}"
-                        Command="{Binding ToggleTranslationCompareCommand}"
-                        VerticalAlignment="Center" Margin="0,0,8,0"
-                        ToolTip.Tip="在右侧显示译文，与原文分屏对照">
-            <StackPanel Orientation="Horizontal" Spacing="4">
-              <lucide:Lucide Icon="Copy" Width="14" Height="14" />
-              <TextBlock Text="对照翻译" FontSize="12" />
-            </StackPanel>
-          </ToggleButton>
+          <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" HorizontalAlignment="Right"
+                      VerticalAlignment="Center">
+            <ToggleButton Classes="ToolbarToggle"
+                          IsChecked="{Binding IsTranslationCompareVisible, Mode=OneWay}"
+                          Command="{Binding ToggleTranslationCompareCommand}"
+                          ToolTip.Tip="显示译文；布局（并排对照 / 段落下方）在 设置 → 外观与显示 中配置">
+              <StackPanel Orientation="Horizontal" Spacing="4">
+                <lucide:Lucide Icon="Copy" Width="14" Height="14" />
+                <TextBlock Text="对照翻译" FontSize="12" />
+              </StackPanel>
+            </ToggleButton>
+          </StackPanel>
           <Button Grid.Column="5" Command="{Binding ExitBookReadingCommand}"
                   Background="{DynamicResource PrimaryBrush}" Foreground="{DynamicResource OnPrimaryBrush}"
                   VerticalAlignment="Center"
@@ -793,30 +784,22 @@
         </Grid>
       </Border>
 
-      <!-- Reading area: two read-only RichEditor streams split by a draggable divider. The left
-           pane carries one page-number badge per page in its rail, aligned with the page's first
-           block (positions tracked by the code-behind through BookReadingPageMap). The right pane
-           is collapsed to zero width while compare is off, so the source pane fills the surface
-           exactly as the single-pane reader did. -->
-      <Grid x:Name="BookReadingSplitGrid" Grid.Row="1" ColumnDefinitions="*,0,0">
-        <ScrollViewer x:Name="BookReadingScroller" Grid.Column="0"
-                      HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
-                      Background="{DynamicResource SurfaceBrush}">
-          <Grid ColumnDefinitions="72,*">
-            <Canvas x:Name="BookReadingBadgeRail" VerticalAlignment="Top" />
-            <are:RichEditor x:Name="BookReadingEditor" Grid.Column="1" IsReadOnly="True" Margin="24,16,24,16" />
-          </Grid>
-        </ScrollViewer>
-        <GridSplitter x:Name="BookReadingSplitter" Grid.Column="1" Width="4"
-                      HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
-                      ResizeDirection="Columns"
-                      Background="{DynamicResource OutlineVariantBrush}" />
-        <ScrollViewer x:Name="BookTranslationScroller" Grid.Column="2"
-                      HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
-                      Background="{DynamicResource SurfaceBrush}">
-          <are:RichEditor x:Name="BookTranslationEditor" IsReadOnly="True" Margin="24,16,24,16" />
-        </ScrollViewer>
-      </Grid>
+      <!-- Reading area: one ReadingView rendering the streamed pages as a concatenated source
+           scene plus (when compare is on) a translation scene. The left rail pins one page-number
+           badge per page at the measured top of its first block; the rail lives inside the scroller
+           so the badges travel with the text and stay block-aligned. Compare layout is side-by-side
+           (matched source/translation tops) or stacked (translation beneath its source), switched
+           at runtime from the toolbar. -->
+      <ScrollViewer x:Name="BookReadingScroller" Grid.Row="1"
+                    HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"
+                    Background="{DynamicResource SurfaceBrush}">
+        <Grid ColumnDefinitions="72,*">
+          <Canvas x:Name="BookReadingBadgeRail" Grid.Column="0" VerticalAlignment="Top" />
+          <reading:ReadingView x:Name="BookReadingView" Grid.Column="1" Margin="24,16,24,16"
+                               CanEditSelection="True"
+                               SelectionAccentBrush="{DynamicResource PrimaryBrush}" />
+        </Grid>
+      </ScrollViewer>
     </Grid>
   </Grid>
 </UserControl>

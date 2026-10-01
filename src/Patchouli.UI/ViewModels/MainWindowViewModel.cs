@@ -2348,6 +2348,23 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         return true;
     }
 
+    /// <summary>Persists the whole-book reading compare layout (side-by-side or translation below
+    /// the source paragraph). Workspaces read the persisted value when they are created.</summary>
+    public async Task<bool> SaveReadingCompareModeImmediatelyAsync(string compareMode)
+    {
+        string mode = UiPreferences.NormalizeReadingCompareMode(compareMode);
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { Ui = _settings.Ui with { ReadingCompareMode = mode } }, "Ui");
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存对照翻译布局设置。");
+            return false;
+        }
+
+        Report("对照翻译布局设置已保存。");
+        return true;
+    }
+
     /// <summary>Persists the whole-book import failure threshold. The failed-page ratio is clamped
     /// to [0, 0.9]; strictly above the threshold a book import fails and rolls back.</summary>
     public async Task<bool> SaveImportSettingsAsync(double maxFailedPageRatio)

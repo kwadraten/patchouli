@@ -25,6 +25,7 @@ using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels.Core;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.Host.Composition;
+using Patchouli.Reading;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -156,7 +157,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         using IDisposable commandActivityTracker = AsyncCommand.UseActivityTracker(main.ActivityTracker);
         _main = main;
         Item = item;
-        ReadingMediaLoader = new FileAssetMediaImageLoader(main);
+        ReadingImages = new CurrentPageImageSource(() => Image);
         PreviousPageCommand = new AsyncCommand(PreviousPageAsync, () => !IsEditMode && PageIndex > 0);
         NextPageCommand =
             new AsyncCommand(NextPageAsync, () => !IsEditMode && PageCount > 0 && PageIndex < PageCount - 1);
@@ -299,6 +300,7 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             new RelayCommand(_ => BookReadingFontSize = ReadingFontCatalog.DefaultFontSize);
         BookReadingFontSize = ReadingFontCatalog.ClampSize(_main.AppOptions.Ui.ReadingFontSize);
         BookReadingFontFamily = FamilyToDisplay(_main.AppOptions.Ui.ReadingFontFamily);
+        BookReadingCompareMode = PersistedToCompareMode(_main.AppOptions.Ui.ReadingCompareMode);
         _isConstructing = false;
     }
 
@@ -525,18 +527,19 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     // Render-ready snapshot of the page content; the sidebar's reading view draws this instead of
     // the per-block MarkdownPreviewBlockViewModel list.
-    [ObservableProperty] public partial DocumentReadingScene? ReadingScene { get; private set; }
+    [ObservableProperty] public partial ReadingScene? ReadingScene { get; private set; }
 
     [ObservableProperty] public partial DocumentBoxId? ReadingSelectedBoxId { get; private set; }
 
     // Render-ready snapshot of the page's translation, or null when the page has no translation
     // (or none has loaded yet); the sidebar shows its placeholder while this is null.
-    [ObservableProperty] public partial DocumentReadingScene? TranslationScene { get; private set; }
+    [ObservableProperty] public partial ReadingScene? TranslationScene { get; private set; }
 
     public bool HasNoTranslation => TranslationScene is null;
 
-    // Resolves the reading view's media block asset ids to decoded images (see the loader type).
-    public IMediaImageLoader ReadingMediaLoader { get; }
+    // Supplies the reading view's media blocks with the current page's in-memory bitmap; media
+    // regions are drawn straight out of it by normalized BBox (see the loader type).
+    public IReadingImageSource ReadingImages { get; }
 
     public bool HasOverlapWarnings => OverlapMarkers.Count > 0;
     public bool HasContinuationLinks => ContinuationLinks.Count > 0;
@@ -2575,7 +2578,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             PreviewBlocks[^1].IsSelected = boxId == _previewSelectedBoxId;
         }
 
-        ReadingScene = DocumentReadingSceneBuilder.Build(model, compiled.Value.SourceMap, _loadedBoxes);
+        ReadingScene = ReadingSceneBuilder.Build(model, compiled.Value.SourceMap, _loadedBoxes,
+            ReadingPageImageKey, markdownSource: compiled.Value.Markdown);
     }
 
     private async Task CopyMarkdownAsync()
@@ -2662,7 +2666,8 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
         _translationMarkdown = translation.Markdown;
         MarkdownDocumentModel model = services.Markdown.Parse(translation.Markdown);
-        TranslationScene = DocumentReadingSceneBuilder.Build(model, translation.SourceMap, _loadedBoxes);
+        TranslationScene = ReadingSceneBuilder.Build(model, translation.SourceMap, _loadedBoxes,
+            ReadingPageImageKey, markdownSource: translation.Markdown);
     }
 
     private void ResetTranslationState()
@@ -2884,9 +2889,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     // ── Whole-book reading mode (B1) ─────────────────────────────────────────────
     // The PDF workspace's secondary "read the whole book" surface. Entering swaps the
-    // toolbar+canvas+sidebar layout for a single streaming read-only RichEditor that renders
-    // the document's committed page content from the page the user was viewing, prepending the
-    // earlier pages above the viewport so the reading flow stays anchored. Font family and size
+    // toolbar+canvas+sidebar layout for a single streaming read-only ReadingView that renders
+    // the document's committed page content from the page the user was viewing, streaming the
+    // surrounding pages on demand so the reading flow stays anchored. Font family and size
     // are tuned live and persisted through MainWindowViewModel.SaveReadingFont.
 
     public const string SystemDefaultReadingFontLabel = "系统默认";
@@ -2936,9 +2941,28 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     /// <summary>Whether reading mode shows the translation pane beside the source pane. Off by
     /// default, so the single-pane reading surface is byte-for-byte the pre-compare behavior;
-    /// toggling it on splits the view and the view syncs the panes by page.</summary>
+    /// toggling it on pairs source and translation blocks in the selected compare layout.</summary>
     [ObservableProperty]
     public partial bool IsTranslationCompareVisible { get; private set; }
+
+    /// <summary>Runtime compare layout: side-by-side (matched source/translation block tops) or
+    /// stacked (translation beneath its source paragraph, immersive-translate style). Read from
+    /// the persisted 设置 → 外观与显示 → 阅读模式 preference at construction; the reading view
+    /// re-flows when it changes.</summary>
+    [ObservableProperty]
+    public partial ReadingCompareMode BookReadingCompareMode { get; set; } = ReadingCompareMode.SideBySide;
+
+    private static ReadingCompareMode PersistedToCompareMode(string? persisted)
+    {
+        return UiPreferences.NormalizeReadingCompareMode(persisted) == UiPreferences.ReadingCompareModeStacked
+            ? ReadingCompareMode.Stacked
+            : ReadingCompareMode.SideBySide;
+    }
+
+    /// <summary>The zero-based page the reading session anchored on; the view resolves its
+    /// measured top for the initial scroll snap.</summary>
+    [ExcludeFromDerivedGeneration]
+    internal int BookReadingStartPageForBadge => _bookReadingStartIndex;
 
     /// <summary>Live reading font size in points, clamped to [10, 28]. Setting it persists
     /// immediately through <see cref="MainWindowViewModel.SaveReadingFont"/> so the choice
@@ -3000,6 +3024,59 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
     }
 
     [ExcludeFromDerivedGeneration] internal bool BookReadingInitialWindowPending => _bookReadingInitialWindowPending;
+
+    /// <summary>The page index currently at the reading viewport centre; drives the whole-book
+    /// media cache's keep-window. Updated by the view as the reader scrolls.</summary>
+    [ExcludeFromDerivedGeneration]
+    internal int BookReadingVisiblePage { get; set; }
+
+    /// <summary>Renders one page of the current document instance to an in-memory bitmap for the
+    /// whole-book reading media blocks. Used by <see cref="BookReadingImageSource"/>; the caller
+    /// owns the returned bitmap. Returns null when the page cannot be rendered.</summary>
+    internal async Task<Bitmap?> RenderBookReadingPageAsync(int pageIndex, CancellationToken cancellationToken)
+    {
+        if (_bookReadingDocumentInstanceId is not { } documentInstanceId)
+        {
+            return null;
+        }
+
+        try
+        {
+            HostServices services = await _main.ServicesAsync();
+            Result<IReadOnlyList<Page>> pages = await services.Pages.ListPagesAsync(
+                documentInstanceId, cancellationToken);
+            Page? page = pages.IsSuccess
+                ? pages.Value.FirstOrDefault(candidate => candidate.PageIndex == pageIndex)
+                : null;
+            if (page is null)
+            {
+                return null;
+            }
+
+            PageRenderRequest request = new(documentInstanceId, page.PageId, Dpi: 120,
+                Purpose: PageRenderPurpose.Preview);
+            Result<PdfPagePixelBufferLease> preview = PageRenderPreviewHandler is not null
+                ? await PageRenderPreviewHandler(request, cancellationToken)
+                : await services.PageRenders.RenderPreviewAsync(request, cancellationToken);
+            if (preview.IsFailure)
+            {
+                return null;
+            }
+
+            using PdfPagePixelBufferLease raster = preview.Value;
+            return CreateBitmap(raster);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            UnexpectedExceptions.Sink.Report(exception, nameof(PdfWorkspaceViewModel),
+                nameof(RenderBookReadingPageAsync));
+            return null;
+        }
+    }
 
     private async Task EnterBookReadingAsync()
     {
@@ -3317,6 +3394,40 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         await GoToPageAsync(pageIndex + 1);
     }
 
+    /// <summary>Leaves reading mode, enters edit mode on the page that owns the first selected box
+    /// and opens that box in the editor dialog. Invoked from the reading surface's 编辑选中文本
+    /// context command; the box ids come from the selection in reading order.</summary>
+    internal async Task EditBookReadingSelectionAsync(IReadOnlyList<DocumentBoxId> boxIds, int pageIndex)
+    {
+        if (boxIds.Count == 0 || IsEditMode)
+        {
+            return;
+        }
+
+        ExitBookReading();
+        if (pageIndex >= 0)
+        {
+            await GoToPageAsync(pageIndex + 1);
+        }
+
+        await EnterEditModeAsync();
+        if (!IsEditMode)
+        {
+            // EnterEditModeAsync already reported why the edit session could not start.
+            return;
+        }
+
+        PdfBBoxViewModel? box = BoundingBoxes.FirstOrDefault(candidate => candidate.BoxId == boxIds[0]);
+        if (box is null)
+        {
+            Status = "未能在当前页面找到选中文本对应的边界框。";
+            return;
+        }
+
+        SelectBox(box, false);
+        await OpenBoxEditorAsync(box);
+    }
+
     private static IReadOnlyList<string> BuildBookReadingFontFamilies()
     {
         List<string> names = [SystemDefaultReadingFontLabel];
@@ -3357,47 +3468,26 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         return display.Trim();
     }
 
-    // Reading-view media previews come from file assets: MediaBoxPayload.AssetId is expected to be a
-    // FileAssetId, which resolves to the asset's original path. The file is decoded to a modest width
-    // off the UI thread because the sidebar scales it down anyway. Any asset id that is not a file
-    // asset id, or whose file is missing or not a decodable image, yields no preview and the reading
-    // view keeps its placeholder card.
-    private sealed class FileAssetMediaImageLoader(MainWindowViewModel main) : IMediaImageLoader
+    // The sidebar reading surface shows exactly one physical page, so every media block shares one
+    // image key: the current page bitmap. Scene building stamps this key onto each media region.
+    private const string ReadingPageImageKey = "page";
+
+    // Reading-view media previews are the current page's in-memory render bitmap (the same pixels
+    // the raster pane shows). Media blocks carry their normalized BBox region, so the reading view
+    // draws the box's page region straight out of this bitmap — including when the box has no
+    // MediaBoxPayload.AssetId. No cropped image file is produced. The bitmap is the workspace's
+    // own Image instance: the source never disposes it (the workspace replaces it on page change).
+    private sealed class CurrentPageImageSource(Func<Bitmap?> currentImage) : IReadingImageSource
     {
-        private const int PreviewDecodeWidth = 800;
-
-        public async Task<IImage?> LoadAsync(string assetId, CancellationToken cancellationToken)
+        public Task<IImage?> LoadImageAsync(string imageKey, CancellationToken cancellationToken)
         {
-            if (!Guid.TryParse(assetId, out Guid parsed))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!string.Equals(imageKey, ReadingPageImageKey, StringComparison.Ordinal))
             {
-                return null;
+                return Task.FromResult<IImage?>(null);
             }
 
-            HostServices services = await main.ServicesAsync();
-            Result<FileAsset> asset = await services.Files.GetFileAssetAsync(
-                new FileAssetId(parsed), cancellationToken);
-            if (asset.IsFailure || !File.Exists(asset.Value.OriginalPath))
-            {
-                return null;
-            }
-
-            string path = asset.Value.OriginalPath;
-            try
-            {
-                return await Task.Run(
-                    () =>
-                    {
-                        using FileStream stream = File.OpenRead(path);
-                        return (IImage?)Bitmap.DecodeToWidth(
-                            stream, PreviewDecodeWidth, BitmapInterpolationMode.HighQuality);
-                    },
-                    cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                // A file asset that is not a decodable image simply has no preview.
-                return null;
-            }
+            return Task.FromResult<IImage?>(currentImage());
         }
     }
 }

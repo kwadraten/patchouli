@@ -67,6 +67,8 @@ public class ViewModelArchitectureTests
             })
             .Where(entry => !reporterFilter.IsMatch(entry.source[entry.catchIndex..]) &&
                             !(entry.line.Contains("// Reported below", StringComparison.Ordinal) ||
+                              entry.line.Contains("// Classified into the page failure result",
+                                  StringComparison.Ordinal) ||
                               entry.line.Contains("exception is IOException or UnauthorizedAccessException",
                                   StringComparison.Ordinal) ||
                               entry.line.Contains("exception is JsonException or InvalidOperationException",

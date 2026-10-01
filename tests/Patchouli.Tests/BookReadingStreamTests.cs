@@ -9,6 +9,7 @@ using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Migrations;
+using Patchouli.Reading;
 using Patchouli.UI.Reading;
 
 namespace Patchouli.Tests;
@@ -83,12 +84,12 @@ public sealed class BookReadingStreamTests
         page.PageIndex.Should().Be(0);
         page.PageCount.Should().Be(2);
         page.IsPrepend.Should().BeFalse("the view model decides prepend ordering, not the stream");
-        page.Html.Should().Contain("<p>识别后的正文</p>");
-        page.Html.Should().NotContain("本页尚未识别文字。");
+        SceneText(page.Source).Should().Contain("识别后的正文");
+        page.Source.Blocks.Should().NotContain(block => block.Text.Contains("本页尚未识别文字。"));
     }
 
     [Fact]
-    public async Task Uses_placeholder_html_when_a_page_has_no_committed_revision()
+    public async Task Uses_placeholder_when_a_page_has_no_committed_revision()
     {
         BookReadingStream stream = CreateStream(
             CreatePages(0, 1),
@@ -96,13 +97,13 @@ public sealed class BookReadingStreamTests
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 1, 2);
 
-        page.Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
+        SceneText(page.Source).Should().Be("本页尚未识别文字。");
         page.PageIndex.Should().Be(1);
         page.IsPrepend.Should().BeFalse();
     }
 
     [Fact]
-    public async Task Uses_placeholder_html_when_markdown_compilation_fails()
+    public async Task Uses_placeholder_when_markdown_compilation_fails()
     {
         BookReadingStream stream = CreateStream(
             CreatePages(0),
@@ -111,11 +112,11 @@ public sealed class BookReadingStreamTests
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 1);
 
-        page.Html.Should().Contain("本页尚未识别文字。");
+        SceneText(page.Source).Should().Contain("本页尚未识别文字。");
     }
 
     [Fact]
-    public async Task Uses_placeholder_html_when_the_page_list_cannot_be_read()
+    public async Task Uses_placeholder_when_the_page_list_cannot_be_read()
     {
         BookReadingStream stream = CreateStream(
             CreatePages(0),
@@ -124,7 +125,7 @@ public sealed class BookReadingStreamTests
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 1);
 
-        page.Html.Should().Contain("本页尚未识别文字。");
+        SceneText(page.Source).Should().Contain("本页尚未识别文字。");
     }
 
     [Fact]
@@ -139,13 +140,14 @@ public sealed class BookReadingStreamTests
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
 
-        page.Html.Should().Contain("识别后的正文");
-        page.TranslationHtml.Should().Contain("<p>翻译后的正文</p>");
-        page.TranslationHtml.Should().NotContain("本页尚无翻译。");
+        SceneText(page.Source).Should().Contain("识别后的正文");
+        page.Translation.Should().NotBeNull();
+        SceneText(page.Translation!).Should().Contain("翻译后的正文");
+        page.Translation!.Blocks.Should().NotContain(block => block.Kind == ReadingBlock.UntranslatedKind);
     }
 
     [Fact]
-    public async Task Uses_placeholder_translation_html_when_the_page_has_no_translation()
+    public async Task Leaves_translation_null_when_the_page_has_no_translation()
     {
         BookReadingStream stream = CreateStream(
             CreatePages(0, 1),
@@ -153,21 +155,21 @@ public sealed class BookReadingStreamTests
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
 
-        page.TranslationHtml.Should().Be("<p><i>本页尚无翻译。</i></p>");
+        page.Translation.Should().BeNull();
     }
 
     [Fact]
-    public async Task Defaults_to_placeholder_translation_html_when_translations_are_not_supplied()
+    public async Task Leaves_translation_null_when_translations_are_not_supplied()
     {
         BookReadingStream stream = CreateStream(CreatePages(0, 1));
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
 
-        page.TranslationHtml.Should().Be("<p><i>本页尚无翻译。</i></p>");
+        page.Translation.Should().BeNull();
     }
 
     [Fact]
-    public async Task Uses_placeholder_translation_html_for_an_empty_compiled_translation()
+    public async Task Leaves_translation_null_for_an_empty_compiled_translation()
     {
         DocumentTreeRevisionId revision = DocumentTreeRevisionId.New();
         BookReadingStream stream = CreateStream(
@@ -178,7 +180,34 @@ public sealed class BookReadingStreamTests
 
         BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
 
-        page.TranslationHtml.Should().Be("<p><i>本页尚无翻译。</i></p>");
+        page.Translation.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Replaces_stale_translation_blocks_with_untranslated_placeholders()
+    {
+        DocumentTreeRevisionId revision = DocumentTreeRevisionId.New();
+        DocumentBoxId staleBox = DocumentBoxId.New();
+        // The translation has one translated block and one stale (untranslated) box; the stale box
+        // renders as a 未翻译 placeholder, never as source text.
+        MarkdownSourceMapEntry[] map =
+        [
+            new(staleBox, 0, 3, 0, 1)
+        ];
+        BookReadingStream stream = CreateStream(
+            CreatePages(0, 1),
+            compile: _ => Result<CompiledMarkdown>.Success(new CompiledMarkdown("源正文", map, [],
+                new MarkdownDocumentModel([new MarkdownBlock("paragraph", "源正文", 0, 3)]))),
+            getTranslation: (_, _, _) => Task.FromResult<TranslatedPageMarkdown?>(
+                new TranslatedPageMarkdown("源正文", map,
+                    new PageTranslationStatus(0, 1, [staleBox], revision, true))));
+
+        BookReadingPage page = await stream.LoadPageAsync(DocumentId, 0, 2);
+
+        page.Translation.Should().NotBeNull();
+        page.Translation!.Blocks.Should().ContainSingle()
+            .Which.Kind.Should().Be(ReadingBlock.UntranslatedKind);
+        SceneText(page.Translation!).Should().Be(ReadingBlock.UntranslatedText);
     }
 
     [Fact]
@@ -238,8 +267,8 @@ public sealed class BookReadingStreamTests
         BookReadingPage missingPage = await stream.LoadPageAsync(documentId, 1, indices.Count);
 
         indices.Should().Equal(0, 1);
-        recognizedPage.Html.Should().Contain("<p>识别出的正文</p>");
-        missingPage.Html.Should().Be("<p><i>本页尚未识别文字。</i></p>");
+        SceneText(recognizedPage.Source).Should().Contain("识别出的正文");
+        SceneText(missingPage.Source).Should().Be("本页尚未识别文字。");
     }
 
     private static async Task SeedDocumentAsync(
@@ -341,6 +370,34 @@ public sealed class BookReadingStreamTests
             (revisionId, _, _, _) => Task.FromResult(compile is null
                 ? Result<CompiledMarkdown>.Success(new CompiledMarkdown("识别后的正文", [], []))
                 : compile(pagesByRevision[revisionId])),
-            getTranslation);
+            getPageTranslation: getTranslation,
+            parseMarkdown: ParseParagraph);
+    }
+
+    // Minimal markdown parse for the stream's fallback: one paragraph block per non-empty line.
+    private static MarkdownDocumentModel ParseParagraph(string markdown)
+    {
+        List<MarkdownBlock> blocks = [];
+        foreach (string raw in markdown.Split("\n\n"))
+        {
+            string text = raw.Trim();
+            if (text.Length > 0)
+            {
+                blocks.Add(new MarkdownBlock("paragraph", text, 0, text.Length));
+            }
+        }
+
+        return new MarkdownDocumentModel(blocks);
+    }
+
+    // Concatenated plain text of a scene's blocks, for asserting on rendered content.
+    private static string SceneText(ReadingScene scene)
+    {
+        return string.Join("\n", scene.Blocks.Select(block => block.Text));
+    }
+
+    private static bool SceneHasPlaceholder(ReadingScene scene, string text)
+    {
+        return scene.Blocks.Any(block => block.Text.Contains(text, StringComparison.Ordinal));
     }
 }

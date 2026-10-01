@@ -351,9 +351,22 @@ public sealed record UiPreferences(
     string ReadingFontFamily = "",
     double ReadingFontSize = 14,
     string LibraryGridSortColumn = "",
-    bool LibraryGridSortDescending = false)
+    bool LibraryGridSortDescending = false,
+    string ReadingCompareMode = UiPreferences.ReadingCompareModeSideBySide)
 {
     public const double DefaultReadingFontSize = 14;
+
+    // Persisted ids for the whole-book reading compare layout; anything unrecognized reads back
+    // as side-by-side so old or hand-edited settings files never break the reading surface.
+    public const string ReadingCompareModeSideBySide = "side_by_side";
+    public const string ReadingCompareModeStacked = "stacked";
+
+    public static string NormalizeReadingCompareMode(string? value)
+    {
+        return string.Equals(value, ReadingCompareModeStacked, StringComparison.Ordinal)
+            ? ReadingCompareModeStacked
+            : ReadingCompareModeSideBySide;
+    }
 
     public static UiPreferences Default()
     {
@@ -460,6 +473,7 @@ public sealed record PatchouliAppSettings(
     public MetadataLookupAppSettings MetadataLookup { get; init; } = MetadataLookupAppSettings.Default();
     public FileScanningAppSettings FileScanning { get; init; } = FileScanningAppSettings.Default();
     public OcrEnginesAppSettings OcrEngines { get; init; } = OcrEnginesAppSettings.Default();
+    public ImportAppSettings Import { get; init; } = ImportAppSettings.Default();
 
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
@@ -473,7 +487,6 @@ public sealed record PatchouliAppSettings(
         return string.IsNullOrWhiteSpace(settingsPath)
             ? new PlatformAppPaths().Resolve().UserSettingsPath
             : Path.GetFullPath(settingsPath);
-    public ImportAppSettings Import { get; init; } = ImportAppSettings.Default();
     }
 
     public static PatchouliAppSettings Load(string? settingsPath = null,
@@ -524,6 +537,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? credentials = GetSection(root, "Credentials");
             JsonElement? sync = GetSection(root, "Sync");
             JsonElement? ocrEngines = GetSection(root, "OcrEngines");
+            JsonElement? import = GetSection(root, "Import");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -537,7 +551,6 @@ public sealed record PatchouliAppSettings(
                 new MinerUAppSettings(
                     ReadString(minerU, "BaseUrl", defaults.MinerU.BaseUrl),
                     ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
-            JsonElement? import = GetSection(root, "Import");
                     ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
                     ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
                     ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
@@ -555,12 +568,15 @@ public sealed record PatchouliAppSettings(
                     ReadString(ui, "LibraryGridSortColumn",
                         defaults.Ui.LibraryGridSortColumn),
                     ReadBool(ui, "LibraryGridSortDescending",
-                        defaults.Ui.LibraryGridSortDescending)))
+                        defaults.Ui.LibraryGridSortDescending),
+                    UiPreferences.NormalizeReadingCompareMode(
+                        ReadString(ui, "ReadingCompareMode", defaults.Ui.ReadingCompareMode))))
             {
                 MetadataLookup = MetadataLookupAppSettings.MergeWithDefaults(ReadMetadataSources(metadataLookup)),
                 FileScanning = new FileScanningAppSettings(
                     ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns)),
                 OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
+                Import = ReadImport(import, defaults.Import),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
                 Sync = new SyncAppSettings(
                     ReadString(sync, "DeviceId", defaults.Sync.DeviceId),
@@ -576,7 +592,6 @@ public sealed record PatchouliAppSettings(
                                                                   : [])),
                     ReadDeviceBindings(sync, defaults.Sync.DeviceBindings ?? []))
             };
-                Import = ReadImport(import, defaults.Import),
         }
         catch (JsonException exception)
         {
@@ -726,7 +741,8 @@ public sealed record PatchouliAppSettings(
                 Ui.ReadingFontFamily,
                 Ui.ReadingFontSize,
                 Ui.LibraryGridSortColumn,
-                Ui.LibraryGridSortDescending
+                Ui.LibraryGridSortDescending,
+                Ui.ReadingCompareMode
             });
             if (Sync.IsSettingEnabled(LibrarySettingKeys.MetadataLookup))
             {
@@ -942,7 +958,8 @@ public sealed record PatchouliAppSettings(
                     Ui.ReadingFontFamily,
                     Ui.ReadingFontSize,
                     Ui.LibraryGridSortColumn,
-                    Ui.LibraryGridSortDescending
+                    Ui.LibraryGridSortDescending,
+                    Ui.ReadingCompareMode
                 });
             }
 
@@ -973,6 +990,14 @@ public sealed record PatchouliAppSettings(
                 });
             }
 
+            if (saveAll || dirtyFields!.Contains("Import"))
+            {
+                root["Import"] = JsonSerializer.SerializeToNode(new
+                {
+                    Import.MaxFailedPageRatio
+                });
+            }
+
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             await File.WriteAllTextAsync(temporaryPath,
                     root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
@@ -990,14 +1015,6 @@ public sealed record PatchouliAppSettings(
                 InvalidOperationException => "settings_path_rejected",
                 _ => "settings_io_failed"
             };
-            if (saveAll || dirtyFields!.Contains("Import"))
-            {
-                root["Import"] = JsonSerializer.SerializeToNode(new
-                {
-                    Import.MaxFailedPageRatio
-                });
-            }
-
             return new SettingsSaveResult(false, code, exception.Message, "user_settings", exception is IOException);
         }
         finally
@@ -1075,6 +1092,18 @@ public sealed record PatchouliAppSettings(
             ReadString(element, "RegionOcrEngine", fallback.RegionOcrEngine));
     }
 
+    private static ImportAppSettings ReadImport(JsonElement? section, ImportAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return new ImportAppSettings(
+            ImportAppSettings.ClampRatio(
+                ReadDouble(element, "MaxFailedPageRatio", fallback.MaxFailedPageRatio)));
+    }
+
     private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)
     {
         if (section is not { ValueKind: JsonValueKind.Object } element ||
@@ -1092,18 +1121,6 @@ public sealed record PatchouliAppSettings(
         {
             return fallback;
         }
-    private static ImportAppSettings ReadImport(JsonElement? section, ImportAppSettings fallback)
-    {
-        if (section is not { ValueKind: JsonValueKind.Object } element)
-        {
-            return fallback;
-        }
-
-        return new ImportAppSettings(
-            ImportAppSettings.ClampRatio(
-                ReadDouble(element, "MaxFailedPageRatio", fallback.MaxFailedPageRatio)));
-    }
-
     }
 
     private static IReadOnlyList<DeviceRootBindingAppSettings> ReadDeviceBindings(

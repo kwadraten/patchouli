@@ -10,12 +10,15 @@ using Patchouli.UI.Themes;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
-/// <summary>「外观与显示」section: selects the UI color palette and the reading-mode font family
-/// and size. Once the settings page is open, edits persist automatically through the debounced
+/// <summary>「外观与显示」section: selects the UI color palette, the reading-mode font family
+/// and size, and the reading-mode compare layout (side-by-side or translation below the source
+/// paragraph). Once the settings page is open, edits persist automatically through the debounced
 /// auto-save pipeline, like the other editable sections.</summary>
 public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewModelBase
 {
     private const string SystemDefaultFontLabel = "系统默认";
+    private const string CompareModeSideBySideLabel = "并排对照";
+    private const string CompareModeStackedLabel = "段落下方";
     private const double MinReadingFontSize = 10;
     private const double MaxReadingFontSize = 28;
 
@@ -23,6 +26,7 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
     private string _persistedPaletteId;
     private string _persistedFontFamily;
     private double _persistedFontSize;
+    private string _persistedCompareMode;
     private IReadOnlyList<string>? _readingFontFamilies;
     private bool _isDirty;
     private bool _isConstructing;
@@ -40,6 +44,8 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         SelectedReadingFontFamily = _persistedFontFamily;
         _persistedFontSize = ClampReadingFontSize(main.AppOptions.Ui.ReadingFontSize);
         ReadingFontSize = _persistedFontSize;
+        _persistedCompareMode = UiPreferences.NormalizeReadingCompareMode(main.AppOptions.Ui.ReadingCompareMode);
+        SelectedReadingCompareMode = CompareModeToLabel(_persistedCompareMode);
         _isConstructing = false;
     }
 
@@ -121,6 +127,29 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         MarkDirty("有未保存的更改");
     }
 
+    /// <summary>Display labels for the reading compare layout picker, paired by
+    /// <see cref="LabelToCompareMode"/> with the persisted ids.</summary>
+    [ExcludeFromDerivedGeneration]
+    public IReadOnlyList<string> ReadingCompareModes { get; } =
+        [CompareModeSideBySideLabel, CompareModeStackedLabel];
+
+    /// <summary>Selected compare layout label for whole-book reading: 并排对照 keeps source and
+    /// translation side by side; 段落下方 draws the translation beneath its source paragraph
+    /// (immersive-translate style).</summary>
+    [ObservableProperty]
+    public partial string SelectedReadingCompareMode { get; set; } = CompareModeSideBySideLabel;
+
+    partial void OnSelectedReadingCompareModeChanged(string value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        UpdateDirtyState();
+        MarkDirty("有未保存的更改");
+    }
+
     public override bool SupportsEditing => true;
 
     [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
@@ -179,6 +208,23 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             _persistedFontSize = ReadingFontSize;
         }
 
+        string compareMode = LabelToCompareMode(SelectedReadingCompareMode);
+        if (compareMode != _persistedCompareMode)
+        {
+            bool compareModeSaved = await _main.SaveReadingCompareModeImmediatelyAsync(compareMode);
+            if (!compareModeSaved)
+            {
+                LastError = "无法保存外观设置。";
+                SaveState = SettingsSaveState.Failed;
+                Status = "保存失败";
+                Raise(nameof(IsDirty));
+                Raise(nameof(CanSave));
+                return;
+            }
+
+            _persistedCompareMode = compareMode;
+        }
+
         _isDirty = false;
         LastError = null;
         SaveState = SettingsSaveState.Saved;
@@ -207,10 +253,13 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             SelectedReadingFontFamily = _persistedFontFamily;
             _persistedFontSize = ClampReadingFontSize(_main.AppOptions.Ui.ReadingFontSize);
             ReadingFontSize = _persistedFontSize;
+            _persistedCompareMode = UiPreferences.NormalizeReadingCompareMode(_main.AppOptions.Ui.ReadingCompareMode);
+            SelectedReadingCompareMode = CompareModeToLabel(_persistedCompareMode);
             _isDirty = false;
             Raise(nameof(SelectedPalette));
             Raise(nameof(SelectedReadingFontFamily));
             Raise(nameof(ReadingFontSize));
+            Raise(nameof(SelectedReadingCompareMode));
             Raise(nameof(IsDirty));
             Raise(nameof(CanSave));
         }
@@ -226,9 +275,24 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         bool fontDirty =
             !string.Equals(SelectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal);
         bool sizeDirty = ReadingFontSize != _persistedFontSize;
-        _isDirty = paletteDirty || fontDirty || sizeDirty;
+        bool compareModeDirty = LabelToCompareMode(SelectedReadingCompareMode) != _persistedCompareMode;
+        _isDirty = paletteDirty || fontDirty || sizeDirty || compareModeDirty;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
+    }
+
+    private static string CompareModeToLabel(string compareMode)
+    {
+        return compareMode == UiPreferences.ReadingCompareModeStacked
+            ? CompareModeStackedLabel
+            : CompareModeSideBySideLabel;
+    }
+
+    private static string LabelToCompareMode(string? label)
+    {
+        return label == CompareModeStackedLabel
+            ? UiPreferences.ReadingCompareModeStacked
+            : UiPreferences.ReadingCompareModeSideBySide;
     }
 
     private void MarkDirty(string message)

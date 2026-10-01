@@ -2,16 +2,16 @@ using FluentAssertions;
 using Patchouli.Core.Documents;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
-using Patchouli.UI.Controls;
+using Patchouli.Reading;
 
 namespace Patchouli.Tests;
 
-public sealed class DocumentReadingSceneTests
+public sealed class ReadingSceneBuilderTests
 {
     [Fact]
     public void Returns_empty_scene_for_an_empty_model()
     {
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(new MarkdownDocumentModel([]), [], []);
+        ReadingScene scene = ReadingSceneBuilder.Build(new MarkdownDocumentModel([]), [], [], "page");
 
         scene.Blocks.Should().BeEmpty();
     }
@@ -26,7 +26,7 @@ public sealed class DocumentReadingSceneTests
         ]);
         MarkdownSourceMapEntry unrelated = SourceMap(DocumentBoxId.New(), 7, 2);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(model, [unrelated], []);
+        ReadingScene scene = ReadingSceneBuilder.Build(model, [unrelated], [], "page");
 
         scene.Blocks.Select(block => block.Kind).Should().Equal("paragraph", "heading", "code");
         scene.Blocks.Select(block => block.Text).Should().Equal("第一段", "标题", "let x = 1;");
@@ -52,7 +52,7 @@ public sealed class DocumentReadingSceneTests
             SourceMap(second, 4, 1)
         ];
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(model, sourceMap, []);
+        ReadingScene scene = ReadingSceneBuilder.Build(model, sourceMap, [], "page");
 
         scene.Blocks.Select(block => block.BoxId)
             .Should().Equal(null, first, first, null, second);
@@ -64,8 +64,7 @@ public sealed class DocumentReadingSceneTests
         DocumentBoxId empty = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("paragraph", "文本")]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(empty, 0, 0)], []);
+        ReadingScene scene = ReadingSceneBuilder.Build(model, [SourceMap(empty, 0, 0)], [], "page");
 
         scene.Blocks.Should().ContainSingle().Which.BoxId.Should().BeNull();
     }
@@ -76,8 +75,7 @@ public sealed class DocumentReadingSceneTests
         DocumentBoxId missing = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("paragraph", "文本")]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(missing, 0, 1)], []);
+        ReadingScene scene = ReadingSceneBuilder.Build(model, [SourceMap(missing, 0, 1)], [], "page");
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.BoxId.Should().Be(missing);
@@ -103,8 +101,8 @@ public sealed class DocumentReadingSceneTests
         DocumentBoxId boxId = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("paragraph", "内容")]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(boxId, 0, 1)], [Box(boxId, boxType)]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)], [Box(boxId, boxType)], "page");
 
         scene.Blocks.Should().ContainSingle().Which.Kind.Should().Be(expectedKind);
     }
@@ -120,8 +118,9 @@ public sealed class DocumentReadingSceneTests
         ]);
         MarkdownSourceMapEntry[] sourceMap = [SourceMap(title, 0, 1), SourceMap(plain, 1, 1)];
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, sourceMap, [Box(title, DocumentBoxType.Title, 4), Box(plain, DocumentBoxType.Text)]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, sourceMap, [Box(title, DocumentBoxType.Title, 4), Box(plain, DocumentBoxType.Text)],
+            "page");
 
         scene.Blocks.Select(block => block.Level).Should().Equal(4, 5);
     }
@@ -130,7 +129,7 @@ public sealed class DocumentReadingSceneTests
     public void Parses_a_gfm_pipe_table_with_a_header()
     {
         string text = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 3 |\n| 梨 | 5 |";
-        DocumentReadingScene scene = BuildTable(text);
+        ReadingScene scene = BuildTable(text);
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.Kind.Should().Be("table");
@@ -147,7 +146,7 @@ public sealed class DocumentReadingSceneTests
     [Fact]
     public void Parses_a_gfm_pipe_table_without_a_header()
     {
-        DocumentReadingScene scene = BuildTable("| 甲 | 乙 |\n| 1 | 2 |");
+        ReadingScene scene = BuildTable("| 甲 | 乙 |\n| 1 | 2 |");
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.Table.Should().NotBeNull();
@@ -161,7 +160,7 @@ public sealed class DocumentReadingSceneTests
     [Fact]
     public void Accepts_table_rows_without_outer_pipes()
     {
-        DocumentReadingScene scene = BuildTable("甲 | 乙\n--- | ---\n1 | 2");
+        ReadingScene scene = BuildTable("甲 | 乙\n--- | ---\n1 | 2");
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.Table.Should().NotBeNull();
@@ -175,7 +174,7 @@ public sealed class DocumentReadingSceneTests
     [Fact]
     public void Keeps_escaped_pipes_inside_a_cell()
     {
-        DocumentReadingScene scene = BuildTable("| a \\| b | c |\n| --- | --- |\n| 1 | 2 |");
+        ReadingScene scene = BuildTable("| a \\| b | c |\n| --- | --- |\n| 1 | 2 |");
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.Table.Should().NotBeNull();
@@ -191,7 +190,7 @@ public sealed class DocumentReadingSceneTests
     [InlineData("   ")]
     public void Falls_back_to_raw_text_when_the_table_yields_no_rows(string text)
     {
-        DocumentReadingScene scene = BuildTable(text);
+        ReadingScene scene = BuildTable(text);
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.Kind.Should().Be("table");
@@ -202,13 +201,120 @@ public sealed class DocumentReadingSceneTests
     [Fact]
     public void Falls_back_to_raw_text_for_the_table_placeholder()
     {
-        DocumentReadingScene scene = BuildTable("[Table]");
+        ReadingScene scene = BuildTable("[Table]");
 
         ReadingBlock block = scene.Blocks.Should().ContainSingle().Subject;
         block.Kind.Should().Be("table");
         block.Table.Should().BeNull();
         block.Text.Should().Be("[Table]");
         block.Inlines.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parses_the_table_from_the_markdown_source_not_the_flattened_plain_text()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string markdown = "| 名称 | 数量 |\n| --- | ---: |\n| 苹果 | 3 |\n| 梨 | 5 |";
+        // Markdig's plain text for a pipe table drops the pipes and joins the cells with spaces,
+        // so parsing MarkdownBlock.Text alone would produce a one-column grid.
+        MarkdownBlock block = new("table", "名称 数量 苹果 3 梨 5", 0, markdown.Length);
+        MarkdownDocumentModel model = new([block]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Table)], "page",
+            markdownSource: markdown);
+
+        ReadingBlock parsed = scene.Blocks.Should().ContainSingle().Subject;
+        ReadingTable table = parsed.Table!;
+        table.HasHeader.Should().BeTrue();
+        table.Rows.Should().HaveCount(3);
+        table.Rows[0].Should().Equal("名称", "数量");
+        table.Rows[1].Should().Equal("苹果", "3");
+        table.Rows[2].Should().Equal("梨", "5");
+    }
+
+    [Fact]
+    public void Renders_a_complex_table_placeholder_from_its_stored_html()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string html =
+            "<table><tr><th>名称</th><th>数量</th></tr><tr><td>苹果</td><td>3</td></tr></table>";
+        MarkdownBlock block = new("table", "[Table]", 0, 7);
+        MarkdownDocumentModel model = new([block]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)],
+            [Box(boxId, DocumentBoxType.Table, payload: new TableBoxPayload("[Table]", html))], "page");
+
+        ReadingBlock parsed = scene.Blocks.Should().ContainSingle().Subject;
+        ReadingTable table = parsed.Table!;
+        table.HasHeader.Should().BeTrue();
+        table.Rows.Should().HaveCount(2);
+        table.Rows[0].Should().Equal("名称", "数量");
+        table.Rows[1].Should().Equal("苹果", "3");
+    }
+
+    [Fact]
+    public void Html_table_colspan_keeps_the_row_aligned_with_the_widest_columns()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string html = "<table><tr><td colspan=\"2\">合计</td><td>3</td></tr></table>";
+        MarkdownBlock block = new("table", "[Table]", 0, 7);
+        MarkdownDocumentModel model = new([block]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)],
+            [Box(boxId, DocumentBoxType.Table, payload: new TableBoxPayload("[Table]", html))], "page");
+
+        ReadingBlock parsed = scene.Blocks.Should().ContainSingle().Subject;
+        IReadOnlyList<string> row = parsed.Table!.Rows.Should().ContainSingle().Subject;
+        row.Should().Equal("合计", "", "3");
+    }
+
+    [Fact]
+    public void Renders_a_complex_table_from_the_inline_html_of_its_markdown_slice()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string markdown =
+            "<table><tr><th>名称</th><th>数量</th></tr><tr><td>苹果</td><td>3</td></tr></table>";
+        // Whole-book reading compiles complex tables with their HTML kept inline, so the block's
+        // slice is the table element itself instead of the [Table] placeholder the preview uses.
+        MarkdownBlock block = new("paragraph", markdown, 0, markdown.Length);
+        MarkdownDocumentModel model = new([block]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Table)], "page",
+            markdownSource: markdown);
+
+        ReadingBlock parsed = scene.Blocks.Should().ContainSingle().Subject;
+        parsed.Kind.Should().Be("table");
+        ReadingTable table = parsed.Table!;
+        table.HasHeader.Should().BeTrue();
+        table.Rows.Should().HaveCount(2);
+        table.Rows[0].Should().Equal("名称", "数量");
+        table.Rows[1].Should().Equal("苹果", "3");
+    }
+
+    [Fact]
+    public void A_complex_table_claims_its_payload_grid_once_across_blocks()
+    {
+        DocumentBoxId boxId = DocumentBoxId.New();
+        const string html = "<table><tr><td>苹果</td><td>3</td></tr></table>";
+        // The grid rides on the box payload, so a complex table whose placeholder markdown arrives
+        // as several blocks must still render one grid instead of repeating it per fragment.
+        MarkdownDocumentModel model = new(
+        [
+            new MarkdownBlock("table", "[Table]", 0, 7),
+            new MarkdownBlock("table", "[Table]", 0, 7)
+        ]);
+
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 2)],
+            [Box(boxId, DocumentBoxType.Table, payload: new TableBoxPayload("[Table]", html))], "page");
+
+        scene.Blocks.Should().HaveCount(2);
+        scene.Blocks[0].Table.Should().NotBeNull();
+        scene.Blocks[1].Table.Should().BeNull();
     }
 
     [Fact]
@@ -219,8 +325,8 @@ public sealed class DocumentReadingSceneTests
             "table", "| a |\n| --- |\n| 1 |", 0, 20, 0, [new MarkdownInlineModel("text", "a")]);
         MarkdownDocumentModel model = new([block]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Table)]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Table)], "page");
 
         ReadingBlock reading = scene.Blocks.Should().ContainSingle().Subject;
         reading.Table.Should().NotBeNull();
@@ -238,8 +344,9 @@ public sealed class DocumentReadingSceneTests
         ]);
         MarkdownSourceMapEntry[] sourceMap = [SourceMap(image, 0, 1), SourceMap(chart, 1, 1)];
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, sourceMap, [Box(image, DocumentBoxType.Image), Box(chart, DocumentBoxType.Chart)]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, sourceMap, [Box(image, DocumentBoxType.Image), Box(chart, DocumentBoxType.Chart)],
+            "page");
 
         scene.Blocks.Select(block => block.Kind).Should().Equal("media", "media");
         scene.Blocks.Select(block => block.MediaLabel).Should().Equal("图像", "图表");
@@ -252,14 +359,14 @@ public sealed class DocumentReadingSceneTests
         DocumentBoxId paragraph = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("paragraph", "正文")]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(paragraph, 0, 1)], [Box(paragraph, DocumentBoxType.Text)]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(paragraph, 0, 1)], [Box(paragraph, DocumentBoxType.Text)], "page");
 
         scene.Blocks.Should().ContainSingle().Which.MediaLabel.Should().BeNull();
     }
 
     [Fact]
-    public void Fills_the_media_asset_id_from_the_box_payload()
+    public void Carries_the_normalized_bbox_region_even_without_a_media_asset_id()
     {
         DocumentBoxId image = DocumentBoxId.New();
         DocumentBoxId chart = DocumentBoxId.New();
@@ -269,28 +376,37 @@ public sealed class DocumentReadingSceneTests
         ]);
         MarkdownSourceMapEntry[] sourceMap = [SourceMap(image, 0, 1), SourceMap(chart, 1, 1)];
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
+        ReadingScene scene = ReadingSceneBuilder.Build(
             model,
             sourceMap,
             [
-                Box(image, DocumentBoxType.Image, payload: new MediaBoxPayload("asset-image", "猫")),
-                Box(chart, DocumentBoxType.Chart, payload: new MediaBoxPayload("asset-chart", "趋势"))
-            ]);
+                // Both boxes have a MediaBoxPayload with no AssetId: the region must still flow
+                // through so the renderer can crop from the page bitmap.
+                Box(image, DocumentBoxType.Image, payload: new MediaBoxPayload(null, "猫"),
+                    bbox: new NormalizedBBox(.1, .2, .3, .4)),
+                Box(chart, DocumentBoxType.Chart, payload: new MediaBoxPayload(null, "趋势"),
+                    bbox: new NormalizedBBox(.0, .0, 1.0, 1.0))
+            ],
+            "page");
 
-        scene.Blocks.Select(block => block.MediaAssetId).Should().Equal("asset-image", "asset-chart");
+        ReadingImageRegion? firstRegion = scene.Blocks[0].Image;
+        firstRegion.Should().NotBeNull();
+        firstRegion!.ImageKey.Should().Be("page");
+        firstRegion.Region.Should().Be(new NormalizedBBox(.1, .2, .3, .4));
+        scene.Blocks[1].Image.Should().NotBeNull();
+        scene.Blocks[1].Image!.Region.Should().Be(new NormalizedBBox(0, 0, 1, 1));
     }
 
     [Fact]
-    public void Leaves_media_asset_id_empty_when_the_payload_has_no_asset()
+    public void Keys_media_regions_by_the_supplied_page_image_key()
     {
         DocumentBoxId image = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("paragraph", "一只猫")]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(image, 0, 1)],
-            [Box(image, DocumentBoxType.Image, payload: new MediaBoxPayload(null, "猫"))]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(image, 0, 1)], [Box(image, DocumentBoxType.Image)], "page-12");
 
-        scene.Blocks.Should().ContainSingle().Which.MediaAssetId.Should().BeNull();
+        scene.Blocks.Should().ContainSingle().Which.Image!.ImageKey.Should().Be("page-12");
     }
 
     [Fact]
@@ -299,11 +415,12 @@ public sealed class DocumentReadingSceneTests
         DocumentBoxId paragraph = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("paragraph", "正文")]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
+        ReadingScene scene = ReadingSceneBuilder.Build(
             model, [SourceMap(paragraph, 0, 1)],
-            [Box(paragraph, DocumentBoxType.Text, payload: new MediaBoxPayload("asset-image", null))]);
+            [Box(paragraph, DocumentBoxType.Text, payload: new MediaBoxPayload("asset-image", null))],
+            "page");
 
-        scene.Blocks.Should().ContainSingle().Which.MediaAssetId.Should().BeNull();
+        scene.Blocks.Should().ContainSingle().Which.Image.Should().BeNull();
     }
 
     [Fact]
@@ -317,10 +434,11 @@ public sealed class DocumentReadingSceneTests
         ]);
         MarkdownSourceMapEntry[] sourceMap = [SourceMap(code, 0, 1), SourceMap(paragraph, 1, 1)];
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
+        ReadingScene scene = ReadingSceneBuilder.Build(
             model,
             sourceMap,
-            [Box(code, DocumentBoxType.Code, codeLanguage: "fsharp"), Box(paragraph, DocumentBoxType.Text)]);
+            [Box(code, DocumentBoxType.Code, codeLanguage: "fsharp"), Box(paragraph, DocumentBoxType.Text)],
+            "page");
 
         scene.Blocks.Select(block => block.CodeLanguage).Should().Equal("fsharp", null);
     }
@@ -336,18 +454,18 @@ public sealed class DocumentReadingSceneTests
         ];
         MarkdownDocumentModel model = new([Block("paragraph", "加强调", inlines: inlines)]);
 
-        DocumentReadingScene scene = DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Text)]);
+        ReadingScene scene = ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Text)], "page");
 
         scene.Blocks.Should().ContainSingle().Which.Inlines.Should().BeSameAs(inlines);
     }
 
-    private static DocumentReadingScene BuildTable(string text)
+    private static ReadingScene BuildTable(string text)
     {
         DocumentBoxId boxId = DocumentBoxId.New();
         MarkdownDocumentModel model = new([Block("table", text)]);
-        return DocumentReadingSceneBuilder.Build(
-            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Table)]);
+        return ReadingSceneBuilder.Build(
+            model, [SourceMap(boxId, 0, 1)], [Box(boxId, DocumentBoxType.Table)], "page");
     }
 
     private static MarkdownBlock Block(
@@ -372,7 +490,8 @@ public sealed class DocumentReadingSceneTests
         string boxType,
         int? headingLevel = null,
         string? codeLanguage = null,
-        DocumentBoxPayload? payload = null)
+        DocumentBoxPayload? payload = null,
+        NormalizedBBox? bbox = null)
     {
         return new DocumentBox(
             DocumentTreeRevisionId.New(),
@@ -384,7 +503,7 @@ public sealed class DocumentReadingSceneTests
             boxType,
             null,
             null,
-            new NormalizedBBox(.1, .1, .8, .1),
+            bbox ?? new NormalizedBBox(.1, .1, .8, .1),
             payload,
             headingLevel,
             codeLanguage,
