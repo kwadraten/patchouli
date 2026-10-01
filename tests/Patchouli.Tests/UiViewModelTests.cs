@@ -629,7 +629,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.3.5 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.3.6 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }

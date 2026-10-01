@@ -14,7 +14,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.Net");
-        BuildInfo.Version.Should().Be("0.3.5");
+        BuildInfo.Version.Should().Be("0.3.6");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -82,7 +82,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.5").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.6").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.5");
+        BuildInfo.Version.Should().Be("0.3.6");
     }
 
     [Fact]
@@ -112,7 +112,7 @@ public sealed class AlphaPackagingTests
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.5").And.NotContain("0.3.4");
+            File.ReadAllText(file).Should().Contain("0.3.6").And.NotContain("0.3.5");
         }
     }
 

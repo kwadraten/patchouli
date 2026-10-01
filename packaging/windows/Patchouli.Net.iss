@@ -5,7 +5,7 @@
   #define OutputDir "..\..\artifacts\installer"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.5"
+  #define AppVersion "0.3.6"
 #endif
 #ifndef AppId
   #define AppId "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"

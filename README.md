@@ -8,6 +8,15 @@
 
 </div>
 
+## 0.3.6 更新
+
+- PDF 导入整本原子提交，失败时回滚；少量坏页保留页序并显示诊断占位，失败页比例阈值默认 20%，可在设置中调整。
+- 全书阅读改用原生阅读组件，按需加载 Markdown 页面，支持图片、表格、页码导航，以及原文与译文并排或段落下方对照；字体、字号与对照布局可配置。
+- 修复 OCR 设置草稿被刷新覆盖、引擎选择保存，以及搜索改写规则部分保存失败后重试产生重复规则的问题。
+- 优化回收站永久删除、单文档搜索索引、MCP 页级读取和译文目录；资产回收使用引用索引，题录缓存按变更范围刷新，快照分片复用一次一致性备份。
+
+可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
+
 ## 特性
 
 - 不再有卡到爆的webview和来自前端项目的屎山代码，本项目尽可能使用.net或rust等原生轮子实现功能，保证性能。
@@ -20,7 +29,7 @@
 
 - [x] 现代化的桌面应用UI：题录管理（标签、回收站、重复检测、合并与永久清除）、PDF查看和OCR内容原生Markdown预览、页级边界框树与不可变修订、设置管理、阻塞任务处理、冲突处理
 - [x] 合理的基础数据模型：贴合CSL规范的题录模型、基于文件哈希的文件资产模型（含垃圾回收）、完整支持MinerU OCR特性的OCR结果模型
-- [x] OCR支持：支持文档、页面、逻辑页面、区域等不同粒度的OCR，针对MinerU OCR提供一等支持，并内置基于ONNX运行时的NDL Koten OCR Lite本地引擎
+- [x] OCR支持：支持文档、页面、逻辑页面、区域等不同粒度的OCR，针对MinerU OCR提供一等支持，并内置基于 ONNX 运行时的 NDL Koten OCR Lite、NDLOCR-Lite 和 RapidOCR 本地引擎
 - [x] 题录支持：全面支持CSL规范定义的各类文献、支持biblatex导入和导出，可以正确输出绝大部分CSL题录的文本和HTML结果
 - [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
@@ -28,8 +37,10 @@
 - [x] MCP / CLI支持：基于虚拟文件系统和结构化工具的 MCP和CLI，支持 `find`、`fetch`、`cite` 和 `put` 四个动作。
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
 - [x] 性能治理：首屏、OCR入库、MCP读取和PDF查看的缓存、批处理、惰性校验与性能回归
+- [x] 全书阅读：原生 Markdown 阅读组件、按需加载、图片与表格、页码导航、原文与译文对照，以及字体和布局设置
+- [x] PDF 导入容错：整本原子提交、坏页诊断占位、可配置失败阈值，以及历史导入残留清理
 - [x] 完善题录系统：实装标签系统（增删改、合并、置顶与筛选），提供回收站、重复题录检测、题录合并与永久清除
-- [x] 本地OCR支持：基于ONNX运行时的NDL Koten OCR Lite引擎，支持模型下载与离线识别
+- [x] 本地OCR支持：基于 ONNX 运行时的 NDL Koten OCR Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
 - [ ] 支持更多OCR：多模态LLM OCR 支持
 
 ## 开发指南
@@ -69,7 +80,7 @@ dotnet test Patchouli.sln
 ./scripts/run-perf.ps1 -Profile smoke -Check -Ui
 ```
 
-性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试和大规模 fixture 请参考 `.agents/perf/README.md`。
+性能回归会生成隐私安全的指标报告，并和仓库内的基线比较。完整性能测试可运行 `./scripts/run-perf.ps1 -Profile full -Check -FullBudgetCheck`，更多参数见 `tests/Patchouli.Performance` 的 `--help`。
 
 ### 代码格式化和静态分析
 
