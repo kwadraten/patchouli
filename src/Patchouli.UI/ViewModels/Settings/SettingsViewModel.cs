@@ -58,11 +58,12 @@ public sealed partial class SettingsViewModel : ViewModelBase
         SearchRewriteSettings = new SearchRewriteSettingsViewModel(main);
         SyncSettings = new SyncSettingsViewModel(main);
         LocalFileManagement = new LocalFileManagementSettingsViewModel(main);
+        ImportSettings = new ImportSettingsViewModel(main);
 
         ISettingsSection[] sections =
         [
             AppearanceSettings, LibrarySettings, SyncSettings, McpSettings, OcrProviderSettings,
-            MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement
+            MetadataLookupSettings, SearchRewriteSettings, LocalFileManagement, ImportSettings
         ];
 
         IDisposable sectionSubscription = Observable.Merge(
@@ -86,6 +87,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
             new("外观与显示", "Palette", AppearanceSettings),
             new("库与本机路径", "Database", LibrarySettings),
             new("本地文件", "FolderOpen", LocalFileManagement),
+            new("导入", "BookOpen", ImportSettings),
             new("OCR 引擎", "ScanText", OcrProviderSettings),
             new("元数据来源", "Search", MetadataLookupSettings),
             new("搜索重写", "Filter", SearchRewriteSettings),
@@ -110,6 +112,7 @@ public sealed partial class SettingsViewModel : ViewModelBase
     public SearchRewriteSettingsViewModel SearchRewriteSettings { get; }
     public SyncSettingsViewModel SyncSettings { get; }
     public LocalFileManagementSettingsViewModel LocalFileManagement { get; }
+    public ImportSettingsViewModel ImportSettings { get; }
 
     public ObservableCollection<NavCategoryViewModel> Categories { get; }
 

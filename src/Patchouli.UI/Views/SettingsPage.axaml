@@ -167,6 +167,29 @@
                     <TextBlock Text="本机同步绑定" Classes="CardTitle" />
                     <TextBlock Text="{Binding DeviceId, StringFormat='设备 ID：\{0\}'}" FontSize="12" />
                     <TextBox Text="{Binding DeviceName}" PlaceholderText="设备名称" />
+            <!-- Import Settings -->
+            <DataTemplate DataType="settings:ImportSettingsViewModel">
+              <StackPanel Spacing="20" MaxWidth="720">
+                <Border Classes="Card">
+                  <StackPanel Spacing="10">
+                    <TextBlock Text="整本失败阈值" Classes="CardTitle" />
+                    <TextBlock
+                      Text="导入书籍时，失败页数占比严格超过该阈值则整本导入失败并回滚；未超过时失败页以占位页导入，可稍后修复。"
+                      FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                      <TextBlock Text="失败页比例阈值" VerticalAlignment="Center" />
+                      <NumericUpDown Value="{Binding MaxFailedPageRatioPercent}" Minimum="0" Maximum="90"
+                                     Increment="5" Width="100" />
+                      <TextBlock Text="%" VerticalAlignment="Center"
+                                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                    </StackPanel>
+                    <TextBlock Text="修改会自动保存并实时生效。" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </StackPanel>
+                </Border>
+              </StackPanel>
+            </DataTemplate>
+
                     <controls:PathPickerTextBox Path="{Binding SyncRoot}" PickerMode="Folder"
                                                 DialogTitle="选择本机同步目录" PlaceholderText="本机同步目录" />
                     <TextBlock Text="{Binding SnapshotOperationStateText, StringFormat='最近同步状态：{0}'}"

@@ -473,6 +473,7 @@ public sealed record PatchouliAppSettings(
         return string.IsNullOrWhiteSpace(settingsPath)
             ? new PlatformAppPaths().Resolve().UserSettingsPath
             : Path.GetFullPath(settingsPath);
+    public ImportAppSettings Import { get; init; } = ImportAppSettings.Default();
     }
 
     public static PatchouliAppSettings Load(string? settingsPath = null,
@@ -536,6 +537,7 @@ public sealed record PatchouliAppSettings(
                 new MinerUAppSettings(
                     ReadString(minerU, "BaseUrl", defaults.MinerU.BaseUrl),
                     ReadString(minerU, "ModelVersion", defaults.MinerU.ModelVersion),
+            JsonElement? import = GetSection(root, "Import");
                     ReadBool(minerU, "IsOcr", defaults.MinerU.IsOcr),
                     ReadBool(minerU, "EnableTable", defaults.MinerU.EnableTable),
                     ReadBool(minerU, "EnableFormula", defaults.MinerU.EnableFormula),
@@ -574,6 +576,7 @@ public sealed record PatchouliAppSettings(
                                                                   : [])),
                     ReadDeviceBindings(sync, defaults.Sync.DeviceBindings ?? []))
             };
+                Import = ReadImport(import, defaults.Import),
         }
         catch (JsonException exception)
         {
@@ -987,6 +990,14 @@ public sealed record PatchouliAppSettings(
                 InvalidOperationException => "settings_path_rejected",
                 _ => "settings_io_failed"
             };
+            if (saveAll || dirtyFields!.Contains("Import"))
+            {
+                root["Import"] = JsonSerializer.SerializeToNode(new
+                {
+                    Import.MaxFailedPageRatio
+                });
+            }
+
             return new SettingsSaveResult(false, code, exception.Message, "user_settings", exception is IOException);
         }
         finally
@@ -1081,6 +1092,18 @@ public sealed record PatchouliAppSettings(
         {
             return fallback;
         }
+    private static ImportAppSettings ReadImport(JsonElement? section, ImportAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        return new ImportAppSettings(
+            ImportAppSettings.ClampRatio(
+                ReadDouble(element, "MaxFailedPageRatio", fallback.MaxFailedPageRatio)));
+    }
+
     }
 
     private static IReadOnlyList<DeviceRootBindingAppSettings> ReadDeviceBindings(

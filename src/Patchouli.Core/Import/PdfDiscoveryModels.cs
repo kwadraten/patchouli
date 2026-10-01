@@ -26,10 +26,15 @@ public sealed record PdfImportRequest(
     string? Authors,
     int? PageCount);
 
+public sealed record PdfImportPageFailure(int PageIndex, string ErrorMessage);
+
 public sealed record PdfImportResult(
     bool Success,
     string? ErrorMessage,
     string? Status,
     string? CreatedItemId,
     string? CreatedFileAssetId,
-    string? CreatedDocumentInstanceId);
+    string? CreatedDocumentInstanceId,
+    int PageCount = 0,
+    int FailedPageCount = 0,
+    IReadOnlyList<PdfImportPageFailure>? PageFailures = null);

@@ -329,7 +329,7 @@ public sealed class FileAssetService : IFileAssetService
         public string ItemId { get; init; } = string.Empty;
     }
 
-    private static object ToParameters(FileAsset asset)
+    internal static object ToParameters(FileAsset asset)
     {
         return new
         {
@@ -349,7 +349,7 @@ public sealed class FileAssetService : IFileAssetService
         };
     }
 
-    private static FileAssetId CreateFileAssetId(string? fullBlake3)
+    internal static FileAssetId CreateFileAssetId(string? fullBlake3)
     {
         if (string.IsNullOrWhiteSpace(fullBlake3) || fullBlake3.Length < 32)
         {

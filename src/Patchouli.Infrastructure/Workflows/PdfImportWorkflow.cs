@@ -1,47 +1,56 @@
 using Patchouli.Core.Bibliography;
-using Patchouli.Core.Documents;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Core.Documents;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
+using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Infrastructure.Bibliography;
+using Patchouli.Infrastructure.Files;
+using Patchouli.Infrastructure.Import;
 
 namespace Patchouli.Infrastructure.Workflows;
 
 public sealed class PdfImportWorkflow
 {
-    private readonly IFileAssetService _fileAssetService;
-    private readonly IItemService _itemService;
-    private readonly IDocumentInstanceService _documentInstanceService;
-    private readonly IPageService _pageService;
+    internal const double DefaultMaxFailedPageRatio = 0.2;
+
+    private readonly ImportBatchWriter _batchWriter;
     private readonly IPdfMetadataReader _pdfMetadataReader;
     private readonly IClock _clock;
+    private readonly ILibraryIdentityService _libraryIdentityService;
+    private readonly IFileFingerprintService _fingerprintService;
     private readonly IItemTypeInferenceService? _itemTypeInferenceService;
     private readonly IHostActivityTracker? _activityTracker;
     private readonly CancellationToken _hostLifetime;
+    private readonly IPdfPageInfoReader? _pageInfoReader;
+    private readonly double _maxFailedPageRatio;
 
     public PdfImportWorkflow(
-        IFileAssetService fileAssetService,
-        IItemService itemService,
-        IDocumentInstanceService documentInstanceService,
-        IPageService pageService,
+        ImportBatchWriter batchWriter,
         IPdfMetadataReader pdfMetadataReader,
         IClock clock,
+        ILibraryIdentityService libraryIdentityService,
+        IFileFingerprintService? fingerprintService = null,
         IItemTypeInferenceService? itemTypeInferenceService = null,
         IHostActivityTracker? activityTracker = null,
-        CancellationToken hostLifetime = default)
+        CancellationToken hostLifetime = default,
+        IPdfPageInfoReader? pageInfoReader = null,
+        double? maxFailedPageRatio = null)
     {
-        _fileAssetService = fileAssetService;
-        _itemService = itemService;
-        _documentInstanceService = documentInstanceService;
-        _pageService = pageService;
+        _batchWriter = batchWriter;
         _pdfMetadataReader = pdfMetadataReader;
         _clock = clock;
+        _libraryIdentityService = libraryIdentityService;
+        _fingerprintService = fingerprintService ?? new FileFingerprintService();
         _itemTypeInferenceService = itemTypeInferenceService;
         _activityTracker = activityTracker;
         _hostLifetime = hostLifetime;
+        _pageInfoReader = pageInfoReader;
+        _maxFailedPageRatio = maxFailedPageRatio ?? DefaultMaxFailedPageRatio;
     }
 
     public async Task<PdfImportResult> ImportPdfAsync(
@@ -69,14 +78,80 @@ public sealed class PdfImportWorkflow
             HostActivityKind.Import,
             Path.GetFileName(request.PdfPath));
 
-        Result<FileAsset> fileAssetResult =
-            await _fileAssetService.RegisterFileAsync(request.PdfPath, cancellationToken);
-        if (fileAssetResult.IsFailure)
+        Result<LibraryMetadata> libraryResult =
+            await _libraryIdentityService.GetCurrentLibraryAsync(cancellationToken);
+        if (libraryResult.IsFailure)
         {
-            return new PdfImportResult(false, fileAssetResult.ErrorMessage, null, null, null, null);
+            return new PdfImportResult(false, libraryResult.ErrorMessage, null, null, null, null);
         }
 
-        FileAsset fileAsset = fileAssetResult.Value;
+        string normalizedPath = Path.GetFullPath(request.PdfPath);
+        Result<FileFingerprint> fingerprintResult =
+            await _fingerprintService.GetFileMetadataAsync(normalizedPath, cancellationToken);
+        if (fingerprintResult.IsFailure)
+        {
+            return new PdfImportResult(false, fingerprintResult.ErrorMessage, null, null, null, null);
+        }
+
+        IReadOnlyList<PdfPageInfoResult>? pageInfoResults = _pageInfoReader is null
+            ? null
+            : await _pageInfoReader.GetPageInfosAsync(normalizedPath, cancellationToken);
+
+        DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+        FileFingerprint fingerprint = fingerprintResult.Value;
+        DocumentInstanceId documentInstanceId = DocumentInstanceId.New();
+        List<PdfImportPageFailure> failures = [];
+        List<PdfImportPagePlaceholder> placeholders = [];
+        List<Page> pages = new(pageCount.Value);
+        for (int pageIndex = 0; pageIndex < pageCount.Value; pageIndex++)
+        {
+            PdfPageInfoResult? infoResult = pageInfoResults is { Count: > 0 } && pageIndex < pageInfoResults.Count
+                ? pageInfoResults[pageIndex]
+                : null;
+            if (infoResult is { Success: true, Info: { } info })
+            {
+                pages.Add(CreatePage(documentInstanceId, pageIndex, info.Width, info.Height, info.Rotation, now));
+                continue;
+            }
+
+            pages.Add(CreatePage(documentInstanceId, pageIndex, null, null, 0, now));
+            if (infoResult is { Success: false })
+            {
+                string reason = string.IsNullOrWhiteSpace(infoResult.ErrorMessage)
+                    ? "Page info could not be read."
+                    : infoResult.ErrorMessage;
+                failures.Add(new PdfImportPageFailure(pageIndex, reason));
+                placeholders.Add(new PdfImportPagePlaceholder(
+                    pageIndex, DocumentBoxDiagnosticCodes.ImportPagePlaceholder, reason));
+            }
+        }
+
+        int failedCount = failures.Count;
+        if (failedCount > 0 && (double)failedCount / pageCount.Value > _maxFailedPageRatio)
+        {
+            double ratio = (double)failedCount / pageCount.Value;
+            return new PdfImportResult(
+                false,
+                $"Import failed: {failedCount} of {pageCount.Value} pages failed " +
+                $"(failure ratio {ratio:0.###} exceeds the maximum failed page ratio {_maxFailedPageRatio:0.###}).",
+                null, null, null, null,
+                pageCount.Value, failedCount, failures);
+        }
+
+        FileAsset fileAsset = new(
+            FileAssetService.CreateFileAssetId(fingerprint.FullBlake3),
+            libraryResult.Value.LibraryId,
+            normalizedPath,
+            fingerprint.FileName,
+            fingerprint.SizeBytes,
+            fingerprint.MtimeUtc,
+            fingerprint.QuickHash,
+            fingerprint.FullBlake3,
+            null,
+            null,
+            FileAssetStatus.Available,
+            now,
+            now);
 
         string title = !string.IsNullOrWhiteSpace(request.Title)
             ? request.Title.Trim()
@@ -86,42 +161,40 @@ public sealed class PdfImportWorkflow
             ? $@"[{{""name"":""{request.Authors.Trim()}""}}]"
             : null;
 
-        Result<ItemMetadata> itemResult = await _itemService.CreateItemAsync(
-            new CreateItemRequest(
-                "general",
-                title,
-                CreatorsJson: creatorsJson),
-            cancellationToken);
+        (ItemMetadata item, IReadOnlyList<ItemCreatorInput> creators, IReadOnlyList<ItemDateInput> dates) =
+            ItemService.CreateItemMetadata(
+                libraryResult.Value.LibraryId,
+                new CreateItemRequest("general", title, CreatorsJson: creatorsJson),
+                now);
 
-        if (itemResult.IsFailure)
+        DocumentInstance documentInstance = new(
+            documentInstanceId,
+            item.ItemId,
+            fileAsset.FileAssetId,
+            title,
+            DocumentInstanceType.PrimaryScan,
+            true,
+            DocumentInstanceStatus.Active,
+            now,
+            now);
+
+        PdfImportBatch batch = new(
+            now,
+            fileAsset,
+            normalizedPath,
+            item,
+            creators,
+            dates,
+            documentInstance,
+            pages,
+            placeholders);
+
+        Result commitResult = await _batchWriter.CommitAsync(batch, cancellationToken);
+        if (commitResult.IsFailure)
         {
-            return new PdfImportResult(false, itemResult.ErrorMessage, null, null, null, null);
-        }
-
-        ItemMetadata item = itemResult.Value;
-
-        Result<DocumentInstance> docResult = await _documentInstanceService.AttachDocumentInstanceAsync(
-            item.ItemId, fileAsset.FileAssetId, DocumentInstanceType.PrimaryScan, title, true, cancellationToken);
-
-        if (docResult.IsFailure)
-        {
-            return new PdfImportResult(false, docResult.ErrorMessage, null, null, null, null);
-        }
-
-        DocumentInstance documentInstance = docResult.Value;
-
-        for (int i = 0; i < pageCount.Value; i++)
-        {
-            Result<Page> pageResult = await _pageService.CreatePageAsync(
-                documentInstance.DocumentInstanceId, i, $"Page {i + 1}",
-                null, null, 0, "normalized", null, null, "import", null,
-                cancellationToken);
-
-            if (pageResult.IsFailure)
-            {
-                return new PdfImportResult(false, $"Failed to create page {i}: {pageResult.ErrorMessage}",
-                    null, null, null, null);
-            }
+            return new PdfImportResult(
+                false, commitResult.ErrorMessage, null, null, null, null,
+                pageCount.Value, failedCount, failures);
         }
 
         if (_itemTypeInferenceService is not null)
@@ -141,10 +214,37 @@ public sealed class PdfImportWorkflow
         }
 
         return new PdfImportResult(
-            true, null, "imported",
+            true, null,
+            failedCount > 0 ? "imported_with_page_failures" : "imported",
             item.ItemId.ToString(),
             fileAsset.FileAssetId.ToString(),
-            documentInstance.DocumentInstanceId.ToString());
+            documentInstance.DocumentInstanceId.ToString(),
+            pageCount.Value, failedCount, failures);
+    }
+
+    private static Page CreatePage(
+        DocumentInstanceId documentInstanceId,
+        int pageIndex,
+        double? width,
+        double? height,
+        int rotation,
+        DateTimeOffset now)
+    {
+        return new Page(
+            PageId.New(),
+            documentInstanceId,
+            pageIndex,
+            $"Page {pageIndex + 1}",
+            width,
+            height,
+            rotation,
+            "normalized",
+            null,
+            null,
+            "import",
+            null,
+            now,
+            now);
     }
 
     private static (string SuggestedType, double Confidence, string EvidenceSummary)? InferTypeFromFileName(

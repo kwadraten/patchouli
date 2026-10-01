@@ -385,11 +385,12 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
-    public void Settings_page_uses_eight_groups_and_keeps_csl_about_outside()
+    public void Settings_page_uses_nine_groups_and_keeps_csl_about_outside()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与显示", "库与本机路径", "本地文件", "OCR 引擎", "元数据来源", "搜索重写", "MCP 服务与安全", "同步与快照");
+            "外观与显示", "库与本机路径", "本地文件", "导入", "OCR 引擎", "元数据来源", "搜索重写",
+            "MCP 服务与安全", "同步与快照");
         vm.Settings.Categories.Select(category => category.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();

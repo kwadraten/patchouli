@@ -29,6 +29,7 @@ using Patchouli.Infrastructure.Database;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Documents.Translations;
 using Patchouli.Infrastructure.Files;
+using Patchouli.Infrastructure.Import;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Mcp;
@@ -242,8 +243,16 @@ public sealed class HostServices
         FileAssetGc = new FileAssetGcService(ConnectionFactory, snapshotSyncSettingsStore, logger);
         PdfMetadata = new PdfMetadataReader();
         PdfDiscovery = new PdfDiscoveryService(FileSearchRootAccess, activityTracker, LifetimeToken);
-        PdfImport = new PdfImportWorkflow(Files, Items, Documents, Pages, PdfMetadata, Clock, ItemTypeInference,
-            activityTracker, LifetimeToken);
+        PdfImport = new PdfImportWorkflow(
+            new ImportBatchWriter(ConnectionFactory, LibraryRevisions),
+            pdfMetadata,
+            Clock,
+            Library,
+            itemTypeInferenceService: ItemTypeInference,
+            activityTracker: activityTracker,
+            hostLifetime: LifetimeToken,
+            pageInfoReader: pdfMetadata,
+            maxFailedPageRatio: settings.Import.MaxFailedPageRatio);
         McpVerification = new McpVerificationService(ConnectionFactory, Mcp);
         FirstRunWorkflow = new FirstRunWorkflow(Library, PdfDiscovery, PdfImport, BlockingOperations);
     }
@@ -519,6 +528,26 @@ public sealed class HostServices
             reportUnexpected(exception, "operation-log", "migration");
         }
 
+
+            try
+            {
+                ImportResidueGcService importResidueGc = new(
+                    services.ConnectionFactory,
+                    services.Clock,
+                    services.LibraryRevisions,
+                    services.FileAssetGc,
+                    startupLogger);
+                ImportResidueGcResult residueResult = await importResidueGc.RunOnceAsync();
+                await startupLogger.LogAsync("import-residue-gc",
+                    $"Startup import residue GC finished: instancesRemoved={residueResult.InstancesRemoved}, " +
+                    $"itemsRemoved={residueResult.ItemsRemoved}, fileAssetsRemoved={residueResult.FileAssetsRemoved}.");
+            }
+            catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(
+                                                  exception,
+                                                  "host.composition",
+                                                  "import-residue-gc"))
+            {
+            }
         return services;
     }
 

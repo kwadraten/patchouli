@@ -1010,7 +1010,7 @@ public sealed class ItemService : IItemService
         }
     }
 
-    private static object ToParameters(ItemMetadata item)
+    internal static object ToParameters(ItemMetadata item)
     {
         return new
         {
@@ -1152,7 +1152,7 @@ public sealed class ItemService : IItemService
                 group => (IReadOnlyList<ItemIdentifier>)group.Select(row => row.ToIdentifier()).ToArray());
     }
 
-    private static async Task ReplaceCreatorsAsync(
+    internal static async Task ReplaceCreatorsAsync(
         SqliteConnection connection,
         DbTransaction transaction,
         ItemId itemId,
@@ -1196,7 +1196,7 @@ public sealed class ItemService : IItemService
         }
     }
 
-    private static async Task ReplaceDatesAsync(
+    internal static async Task ReplaceDatesAsync(
         SqliteConnection connection,
         DbTransaction transaction,
         ItemId itemId,
@@ -1379,6 +1379,55 @@ public sealed class ItemService : IItemService
         return Result<T>.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
     }
 
+    internal static (ItemMetadata Item, IReadOnlyList<ItemCreatorInput> Creators, IReadOnlyList<ItemDateInput> Dates)
+        CreateItemMetadata(
+            LibraryId libraryId,
+            CreateItemRequest request,
+            DateTimeOffset now)
+    {
+        ItemId itemId = ItemId.New();
+        IReadOnlyList<ItemCreatorInput> creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
+        IReadOnlyList<ItemDateInput> dateInputs = request.Dates ?? ParseDateInputs(request.Date);
+        ItemMetadata item = new(
+            itemId,
+            libraryId,
+            request.ItemType.Trim(),
+            GenerateCitationKey(request.Title, itemId),
+            request.Title.Trim(),
+            NullIfWhiteSpace(request.Subtitle),
+            NullIfWhiteSpace(request.TitleShort),
+            request.Creators is null
+                ? DefaultJsonArray(request.CreatorsJson)
+                : SerializeCreatorCache(creatorInputs),
+            Array.Empty<ItemCreator>(),
+            request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
+            Array.Empty<ItemDate>(),
+            Array.Empty<ItemIdentifier>(),
+            NullIfWhiteSpace(request.PublicationTitle),
+            NullIfWhiteSpace(request.ContainerTitleShort),
+            NullIfWhiteSpace(request.CollectionTitle),
+            NullIfWhiteSpace(request.Publisher),
+            NullIfWhiteSpace(request.Place),
+            NullIfWhiteSpace(request.Edition),
+            NullIfWhiteSpace(request.Genre),
+            NullIfWhiteSpace(request.Number),
+            NullIfWhiteSpace(request.ChapterNumber),
+            NullIfWhiteSpace(request.Volume),
+            NullIfWhiteSpace(request.Version),
+            NullIfWhiteSpace(request.Issue),
+            NullIfWhiteSpace(request.Pages),
+            NullIfWhiteSpace(request.Language),
+            NullIfWhiteSpace(request.Status),
+            NullIfWhiteSpace(request.Note),
+            NullIfWhiteSpace(request.AbstractText),
+            DefaultJsonArray(request.TagsJson),
+            DefaultJsonArray(request.CollectionsJson),
+            DefaultJsonObject(request.CustomFieldsJson),
+            now,
+            now);
+        return (item, creatorInputs, dateInputs);
+    }
+
     private async Task<Result<ItemMetadata>> CreateItemCoreAsync(
         CreateItemRequest request,
         CancellationToken cancellationToken)
@@ -1402,47 +1451,10 @@ public sealed class ItemService : IItemService
         try
         {
             DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
-            ItemId itemId = ItemId.New();
-            IReadOnlyList<ItemCreatorInput>
-                creatorInputs = request.Creators ?? ParseCreatorInputs(request.CreatorsJson);
-            IReadOnlyList<ItemDateInput> dateInputs = request.Dates ?? ParseDateInputs(request.Date);
-            ItemMetadata item = new(
-                itemId,
-                libraryResult.Value.LibraryId,
-                request.ItemType.Trim(),
-                GenerateCitationKey(request.Title, itemId),
-                request.Title.Trim(),
-                NullIfWhiteSpace(request.Subtitle),
-                NullIfWhiteSpace(request.TitleShort),
-                request.Creators is null
-                    ? DefaultJsonArray(request.CreatorsJson)
-                    : SerializeCreatorCache(creatorInputs),
-                Array.Empty<ItemCreator>(),
-                request.Dates is null ? NullIfWhiteSpace(request.Date) : DisplayIssuedDate(dateInputs),
-                Array.Empty<ItemDate>(),
-                Array.Empty<ItemIdentifier>(),
-                NullIfWhiteSpace(request.PublicationTitle),
-                NullIfWhiteSpace(request.ContainerTitleShort),
-                NullIfWhiteSpace(request.CollectionTitle),
-                NullIfWhiteSpace(request.Publisher),
-                NullIfWhiteSpace(request.Place),
-                NullIfWhiteSpace(request.Edition),
-                NullIfWhiteSpace(request.Genre),
-                NullIfWhiteSpace(request.Number),
-                NullIfWhiteSpace(request.ChapterNumber),
-                NullIfWhiteSpace(request.Volume),
-                NullIfWhiteSpace(request.Version),
-                NullIfWhiteSpace(request.Issue),
-                NullIfWhiteSpace(request.Pages),
-                NullIfWhiteSpace(request.Language),
-                NullIfWhiteSpace(request.Status),
-                NullIfWhiteSpace(request.Note),
-                NullIfWhiteSpace(request.AbstractText),
-                DefaultJsonArray(request.TagsJson),
-                DefaultJsonArray(request.CollectionsJson),
-                DefaultJsonObject(request.CustomFieldsJson),
-                now,
-                now);
+            (ItemMetadata item, IReadOnlyList<ItemCreatorInput> creatorInputs,
+                    IReadOnlyList<ItemDateInput> dateInputs) =
+                CreateItemMetadata(libraryResult.Value.LibraryId, request, now);
+            ItemId itemId = item.ItemId;
 
             using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
             await using SqliteConnection connection = _connectionFactory.CreateConnection();

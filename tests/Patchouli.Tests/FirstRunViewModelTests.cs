@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
@@ -13,6 +13,7 @@ using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Bibliography;
 using Patchouli.Infrastructure.Documents;
 using Patchouli.Infrastructure.Files;
+using Patchouli.Infrastructure.Import;
 using Patchouli.Infrastructure.LibraryIdentity;
 using Patchouli.Infrastructure.Layout;
 using Patchouli.Infrastructure.Migrations;
@@ -355,12 +356,10 @@ public sealed class FirstRunViewModelTests
             LibraryIdentityService library = new(database.ConnectionFactory, clock);
             await library.CreateLibraryAsync("Scan Import");
             PdfImportWorkflow pdfImport = new(
-                new FileAssetService(database.ConnectionFactory, library, clock),
-                new ItemService(database.ConnectionFactory, library, clock),
-                new DocumentInstanceService(database.ConnectionFactory, clock),
-                new PageService(database.ConnectionFactory, clock),
+                new ImportBatchWriter(database.ConnectionFactory),
                 new PdfMetadataReader(),
-                clock);
+                clock,
+                library);
             BlockingOperationService blockingOperations = new(database.ConnectionFactory, clock);
             FirstRunWorkflow workflow = new(
                 library,

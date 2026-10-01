@@ -370,6 +370,14 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                         knownPaths.Add(normalizedPath);
                         progress?.Invoke(processedRoots, roots.Value.Count, $"已导入：{candidate.FileName}",
                             $"导入完成 → {normalizedPath}");
+                        if (importedPdf.FailedPageCount > 0)
+                        {
+                            string firstPageFailure = importedPdf.PageFailures?.FirstOrDefault()?.ErrorMessage
+                                                      ?? "unknown";
+                            await LogOperationAsync("file-scan",
+                                $"Import finished with {importedPdf.FailedPageCount} failed page placeholder(s) " +
+                                $"(trigger={trigger}): {normalizedPath} - first failure: {firstPageFailure}");
+                        }
                     }
                     else
                     {

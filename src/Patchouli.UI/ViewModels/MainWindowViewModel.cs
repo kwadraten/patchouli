@@ -2348,6 +2348,23 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         return true;
     }
 
+    /// <summary>Persists the whole-book import failure threshold. The failed-page ratio is clamped
+    /// to [0, 0.9]; strictly above the threshold a book import fails and rolls back.</summary>
+    public async Task<bool> SaveImportSettingsAsync(double maxFailedPageRatio)
+    {
+        double ratio = ImportAppSettings.ClampRatio(maxFailedPageRatio);
+        SettingsSaveResult saved = await UpdateAppOptionsAsync(
+            _settings with { Import = _settings.Import with { MaxFailedPageRatio = ratio } }, "Import");
+        if (!saved.IsSuccess)
+        {
+            ReportError(saved.ErrorMessage ?? "无法保存导入设置。");
+            return false;
+        }
+
+        Report("导入设置已保存。");
+        return true;
+    }
+
     public async Task<bool> RemoveMinerUCredentialAsync()
     {
         ConfirmDialogResult? choice = await Dialogs.ShowDialogAsync<ConfirmDialogResult>(

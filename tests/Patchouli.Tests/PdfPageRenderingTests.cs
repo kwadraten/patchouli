@@ -487,7 +487,8 @@ public sealed class PdfPageRenderingTests
                 "038_retire_unused_tables.sql",
                 "039_search_settings_rewrite_enabled.sql",
                 "040_create_collections.sql",
-                "041_create_page_translations.sql");
+                "041_create_page_translations.sql",
+                "046_track_local_maintenance.sql");
     }
 
     private sealed class Context : IAsyncDisposable
