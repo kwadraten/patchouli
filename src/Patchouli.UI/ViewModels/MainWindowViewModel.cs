@@ -2238,7 +2238,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
         Shell.MinerUToken = trimmed;
         FirstRun.MinerUToken = trimmed;
-        _settingsViewModel?.OcrProviderSettings.LoadPersistedToken(trimmed);
+        _settingsViewModel?.OcrProviderSettings.LoadPersistedCredential(trimmed);
         Report("MinerU 凭据已保存。");
         return true;
     }
@@ -2297,11 +2297,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         {
             ReportError(saved.ErrorMessage ?? "无法保存 OCR 引擎设置。");
             return false;
-        }
-
-        if (_settingsViewModel is { } settings)
-        {
-            settings.OcrProviderSettings.LoadPersistedToken(await GetPersistedMinerUTokenAsync());
         }
 
         Report("OCR 引擎选择已保存。");
@@ -2377,7 +2372,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _settings = PatchouliAppSettings.Load(SettingsFilePath);
         Shell.MinerUToken = "";
         FirstRun.MinerUToken = "";
-        _settingsViewModel?.OcrProviderSettings.LoadPersistedToken("");
+        _settingsViewModel?.OcrProviderSettings.LoadPersistedCredential("");
         Report("MinerU 凭据已移除。");
         return true;
     }

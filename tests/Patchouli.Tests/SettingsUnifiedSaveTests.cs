@@ -135,6 +135,41 @@ public sealed class SettingsUnifiedSaveTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task Ocr_engine_selection_save_with_persisted_mineru_token_keeps_new_value()
+    {
+        string path = TempDbPath("ocr-engines-token");
+        try
+        {
+            MainWindowViewModel vm = await OpenMainAsync(path);
+            vm.Settings.OcrProviderSettings.MinerUTokenInput.Should().BeEmpty();
+            (await vm.SaveMinerUSettingsAsync("persisted-token", "vlm", 300)).Should().BeTrue();
+            vm.Settings.OcrProviderSettings.MinerUTokenInput.Should().Be("persisted-token");
+            await vm.Settings.OcrProviderSettings.LoadAsync();
+
+            string originalDocument = vm.Settings.OcrProviderSettings.SelectedDocumentEngine;
+            string target = vm.Settings.OcrProviderSettings.AvailableEngines
+                .FirstOrDefault(option => option.EngineId != originalDocument)?.EngineId ?? originalDocument;
+
+            vm.Settings.OcrProviderSettings.SelectedDocumentEngine = target;
+            vm.Settings.OcrProviderSettings.IsDirty.Should().BeTrue();
+
+            await vm.Settings.SaveCommand.ExecuteAsync();
+
+            vm.Settings.OcrProviderSettings.SaveState.Should()
+                .Be(SettingsSaveState.Saved, $"status: {vm.Settings.GlobalStatus}");
+            vm.Settings.OcrProviderSettings.SelectedDocumentEngine.Should().Be(target);
+            vm.Settings.OcrProviderSettings.IsDirty.Should().BeFalse();
+            vm.AppOptions.OcrEngines.DocumentOcrEngine.Should().Be(target);
+            PatchouliAppSettings loaded = PatchouliAppSettings.Load(_settings.Path);
+            loaded.OcrEngines.DocumentOcrEngine.Should().Be(target);
+        }
+        finally
+        {
+            CleanupDb(path);
+        }
+    }
+
     public void Dispose()
     {
         _settings.Dispose();

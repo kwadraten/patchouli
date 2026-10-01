@@ -151,12 +151,16 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
                 }
             }
 
-            foreach (SearchRewriteRuleId ruleId in _pendingDeletions)
+            foreach (SearchRewriteRuleId ruleId in _pendingDeletions.ToArray())
             {
                 Result deleted = await services.SearchProfiles.DeleteRuleAsync(ruleId);
                 if (deleted.IsFailure)
                 {
                     errors.Add($"删除规则：{deleted.ErrorMessage}");
+                }
+                else
+                {
+                    _pendingDeletions.Remove(ruleId);
                 }
             }
 
@@ -347,8 +351,8 @@ public sealed record SearchRewriteScopeOption(string Label, SearchProfileId? Pro
 public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
 {
     private readonly SearchRewriteSettingsViewModel _parent;
-    private readonly SearchProfileId? _originalProfileId;
-    private readonly bool _originalEnabled;
+    private SearchProfileId? _originalProfileId;
+    private bool _originalEnabled;
     private readonly bool _isConstructing;
 
     internal SearchRewriteRuleRowViewModel(
@@ -381,7 +385,7 @@ public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
         _isConstructing = false;
     }
 
-    public SearchRewriteRuleId? RuleId { get; }
+    public SearchRewriteRuleId? RuleId { get; private set; }
     public bool IsExisting => RuleId is not null;
     public RelayCommand DeleteCommand { get; }
 
@@ -553,36 +557,50 @@ public sealed partial class SearchRewriteRuleRowViewModel : ViewModelBase
         string ruleType = SelectedRuleType.Value;
         string direction = SelectedDirection.Value;
 
-        if (RuleId is null)
+        if (RuleId is null || profileId != _originalProfileId)
         {
-            Result<SearchRewriteRule> added = await services.SearchProfiles.AddRewriteRuleAsync(profileId, ruleType,
-                pattern, replacement, direction, Priority, note);
-            return added.IsFailure
-                ? Result.Failure(added.ErrorCode!, added.ErrorMessage!)
-                : await ApplyEnabledIfNeededAsync(services, added.Value.RuleId, true);
+            if (RuleId is { } oldRuleId)
+            {
+                Result deleted = await services.SearchProfiles.DeleteRuleAsync(oldRuleId);
+                if (deleted.IsFailure)
+                {
+                    return deleted;
+                }
+
+                // The old rule is gone; a failed re-add below must retry as a plain insert instead
+                // of deleting an already-deleted id.
+                RuleId = null;
+                Raise(nameof(IsExisting));
+            }
+
+            return await AddAsNewRuleAsync(services, profileId, ruleType, pattern, replacement, direction, note);
         }
 
         SearchRewriteRuleId ruleId = RuleId.Value;
-        if (profileId != _originalProfileId)
-        {
-            Result deleted = await services.SearchProfiles.DeleteRuleAsync(ruleId);
-            if (deleted.IsFailure)
-            {
-                return deleted;
-            }
-
-            Result<SearchRewriteRule> reAdded = await services.SearchProfiles.AddRewriteRuleAsync(profileId, ruleType,
-                pattern, replacement, direction, Priority, note);
-            return reAdded.IsFailure
-                ? Result.Failure(reAdded.ErrorCode!, reAdded.ErrorMessage!)
-                : await ApplyEnabledIfNeededAsync(services, reAdded.Value.RuleId, true);
-        }
-
         Result<SearchRewriteRule> updated = await services.SearchProfiles.UpdateRewriteRuleAsync(ruleId, ruleType,
             pattern, replacement, direction, Priority, note);
         return updated.IsFailure
             ? Result.Failure(updated.ErrorCode!, updated.ErrorMessage!)
             : await ApplyEnabledIfNeededAsync(services, ruleId, _originalEnabled);
+    }
+
+    private async Task<Result> AddAsNewRuleAsync(HostServices services, SearchProfileId? profileId, string ruleType,
+        string pattern, string replacement, string direction, string? note)
+    {
+        Result<SearchRewriteRule> added = await services.SearchProfiles.AddRewriteRuleAsync(profileId, ruleType,
+            pattern, replacement, direction, Priority, note);
+        if (added.IsFailure)
+        {
+            return Result.Failure(added.ErrorCode!, added.ErrorMessage!);
+        }
+
+        // Adopt the persisted identity immediately so a retry after a partially failed save
+        // updates this rule instead of inserting a duplicate.
+        RuleId = added.Value.RuleId;
+        _originalProfileId = profileId;
+        _originalEnabled = true;
+        Raise(nameof(IsExisting));
+        return await ApplyEnabledIfNeededAsync(services, added.Value.RuleId, true);
     }
 
     private async Task<Result> ApplyEnabledIfNeededAsync(HostServices services, SearchRewriteRuleId ruleId,
