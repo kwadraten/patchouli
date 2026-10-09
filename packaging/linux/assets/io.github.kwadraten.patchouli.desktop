@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Patchouli
+GenericName=Literature Manager
+Comment=Personal literature manager for large PDF libraries
+Exec=__EXEC__
+Icon=io.github.kwadraten.patchouli
+Terminal=false
+Type=Application
+Categories=Office;Education;
+StartupWMClass=Patchouli.UI
+MimeType=application/pdf;

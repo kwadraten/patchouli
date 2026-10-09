@@ -1,0 +1,26 @@
+app-id: io.github.kwadraten.patchouli
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: patchouli
+finish-args:
+  # X11 + Wayland + GPU + audio for the Avalonia desktop UI
+  - --share=ipc
+  - --socket=x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  # The app tracks PDF files by content hash wherever the user keeps them.
+  - --filesystem=home
+  - --talk-name=org.freedesktop.Notifications
+modules:
+  - name: patchouli
+    buildsystem: simple
+    build-commands:
+      - cp -r usr /app/
+      - mkdir -p /app/bin
+      - ln -s ../lib/patchouli/Patchouli.UI /app/bin/patchouli
+      - ln -s ../lib/patchouli-cli/patchouli-cli /app/bin/patchouli-cli
+    sources:
+      - type: dir
+        path: usr
