@@ -15,6 +15,7 @@ using Avalonia.VisualTree;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
+using Microsoft.Reactive.Testing;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Diagnostics;
@@ -1230,6 +1231,31 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Library_sidebar_visibility_updates_when_first_run_finishes_without_switching_tabs()
+    {
+        using MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
+        vm.IsFirstRunVisible = true;
+        WorkspaceTabViewModel? activeTab = vm.ActiveTab;
+        bool displayedLibrary = vm.Shell.IsLibraryVisible;
+        vm.Shell.PropertyChanged += (sender, args) =>
+        {
+            if (args.PropertyName == nameof(LibraryShellViewModel.IsLibraryVisible))
+            {
+                displayedLibrary = ((LibraryShellViewModel)sender!).IsLibraryVisible;
+            }
+        };
+
+        displayedLibrary.Should().BeFalse();
+        vm.IsFirstRunVisible = false;
+
+        displayedLibrary.Should().BeTrue();
+        vm.ActiveTab.Should().BeSameAs(activeTab);
+
+        vm.IsFirstRunVisible = true;
+        displayedLibrary.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Library_sidebars_reopen_after_switching_tabs()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
@@ -1370,6 +1396,48 @@ public sealed class UiViewModelTests : IDisposable
             dialogs.LastViewModel.Should().BeOfType<BlockingOperationDialogViewModel>().Subject;
         closed.OperationState.Should().Be("已取消");
         closed.IsTerminal.Should().BeTrue();
+    }
+
+    [Fact]
+    public void File_search_root_visibility_updates_after_queued_state_changes_without_switching_tabs()
+    {
+        TestScheduler scheduler = new();
+        using MainWindowViewModel vm = new(new FakeClipboard(), settingsPath: _settings.Path,
+            uiScheduler: scheduler);
+        scheduler.AdvanceBy(1);
+        WorkspaceTabViewModel? activeTab = vm.ActiveTab;
+        bool displayedRoots = vm.Shell.HasFileSearchRoots;
+        bool displayedEmptyState = vm.Shell.NoFileSearchRoots;
+        vm.Shell.PropertyChanged += (sender, args) =>
+        {
+            if (args.PropertyName == nameof(LibraryShellViewModel.HasFileSearchRoots))
+            {
+                displayedRoots = ((LibraryShellViewModel)sender!).HasFileSearchRoots;
+            }
+
+            if (args.PropertyName == nameof(LibraryShellViewModel.NoFileSearchRoots))
+            {
+                displayedEmptyState = ((LibraryShellViewModel)sender!).NoFileSearchRoots;
+            }
+        };
+
+        vm.FileSearchRoots.Add(new SidebarFileSearchRootViewModel(
+            TestPaths.FromRepositoryRoot("tests"), true, DateTimeOffset.UtcNow, 0));
+        // RefreshSidebarPathsAsync publishes page state before the queued Rx setters run.
+        vm.Shell.RaisePageStateChanged();
+        displayedRoots.Should().BeFalse();
+        displayedEmptyState.Should().BeTrue();
+
+        scheduler.AdvanceBy(10);
+
+        displayedRoots.Should().BeTrue();
+        displayedEmptyState.Should().BeFalse();
+        vm.ActiveTab.Should().BeSameAs(activeTab);
+
+        vm.FileSearchRoots.Clear();
+        scheduler.AdvanceBy(10);
+        displayedRoots.Should().BeFalse();
+        displayedEmptyState.Should().BeTrue();
     }
 
     [Fact]

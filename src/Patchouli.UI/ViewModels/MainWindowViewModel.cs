@@ -133,6 +133,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     [ObservableProperty] public partial bool NoFileSearchRoots { get; private set; } = true;
 
+    partial void OnHasFileSearchRootsChanged(bool value)
+    {
+        Shell?.RaisePageStateChanged();
+    }
+
+    partial void OnNoFileSearchRootsChanged(bool value)
+    {
+        Shell?.RaisePageStateChanged();
+    }
+
     [ObservableProperty] public partial string Status { get; set; } = "请选择运行数据库路径，然后创建或打开资料库。";
 
     [ObservableProperty] public partial bool StatusIsError { get; set; }
@@ -188,6 +198,11 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ObservableProperty] public partial FirstRunViewModel FirstRun { get; private set; }
 
     [ObservableProperty] public partial bool IsFirstRunVisible { get; set; }
+
+    partial void OnIsFirstRunVisibleChanged(bool value)
+    {
+        Shell?.RaisePageStateChanged();
+    }
 
     public bool IsLibraryVisible => !IsFirstRunVisible;
     public bool IsSearchEnabled => !IsFirstRunVisible;
