@@ -91,6 +91,9 @@ public sealed class ReadingView : Control, ICustomHitTest
     public static readonly StyledProperty<bool> CanEditSelectionProperty =
         AvaloniaProperty.Register<ReadingView, bool>(nameof(CanEditSelection));
 
+    public static readonly StyledProperty<bool> IsActiveProperty =
+        AvaloniaProperty.Register<ReadingView, bool>(nameof(IsActive), true);
+
     static ReadingView()
     {
         SourceSceneProperty.Changed.AddClassHandler<ReadingView>((view, _) => view.OnSceneChanged());
@@ -102,6 +105,8 @@ public sealed class ReadingView : Control, ICustomHitTest
         ImageSourceProperty.Changed.AddClassHandler<ReadingView>((view, _) => view.OnImageSourceChanged());
         SelectionAccentBrushProperty.Changed.AddClassHandler<ReadingView>((view, _) =>
             view.InvalidateVisual());
+        IsActiveProperty.Changed.AddClassHandler<ReadingView>((view, change) =>
+            view.OnActiveChanged(change.GetNewValue<bool>()));
     }
 
     public ReadingView()
@@ -112,6 +117,12 @@ public sealed class ReadingView : Control, ICustomHitTest
         _copyItem.Click += OnCopyItemClick;
         _editItem.Click += OnEditItemClick;
         ContextRequested += OnContextRequested;
+    }
+
+    public bool IsActive
+    {
+        get => GetValue(IsActiveProperty);
+        set => SetValue(IsActiveProperty, value);
     }
 
     public ReadingScene? SourceScene
@@ -246,7 +257,11 @@ public sealed class ReadingView : Control, ICustomHitTest
         ResolveThemeBrushes();
         // Foreground/background are baked into TextLayout, so a theme change invalidates the cache.
         _layoutValid = false;
-        _imageLoadCancellation ??= new CancellationTokenSource();
+        if (IsActive)
+        {
+            _imageLoadCancellation ??= new CancellationTokenSource();
+        }
+
         _imageScrollViewer = this.FindAncestorOfType<ScrollViewer>();
         if (_imageScrollViewer is not null)
         {
@@ -255,7 +270,10 @@ public sealed class ReadingView : Control, ICustomHitTest
 
         InvalidateMeasure();
         InvalidateVisual();
-        EnsureImageLoads();
+        if (IsActive)
+        {
+            EnsureImageLoads();
+        }
     }
 
     /// <inheritdoc/>
@@ -278,7 +296,10 @@ public sealed class ReadingView : Control, ICustomHitTest
         // so without a repaint freshly exposed content stays blank until a click or a completed
         // image load happens to invalidate the view.
         InvalidateVisual();
-        EnsureImageLoads();
+        if (IsActive)
+        {
+            EnsureImageLoads();
+        }
     }
 
     /// <inheritdoc/>
@@ -1323,7 +1344,7 @@ public sealed class ReadingView : Control, ICustomHitTest
     private void EnsureImageLoads()
     {
         IReadingImageSource? source = ImageSource;
-        if (source is null || _imageLoadCancellation is not { } cancellation ||
+        if (!IsActive || source is null || _imageLoadCancellation is not { } cancellation ||
             cancellation.IsCancellationRequested)
         {
             return;
@@ -1400,11 +1421,21 @@ public sealed class ReadingView : Control, ICustomHitTest
     {
         if (generation != _imageGeneration)
         {
+            if (image is not null)
+            {
+                source.ReleaseImage(imageKey, image);
+            }
+
             return;
         }
 
         if (!_imagesInFlight.Remove(imageKey))
         {
+            if (image is not null)
+            {
+                source.ReleaseImage(imageKey, image);
+            }
+
             return;
         }
 
@@ -1434,6 +1465,23 @@ public sealed class ReadingView : Control, ICustomHitTest
 
         // Cancelled keys drop out of the in-flight set so a later attach retries them.
         _imagesInFlight.Clear();
+    }
+
+    private void OnActiveChanged(bool isActive)
+    {
+        if (isActive)
+        {
+            if (VisualRoot is not null)
+            {
+                _imageLoadCancellation ??= new CancellationTokenSource();
+                EnsureImageLoads();
+            }
+
+            return;
+        }
+
+        CancelImageLoads();
+        ReleaseAllImages();
     }
 
     private void ResetImageLoads()

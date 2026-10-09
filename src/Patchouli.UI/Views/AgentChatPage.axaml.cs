@@ -8,6 +8,7 @@ using Avalonia.Threading;
 using LiveMarkdown.Avalonia;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Services;
+using Patchouli.UI.Controls;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.AgentChat;
 
@@ -18,11 +19,15 @@ namespace Patchouli.UI.Views;
 ///     model's periodic refresh and hiding it stops that refresh, which is exactly the "closing
 ///     removes the front end only" contract (D9) — the run keeps going.
 /// </summary>
-public sealed partial class AgentChatPage : UserControl
+public sealed partial class AgentChatPage : UserControl, IWorkspaceTabPage
 {
     private AgentChatTabViewModel? _chat;
     private bool _followLatest = true;
     private bool? _isNarrow;
+    private bool _isActive;
+    private bool _isClosed;
+    private bool _pendingLatest;
+    private int _lifecycleGeneration;
 
     /// <summary>Creates the view.</summary>
     public AgentChatPage()
@@ -44,15 +49,14 @@ public sealed partial class AgentChatPage : UserControl
     {
         base.OnAttachedToVisualTree(e);
         Attach(DataContext as AgentChatTabViewModel);
-        _ = ActivateAsync();
+        OnTabActivated();
     }
 
     /// <inheritdoc />
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
-        // Detaching is a tab switch or a close; either way the session is left running.
-        _chat?.Deactivate();
+        OnTabDeactivated();
         Attach(null);
     }
 
@@ -65,24 +69,86 @@ public sealed partial class AgentChatPage : UserControl
 
         if (_chat is not null)
         {
+            if (_isActive)
+            {
+                _chat.Deactivate();
+            }
+
             _chat.Messages.CollectionChanged -= OnMessagesChanged;
         }
 
         _chat = chat;
-        if (chat is not null)
+        if (chat is not null && !_isClosed)
         {
             chat.Messages.CollectionChanged += OnMessagesChanged;
+            if (_isActive && !_isClosed)
+            {
+                _followLatest = true;
+                _pendingLatest = false;
+                int generation = ++_lifecycleGeneration;
+                _ = ActivateAsync(chat, generation);
+            }
         }
     }
 
-    private async Task ActivateAsync()
+    public void OnTabActivated()
+    {
+        if (_isClosed || _isActive)
+        {
+            return;
+        }
+
+        _isActive = true;
+        int generation = ++_lifecycleGeneration;
+        if (_pendingLatest && _followLatest)
+        {
+            _pendingLatest = false;
+            PostScrollToLatest(generation);
+        }
+
+        if (_chat is { } chat)
+        {
+            _ = ActivateAsync(chat, generation);
+        }
+    }
+
+    public void OnTabDeactivated()
+    {
+        if (!_isActive)
+        {
+            return;
+        }
+
+        _isActive = false;
+        ++_lifecycleGeneration;
+        _chat?.Deactivate();
+    }
+
+    public void OnTabClosed()
+    {
+        if (_isClosed)
+        {
+            return;
+        }
+
+        OnTabDeactivated();
+        _isClosed = true;
+        ++_lifecycleGeneration;
+        Attach(null);
+        SizeChanged -= OnPageSizeChanged;
+        MessageBox.RemoveHandler(KeyDownEvent, OnComposerKeyDown);
+    }
+
+    private async Task ActivateAsync(AgentChatTabViewModel chat, int generation)
     {
         try
         {
-            if (_chat is { } chat)
+            await chat.ActivateAsync();
+            if (_isActive && !_isClosed && generation == _lifecycleGeneration && ReferenceEquals(_chat, chat) &&
+                _pendingLatest && _followLatest)
             {
-                await chat.ActivateAsync();
-                ScrollToLatest();
+                _pendingLatest = false;
+                PostScrollToLatest(generation);
             }
         }
         catch (Exception exception)
@@ -100,8 +166,26 @@ public sealed partial class AgentChatPage : UserControl
 
         if (_followLatest)
         {
-            Dispatcher.UIThread.Post(ScrollToLatest, DispatcherPriority.Loaded);
+            if (_isActive)
+            {
+                PostScrollToLatest(_lifecycleGeneration);
+            }
+            else
+            {
+                _pendingLatest = true;
+            }
         }
+    }
+
+    private void PostScrollToLatest(int generation)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (_isActive && !_isClosed && generation == _lifecycleGeneration && _followLatest)
+            {
+                ScrollToLatest();
+            }
+        }, DispatcherPriority.Loaded);
     }
 
     private void ScrollToLatest()
@@ -111,9 +195,14 @@ public sealed partial class AgentChatPage : UserControl
 
     private void OnMessageScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
+        if (!_isActive || _isClosed)
+        {
+            return;
+        }
+
         if (e.ExtentDelta.Y != 0 && _followLatest)
         {
-            Dispatcher.UIThread.Post(ScrollToLatest, DispatcherPriority.Loaded);
+            PostScrollToLatest(_lifecycleGeneration);
         }
         else if (e.ExtentDelta.Y == 0)
         {
@@ -138,17 +227,24 @@ public sealed partial class AgentChatPage : UserControl
             e.AddedItems.OfType<AgentChatSessionViewModel>().FirstOrDefault() is { } session &&
             !ReferenceEquals(chat.SelectedSession, session))
         {
-            _ = SelectSessionAsync(chat, session);
+            _ = SelectSessionAsync(chat, session, _lifecycleGeneration);
         }
     }
 
-    private async Task SelectSessionAsync(AgentChatTabViewModel chat, AgentChatSessionViewModel session)
+    private async Task SelectSessionAsync(
+        AgentChatTabViewModel chat, AgentChatSessionViewModel session, int generation)
     {
         try
         {
             await chat.SelectSessionAsync(session);
+            if (!_isActive || _isClosed || generation != _lifecycleGeneration ||
+                !ReferenceEquals(_chat, chat) || !ReferenceEquals(chat.SelectedSession, session))
+            {
+                return;
+            }
+
             _followLatest = true;
-            Dispatcher.UIThread.Post(ScrollToLatest, DispatcherPriority.Loaded);
+            PostScrollToLatest(_lifecycleGeneration);
         }
         catch (Exception exception)
         {

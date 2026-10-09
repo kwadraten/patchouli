@@ -9,13 +9,14 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Patchouli.Core.Ids;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Controls;
 using Patchouli.Reading;
 using Patchouli.UI.Reading;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.Views;
 
-public sealed partial class PdfWorkspacePage : UserControl
+public sealed partial class PdfWorkspacePage : UserControl, IWorkspaceTabPage
 {
     private PdfWorkspaceViewModel? _workspace;
     private bool _workspaceEventsSubscribed;
@@ -58,6 +59,12 @@ public sealed partial class PdfWorkspacePage : UserControl
     // Lazy, bounded page-image cache for whole-book media blocks: renders each page's pixel buffer
     // on demand and keeps only the visible page plus one neighbour on either side.
     private BookReadingImageSource? _bookReadingImages;
+    private bool _isTabActive = true;
+    private bool _isClosed;
+    private bool _bookReadingInitialized;
+    private bool _bookReadingScenesDirty;
+    private bool _needsReadingReplay;
+    private bool _isReconcilingReadingReplay;
 
     public PdfWorkspacePage()
     {
@@ -111,10 +118,21 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
+        if (!ReferenceEquals(_workspace, DataContext))
+        {
+            _bookReadingImages?.Dispose();
+            _bookReadingImages = null;
+            BookReadingView.ImageSource = null;
+            _bookReadingInitialized = false;
+            _bookReadingScenesDirty = false;
+            _bookReadingSourceScenes.Clear();
+            _bookReadingTranslationScenes.Clear();
+        }
+
         UnsubscribeWorkspaceEvents();
-        _workspace = DataContext as PdfWorkspaceViewModel;
+        _workspace = _isClosed ? null : DataContext as PdfWorkspaceViewModel;
         SubscribeWorkspaceEvents();
-        if (VisualRoot is not null)
+        if (VisualRoot is not null && !_isClosed)
         {
             ReplayBookReadingIfNeeded();
         }
@@ -122,7 +140,7 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void SubscribeWorkspaceEvents()
     {
-        if (_workspaceEventsSubscribed || _workspace is null)
+        if (_isClosed || _workspaceEventsSubscribed || _workspace is null)
         {
             return;
         }
@@ -136,13 +154,42 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void ReplayBookReadingIfNeeded()
     {
-        if (_workspace is { IsBookReadingMode: true })
+        if (!_bookReadingInitialized && _workspace is { IsBookReadingMode: true })
         {
             // The view was recreated after reading mode had already started (e.g. a tab switch
             // back). The start/page events fired before this subscription existed, so ask the
             // workspace to replay what it has delivered.
             _workspace.ReplayBookReading();
         }
+    }
+
+    private void ReconcileDetachedBookReading()
+    {
+        if (_workspace is null)
+        {
+            return;
+        }
+
+        Vector pdfOffset = PdfScrollViewer.Offset;
+        Vector bookOffset = BookReadingScroller.Offset;
+        _isReconcilingReadingReplay = true;
+        try
+        {
+            _workspace.ReplayBookReading();
+        }
+        finally
+        {
+            _isReconcilingReadingReplay = false;
+        }
+
+        if (_bookReadingScenesDirty)
+        {
+            _bookReadingScenesDirty = false;
+            RebuildBookReadingDocument();
+        }
+
+        PdfScrollViewer.Offset = pdfOffset;
+        BookReadingScroller.Offset = bookOffset;
     }
 
     private void UnsubscribeWorkspaceEvents()
@@ -163,17 +210,120 @@ public sealed partial class PdfWorkspacePage : UserControl
     protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnAttachedToVisualTree(e);
+        if (_isClosed)
+        {
+            return;
+        }
+
+        if (!_isTabActive)
+        {
+            OnTabActivated();
+            return;
+        }
+
         SubscribeWorkspaceEvents();
         ReplayBookReadingIfNeeded();
     }
 
-    /// <inheritdoc/>
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
-        base.OnDetachedFromVisualTree(e);
+        if (!_isClosed)
+        {
+            _needsReadingReplay = _bookReadingInitialized && _workspace?.IsBookReadingMode == true;
+        }
+
+        OnTabDeactivated();
         UnsubscribeWorkspaceEvents();
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    /// <inheritdoc/>
+    public void OnTabActivated()
+    {
+        if (_isClosed || _isTabActive)
+        {
+            return;
+        }
+
+        _isTabActive = true;
+        ReadingView.IsActive = true;
+        TranslationReadingView.IsActive = true;
+        BookReadingView.IsActive = true;
+        SubscribeWorkspaceEvents();
+        if (_workspace is { } workspace)
+        {
+            string family = workspace.BookReadingFontFamily;
+            BookReadingView.FontFamily = string.IsNullOrWhiteSpace(family) ||
+                                         string.Equals(family,
+                                             PdfWorkspaceViewModel.SystemDefaultReadingFontLabel,
+                                             StringComparison.Ordinal)
+                ? FontFamily.Default
+                : new FontFamily(family);
+            BookReadingView.FontSize = workspace.BookReadingFontSize;
+            BookReadingView.CompareMode = workspace.BookReadingCompareMode;
+        }
+
+        if (_needsReadingReplay && _workspace?.IsBookReadingMode == true)
+        {
+            ReconcileDetachedBookReading();
+        }
+        else if (_bookReadingScenesDirty)
+        {
+            _bookReadingScenesDirty = false;
+            RebuildBookReadingDocument();
+        }
+        else
+        {
+            ReplayBookReadingIfNeeded();
+        }
+
+        _needsReadingReplay = false;
+
+        TryApplyBookReadingAnchor();
+    }
+
+    public void OnTabDeactivated()
+    {
+        if (_isClosed || !_isTabActive)
+        {
+            return;
+        }
+
+        _isTabActive = false;
+        ReadingView.IsActive = false;
+        TranslationReadingView.IsActive = false;
+        BookReadingView.IsActive = false;
+    }
+
+    public void OnTabClosed()
+    {
+        if (_isClosed)
+        {
+            return;
+        }
+
+        _isClosed = true;
+        _isTabActive = false;
+        UnsubscribeWorkspaceEvents();
+        ReadingView.IsActive = false;
+        TranslationReadingView.IsActive = false;
+        BookReadingView.IsActive = false;
+        ReadingView.SourceScene = null;
+        ReadingView.TranslationScene = null;
+        TranslationReadingView.SourceScene = null;
+        TranslationReadingView.TranslationScene = null;
+        BookReadingView.SourceScene = null;
+        BookReadingView.TranslationScene = null;
+        ReadingView.ImageSource = null;
+        TranslationReadingView.ImageSource = null;
+        BookReadingView.ImageSource = null;
         _bookReadingImages?.Dispose();
         _bookReadingImages = null;
+        _bookReadingSourceScenes.Clear();
+        _bookReadingTranslationScenes.Clear();
+        _bookReadingScenesDirty = false;
+        BookReadingBadgeRail.Children.Clear();
+        _workspace = null;
     }
 
     private void OnReadingBlockClicked(object? sender, ReadingBlockActivation activation)
@@ -616,11 +766,22 @@ public sealed partial class PdfWorkspacePage : UserControl
 
     private void OnBookReadingStarted()
     {
+        if (_isReconcilingReadingReplay && _bookReadingInitialized)
+        {
+            return;
+        }
+
+        _bookReadingInitialized = true;
+        _bookReadingScenesDirty = false;
         _bookReadingSourceScenes.Clear();
         _bookReadingTranslationScenes.Clear();
         _bookReadingAnchorY = null;
         _bookReadingAnchorPending = true;
-        BookReadingBadgeRail.Children.Clear();
+        if (_isTabActive)
+        {
+            BookReadingBadgeRail.Children.Clear();
+        }
+
         if (_workspace is null)
         {
             return;
@@ -628,9 +789,15 @@ public sealed partial class PdfWorkspacePage : UserControl
 
         _bookReadingImages?.Dispose();
         _bookReadingImages = new BookReadingImageSource(_workspace.RenderBookReadingPageAsync);
+        BookReadingView.ImageSource = _bookReadingImages;
+        if (!_isTabActive)
+        {
+            _bookReadingScenesDirty = true;
+            return;
+        }
+
         BookReadingView.SourceScene = ReadingScene.Empty;
         BookReadingView.TranslationScene = null;
-        BookReadingView.ImageSource = _bookReadingImages;
         BookReadingScroller.Offset = Vector.Zero;
         ApplyBookReadingFont();
         ApplyTranslationCompareVisibility();
@@ -643,6 +810,11 @@ public sealed partial class PdfWorkspacePage : UserControl
     // real width; until then the request stays pending and ScrollChanged retries after layout.
     private void OnBookReadingAnchorRequested()
     {
+        if (!_isTabActive || _isReconcilingReadingReplay)
+        {
+            return;
+        }
+
         _bookReadingAnchorPending = true;
         TryApplyBookReadingAnchor();
     }
@@ -665,7 +837,7 @@ public sealed partial class PdfWorkspacePage : UserControl
     // no real width yet (e.g. a recreated view before its first layout pass).
     private void TryApplyBookReadingAnchor()
     {
-        if (!_bookReadingAnchorPending || _workspace is null)
+        if (!_isTabActive || !_bookReadingAnchorPending || _workspace is null)
         {
             return;
         }
@@ -700,6 +872,18 @@ public sealed partial class PdfWorkspacePage : UserControl
 
         _bookReadingSourceScenes[page.PageIndex] = page.Source;
         _bookReadingTranslationScenes[page.PageIndex] = page.Translation;
+        if (!_isTabActive)
+        {
+            _bookReadingScenesDirty = true;
+            return;
+        }
+
+        if (_isReconcilingReadingReplay)
+        {
+            _bookReadingScenesDirty = true;
+            return;
+        }
+
         RebuildBookReadingDocument();
     }
 
@@ -711,6 +895,12 @@ public sealed partial class PdfWorkspacePage : UserControl
     {
         if (_workspace is null)
         {
+            return;
+        }
+
+        if (!_isTabActive)
+        {
+            _bookReadingScenesDirty = true;
             return;
         }
 
@@ -765,6 +955,11 @@ public sealed partial class PdfWorkspacePage : UserControl
     // that page in the PDF workbench.
     private void UpdateBookReadingBadges()
     {
+        if (!_isTabActive)
+        {
+            return;
+        }
+
         BookReadingBadgeRail.Children.Clear();
         HashSet<int> placed = [];
         double contentBottom = 0;
@@ -803,7 +998,7 @@ public sealed partial class PdfWorkspacePage : UserControl
     // the very edge would show a blank frame while it loads.
     private void OnBookReadingScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
-        if (_workspace is not { IsBookReadingMode: true } workspace)
+        if (!_isTabActive || _workspace is not { IsBookReadingMode: true } workspace)
         {
             return;
         }
@@ -867,6 +1062,26 @@ public sealed partial class PdfWorkspacePage : UserControl
     {
         if (_workspace is null)
         {
+            return;
+        }
+
+        if (!_isTabActive)
+        {
+            if (e.PropertyName is nameof(PdfWorkspaceViewModel.BookReadingFontSize) or
+                nameof(PdfWorkspaceViewModel.BookReadingFontFamily) or
+                nameof(PdfWorkspaceViewModel.IsTranslationCompareVisible) or
+                nameof(PdfWorkspaceViewModel.BookReadingCompareMode))
+            {
+                _bookReadingScenesDirty = true;
+            }
+
+            if (e.PropertyName == nameof(PdfWorkspaceViewModel.IsBookReadingMode) &&
+                !_workspace.IsBookReadingMode)
+            {
+                _bookReadingImages?.Dispose();
+                _bookReadingImages = null;
+            }
+
             return;
         }
 

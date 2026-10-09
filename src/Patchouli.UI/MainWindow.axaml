@@ -289,9 +289,9 @@
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1" Background="{DynamicResource SurfaceContainerLowestBrush}">
-      <TabControl ItemsSource="{Binding Layout.Tabs}" SelectedItem="{Binding Layout.ActiveTab}" Padding="0">
-        <TabControl.ItemTemplate>
+    <Grid Grid.Row="1" RowDefinitions="Auto,*" Background="{DynamicResource SurfaceContainerLowestBrush}">
+      <TabStrip Grid.Row="0" ItemsSource="{Binding Layout.Tabs}" SelectedItem="{Binding Layout.ActiveTab}" Padding="0">
+        <TabStrip.ItemTemplate>
           <DataTemplate DataType="{x:Type local:WorkspaceTabViewModel}">
             <Grid>
               <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="0,0,24,0">
@@ -308,16 +308,13 @@
               </Button>
             </Grid>
           </DataTemplate>
-        </TabControl.ItemTemplate>
-        <TabControl.ContentTemplate>
-          <DataTemplate DataType="{x:Type local:WorkspaceTabViewModel}">
-            <ContentControl Content="{Binding Content}" />
-          </DataTemplate>
-        </TabControl.ContentTemplate>
-      </TabControl>
+        </TabStrip.ItemTemplate>
+      </TabStrip>
+      <controls:WorkspaceTabContentHost Grid.Row="1" ItemsSource="{Binding Layout.Tabs}"
+                                        ActiveTab="{Binding Layout.ActiveTab}" />
 
-      <views:FirstRunPage IsVisible="{Binding IsFirstRunVisible}" ZIndex="10" />
-      <views:StartupLoadingPage IsVisible="{Binding IsStartupLoadingVisible}" ZIndex="20" />
+      <views:FirstRunPage Grid.Row="1" IsVisible="{Binding IsFirstRunVisible}" ZIndex="10" />
+      <views:StartupLoadingPage Grid.Row="1" IsVisible="{Binding IsStartupLoadingVisible}" ZIndex="20" />
     </Grid>
 
     <Border Grid.Row="2" Background="{DynamicResource InverseSurfaceBrush}" Padding="12,0">

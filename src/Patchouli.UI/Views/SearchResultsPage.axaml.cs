@@ -6,10 +6,11 @@ using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.Diagnostics;
+using Patchouli.UI.Controls;
 
 namespace Patchouli.UI.Views;
 
-public sealed partial class SearchResultsPage : UserControl
+public sealed partial class SearchResultsPage : UserControl, IWorkspaceTabPage
 {
     // ProDataGrid 12.1 internal writer for its per-slot details-visibility table; used to repair
     // stale slot entries left behind by recycled rows (see ApplyDetailsVisibility).
@@ -18,6 +19,10 @@ public sealed partial class SearchResultsPage : UserControl
         BindingFlags.Instance | BindingFlags.NonPublic);
 
     private SearchEvidenceViewModel? _search;
+    private bool _isAttached;
+    private bool _isActive;
+    private bool _isClosed;
+    private bool _pendingCollapseReset;
 
     static SearchResultsPage()
     {
@@ -36,6 +41,98 @@ public sealed partial class SearchResultsPage : UserControl
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
+    protected override void OnAttachedToVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnAttachedToVisualTree(e);
+        _isAttached = true;
+        if (!_isClosed)
+        {
+            _isActive = true;
+            AttachSearch(DataContext as SearchEvidenceViewModel);
+        }
+    }
+
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        _isActive = false;
+        _isAttached = false;
+        DetachSearch();
+        base.OnDetachedFromVisualTree(e);
+    }
+
+    protected override void OnDataContextChanged(EventArgs e)
+    {
+        DetachSearch();
+        base.OnDataContextChanged(e);
+        if (_isAttached && !_isClosed)
+        {
+            AttachSearch(DataContext as SearchEvidenceViewModel);
+        }
+    }
+
+    public void OnTabActivated()
+    {
+        if (_isClosed || _isActive)
+        {
+            return;
+        }
+
+        _isActive = true;
+        if (_pendingCollapseReset)
+        {
+            _pendingCollapseReset = false;
+            ResetDetailsVisibilityTable();
+        }
+
+        ApplyAllRealizedRows();
+    }
+
+    public void OnTabDeactivated()
+    {
+        _isActive = false;
+    }
+
+    public void OnTabClosed()
+    {
+        if (_isClosed)
+        {
+            return;
+        }
+
+        _isClosed = true;
+        _isActive = false;
+        DetachSearch();
+        BibliographicGrid.RemoveHandler(PointerPressedEvent, OnBibliographicGridPointerPressed);
+    }
+
+    private void DetachSearch()
+    {
+        if (_search is null)
+        {
+            return;
+        }
+
+        _search.HitExpansionChanged -= OnHitExpansionChanged;
+        _search.AllHitsExpansionChanged -= OnAllHitsExpansionChanged;
+        _search = null;
+    }
+
+    private void AttachSearch(SearchEvidenceViewModel? search)
+    {
+        if (_isClosed || ReferenceEquals(_search, search))
+        {
+            return;
+        }
+
+        DetachSearch();
+        _search = search;
+        if (_search is not null)
+        {
+            _search.HitExpansionChanged += OnHitExpansionChanged;
+            _search.AllHitsExpansionChanged += OnAllHitsExpansionChanged;
+        }
+    }
+
     private void OnBibliographicGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         ApplyColumnLayout(BibliographicGrid);
@@ -48,18 +145,7 @@ public sealed partial class SearchResultsPage : UserControl
     private void OnFullTextGridLoaded(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         ApplyColumnLayout(FullTextGrid);
-        if (DataContext is SearchEvidenceViewModel search && !ReferenceEquals(_search, search))
-        {
-            if (_search is not null)
-            {
-                _search.HitExpansionChanged -= OnHitExpansionChanged;
-                _search.AllHitsExpansionChanged -= OnAllHitsExpansionChanged;
-            }
-
-            _search = search;
-            _search.HitExpansionChanged += OnHitExpansionChanged;
-            _search.AllHitsExpansionChanged += OnAllHitsExpansionChanged;
-        }
+        AttachSearch(DataContext as SearchEvidenceViewModel);
     }
 
     // Right-click keeps the shell selection in sync with the hit row so the shared library
@@ -127,21 +213,37 @@ public sealed partial class SearchResultsPage : UserControl
     // resurrect expansion state for recycled rows.
     private void OnHitExpansionChanged(SearchHitItemViewModel hit)
     {
+        if (!_isActive)
+        {
+            return;
+        }
+
         ApplyAllRealizedRows();
     }
 
     private void OnAllHitsExpansionChanged(bool expanded)
     {
+        if (!_isActive)
+        {
+            _pendingCollapseReset |= !expanded;
+            return;
+        }
+
         if (!expanded)
         {
-            // Collapsing must also clear per-slot table entries of unrealized slots: imperative
-            // row writes only cover realized rows and stale entries would resurrect on scrolling.
-            // Flipping the mode rewrites the table for every slot through the grid's own path.
-            FullTextGrid.RowDetailsVisibilityMode = DataGridRowDetailsVisibilityMode.VisibleWhenSelected;
-            FullTextGrid.RowDetailsVisibilityMode = DataGridRowDetailsVisibilityMode.Collapsed;
+            ResetDetailsVisibilityTable();
         }
 
         ApplyAllRealizedRows();
+    }
+
+    private void ResetDetailsVisibilityTable()
+    {
+        // Collapsing must also clear per-slot entries of unrealized slots: imperative
+        // row writes only cover realized rows and stale entries would resurrect on scrolling.
+        // Flipping the mode rewrites the table for every slot through the grid's own path.
+        FullTextGrid.RowDetailsVisibilityMode = DataGridRowDetailsVisibilityMode.VisibleWhenSelected;
+        FullTextGrid.RowDetailsVisibilityMode = DataGridRowDetailsVisibilityMode.Collapsed;
     }
 
     private void ApplyAllRealizedRows()

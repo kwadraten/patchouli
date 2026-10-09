@@ -9,15 +9,18 @@ using Patchouli.UI.Diagnostics;
 using Avalonia.Input;
 using Patchouli.Core.Bibliography;
 using Avalonia.Controls.DataGridSorting;
+using Patchouli.UI.Controls;
 
 namespace Patchouli.UI.Views;
 
-public sealed partial class LibraryPage : UserControl
+public sealed partial class LibraryPage : UserControl, IWorkspaceTabPage
 {
     private LibraryShellViewModel? _shell;
     private ScrollViewer? _libraryScrollViewer;
     private bool _syncingSelection;
     private bool _isAttached;
+    private bool _isActive;
+    private bool _isClosed;
 
     public LibraryPage()
     {
@@ -77,7 +80,8 @@ public sealed partial class LibraryPage : UserControl
 
     private void OnDataGridSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
-        if (!_syncingSelection && sender is DataGrid grid && DataContext is LibraryShellViewModel shell)
+        if (_isActive && !_isClosed && !_syncingSelection && sender is DataGrid grid &&
+            DataContext is LibraryShellViewModel shell)
         {
             shell.SetSelectedItems(grid.SelectedItems.OfType<LibraryItemViewModel>());
         }
@@ -99,12 +103,17 @@ public sealed partial class LibraryPage : UserControl
         base.OnAttachedToVisualTree(e);
         _isAttached = true;
         _shell = DataContext as LibraryShellViewModel;
-        SubscribeToShell();
+        if (!_isClosed)
+        {
+            _isActive = true;
+            SubscribeToShell();
+        }
     }
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         _isAttached = false;
+        _isActive = false;
         UnsubscribeFromShell();
         DetachLibraryScrollViewer();
         foreach (DataGridColumn? column in LibraryGrid.Columns)
@@ -115,6 +124,40 @@ public sealed partial class LibraryPage : UserControl
         base.OnDetachedFromVisualTree(e);
     }
 
+    public void OnTabActivated()
+    {
+        if (_isClosed || _isActive)
+        {
+            return;
+        }
+
+        _isActive = true;
+        SyncSelectionFromViewModel();
+    }
+
+    public void OnTabDeactivated()
+    {
+        _isActive = false;
+    }
+
+    public void OnTabClosed()
+    {
+        if (_isClosed)
+        {
+            return;
+        }
+
+        _isClosed = true;
+        _isActive = false;
+        _isAttached = false;
+        UnsubscribeFromShell();
+        DetachLibraryScrollViewer();
+        foreach (DataGridColumn? column in LibraryGrid.Columns)
+        {
+            column.PropertyChanged -= OnColumnPropertyChanged;
+        }
+    }
+
     private void OnSelectedItemsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         SyncSelectionFromViewModel();
@@ -122,7 +165,7 @@ public sealed partial class LibraryPage : UserControl
 
     private void SyncSelectionFromViewModel()
     {
-        if (!_isAttached || _shell is null)
+        if (!_isAttached || !_isActive || _shell is null)
         {
             return;
         }
@@ -144,7 +187,7 @@ public sealed partial class LibraryPage : UserControl
 
     private void SubscribeToShell()
     {
-        if (_shell is null)
+        if (_isClosed || _shell is null)
         {
             return;
         }
@@ -243,7 +286,7 @@ public sealed partial class LibraryPage : UserControl
 
     private void OnLibraryScrollChanged(object? sender, ScrollChangedEventArgs e)
     {
-        if (sender is not ScrollViewer scrollViewer || _shell is not { HasMoreItems: true })
+        if (!_isActive || _isClosed || sender is not ScrollViewer scrollViewer || _shell is not { HasMoreItems: true })
         {
             return;
         }
@@ -259,7 +302,8 @@ public sealed partial class LibraryPage : UserControl
 
     private void OnColumnPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        if (_restoringColumns || sender is not DataGridColumn column || DataContext is not LibraryShellViewModel shell)
+        if (!_isActive || _isClosed || _restoringColumns || sender is not DataGridColumn column ||
+            DataContext is not LibraryShellViewModel shell)
         {
             return;
         }

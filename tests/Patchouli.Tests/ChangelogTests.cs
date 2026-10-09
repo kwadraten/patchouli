@@ -13,9 +13,16 @@ using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
-[Collection("Avalonia")]
+[Collection("RetainedTabUI")]
 public sealed class ChangelogTests
 {
+    private readonly AvaloniaSharedSessionFixture _headless;
+
+    public ChangelogTests(AvaloniaSharedSessionFixture headless)
+    {
+        _headless = headless;
+    }
+
     [Fact]
     public void Embedded_changelog_matches_the_standalone_document()
     {
@@ -27,15 +34,16 @@ public sealed class ChangelogTests
     [Fact]
     public async Task Settings_menu_opens_a_rendered_changelog_tab_and_reuses_it_until_closed()
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(async () =>
+        await _headless.Session.Dispatch<int>(async () =>
         {
             using TemporaryAppSettingsFile settings = new();
             MainWindowViewModel main = new(settingsPath: settings.Path);
             MainWindow window = new(main);
-            window.Show();
+            TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.Closed += (_, _) => closed.TrySetResult();
             try
             {
+                window.Show();
                 Menu menu = window.GetLogicalDescendants().OfType<Menu>().Single();
                 MenuItem settingsMenu = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "设置"));
                 MenuItem changelogMenu = settingsMenu.Items.OfType<MenuItem>()
@@ -47,15 +55,30 @@ public sealed class ChangelogTests
                 tab.Title.Should().Be("更新日志");
                 tab.IsClosable.Should().BeTrue();
 
-                Dispatcher.UIThread.RunJobs();
-                window.Measure(new Size(1280, 820));
-                window.Arrange(new Rect(0, 0, 1280, 820));
+                ChangelogPage? page = null;
+                MarkdownRenderer? renderer = null;
+                MarkdownTextBlock[] renderedBlocks = [];
+                using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+                while (renderer is null || renderedBlocks.Length == 0)
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    window.Measure(new Size(1280, 820));
+                    window.Arrange(new Rect(0, 0, 1280, 820));
+                    window.UpdateLayout();
+                    page = window.GetVisualDescendants().OfType<ChangelogPage>().FirstOrDefault();
+                    renderer = page?.GetVisualDescendants().OfType<MarkdownRenderer>().FirstOrDefault();
+                    renderedBlocks = renderer?.GetVisualDescendants().OfType<MarkdownTextBlock>().ToArray() ?? [];
+                    if (renderer is null || renderedBlocks.Length == 0)
+                    {
+                        await Task.Delay(20, timeout.Token);
+                    }
+                }
+
+                page.Should().NotBeNull();
+                renderer!.MarkdownBuilder.Should().BeSameAs(((ChangelogViewModel)tab.Content).MarkdownBuilder);
                 using RenderTargetBitmap bitmap = new(new PixelSize(1280, 820), new Vector(96, 96));
                 bitmap.Render(window);
-                ChangelogPage page = window.GetVisualDescendants().OfType<ChangelogPage>().Single();
-                MarkdownRenderer renderer = page.GetVisualDescendants().OfType<MarkdownRenderer>().Single();
-                renderer.MarkdownBuilder.Should().BeSameAs(((ChangelogViewModel)tab.Content).MarkdownBuilder);
-                renderer.GetVisualDescendants().OfType<MarkdownTextBlock>().Should().NotBeEmpty();
+                renderedBlocks.Should().NotBeEmpty();
 
                 await main.OpenAboutAsync();
                 await main.ShowChangelogCommand.ExecuteAsync();
@@ -69,10 +92,18 @@ public sealed class ChangelogTests
             }
             finally
             {
-                window.Close();
+                if (window.IsVisible)
+                {
+                    window.Close();
+                    await closed.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                }
+                else
+                {
+                    await main.ShutdownAsync();
+                }
             }
 
-            return true;
+            return 0;
         }, CancellationToken.None);
     }
 }

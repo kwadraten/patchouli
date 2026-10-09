@@ -97,8 +97,9 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     window.UpdateLayout();
                     await Task.Delay(600);
                     Dispatcher.UIThread.RunJobs();
-                    page.GetVisualDescendants().Should().NotContain(model,
-                        "the previous provider controls must really be detached before returning");
+                    page.GetVisualDescendants().Should().Contain(model);
+                    model.IsEffectivelyVisible.Should().BeFalse(
+                        "the previous provider editor stays cached but is hidden while another section is active");
                     await main.Settings.SelectSectionAsync("llm");
                     Dispatcher.UIThread.RunJobs();
                     window.UpdateLayout();
@@ -107,6 +108,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     row.Model.Should().Be("deepseek-reasoner", string.Join("\n", modelChanges));
                     TextBox reopenedModel = page.GetVisualDescendants().OfType<TextBox>().Single(input =>
                         ReferenceEquals(input.DataContext, row) && input.PlaceholderText == row.ModelWatermark);
+                    reopenedModel.Should().BeSameAs(model,
+                        "returning to the provider section should reveal the cached editor instance");
                     reopenedModel.Text.Should().Be("deepseek-reasoner");
                     PatchouliAppSettings.Load(_settings.Path).Llm.FindProvider("deepseek")!.Model.Should()
                         .Be("deepseek-reasoner");

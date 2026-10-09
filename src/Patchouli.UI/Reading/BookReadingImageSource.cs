@@ -69,7 +69,7 @@ public sealed class BookReadingImageSource : IReadingImageSource, IDisposable
         Bitmap? rendered = null;
         try
         {
-            rendered = await _renderPage(pageIndex, cancellationToken).ConfigureAwait(false);
+            rendered = await _renderPage(pageIndex, cancellationToken);
         }
         catch (OperationCanceledException)
         {

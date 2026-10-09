@@ -1049,8 +1049,9 @@ public sealed class UiViewModelTests : IDisposable
         editorXaml.Should().Contain("RemoveCommand").And.Contain("Content=\"移除\"");
         libraryXaml.Should().Contain("SelectionMode=\"Extended\"").And.Contain("OnDataGridSelectionChanged");
         libraryXaml.Should().NotContain("<Button Content=\"获取所选元数据\"");
-        mainXaml.Should().Contain("获取所选题录元数据").And.Contain("Shell.LookupMetadataBatchCommand").And
-            .Contain("Shell.CancelMetadataBatchCommand");
+        mainXaml.Should().Contain("获取所选题录元数据").And
+            .Contain("Command=\"{Binding LookupMetadataBatchCommand}\"").And
+            .Contain("Command=\"{Binding CancelMetadataBatchCommand}\"");
         libraryXaml.Should().Contain("获取所选题录元数据").And.Contain("LookupMetadataBatchCommand").And
             .Contain("CancelMetadataBatchCommand");
         libraryCode.Should().Contain("grid.SelectedItems").And.Contain("SetSelectedItems").And
@@ -3178,11 +3179,13 @@ public sealed class UiViewModelTests : IDisposable
         string firstPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-first.pdf");
         string secondPdf = Path.Combine(Path.GetTempPath(), $"ui-tab-title-{Guid.NewGuid():N}-second.pdf");
         string longTitle = "非常长的题录标题用于验证标签页会在合理长度之后被截断而不是撑爆标签栏";
+        MainWindowViewModel? vm = null;
         try
         {
             File.Copy(TestFixtures.RealThreePagePdf, firstPdf);
             File.Copy(TestFixtures.RealThreePagePdf, secondPdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+            File.AppendAllText(secondPdf, "\n% distinct PDF fixture for the second item\n");
+            vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.OpenDatabaseCommand.ExecuteAsync();
             await vm.Library.CreateCommand.ExecuteAsync();
             HostServices services = await vm.ServicesAsync();
@@ -3218,6 +3221,12 @@ public sealed class UiViewModelTests : IDisposable
         }
         finally
         {
+            if (vm is not null)
+            {
+                vm.Workspace.CloseKind(WorkspaceTabKind.PdfWorkspace);
+                await vm.ShutdownAsync();
+            }
+
             if (File.Exists(firstPdf))
             {
                 File.Delete(firstPdf);

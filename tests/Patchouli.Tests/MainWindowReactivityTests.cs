@@ -290,6 +290,29 @@ public sealed class MainWindowReactivityTests
             settingsAfterRapid.IsSuccess.Should().BeTrue();
             settingsAfterRapid.Value.RewriteEnabled.Should().BeFalse();
 
+            // The UI request stream observes setters on a TaskPool scheduler. Seeing the disabled
+            // status can belong to the first `false` in the rapid sequence while a later queued
+            // write is still completing. Let the persisted value remain stable across several
+            // scheduler turns before installing the failure trigger below.
+            int stableDisabledReads = 0;
+            for (int attempt = 0; attempt < 100 && stableDisabledReads < 5; attempt++)
+            {
+                await Task.Delay(20);
+                Result<SearchProfileSettings> settledSettings = await services.SearchProfiles.GetSearchSettingsAsync();
+                if (settledSettings.IsSuccess && !settledSettings.Value.RewriteEnabled &&
+                    vm.QueryRewriteEnabled == false && vm.Status == "已停用查询重写。" && !vm.StatusIsError)
+                {
+                    stableDisabledReads++;
+                }
+                else
+                {
+                    stableDisabledReads = 0;
+                }
+            }
+
+            stableDisabledReads.Should().Be(5,
+                "the rapid request stream should settle on its final disabled value before injecting a failure");
+
             // Simulate failure during persistence via an SQLite trigger on search_settings
             await using (SqliteConnection conn = new($"Data Source={dbPath}"))
             {
