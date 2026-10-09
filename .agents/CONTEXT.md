@@ -11,7 +11,15 @@ Provider cards use masked password inputs to load saved API keys from `ICredenti
 
 ## Standing Product Boundaries
 
-These boundaries are not backlog items. They are durable constraints that future PRDs should inherit unless an ADR explicitly replaces them.
+The delivered desktop baseline includes type-aware bibliographic editing and CSL rendering,
+one-level collections, trash/restore/merge/purge, metadata and full-text search, PDF/Box editing,
+OCR queues, explicit snapshot branch import and desktop single-instance activation.
+CSL general is not silently mapped to document, and rendering failure is not empty success.
+Page/document history uses working revisions and in-place commit; restoring history creates
+a new commit. Bibliographic records and CSL styles do not share document-version history.
+Product progress is maintained through [GitHub Issues](issue-tracker.md).
+
+These boundaries are not backlog items. They are durable constraints that future issues should inherit unless an ADR explicitly replaces them.
 
 **Storage and sync**:
 The active runtime SQLite database stays outside sync roots. Sync publishes validated snapshot artifacts rather than syncing WAL/SHM files. Published snapshots use manifests plus SQLite shards; runtime caches, render images, and active working files are not snapshot payloads.
@@ -182,6 +190,18 @@ _Avoid_: Last-writer-wins conflict
 A user-owned token, key, or credential used by OCR/HTR providers. It is never exposed through MCP.
 _Avoid_: Provider config, secret in shard
 
+API LLM providers use one active key per provider through ICredentialStore. OCR and translation
+share provider configuration with separate default provider/model selections. Translation defaults
+include target language, a window radius of one physical page and optional previous-translation context.
+Subscription authentication follows ADR 0037.
+
+MultimodalLlmOcrAdapter sends page/region images directly to the selected vision model and normalizes
+the response to OcrEnginePageResult. OcrRunEngine converts it to OcrDocumentTreeCandidate for the
+shared import/commit path; providers never directly write document_boxes. Environment/preset
+checks validate provider, credential metadata and model configuration. Failures retain the existing
+OcrRetryPolicy classification. Text-only subscription backends cannot serve vision OCR.
+OCR remains independent of agent sessions and keeps its own queue, scheduler and activity tracking.
+
 **MCP surface**:
 A first-class, text-only human-machine collaboration interface for library exploration, evidence retrieval, citation rendering, and controlled interaction with agent runs and workflows (ADR `0036`, amending `0010` and `0023`). Production uses `patchouli.find`, `patchouli.fetch`, `patchouli.put`, `patchouli.cite`, and `patchouli.send` under ADR `0024` (as extended by ADR `0034` and ADR `0036`), served by the one desktop or headless runtime host for the Library. CLI is a local MCP client of that host; remote/local agent clients use the same service. All agents can fetch the fixed `patchouli://library.toon` projection (`library_id`, `display_name`, and—when the device-local `ExposeLibraryTags`/`ExposeLibraryCollections` policy allows—sorted tags and collections with item counts; collections include empty ones). Item filtering supports exact `collection_id` and exact case-sensitive `tag` clauses intersecting with AND; hiding a category returns `PERMISSION_DENIED` for that filter and removes it from relationship output. There is no `/collections` VFS directory and no collection URI, and Collections are MCP write-protected. A fourth root, `patchouli://translations/`, exposes the derived page translations: a document directory lists translation progress, a document directory lists per-page status (`untranslated`/`partial`/`translated`/`stale`), and `patchouli://translations/{document-id}/page-{index}.md` is a writable whole-page translation that must be structurally identical to the source page Markdown. Two further roots, `patchouli://runs/` and `patchouli://workflows/`, expose run observation and workflow discovery/launch (see **Run** and **Workflow**). Capability boundaries are user-controlled: `put` and `send` are switchable tool/write-policy entries that return MCP to read-only when disabled (ADR `0036`). Data boundaries are developer invariants regardless of that policy: MCP never exposes local paths, provider secrets, images, file URLs, or OCR/index actions, and it cannot read provider keys. `.NET` remains the sole domain authority for Library data.
 
@@ -213,4 +233,4 @@ unknown writes are not blindly replayed. See [workflow-api](workflow-api.md) for
 - **ItemMergePreviewDialog**: explicit target and field-conflict selection before merging Items.
 - **PurgeConfirmDialog**: blocking permanent-delete confirmation with expandable dependency details.
 
-These names identify existing UI surfaces, not new persisted domain entities. More elaborate annotation storage and Markdown preview component selection remain PRD V3-T2 work.
+These names identify existing UI surfaces, not new persisted domain entities. More elaborate annotation storage and Markdown preview component selection require future issue-driven design.

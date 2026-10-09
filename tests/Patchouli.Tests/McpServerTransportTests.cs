@@ -589,11 +589,12 @@ public sealed class McpServerTransportTests
     }
 
     [Fact]
-    public void Agent_prd_documents_http_read_only_mcp_boundaries()
+    public void Agent_context_documents_http_mcp_boundaries()
     {
-        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md"));
-        r.Should().Contain("v1/v2 首发 MCP 是只读且纯文本的").And.Contain("MCP 从不触发 OCR 或索引重建").And.Contain("提供程序密钥").And
-            .Contain("缓存图像");
+        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "CONTEXT.md"));
+        r.Should().Contain("text-only").And.Contain("triggers OCR, rebuilds indexes").And.Contain("provider secrets")
+            .And
+            .Contain("Page renders");
     }
 
     [Fact]

@@ -240,11 +240,13 @@ public sealed class SnapshotBranchInspectionTests
     }
 
     [Fact]
-    public void Agent_prd_documents_branch_safety()
+    public void Agent_context_documents_branch_safety()
     {
-        string prd = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md"));
-        prd.Should().Contain("作为独立分支打开以供检查").And.Contain("v1 不执行自动对象级合并").And.Contain("不得在分支间静默执行最后写入者胜出").And
-            .Contain("提供程序凭据");
+        string prd = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "CONTEXT.md"));
+        prd.Should().Contain("Branches are inspected and imported explicitly").And
+            .Contain("v1 does not perform automatic object-level merge").And
+            .Contain("silent last-writer-wins conflict resolution").And
+            .Contain("ProviderCredential");
     }
 
     [Fact]

@@ -16,7 +16,8 @@ Before exploring, read these when they exist:
 
 - `.agents/CONTEXT.md` for project domain language and glossary.
 - `.agents/adr/` for architectural decision records relevant to the area being changed.
-- `.agents/PRD.md` for the completed baseline and remaining product scope.
+- `.agents/workflow-api.md` for agent workflow authoring and recovery contracts.
+- `.agents/issue-tracker.md` for issue-driven product work; there is no dedicated PRD document.
 - `.agents/mcp-protocol.md` for MCP/CLI parameters, response schemas and regression obligations.
 - `.agents/palettes/` for the selectable UI color palettes (one `DESIGN.md` per palette).
 
@@ -29,7 +30,7 @@ If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do
 ├── AGENTS.md
 ├── .agents/
 │   ├── CONTEXT.md
-│   ├── PRD.md
+│   ├── workflow-api.md
 │   ├── mcp-protocol.md
 │   ├── domain.md
 │   ├── issue-tracker.md
@@ -86,6 +87,22 @@ additionally raise `ExternalChangeDetected` so the UI can tell cross-process edi
 own commits.
 
 
+## Agent runtime ownership
+
+Patchouli.Agent owns the pure Event/Effect core and semantic SDK types; Patchouli.Llm owns
+provider transports. Patchouli.Workflows builds cold typed control plans and node codecs.
+Patchouli.Host owns the shared AgentDriver, session inbox/lifecycle/persistence, independent
+FSI worker and SDK invoker. Native calls and FSI typed RPC use the same capability checks,
+validation and operation journal. The UI merges SDK start/end activity by operation ID,
+retaining parent ID, input, output/error and duration.
+
+Current authoring and recovery contracts are in [workflow-api](workflow-api.md), with rationale
+in ADR [0039](adr/0039-typed-functional-agent-harness-workflows.md). Session sync/purge and
+MCP runtime roots follow ADR 0036 and mcp-protocol. Closing a chat tab leaves the session running;
+workflow menus start a session and open its chat tab, while opening the chat surface alone starts none.
+Settings check workflow types without evaluation; locked built-ins are copied to author custom workflows.
+Code/contract delivery does not establish real-device end-to-end acceptance or full-scale performance budgets.
+
 ## UI Layer
 
 `src/Patchouli.UI` manages the desktop application state using a three-layer reactivity model ([ADR 0033](adr/0033-ui-reactivity-three-layer-model.md)):
@@ -95,6 +112,6 @@ own commits.
 
 ## Document ownership and remaining implementation gaps
 
-Keep completed feature summaries at the top of PRD; retain open scope and acceptance budgets below. Durable vocabulary and UI semantics belong in CONTEXT, protocol details in mcp-protocol, architectural choices in ADR, and performance reproduction instructions in perf. Link to the owning document instead of repeating completed acceptance tables.
+Completed behavior belongs in its owning document: vocabulary and UI semantics in CONTEXT, protocol details in mcp-protocol, workflow authoring in workflow-api, and architectural choices in ADR. Product work is tracked through GitHub Issues, not a dedicated PRD. Link to the owning document instead of repeating completed acceptance tables.
 
 The shared composition layer and ADR `0024` one-host-per-Library target are implemented. A device-local lifetime lock keyed before SQLite open by the canonical database path elects exactly one Desktop or Headless owner; an atomic discovery record publishes the live process identity, Library ID and MCP endpoint, and the authenticated local lifecycle channel performs Desktop takeover. Normal UI, CLI and MCP writes therefore share the in-process revision event path. `LibraryRevisionMonitor` remains available for explicit abnormal external-write recovery, but the Desktop no longer starts its polling loop during normal operation. Full incremental cache invalidation remains V3-T7 work.

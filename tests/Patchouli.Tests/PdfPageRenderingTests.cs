@@ -434,9 +434,9 @@ public sealed class PdfPageRenderingTests
     }
 
     [Fact]
-    public void Agent_prd_keeps_render_cache_out_of_mcp_and_snapshots()
+    public void Agent_context_keeps_render_cache_out_of_mcp_and_snapshots()
     {
-        File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md")).Should()
+        File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "CONTEXT.md")).Should()
             .Contain("MCP never returns cached images or image paths").And.Contain("page_renders");
     }
 

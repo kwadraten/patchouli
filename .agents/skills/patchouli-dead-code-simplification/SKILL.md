@@ -44,11 +44,11 @@ Complex code is not dead merely because it is defensive or hard to read.
 
 ## Adaptation Boundary
 
-Borrow from DeepSeek Harness: production-versus-test consumer proof, strong-candidate selection, tests-are-not-golden-truth, complete-obligation removal, explicit trade-offs, and reintroduction conditions. Do not copy its pre-release “reject old data instead of migrating” stance, Cordis/knip assumptions, per-file 100% coverage pressure, bilingual Agent Note lifecycle, or rule that every non-trivial change needs an Agent Note. Patchouli uses supported SQLite migrations, `.agents/CONTEXT.md`, ADRs, its PRD, GitHub Issues, ReSharper, and real Avalonia/MCP/CLI entry paths.
+Borrow from DeepSeek Harness: production-versus-test consumer proof, strong-candidate selection, tests-are-not-golden-truth, complete-obligation removal, explicit trade-offs, and reintroduction conditions. Do not copy its pre-release “reject old data instead of migrating” stance, Cordis/knip assumptions, per-file 100% coverage pressure, bilingual Agent Note lifecycle, or rule that every non-trivial change needs an Agent Note. Patchouli uses supported SQLite migrations, `.agents/CONTEXT.md`, ADRs, GitHub Issues, ReSharper, and real Avalonia/MCP/CLI entry paths.
 
 ## Non-Negotiable Repository Rules
 
-1. Read root `AGENTS.md`, `.agents/CONTEXT.md`, relevant `.agents/adr/` records, and `.agents/PRD.md` when product scope matters. Surface ADR conflicts instead of overriding them.
+1. Read root `AGENTS.md`, `.agents/CONTEXT.md`, relevant `.agents/adr/` records, and `.agents/issue-tracker.md` when product scope matters. Surface ADR conflicts instead of overriding them.
 2. Preserve unrelated user changes. Start with `git status --short`; never reset, clean, checkout, stage, or rewrite files outside the approved scope. Before the first edit, enumerate the complete planned file set—including declarations, callers, tests, docs, project files, and resources—and compare it with the initial status. If any planned file contains pre-existing changes, stop and ask unless the user explicitly authorizes editing that dirty file.
 3. Use CodeGraph before text search for symbols, callers, flow, impact, and project structure. Use `rg` afterward for wire strings, SQL, XAML, JSON names, settings keys, comments, and generated or packaging references CodeGraph cannot see.
 4. Do not add automatic or broad suppressions. A verified false positive may use only the narrowest ReSharper suppression at the affected location, with a short comment explaining the dynamic consumer and why it is safe.
@@ -150,7 +150,7 @@ For each candidate, record:
 | Producers and consumers | For events, states, DTO fields, warnings, settings, and vocabulary |
 | Test/doc-only callers | Whether they protect current behavior or only the candidate itself |
 | Persistence/compatibility | Schema, migration, snapshot, wire, URI, or old-data obligations |
-| ADR/PRD rationale | Current decision, superseded decision, or none |
+| ADR/issue rationale | Current decision, superseded decision, or none |
 | Removal surface | Declaration, implementations, tests, docs, DI, settings, packages, resources |
 | Risk and reintroduction | Capability lost and what real consumer would justify bringing it back |
 

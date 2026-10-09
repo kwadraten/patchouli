@@ -120,7 +120,7 @@ CLI `--json` and MCP `format=json` are semantically equivalent JSON projections
 for batch agents and other programming-language clients; choosing JSON never
 requires parsing TOON and never changes fields, pagination, warnings, errors,
 or the requested default/detailed projection. TOON and both JSON projections
-share the PRD's closed response shape: `meta`, `continuation`, optional
+share the mcp-protocol closed response shape: `meta`, `continuation`, optional
 `message`, and `entries`; there is no separate `data` envelope. `message`
 contains stable warning codes and/or the request-level error, and is omitted
 for a clean success. CLI help and the MCP initialize response state this Unix
@@ -163,7 +163,7 @@ mismatch it discards any prepared entries and returns `NOT_FOUND`; it must
 never return entries, partial entries, or a citation from a different Library.
 
 Regular-expression search is deliberately absent from the CLI/MCP protocol. The
-structured `find` scope × query/`--literal`/filter matrix in the PRD is the
+structured `find` scope × query/`--literal`/filter matrix in mcp-protocol is the
 single authority for supported combinations; an unsupported combination,
 including `--regex`, returns `INVALID_ARGUMENT`. Agents that need regex
 matching perform it locally on text returned by `find` or `fetch` rather than
@@ -174,7 +174,7 @@ whitespace-only queries browse; a known file URI is a singleton discovery scope;
 root discovery can be paged; and a continuation cursor restores its embedded
 context when conflicting request values are supplied. `where` splits on its
 first `=` and uses the last value for a repeated key. Each normalization emits
-the corresponding stable PRD warning in `message.warnings`; an invalid cursor
+the corresponding stable protocol warning in `message.warnings`; an invalid cursor
 or unsupported matrix combination still returns `INVALID_ARGUMENT`.
 
 All writes, including desktop UI writes, flow through the host write service;
@@ -196,7 +196,7 @@ cancellation, HTTP disconnect, and CLI interruption propagate to the host. A
 cancelled `put` before its atomic commit point returns `CANCELLED` and writes
 nothing; after that point the host completes the atomic commit or rollback, so
 the client must re-fetch after a disconnect rather than infer a partial state.
-Unexpected host, database, or internal-helper failures map to the PRD's stable
+Unexpected host, database, or internal-helper failures map to the protocol contract stable
 `INTERNAL` error code; responses may carry a correlation id but never raw
 exception details, stacks, local paths, or secrets.
 

@@ -72,7 +72,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void Agent_docs_live_under_agent_directory()
     {
-        File.Exists(TestPaths.FromRepositoryRoot(".agents", "PRD.md")).Should().BeTrue();
+        File.Exists(TestPaths.FromRepositoryRoot(".agents", "CONTEXT.md")).Should().BeTrue();
         File.Exists(TestPaths.FromRepositoryRoot(".agents", "domain.md")).Should().BeTrue();
         Directory.Exists(TestPaths.FromRepositoryRoot("docs")).Should().BeFalse();
     }
@@ -86,10 +86,11 @@ public sealed class AlphaPackagingTests
     }
 
     [Fact]
-    public void PRD_documents_queue_search_and_mcp_boundaries()
+    public void Context_documents_queue_search_and_mcp_boundaries()
     {
-        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "PRD.md"));
-        r.Should().Contain("MCP 从不触发 OCR 或索引重建").And.Contain("搜索配置文件").And.Contain("本地 FTS 索引是可重建的本地缓存");
+        string r = File.ReadAllText(TestPaths.FromRepositoryRoot(".agents", "CONTEXT.md"));
+        r.Should().Contain("triggers OCR, rebuilds indexes").And.Contain("SearchProfile").And
+            .Contain("FTS index is rebuildable local cache");
     }
 
     [Fact]
