@@ -109,6 +109,10 @@ public sealed record McpToolError(
             McpErrorCode.Cancelled => "CANCELLED",
             McpErrorCode.ItemInTrash => "ITEM_IN_TRASH",
             McpErrorCode.ItemMerged => "ITEM_MERGED",
+            McpErrorCode.WorkflowNotFound => "WORKFLOW_NOT_FOUND",
+            McpErrorCode.SessionNotFound => "SESSION_NOT_FOUND",
+            McpErrorCode.SessionStateInvalid => "SESSION_STATE_INVALID",
+            McpErrorCode.DuplicateMessage => "DUPLICATE_MESSAGE",
             _ => "UNKNOWN"
         };
     }
@@ -129,6 +133,10 @@ public sealed record McpToolError(
             McpErrorCode.Cancelled => "The request was cancelled.",
             McpErrorCode.ItemInTrash => "The requested item is in trash.",
             McpErrorCode.ItemMerged => "The requested item has been merged into another item.",
+            McpErrorCode.WorkflowNotFound => "The workflow URI does not name an available workflow.",
+            McpErrorCode.SessionNotFound => "The agent session does not exist.",
+            McpErrorCode.SessionStateInvalid => "The session state does not allow this send instruction.",
+            McpErrorCode.DuplicateMessage => "The message_id was already accepted and was not appended again.",
             _ => "The request failed."
         };
     }

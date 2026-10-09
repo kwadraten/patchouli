@@ -253,6 +253,14 @@ public sealed partial class MainWindow : Window
         _viewModel.RunToolbarSearchCommand.Execute(null);
     }
 
+    private async void OnWorkflowMenuPointerEntered(object? sender, Avalonia.Input.PointerEventArgs e)
+    {
+        // Menus are opened far more often than workflows change: rebuilding the entries here keeps the
+        // list current (and picks up the current Library selection) without watching the store.
+        await UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshWorkflowMenuAsync, "workflow-menu-refresh");
+    }
+
+
     private async void OnCopyMcpAddressClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         try

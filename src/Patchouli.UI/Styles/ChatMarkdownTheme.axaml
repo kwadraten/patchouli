@@ -1,0 +1,13 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <ResourceDictionary.MergedDictionaries>
+    <ResourceInclude Source="avares://LiveMarkdown.Avalonia/Defaults.axaml" />
+  </ResourceDictionary.MergedDictionaries>
+  <SolidColorBrush x:Key="ForegroundColor" Color="{DynamicResource OnSurfaceColor}" />
+  <SolidColorBrush x:Key="BorderColor" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="BorderBrush" Color="{DynamicResource OutlineVariantColor}" />
+  <SolidColorBrush x:Key="CardBackgroundColor" Color="{DynamicResource SurfaceContainerLowColor}" />
+  <SolidColorBrush x:Key="SecondaryCardBackgroundColor" Color="{DynamicResource SurfaceContainerColor}" />
+  <SolidColorBrush x:Key="CodeInlineColor" Color="{DynamicResource PrimaryColor}" />
+  <SolidColorBrush x:Key="QuoteBorderColor" Color="{DynamicResource PrimaryColor}" />
+</ResourceDictionary>

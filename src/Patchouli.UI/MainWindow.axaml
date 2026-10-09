@@ -7,6 +7,7 @@
         xmlns:editor="using:Patchouli.UI.ViewModels.Editor"
         xmlns:csl="using:Patchouli.UI.ViewModels.Csl"
         xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+        xmlns:agentchat="using:Patchouli.UI.ViewModels.AgentChat"
         xmlns:controls="using:Patchouli.UI.Controls"
         x:DataType="local:MainWindowViewModel"
         Width="1280" Height="820" MinWidth="1040" MinHeight="680"
@@ -39,9 +40,15 @@
     <DataTemplate DataType="{x:Type local:OcrQueueViewModel}">
       <views:OcrQueuePage />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type agentchat:AgentChatTabViewModel}">
+      <views:AgentChatPage />
+    </DataTemplate>
     <!-- About tab content is AboutViewModel -->
     <DataTemplate DataType="{x:Type local:AboutViewModel}">
       <views:AboutPage />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type local:ChangelogViewModel}">
+      <views:ChangelogPage />
     </DataTemplate>
   </Window.DataTemplates>
 
@@ -61,6 +68,8 @@
       <Grid ColumnDefinitions="*,Auto" Margin="12,0">
         <Menu VerticalAlignment="Center" Background="Transparent">
           <MenuItem Header="书库">
+            <MenuItem Header="打开其他书库…" Command="{Binding OpenOtherLibraryCommand}" />
+            <Separator />
             <MenuItem Header="侧边栏">
               <MenuItem Header="左侧边栏" ToggleType="CheckBox"
                         IsChecked="{Binding ShowLibraryLeftSidebarPreference, Mode=TwoWay}" />
@@ -93,40 +102,87 @@
                       Command="{Binding OpenSnapshotPackageDescriptor}"
                       ToolTip.Tip="{Binding OpenSnapshotPackageDescriptor.DisabledReason}" />
           </MenuItem>
-          <MenuItem Header="题录">
+          <MenuItem Header="题录"
+                    DataContext="{Binding $parent[Window].((local:MainWindowViewModel)DataContext).Shell, FallbackValue={x:Null}}"
+                    x:DataType="local:LibraryShellViewModel"
+                    PointerEntered="OnWorkflowMenuPointerEntered">
             <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
+            <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
+                      IsVisible="{Binding HasWorkflowMenuEntries}" x:CompileBindings="False">
+              <MenuItem.ItemTemplate>
+                <DataTemplate x:DataType="local:WorkflowMenuEntryViewModel">
+                  <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
+                </DataTemplate>
+              </MenuItem.ItemTemplate>
+              <MenuItem.Styles>
+                <Style Selector="MenuItem MenuItem">
+                  <Setter Property="Command" Value="{Binding LaunchCommand}" />
+                  <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
+                </Style>
+              </MenuItem.Styles>
+            </MenuItem>
+            <Separator IsVisible="{Binding HasWorkflowMenuEntries}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
-                      IsEnabled="{Binding Shell.IsSingleSelectionOrNone}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="检测重复题录" Command="{Binding DetectDuplicateItemsCommand}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="获取所选题录元数据" Command="{Binding Shell.LookupMetadataBatchCommand}"
-                      IsEnabled="{Binding Shell.HasBatchSelection}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="取消批量获取元数据" Command="{Binding Shell.CancelMetadataBatchCommand}"
-                      IsVisible="{Binding Shell.IsMetadataBatchBusy}" />
+                      IsEnabled="{Binding IsSingleSelectionOrNone}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="合并题录" Command="{Binding MergeSelectedItemsCommand}"
+                      IsEnabled="{Binding CanMergeSelectedItems}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="检测重复题录"
+                      Command="{Binding DetectDuplicatesCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="获取所选题录元数据"
+                      Command="{Binding LookupMetadataBatchCommand}"
+                      IsEnabled="{Binding HasBatchSelection}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="取消批量获取元数据"
+                      Command="{Binding CancelMetadataBatchCommand}"
+                      IsVisible="{Binding IsMetadataBatchBusy}" />
+            <MenuItem Header="打开文档" Command="{Binding ShowReadingCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="添加到集合" IsVisible="{Binding Sidebar.IsActiveSelected}"
+                      IsEnabled="{Binding HasCollections}" ItemsSource="{Binding CollectionContextItems}"
+                      x:CompileBindings="False">
+              <MenuItem.ItemTemplate>
+                <DataTemplate x:DataType="local:CollectionListItemViewModel">
+                  <TextBlock Text="{Binding Name}" />
+                </DataTemplate>
+              </MenuItem.ItemTemplate>
+              <MenuItem.Styles>
+                <Style Selector="MenuItem MenuItem">
+                  <Setter Property="ToggleType" Value="CheckBox" />
+                  <Setter Property="IsChecked" Value="{Binding ContainsSelection, Mode=OneWay}" />
+                  <Setter Property="Command" Value="{Binding AddToSelectionCommand}" />
+                </Style>
+              </MenuItem.Styles>
+            </MenuItem>
+            <MenuItem Header="从当前集合移除"
+                      Command="{Binding RemoveSelectedItemsFromCurrentCollectionCommand}"
+                      IsVisible="{Binding HasSelectedCollectionFilter}" />
             <MenuItem Header="{Binding CopyCslBibliographyDescriptor.Label}"
                       Command="{Binding CopyCslBibliographyDescriptor}"
                       ToolTip.Tip="{Binding CopyCslBibliographyDescriptor.DisabledReason}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="{Binding ExportItemDescriptor.Label}" Command="{Binding ExportItemDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="{Binding ExportItemDescriptor.Label}"
+                      Command="{Binding ExportItemDescriptor}"
                       ToolTip.Tip="{Binding ExportItemDescriptor.DisabledReason}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="删除" Command="{Binding Shell.DeleteSelectedItemsCommand}"
-                      IsVisible="{Binding Shell.Sidebar.IsActiveSelected}" />
-            <MenuItem Header="还原" Command="{Binding Shell.RestoreSelectedItemsCommand}"
-                      IsVisible="{Binding Shell.Sidebar.IsTrashSelected}" />
-            <MenuItem Header="永久删除" Command="{Binding Shell.PurgeSelectedItemsCommand}"
-                      IsVisible="{Binding Shell.Sidebar.IsTrashSelected}" />
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="删除" Command="{Binding DeleteSelectedItemsCommand}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="还原" Command="{Binding RestoreSelectedItemsCommand}"
+                      IsVisible="{Binding Sidebar.IsTrashSelected}" />
+            <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
+                      IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <Separator />
             <MenuItem Header="{Binding ImportBiblatexBatchDescriptor.Label}"
                       Command="{Binding ImportBiblatexBatchDescriptor}" />
-            <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}"
-                      Command="{Binding ExportBiblatexDescriptor}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
-            <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}"
-                      Command="{Binding CopyBiblatexDescriptor}"
-                      IsVisible="{Binding Shell.CanModifyLibraryItems}" />
+            <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}" Command="{Binding ExportBiblatexDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}" Command="{Binding CopyBiblatexDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
           </MenuItem>
           <MenuItem Header="OCR">
             <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />
@@ -143,14 +199,32 @@
             <Separator />
             <MenuItem Header="重建 FTS 索引" Command="{Binding RebuildSearchIndexCommand}" />
           </MenuItem>
-          <MenuItem Header="MCP">
-            <MenuItem Header="MCP 设置" Command="{Binding OpenMcpSettingsCommand}" />
+          <MenuItem Header="AI集成" x:Name="WorkflowMenu" PointerEntered="OnWorkflowMenuPointerEntered">
+            <MenuItem Header="{Binding ToggleMcpServerLabel}" Command="{Binding ToggleMcpServerCommand}" />
+            <MenuItem Header="AI集成设置" Command="{Binding OpenMcpSettingsCommand}" />
+            <Separator />
+            <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
+                      IsVisible="{Binding HasWorkflowMenuEntries}" x:CompileBindings="False">
+              <MenuItem.ItemTemplate>
+                <DataTemplate x:DataType="local:WorkflowMenuEntryViewModel">
+                  <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
+                </DataTemplate>
+              </MenuItem.ItemTemplate>
+              <MenuItem.Styles>
+                <Style Selector="MenuItem MenuItem">
+                  <Setter Property="Command" Value="{Binding LaunchCommand}" />
+                  <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
+                </Style>
+              </MenuItem.Styles>
+            </MenuItem>
+            <Separator />
+            <!-- Opens the chat tab without starting any session (plan §3.8). -->
+            <MenuItem Header="打开聊天标签页" Command="{Binding OpenAgentChatCommand}" />
+            <MenuItem Header="立刻停止所有会话" Command="{Binding StopAllAgentSessionsCommand}" />
           </MenuItem>
           <MenuItem Header="设置">
             <MenuItem Header="全局设置" Command="{Binding OpenSettingsCommand}" />
-            <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
-          </MenuItem>
-          <MenuItem Header="帮助">
+            <MenuItem Header="更新日志" Command="{Binding ShowChangelogCommand}" />
             <MenuItem Header="关于" Command="{Binding ShowAboutCommand}" />
           </MenuItem>
         </Menu>
@@ -257,7 +331,8 @@
                                      SleepReason="{Binding ActivityReason}"
                                      StatusText="{Binding ActivityDescription}"
                                      Foreground="{DynamicResource InverseOnSurfaceBrush}" />
-        <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="statusBar" FontSize="12" VerticalAlignment="Center">
+        <TextBlock Grid.Column="1" Text="{Binding Status}" Classes="statusBar" FontSize="12" VerticalAlignment="Center"
+                   TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Status}">
           <Classes.error>
             <MultiBinding Converter="{x:Static BoolConverters.Or}">
               <Binding Path="StatusIsError" />

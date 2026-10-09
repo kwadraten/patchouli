@@ -37,4 +37,7 @@ public sealed record PdfImportResult(
     string? CreatedDocumentInstanceId,
     int PageCount = 0,
     int FailedPageCount = 0,
-    IReadOnlyList<PdfImportPageFailure>? PageFailures = null);
+    IReadOnlyList<PdfImportPageFailure>? PageFailures = null)
+{
+    public bool IsDuplicate => Status is "already_imported" or "already_imported_deleted";
+}

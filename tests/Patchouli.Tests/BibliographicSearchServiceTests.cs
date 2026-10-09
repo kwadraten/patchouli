@@ -75,14 +75,14 @@ public sealed class BibliographicSearchServiceTests : IAsyncLifetime
         IReadOnlyList<LibraryItemRow> rows = (await _queries.SearchRowsAsync(new BibliographicItemSearch(null,
         [
             new BibliographicSearchFilter(BibliographicSearchFilterKeys.ItemType, "book"),
-            new BibliographicSearchFilter(BibliographicSearchFilterKeys.Author, "周志华"),
+            new BibliographicSearchFilter(BibliographicSearchFilterKeys.Author, "周志华")
         ]))).Value;
         rows.Select(row => row.ItemId).Should().Equal(_book.ItemId);
 
         IReadOnlyList<LibraryItemRow> noHit = (await _queries.SearchRowsAsync(new BibliographicItemSearch(null,
         [
             new BibliographicSearchFilter(BibliographicSearchFilterKeys.ItemType, "article-journal"),
-            new BibliographicSearchFilter(BibliographicSearchFilterKeys.Title, "机器学习"),
+            new BibliographicSearchFilter(BibliographicSearchFilterKeys.Title, "机器学习")
         ]))).Value;
         noHit.Should().BeEmpty();
     }

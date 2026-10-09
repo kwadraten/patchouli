@@ -19,7 +19,7 @@ try
         out string? mcpToken, out string? databasePath, out IReadOnlyList<string> rest);
     if (rest.Count == 0)
     {
-        Console.Error.WriteLine("patchouli-cli: a command is required (find, fetch, put, cite).");
+        Console.Error.WriteLine("patchouli-cli: a command is required (find, fetch, put, cite, send).");
         PrintUsage();
         return CliExitCode.InvalidArgument;
     }
@@ -149,7 +149,7 @@ static void ParseGlobalArguments(
 static void PrintUsage()
 {
     Console.Error.WriteLine(
-        "patchouli-cli [--json] [--db <runtime.sqlite>] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite> [arguments]");
+        "patchouli-cli [--json] [--db <runtime.sqlite>] [--mcp-url <url>] [--mcp-token <token>] <find|fetch|put|cite|send> [arguments]");
     Console.Error.WriteLine(
         "  find [QUERY] [--in <uri>] [--where <KEY=VALUE>] [--literal] [--limit <n>] [--cursor <token>] [--long]");
     Console.Error.WriteLine(
@@ -164,6 +164,11 @@ static void PrintUsage()
     Console.Error.WriteLine(
         "    Writable: patchouli://items/<id>.bib, patchouli://csl-styles/<id>.csl, patchouli://translations/<document-id>/page-<index>.md");
     Console.Error.WriteLine("  cite <ref>... [--style <uri>] [--locale <locale>] [--bibliography] [--html]");
+    Console.Error.WriteLine("  send <start|message|cancel|resume> [OPTIONS]");
+    Console.Error.WriteLine(
+        "    start --workflow <uri> [--param NAME=VALUE]...; message --session <uri> --message-id <id> [--text <text>]; cancel|resume --session <uri>");
+    Console.Error.WriteLine(
+        "    Sessions and workflows are observed at patchouli://runs/agent/{session-id}/status|/events and patchouli://workflows/.");
     Console.Error.WriteLine(
         "Global options: --json, --db <runtime.sqlite>, --mcp-url <url>, --mcp-token <token>, --version, --help");
     Console.Error.WriteLine(

@@ -112,15 +112,13 @@ public sealed class BiblatexImportService : IBiblatexImportService
             if (targetItemId is null)
             {
                 Result<ItemMetadata> createdItem =
-                    await _items.CreateItemAsync(BiblatexMappedItemMerge.ToCreateRequest(source), cancellationToken);
+                    await CreateImportedItemAsync(source, bibFileDirectory, skips, cancellationToken);
                 if (createdItem.IsFailure)
                 {
                     return Result<BiblatexImportApplyResult>.Failure(createdItem.ErrorCode!, createdItem.ErrorMessage!);
                 }
 
                 created.Add(createdItem.Value.ItemId.ToString());
-                await AttachFileAsync(source, createdItem.Value.ItemId, true, bibFileDirectory, skips,
-                    cancellationToken);
             }
             else
             {
@@ -168,7 +166,7 @@ public sealed class BiblatexImportService : IBiblatexImportService
                 }
 
                 updated.Add(target.ToString());
-                await AttachFileAsync(source, target, false, bibFileDirectory, skips,
+                await AttachFileAsync(source, target, bibFileDirectory, skips,
                     cancellationToken);
             }
         }
@@ -257,9 +255,8 @@ public sealed class BiblatexImportService : IBiblatexImportService
 
                 if (createNew)
                 {
-                    Result<ItemMetadata> createdItem = await _items.CreateItemAsync(
-                        BiblatexMappedItemMerge.ToCreateRequest(group.Source),
-                        cancellationToken);
+                    Result<ItemMetadata> createdItem = await CreateImportedItemAsync(
+                        group.Source, bibFileDirectory, skips, cancellationToken);
                     if (createdItem.IsFailure)
                     {
                         await CompensateDeletesAsync(created, CancellationToken.None);
@@ -269,8 +266,6 @@ public sealed class BiblatexImportService : IBiblatexImportService
                     }
 
                     created.Add(createdItem.Value.ItemId.ToString());
-                    await AttachFileAsync(group.Source, createdItem.Value.ItemId, true, bibFileDirectory,
-                        skips, cancellationToken);
                     continue;
                 }
 
@@ -303,7 +298,7 @@ public sealed class BiblatexImportService : IBiblatexImportService
                 }
 
                 updated.Add(linkedTarget.ToString());
-                await AttachFileAsync(group.Source, linkedTarget, false, bibFileDirectory, skips,
+                await AttachFileAsync(group.Source, linkedTarget, bibFileDirectory, skips,
                     cancellationToken);
             }
         }
@@ -424,46 +419,10 @@ public sealed class BiblatexImportService : IBiblatexImportService
 
     private static BiblatexMatchCandidateSeed ToSeed(ItemMetadata item)
     {
-        HashSet<int> years = [];
-        foreach (ItemDate date in item.Dates.Where(static d =>
-                     string.Equals(d.Role, "issued", StringComparison.OrdinalIgnoreCase)))
-        {
-            try
-            {
-                int[][]? parts = JsonSerializer.Deserialize<int[][]>(date.DatePartsJson);
-                if (parts is null)
-                {
-                    continue;
-                }
-
-                foreach (int[] part in parts)
-                {
-                    if (part.Length > 0)
-                    {
-                        years.Add(part[0]);
-                    }
-                }
-            }
-            catch (JsonException)
-            {
-                // Ignore unparsable date parts for matching seeds.
-            }
-        }
-
         string[] authors = item.Creators
             .Where(static creator =>
-                string.Equals(creator.Role, "author", StringComparison.OrdinalIgnoreCase))
-            .Select(static creator =>
-            {
-                if (!string.IsNullOrWhiteSpace(creator.Literal))
-                {
-                    return creator.Literal.Trim();
-                }
-
-                string family = creator.Family?.Trim() ?? "";
-                string given = creator.Given?.Trim() ?? "";
-                return string.Join(" ", new[] { given, family }.Where(static part => part.Length > 0));
-            })
+                string.Equals(creator.Role, ItemCreatorRoles.Author, StringComparison.OrdinalIgnoreCase))
+            .Select(BiblatexFieldMapper.CreatorMatchKey)
             .Where(static value => value.Length > 0)
             .ToArray();
 
@@ -473,59 +432,44 @@ public sealed class BiblatexImportService : IBiblatexImportService
             item.PublicationTitle,
             item.Publisher,
             authors,
-            years);
+            BiblatexFieldMapper.ExtractYearsFromItemDates(item.Dates));
+    }
+
+    private async Task<Result<ItemMetadata>> CreateImportedItemAsync(
+        BiblatexMappedItem source,
+        string? bibFileDirectory,
+        List<BiblatexFileSkip> skips,
+        CancellationToken cancellationToken)
+    {
+        RegisteredImportFile? file = await RegisterImportFileAsync(source, bibFileDirectory, skips, cancellationToken);
+        CreateItemRequest request = BiblatexMappedItemMerge.ToCreateRequest(source);
+        return file is null
+            ? await _items.CreateItemAsync(request, cancellationToken)
+            : await _items.CreateItemWithPrimaryDocumentAsync(
+                request, file.Asset.FileAssetId, file.Title, cancellationToken);
     }
 
     private async Task AttachFileAsync(
         BiblatexMappedItem source,
         ItemId itemId,
-        bool makePrimary,
         string? bibFileDirectory,
         List<BiblatexFileSkip> skips,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(source.FilePath))
+        RegisteredImportFile? file = await RegisterImportFileAsync(source, bibFileDirectory, skips, cancellationToken);
+        if (file is null)
         {
-            return;
-        }
-
-        string raw = source.FilePath.Trim();
-        string resolved;
-        if (Path.IsPathRooted(raw))
-        {
-            resolved = raw;
-        }
-        else if (string.IsNullOrWhiteSpace(bibFileDirectory))
-        {
-            skips.Add(new BiblatexFileSkip("clipboard relative path has no base directory", 1));
-            return;
-        }
-        else
-        {
-            resolved = Path.GetFullPath(Path.Combine(bibFileDirectory, raw));
-        }
-
-        if (!File.Exists(resolved))
-        {
-            skips.Add(new BiblatexFileSkip("path does not exist", 1));
             return;
         }
 
         try
         {
-            Result<FileAsset> asset = await _files.RegisterFileAsync(resolved, cancellationToken);
-            if (asset.IsFailure)
-            {
-                skips.Add(new BiblatexFileSkip(asset.ErrorMessage ?? "register failed", 1));
-                return;
-            }
-
             Result<DocumentInstance> document = await _documents.AttachDocumentInstanceAsync(
                 itemId,
-                asset.Value.FileAssetId,
-                makePrimary ? DocumentInstanceType.PrimaryScan : DocumentInstanceType.Supplement,
-                Path.GetFileName(resolved),
-                makePrimary,
+                file.Asset.FileAssetId,
+                DocumentInstanceType.Supplement,
+                file.Title,
+                false,
                 cancellationToken);
             if (document.IsFailure)
             {
@@ -545,6 +489,68 @@ public sealed class BiblatexImportService : IBiblatexImportService
             AddFileSkip(skips, exception);
         }
     }
+
+    private async Task<RegisteredImportFile?> RegisterImportFileAsync(
+        BiblatexMappedItem source,
+        string? bibFileDirectory,
+        List<BiblatexFileSkip> skips,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(source.FilePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            string raw = source.FilePath.Trim();
+            string resolved;
+            if (Path.IsPathRooted(raw))
+            {
+                resolved = raw;
+            }
+            else if (string.IsNullOrWhiteSpace(bibFileDirectory))
+            {
+                skips.Add(new BiblatexFileSkip("clipboard relative path has no base directory", 1));
+                return null;
+            }
+            else
+            {
+                resolved = Path.GetFullPath(Path.Combine(bibFileDirectory, raw));
+            }
+
+            if (!File.Exists(resolved))
+            {
+                skips.Add(new BiblatexFileSkip("path does not exist", 1));
+                return null;
+            }
+
+            Result<FileAsset> asset = await _files.RegisterFileAsync(resolved, cancellationToken);
+            if (asset.IsFailure)
+            {
+                skips.Add(new BiblatexFileSkip(asset.ErrorMessage ?? "register failed", 1));
+                return null;
+            }
+
+            return new RegisteredImportFile(asset.Value, Path.GetFileName(resolved));
+        }
+        catch (IOException exception)
+        {
+            AddFileSkip(skips, exception);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            AddFileSkip(skips, exception);
+        }
+        catch (ArgumentException exception)
+        {
+            AddFileSkip(skips, exception);
+        }
+
+        return null;
+    }
+
+    private sealed record RegisteredImportFile(FileAsset Asset, string Title);
 
     private static void AddFileSkip(ICollection<BiblatexFileSkip> skips, Exception exception)
     {

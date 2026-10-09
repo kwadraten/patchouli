@@ -242,6 +242,15 @@ public sealed partial class FirstRunViewModel : ViewModelBase
         }
     }
 
+    public void Resume(LibraryImportOrchestrator orchestrator, ExistingDatabaseSetup? setup)
+    {
+        _orchestrator = orchestrator;
+        State = setup is null
+            ? new FirstRunWorkflowState(FirstRunStep.Library, "数据库已就绪。请创建资料库身份。", null,
+                null, null, null, null, null, false)
+            : ToWorkflowState(setup);
+    }
+
     public async Task CreateLibraryAsync()
     {
         if (string.IsNullOrWhiteSpace(LibraryName))

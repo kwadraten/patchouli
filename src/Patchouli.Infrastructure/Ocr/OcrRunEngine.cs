@@ -291,7 +291,49 @@ public sealed class OcrRunEngine : IOcrRunEngine
         Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
         return pages.IsFailure
             ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
-            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, regionBBox, null, cancellationToken);
+            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, regionBBox, null, cancellationToken,
+                allowAutoCommit: false);
+    }
+
+    public async Task<Result<OcrRun>> RunWorkingOnPageAsync(
+        DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<Page[]> pages = await GetPagesAsync(documentInstanceId, [pageId], cancellationToken);
+        return pages.IsFailure
+            ? Result<OcrRun>.Failure(pages.ErrorCode!, pages.ErrorMessage!)
+            : await RunPagesAsync(documentInstanceId, presetId, pages.Value, null, null, cancellationToken,
+                allowAutoCommit: false);
+    }
+
+    public async Task<Result> DiscardWorkingRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+    {
+        using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+        await using SqliteConnection connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+        string[] ids = (await connection.QueryAsync<string>(
+            """
+            select r.tree_revision_id from document_tree_revisions r
+            where r.status = 'working' and r.edit_session_id is null and r.tree_revision_id in (
+                select working_tree_revision_id from ocr_page_results where ocr_run_id = @RunId
+                union select output_tree_revision_id from ocr_runs where ocr_run_id = @RunId
+            );
+            """, new { RunId = runId.ToString() }, transaction)).ToArray();
+        if (ids.Length > 0)
+        {
+            await connection.ExecuteAsync(
+                """
+                update ocr_page_results set working_tree_revision_id = null
+                where ocr_run_id = @RunId and working_tree_revision_id in @Ids;
+                update ocr_runs set output_tree_revision_id = null
+                where ocr_run_id = @RunId and output_tree_revision_id in @Ids;
+                """, new { RunId = runId.ToString(), Ids = ids }, transaction);
+            await DeleteWorkingRevisionsAsync(connection, transaction, ids);
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return Result.Success();
     }
 
     public async Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(
@@ -777,12 +819,18 @@ public sealed class OcrRunEngine : IOcrRunEngine
         NormalizedBBox? region,
         string? imagePath,
         CancellationToken cancellationToken,
-        IProgress<OcrTaskStageProgress>? progress = null)
+        IProgress<OcrTaskStageProgress>? progress = null,
+        bool allowAutoCommit = true)
     {
         Result<OcrPresetVersion> version = await ResolvePresetVersionAsync(presetId, cancellationToken);
         if (version.IsFailure)
         {
             return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
+        }
+
+        if (!allowAutoCommit)
+        {
+            version = Result<OcrPresetVersion>.Success(version.Value with { ApplyOnSuccess = false });
         }
 
         Result adapterValidation = await ValidateAdapterAsync(version.Value, cancellationToken);

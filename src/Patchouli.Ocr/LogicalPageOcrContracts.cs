@@ -25,6 +25,9 @@ public sealed record PhysicalPageOcrResult(
 
 public interface ILogicalPageOcrService
 {
+    Task<Result<PhysicalPageOcrResult>> RunPageEditAsync(OcrPresetId presetId, PageEditSessionId sessionId,
+        CancellationToken cancellationToken = default);
+
     Task<Result<LogicalPageOcrResult>> RunAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,

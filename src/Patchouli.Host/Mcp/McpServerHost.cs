@@ -235,7 +235,10 @@ public sealed class McpServerHost : IAsyncDisposable
 
         McpProtocolHandler handler = new(_services.Mcp, _services.McpWrites, _services.BiblatexImport,
             _services.Items, _services.VersionedEvidenceReader, _services.ConnectionFactory, serverSettings,
-            ReportMcpException, activityTracker: _services.ActivityTracker, hostLifetime: _services.LifetimeToken);
+            ReportMcpException, activityTracker: _services.ActivityTracker, hostLifetime: _services.LifetimeToken,
+            agentRuns: new McpHostAgentRunsApi(_services.AgentSessions),
+            workflowRuns: new McpHostWorkflowRunsApi(_services.HostWorkflows),
+            ocrRuns: new McpHostOcrRunsApi(_services.GetOcrQueueRowsAsync));
         McpHttpServer server = new(handler, serverSettings, ReportMcpException);
         server.ConnectionCountsChanged += OnServerConnectionCountsChanged;
         try

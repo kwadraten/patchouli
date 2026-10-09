@@ -6,6 +6,9 @@ Date: 2026-09-15
 
 Accepted. Amends the resource tree of ADR `0024` (it adds one VFS root) and follows the
 versioned-evidence model of ADR `0028` and the working/committed revision model of ADR `0027`.
+Amended in part by ADR `0036`: only the premise that "Patchouli embeds no translation engine" is
+superseded, because the built-in agent now translates through the same `put` contract; the
+box-derived storage, realignment and validation decisions below remain in force.
 
 ## Context
 

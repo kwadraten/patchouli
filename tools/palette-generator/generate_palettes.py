@@ -5,7 +5,7 @@ Outputs:
   2. src/Patchouli.UI/Themes/UiColorPalettes.Generated.cs — light-scale step data and the
      palette registry consumed by Patchouli.UI.Themes.UiColorPalettes.
 
-The npm package is downloaded once into artifacts/radix-colors/ (gitignored) and reused.
+The npm package is downloaded once into .tmp/radix-colors/ (gitignored) and reused.
 Re-run after bumping PACKAGE_VERSION:  python tools/palette-generator/generate_palettes.py
 """
 
@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CACHE = ROOT / "artifacts" / "radix-colors"
+CACHE = ROOT / ".tmp" / "radix-colors"
 OUT_DOCS = ROOT / ".agents" / "palettes"
 OUT_CS = ROOT / "src" / "Patchouli.UI" / "Themes" / "UiColorPalettes.Generated.cs"
 PACKAGE_NAME = "@radix-ui/colors"

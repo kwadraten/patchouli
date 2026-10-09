@@ -1,6 +1,6 @@
 # Allow Limited Writable MCP
 
-Status: accepted (2026-07-31); amended 2026-08-01; amends ADR `0010`; production transport selected by ADR `0024`
+Status: accepted (2026-07-31); amended 2026-08-01; amends ADR `0010`; production transport selected by ADR `0024`; **amended in part by ADR `0036`** (write capability is now gated by user tool switches and the built-in agent writes through the same `put` contract; the narrow atomic write set and safety rules below are unchanged)
 
 ## Context
 

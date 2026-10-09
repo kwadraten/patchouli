@@ -1,0 +1,123 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:Patchouli.UI.ViewModels.Dialogs"
+        xmlns:settings="using:Patchouli.UI.ViewModels.Settings"
+        xmlns:controls="using:Patchouli.UI.Controls"
+        x:Class="Patchouli.UI.Views.WorkflowEditorDialog"
+        x:DataType="vm:WorkflowEditorDialogViewModel"
+        Title="工作流编辑器" Icon="/Assets/AppIcon.ico"
+        Width="1100" Height="760" MinWidth="820" MinHeight="540"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource SurfaceBrush}">
+  <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="20" RowSpacing="14">
+    <StackPanel Spacing="6">
+      <TextBlock Text="{Binding Editor.HeaderText}" FontSize="20" FontWeight="SemiBold" />
+      <TextBlock Text="{Binding Editor.TrustWarning}" FontSize="12" TextWrapping="Wrap"
+                 Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+    </StackPanel>
+    <Grid Grid.Row="1" ColumnDefinitions="300,16,*">
+      <ScrollViewer>
+        <StackPanel Spacing="12">
+          <TextBlock Text="工作流设置" FontSize="15" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding Editor.LockExplanation}" FontSize="12" TextWrapping="Wrap"
+                     IsVisible="{Binding Editor.IsReadOnly}"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8"
+                RowSpacing="8" IsEnabled="{Binding Editor.CanEditFields}">
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="名称" VerticalAlignment="Center" />
+            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Editor.Name}" />
+            <TextBlock Grid.Row="1" Grid.Column="0" Text="说明" VerticalAlignment="Center" />
+            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Editor.Description}" />
+            <TextBlock Grid.Row="2" Grid.Column="0" Text="脚本入口点" VerticalAlignment="Center" />
+            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Editor.ScriptEntryPoint}"
+                     PlaceholderText="run" />
+            <TextBlock Grid.Row="3" Grid.Column="0" Text="参数定义" VerticalAlignment="Top" />
+            <StackPanel Grid.Row="3" Grid.Column="1" Spacing="4">
+              <TextBox Text="{Binding Editor.ParametersText}" AcceptsReturn="True" MinHeight="90"
+                       TextWrapping="NoWrap"
+                       PlaceholderText="每行一个参数：name: Text | required | 说明 | 默认=值" />
+              <TextBlock Text="{Binding Editor.ParameterTypesHint}" FontSize="11"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+            </StackPanel>
+          </Grid>
+
+          <WrapPanel Orientation="Horizontal"
+                     IsEnabled="{Binding Editor.CanEditFields}">
+            <CheckBox Margin="0,0,10,6" Content="适用于文档" IsChecked="{Binding Editor.ScopeDocuments}" />
+            <CheckBox Margin="0,0,10,6" Content="适用于页范围" IsChecked="{Binding Editor.ScopePages}" />
+            <CheckBox Margin="0,0,10,6" Content="适用于文本选择" IsChecked="{Binding Editor.ScopeSelection}" />
+            <CheckBox Margin="0,0,10,6" Content="加入菜单" IsChecked="{Binding Editor.ShowInMenu}" />
+          </WrapPanel>
+
+          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" IsEnabled="{Binding Editor.CanEditFields}">
+            <TextBlock Text="菜单排序" VerticalAlignment="Center" />
+            <NumericUpDown Grid.Column="1" Minimum="0" Maximum="10000" Increment="1"
+                           Value="{Binding Editor.MenuOrder}" Width="140" HorizontalAlignment="Left" />
+          </Grid>
+
+          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" IsEnabled="{Binding Editor.CanEditFields}">
+            <TextBlock Text="菜单路径" VerticalAlignment="Center" />
+            <TextBox Grid.Column="1" Text="{Binding Editor.MenuPath}"
+                     PlaceholderText="Tools/Workflows" />
+          </Grid>
+
+
+        </StackPanel>
+      </ScrollViewer>
+      <Grid Grid.Column="2" RowDefinitions="Auto,*,Auto" RowSpacing="8">
+        <StackPanel Spacing="4">
+          <TextBlock Text="F# 脚本（.fsx）" FontSize="15" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding Editor.ScriptHint}" FontSize="11" TextWrapping="Wrap"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+        </StackPanel>
+        <Border Grid.Row="1" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6"
+                Background="{DynamicResource SurfaceContainerLowestBrush}" Padding="4">
+          <controls:WorkflowCodeEditor x:Name="ScriptEditor" Code="{Binding Editor.ScriptText, Mode=TwoWay}"
+                                       IsReadOnly="{Binding Editor.IsReadOnly}" IsEnabled="{Binding !Editor.IsSaving}"
+                                       FontFamily="Cascadia Mono,Consolas,monospace" FontSize="13"
+                                       Foreground="{DynamicResource OnSurfaceBrush}"
+                                       Background="{DynamicResource SurfaceContainerLowestBrush}"
+                                       HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" />
+        </Border>
+        <ScrollViewer Grid.Row="2" MaxHeight="140" IsVisible="{Binding Editor.HasResult}">
+          <Border Padding="10" CornerRadius="6"
+                  Background="{DynamicResource SurfaceContainerHighestBrush}">
+            <StackPanel Spacing="4">
+              <TextBlock Text="{Binding Editor.ResultText}" FontSize="12" TextWrapping="Wrap"
+                         IsVisible="{Binding Editor.HasResult}" />
+              <TextBlock Text="{Binding Editor.DiagnosticsSummary}" FontSize="11"
+                         IsVisible="{Binding Editor.HasDiagnostics}"
+                         Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+              <ItemsControl ItemsSource="{Binding Editor.Diagnostics}"
+                            IsVisible="{Binding Editor.HasDiagnostics}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate DataType="settings:WorkflowScriptDiagnosticViewModel">
+                    <TextBlock Text="{Binding DisplayText}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </Border>
+
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+    <Border Grid.Row="2" Padding="12" CornerRadius="6" IsVisible="{Binding IsCloseConfirmationVisible}"
+            Background="{DynamicResource SurfaceContainerHighestBrush}">
+      <StackPanel Spacing="8">
+        <TextBlock Text="有未保存的修改。保存后关闭，或放弃这些修改？" TextWrapping="Wrap" />
+        <WrapPanel Orientation="Horizontal">
+          <Button Content="继续编辑" Command="{Binding ContinueEditingCommand}" Margin="0,0,8,0" />
+          <Button Content="放弃并关闭" Command="{Binding DiscardAndCloseCommand}" Classes="Danger" Margin="0,0,8,0" />
+          <Button Content="保存并关闭" Command="{Binding SaveAndCloseCommand}" IsEnabled="{Binding Editor.CanSave}" />
+        </WrapPanel>
+      </StackPanel>
+    </Border>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="检查脚本" Command="{Binding Editor.CheckScriptCommand}" />
+      <Button Content="保存工作流" Command="{Binding Editor.SaveScriptCommand}" Classes="Primary" />
+      <Button Content="关闭" Command="{Binding CloseCommand}" IsEnabled="{Binding !Editor.IsSaving}" />
+    </StackPanel>
+  </Grid>
+</Window>

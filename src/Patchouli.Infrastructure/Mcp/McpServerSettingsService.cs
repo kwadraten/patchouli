@@ -49,12 +49,26 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         long expectedRevision,
         CancellationToken cancellationToken = default)
     {
+        return await SaveCoreAsync(settings, expectedRevision, true, cancellationToken);
+    }
+
+    public Task<Result<McpServerSettings>> SaveDraftSettingsAsync(McpServerSettings settings, long expectedRevision,
+        CancellationToken cancellationToken = default)
+    {
+        return SaveCoreAsync(settings, expectedRevision, false, cancellationToken);
+    }
+
+    private async Task<Result<McpServerSettings>> SaveCoreAsync(McpServerSettings settings, long expectedRevision,
+        bool validateRuntime, CancellationToken cancellationToken)
+    {
         McpServerSettings draft = Freeze(settings);
         SemaphoreSlim gate = SettingsFileWriteCoordinator.ForPath(_path);
         await gate.WaitAsync(cancellationToken);
         try
         {
-            Result validation = await ValidateSettingsAsync(draft, cancellationToken);
+            Result validation = validateRuntime
+                ? await ValidateSettingsAsync(draft, cancellationToken)
+                : ValidatePermissionStructure(draft);
             if (validation.IsFailure)
             {
                 return Result<McpServerSettings>.Failure(validation.ErrorCode!, validation.ErrorMessage!);
@@ -83,6 +97,31 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
 
     public async Task<Result> ValidateSettingsAsync(McpServerSettings settings,
         CancellationToken cancellationToken = default)
+    {
+        Result permissions = ValidatePermissionStructure(settings);
+        if (permissions.IsFailure)
+        {
+            return permissions;
+        }
+
+        return await ValidateRuntimeSettingsAsync(settings, cancellationToken);
+    }
+
+    private static Result ValidatePermissionStructure(McpServerSettings settings)
+    {
+        if (settings.DomainPermissions.Any(value => !McpPermissionPolicy.Domains.Contains(value.Domain) ||
+                                                    !McpPermissionPolicy.Verbs.Contains(value.Verb)) ||
+            settings.DomainPermissions.Select(value => (value.Domain, value.Verb)).Distinct().Count() !=
+            settings.DomainPermissions.Count)
+        {
+            return Result.Failure(AppErrorCodes.ValidationFailed, "Invalid or duplicate MCP domain permission.");
+        }
+
+        return Result.Success();
+    }
+
+    private async Task<Result> ValidateRuntimeSettingsAsync(McpServerSettings settings,
+        CancellationToken cancellationToken)
     {
         if (settings.Port is < 1 or > 65535)
         {
@@ -188,7 +227,10 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         {
             ShellCommandTimeoutSeconds = shellCommandTimeoutSeconds,
             ExposeLibraryTags = exposeLibraryTags,
-            ExposeLibraryCollections = exposeLibraryCollections
+            ExposeLibraryCollections = exposeLibraryCollections,
+            DomainPermissions = mcp.TryGetProperty("DomainPermissions", out JsonElement permissions)
+                ? JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? []
+                : []
         };
     }
 
@@ -221,6 +263,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
             ["AuthRequired"] = settings.AuthRequired,
             ["Token"] = settings.Token ?? "",
             ["ToolOverrides"] = JsonSerializer.SerializeToNode(settings.ToolOverrides),
+            ["DomainPermissions"] = JsonSerializer.SerializeToNode(settings.DomainPermissions),
             ["ShellCommandTimeoutSeconds"] = settings.ShellCommandTimeoutSeconds,
             ["ExposeLibraryTags"] = settings.ExposeLibraryTags,
             ["ExposeLibraryCollections"] = settings.ExposeLibraryCollections,
@@ -257,6 +300,7 @@ public sealed class McpServerSettingsService : IMcpServerSettingsService
         {
             BindAddress = settings.BindAddress.Trim(),
             AllowedOrigins = settings.AllowedOrigins.ToArray(),
+            DomainPermissions = settings.DomainPermissions.Select(item => item with { }).ToArray(),
             ToolOverrides = settings.ToolOverrides
                 .Select(item => item with { })
                 .ToArray()

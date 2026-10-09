@@ -33,18 +33,21 @@ using Patchouli.Ocr;
 using Patchouli.Core.Search;
 using Patchouli.UI.Themes;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Agent;
 using Patchouli.Host.Settings;
 using Patchouli.Host.Caching;
 using Patchouli.Host.Import;
 using Patchouli.Host.Lifecycle;
 using Patchouli.Host.Mcp;
 using Patchouli.Host.Watching;
+using Patchouli.Host.Workflows;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
 using Patchouli.UI;
+using Patchouli.Workflows;
 
 namespace Patchouli.UI.ViewModels;
 
@@ -55,8 +58,10 @@ using Core;
 using Dialogs;
 using Views;
 using Services;
+using AgentChat;
 
-public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable
+public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposable, IAgentChatHost,
+    IWorkflowMenuEntryHost
 {
     private static readonly TimeSpan RevisionBufferWindow = TimeSpan.FromMilliseconds(20);
     private readonly IScheduler _timingScheduler;
@@ -65,7 +70,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private readonly SerialDisposable _mcpSubscriptions = new();
     private readonly SerialDisposable _watcherSubscriptions = new();
     private readonly Subject<bool> _queryRewriteRequests = new();
-    private bool _suppressQueryRewritePersist;
+    private readonly AsyncLocal<bool> _suppressQueryRewritePersist = new();
 
     private static readonly Action<Exception, string, string?> ReportUnexpectedException =
         static (exception, boundary, operation) =>
@@ -78,7 +83,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private LibraryImportOrchestrator? _importOrchestrator;
     private LibraryRevisionMonitor? _libraryRevisionMonitor;
     private RuntimeHostLease? _runtimeHostLease;
-    private RescanCompletionCapture? _activeRescanCapture;
+    private readonly AsyncLocal<RescanCompletionCapture?> _activeRescanCapture = new();
     private readonly bool _autoStartMcpServer;
     private readonly bool _enforceRuntimeHostOwnership;
     private PatchouliAppSettings _settings;
@@ -95,7 +100,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private BibliographyViewModel? _bibliographyViewModel;
     private FileDocumentViewModel? _fileDocumentViewModel;
     private OcrQueueViewModel? _ocrQueueViewModel;
+    private AgentChatTabViewModel? _agentChatViewModel;
     private SearchEvidenceViewModel? _searchEvidenceViewModel;
+    private readonly IWorkflowMenuService _workflowMenu;
+    private readonly IWorkflowSessionNotifications _workflowNotifications;
+    private readonly IWorkflowSessionStatusLookup? _workflowSessionStatus;
+    private IDisposable? _workflowNotificationSubscription;
 
     public WorkspaceLayoutViewModel Layout { get; }
     public WorkspaceManager Workspace { get; }
@@ -134,7 +144,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     [ExcludeFromDerivedGeneration] public bool McpServerRunning => _mcpHost?.IsRunning == true;
 
-    [ExcludeFromDerivedGeneration] public bool CanStopMcpServer => !_enforceRuntimeHostOwnership;
+    public bool CanStopMcpServer => true;
+
+    [ExcludeFromDerivedGeneration] public string ToggleMcpServerLabel => McpServerRunning ? "关闭 MCP" : "开启 MCP";
 
     [ExcludeFromDerivedGeneration] public long? McpRunningSettingsRevision => _mcpHost?.RunningSettingsRevision;
 
@@ -255,7 +267,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     partial void OnQueryRewriteEnabledChanged(bool value)
     {
-        if (_suppressQueryRewritePersist)
+        if (_suppressQueryRewritePersist.Value)
         {
             return;
         }
@@ -315,6 +327,26 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public OcrQueueViewModel OcrQueue =>
         _ocrQueueViewModel ??= CreateWithActivityTracker(() => new OcrQueueViewModel(this));
 
+    /// <summary>
+    ///     The chat tab's view model (S3). It is owned by the window rather than by the workspace tab,
+    ///     so closing the tab removes only the front end: the session list, the message flow and the
+    ///     selected session survive a close, and opening the tab again shows the same state (D9).
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public AgentChatTabViewModel AgentChat =>
+        _agentChatViewModel ??=
+            CreateWithActivityTracker(() => new AgentChatTabViewModel(this, ResolveAgentChatSessionsAsync));
+
+    /// <summary>Host services the chat tab's commands are constructed under.</summary>
+    [ExcludeFromDerivedGeneration]
+    public AgentChatCommandContext CommandContext => new(_activityTracker);
+
+    /// <summary>The dialog surface a chat-tab confirmation (e.g. the S5 session purge) is shown through.</summary>
+    public Task<TResult?> ShowDialogAsync<TResult>(object viewModel)
+    {
+        return Dialogs.ShowDialogAsync<TResult>(viewModel);
+    }
+
     [ExcludeFromDerivedGeneration]
     public SearchEvidenceViewModel SearchEvidence =>
         _searchEvidenceViewModel ??= CreateSearchEvidenceViewModel();
@@ -359,6 +391,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AboutViewModel About => _about ??= CreateWithActivityTracker(() => new AboutViewModel(this));
 
     public AsyncCommand OpenDatabaseCommand { get; }
+
+    public AsyncCommand OpenOtherLibraryCommand { get; }
+
+    public AsyncCommand ToggleMcpServerCommand { get; }
+
+    public AsyncCommand StopAllAgentSessionsCommand { get; }
     public AsyncCommand CompleteFirstRunCommand { get; }
     public AsyncCommand ShowLibraryCommand { get; }
     public AsyncCommand ShowReadingCommand { get; }
@@ -368,9 +406,25 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand OpenSearchRewriteSettingsCommand { get; }
     public AsyncCommand OpenMcpSettingsCommand { get; }
     public AsyncCommand OpenOcrQueueCommand { get; }
+    public AsyncCommand OpenAgentChatCommand { get; }
+    public AsyncCommand RefreshWorkflowMenuCommand { get; }
+
+    /// <summary>Ordered menu-bar entries; the Library context menu shares this one source.</summary>
+    public ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries { get; }
+
+    /// <summary>Ordered reading-toolbar entries; loaded with the open document as the selection.</summary>
+    public ObservableCollection<WorkflowMenuEntryViewModel> ReadingWorkflowMenuEntries { get; }
+
+    /// <summary>True when the Library has at least one workflow that opted into the menus.</summary>
+    public bool HasWorkflowMenuEntries => WorkflowMenuEntries.Count > 0;
+
+    /// <summary>True when the reading view's workflow menu has at least one entry.</summary>
+    public bool HasReadingWorkflowMenuEntries => ReadingWorkflowMenuEntries.Count > 0;
+
     public AsyncCommand ActivateSettingsTabCommand { get; }
     public AsyncCommand ActivateSearchTabCommand { get; }
     public AsyncCommand ActivateOcrQueueTabCommand { get; }
+    public AsyncCommand ActivateAgentChatTabCommand { get; }
     public AsyncCommand ActivateAboutTabCommand { get; }
     public AsyncCommand CheckSyncStateCommand { get; }
     public AsyncCommand CopyCslBibliographyCommand { get; }
@@ -387,12 +441,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public AsyncCommand CloseSettingsTabCommand { get; }
     public AsyncCommand CloseSearchTabCommand { get; }
     public AsyncCommand CloseOcrQueueTabCommand { get; }
+    public AsyncCommand CloseAgentChatTabCommand { get; }
     public AsyncCommand CloseItemEditorTabCommand { get; }
     public AsyncCommand CloseAboutTabCommand { get; }
     public AsyncCommand RebuildSearchIndexCommand { get; }
     public AsyncCommand RescanFileSearchRootsCommand { get; }
     public AsyncCommand ToggleInspectorPaneCommand { get; }
     public AsyncCommand ShowAboutCommand { get; }
+    public AsyncCommand ShowChangelogCommand { get; }
     public AsyncCommand OpenCslStyleManagerCommand { get; }
     public UiCommandDescriptor CheckSyncStateDescriptor { get; }
     public UiCommandDescriptor PublishSnapshotDescriptor { get; }
@@ -408,6 +464,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ExcludeFromDerivedGeneration] public PatchouliAppSettings AppOptions => _settings;
     [ExcludeFromDerivedGeneration] public IAppSettingsStore SettingsStore => _settingsStore;
     [ExcludeFromDerivedGeneration] public IHostActivityTracker ActivityTracker => _activityTracker;
+
+    /// <summary>The window a workspace view model belongs to (used for its host services and status).</summary>
+    [ExcludeFromDerivedGeneration]
+    public MainWindowViewModel Main => this;
 
     [ObservableProperty] public partial bool IsActivityBusy { get; private set; }
     [ObservableProperty] public partial string? ActivitySummary { get; private set; }
@@ -472,8 +532,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     private void ApplyAppOptions(PatchouliAppSettings settings)
     {
         _settings = settings;
+        _services?.UpdateLlmSettings(settings.Llm);
         _services?.UpdateMetadataLookupPreferences(settings.MetadataLookup);
         _services?.UpdateFileScanExclusions(settings.FileScanning);
+    }
+
+    internal void NotifyLlmCredentialsChanged()
+    {
+        // A fresh runtime snapshot invalidates cached clients without rewriting non-secret settings.
+        _services?.UpdateLlmSettings(_settings.Llm with { });
     }
 
     public async Task<SettingsSaveResult> SaveMetadataLookupSettingsAsync(MetadataLookupAppSettings metadataLookup)
@@ -588,12 +655,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         IFilePickerService? filePicker = null, bool enforceRuntimeHostOwnership = false,
         IScheduler? timingScheduler = null, IScheduler? uiScheduler = null,
         IAppSettingsStore? settingsStore = null,
-        IHostActivityTracker? activityTracker = null)
+        IHostActivityTracker? activityTracker = null,
+        IWorkflowSessionStatusLookup? workflowSessionStatus = null)
     {
         _timingScheduler = timingScheduler ?? TaskPoolScheduler.Default;
         _uiScheduler = uiScheduler ?? (SynchronizationContext.Current is { } synchronizationContext
             ? new SynchronizationContextScheduler(synchronizationContext)
             : ImmediateScheduler.Instance);
+        _workflowSessionStatus = workflowSessionStatus;
         Register(_revisionSubscription);
         Register(_mcpSubscriptions);
         Register(_watcherSubscriptions);
@@ -648,9 +717,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Dialogs = dialogs ?? CreateDialogService();
         ModalOperations = modalOperations ?? new ModalOperationRunner(Dialogs);
         Logger = logger ?? new SimpleFileLogger(_settings.Runtime.LogDirectory);
-        Layout = new WorkspaceLayoutViewModel();
+        Layout = new WorkspaceLayoutViewModel(_uiScheduler);
         Workspace = new WorkspaceManager(Layout);
         Shell = new LibraryShellViewModel(this);
+
+        // The workflows live with the opened Library, so the menu source resolves the runner through
+        // the same composition root every other host service comes from.
+        _workflowNotifications = new WorkflowMenuService(_ => Task.FromResult<WorkflowSessionRunner?>(null));
+        _workflowMenu = WorkflowMenuService.ForHost(cancellationToken => ServicesAsync(false));
+        _workflowNotificationSubscription = _workflowNotifications.Subscribe(
+            _activityTracker, ResolveAgentSessionStatus, OnWorkflowNotifications);
 
         Shell.MinerUToken = "";
 
@@ -783,6 +859,20 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             }, exception => UnexpectedExceptions.Sink.Report(exception, "layout-active-tab"));
         Register(activeTabSub);
 
+        // Closing the chat tab removes the front end only (D9): the tab view model is owned by the
+        // window, so its session and message flow survive and nothing is stopped or cancelled.
+        IDisposable chatTabSub = Observable
+            .FromEventPattern<NotifyCollectionChangedEventHandler, NotifyCollectionChangedEventArgs>(
+                handler => OpenTabs.CollectionChanged += handler,
+                handler => OpenTabs.CollectionChanged -= handler)
+            .Where(pattern => pattern.EventArgs.Action == NotifyCollectionChangedAction.Remove &&
+                              pattern.EventArgs.OldItems?.OfType<WorkspaceTabViewModel>()
+                                  .Any(tab => tab.Kind == WorkspaceTabKind.AgentChat) == true)
+            .ObserveOn(_uiScheduler)
+            .Subscribe(_ => _agentChatViewModel?.Deactivate(), exception =>
+                UnexpectedExceptions.Sink.Report(exception, "layout-chat-tab"));
+        Register(chatTabSub);
+
         IDisposable inspectorPaneSub = layoutChanges
             .Where(e => e.EventArgs.PropertyName is null or nameof(WorkspaceLayoutViewModel.ShowInspectorPane))
             .ObserveOn(_uiScheduler)
@@ -815,8 +905,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     string epochs = exception.SchemaVersions.Count == 0
                         ? "未知"
                         : string.Join("、", exception.SchemaVersions.Order());
-                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.6 支持的数据库 schema epoch（{epochs}）。" +
-                                "0.3.6 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
+                    ReportError($"无法打开资料库：检测到不受 Patchouli 0.3.7 支持的数据库 schema epoch（{epochs}）。" +
+                                "0.3.7 不会自动迁移旧资料库；请新建资料库并重新导入源文档。");
                     return;
                 }
 
@@ -850,13 +940,31 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         ShowReadingCommand = new AsyncCommand(ShowReadingAsync);
         RunToolbarSearchCommand = new AsyncCommand(RunToolbarSearchAsync);
         OpenAdvancedSearchCommand = new AsyncCommand(OpenAdvancedSearchAsync);
-        OpenSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mineru"));
+        OpenSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("appearance"));
         OpenSearchRewriteSettingsCommand = new AsyncCommand(OpenSearchRewriteSettingsAsync);
         OpenMcpSettingsCommand = new AsyncCommand(() => OpenSettingsAsync("mcp"));
         OpenOcrQueueCommand = new AsyncCommand(OpenOcrQueueAsync);
+        OpenAgentChatCommand = new AsyncCommand(OpenAgentChatAsync);
+        OpenOtherLibraryCommand = new AsyncCommand(OpenOtherLibraryAsync);
+        ToggleMcpServerCommand = new AsyncCommand(async () =>
+        {
+            if (McpServerRunning)
+            {
+                await StopMcpServerAsync();
+            }
+            else
+            {
+                await StartMcpServerAsync();
+            }
+        });
+        StopAllAgentSessionsCommand = new AsyncCommand(StopAllAgentSessionsAsync);
+        WorkflowMenuEntries = [];
+        ReadingWorkflowMenuEntries = [];
+        RefreshWorkflowMenuCommand = new AsyncCommand(() => LoadWorkflowMenuAsync(WorkflowMenuEntries));
         ActivateSettingsTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.Settings));
         ActivateSearchTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.SearchResults));
         ActivateOcrQueueTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.OcrQueue));
+        ActivateAgentChatTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.AgentChat));
         ActivateAboutTabCommand = new AsyncCommand(() => ActivateExistingTabAsync(WorkspaceTabKind.About));
         CheckSyncStateCommand = new AsyncCommand(OpenSyncCenterAsync);
         CopyCslBibliographyCommand = new AsyncCommand(CopyCslBibliographyAsync, () => Shell.SelectedItem is not null);
@@ -875,6 +983,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         CloseSettingsTabCommand = new AsyncCommand(CloseSettingsTabAsync, () => Layout.HasSettingsTab);
         CloseSearchTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.SearchResults));
         CloseOcrQueueTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.OcrQueue));
+        CloseAgentChatTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.AgentChat));
         CloseItemEditorTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.ItemEditor),
             () => Layout.HasItemEditorTab);
         CloseAboutTabCommand = new AsyncCommand(() => CloseTabAsync(WorkspaceTabKind.About));
@@ -887,6 +996,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return Task.CompletedTask;
         });
         ShowAboutCommand = new AsyncCommand(OpenAboutAsync);
+        ShowChangelogCommand = new AsyncCommand(OpenChangelogAsync);
         OpenCslStyleManagerCommand = new AsyncCommand(OpenCslStyleManagerAsync);
 
         IDisposable commandInvalidationSub = layoutChanges.ObserveOn(_uiScheduler).Subscribe(_ =>
@@ -921,7 +1031,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             new AsyncCommand(OpenSyncCenterAsync));
         ReceiveSnapshotDescriptor = new UiCommandDescriptor(
             "sync.receive_current",
-            "检查/接收 current 快照",
+            "检查同步根目录中的快照",
             new AsyncCommand(async () =>
             {
                 await OpenSyncCenterAsync();
@@ -1054,6 +1164,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     public async Task RunStartupAsync(bool startMcpServer)
     {
+        bool hadDatabase = File.Exists(RuntimeDatabasePath) && new FileInfo(RuntimeDatabasePath).Length > 0;
         using IActivityScope startupActivity =
             _activityTracker.BeginScope("启动", HostActivityKind.Startup, "初始化运行环境");
         IsStartupLoadingVisible = true;
@@ -1096,10 +1207,32 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             if (library.IsFailure)
             {
                 await ShowInlineFirstRunAsync();
+                if (hadDatabase && _importOrchestrator is not null)
+                {
+                    FirstRun.Resume(_importOrchestrator, null);
+                }
             }
             else
             {
-                await Shell.RefreshAsync();
+                ExistingDatabaseSetup setup = await ExistingDatabaseSetupInspector.InspectAsync(RuntimeDatabasePath);
+                if (setup.CurrentStep == FirstRunStep.Complete && string.IsNullOrWhiteSpace(Shell.MinerUToken))
+                {
+                    setup = setup with
+                    {
+                        CurrentStep = FirstRunStep.MinerUConfig, IsComplete = false,
+                        ProgressText = "请完成 MinerU API token 配置。"
+                    };
+                }
+
+                if (!setup.IsComplete && _importOrchestrator is not null)
+                {
+                    await ShowInlineFirstRunAsync();
+                    FirstRun.Resume(_importOrchestrator, setup);
+                }
+                else
+                {
+                    await Shell.RefreshAsync();
+                }
             }
         }
         finally
@@ -1165,6 +1298,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
         RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
         RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
+        // A new Library is a new workflow store, so the menu entries are rebuilt from its definitions.
+        RefreshWorkflowMenuCommand?.Execute(null);
     }
 
     /// <summary>
@@ -1174,35 +1309,39 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     /// </summary>
     private void AttachHostServices(HostServices services)
     {
-        _mcpHost = new McpServerHost(services, ReportUnexpectedException);
+        McpServerHost mcpHost = new(services, ReportUnexpectedException);
+        _mcpHost = mcpHost;
         CompositeDisposable mcpSubs = new();
         mcpSubs.Add(Observable.FromEventPattern<McpServerHostStatusChangedEventArgs>(
-                h => _mcpHost.StatusChanged += h,
-                h => _mcpHost.StatusChanged -= h)
+                h => mcpHost.StatusChanged += h,
+                h => mcpHost.StatusChanged -= h)
             .ObserveOn(_uiScheduler)
             .Subscribe(e => OnMcpHostStatusChanged(e.Sender, e.EventArgs)));
         mcpSubs.Add(Observable.FromEventPattern<EventHandler, EventArgs>(
-                h => _mcpHost.ConnectionCountsChanged += h,
-                h => _mcpHost.ConnectionCountsChanged -= h)
+                h => mcpHost.ConnectionCountsChanged += h,
+                h => mcpHost.ConnectionCountsChanged -= h)
             .ObserveOn(_uiScheduler)
             .Subscribe(e => OnMcpHostConnectionCountsChanged(e.Sender, e.EventArgs)));
         _mcpSubscriptions.Disposable = mcpSubs;
 
-        _fileSearchRootWatcher = new FileSearchRootWatcherService(services, Logger);
+        FileSearchRootWatcherService fileSearchRootWatcher = new(services, Logger);
+        _fileSearchRootWatcher = fileSearchRootWatcher;
         CompositeDisposable watcherSubs = new();
         watcherSubs.Add(Observable.FromEventPattern<FileSearchRootRescanCompleted>(
-                h => _fileSearchRootWatcher.RescanCompleted += h,
-                h => _fileSearchRootWatcher.RescanCompleted -= h)
+                h => fileSearchRootWatcher.RescanCompleted += h,
+                h => fileSearchRootWatcher.RescanCompleted -= h)
+            .Where(e => !CaptureFileSearchRootRescanCompleted(e.Sender, e.EventArgs))
             .ObserveOn(_uiScheduler)
             .Subscribe(e => OnFileSearchRootRescanCompleted(e.Sender, e.EventArgs)));
         watcherSubs.Add(Observable.FromEventPattern<FileSearchRootRescanFailed>(
-                h => _fileSearchRootWatcher.RescanFailed += h,
-                h => _fileSearchRootWatcher.RescanFailed -= h)
+                h => fileSearchRootWatcher.RescanFailed += h,
+                h => fileSearchRootWatcher.RescanFailed -= h)
+            .Where(e => !CaptureFileSearchRootRescanFailed(e.Sender, e.EventArgs))
             .ObserveOn(_uiScheduler)
             .Subscribe(e => OnFileSearchRootRescanFailed(e.Sender, e.EventArgs)));
         watcherSubs.Add(Observable.FromEventPattern<SearchRootAvailabilityChanged>(
-                h => _fileSearchRootWatcher.SearchRootAvailabilityChanged += h,
-                h => _fileSearchRootWatcher.SearchRootAvailabilityChanged -= h)
+                h => fileSearchRootWatcher.SearchRootAvailabilityChanged += h,
+                h => fileSearchRootWatcher.SearchRootAvailabilityChanged -= h)
             .ObserveOn(_uiScheduler)
             .Subscribe(e => OnSearchRootAvailabilityChanged(e.Sender, e.EventArgs)));
         _watcherSubscriptions.Disposable = watcherSubs;
@@ -1432,6 +1571,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     internal async Task SetQueryRewriteEnabledAsync(bool enabled, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        ApplyQueryRewriteEnabled(enabled);
         await PersistQueryRewriteEnabledAsync(enabled, cancellationToken);
     }
 
@@ -1442,12 +1583,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         HostServices? services = _services;
         if (services is null)
         {
-            ApplyQueryRewriteEnabled(enabled);
             return;
         }
 
-        ApplyQueryRewriteEnabled(enabled);
-        Result saved = await services.SearchProfiles.SetRewriteEnabledAsync(enabled);
+        // The setter already reflects the user's latest choice. Reapplying a queued older
+        // request here would overwrite newer input before Switch cancels that request.
+        Result saved = await services.SearchProfiles.SetRewriteEnabledAsync(enabled, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (gen != LibraryGeneration)
         {
@@ -1472,14 +1613,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        _suppressQueryRewritePersist = true;
+        bool previousSuppression = _suppressQueryRewritePersist.Value;
+        _suppressQueryRewritePersist.Value = true;
         try
         {
             QueryRewriteEnabled = enabled;
         }
         finally
         {
-            _suppressQueryRewritePersist = false;
+            _suppressQueryRewritePersist.Value = previousSuppression;
         }
     }
 
@@ -1551,7 +1693,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         // (manual rescans); watcher-triggered rescans with no direct caller are marshaled to the
         // UI thread by the event handlers instead.
         RescanCompletionCapture capture = new();
-        _activeRescanCapture = capture;
+        RescanCompletionCapture? previousCapture = _activeRescanCapture.Value;
+        _activeRescanCapture.Value = capture;
         try
         {
             Result<FileSearchRootRescanSummary> result;
@@ -1575,6 +1718,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
                     trigger);
             }
 
+            // Follow-up creates watchers and background work; those must not inherit this
+            // completed manual scan's capture through their execution context.
+            _activeRescanCapture.Value = previousCapture;
             if (!IsCurrentLibraryContext(services, libraryGeneration) ||
                 !ReferenceEquals(watcher, _fileSearchRootWatcher))
             {
@@ -1600,9 +1746,9 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
         finally
         {
-            if (ReferenceEquals(_activeRescanCapture, capture))
+            if (ReferenceEquals(_activeRescanCapture.Value, capture))
             {
-                _activeRescanCapture = null;
+                _activeRescanCapture.Value = previousCapture;
             }
         }
     }
@@ -1613,16 +1759,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         public FileSearchRootRescanFailed? Failed { get; set; }
     }
 
+    private bool CaptureFileSearchRootRescanCompleted(object? sender, FileSearchRootRescanCompleted completed)
+    {
+        if (ReferenceEquals(sender, _fileSearchRootWatcher) && _activeRescanCapture.Value is { } capture)
+        {
+            capture.Completed = completed;
+            return true;
+        }
+
+        return false;
+    }
+
     private void OnFileSearchRootRescanCompleted(object? sender, FileSearchRootRescanCompleted completed)
     {
         if (!ReferenceEquals(sender, _fileSearchRootWatcher))
         {
-            return;
-        }
-
-        if (_activeRescanCapture is { } capture)
-        {
-            capture.Completed = completed;
             return;
         }
 
@@ -1655,16 +1806,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         }
     }
 
+    private bool CaptureFileSearchRootRescanFailed(object? sender, FileSearchRootRescanFailed failed)
+    {
+        if (ReferenceEquals(sender, _fileSearchRootWatcher) && _activeRescanCapture.Value is { } capture)
+        {
+            capture.Failed = failed;
+            return true;
+        }
+
+        return false;
+    }
+
     private void OnFileSearchRootRescanFailed(object? sender, FileSearchRootRescanFailed failed)
     {
         if (!ReferenceEquals(sender, _fileSearchRootWatcher))
         {
-            return;
-        }
-
-        if (_activeRescanCapture is { } capture)
-        {
-            capture.Failed = failed;
             return;
         }
 
@@ -1773,7 +1929,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await StopFileSearchRootWatchersAsync();
         DetachLibraryChangeNotifications();
         Shell.Dispose();
-        await StopMcpServerAsync(allowRuntimeHostShutdown: true);
+        await StopMcpServerAsync();
         StopLibraryRevisionMonitor();
         await StopHostServicesAsync();
         await ReleaseRuntimeHostAsync();
@@ -1808,6 +1964,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private void DisposeActivityTracker()
     {
+        _workflowNotificationSubscription?.Dispose();
+        _workflowNotificationSubscription = null;
         _activitySubscription?.Dispose();
         _activitySubscription = null;
         if (_ownsActivityTracker && _activityTracker is IDisposable trackerDisposable)
@@ -1851,19 +2009,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             });
     }
 
-    public async Task StopMcpServerAsync(
-        string detail = "MCP HTTP 服务已停止。",
-        bool allowRuntimeHostShutdown = false)
+    public async Task StopMcpServerAsync(string detail = "MCP HTTP 服务已停止。")
     {
-        if (!allowRuntimeHostShutdown && _enforceRuntimeHostOwnership && _runtimeHostLease is not null)
-        {
-            SetMcpStatus(
-                McpServerRunning ? "MCP: 运行中" : "MCP: 错误",
-                "桌面宿主持有资料库期间必须保持 MCP endpoint 可用，以便 patchouli-cli 连接。",
-                McpServerRunning ? Brushes.LimeGreen : Brushes.OrangeRed);
-            return;
-        }
-
         if (_mcpHost is not null)
         {
             await _mcpHost.StopAsync(detail);
@@ -1904,7 +2051,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         _searchEvidenceViewModel?.DetachLibraryContext();
         _ocrQueueViewModel?.DetachLibraryContext();
         _snapshot?.DetachLibraryContext();
-        await StopMcpServerAsync(detail, true);
+        await StopMcpServerAsync(detail);
         await StopFileSearchRootWatchersAsync();
         StopLibraryRevisionMonitor();
         await StopHostServicesAsync();
@@ -1919,6 +2066,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         DetectDuplicateItemsCommand?.NotifyCanExecuteChanged();
         RebuildSearchIndexCommand?.NotifyCanExecuteChanged();
         RescanFileSearchRootsCommand?.NotifyCanExecuteChanged();
+        WorkflowMenuEntries.Clear();
+        ReadingWorkflowMenuEntries.Clear();
     }
 
     private async Task StartMcpServerAsync(HostServices services)
@@ -2060,6 +2209,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         McpStatusBrush = brush;
         // Manual Raise: McpServerRunning bridges _mcpHost external status change into ViewModel PropertyChanged.
         Raise(nameof(McpServerRunning));
+        Raise(nameof(ToggleMcpServerLabel));
     }
 
     private void SetMcpEndpoint(string endpoint)
@@ -2129,9 +2279,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
 
     private async Task CompleteFirstRunAsync()
     {
-        await FirstRun.FinishSetupCommand.ExecuteAsync();
-        if (!FirstRun.IsComplete)
+        if (FirstRun.CurrentStep is not (FirstRunStep.MinerUConfig or FirstRunStep.Complete))
         {
+            ReportError("请先完成资料库身份和 PDF 目录配置。");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(FirstRun.MinerUToken))
+        {
+            await FirstRun.FinishSetupCommand.ExecuteAsync();
             return;
         }
 
@@ -2146,24 +2302,21 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return;
         }
 
-        Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
-        if (!string.IsNullOrWhiteSpace(FirstRun.ScanRoot))
+        LibraryImportOrchestrator orchestrator = await ImportOrchestratorAsync();
+        Result<OcrPresetId> preset = await orchestrator.EnsurePresetForEngineAsync(OcrEngineIds.MinerU);
+        if (preset.IsFailure)
         {
-            HostServices services = await ServicesAsync();
-            if (FirstRun.SelectedScanRoot is null)
-            {
-                ReportError("文件搜索根必须通过系统文件夹选择器选择。");
-                return;
-            }
-
-            Result<FileSearchRoot> addedRoot =
-                await services.FileResolution.AddSearchRootAsync(FirstRun.SelectedScanRoot);
-            if (addedRoot.IsFailure && addedRoot.ErrorCode != AppErrorCodes.InvalidState)
-            {
-                Report(addedRoot.ErrorMessage ?? "无法登记 FileSearchRoot。");
-            }
+            ReportError(preset.ErrorMessage ?? "无法保存 OCR Preset。");
+            return;
         }
 
+        await FirstRun.FinishSetupCommand.ExecuteAsync();
+        if (!FirstRun.IsComplete)
+        {
+            return;
+        }
+
+        Report("初始化完成。请选择题录，并通过右键菜单运行 MinerU OCR。");
         await RefreshSidebarPathsAsync();
         await HideInlineFirstRunAsync();
     }
@@ -2426,6 +2579,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         service.Register<ConflictResolutionDialogViewModel, ConflictResolutionDialog>();
         service.Register<BiblatexImportPreviewDialogViewModel, BiblatexImportPreviewDialog>();
         service.Register<ConfirmDialogViewModel, ConfirmDialog>();
+        service.Register<WorkflowEditorDialogViewModel, WorkflowEditorDialog>();
         service.Register<PurgeConfirmDialogViewModel, PurgeConfirmDialog>();
         service.Register<TagNamePromptDialogViewModel, TagNamePromptDialog>();
         service.Register<PdfBBoxViewModel, BoxEditorDialog>();
@@ -2548,16 +2702,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     public async Task OpenSettingsAsync(string section, string? statusMessage = null)
     {
         await ActivateTabAsync(WorkspaceTabKind.Settings, "Settings", "设置", "Menu", true, () => Settings);
-        string icon = section.ToLowerInvariant() switch
-        {
-            "mcp" => "Server",
-            "csl" => "Quote",
-            "library" => "Database",
-            "search_rewrite" => "Filter",
-            _ => "ScanText"
-        };
-        Settings.ActiveCategory = Settings.Categories.Single(c => c.IconName == icon);
-        await Settings.WaitForActiveSectionLoadAsync();
+        await Settings.SelectSectionAsync(section);
     }
 
     private async Task OpenSearchRewriteSettingsAsync()
@@ -2571,11 +2716,196 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         await ActivateTabAsync(WorkspaceTabKind.About, "About", "关于", "Info", true, () => About);
     }
 
+    public Task OpenChangelogAsync()
+    {
+        return ActivateTabAsync(WorkspaceTabKind.Changelog, "Changelog", "更新日志", "List", true,
+            () => new ChangelogViewModel());
+    }
+
     private async Task OpenOcrQueueAsync()
     {
         await ActivateTabAsync(WorkspaceTabKind.OcrQueue, "OcrQueue", "OCR 队列", "List", true, () => OcrQueue);
         await OcrQueue.RefreshAsync();
     }
+
+    /// <summary>
+    ///     Opens the chat tab without starting a session (the menu's manual entry point). Starting a
+    ///     session is always the caller's decision; this only shows the session list and the selected
+    ///     session's message flow.
+    /// </summary>
+    public async Task OpenAgentChatAsync()
+    {
+        await ActivateTabAsync(WorkspaceTabKind.AgentChat, "AgentChat", "聊天", "List", true,
+            () => AgentChat);
+        await AgentChat.ActivateAsync();
+    }
+
+    private async Task OpenOtherLibraryAsync()
+    {
+        if (HasDirtySettings)
+        {
+            ReportError("设置有未保存的更改，请先保存或放弃后再切换书库。");
+            return;
+        }
+
+        string? path = await FilePicker.OpenFileAsync("打开其他书库", "书库数据库", ["*.sqlite", "*.sqlite3", "*.db"]);
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        RuntimeDatabasePath = path;
+        await OpenDatabaseCommand.ExecuteAsync();
+        if (_services is not null)
+        {
+            await Shell.RefreshAsync();
+            await ShowLibraryAsync();
+        }
+    }
+
+    public async Task StopAllAgentSessionsAsync()
+    {
+        HostServices services = await ServicesAsync();
+        int libraryGeneration = LibraryGeneration;
+        IAgentChatSessionService sessions = new AgentChatSessionServiceAdapter(services.AgentSessions);
+        IReadOnlyList<AgentSessionSnapshot> snapshots = await sessions.ListSessionsAsync();
+        if (!IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
+        Task<AgentSessionSnapshot>[] stops = snapshots
+            .Where(snapshot => AgentChatPresentation.IsActive(snapshot.Status))
+            .Select(snapshot => sessions.StopAsync(snapshot.SessionId))
+            .ToArray();
+        await Task.WhenAll(stops);
+        if (!IsCurrentLibraryContext(services, libraryGeneration))
+        {
+            return;
+        }
+
+        if (_agentChatViewModel is not null)
+        {
+            await _agentChatViewModel.RefreshAsync();
+        }
+
+        Report($"已停止 {stops.Length} 个会话；会话保留，可随时恢复。");
+    }
+
+    /// <summary>Resolves the host session service the chat tab talks to (null-free seam for tests).</summary>
+    private async Task<IAgentChatSessionService> ResolveAgentChatSessionsAsync(CancellationToken cancellationToken)
+    {
+        HostServices services = await ServicesAsync().ConfigureAwait(false);
+        return new AgentChatSessionServiceAdapter(services.AgentSessions);
+    }
+
+    /// <summary>
+    ///     Brings the chat tab forward: an open tab refreshes its session list (the launch just added a
+    ///     session), and a closed one is opened through the normal tab path.
+    /// </summary>
+    public async Task OpenChatTabAsync(string? sessionId = null)
+    {
+        await OpenAgentChatAsync().ConfigureAwait(true);
+        if (sessionId is not null && !await AgentChat.OpenSessionByIdAsync(sessionId))
+        {
+            ReportError($"无法打开工作流会话：{sessionId}");
+        }
+    }
+
+    /// <summary>The menu-bar entries, loaded from the same ordered definition source as every menu.</summary>
+    public Task RefreshWorkflowMenuAsync()
+    {
+        return LoadWorkflowMenuAsync(WorkflowMenuEntries);
+    }
+
+    /// <summary>The reading-toolbar entries, captured against the document the reading view shows.</summary>
+    public Task RefreshReadingWorkflowMenuAsync(string documentId, string pageRange = "")
+    {
+        return LoadWorkflowMenuAsync(ReadingWorkflowMenuEntries, new WorkflowLaunchSelection(documentId, pageRange));
+    }
+
+    private async Task LoadWorkflowMenuAsync(ObservableCollection<WorkflowMenuEntryViewModel> target,
+        WorkflowLaunchSelection? selection = null)
+    {
+        try
+        {
+            IReadOnlyList<WorkflowDefinition> definitions = await _workflowMenu.ListMenuDefinitionsAsync()
+                .ConfigureAwait(true);
+            WorkflowLaunchSelection effective = selection ?? CurrentLibrarySelection();
+            target.Clear();
+            foreach (WorkflowDefinition definition in definitions)
+            {
+                target.Add(new WorkflowMenuEntryViewModel(definition, _workflowMenu, this, effective));
+            }
+
+            Raise(nameof(HasWorkflowMenuEntries));
+            Raise(nameof(HasReadingWorkflowMenuEntries));
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "workflow-menu", "load");
+        }
+    }
+
+    private void OnWorkflowNotifications(IReadOnlyList<WorkflowSessionNotification> notifications)
+    {
+        foreach (WorkflowSessionNotification notification in notifications)
+        {
+            if (notification.IsError)
+            {
+                ReportError(notification.Message);
+            }
+            else
+            {
+                Report(notification.Message);
+            }
+        }
+    }
+
+    /// <summary>
+    ///     The authoritative status of one session: the host session service keeps every session it
+    ///     created in memory, and it is the same service the chat tab lists (S1/S3).
+    /// </summary>
+    private AgentSessionSnapshot? ResolveAgentSessionStatus(string sessionId)
+    {
+        return _workflowSessionStatus?.TryGetStatus(sessionId) ??
+               _services?.AgentSessions.TryGetSnapshot(sessionId);
+    }
+
+    /// <summary>Reports one host activity snapshot as status-bar notifications (the test seam).</summary>
+    public IReadOnlyList<WorkflowSessionNotification> ReportWorkflowSessionActivity(HostActivitySnapshot snapshot)
+    {
+        IReadOnlyList<WorkflowSessionNotification> notifications =
+            _workflowNotifications.ReadNotifications(snapshot, ResolveAgentSessionStatus);
+        OnWorkflowNotifications(notifications);
+        return notifications;
+    }
+
+    /// <summary>The Library selection a menu launch carries: the selected row's main document.</summary>
+    public WorkflowLaunchSelection CurrentLibrarySelection()
+    {
+        LibraryItemViewModel? item = Shell.SelectedItem;
+        return item is null || string.IsNullOrWhiteSpace(item.DocumentInstanceId)
+            ? WorkflowLaunchSelection.None
+            : new WorkflowLaunchSelection(item.DocumentInstanceId);
+    }
+
+    void IWorkflowMenuEntryHost.Report(string message)
+    {
+        Report(message);
+    }
+
+    void IWorkflowMenuEntryHost.ReportError(string message)
+    {
+        ReportError(message);
+    }
+
+    Task IWorkflowMenuEntryHost.OpenChatTabAsync(string? sessionId)
+    {
+        return OpenChatTabAsync(sessionId);
+    }
+
+    IHostActivityTracker? IWorkflowMenuEntryHost.ActivityTracker => ActivityTracker;
 
     private Task ShowPlaceholderAsync(string message)
     {
@@ -2607,6 +2937,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         string title = BuildItemWorkspaceTabTitle("PDF 工作台", item.Title ?? item.FileName);
         await ActivateTabAsync(WorkspaceTabKind.PdfWorkspace, tabId, title, "FolderOpen", true,
             () => new PdfWorkspaceViewModel(this, item));
+        // The reading toolbar's workflow entries are captured against the document that is now open.
+        await RefreshReadingWorkflowMenuAsync(item.DocumentInstanceId ?? string.Empty);
 
         if (ActiveTab?.Content is PdfWorkspaceViewModel pdf && !pdf.HasImage)
         {

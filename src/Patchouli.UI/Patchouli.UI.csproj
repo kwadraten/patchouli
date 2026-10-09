@@ -24,12 +24,16 @@
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.McpServer\Patchouli.McpServer.csproj" />
     <ProjectReference Include="..\Patchouli.Host\Patchouli.Host.csproj" />
+    <ProjectReference Include="..\Patchouli.Workflows\Patchouli.Workflows.fsproj" />
     <ProjectReference Include="..\Patchouli.Reading\Patchouli.Reading.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.AvaloniaEdit" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="LiveMarkdown.Avalonia" />
+    <PackageReference Include="LiveMarkdown.Avalonia.Mermaid" />
     <PackageReference Include="CommunityToolkit.Mvvm" />
     <ProjectReference Include="..\Patchouli.UI.Generators\Patchouli.UI.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
     <PackageReference Include="ProDataGrid" />
@@ -44,6 +48,8 @@
     <AvaloniaResource Include="Assets\CatWalk\NOTICE" />
     <AvaloniaResource Include="Assets\CatWalk\SOURCE" />
     <EmbeddedResource Include="..\..\LICENSE" Link="LICENSE" />
+    <EmbeddedResource Include="..\..\Changelog.md" Link="Changelog.md" LogicalName="Patchouli.UI.Changelog.md" />
+    <EmbeddedResource Include="Assets\FSharp.xshd" />
     <EmbeddedResource Include="Assets\CatWalk\LICENSE" Link="Assets\CatWalk\LICENSE" />
     <EmbeddedResource Include="Assets\CatWalk\NOTICE" Link="Assets\CatWalk\NOTICE" />
     <EmbeddedResource Include="Assets\CatWalk\SOURCE" Link="Assets\CatWalk\SOURCE" />

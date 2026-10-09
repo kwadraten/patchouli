@@ -38,8 +38,10 @@ public sealed class SearchRewriteSettingsTests : IDisposable
 
             await section.SaveAsync();
 
-            section.SaveState.Should().Be(SettingsSaveState.Failed);
-            section.IsDirty.Should().BeTrue();
+            section.SaveState.Should().Be(SettingsSaveState.Saved);
+            section.ValidationState.Should().Be(SettingsValidationState.Invalid);
+            section.IsDirty.Should().BeFalse();
+            section.Status.Should().Contain("草稿");
             first.RuleId.Should().NotBeNull("the committed row must adopt its persisted identity");
             second.RuleId.Should().BeNull();
 

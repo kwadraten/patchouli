@@ -58,8 +58,9 @@ public sealed partial class MetadataLookupSettingsViewModel : SettingsSectionVie
         SettingsSaveResult saved = await _main.SaveMetadataLookupSettingsAsync(settings);
         if (saved.IsSuccess)
         {
-            SetDirty(false);
-            SaveState = SettingsSaveState.Saved;
+            SetDirty(!Sources.Select(source => new MetadataSourcePreference(source.SourceId, source.Enabled))
+                .SequenceEqual(settings.Sources));
+            SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
             ValidationState = SettingsValidationState.Valid;
             Status = "已保存";
             LastError = null;

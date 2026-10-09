@@ -33,7 +33,6 @@ If `.agents/CONTEXT.md` or `.agents/adr/` do not exist yet, proceed silently. Do
 │   ├── mcp-protocol.md
 │   ├── domain.md
 │   ├── issue-tracker.md
-│   ├── triage-labels.md
 │   └── adr/
 │       ├── 0001-example-decision.md
 │       └── 0002-example-decision.md

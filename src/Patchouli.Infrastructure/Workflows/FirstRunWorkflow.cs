@@ -115,6 +115,7 @@ public sealed class FirstRunWorkflow
             }
 
             int importedCount = 0;
+            int duplicateCount = 0;
             int failedCount = 0;
             int booksWithPageFailures = 0;
             string? lastDocumentInstanceId = null;
@@ -154,12 +155,21 @@ public sealed class FirstRunWorkflow
                     orderedCandidates.Count,
                     $"Importing {candidate.FileName} ({tier}).",
                     cancellationToken);
-                (FirstRunWorkflowState importState, int failedPageCount, _) = await ImportPdfCoreAsync(
-                    new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
-                    cancellationToken);
+                (FirstRunWorkflowState importState, int failedPageCount, _, bool isDuplicate) =
+                    await ImportPdfCoreAsync(
+                        new PdfImportRequest(candidate.Path, null, null, candidate.PageCount),
+                        cancellationToken);
                 if (string.IsNullOrWhiteSpace(importState.LastError))
                 {
-                    importedCount++;
+                    if (isDuplicate)
+                    {
+                        duplicateCount++;
+                    }
+                    else
+                    {
+                        importedCount++;
+                    }
+
                     if (failedPageCount > 0)
                     {
                         booksWithPageFailures++;
@@ -177,15 +187,17 @@ public sealed class FirstRunWorkflow
                     index + 1,
                     orderedCandidates.Count,
                     string.IsNullOrWhiteSpace(importState.LastError)
-                        ? failedPageCount > 0
-                            ? $"已导入：{candidate.FileName}（{failedPageCount} 页失败已占位）"
-                            : $"已导入：{candidate.FileName}"
+                        ? isDuplicate
+                            ? $"文件已存在，已跳过：{candidate.FileName}"
+                            : failedPageCount > 0
+                                ? $"已导入：{candidate.FileName}（{failedPageCount} 页失败已占位）"
+                                : $"已导入：{candidate.FileName}"
                         : $"导入失败：{candidate.FileName}",
                     importState.LastError);
             }
 
             int skippedPathCount = (scan.SkippedDirectories?.Count ?? 0) + (scan.SkippedFiles?.Count ?? 0);
-            FirstRunWorkflowState state = importedCount > 0
+            FirstRunWorkflowState state = importedCount + duplicateCount > 0
                 ? new FirstRunWorkflowState(
                     FirstRunStep.MinerUConfig,
                     scan.ScanStatus == FileSearchRootScanStatuses.Partial
@@ -193,14 +205,14 @@ public sealed class FirstRunWorkflow
                         : failedCount == 0
                             ? booksWithPageFailures > 0
                                 ? $"已导入 {importedCount} 个 PDF 题录（其中 {booksWithPageFailures} 个的部分页面导入失败，已放置占位页）。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
-                                : $"已导入 {importedCount} 个 PDF 题录。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
+                                : $"已导入 {importedCount} 个 PDF 题录，跳过 {duplicateCount} 个已有文件。配置 MinerU token 后，请从题录右键菜单运行 OCR。"
                             : $"已导入 {importedCount} 个 PDF 题录；{failedCount} 个文件未能导入。配置 MinerU token 后，请从题录右键菜单运行 OCR。",
                     lastPdfPath, libraryId, null, null, lastDocumentInstanceId, null, false)
                 : new FirstRunWorkflowState(
                     FirstRunStep.Scan, "扫描到了 PDF 文件，但没有任何文件成功导入。", null,
                     libraryId, null, null, null, "没有任何 PDF 文件被成功导入。", false);
 
-            if (importedCount > 0)
+            if (importedCount + duplicateCount > 0)
             {
                 string completionDetail = scan.ScanStatus == FileSearchRootScanStatuses.Partial
                     ? $"Scan incomplete ({skippedPathCount} path(s) skipped); imported {importedCount} of " +
@@ -231,10 +243,10 @@ public sealed class FirstRunWorkflow
             progress?.Invoke(
                 scan.Candidates.Count,
                 scan.Candidates.Count,
-                importedCount > 0 ? "PDF 导入完成。" : "PDF 导入未完成。",
+                importedCount + duplicateCount > 0 ? "PDF 导入完成。" : "PDF 导入未完成。",
                 $"成功 {importedCount} 个，失败 {failedCount} 个。");
 
-            return new FirstRunImportResult(state, scan, importedCount, failedCount);
+            return new FirstRunImportResult(state, scan, importedCount, failedCount, duplicateCount);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -254,14 +266,15 @@ public sealed class FirstRunWorkflow
     public async Task<FirstRunWorkflowState> ImportPdfAsync(
         PdfImportRequest request, CancellationToken cancellationToken = default)
     {
-        (FirstRunWorkflowState state, _, _) = await ImportPdfCoreAsync(request, cancellationToken);
+        (FirstRunWorkflowState state, _, _, _) = await ImportPdfCoreAsync(request, cancellationToken);
         return state;
     }
 
     private async Task<(
         FirstRunWorkflowState State,
         int FailedPageCount,
-        PdfImportPageFailure? FirstPageFailure)> ImportPdfCoreAsync(
+        PdfImportPageFailure? FirstPageFailure,
+        bool IsDuplicate)> ImportPdfCoreAsync(
         PdfImportRequest request, CancellationToken cancellationToken)
     {
         PdfImportResult importResult = await _pdfImportWorkflow.ImportPdfAsync(request, cancellationToken);
@@ -269,16 +282,21 @@ public sealed class FirstRunWorkflow
         {
             return (new FirstRunWorkflowState(FirstRunStep.Import, importResult.ErrorMessage ?? "导入失败。",
                     request.PdfPath, null, null, null, null, importResult.ErrorMessage, false),
-                0, null);
+                0, null, false);
         }
 
         return (new FirstRunWorkflowState(FirstRunStep.MinerUConfig,
-                "PDF 已导入。请配置 OCR Preset 后从题录菜单运行 OCR。",
+                importResult.IsDuplicate
+                    ? importResult.Status == "already_imported_deleted"
+                        ? "文件已存在于已删除的题录中，已跳过重复导入。"
+                        : "文件已存在，已跳过重复导入。"
+                    : "PDF 已导入。请配置 OCR Preset 后从题录菜单运行 OCR。",
                 request.PdfPath, null, importResult.CreatedItemId,
                 importResult.CreatedFileAssetId, importResult.CreatedDocumentInstanceId,
                 null, false),
             importResult.FailedPageCount,
-            importResult.PageFailures?.FirstOrDefault());
+            importResult.PageFailures?.FirstOrDefault(),
+            importResult.IsDuplicate);
     }
 
     private async Task<BlockingOperationId?> TryStartInitialRootScanAsync(
@@ -438,7 +456,8 @@ public sealed record FirstRunImportResult(
     FirstRunWorkflowState State,
     PdfScanResult ScanResult,
     int ImportedCount,
-    int FailedCount) : IOperationOutcome
+    int FailedCount,
+    int SkippedDuplicateCount = 0) : IOperationOutcome
 {
     public bool IsSuccess => string.IsNullOrWhiteSpace(State.LastError);
     public bool IsCancelled => ScanResult.ScanStatus == FileSearchRootScanStatuses.Cancelled;

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<SyntaxDefinition name="F#" extensions=".fs;.fsx" xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+  <Color name="Keyword" foreground="#6F42C1" fontWeight="bold" />
+  <Color name="Comment" foreground="#687A60" fontStyle="italic" />
+  <Color name="String" foreground="#18794E" />
+  <Color name="Number" foreground="#B35D00" />
+  <Color name="Directive" foreground="#0969A6" />
+  <RuleSet name="BlockComment">
+    <Span color="Comment" multiline="true">
+      <Begin>\(\*</Begin><End>\*\)</End><RuleSet reference="BlockComment" />
+    </Span>
+  </RuleSet>
+  <RuleSet>
+    <Span color="Comment"><Begin>//</Begin></Span>
+    <Span color="Comment" multiline="true">
+      <Begin>\(\*</Begin><End>\*\)</End><RuleSet reference="BlockComment" />
+    </Span>
+    <Span color="String" multiline="true"><Begin>"""</Begin><End>"""</End></Span>
+    <Span color="String" multiline="true">
+      <Begin>@"</Begin><End>"</End><RuleSet><Rule>""</Rule></RuleSet>
+    </Span>
+    <Span color="String">
+      <Begin>"</Begin><End>"</End><RuleSet><Rule>\\.</Rule></RuleSet>
+    </Span>
+    <Rule color="String">'([^'\\]|\\.)'</Rule>
+    <Rule color="Number">\b(0[xX][0-9a-fA-F]+|0[bB][01]+|\d+(\.\d+)?([eE][+-]?\d+)?[a-zA-Z]*)\b</Rule>
+    <Rule color="Directive">^\s*\#(r|load|I|if|else|endif|nowarn|time|light)\b</Rule>
+    <Keywords color="Keyword">
+      <Word>abstract</Word><Word>and</Word><Word>as</Word><Word>assert</Word><Word>base</Word>
+      <Word>begin</Word><Word>class</Word><Word>default</Word><Word>delegate</Word><Word>do</Word>
+      <Word>done</Word><Word>downcast</Word><Word>downto</Word><Word>elif</Word><Word>else</Word>
+      <Word>end</Word><Word>exception</Word><Word>extern</Word><Word>false</Word><Word>finally</Word>
+      <Word>for</Word><Word>fun</Word><Word>function</Word><Word>global</Word><Word>if</Word>
+      <Word>in</Word><Word>inherit</Word><Word>inline</Word><Word>interface</Word><Word>internal</Word>
+      <Word>lazy</Word><Word>let</Word><Word>match</Word><Word>member</Word><Word>module</Word>
+      <Word>mutable</Word><Word>namespace</Word><Word>new</Word><Word>null</Word><Word>of</Word>
+      <Word>open</Word><Word>or</Word><Word>override</Word><Word>private</Word><Word>public</Word>
+      <Word>rec</Word><Word>return</Word><Word>static</Word><Word>struct</Word><Word>then</Word>
+      <Word>to</Word><Word>true</Word><Word>try</Word><Word>type</Word><Word>upcast</Word>
+      <Word>use</Word><Word>val</Word><Word>void</Word><Word>when</Word><Word>while</Word>
+      <Word>with</Word><Word>yield</Word>
+    </Keywords>
+  </RuleSet>
+</SyntaxDefinition>

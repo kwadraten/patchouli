@@ -8,14 +8,14 @@ set -euo pipefail
 
 runtime="${1:-osx-arm64}"
 configuration="${CONFIGURATION:-Release}"
-version="${VERSION:-0.3.6}"
+version="${VERSION:-0.3.7}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-publish_dir="$root/artifacts/publish/$runtime"
-app_dir="$root/artifacts/macos/Patchouli.Net.app"
+publish_dir="$root/.tmp/publish/$runtime"
+app_dir="$root/.tmp/macos/Patchouli.Net.app"
 contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
-dmg_dir="$root/artifacts/installer"
+dmg_dir="$root/.tmp/installer"
 dmg_path="$dmg_dir/Patchouli.Net-$version-$runtime.dmg"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -64,7 +64,7 @@ fi
 cp "$helper_bin" "$macos_dir/biblatex-helper"
 chmod +x "$macos_dir/biblatex-helper"
 
-cli_dir="$root/artifacts/cli-publish"
+cli_dir="$root/.tmp/cli-publish"
 rm -rf "$cli_dir"
 dotnet publish "$root/src/Patchouli.Cli/Patchouli.Cli.csproj" \
   -c "$configuration" \
@@ -91,7 +91,9 @@ mv "$macos_dir/appsettings.json" "$resources_dir/appsettings.json"
 sed "s/__VERSION__/$version/g" "$root/packaging/macos/Info.plist.template" > "$contents_dir/Info.plist"
 plutil -lint "$contents_dir/Info.plist"
 
-iconset="$(mktemp -d)/AppIcon.iconset"
+mkdir -p "$root/.tmp/packaging"
+iconset_root="$(mktemp -d "$root/.tmp/packaging/icons.XXXXXX")"
+iconset="$iconset_root/AppIcon.iconset"
 mkdir -p "$iconset"
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" "$root/logo/icon.png" --out "$iconset/icon_${size}x${size}.png" >/dev/null
@@ -99,6 +101,7 @@ for size in 16 32 128 256 512; do
   sips -z "$double" "$double" "$root/logo/icon.png" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$iconset" -o "$resources_dir/AppIcon.icns"
+rm -rf "$iconset_root"
 
 settings_count="$(find "$contents_dir" -type f -name appsettings.json | wc -l | tr -d '[:space:]')"
 if [[ "$settings_count" != "1" || ! -f "$resources_dir/appsettings.json" || -e "$macos_dir/appsettings.json" ]]; then
@@ -126,7 +129,7 @@ dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configurat
   --filter 'FullyQualifiedName~RealPdfRendererTests|FullyQualifiedName~MinerUUploadPreparerTests.UploadAndExtract_splits_pdf_when_page_limit_would_be_exceeded'
 
 rm -f "$dmg_path"
-staging="$(mktemp -d)"
+staging="$(mktemp -d "$root/.tmp/packaging/dmg.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 cp -R "$app_dir" "$staging/Patchouli.Net.app"
 ln -s /Applications "$staging/Applications"

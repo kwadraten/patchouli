@@ -271,6 +271,20 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         }, cancellationToken);
     }
 
+    public Task<Result<PageEditSession>> GetPageEditAsync(PageEditSessionId sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return WithConnectionAsync(async connection =>
+        {
+            DocumentTreeRevisionRow? row = await GetSessionRevisionRowAsync(connection, null, sessionId);
+            return row is null
+                ? Result<PageEditSession>.Failure(AppErrorCodes.NotFound, "Page edit session was not found.")
+                : Result<PageEditSession>.Success(new PageEditSession(sessionId,
+                    DocumentTreeRevisionId.Parse(row.TreeRevisionId),
+                    DocumentInstanceId.Parse(row.DocumentInstanceId), PageId.Parse(row.PageId)));
+        }, cancellationToken);
+    }
+
     public async Task<Result<DocumentTreeRevision>> GetCurrentRevisionAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
@@ -614,6 +628,14 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
             DocumentTreeRevision working = row.ToRevision();
             DocumentBox[] boxes = await GetBoxesAsync(connection, transaction, working.TreeRevisionId);
+            DocumentTreeRevisionRow? current = await GetCurrentRevisionRowAsync(connection, transaction,
+                working.DocumentInstanceId, working.PageId);
+            if (current?.TreeRevisionId != working.ParentTreeRevisionId?.ToString())
+            {
+                return Result<DocumentTreeRevision>.Failure(AppErrorCodes.Conflict,
+                    "The current page changed after editing began. Keep the draft and resolve the conflict before saving.");
+            }
+
             Result validation = _validator.Validate(working, boxes);
             if (validation.IsFailure)
             {
@@ -1062,6 +1084,33 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
         return ToResult(result);
     }
 
+    public async Task<Result> ApplyPageOcrAsync(PageEditSession session,
+        IReadOnlyList<DocumentBox> expectedBoxes, IReadOnlyList<DocumentBox> replacementBoxes,
+        CancellationToken cancellationToken = default)
+    {
+        Result<bool> result = await MutateWorkingAsync(session.SessionId, (revision, boxes) =>
+        {
+            if (revision.TreeRevisionId != session.DraftRevisionId ||
+                revision.DocumentInstanceId != session.DocumentInstanceId || revision.PageId != session.PageId ||
+                !boxes.SequenceEqual(expectedBoxes))
+            {
+                return Mutation<bool>.Failure("The page draft changed during OCR; the result was not applied.");
+            }
+
+            if (replacementBoxes.Any(box => box.TreeRevisionId != revision.TreeRevisionId ||
+                                            box.DocumentInstanceId != revision.DocumentInstanceId ||
+                                            box.PageId != revision.PageId))
+            {
+                return Mutation<bool>.Failure("OCR boxes must belong to the edited page and working revision.");
+            }
+
+            boxes.Clear();
+            boxes.AddRange(replacementBoxes);
+            return Mutation<bool>.Success(true);
+        }, cancellationToken);
+        return ToResult(result);
+    }
+
     private async Task<Result<T>> MutateWorkingAsync<T>(
         PageEditSessionId sessionId,
         Func<DocumentTreeRevision, List<DocumentBox>, Mutation<T>> mutate,
@@ -1364,7 +1413,7 @@ public sealed class DocumentTreeService : IDocumentTreeService, IDocumentTreeEdi
 
     private static Task<DocumentTreeRevisionRow?> GetSessionRevisionRowAsync(
         SqliteConnection connection,
-        DbTransaction transaction,
+        DbTransaction? transaction,
         PageEditSessionId sessionId)
     {
         return connection.QuerySingleOrDefaultAsync<DocumentTreeRevisionRow>(

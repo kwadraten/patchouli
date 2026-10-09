@@ -1,3 +1,5 @@
+using Dapper;
+using Microsoft.Data.Sqlite;
 using FluentAssertions;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
@@ -11,6 +13,38 @@ namespace Patchouli.Tests;
 
 public sealed class FileSearchRootWatcherServiceTests
 {
+    [Fact]
+    public async Task Rescan_skips_renamed_content_and_remembers_location_on_following_scans()
+    {
+        await using HostContext context = await HostContext.CreateAsync();
+        string root = context.CreateRootDirectory();
+        (await context.Services.FileResolution.AddSearchRootAsync(SelectedRoot(root))).IsSuccess.Should().BeTrue();
+        string original = TestFixtures.CopyRealThreePagePdfTo(root, "original.pdf");
+        await using FileSearchRootWatcherService watcher = new(context.Services, new NoOpAppLogger());
+        Result<FileSearchRootRescanSummary> first = await watcher.RescanFileSearchRootsAsync();
+        first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+        first.Value.ImportedPdfCount.Should().Be(1);
+        string renamed = Path.Combine(root, "renamed.pdf");
+        File.Move(original, renamed);
+        Result<FileSearchRootRescanSummary> second = await watcher.RescanFileSearchRootsAsync();
+        second.IsSuccess.Should().BeTrue(second.ErrorMessage);
+        second.Value.ImportedPdfCount.Should().Be(0);
+        second.Value.SkippedKnownPdfCount.Should().Be(1);
+
+        // If the next scan invokes PDF import instead of recognizing the remembered path,
+        // the duplicate writer will bump the revision again. An unchanged revision proves
+        // the next scan does not rehash or read this PDF's page metadata.
+        await using SqliteConnection connection = context.Services.ConnectionFactory.CreateReadConnection();
+        await connection.OpenAsync();
+        long revision = await connection.ExecuteScalarAsync<long>("select library_revision from library_metadata;");
+        Result<FileSearchRootRescanSummary> third = await watcher.RescanFileSearchRootsAsync();
+        third.IsSuccess.Should().BeTrue(third.ErrorMessage);
+        third.Value.SkippedKnownPdfCount.Should().Be(1);
+        (await connection.ExecuteScalarAsync<long>("select library_revision from library_metadata;"))
+            .Should().Be(revision);
+        (await connection.ExecuteScalarAsync<int>("select count(*) from items;")).Should().Be(1);
+    }
+
     [Fact]
     public async Task Debounced_rescan_coalesces_rapid_file_events_into_a_single_rescan()
     {

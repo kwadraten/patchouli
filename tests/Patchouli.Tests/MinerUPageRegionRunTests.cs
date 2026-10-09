@@ -23,6 +23,221 @@ namespace Patchouli.Tests;
 
 public sealed class MinerUPageRegionRunTests
 {
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    public async Task Page_edit_ocr_updates_the_existing_working_tree_and_only_save_changes_current(
+        bool logicalPages, bool autoApply, bool save)
+    {
+        await using Context context = await Context.CreateAsync(3, autoApply);
+        PageId pageId = context.Pages[0].PageId;
+        DocumentTreeRevision original = (await context.Trees.BeginWorkingRevisionAsync(
+            context.Document.DocumentInstanceId, pageId,
+            [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("original"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(original.TreeRevisionId);
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.Document.DocumentInstanceId, pageId))
+            .Value;
+        if (logicalPages)
+        {
+            DocumentBox oldBox = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Single();
+            await context.Trees.DeleteBoxAsync(edit.SessionId, oldBox.BoxId);
+            DocumentBox left = (await context.Trees.InsertLogicalPageAsync(edit.SessionId, null,
+                new NormalizedBBox(0, 0, .5, 1))).Value;
+            await context.Trees.InsertLogicalPageAsync(edit.SessionId, left.BoxId,
+                new NormalizedBBox(.5, 0, .5, 1));
+        }
+
+        IReadOnlyList<DocumentBox> before = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+        context.MinerUClient.ContentListJson =
+            """[{"type":"text","page_idx":0,"text":"recognized","bbox":[100,100,200,200]}]""";
+        OcrQueueScheduler queue = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow),
+            new OcrQueueTaskExecutor(context.Engine));
+        try
+        {
+            LogicalPageOcrService service = new(new QueuedOcrRunCoordinator(queue, context.Engine), context.Trees);
+            Result<PhysicalPageOcrResult> result =
+                await service.RunPageEditAsync(context.Preset.PresetId, edit.SessionId);
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.WorkingTreeRevisionId.Should().Be(edit.DraftRevisionId);
+            result.Value.UsedLogicalPages.Should().Be(logicalPages);
+            result.Value.RunIds.Should().HaveCount(logicalPages ? 2 : 1);
+            (await context.Trees.GetPageEditAsync(edit.SessionId)).Value.Should().Be(edit);
+            (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, pageId)).Value.TreeRevisionId
+                .Should().Be(original.TreeRevisionId);
+            (await context.Trees.ListRevisionsAsync(edit.DocumentInstanceId, pageId)).Value.Should().ContainSingle();
+            (await context.CountAsync("select count(*) from document_commits;")).Should().Be(0);
+            (await context.CountAsync("select count(*) from document_tree_revisions where status='working';"))
+                .Should().Be(1);
+            (await context.CountAsync("select count(*) from ocr_candidate_adoptions;")).Should().Be(0);
+            IReadOnlyList<DocumentBox> after = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+            after.Where(box => box.BoxType == DocumentBoxType.Text).Should().HaveCount(logicalPages ? 2 : 1)
+                .And.OnlyContain(box => ((TextBoxPayload)box.Payload!).Markdown == "recognized");
+            if (logicalPages)
+            {
+                after.Where(box => box.BoxType == DocumentBoxType.LogicalPage).Should().Equal(before);
+                context.Renders.Regions.Should().Equal(before.Select(box => box.BBox));
+                after.Where(box => box.BoxType == DocumentBoxType.Text).Should()
+                    .OnlyContain(box => box.ParentBoxId != null);
+                context.MinerUClient.UploadedPdfPageCounts.Should().BeEmpty();
+            }
+            else
+            {
+                context.MinerUClient.UploadedPdfPageCounts.Should().Equal(1);
+            }
+
+            (await queue.ListTasksAsync(new OcrQueueTaskFilter())).Value.Should()
+                .OnlyContain(task => !task.CommitOnCompletion && task.State == OcrQueueTaskState.Succeeded);
+            if (save)
+            {
+                Result<DocumentTreeRevision> committed = await context.Trees.CommitPageEditAsync(edit.SessionId);
+                committed.IsSuccess.Should().BeTrue(committed.ErrorMessage);
+                committed.Value.TreeRevisionId.Should().Be(edit.DraftRevisionId);
+                (await context.CountAsync("select count(*) from document_commits;")).Should().Be(1);
+                (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, pageId)).Value.TreeRevisionId
+                    .Should().Be(edit.DraftRevisionId);
+            }
+            else
+            {
+                (await context.Trees.DiscardPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+                (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, pageId)).Value.TreeRevisionId
+                    .Should().Be(original.TreeRevisionId);
+            }
+        }
+        finally
+        {
+            await queue.StopAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData("failure")]
+    [InlineData("cancel")]
+    [InlineData("changed")]
+    [InlineData("closed")]
+    public async Task Page_edit_ocr_preserves_current_and_cleans_intermediate_results_when_it_cannot_apply(
+        string scenario)
+    {
+        await using Context context = await Context.CreateAsync(1, true);
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(
+            context.Document.DocumentInstanceId, context.Pages[0].PageId)).Value;
+        DocumentBox left = (await context.Trees.InsertLogicalPageAsync(edit.SessionId, null,
+            new NormalizedBBox(0, 0, .5, 1))).Value;
+        await context.Trees.InsertLogicalPageAsync(edit.SessionId, left.BoxId, new NormalizedBBox(.5, 0, .5, 1));
+        IReadOnlyList<DocumentBox> before = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+        using CancellationTokenSource cancellation = new();
+        NormalizedBBox changedBBox = new(.01, .01, .48, .98);
+        Action cancel = cancellation.Cancel;
+        DocumentTreeService trees = context.Trees;
+        context.MinerUClient.BeforeUpload = async (count, token) =>
+        {
+            if (count == 2)
+            {
+                if (scenario == "failure")
+                {
+                    return Result.Failure("validation_failed", "second region failed");
+                }
+
+                if (scenario == "cancel")
+                {
+                    cancel();
+                    token.ThrowIfCancellationRequested();
+                }
+                else if (scenario == "changed")
+                {
+                    (await trees.UpdateBBoxAsync(edit.SessionId, left.BoxId, changedBBox)).IsSuccess
+                        .Should().BeTrue();
+                }
+                else if (scenario == "closed")
+                {
+                    await trees.DiscardPageEditAsync(edit.SessionId);
+                }
+            }
+
+            return Result.Success();
+        };
+        OcrQueueScheduler queue = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow),
+            new OcrQueueTaskExecutor(context.Engine));
+        try
+        {
+            LogicalPageOcrService service = new(new QueuedOcrRunCoordinator(queue, context.Engine), context.Trees);
+            Result<PhysicalPageOcrResult> result = await service.RunPageEditAsync(
+                context.Preset.PresetId, edit.SessionId, cancellation.Token);
+            await queue.WaitForIdleAsync();
+
+            result.IsFailure.Should().BeTrue();
+            (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, edit.PageId)).IsFailure.Should()
+                .BeTrue();
+            (await context.CountAsync("select count(*) from document_commits;")).Should().Be(0);
+            (await context.CountAsync(
+                    "select count(*) from document_tree_revisions where status='working' and edit_session_id is null;"))
+                .Should().Be(0);
+            if (scenario != "closed")
+            {
+                IReadOnlyList<DocumentBox> after = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+                after.Should().Equal(before.Select(box => scenario == "changed" && box.BoxId == left.BoxId
+                    ? box with { BBox = changedBBox }
+                    : box));
+            }
+            else
+            {
+                (await context.Trees.GetPageEditAsync(edit.SessionId)).IsFailure.Should().BeTrue();
+            }
+        }
+        finally
+        {
+            await queue.StopAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Page_edit_ocr_retains_blank_placeholders_from_the_importer(bool logicalPages)
+    {
+        await using Context context = await Context.CreateAsync(3, true);
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(
+            context.Document.DocumentInstanceId, context.Pages[0].PageId)).Value;
+        DocumentBox? root = logicalPages
+            ? (await context.Trees.InsertLogicalPageAsync(edit.SessionId, null, new NormalizedBBox(0, 0, 1, 1))).Value
+            : null;
+        await context.Trees.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(root?.BoxId, null,
+            DocumentBoxType.Text, null, null, new NormalizedBBox(.1, .1, .5, .5), new TextBoxPayload("old text")));
+        context.MinerUClient.ContentListJson =
+            """[{"type":"list","page_idx":0,"text":"","bbox":[0,0,100,100]}]""";
+        OcrQueueScheduler queue = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow),
+            new OcrQueueTaskExecutor(context.Engine));
+        try
+        {
+            LogicalPageOcrService service = new(new QueuedOcrRunCoordinator(queue, context.Engine), context.Trees);
+            Result<PhysicalPageOcrResult> result =
+                await service.RunPageEditAsync(context.Preset.PresetId, edit.SessionId);
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            DocumentBox placeholder = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Should()
+                .ContainSingle().Which;
+            placeholder.BoxType.Should().Be(DocumentBoxType.LogicalPage);
+            ((TextBoxPayload)placeholder.Payload!).Markdown.Should().Contain("Blank page");
+            if (root is not null)
+            {
+                placeholder.BoxId.Should().Be(root.BoxId);
+            }
+
+            (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, edit.PageId)).IsFailure.Should()
+                .BeTrue();
+        }
+        finally
+        {
+            await queue.StopAsync();
+        }
+    }
+
     [Fact]
     public async Task Pages_run_uploads_only_the_requested_pages_and_creates_no_orphan_working_trees()
     {
@@ -279,7 +494,7 @@ public sealed class MinerUPageRegionRunTests
             return await connection.ExecuteScalarAsync<int>(sql);
         }
 
-        public static async Task<Context> CreateAsync(int pageCount)
+        public static async Task<Context> CreateAsync(int pageCount, bool autoApply = false)
         {
             TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
             FixedClock clock = new(DateTimeOffset.Parse("2026-07-13T00:00:00Z"));
@@ -316,7 +531,7 @@ public sealed class MinerUPageRegionRunTests
             }
 
             OcrPreset preset = (await new OcrPresetService(database.ConnectionFactory, libraries, clock)
-                .CreatePresetAsync("MinerU runs", null, OcrEngineIds.MinerU, "vlm", null, "{}", false)).Value;
+                .CreatePresetAsync("MinerU runs", null, OcrEngineIds.MinerU, "vlm", null, "{}", autoApply)).Value;
             DocumentTreeService trees = BoxTreeTestData.CreateService(database.ConnectionFactory, clock);
             OcrDocumentTreeImporter treeImporter = new(trees);
             FakePageRenderService renders = new(regionPngPath);
@@ -380,11 +595,13 @@ public sealed class MinerUPageRegionRunTests
         }
 
         public NormalizedBBox? LastRegion { get; private set; }
+        public List<NormalizedBBox> Regions { get; } = [];
 
         public Task<Result<string>> RenderRegionPngAsync(DocumentInstanceId documentInstanceId, PageId pageId,
             NormalizedBBox region, int dpi = 200, CancellationToken cancellationToken = default)
         {
             LastRegion = region;
+            Regions.Add(region);
             return Task.FromResult(Result<string>.Success(_regionPngPath));
         }
 
@@ -439,6 +656,7 @@ public sealed class MinerUPageRegionRunTests
         public List<MinerUUploadRequest> UploadRequests { get; } = new();
         public List<int> UploadedPdfPageCounts { get; } = new();
         public string? ContentListJson { get; set; }
+        public Func<int, CancellationToken, Task<Result>>? BeforeUpload { get; set; }
         public bool IsConfigured => true;
 
         public async Task<Result<MinerUUploadBatch>> RequestUploadUrlsAsync(
@@ -447,6 +665,15 @@ public sealed class MinerUPageRegionRunTests
         {
             MinerUUploadRequest request = files.Single();
             UploadRequests.Add(request);
+            if (BeforeUpload is { } beforeUpload)
+            {
+                Result preparation = await beforeUpload(UploadRequests.Count, cancellationToken);
+                if (preparation.IsFailure)
+                {
+                    return Result<MinerUUploadBatch>.Failure(preparation.ErrorCode!, preparation.ErrorMessage!);
+                }
+            }
+
             string batchId = $"batch-{UploadRequests.Count}";
             int pageCount = 1;
             if (request.FileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))

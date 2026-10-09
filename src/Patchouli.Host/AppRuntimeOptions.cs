@@ -8,6 +8,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Infrastructure.Snapshots;
 using Patchouli.Core.Mcp;
 using Patchouli.Core.Settings;
+using Patchouli.Llm;
 using System.Security;
 using Patchouli.UI.Diagnostics;
 using Patchouli.UI.Themes;
@@ -158,11 +159,27 @@ public sealed record SyncAppSettings(
     string SyncRootId = "",
     SnapshotSyncLocalState? SnapshotState = null,
     IReadOnlyList<string>? SyncedSettingKeys = null,
-    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null)
+    IReadOnlyList<DeviceRootBindingAppSettings>? DeviceBindings = null,
+    bool SyncAgentSessions = false,
+    bool SyncWorkflowDefinitions = false)
 {
     public static SyncAppSettings Default(AppRuntimeOptions runtime)
     {
         return new SyncAppSettings("", Environment.MachineName, runtime.DefaultSyncRoot, false);
+    }
+
+    /// <summary>
+    /// Two independent snapshot switches (ADR 0036 §Persistence): whether agent session directories and
+    /// whether workflow definitions enter a Library snapshot. Both default to off — session history is
+    /// never pulled into a snapshot unless the user opts in.
+    /// </summary>
+    public SyncAppSettings WithAgentWorkflowSync(bool syncAgentSessions, bool syncWorkflowDefinitions)
+    {
+        return this with
+        {
+            SyncAgentSessions = syncAgentSessions,
+            SyncWorkflowDefinitions = syncWorkflowDefinitions
+        };
     }
 
     [JsonIgnore]
@@ -475,6 +492,13 @@ public sealed record PatchouliAppSettings(
     public OcrEnginesAppSettings OcrEngines { get; init; } = OcrEnginesAppSettings.Default();
     public ImportAppSettings Import { get; init; } = ImportAppSettings.Default();
 
+    /// <summary>
+    /// LLM provider directory and translation defaults, persisted in the JSON "Llm" section. API keys are
+    /// deliberately absent: each provider key lives in <see cref="Patchouli.Core.Credentials.ICredentialStore"/>
+    /// (D2), so a shared or synced settings file never carries a secret.
+    /// </summary>
+    public LlmAppSettings Llm { get; init; } = LlmAppSettings.Default();
+
     public static PatchouliAppSettings Default(IAppPaths? appPaths = null)
     {
         return new PatchouliAppSettings(AppRuntimeOptions.Default(appPaths), MinerUAppSettings.Default(),
@@ -538,6 +562,7 @@ public sealed record PatchouliAppSettings(
             JsonElement? sync = GetSection(root, "Sync");
             JsonElement? ocrEngines = GetSection(root, "OcrEngines");
             JsonElement? import = GetSection(root, "Import");
+            JsonElement? llm = GetSection(root, "Llm");
 
             return new PatchouliAppSettings(
                 new AppRuntimeOptions(
@@ -577,6 +602,7 @@ public sealed record PatchouliAppSettings(
                     ReadStringList(fileScanning, "ExclusionPatterns", defaults.FileScanning.ExclusionPatterns)),
                 OcrEngines = ReadOcrEngines(ocrEngines, defaults.OcrEngines),
                 Import = ReadImport(import, defaults.Import),
+                Llm = ReadLlm(llm, defaults.Llm),
                 Credentials = ReadCredentials(credentials, defaults.Credentials),
                 Sync = new SyncAppSettings(
                     ReadString(sync, "DeviceId", defaults.Sync.DeviceId),
@@ -760,6 +786,7 @@ public sealed record PatchouliAppSettings(
                 OcrEngines.PageOcrEngine,
                 OcrEngines.RegionOcrEngine
             });
+            root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
 
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
@@ -998,6 +1025,11 @@ public sealed record PatchouliAppSettings(
                 });
             }
 
+            if (saveAll || dirtyFields!.Contains(LlmProviderCatalog.SectionName))
+            {
+                root[LlmProviderCatalog.SectionName] = SerializeLlm(Llm);
+            }
+
             temporaryPath = path + $".{Guid.NewGuid():N}.tmp";
             await File.WriteAllTextAsync(temporaryPath,
                     root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), cancellationToken)
@@ -1102,6 +1134,82 @@ public sealed record PatchouliAppSettings(
         return new ImportAppSettings(
             ImportAppSettings.ClampRatio(
                 ReadDouble(element, "MaxFailedPageRatio", fallback.MaxFailedPageRatio)));
+    }
+
+    /// <summary>
+    /// Reads the "Llm" section. Unknown provider ids are kept as-is so a settings file written by a newer
+    /// build is not silently rewritten on save; <see cref="LlmAppSettings.Normalize"/> then guarantees one row
+    /// per catalog entry and clamps the window radius.
+    /// </summary>
+    private static LlmAppSettings ReadLlm(JsonElement? section, LlmAppSettings fallback)
+    {
+        if (section is not { ValueKind: JsonValueKind.Object } element)
+        {
+            return fallback;
+        }
+
+        List<LlmProviderAppSettings> providers = [];
+        if (element.TryGetProperty("Providers", out JsonElement providersElement) &&
+            providersElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement provider in providersElement.EnumerateArray())
+            {
+                if (provider.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                string providerId = ReadString(provider, "ProviderId", "").Trim();
+                if (string.IsNullOrWhiteSpace(providerId))
+                {
+                    continue;
+                }
+
+                providers.RemoveAll(value =>
+                    string.Equals(value.ProviderId, providerId, StringComparison.OrdinalIgnoreCase));
+                providers.Add(new LlmProviderAppSettings(
+                    providerId,
+                    ReadString(provider, "DisplayName", ""),
+                    ReadString(provider, "BaseUrl", ""),
+                    ReadString(provider, "Model", ""),
+                    ReadString(provider, "Subscription", ""),
+                    ReadString(provider, "Deployment", ""),
+                    ReadString(provider, "ApiVersion", ""),
+                    ReadString(provider, "AuthenticationMode", LlmAuthenticationModes.ApiKey))
+                {
+                    ContextWindowTokens = ReadInt(provider, "ContextWindowTokens",
+                        LlmProviderAppSettings.DefaultContextWindowTokens),
+                    IsAdded = ReadBool(provider, "IsAdded", false)
+                });
+            }
+        }
+
+        return new LlmAppSettings(
+                providers,
+                ReadString(element, "OcrProviderId", fallback.OcrProviderId),
+                ReadString(element, "OcrModel", fallback.OcrModel),
+                ReadString(element, "TranslationProviderId", fallback.TranslationProviderId),
+                ReadString(element, "TranslationModel", fallback.TranslationModel),
+                ReadString(element, "TargetLanguage", fallback.TargetLanguage),
+                ReadInt(element, "TranslationWindowRadius", fallback.TranslationWindowRadius),
+                ReadBool(element, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation))
+            .Normalize();
+    }
+
+    private static JsonObject SerializeLlm(LlmAppSettings llm)
+    {
+        LlmAppSettings normalized = llm.Normalize();
+        return JsonSerializer.SerializeToNode(new
+        {
+            normalized.Providers,
+            normalized.OcrProviderId,
+            normalized.OcrModel,
+            normalized.TranslationProviderId,
+            normalized.TranslationModel,
+            normalized.TargetLanguage,
+            normalized.TranslationWindowRadius,
+            normalized.BackfillPreviousWindowTranslation
+        }) as JsonObject ?? new JsonObject();
     }
 
     private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)
@@ -1249,7 +1357,10 @@ public sealed record PatchouliAppSettings(
             ReadLong(section, "Revision", fallback.Revision))
         {
             ShellCommandTimeoutSeconds = ReadInt(section, "ShellCommandTimeoutSeconds",
-                fallback.ShellCommandTimeoutSeconds)
+                fallback.ShellCommandTimeoutSeconds),
+            DomainPermissions = element.TryGetProperty("DomainPermissions", out JsonElement permissions)
+                ? JsonSerializer.Deserialize<McpDomainPermission[]>(permissions.GetRawText()) ?? []
+                : fallback.DomainPermissions
         };
     }
 

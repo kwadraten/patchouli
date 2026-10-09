@@ -110,6 +110,13 @@ public abstract class SettingsSectionViewModelBase : ViewModelBase, ISettingsSec
 
     public abstract Task SaveAsync();
     public abstract Task DiscardAsync();
+
+    internal void ReportSaveFailure(string message)
+    {
+        LastError = message;
+        SaveState = SettingsSaveState.Failed;
+        Status = $"保存失败：{message}";
+    }
 }
 
 public enum SettingsSaveState

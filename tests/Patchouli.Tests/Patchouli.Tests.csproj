@@ -6,6 +6,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Patchouli.Core\Patchouli.Core.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Agent\Patchouli.Agent.fsproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Llm\Patchouli.Llm.csproj" />
+    <ProjectReference Include="..\..\src\Patchouli.Workflows\Patchouli.Workflows.fsproj" />
     <ProjectReference Include="..\..\src\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Ocr\Patchouli.Ocr.csproj" />
     <ProjectReference Include="..\..\src\Patchouli.Mcp\Patchouli.Mcp.csproj" />

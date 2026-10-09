@@ -950,6 +950,13 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         try
         {
             new SqliteConnectionFactory(branch.StagingDatabasePath).DeleteDatabaseFiles();
+            string payloadsRoot =
+                SnapshotFilePayloads.StagingPayloadsRoot(branch.StagingDatabasePath, branch.SnapshotId);
+            if (Directory.Exists(payloadsRoot))
+            {
+                Directory.Delete(payloadsRoot, true);
+            }
+
             return Task.FromResult(Result.Success());
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
@@ -959,22 +966,35 @@ public sealed class SnapshotBranchInspectionService : ISnapshotBranchInspectionS
         }
     }
 
-    public Task<Result<string>> KeepBranchAsSeparateLibraryCopyAsync(
+    public async Task<Result<string>> KeepBranchAsSeparateLibraryCopyAsync(
         SnapshotBranchInspectionInfo branch,
         string destinationPath,
         CancellationToken cancellationToken = default)
     {
-        _ = cancellationToken;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(destinationPath))!);
             File.Copy(branch.StagingDatabasePath, destinationPath, true);
-            return Task.FromResult(Result<string>.Success(destinationPath));
+
+            string payloadsRoot =
+                SnapshotFilePayloads.StagingPayloadsRoot(branch.StagingDatabasePath, branch.SnapshotId);
+            if (Directory.Exists(payloadsRoot))
+            {
+                Result<IReadOnlyList<string>> merged =
+                    await SnapshotFilePayloads.MergeStagedPayloadsAsync(payloadsRoot, destinationPath,
+                        cancellationToken);
+                if (merged.IsFailure)
+                {
+                    return Result<string>.Failure(merged.ErrorCode!, merged.ErrorMessage!);
+                }
+            }
+
+            return Result<string>.Success(destinationPath);
         }
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.snapshot-branch-inspection"))
         {
-            return Task.FromResult(Result<string>.Failure(AppErrorCodes.DatabaseError, exception.Message));
+            return Result<string>.Failure(AppErrorCodes.DatabaseError, exception.Message);
         }
     }
 

@@ -238,6 +238,34 @@
             </StackPanel>
           </Button>
 
+          <!-- The reading view's workflow entry: the same ordered definitions the Library context
+               menu and the menu bar show, captured against the open document. -->
+          <Button Background="Transparent" ToolTip.Tip="工作流">
+            <Button.Flyout>
+              <MenuFlyout Opening="OnReadingWorkflowMenuOpening">
+                <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
+                          IsVisible="{Binding HasReadingWorkflowMenuEntries}" x:CompileBindings="False">
+                  <MenuItem.ItemTemplate>
+                    <DataTemplate x:DataType="vm:WorkflowMenuEntryViewModel">
+                      <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
+                    </DataTemplate>
+                  </MenuItem.ItemTemplate>
+                  <MenuItem.Styles>
+                    <Style Selector="MenuItem MenuItem">
+                      <Setter Property="Command" Value="{Binding LaunchCommand}" />
+                      <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
+                    </Style>
+                  </MenuItem.Styles>
+                </MenuItem>
+              </MenuFlyout>
+            </Button.Flyout>
+            <StackPanel Orientation="Horizontal" Spacing="4">
+              <lucide:Lucide Icon="RefreshCw" Width="14" Height="14"
+                             StrokeBrush="{DynamicResource OnSurfaceVariantBrush}" />
+              <TextBlock Text="工作流" FontSize="12" Foreground="{DynamicResource OnSurfaceBrush}" />
+            </StackPanel>
+          </Button>
+
           <Border Width="1" Height="20" Background="{DynamicResource OutlineVariantBrush}" Margin="4,0" />
 
           <ToggleButton Classes="ToolbarToggle" IsChecked="{Binding IsSidebarOpen}"

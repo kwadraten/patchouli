@@ -16,6 +16,8 @@ using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.Host.Composition;
+using Patchouli.UI.Services;
+using Patchouli.UI.ViewModels.Dialogs;
 
 namespace Patchouli.Tests;
 
@@ -32,6 +34,107 @@ public sealed class PdfWorkspaceSourceValidationTests : IDisposable
     public void Dispose()
     {
         _settings.Dispose();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Page_ocr_refreshes_the_open_working_box_tree_and_preview_without_committing(bool logicalPages)
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            using MainWindowViewModel main = new(new FakeClipboard(), settingsPath: _settings.Path,
+                modalOperations: new DirectModalRunner())
+            {
+                RuntimeDatabasePath = CreateDatabasePath("ui-page-ocr-working")
+            };
+            await OpenImportedItemAsync(main, CreatePdfPath());
+            HostServices services = await main.ServicesAsync();
+            services.OcrAdapters.RegisterAdapter(new WorkingPageAdapter());
+            LibraryItemViewModel item = main.Shell.Items.Single();
+            await item.ViewPdfCommand.ExecuteAsync();
+            PdfWorkspaceViewModel workspace = (PdfWorkspaceViewModel)main.ActiveTab!.Content!;
+            await workspace.EnterEditModeCommand.ExecuteAsync();
+            PageEditSession edit = (await services.DocumentTrees.GetPageEditAsync(workspace.EditSessionId!.Value))
+                .Value;
+            DocumentTreeRevision current = (await services.DocumentTrees.GetCurrentRevisionAsync(
+                edit.DocumentInstanceId, edit.PageId)).Value;
+            if (!logicalPages)
+            {
+                foreach (DocumentBox root in (await services.DocumentTrees.ListBoxesAsync(edit.DraftRevisionId)).Value
+                         .Where(box => box.ParentBoxId is null))
+                {
+                    await services.DocumentTreeEditor.DeleteBoxAsync(edit.SessionId, root.BoxId);
+                }
+
+                await workspace.RefreshBoxesAsync();
+            }
+
+            await workspace.RunCurrentPageOcrCommand.ExecuteAsync();
+
+            workspace.Status.Should().Contain("更新页面草稿").And.Contain("保存后生效");
+            workspace.EditSessionId.Should().Be(edit.SessionId);
+            workspace.BoundingBoxes.Should().Contain(box => box.Text == "new working text");
+            workspace.ReadingScene.Should().NotBeNull();
+            workspace.PreviewBlocks.Should().Contain(block => block.Markdown.Contains("new working text"));
+            (await services.DocumentTrees.GetCurrentRevisionAsync(edit.DocumentInstanceId, edit.PageId)).Value
+                .TreeRevisionId.Should().Be(current.TreeRevisionId);
+            await workspace.CancelEditModeCommand.ExecuteAsync();
+            workspace.BoundingBoxes.Should().NotContain(box => box.Text == "new working text");
+            await ReleaseDocumentSessionAsync(main, item);
+        }, CancellationToken.None);
+    }
+
+    private sealed class DirectModalRunner : IModalOperationRunner
+    {
+        public async Task<T> RunAsync<T>(ModalOperationOptions options, Func<ModalOperationContext, Task<T>> operation,
+            CancellationToken cancellationToken = default)
+        {
+            using BlockingOperationDialogViewModel dialog = new();
+            return await operation(new ModalOperationContext(dialog, cancellationToken, false));
+        }
+    }
+
+    private sealed class WorkingPageAdapter : IRealOcrAdapter
+    {
+        public string EngineId => OcrEngineIds.NdlKoten;
+        public string DisplayName => "Working page test";
+        public string Kind => OcrAdapterKind.LocalLibrary;
+
+        public OcrEngineCapability GetCapability()
+        {
+            return new OcrEngineCapability(EngineId, DisplayName, false, false, true, false,
+                true, false, false, false, false, [OcrInputKinds.PageImage, OcrInputKinds.RegionImage], "Test adapter");
+        }
+
+        public Task<OcrEnvironmentCheckResult> CheckEnvironmentAsync(OcrPresetVersion presetVersion,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new OcrEnvironmentCheckResult(
+                EngineId, presetVersion.ModelId, null, OcrEnvironmentStatus.Ready, true, "Ready",
+                OcrRequiredAction.None, []));
+        }
+
+        public Task<Result> ValidatePresetAsync(OcrPresetVersion presetVersion,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result> ValidateInputAsync(OcrInputDescriptor input,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<OcrEnginePageResult>> RunPageAsync(OcrInputDescriptor input, OcrPresetVersion presetVersion,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<OcrEnginePageResult>.Success(
+                new OcrEnginePageResult(input.PageId, true, "new working text",
+                    input.RegionBBox ?? new NormalizedBBox(0, 0, 1, 1), null, null)));
+        }
     }
 
     [Fact]

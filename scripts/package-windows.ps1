@@ -1,14 +1,14 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$Version = "0.3.6",
+    [string]$Version = "0.3.7",
     [switch]$Smoke
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$publishDir = Join-Path $root "artifacts\publish\$Runtime"
-$installerDir = Join-Path $root "artifacts\installer"
+$publishDir = Join-Path $root ".tmp\publish\$Runtime"
+$installerDir = Join-Path $root ".tmp\installer"
 $productionAppId = "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"
 $smokeAppId = "{{E3F7D819-616F-4A16-B65C-17C78FDE024E}"
 $appId = if ($Smoke) { $smokeAppId } else { $productionAppId }
@@ -27,6 +27,11 @@ if (-not $iscc) {
 }
 
 if (Test-Path -LiteralPath $publishDir) {
+    $resolvedPublishDir = [IO.Path]::GetFullPath($publishDir)
+    $temporaryRoot = [IO.Path]::GetFullPath((Join-Path $root '.tmp')) + [IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedPublishDir.StartsWith($temporaryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Publish output must be inside the repository .tmp directory.'
+    }
     Remove-Item -LiteralPath $publishDir -Recurse -Force
 }
 New-Item -ItemType Directory -Force -Path $publishDir, $installerDir | Out-Null

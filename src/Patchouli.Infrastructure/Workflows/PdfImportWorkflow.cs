@@ -65,14 +65,6 @@ public sealed class PdfImportWorkflow
             return new PdfImportResult(false, "PDF file was not found at the specified path.", null, null, null, null);
         }
 
-        int? pageCount = request.PageCount ??
-                         await _pdfMetadataReader.GetPageCountAsync(request.PdfPath, cancellationToken);
-
-        if (pageCount is null or <= 0)
-        {
-            return new PdfImportResult(false, "Could not determine page count for this PDF.", null, null, null, null);
-        }
-
         using IActivityScope? activity = _activityTracker?.BeginScope(
             "导入 PDF",
             HostActivityKind.Import,
@@ -93,12 +85,52 @@ public sealed class PdfImportWorkflow
             return new PdfImportResult(false, fingerprintResult.ErrorMessage, null, null, null, null);
         }
 
+        if (string.IsNullOrWhiteSpace(fingerprintResult.Value.FullBlake3))
+        {
+            return new PdfImportResult(false, "Automatic import requires verified file content.", null, null, null,
+                null);
+        }
+
+        DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
+        FileFingerprint fingerprint = fingerprintResult.Value;
+        FileAsset fileAsset = new(
+            FileAssetService.CreateFileAssetId(fingerprint.FullBlake3),
+            libraryResult.Value.LibraryId,
+            normalizedPath,
+            fingerprint.FileName,
+            fingerprint.SizeBytes,
+            fingerprint.MtimeUtc,
+            fingerprint.QuickHash,
+            fingerprint.FullBlake3,
+            null,
+            null,
+            FileAssetStatus.Available,
+            now,
+            now);
+
+        Result<FileImportOwner?> existing = await _batchWriter.TryReuseAsync(
+            fileAsset, normalizedPath, now, cancellationToken);
+        if (existing.IsFailure)
+        {
+            return new PdfImportResult(false, existing.ErrorMessage, null, null, null, null);
+        }
+
+        if (existing.Value is { } owner)
+        {
+            return AlreadyImported(owner);
+        }
+
+        int? pageCount = request.PageCount ??
+                         await _pdfMetadataReader.GetPageCountAsync(normalizedPath, cancellationToken);
+        if (pageCount is null or <= 0)
+        {
+            return new PdfImportResult(false, "Could not determine page count for this PDF.", null, null, null, null);
+        }
+
         IReadOnlyList<PdfPageInfoResult>? pageInfoResults = _pageInfoReader is null
             ? null
             : await _pageInfoReader.GetPageInfosAsync(normalizedPath, cancellationToken);
 
-        DateTimeOffset now = _clock.UtcNow.ToUniversalTime();
-        FileFingerprint fingerprint = fingerprintResult.Value;
         DocumentInstanceId documentInstanceId = DocumentInstanceId.New();
         List<PdfImportPageFailure> failures = [];
         List<PdfImportPagePlaceholder> placeholders = [];
@@ -138,21 +170,6 @@ public sealed class PdfImportWorkflow
                 pageCount.Value, failedCount, failures);
         }
 
-        FileAsset fileAsset = new(
-            FileAssetService.CreateFileAssetId(fingerprint.FullBlake3),
-            libraryResult.Value.LibraryId,
-            normalizedPath,
-            fingerprint.FileName,
-            fingerprint.SizeBytes,
-            fingerprint.MtimeUtc,
-            fingerprint.QuickHash,
-            fingerprint.FullBlake3,
-            null,
-            null,
-            FileAssetStatus.Available,
-            now,
-            now);
-
         string title = !string.IsNullOrWhiteSpace(request.Title)
             ? request.Title.Trim()
             : Path.GetFileNameWithoutExtension(request.PdfPath);
@@ -189,12 +206,17 @@ public sealed class PdfImportWorkflow
             pages,
             placeholders);
 
-        Result commitResult = await _batchWriter.CommitAsync(batch, cancellationToken);
+        Result<PdfImportCommitResult> commitResult = await _batchWriter.CommitAsync(batch, cancellationToken);
         if (commitResult.IsFailure)
         {
             return new PdfImportResult(
                 false, commitResult.ErrorMessage, null, null, null, null,
                 pageCount.Value, failedCount, failures);
+        }
+
+        if (commitResult.Value.ExistingOwner is { } committedOwner)
+        {
+            return AlreadyImported(committedOwner);
         }
 
         if (_itemTypeInferenceService is not null)
@@ -217,9 +239,16 @@ public sealed class PdfImportWorkflow
             true, null,
             failedCount > 0 ? "imported_with_page_failures" : "imported",
             item.ItemId.ToString(),
-            fileAsset.FileAssetId.ToString(),
+            commitResult.Value.FileAssetId.ToString(),
             documentInstance.DocumentInstanceId.ToString(),
             pageCount.Value, failedCount, failures);
+    }
+
+    private static PdfImportResult AlreadyImported(FileImportOwner owner)
+    {
+        return new PdfImportResult(true, null,
+            owner.IsDeleted ? "already_imported_deleted" : "already_imported",
+            owner.ItemId, owner.FileAssetId, owner.DocumentInstanceId);
     }
 
     private static Page CreatePage(

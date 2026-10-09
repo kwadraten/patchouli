@@ -8,13 +8,7 @@ public partial class ConflictResolutionDialog : Window
     public ConflictResolutionDialog()
     {
         InitializeComponent();
-
-        DataContextChanged += (s, e) =>
-        {
-            if (DataContext is ConflictResolutionDialogViewModel vm)
-            {
-                vm.RequestClose = (result) => Close(result);
-            }
-        };
+        DialogCloseBinding.Bind<ConflictResolutionDialogViewModel, object?>(
+            this, static (vm, close) => vm.RequestClose = close);
     }
 }

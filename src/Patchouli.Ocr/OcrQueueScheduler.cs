@@ -4,6 +4,7 @@ using Patchouli.Core.Ids;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Llm;
 using Patchouli.Ocr.MinerU;
 
 namespace Patchouli.Ocr;
@@ -14,7 +15,8 @@ public sealed class OcrRetryPolicy : IOcrRetryPolicy
     [
         "network_timeout", "temporary_provider_error", "rate_limited", "quota_exceeded_retryable", "worker_crashed",
         OcrFailureCode.LocalOcrTimeout, MinerUProviderStatus.DownloadFailed, MinerUProviderStatus.Timeout,
-        MinerUProviderStatus.UploadFailed, MinerUProviderStatus.UploadUrlFailed
+        MinerUProviderStatus.UploadFailed, MinerUProviderStatus.UploadUrlFailed,
+        LlmFailureCodes.Cancelled, LlmFailureCodes.Interrupted, LlmFailureCodes.InvalidModelOutput
     ];
 
     private static readonly HashSet<string> Manual =
@@ -22,7 +24,8 @@ public sealed class OcrRetryPolicy : IOcrRetryPolicy
         "auth_failed", "model_not_found", "bad_endpoint_config", "model_path_missing", "model_path_inaccessible",
         OcrFailureCode.SourceFileMissing, OcrFailureCode.SourceFileChanged,
         OcrFailureCode.BBoxCoordinateTransformFailed, OcrFailureCode.ImageTooLargeForOcr,
-        OcrFailureCode.RendererTimeout, "unsupported_file", "invalid_page_box", "missing_executable"
+        OcrFailureCode.RendererTimeout, "unsupported_file", "invalid_page_box", "missing_executable",
+        LlmFailureCodes.ContextLengthExceeded, LlmFailureCodes.ContentFiltered, LlmFailureCodes.EmptyResponse
     ];
 
     public string Classify(string? code)

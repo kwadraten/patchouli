@@ -147,7 +147,7 @@ public sealed class PdfWorkspaceLayoutTests
         string viewModel = File.ReadAllText(TestPaths.FromRepositoryRoot(
             "src", "Patchouli.UI", "ViewModels", "Ocr", "PdfWorkspaceViewModel.cs"));
         int start = viewModel.IndexOf("private async Task RunDocumentOcrAsync()", StringComparison.Ordinal);
-        int end = viewModel.IndexOf("private async Task RunCurrentPageOcrAsync()", start, StringComparison.Ordinal);
+        int end = viewModel.IndexOf("private Task RunCurrentPageOcrAsync()", start, StringComparison.Ordinal);
 
         start.Should().BeGreaterThanOrEqualTo(0);
         end.Should().BeGreaterThan(start);

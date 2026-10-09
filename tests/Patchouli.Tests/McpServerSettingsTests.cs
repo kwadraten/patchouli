@@ -16,6 +16,23 @@ namespace Patchouli.Tests;
 public sealed class McpServerSettingsTests
 {
     [Fact]
+    public async Task Incomplete_endpoint_drafts_are_persisted_but_cannot_start_a_listener()
+    {
+        using TemporaryAppSettingsFile file = new();
+        FixedClock clock = new(DateTimeOffset.Parse("2026-07-08T00:00:00Z"));
+        McpServerSettingsService service = new(file.Path, clock);
+        McpServerSettings draft = McpServerSettingsService.DefaultSettings(clock.UtcNow) with
+        {
+            BindAddress = "", AuthRequired = true, Token = ""
+        };
+        Result<McpServerSettings> saved = await service.SaveDraftSettingsAsync(draft, 0);
+        saved.IsSuccess.Should().BeTrue();
+        (await service.GetSettingsAsync()).Value.BindAddress.Should().BeEmpty();
+        (await service.ValidateSettingsAsync(saved.Value)).IsFailure.Should().BeTrue();
+        (await service.SaveSettingsAsync(saved.Value)).IsFailure.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Save_and_load_round_trip_preserves_non_secret_fields_and_overrides()
     {
         await using TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();
@@ -34,6 +51,7 @@ public sealed class McpServerSettingsTests
             [new McpToolOverride("search_library", false, "disabled for tests")],
             clock.UtcNow)
         {
+            DomainPermissions = [new McpDomainPermission("texts", "fetch", false)],
             ShellCommandTimeoutSeconds = 42
         });
         Result<McpServerSettings> loaded = await service.GetSettingsAsync();
@@ -44,6 +62,7 @@ public sealed class McpServerSettingsTests
         File.ReadAllText(settingsPath).Should().Contain("redacted-token");
         loaded.Value.ToolOverrides.Should().ContainSingle();
         loaded.Value.ShellCommandTimeoutSeconds.Should().Be(42);
+        loaded.Value.DomainPermissions.Should().Equal(new McpDomainPermission("texts", "fetch", false));
     }
 
     [Fact]

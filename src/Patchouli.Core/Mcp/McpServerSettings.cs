@@ -11,6 +11,8 @@ public sealed record McpServerSettings(
     DateTimeOffset UpdatedAt,
     long Revision = 0)
 {
+    public IReadOnlyList<McpDomainPermission> DomainPermissions { get; init; } = [];
+
     public int ShellCommandTimeoutSeconds { get; init; } = 15;
 
     /// <summary>Device-local MCP exposure policy: when false, Library tags are omitted from

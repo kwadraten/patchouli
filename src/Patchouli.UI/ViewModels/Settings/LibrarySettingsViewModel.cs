@@ -12,6 +12,7 @@ using Patchouli.Core.Results;
 using Patchouli.Host.Composition;
 using Patchouli.Host.Watching;
 using Patchouli.Infrastructure.Files;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 
@@ -25,11 +26,16 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
     private bool _isDirty;
     private bool _isConstructing;
     private bool _isSyncing;
+    private long _editRevision;
+    private readonly SettingsDraftStore _draftStore;
+
+    private sealed record LibraryDraft(bool RememberLastDatabase, string ExclusionPatternsText);
 
     public LibrarySettingsViewModel(MainWindowViewModel main)
     {
         _isConstructing = true;
         _main = main;
+        _draftStore = new SettingsDraftStore(main.SettingsFilePath);
         AddFileSearchRootCommand = new AsyncCommand(AddFileSearchRootAsync);
         RescanFileSearchRootsCommand = new AsyncCommand(RescanFileSearchRootsAsync);
         RememberLastDatabase = _main.AppOptions.Runtime.RememberLastDatabase;
@@ -42,6 +48,19 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        long revision = _editRevision;
+        LibraryDraft? draft = await _draftStore.ReadAsync<LibraryDraft>("library", cancellationToken);
+        if (!IsDirty && revision == _editRevision && draft is not null)
+        {
+            _isSyncing = true;
+            RememberLastDatabase = draft.RememberLastDatabase;
+            ExclusionPatternsText = draft.ExclusionPatternsText;
+            _isSyncing = false;
+            ValidationState = SettingsValidationState.Invalid;
+            LastError = "请补全有效的排除规则。";
+            Status = "已恢复草稿，请补全有效的排除规则。";
+        }
+
         await LoadFileSearchRootsAsync();
     }
 
@@ -144,21 +163,27 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
 
     public override async Task SaveAsync()
     {
+        long revision = _editRevision;
+        LibraryDraft draft = new(RememberLastDatabase, ExclusionPatternsText);
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
-        string[] patterns = ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
-                                                                      StringSplitOptions.TrimEntries);
+        string[] patterns = draft.ExclusionPatternsText.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries |
+                                                                            StringSplitOptions.TrimEntries);
         if (!FileSearchRootAccess.TryValidateExclusionPatterns(patterns, out string? error))
         {
-            SaveState = SettingsSaveState.Failed;
+            await _draftStore.WriteAsync("library", draft);
+            _isDirty = revision != _editRevision;
+            SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
             ValidationState = SettingsValidationState.Invalid;
-            SetStatus($"排除规则无效：{error}");
+            SetStatus($"已保存草稿，请补全排除规则：{error}");
             LastError = error;
+            Raise(nameof(IsDirty));
+            Raise(nameof(CanSave));
             return;
         }
 
-        AppRuntimeOptions runtime = _main.AppOptions.Runtime with { RememberLastDatabase = RememberLastDatabase };
-        if (RememberLastDatabase)
+        AppRuntimeOptions runtime = _main.AppOptions.Runtime with { RememberLastDatabase = draft.RememberLastDatabase };
+        if (draft.RememberLastDatabase)
         {
             runtime = runtime with { RuntimeDatabasePath = Path.GetFullPath(_main.RuntimeDatabasePath) };
         }
@@ -170,10 +195,11 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
         });
         if (saved.IsSuccess)
         {
-            _persistedExclusionPatternsText = ExclusionPatternsText;
-            _isDirty = false;
+            await _draftStore.WriteAsync<LibraryDraft>("library", null);
+            _persistedExclusionPatternsText = draft.ExclusionPatternsText;
+            _isDirty = revision != _editRevision;
             LastError = null;
-            SaveState = SettingsSaveState.Saved;
+            SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
             ValidationState = SettingsValidationState.Valid;
             SetStatus("已保存");
         }
@@ -200,6 +226,7 @@ public sealed partial class LibrarySettingsViewModel : SettingsSectionViewModelB
 
     private void MarkDirty()
     {
+        _editRevision++;
         _isDirty = true;
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));

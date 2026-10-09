@@ -496,8 +496,9 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
 
         long loadGeneration = ++_loadGeneration;
         long editRevision = _editRevision;
+        IMcpServerSettingsService service = (await _main.ServicesAsync()).McpSettings;
         Result<McpServerSettings> result =
-            await (await _main.ServicesAsync()).McpSettings.GetSettingsAsync(cancellationToken);
+            await service.GetSettingsAsync(cancellationToken);
         if (result.IsFailure)
         {
             LastError = result.ErrorMessage;
@@ -505,6 +506,7 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
+        Result validation = await service.ValidateSettingsAsync(result.Value, cancellationToken);
         if (loadGeneration != _loadGeneration || editRevision != _editRevision || IsDirty)
         {
             SetStatus("MCP 设置已在加载期间变更，已保留当前草稿。");
@@ -515,11 +517,12 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         SyncFromSettings(result.Value);
         _isDirty = false;
         SaveState = SettingsSaveState.Clean;
-        LastError = null;
+        LastError = validation.IsFailure ? validation.ErrorMessage : null;
+        ValidationState = validation.IsFailure ? SettingsValidationState.Invalid : SettingsValidationState.Valid;
         RefreshRequiresReload();
         RefreshCliStatus(await _main.ServicesAsync());
         await RefreshLibraryPreviewInternalAsync(cancellationToken);
-        SetStatus("已加载数据库 MCP 设置。");
+        SetStatus(validation.IsFailure ? $"已保存，启动服务前仍需补全：{validation.ErrorMessage}" : "已加载数据库 MCP 设置。");
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }
@@ -541,7 +544,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
                 AllowedOrigins = _settings.AllowedOrigins.ToArray(),
                 ToolOverrides = _settings.ToolOverrides.ToArray()
             };
-            Result<McpServerSettings> result = await (await _main.ServicesAsync()).McpSettings.SaveSettingsAsync(
+            IMcpServerSettingsService settingsService = (await _main.ServicesAsync()).McpSettings;
+            Result<McpServerSettings> result = await settingsService.SaveDraftSettingsAsync(
                 draft,
                 _persistedSettings.Revision,
                 saveCancellation.Token);
@@ -568,6 +572,14 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
             }
 
             LastError = null;
+            Result validation = await settingsService.ValidateSettingsAsync(result.Value, saveCancellation.Token);
+            ValidationState = validation.IsSuccess ? SettingsValidationState.Valid : SettingsValidationState.Invalid;
+            if (validation.IsFailure)
+            {
+                LastError = validation.ErrorMessage;
+                SetStatus($"已保存，启动服务前仍需补全：{validation.ErrorMessage}");
+            }
+
             RefreshRequiresReload();
             Raise(nameof(IsDirty));
             Raise(nameof(CanSave));
@@ -643,10 +655,46 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(LibraryPreviewHint));
     }
 
+    [ExcludeFromDerivedGeneration]
+    public ObservableCollection<McpDomainPermissionRowViewModel> PermissionRows { get; } = new();
+
+    internal void UpdateDomainPermission(string domain, string verb, bool enabled)
+    {
+        if (!McpPermissionPolicy.Supports(domain, verb))
+        {
+            return;
+        }
+
+        List<McpDomainPermission> permissions = _settings.DomainPermissions.ToList();
+        // Materialize the legacy global deny before removing it, so granting one cell cannot
+        // accidentally grant every other domain for that verb.
+        if (_settings.ToolOverrides.Any(value => value.ToolName == "patchouli." + verb && !value.Enabled))
+        {
+            permissions.RemoveAll(value => value.Verb == verb);
+            permissions.AddRange(
+                McpPermissionPolicy.Domains.Select(value => new McpDomainPermission(value, verb, false)));
+        }
+
+        permissions.RemoveAll(value => value.Domain == domain && value.Verb == verb);
+        permissions.Add(new McpDomainPermission(domain, verb, enabled));
+        _settings = _settings with
+        {
+            DomainPermissions = permissions.ToArray(),
+            ToolOverrides = _settings.ToolOverrides.Where(value => value.ToolName != "patchouli." + verb).ToArray()
+        };
+        MarkDirty();
+    }
+
     private void ReloadToolOverrides()
     {
         HashSet<string> disabled = _settings.ToolOverrides.Where(value => !value.Enabled)
             .Select(value => value.ToolName).ToHashSet(StringComparer.Ordinal);
+        PermissionRows.Clear();
+        foreach (string domain in McpPermissionPolicy.Domains)
+        {
+            PermissionRows.Add(new McpDomainPermissionRowViewModel(this, domain, _settings));
+        }
+
         ToolOverrides.Clear();
         foreach (string tool in KnownTools)
         {
@@ -675,7 +723,8 @@ public sealed partial class McpSettingsViewModel : SettingsSectionViewModelBase
         "patchouli.find",
         "patchouli.fetch",
         "patchouli.put",
-        "patchouli.cite"
+        "patchouli.cite",
+        "patchouli.send"
     ];
 }
 
@@ -705,5 +754,63 @@ public sealed partial class McpToolOverrideViewModel : ViewModelBase
         }
 
         _parent.UpdateToolOverride(ToolName, value);
+    }
+}
+
+public sealed class McpDomainPermissionRowViewModel
+{
+    public McpDomainPermissionRowViewModel(McpSettingsViewModel parent, string domain, McpServerSettings settings)
+    {
+        Domain = domain == "/" ? "根目录 /" : domain;
+        Cells = McpPermissionPolicy.Verbs.Select(verb => new McpDomainPermissionCellViewModel(parent, domain, verb,
+                McpPermissionPolicy.Allows(settings, verb,
+                    domain == "/" ? "patchouli://" : "patchouli://" + domain + "/")))
+            .ToArray();
+    }
+
+    public string Domain { get; }
+    public IReadOnlyList<McpDomainPermissionCellViewModel> Cells { get; }
+}
+
+public sealed partial class McpDomainPermissionCellViewModel : ViewModelBase
+{
+    private readonly McpSettingsViewModel _parent;
+    private readonly string _domain;
+    private readonly string _verb;
+    private bool _initializing = true;
+
+    public McpDomainPermissionCellViewModel(McpSettingsViewModel parent, string domain, string verb, bool enabled)
+    {
+        _parent = parent;
+        _domain = domain;
+        _verb = verb;
+        IsSupported = McpPermissionPolicy.Supports(domain, verb);
+        Description = IsSupported ? domain + " / " + verb : $"{domain} 不支持 {verb}，无法授权。";
+        Enabled = IsSupported && enabled;
+        _initializing = false;
+    }
+
+    public string Description { get; }
+
+    public bool IsSupported { get; }
+
+    [ObservableProperty] public partial bool Enabled { get; set; }
+
+    partial void OnEnabledChanged(bool value)
+    {
+        if (!IsSupported)
+        {
+            if (value)
+            {
+                Enabled = false;
+            }
+
+            return;
+        }
+
+        if (!_initializing)
+        {
+            _parent.UpdateDomainPermission(_domain, _verb, value);
+        }
     }
 }

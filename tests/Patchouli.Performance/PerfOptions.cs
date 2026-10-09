@@ -179,7 +179,8 @@ public sealed record PerfOptions(
             DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
         string profileName = isFull ? "full" : "smoke";
         string defaultOutput = outputPath
-                               ?? Path.Combine("artifacts", "perf", $"{profileName}-{stamp}.json");
+                               ?? Path.Combine(Testing.RepositoryTestEnvironment.TemporaryRoot, "perf",
+                                   $"{profileName}-{stamp}.json");
         return new PerfOptions(
             profile, iterations, seed, databasePath, keepDatabase, defaultOutput, reportPath, emitBaseline, check,
             baselinePath, deterministicTolerance, allocationTolerance, latencyTolerance, latencyCeilingMs,
@@ -247,7 +248,7 @@ public sealed record PerfOptions(
           --seed <n>                   Deterministic fixture seed (default 20260802).
           --db <path>                  Reuse a database path instead of a temp file.
           --keep-db                    Keep the database after the run.
-          --output <path.json>         JSON report path (default artifacts/perf/<profile>-<stamp>.json).
+          --output <path.json>         JSON report path (default .tmp/perf/<profile>-<stamp>.json).
           --report <path.md>           Optional human-readable markdown report path.
           --emit-baseline <path>       Write this run's metric values as a baseline file (no --check).
           --check                      Compare this run against a baseline and fail on regression.

@@ -22,9 +22,10 @@ public sealed class BiblatexImportApplyTests
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-bib-apply-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         string db = Path.Combine(root, "runtime.sqlite");
+        HostServices? services = null;
         try
         {
-            HostServices services = await HostServices.CreateAsync(db, PatchouliAppSettings.Default() with
+            services = await HostServices.CreateAsync(db, PatchouliAppSettings.Default() with
             {
                 Runtime = PatchouliAppSettings.Default().Runtime with
                 {
@@ -74,6 +75,11 @@ public sealed class BiblatexImportApplyTests
         }
         finally
         {
+            if (services is not null)
+            {
+                await services.ShutdownAsync();
+            }
+
             SqliteTestCleanup.ReleasePools(db);
             if (Directory.Exists(root))
             {
@@ -93,9 +99,10 @@ public sealed class BiblatexImportApplyTests
         string root = Path.Combine(Path.GetTempPath(), $"patchouli-bib-batch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         string db = Path.Combine(root, "runtime.sqlite");
+        HostServices? services = null;
         try
         {
-            HostServices services = await HostServices.CreateAsync(db, PatchouliAppSettings.Default() with
+            services = await HostServices.CreateAsync(db, PatchouliAppSettings.Default() with
             {
                 Runtime = PatchouliAppSettings.Default().Runtime with
                 {
@@ -124,6 +131,11 @@ public sealed class BiblatexImportApplyTests
         }
         finally
         {
+            if (services is not null)
+            {
+                await services.ShutdownAsync();
+            }
+
             SqliteTestCleanup.ReleasePools(db);
             if (Directory.Exists(root))
             {

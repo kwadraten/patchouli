@@ -8,12 +8,15 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using Patchouli.Host.Composition;
 using Patchouli.Ocr;
 using Patchouli.UI.ViewModels;
+using Patchouli.UI.Services;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
 public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private readonly SettingsDraftStore _draftStore;
+    private long _editRevision;
     private string _token = "";
     private string _persistedToken = "";
     private string _modelVersion;
@@ -34,6 +37,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
     {
         _isConstructing = true;
         _main = main;
+        _draftStore = new SettingsDraftStore(main.SettingsFilePath);
         RemoveMinerUCredentialCommand = new AsyncCommand(RemoveMinerUCredentialAsync);
         _token = "";
         _persistedToken = _token;
@@ -182,6 +186,19 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        long revision = _editRevision;
+        OcrEnginesAppSettings? draft =
+            await _draftStore.ReadAsync<OcrEnginesAppSettings>("ocr-engines", cancellationToken);
+        if (draft is not null && !IsDirty && revision == _editRevision)
+        {
+            _persistedDocumentOcrEngine = draft.DocumentOcrEngine;
+            _persistedPageOcrEngine = draft.PageOcrEngine;
+            _persistedRegionOcrEngine = draft.RegionOcrEngine;
+            SyncState(_persistedToken, _persistedModelVersion, _persistedPollingTimeoutSeconds,
+                draft.DocumentOcrEngine, draft.PageOcrEngine, draft.RegionOcrEngine);
+            ValidationState = SettingsValidationState.Invalid;
+        }
+
         if (IsDirty)
         {
             Status = "OCR 设置有未保存的更改，已保留当前草稿。";
@@ -204,7 +221,9 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
                 return;
             }
 
-            LastError = UnavailableSelectionNotice();
+            LastError = UnavailableSelectionNotice() ??
+                        (draft is null ? null : "请为全文、页与区域选择可用的 OCR 引擎。");
+            ValidationState = LastError is null ? SettingsValidationState.Valid : SettingsValidationState.Invalid;
             Status = LastError ?? "OCR 引擎列表已加载。";
         }
         catch (Exception exception)
@@ -265,12 +284,20 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
     public override async Task SaveAsync()
     {
+        long revision = _editRevision;
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
 
-        bool minerUSaved = string.IsNullOrWhiteSpace(_token)
-            ? await _main.SaveMinerUModelSettingsAsync(_modelVersion, _pollingTimeoutSeconds)
-            : await _main.SaveMinerUSettingsAsync(_token, _modelVersion, _pollingTimeoutSeconds);
+        string token = _token;
+        string modelVersion = _modelVersion;
+        int pollingTimeout = _pollingTimeoutSeconds;
+        OcrEnginesAppSettings engines = new(
+            NormalizeEngineId(_documentOcrEngine),
+            NormalizeEngineId(_pageOcrEngine),
+            NormalizeEngineId(_regionOcrEngine));
+        bool minerUSaved = string.IsNullOrWhiteSpace(token)
+            ? await _main.SaveMinerUModelSettingsAsync(modelVersion, pollingTimeout)
+            : await _main.SaveMinerUSettingsAsync(token, modelVersion, pollingTimeout);
         if (!minerUSaved)
         {
             LastError = "无法保存 MinerU 模型设置。";
@@ -281,15 +308,29 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
             return;
         }
 
-        _persistedToken = _token;
-        _persistedModelVersion = _modelVersion;
-        _persistedPollingTimeoutSeconds = _pollingTimeoutSeconds;
+        _persistedToken = token;
+        _persistedModelVersion = modelVersion;
+        _persistedPollingTimeoutSeconds = pollingTimeout;
         Raise(nameof(HasPersistedCredential));
 
-        OcrEnginesAppSettings engines = new(
-            NormalizeEngineId(_documentOcrEngine),
-            NormalizeEngineId(_pageOcrEngine),
-            NormalizeEngineId(_regionOcrEngine));
+        HostServices services = await _main.ServicesAsync();
+        string[] available = services.OcrAdapters.ListCapabilities().Select(capability => capability.EngineId)
+            .ToArray();
+        if (new[] { engines.DocumentOcrEngine, engines.PageOcrEngine, engines.RegionOcrEngine }
+            .Any(engine => !available.Contains(engine, StringComparer.Ordinal)))
+        {
+            await _draftStore.WriteAsync("ocr-engines", engines);
+            _persistedDocumentOcrEngine = engines.DocumentOcrEngine;
+            _persistedPageOcrEngine = engines.PageOcrEngine;
+            _persistedRegionOcrEngine = engines.RegionOcrEngine;
+            UpdateDirtyState();
+            SaveState = IsDirty || revision != _editRevision ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
+            ValidationState = SettingsValidationState.Invalid;
+            LastError = "请为全文、页与区域选择可用的 OCR 引擎。";
+            Status = "已保存草稿，请补全可用的 OCR 引擎。";
+            return;
+        }
+
         bool enginesSaved = await _main.SaveOcrEngineSettingsAsync(engines);
         if (!enginesSaved)
         {
@@ -301,12 +342,13 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
             return;
         }
 
-        _persistedDocumentOcrEngine = _documentOcrEngine;
-        _persistedPageOcrEngine = _pageOcrEngine;
-        _persistedRegionOcrEngine = _regionOcrEngine;
-        _isDirty = false;
+        await _draftStore.WriteAsync<OcrEnginesAppSettings>("ocr-engines", null);
+        _persistedDocumentOcrEngine = engines.DocumentOcrEngine;
+        _persistedPageOcrEngine = engines.PageOcrEngine;
+        _persistedRegionOcrEngine = engines.RegionOcrEngine;
+        UpdateDirtyState();
         LastError = null;
-        SaveState = SettingsSaveState.Saved;
+        SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
         ValidationState = SettingsValidationState.Valid;
         Status = "已保存";
         UpdateDirtyState();
@@ -359,6 +401,7 @@ public sealed partial class OcrProviderSettingsViewModel : SettingsSectionViewMo
 
     private void MarkDirty(string message)
     {
+        _editRevision++;
         SaveState = SettingsSaveState.Dirty;
         Status = message;
     }

@@ -131,7 +131,7 @@ Use multiple signals; none is sufficient alone:
 
 1. CodeGraph `search`, `node`, `callers`, `impact`, or `explore` for symbols and production flow.
 2. Exact `rg` searches for the symbol and serialized/string forms.
-3. ReSharper SARIF from `artifacts/inspectcode.sarif`; run `scripts/inspect-code.ps1` only when a fresh full-solution result is appropriate for the worktree.
+3. ReSharper SARIF from `.tmp/inspectcode.sarif`; run `scripts/inspect-code.ps1` only when a fresh full-solution result is appropriate for the worktree.
 4. Project references, `HostServices` (the Patchouli.Host composition root), MCP/CLI dispatch, XAML, JSON/Dapper mappings, SQL, settings, snapshot lists, package manifests, and packaging scripts.
 5. Tests and docs, explicitly separated from production consumers.
 6. Git history only when it explains whether a path is an unfinished migration, a superseded implementation, or an intentional compatibility commitment. History is supporting evidence, not the only source of rationale.

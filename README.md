@@ -8,14 +8,11 @@
 
 </div>
 
-## 0.3.6 更新
+## 下载与更新日志
 
-- PDF 导入整本原子提交，失败时回滚；少量坏页保留页序并显示诊断占位，失败页比例阈值默认 20%，可在设置中调整。
-- 全书阅读改用原生阅读组件，按需加载 Markdown 页面，支持图片、表格、页码导航，以及原文与译文并排或段落下方对照；字体、字号与对照布局可配置。
-- 修复 OCR 设置草稿被刷新覆盖、引擎选择保存，以及搜索改写规则部分保存失败后重试产生重复规则的问题。
-- 优化回收站永久删除、单文档搜索索引、MCP 页级读取和译文目录；资产回收使用引用索引，题录缓存按变更范围刷新，快照分片复用一次一致性备份。
+当前版本：**0.3.7**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
 
-可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
+版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
 
 ## 特性
 
@@ -29,19 +26,21 @@
 
 - [x] 现代化的桌面应用UI：题录管理（标签、回收站、重复检测、合并与永久清除）、PDF查看和OCR内容原生Markdown预览、页级边界框树与不可变修订、设置管理、阻塞任务处理、冲突处理
 - [x] 合理的基础数据模型：贴合CSL规范的题录模型、基于文件哈希的文件资产模型（含垃圾回收）、完整支持MinerU OCR特性的OCR结果模型
-- [x] OCR支持：支持文档、页面、逻辑页面、区域等不同粒度的OCR，针对MinerU OCR提供一等支持，并内置基于 ONNX 运行时的 NDL Koten OCR Lite、NDLOCR-Lite 和 RapidOCR 本地引擎
+- [x] OCR支持：支持文档、页面、逻辑页面、区域等不同粒度的OCR，针对MinerU OCR提供一等支持，并内置基于 ONNX 运行时的 NDL Koten OCR Lite、NDLOCR-Lite 和 RapidOCR 本地引擎，以及多模态 LLM OCR
 - [x] 题录支持：全面支持CSL规范定义的各类文献、支持biblatex导入和导出，可以正确输出绝大部分CSL题录的文本和HTML结果
 - [x] 外部数据来源支持：支持使用文献标识符快速拉取元数据、支持从zotero官方列表和中文社区样式列表获取CSL样式
 - [x] 全文检索支持：基于Sqlite FTS的全文检索，带有唯一证据引用的搜索结果
 - [x] 快照同步支持：支持将本机数据库发布为快照，可自行配置通过网盘/同步盘同步快照，支持处理快照间冲突
-- [x] MCP / CLI支持：基于虚拟文件系统和结构化工具的 MCP和CLI，支持 `find`、`fetch`、`cite` 和 `put` 四个动作。
+- [x] MCP / CLI支持：基于虚拟文件系统和结构化工具的 MCP和CLI，支持 `find`、`fetch`、`cite`、`put` 和 `send`，可按资源域与动作配置权限。
 - [x] MacOS 适配：对MacOS的TCC权限体系提供支持
 - [x] 性能治理：首屏、OCR入库、MCP读取和PDF查看的缓存、批处理、惰性校验与性能回归
 - [x] 全书阅读：原生 Markdown 阅读组件、按需加载、图片与表格、页码导航、原文与译文对照，以及字体和布局设置
 - [x] PDF 导入容错：整本原子提交、坏页诊断占位、可配置失败阈值，以及历史导入残留清理
 - [x] 完善题录系统：实装标签系统（增删改、合并、置顶与筛选），提供回收站、重复题录检测、题录合并与永久清除
 - [x] 本地OCR支持：基于 ONNX 运行时的 NDL Koten OCR Lite、NDLOCR-Lite 和 RapidOCR 引擎，支持模型下载与离线识别
-- [ ] 支持更多OCR：多模态LLM OCR 支持
+- [x] 多模态 LLM OCR：复用模型提供程序配置，支持文档与区域识别。
+- [x] 内置 AI 聊天：持久化会话、模型与订阅提供程序配置、上下文压缩、历史检索和会话内 F# REPL。
+- [x] F# 工作流：脚本编辑、运行检查点、菜单启动，以及工作流与会话的快照同步。
 
 ## 开发指南
 
@@ -66,7 +65,7 @@ CSL 渲染由托管 NuGet 包 `Fsharp.Citeproc` 提供。当前仓库包含一�
 cargo build --release --manifest-path tools/biblatex-helper/Cargo.toml
 ```
 
-Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`put`、`cite` 工具，不依赖 Shell sidecar。
+Windows/macOS 打包脚本会构建并把该可执行文件复制到应用目录。生产 MCP 使用结构化 `find`、`fetch`、`put`、`cite`、`send` 工具，不依赖 Shell sidecar。
 
 ### 运行单元测试
 
@@ -89,7 +88,9 @@ dotnet test Patchouli.sln
 ./scripts/inspect-code.ps1
 ```
 
-清理和分析脚本要求 JetBrains Command Line Tools `2026.1.4`，并会使用仓库内的 `.editorconfig` 和固定的清理配置。提交非文档改动前，请先执行这两个命令；静态分析报告输出至 `artifacts/inspectcode.sarif`。
+清理和分析脚本要求 JetBrains Command Line Tools `2026.1.4`，并会使用仓库内的 `.editorconfig` 和固定的清理配置。提交非文档改动前，请先执行这两个命令；静态分析报告输出至 `.tmp/inspectcode.sarif`。
+
+临时文件统一放在仓库根目录的 `.tmp/` 下：测试临时文件为 `.tmp/tests/`，测试结果为 `.tmp/test-results/`，性能报告为 `.tmp/perf/`，界面截图为 `.tmp/previews/`，安装包为 `.tmp/installer/`。请勿重新创建已弃用的 `artifacts/` 或 `scratch/` 临时目录。
 
 ## 反馈问题
 

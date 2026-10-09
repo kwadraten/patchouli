@@ -33,7 +33,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: patchouli-windows
-          path: artifacts/installer/*.exe
+          path: .tmp/installer/*.exe
+          include-hidden-files: true
           if-no-files-found: error
 
   package-macos:
@@ -60,7 +61,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: patchouli-macos
-          path: artifacts/installer/*.dmg
+          path: .tmp/installer/*.dmg
+          include-hidden-files: true
           if-no-files-found: error
 
   release:
@@ -73,14 +75,14 @@ jobs:
       - name: Download packaged artifacts
         uses: actions/download-artifact@v8
         with:
-          path: release-assets
+          path: .tmp/release-assets
       - name: Create or update release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          mapfile -d '' assets < <(find release-assets -type f \( -name '*.exe' -o -name '*.dmg' \) -print0)
+          mapfile -d '' assets < <(find .tmp/release-assets -type f \( -name '*.exe' -o -name '*.dmg' \) -print0)
           test "${#assets[@]}" -eq 2
 
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then

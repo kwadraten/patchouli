@@ -5,6 +5,7 @@
   xmlns:converters="using:Patchouli.UI.Converters">
   <Application.Styles>
     <FluentTheme />
+    <StyleInclude Source="avares://AvaloniaEdit/Themes/Fluent/AvaloniaEdit.xaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/FormStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/CardStyles.axaml" />
     <StyleInclude Source="avares://Patchouli.UI/Styles/SidebarStyles.axaml" />

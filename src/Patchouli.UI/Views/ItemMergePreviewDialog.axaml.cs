@@ -8,13 +8,7 @@ public partial class ItemMergePreviewDialog : Window
     public ItemMergePreviewDialog()
     {
         InitializeComponent();
-
-        DataContextChanged += (_, _) =>
-        {
-            if (DataContext is ItemMergePreviewDialogViewModel vm)
-            {
-                vm.RequestClose = result => Close(result);
-            }
-        };
+        DialogCloseBinding.Bind<ItemMergePreviewDialogViewModel, ItemMergeDialogResult>(
+            this, static (vm, close) => vm.RequestClose = close);
     }
 }

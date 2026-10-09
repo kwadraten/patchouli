@@ -66,7 +66,7 @@ public sealed class McpCommandContractTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Find_root_returns_the_four_vfs_directories_and_library_projection_without_message()
+    public async Task Find_root_returns_the_six_vfs_directories_and_library_projection_without_message()
     {
         McpCommandResult<McpFindMeta, object> result =
             await _library.Commands.FindAsync(new McpFindRequest(null, null, null));
@@ -75,17 +75,19 @@ public sealed class McpCommandContractTests : IAsyncLifetime
         McpEnvelope<McpFindMeta, object> envelope = result.Envelope!;
         envelope.Continuation.Should().BeNull();
         envelope.Message.Should().BeNull("a clean success omits message");
-        envelope.Meta.ShownTotal.Should().Be(5);
-        envelope.Meta.DomainTotal.Should().Be(5);
-        envelope.Meta.FilteredTotal.Should().Be(5);
+        envelope.Meta.ShownTotal.Should().Be(7);
+        envelope.Meta.DomainTotal.Should().Be(7);
+        envelope.Meta.FilteredTotal.Should().Be(7);
         envelope.Meta.LibraryRevision.Should().MatchRegex("^lib:[0-9]+$");
         envelope.Entries.Select(Entry).Select(entry => entry.Uri).Should().Equal(
             "patchouli://items/",
             "patchouli://texts/",
             "patchouli://translations/",
             "patchouli://csl-styles/",
+            "patchouli://runs/",
+            "patchouli://workflows/",
             "patchouli://library.toon");
-        envelope.Entries.Select(Entry).Take(4).Should().OnlyContain(entry => entry.Type == "directory");
+        envelope.Entries.Select(Entry).Take(6).Should().OnlyContain(entry => entry.Type == "directory");
         envelope.Entries.Select(Entry).Last().Type.Should().Be("file");
     }
 

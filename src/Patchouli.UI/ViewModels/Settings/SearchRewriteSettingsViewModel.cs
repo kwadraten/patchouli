@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -10,6 +11,7 @@ using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Search;
 using Patchouli.Host.Composition;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 
 namespace Patchouli.UI.ViewModels.Settings;
@@ -24,10 +26,27 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
     private readonly MainWindowViewModel _main;
     private readonly List<SearchRewriteRuleId> _pendingDeletions = [];
     private bool _isDirty;
+    private long _editRevision;
+    private readonly SettingsDraftStore _draftStore;
+    [ExcludeFromDerivedGeneration] private string DraftKey => "search:" + Path.GetFullPath(_main.RuntimeDatabasePath);
+
+    private sealed record RuleDraft(
+        string? RuleId,
+        string? ProfileId,
+        string RuleType,
+        string Direction,
+        string Pattern,
+        string Replacement,
+        int Priority,
+        string Note,
+        bool Enabled);
+
+    private sealed record SearchDraft(RuleDraft[] Rules, string[] PendingDeletions);
 
     public SearchRewriteSettingsViewModel(MainWindowViewModel main)
     {
         _main = main;
+        _draftStore = new SettingsDraftStore(main.SettingsFilePath);
         AddRuleCommand = new RelayCommand(_ => AddRule());
         SaveCommand = new AsyncCommand(SaveAsync);
         DiscardCommand = new AsyncCommand(DiscardAsync);
@@ -85,11 +104,23 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
     public override async Task LoadAsync(CancellationToken cancellationToken = default)
     {
+        if (IsDirty || IsSaving)
+        {
+            return;
+        }
+
+        long revision = _editRevision;
+        int generation = _main.LibraryGeneration;
         try
         {
             HostServices services = await _main.ServicesAsync();
             Result<IReadOnlyList<SearchProfile>> profiles =
                 await services.SearchProfiles.ListProfilesAsync(true, cancellationToken);
+            if (revision != _editRevision || generation != _main.LibraryGeneration)
+            {
+                return;
+            }
+
             Scopes.Clear();
             Scopes.Add(SearchRewriteScopeOption.Global);
             if (profiles.IsSuccess)
@@ -102,8 +133,37 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
             Result<IReadOnlyList<SearchRewriteRule>> rules =
                 await services.SearchProfiles.ListRulesAsync(null, true, cancellationToken);
+            SearchDraft? draft = await _draftStore.ReadAsync<SearchDraft>(DraftKey, cancellationToken);
+            if (revision != _editRevision || generation != _main.LibraryGeneration)
+            {
+                return;
+            }
+
             Rules.Clear();
             _pendingDeletions.Clear();
+            if (draft is not null)
+            {
+                foreach (RuleDraft savedRow in draft.Rules)
+                {
+                    SearchProfileId? profileId =
+                        savedRow.ProfileId is null ? null : SearchProfileId.Parse(savedRow.ProfileId);
+                    Rules.Add(new SearchRewriteRuleRowViewModel(this,
+                        savedRow.RuleId is null ? null : SearchRewriteRuleId.Parse(savedRow.RuleId),
+                        Scopes.FirstOrDefault(scope => scope.ProfileId == profileId) ?? SearchRewriteScopeOption.Global,
+                        RuleTypeOptions.Single(option => option.Value == savedRow.RuleType),
+                        DirectionOptions.Single(option => option.Value == savedRow.Direction), profileId,
+                        savedRow.Pattern, savedRow.Replacement, savedRow.Priority, savedRow.Note, savedRow.Enabled));
+                }
+
+                _pendingDeletions.AddRange(draft.PendingDeletions.Select(SearchRewriteRuleId.Parse));
+                SetDirty(false);
+                SaveState = SettingsSaveState.Saved;
+                ValidationState = SettingsValidationState.Invalid;
+                LastError = "请补全搜索规则中的匹配和替换内容，并检查正则表达式。";
+                Status = "已恢复草稿，请补全有效的搜索规则。";
+                return;
+            }
+
             if (rules.IsSuccess)
             {
                 foreach (SearchRewriteRule rule in rules.Value)
@@ -136,22 +196,32 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
     public override async Task SaveAsync()
     {
+        long revision = _editRevision;
+        string draftKey = DraftKey;
+        SearchRewriteRuleRowViewModel[] rows = Rules.ToArray();
+        SearchRewriteRuleId[] deletions = _pendingDeletions.ToArray();
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         try
         {
             HostServices services = await _main.ServicesAsync();
             List<string> errors = [];
-            foreach (SearchRewriteRuleRowViewModel row in Rules.ToArray())
+            List<string> validationErrors = [];
+            foreach (SearchRewriteRuleRowViewModel row in rows)
             {
                 Result committed = await row.CommitAsync(services);
                 if (committed.IsFailure)
                 {
-                    errors.Add($"{row.DisplayLabel}：{committed.ErrorMessage}");
+                    bool incomplete = committed.ErrorCode is AppErrorCodes.ValidationFailed or AppErrorCodes.NotFound;
+                    (incomplete ? validationErrors : errors).Add($"{row.DisplayLabel}：{committed.ErrorMessage}");
+                }
+                else if (!Rules.Contains(row) && row.RuleId is { } removedId)
+                {
+                    _pendingDeletions.Add(removedId);
                 }
             }
 
-            foreach (SearchRewriteRuleId ruleId in _pendingDeletions.ToArray())
+            foreach (SearchRewriteRuleId ruleId in deletions)
             {
                 Result deleted = await services.SearchProfiles.DeleteRuleAsync(ruleId);
                 if (deleted.IsFailure)
@@ -166,18 +236,33 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
             if (errors.Count > 0)
             {
+                await _draftStore.WriteAsync(draftKey, CaptureDraft());
                 SaveState = SettingsSaveState.Failed;
                 LastError = string.Join("；", errors);
-                Status = $"保存失败：{LastError}";
+                Status = $"应用到书库失败，草稿已保留：{LastError}";
                 return;
             }
 
-            _pendingDeletions.Clear();
-            await LoadAsync();
-            SaveState = SettingsSaveState.Saved;
-            ValidationState = SettingsValidationState.Valid;
-            Status = "已保存";
-            LastError = null;
+            if (validationErrors.Count > 0 || revision != _editRevision)
+            {
+                SearchDraft draft = CaptureDraft();
+                // Identities adopted by successful inserts must be retained to make retries idempotent.
+                long draftRevision = _editRevision;
+                await _draftStore.WriteAsync(draftKey, draft);
+                SetDirty(revision != _editRevision || draftRevision != _editRevision);
+            }
+            else
+            {
+                await _draftStore.WriteAsync<SearchDraft>(draftKey, null);
+                SetDirty(revision != _editRevision);
+            }
+
+            SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
+            ValidationState = validationErrors.Count == 0
+                ? SettingsValidationState.Valid
+                : SettingsValidationState.Invalid;
+            LastError = validationErrors.Count == 0 ? null : string.Join("；", validationErrors);
+            Status = LastError is null ? "已保存" : $"已保存草稿，请检查当前书库并补全搜索规则：{LastError}";
         }
         catch (Exception exception)
         {
@@ -187,8 +272,18 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
         }
     }
 
+    private SearchDraft CaptureDraft()
+    {
+        return new SearchDraft(Rules.Select(row => new RuleDraft(row.RuleId?.ToString(),
+                row.SelectedScope.ProfileId?.ToString(), row.SelectedRuleType.Value, row.SelectedDirection.Value,
+                row.Pattern, row.Replacement, row.Priority, row.Note, row.Enabled)).ToArray(),
+            _pendingDeletions.Select(id => id.ToString()).ToArray());
+    }
+
     public override async Task DiscardAsync()
     {
+        SetDirty(false);
+        SaveState = SettingsSaveState.Clean;
         await LoadAsync();
         SaveState = SettingsSaveState.Clean;
         Status = "已放弃更改";
@@ -222,6 +317,7 @@ public sealed partial class SearchRewriteSettingsViewModel : SettingsSectionView
 
     internal void MarkDirty()
     {
+        _editRevision++;
         SetDirty(true);
         SaveState = SettingsSaveState.Dirty;
         Status = "有未保存的更改";

@@ -8,18 +8,7 @@ public sealed partial class TagNamePromptDialog : Window
     public TagNamePromptDialog()
     {
         InitializeComponent();
-    }
-
-    protected override void OnDataContextChanged(EventArgs e)
-    {
-        base.OnDataContextChanged(e);
-        if (DataContext is TagNamePromptDialogViewModel vm)
-        {
-            vm.RequestClose = result =>
-            {
-                Close(result);
-                vm.RequestClose = null;
-            };
-        }
+        DialogCloseBinding.Bind<TagNamePromptDialogViewModel, string?>(
+            this, static (vm, close) => vm.RequestClose = close);
     }
 }

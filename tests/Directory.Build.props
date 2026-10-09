@@ -1,0 +1,10 @@
+<Project>
+  <Import Project="$(MSBuildThisFileDirectory)..\Directory.Build.props" />
+  <PropertyGroup>
+    <VSTestResultsDirectory>$(MSBuildThisFileDirectory)..\.tmp\test-results\$(MSBuildProjectName)</VSTestResultsDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)Shared\RepositoryTestEnvironment.cs"
+             Link="Shared\RepositoryTestEnvironment.cs" />
+  </ItemGroup>
+</Project>

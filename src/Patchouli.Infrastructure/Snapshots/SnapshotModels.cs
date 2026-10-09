@@ -13,7 +13,9 @@ public sealed record SnapshotPublishRequest(
     string? Notes = null,
     long TargetShardSizeBytes = 512L * 1024L * 1024L,
     string? SyncRootId = null,
-    IReadOnlyList<string>? EnabledSettingKeys = null);
+    IReadOnlyList<string>? EnabledSettingKeys = null,
+    bool SyncAgentSessions = false,
+    bool SyncWorkflowDefinitions = false);
 
 public sealed record SnapshotPublishResult(
     string SnapshotId,
@@ -21,7 +23,12 @@ public sealed record SnapshotPublishResult(
     string CurrentPointerPath,
     IReadOnlyList<SnapshotShard> Shards,
     long LogicalGeneration,
-    string? Warning);
+    string? Warning,
+    IReadOnlyList<SnapshotFilePayload> FilePayloads = null!)
+{
+    public IReadOnlyList<SnapshotFilePayload> FilePayloads { get; init; } =
+        FilePayloads ?? Array.Empty<SnapshotFilePayload>();
+}
 
 public sealed record SnapshotImportRequest(
     string ManifestPath,
@@ -55,7 +62,28 @@ public sealed record SnapshotManifest(
     IReadOnlyList<SnapshotShard> Shards,
     IReadOnlyList<SnapshotShard> SensitiveMutableShards,
     string? RuntimeDatabaseHash,
-    string? Notes);
+    string? Notes)
+{
+    /// <summary>
+    /// Optional file-tree payloads (agent session directories, workflow definitions). They are content
+    /// addressed like shards but are opaque archives, not sqlite databases, so validation and import
+    /// handle them separately from <see cref="Shards" />. Absent on snapshots published before
+    /// session/workflow sync existed, and whenever both independent switches were off.
+    /// </summary>
+    public IReadOnlyList<SnapshotFilePayload> FilePayloads { get; init; } = [];
+}
+
+/// <summary>
+/// One archived library file tree carried by a snapshot. <see cref="Kind" /> is a wire-format value
+/// (<see cref="SnapshotFilePayloadKinds" />) mapped to a fixed auxiliary library directory; the
+/// volatile <c>runs/</c> projection is deliberately not a payload kind and never enters a snapshot.
+/// </summary>
+public sealed record SnapshotFilePayload(
+    string PayloadId,
+    string Kind,
+    string FileName,
+    long SizeBytes,
+    string Blake3);
 
 public sealed record SnapshotShard(
     string ShardId,
@@ -140,7 +168,9 @@ public sealed record SnapshotSyncBinding(
     string DeviceId,
     SnapshotSyncLocalState LocalState,
     IReadOnlyList<string>? EnabledSettingKeys = null,
-    IReadOnlyList<DeviceRootBinding>? DeviceRootBindings = null);
+    IReadOnlyList<DeviceRootBinding>? DeviceRootBindings = null,
+    bool SyncAgentSessions = false,
+    bool SyncWorkflowDefinitions = false);
 
 public interface ISnapshotSyncBindingStore
 {

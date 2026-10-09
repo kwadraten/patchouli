@@ -304,7 +304,7 @@ public sealed class MainWindowReactivityTests
             vm.QueryRewriteEnabled = true;
 
             // Wait for production pipeline to handle failure and roll back
-            for (int i = 0; i < 100 && !vm.StatusIsError; i++)
+            for (int i = 0; i < 100 && (!vm.StatusIsError || vm.QueryRewriteEnabled); i++)
             {
                 await Task.Delay(10);
             }

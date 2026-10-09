@@ -219,11 +219,27 @@
                 RowBackground="Transparent" BorderThickness="0"
                 Background="{DynamicResource SurfaceContainerLowestBrush}">
         <DataGrid.ContextMenu>
-          <ContextMenu>
+          <ContextMenu Opened="OnLibraryContextMenuOpened">
+            <MenuItem Header="新建题录" Command="{Binding CreateItemMenuCommand}" />
+            <MenuItem Header="执行工作流" ItemsSource="{Binding WorkflowMenuEntries}"
+                      IsVisible="{Binding HasWorkflowMenuEntries}" x:CompileBindings="False">
+              <MenuItem.ItemTemplate>
+                <DataTemplate x:DataType="vm:WorkflowMenuEntryViewModel">
+                  <TextBlock Text="{Binding Header}" ToolTip.Tip="{Binding Tooltip}" />
+                </DataTemplate>
+              </MenuItem.ItemTemplate>
+              <MenuItem.Styles>
+                <Style Selector="MenuItem MenuItem">
+                  <Setter Property="Command" Value="{Binding LaunchCommand}" />
+                  <Setter Property="IsEnabled" Value="{Binding IsEnabled}" />
+                </Style>
+              </MenuItem.Styles>
+            </MenuItem>
+            <Separator IsVisible="{Binding HasWorkflowMenuEntries}" />
             <MenuItem Header="编辑元数据" Command="{Binding EditSelectedItemCommand}"
                       IsEnabled="{Binding IsSingleSelectionOrNone}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
-            <MenuItem Header="合并条目" Command="{Binding MergeSelectedItemsCommand}"
+            <MenuItem Header="合并题录" Command="{Binding MergeSelectedItemsCommand}"
                       IsEnabled="{Binding CanMergeSelectedItems}"
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="检测重复题录"
@@ -273,6 +289,14 @@
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
             <MenuItem Header="永久删除" Command="{Binding PurgeSelectedItemsCommand}"
                       IsVisible="{Binding Sidebar.IsTrashSelected}" />
+            <Separator />
+            <MenuItem Header="{Binding ImportBiblatexBatchDescriptor.Label}"
+                      Command="{Binding ImportBiblatexBatchDescriptor}" />
+            <MenuItem Header="{Binding ExportBiblatexDescriptor.Label}" Command="{Binding ExportBiblatexDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="{Binding CopyBiblatexDescriptor.Label}" Command="{Binding CopyBiblatexDescriptor}"
+                      IsVisible="{Binding Sidebar.IsActiveSelected}" />
+            <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
           </ContextMenu>
         </DataGrid.ContextMenu>
         <DataGrid.Columns>

@@ -8,13 +8,7 @@ public partial class ConfirmDialog : Window
     public ConfirmDialog()
     {
         InitializeComponent();
-
-        DataContextChanged += (s, e) =>
-        {
-            if (DataContext is ConfirmDialogViewModel vm)
-            {
-                vm.RequestClose = result => Close(result);
-            }
-        };
+        DialogCloseBinding.Bind<ConfirmDialogViewModel, ConfirmDialogResult>(
+            this, static (vm, close) => vm.RequestClose = close);
     }
 }

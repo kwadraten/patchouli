@@ -88,7 +88,7 @@
           <Border Classes="Card" IsVisible="{Binding IsReceiveSectionActive}">
             <StackPanel Spacing="10">
               <TextBlock Text="接收与检查" Classes="CardTitle" />
-              <Button Content="检查同步目录的更新" Command="{Binding CheckCurrentCommand}" HorizontalAlignment="Left" />
+              <Button Content="检查同步根目录中的快照" Command="{Binding CheckCurrentCommand}" HorizontalAlignment="Left" />
               <controls:PathPickerTextBox Path="{Binding PackageManifestPath}" PickerMode="OpenFile"
                                           DialogTitle="选择快照包 manifest" PlaceholderText="目录包中的 manifests/快照.json" />
               <Button Content="从快照包打开" Command="{Binding OpenPackageCommand}" HorizontalAlignment="Left" />

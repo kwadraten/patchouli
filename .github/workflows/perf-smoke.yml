@@ -24,5 +24,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: perf-smoke-report
-          path: artifacts/perf/smoke-*.json
+          path: .tmp/perf/smoke-*.json
+          include-hidden-files: true
           if-no-files-found: error

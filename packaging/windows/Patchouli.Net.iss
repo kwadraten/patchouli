@@ -2,10 +2,10 @@
   #error SourceDir must point to the published application directory.
 #endif
 #ifndef OutputDir
-  #define OutputDir "..\..\artifacts\installer"
+  #define OutputDir "..\..\.tmp\installer"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.3.6"
+  #define AppVersion "0.3.7"
 #endif
 #ifndef AppId
   #define AppId "{{DCBB7F21-2751-4C90-A9B4-9459523CFF70}"

@@ -1,0 +1,30 @@
+<UserControl x:Class="Patchouli.UI.Views.ChangelogPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Patchouli.UI.ViewModels"
+             xmlns:md="using:LiveMarkdown.Avalonia"
+             x:DataType="vm:ChangelogViewModel"
+             Background="{DynamicResource SurfaceBrush}">
+  <UserControl.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://Patchouli.UI/Styles/ChatMarkdownTheme.axaml" />
+      </ResourceDictionary.MergedDictionaries>
+    </ResourceDictionary>
+  </UserControl.Resources>
+  <UserControl.Styles>
+    <StyleInclude Source="avares://LiveMarkdown.Avalonia/Styles.axaml" />
+    <Style Selector="md|MarkdownTextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+      <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBrush}" />
+      <Setter Property="SelectionForegroundBrush" Value="{DynamicResource OnSurfaceBrush}" />
+    </Style>
+    <Style Selector="md|MarkdownRenderer md|Link, md|MarkdownRenderer md|Link:clicked">
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+  </UserControl.Styles>
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+    <md:MarkdownRenderer MarkdownBuilder="{Binding MarkdownBuilder}" Margin="32" MaxWidth="960"
+                         HorizontalAlignment="Stretch" />
+  </ScrollViewer>
+</UserControl>

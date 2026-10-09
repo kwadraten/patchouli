@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="LlmTornado" />
+  </ItemGroup>
+</Project>

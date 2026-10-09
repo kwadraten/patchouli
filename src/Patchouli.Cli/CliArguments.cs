@@ -4,8 +4,8 @@ namespace Patchouli.Cli;
 /// A single MCP tool invocation produced by parsing patchouli-cli arguments. The CLI is a
 /// thin local MCP HTTP client: it never opens a SQLite connection or calls a domain service
 /// directly. Command-line flags map one-to-one onto the <c>patchouli.find</c>,
-/// <c>patchouli.fetch</c>, <c>patchouli.put</c>, and <c>patchouli.cite</c> tool requests.
-/// For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
+/// <c>patchouli.fetch</c>, <c>patchouli.put</c>, <c>patchouli.cite</c>, and <c>patchouli.send</c>
+/// tool requests. For <c>put</c>, <see cref="PutSourcePath"/>/<see cref="PutStdin"/> identify the local input
 /// adapter that the executable reads before sending the same inline <c>content</c>.
 /// </summary>
 internal sealed record CliToolCall(
@@ -26,6 +26,7 @@ internal static class CliArguments
     public const string Fetch = "patchouli.fetch";
     public const string Put = "patchouli.put";
     public const string Cite = "patchouli.cite";
+    public const string Send = "patchouli.send";
 
     public static CliToolCall BuildToolCall(string command, IReadOnlyList<string> args, bool json)
     {
@@ -35,6 +36,7 @@ internal static class CliArguments
             "fetch" => BuildFetch(args, json),
             "put" => BuildPut(args, json),
             "cite" => BuildCite(args, json),
+            "send" => BuildSend(args, json),
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -47,6 +49,7 @@ internal static class CliArguments
             "fetch" => Fetch,
             "put" => Put,
             "cite" => Cite,
+            "send" => Send,
             _ => throw new CliUsageException($"unknown command '{command}'.")
         };
     }
@@ -230,6 +233,68 @@ internal static class CliArguments
 
         arguments["refs"] = refs.ToArray();
         return new CliToolCall(Cite, WithFormat(arguments, json));
+    }
+
+    private static CliToolCall BuildSend(IReadOnlyList<string> args, bool json)
+    {
+        Dictionary<string, object?> arguments = new(StringComparer.Ordinal);
+        string? verb = null;
+        string? text = null;
+        List<string> parameters = [];
+        for (int index = 0; index < args.Count; index++)
+        {
+            switch (args[index])
+            {
+                case "--workflow":
+                    arguments["workflow"] = TakeValue(args, ref index, "--workflow");
+                    break;
+                case "--session":
+                    arguments["session"] = TakeValue(args, ref index, "--session");
+                    break;
+                case "--message-id":
+                    arguments["message_id"] = TakeValue(args, ref index, "--message-id");
+                    break;
+                case "--text":
+                    text = TakeValue(args, ref index, "--text");
+                    break;
+                case "--param":
+                    parameters.Add(TakeValue(args, ref index, "--param"));
+                    break;
+                case var _ when args[index].StartsWith("--", StringComparison.Ordinal):
+                    throw new CliUsageException($"unknown option '{args[index]}' for send.");
+                default:
+                    if (verb is not null)
+                    {
+                        throw new CliUsageException("send accepts a single VERB argument.");
+                    }
+
+                    verb = args[index];
+                    break;
+            }
+        }
+
+        if (verb is null)
+        {
+            throw new CliUsageException("send requires a VERB argument (start, message, cancel, resume).");
+        }
+
+        if (verb is not ("start" or "message" or "cancel" or "resume"))
+        {
+            throw new CliUsageException($"unknown send verb '{verb}'.");
+        }
+
+        arguments["instruction"] = verb;
+        if (text is not null)
+        {
+            arguments["text"] = text;
+        }
+
+        if (parameters.Count > 0)
+        {
+            arguments["parameters"] = parameters.ToArray();
+        }
+
+        return new CliToolCall(Send, WithFormat(arguments, json));
     }
 
     private static Dictionary<string, object?> WithFormat(Dictionary<string, object?> arguments, bool json)

@@ -16,6 +16,144 @@ public sealed class LogicalPageOcrService : ILogicalPageOcrService
         _trees = trees;
     }
 
+    public async Task<Result<PhysicalPageOcrResult>> RunPageEditAsync(OcrPresetId presetId,
+        PageEditSessionId sessionId, CancellationToken cancellationToken = default)
+    {
+        if (_trees is not IDocumentTreeEditor editor)
+        {
+            return Result<PhysicalPageOcrResult>.Failure(AppErrorCodes.UnsupportedOperation,
+                "The tree service does not support page editing.");
+        }
+
+        Result<PageEditSession> edit = await _trees.GetPageEditAsync(sessionId, cancellationToken);
+        if (edit.IsFailure)
+        {
+            return Result<PhysicalPageOcrResult>.Failure(edit.ErrorCode!, edit.ErrorMessage!);
+        }
+
+        PageEditSession session = edit.Value;
+        Result<IReadOnlyList<DocumentBox>> snapshot = await _trees.ListBoxesAsync(
+            session.DraftRevisionId, cancellationToken);
+        if (snapshot.IsFailure)
+        {
+            return Result<PhysicalPageOcrResult>.Failure(snapshot.ErrorCode!, snapshot.ErrorMessage!);
+        }
+
+        DocumentBox[] roots = snapshot.Value.Where(box => box.BoxType == DocumentBoxType.LogicalPage).ToArray();
+        List<OcrRunId> runIds = [];
+        List<DocumentBox> replacement = [];
+        if (roots.Length == 0)
+        {
+            Result<IReadOnlyList<DocumentBox>> recognized = await RecognizeWorkingBoxesAsync(
+                session, presetId, null, runIds, cancellationToken);
+            if (recognized.IsFailure)
+            {
+                return Result<PhysicalPageOcrResult>.Failure(recognized.ErrorCode!, recognized.ErrorMessage!);
+            }
+
+            replacement.AddRange(recognized.Value.Select(box => box with
+            {
+                TreeRevisionId = session.DraftRevisionId
+            }));
+        }
+        else
+        {
+            foreach (DocumentBox root in Order(roots))
+            {
+                Result<IReadOnlyList<DocumentBox>> recognized = await RecognizeWorkingBoxesAsync(
+                    session, presetId, root, runIds, cancellationToken);
+                if (recognized.IsFailure)
+                {
+                    return Result<PhysicalPageOcrResult>.Failure(recognized.ErrorCode!, recognized.ErrorMessage!);
+                }
+
+                HashSet<DocumentBoxId> logicalIds = recognized.Value
+                    .Where(box => box.BoxType == DocumentBoxType.LogicalPage).Select(box => box.BoxId).ToHashSet();
+                DocumentBox[] content = recognized.Value.Where(box => box.BoxType != DocumentBoxType.LogicalPage)
+                    .Select(box => box with
+                    {
+                        TreeRevisionId = session.DraftRevisionId,
+                        ParentBoxId = box.ParentBoxId is null || logicalIds.Contains(box.ParentBoxId.Value)
+                            ? root.BoxId
+                            : box.ParentBoxId
+                    }).ToArray();
+                replacement.Add(root with
+                {
+                    Payload = content.Length == 0
+                        ? recognized.Value.FirstOrDefault(box => box.BoxType == DocumentBoxType.LogicalPage)?.Payload
+                        : null
+                });
+                // Removing provider logical-page wrappers joins their children into one sibling chain.
+                foreach (IGrouping<DocumentBoxId?, DocumentBox> siblings in content.GroupBy(box => box.ParentBoxId))
+                {
+                    DocumentBox[] ordered = siblings.ToArray();
+                    for (int index = 0; index < ordered.Length; index++)
+                    {
+                        replacement.Add(ordered[index] with
+                        {
+                            NextSiblingBoxId = index + 1 < ordered.Length ? ordered[index + 1].BoxId : null
+                        });
+                    }
+                }
+            }
+        }
+
+        Result applied = await editor.ApplyPageOcrAsync(session, snapshot.Value, replacement, cancellationToken);
+        return applied.IsFailure
+            ? Result<PhysicalPageOcrResult>.Failure(applied.ErrorCode!, applied.ErrorMessage!, applied.Conflicts)
+            : Result<PhysicalPageOcrResult>.Success(new PhysicalPageOcrResult(
+                session.DraftRevisionId, runIds, roots.Length > 0));
+    }
+
+    private async Task<Result<IReadOnlyList<DocumentBox>>> RecognizeWorkingBoxesAsync(PageEditSession session,
+        OcrPresetId presetId, DocumentBox? logicalPage, List<OcrRunId> runIds, CancellationToken cancellationToken)
+    {
+        Result<OcrRun> run = logicalPage is null
+            ? await _ocr.RunWorkingOnPageAsync(session.DocumentInstanceId, presetId, session.PageId, cancellationToken)
+            : await _ocr.RunPresetOnRegionAsync(session.DocumentInstanceId, presetId, session.PageId,
+                logicalPage.BBox, cancellationToken);
+        if (run.IsFailure)
+        {
+            return Result<IReadOnlyList<DocumentBox>>.Failure(run.ErrorCode!, run.ErrorMessage!);
+        }
+
+        runIds.Add(run.Value.OcrRunId);
+        Result<IReadOnlyList<DocumentBox>> recognized;
+        Result cleanup;
+        try
+        {
+            recognized = await ReadWorkingBoxesAsync(run.Value.OcrRunId, session.PageId, cancellationToken);
+        }
+        finally
+        {
+            // Cleanup must also finish after cancellation, before the session draft is ever modified.
+            cleanup = await _ocr.DiscardWorkingRunAsync(run.Value.OcrRunId, CancellationToken.None);
+        }
+
+        return cleanup.IsFailure
+            ? Result<IReadOnlyList<DocumentBox>>.Failure(cleanup.ErrorCode!, cleanup.ErrorMessage!)
+            : recognized;
+    }
+
+    private async Task<Result<IReadOnlyList<DocumentBox>>> ReadWorkingBoxesAsync(OcrRunId runId, PageId pageId,
+        CancellationToken cancellationToken)
+    {
+        Result<IReadOnlyList<OcrPageResult>> results = await _ocr.ListPageResultsAsync(runId, cancellationToken);
+        if (results.IsFailure)
+        {
+            return Result<IReadOnlyList<DocumentBox>>.Failure(results.ErrorCode!, results.ErrorMessage!);
+        }
+
+        OcrPageResult? page = results.Value.SingleOrDefault(result => result.PageId == pageId);
+        if (page is null || page.State != OcrPageResultState.Succeeded || page.WorkingTreeRevisionId is null)
+        {
+            return Result<IReadOnlyList<DocumentBox>>.Failure(page?.ErrorCode ?? AppErrorCodes.InvalidState,
+                page?.ErrorMessage ?? "Page OCR did not produce a successful working result.");
+        }
+
+        return await _trees.ListBoxesAsync(page.WorkingTreeRevisionId.Value, cancellationToken);
+    }
+
     public async Task<Result<LogicalPageOcrResult>> RunAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,

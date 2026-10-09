@@ -1,12 +1,22 @@
 # MCP / CLI 资源协议
 
-本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品进度见 [PRD](PRD.md)。选择理由见 [ADR 0024](adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](adr/0028-versioned-uri-evidence.md) 为准。
+本文件承接原 PRD §3.4 的规范性参数、投影、schema 与错误语义，作为长期契约维护；产品进度见 [PRD](PRD.md)。选择理由见 [ADR 0024](adr/0024-adopt-structured-mcp-resource-protocol.md)，写入边界见 [ADR 0023](adr/0023-allow-limited-writable-mcp.md)，证据身份以 [ADR 0028](adr/0028-versioned-uri-evidence.md) 为准。内置 agent 会话平台、`runs/`/`workflows/` 与 `send` 决策见 [ADR 0036](adr/0036-agent-sessions-fsx-workflows-and-mcp-collaboration.md)。
 
-实现状态（2026-09-12）：结构化四工具、CLI HTTP 客户端、TOON/JSON、有限写入，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地。回归义务继续约束后续改动。
+实现状态（2026-10-05）：结构化五动词（`find`/`fetch`/`put`/`cite`/`send`）、`runs/`/`workflows/` 资源根、CLI HTTP 客户端、TOON/JSON、有限写入，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（`send` 与两根的决策见 ADR `0036`）。回归义务继续约束后续改动。
 
 **定位**：`patchouli-cli` — access an academic literature library powered by patchouli.net
 
 ## 1 全局
+
+### 按域授权
+
+MCP 设置使用 VFS 域 × 动词的权限矩阵，覆盖 `/`、`items`、`texts`、`translations`、
+`csl-styles`、`runs`、`workflows`、`library.toon` 与五个动词。禁止的组合返回
+`PERMISSION_DENIED`；授权不扩大资源本身支持的操作。`find` 按恢复后的游标作用域检查，
+根目录不列出禁止 `find` 的域；`fetch` 的混合批次包含任何禁止域时整批拒绝；`cite`
+同时检查引用域、题录域和样式域；`send start` 检查工作流域，其余 `send` 检查运行域。
+内置 agent 在每次操作读取已保存权限，外部 MCP 服务重载后生效。
+迁移与内置 agent 默认具备的独立 FSI 能力见 [ADR 0038](adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md)。
 
 ```text
 USAGE
@@ -17,6 +27,7 @@ COMMANDS
   fetch     Retrieve known resources
   put       Replace one writable resource
   cite      Render citations from citation-capable item/document/page/evidence refs
+  send      Send a typed instruction to an agent workflow or session
 
 GLOBAL OPTIONS
   --json       Return JSON instead of the default TOON listing; does not change the unified response schema or entry projection
@@ -28,6 +39,7 @@ RULES
   Use fetch when the URI is known.
   Use put to replace one writable resource.
   Use cite only to render citations.
+  Use send to start, message, cancel, or resume agent workflows and sessions.
 
   Empty find queries browse a scope.
   Non-empty find queries search the same scope.
@@ -40,7 +52,7 @@ RULES
 
 CLI 先发现选定 Library 的本地宿主并调用其 MCP HTTP 端点；桌面未运行时，CLI 必须自启同一二进制的无 UI headless 宿主，待其就绪后再执行同一请求。headless 宿主以后台守护程序持续运行。每个 Library 同时只能有一个宿主，由持久化发现记录和互斥锁保证；桌面启动同一 Library 时必须终止 headless 宿主、取得数据库所有权后接管服务。CLI 不得直连 SQLite、另建领域实现或绕过宿主写服务。`--from`/`--stdin` 仍只是 CLI 客户端读取内容的本地适配器，随后必须形成内联 MCP `content` 请求。
 
-所有 UI、CLI 和 MCP 写入均流经宿主的单一写服务；成功提交会发布资源变更通知，桌面 UI 据此刷新。桌面与 headless 宿主共用 MCP 设置；headless 监听 `0.0.0.0` 时同样必须有 token，且 bind、CORS、工具开关和认证策略与桌面宿主一致。宿主生命周期命令（例如显式 `serve-mcp`）可以提供给 CLI，但不属于 `find` / `fetch` / `put` / `cite` 四个资源动词，也不映射为 MCP 工具。
+所有 UI、CLI 和 MCP 写入均流经宿主的单一写服务；成功提交会发布资源变更通知，桌面 UI 据此刷新。桌面与 headless 宿主共用 MCP 设置；headless 监听 `0.0.0.0` 时同样必须有 token，且 bind、CORS、工具开关和认证策略与桌面宿主一致。宿主生命周期命令（例如显式 `serve-mcp`）可以提供给 CLI，但不属于 `find` / `fetch` / `put` / `cite` / `send` 五个资源动词，也不映射为 MCP 工具。
 
 ## 2 资源树
 
@@ -61,10 +73,19 @@ RESOURCE TREE
   patchouli://csl-styles/
   patchouli://csl-styles/{style-id}.csl
 
+  patchouli://runs/
+  patchouli://runs/ocr/{task-id}/status
+  patchouli://runs/agent/{session-id}/status
+  patchouli://runs/agent/{session-id}/events
+  patchouli://runs/agent/{session-id}/events?after={sequence}
+
+  patchouli://workflows/
+  patchouli://workflows/{workflow-id}
+
   patchouli://library.toon
 ```
 
-无参数 `find` 是 VFS 根目录发现，返回 `/items`、`/texts`、`/translations`、`/csl-styles` 四个 directory 条目与 `/library.toon` 这一个 file 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/library.yml`、`/collections`、`profiles` 或其他虚拟 skill 文件；集合与标签只通过 `patchouli://library.toon` 投影暴露，没有独立的 collection URI 或 VFS 目录。Evidence 仅通过 text page URI 的 `?rev={tree-revision-id}&box={box-id}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
+无参数 `find` 是 VFS 根目录发现，返回 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs`、`/workflows` 六个 directory 条目与 `/library.toon` 这一个 file 条目及各自的 canonical URI。根目录不暴露 `/evidence`、`/AGENTS.md`、`/library.yml`、`/collections`、`profiles` 或其他虚拟 skill 文件；集合与标签只通过 `patchouli://library.toon` 投影暴露，没有独立的 collection URI 或 VFS 目录。Evidence 仅通过 text page URI 的 `?rev={tree-revision-id}&box={box-id}` 访问。该 VFS/URI 发现层不恢复 Bashkit 或 `patchouli_shell`。
 
 `patchouli://library.toon` 是固定单例，内容始终包含 `library_id` 与 `display_name`；当设备本地 MCP 设置 `ExposeLibraryTags` / `ExposeLibraryCollections` 开启（默认开启）时，分别追加按名称/标签排序的 `tags` 与 `collections` 数组，并带 item count。`collections` 包含空集合；标签按 ordinal 排序。该投影由生产 TOON encoder 输出，MCP 设置页的回显预览使用已保存设置调用同一投影（未保存草稿不影响预览），因此预览与实际输出不会漂移。`patchouli://library.toon` 是只读资源，任何 `put` 返回 `PERMISSION_DENIED`。集合是只读关系：MCP 不能创建、重命名、解散集合，也不能改成员。
 
@@ -72,7 +93,13 @@ RESOURCE TREE
 
 `page-index` 是指定 DocumentInstance 内与物理 PDF 页对应的**一基**页码。DocumentInstance 的物理页顺序稳定，不因 UI、CLI 或 MCP 的访问而重排；因此 `page-1.md` 是人类报告和程序调用共用的第一页。`?rev=&box=` 是 evidence 的规范消费形式：服务在 `fetch` 或 `cite` 消费它时必须验证 `tree_revision_id`/`box_id` 实际归属所声明的 DocumentInstance 和 page；不存在或不归属时返回 `NOT_FOUND`，不得把其他页面的 evidence 作为成功结果返回。
 
-`patchouli://translations/` 是页面翻译的派生资源树，形态与 `texts/` 一一对应并共享同一套一基物理页码。目录条目携带翻译进度：`patchouli://translations/` 返回每个 DocumentInstance 的 `page_count`、`translated_page_count`、`partial_page_count`、`untranslated_page_count`、`stale_page_count`；`patchouli://translations/{document-instance-id}/` 返回每页的 `translation_status`（`untranslated`/`partial`/`translated`/`stale`）与 `translated_box_count`/`total_box_count`。翻译不是独立事实，而是当前 committed Box Tree 的派生数据：任何内容变更都会产生新 revision，页面上一次写入的翻译因而变为 `stale`，读取时先做懒重对齐（保留 `box_id` 与源 payload 均未变的行，删除过期行）。`patchouli://translations/{document-instance-id}/page-{page-index}.md` 是整页翻译 markdown，**可读可写**：`put` 要求提交内容与当前原文 markdown 的结构逐块一一对应（标题级别、块类型、表格行列、代码/公式围栏、逻辑页分隔），文本自由；校验失败返回 `INVALID_CONTENT` 与结构化 `translation_errors` 清单，且不写入。没有翻译的页面 `fetch` 返回 `NOT_FOUND` 并在消息中指向 `patchouli://texts/{document-instance-id}/page-{page-index}.md` 原文。翻译树不暴露 bbox、不触发 OCR、不重建索引、不返回本地路径，也不引入翻译引擎；语言选择与翻译质量由外部 agent 负责。设计依据见 ADR `0034`。
+`patchouli://translations/` 是页面翻译的派生资源树，形态与 `texts/` 一一对应并共享同一套一基物理页码。目录条目携带翻译进度：`patchouli://translations/` 返回每个 DocumentInstance 的 `page_count`、`translated_page_count`、`partial_page_count`、`untranslated_page_count`、`stale_page_count`；`patchouli://translations/{document-instance-id}/` 返回每页的 `translation_status`（`untranslated`/`partial`/`translated`/`stale`）与 `translated_box_count`/`total_box_count`。翻译不是独立事实，而是当前 committed Box Tree 的派生数据：任何内容变更都会产生新 revision，页面上一次写入的翻译因而变为 `stale`，读取时先做懒重对齐（保留 `box_id` 与源 payload 均未变的行，删除过期行）。`patchouli://translations/{document-instance-id}/page-{page-index}.md` 是整页翻译 markdown，**可读可写**：`put` 要求提交内容与当前原文 markdown 的结构逐块一一对应（标题级别、块类型、表格行列、代码/公式围栏、逻辑页分隔），文本自由；校验失败返回 `INVALID_CONTENT` 与结构化 `translation_errors` 清单，且不写入。没有翻译的页面 `fetch` 返回 `NOT_FOUND` 并在消息中指向 `patchouli://texts/{document-instance-id}/page-{page-index}.md` 原文。翻译树不暴露 bbox、不触发 OCR、不重建索引、不返回本地路径；译文由内置或外部 agent 经同一 `put` 契约写入，语言选择与翻译质量由 agent 负责（内置 agent 会话平台见 ADR `0036`）。设计依据见 ADR `0034`（其「无翻译引擎」前提已由 ADR `0036` 修订，存储与校验设计不变）。
+
+**`runs/` 是 VFS 首个易失运行时资源树**：`patchouli://runs/` 只投影运行时任务与会话的实时状态与事件，不进任何快照、不可 `put`、不属 canonical 资源——`meta.library_revision` 不因其变化，宿主的资源变更通知也不因它发布。它在宿主进程生命周期内有效，宿主退出或重启后其中的运行时投影不承诺保留，也不属于 `cite.refs` 可引用对象。OCR 运行与 agent 会话运行是两个不同的运行时投影，各自有各自的 status/events 语义，**不强行统一为一个通用 run 模型**：`runs/ocr/{task-id}/status` 只承载 OCR 任务的阶段与进度，`runs/agent/{session-id}/status` 与 `runs/agent/{session-id}/events` 只承载会话状态与事件流。`workflows/` 则是只读的持久化元数据树，与 `runs/` 的易失运行时投影分离。
+
+`patchouli://runs/ocr/{task-id}/status` 是单个 OCR 任务的运行状态投影；`patchouli://runs/agent/{session-id}/status` 是单个 agent 会话的状态投影。二者都是只读的最终状态快照，`fetch` 返回当前值。`patchouli://runs/agent/{session-id}/events` 是该会话的事件流投影，事件按宿主分配的**单调递增序号**（从 1 开始的正整数）排序；默认 `fetch` 返回自上一次读取以来的**增量事件**，URI 查询参数 `?after={sequence}` 显式指定只返回序号大于 `sequence` 的事件（增量读取），`?after=0` 表示从头读取全部已存事件。响应必须给出 `last_sequence` 与 `next_after`，调用方据此持续拉取而不重放旧事件。事件流是易失的：不进快照、不被 `put`、不属于 canonical 资源，也不参与 `meta.library_revision`；它只在宿主运行期间保留。
+
+`patchouli://workflows/` 是只读的 workflow 元数据树，`patchouli://workflows/{workflow-id}` 返回该 workflow 的元数据与**参数定义**（参数名、类型、是否必需、说明与默认值），供 agent 在 `send start` 前构造参数。workflow 定义本身不接受 `put`，也不能通过 MCP 创建、修改或删除。
 
 TOON 使用 MIT `Corvus.Toon.SystemTextJson` NuGet 包作为唯一编码/解码实现，并遵循 TOON specification **v3.0**；不得维护自定义 TOON parser 或 encoder。协议编码固定使用 UTF-8/LF、`ToonWriterOptions` 的字面 TAB delimiter 与 `KeyFolding=Off`；默认 uniform entries 使用 TOON v3 tabular form，声明的 `[N]` 必须与实际行数一致。`text/toon` 是其媒体类型。本资源发现与格式决策已由 ADR `0024` 的 2026-08-01 修订同步；后续改变 URI 根、evidence 消费形式、TOON 库或默认编码时，必须同时更新本契约、ADR 与运行时契约。
 
@@ -153,12 +180,14 @@ DETAILED RESULTS (--long)
 
 | `--in` scope | 无 QUERY | 普通 QUERY | `--literal` | 可用 `--where` |
 |---|---|---|---|---|
-| `patchouli://` | 仅发现五个根条目；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
+| `patchouli://` | 仅发现根条目；`--limit`/`--cursor` 按普通分页处理并返回 `ROOT_DISCOVERY_PAGINATED` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
 | `patchouli://items/` | 浏览题录资源 | 题名、作者、identifier 元数据搜索 | 相同字段的直接字面匹配 | `item_type`、`item_status`、`primary_document_ocr_index_status`、`citable`、`tag`、`collection_id` |
 | `patchouli://texts/` | 浏览 text document 资源 | 带 query rewrite 的 SearchUnit 全文搜索；每个命中 SearchUnit 一项 | canonical indexed SearchUnit text 的直接字面匹配 | `item_id`、`item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
 | `patchouli://translations/` | 浏览文档级翻译进度投影 | document title 大小写不敏感包含匹配 | 相同字段的直接字面匹配 | `item_id`、`item_type`、`item_status`、`document_status`、`source_status`、`ocr_index_status`、`citable` |
 | `patchouli://translations/{document-id}/` | 浏览该 document 的页面清单与每页翻译状态 | page label 大小写不敏感包含匹配 | 相同字段的直接字面匹配 | 同上，作用于所属 document |
 | `patchouli://csl-styles/` | 浏览 CSL style 资源 | style id、display name 搜索 | 相同字段的直接字面匹配 | `style_enabled` |
+| `patchouli://runs/` | 浏览当前运行的 OCR 任务与 agent 会话投影 | 不支持 QUERY | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` |
+| `patchouli://workflows/` | 浏览可用 workflow 元数据资源 | workflow id、name 搜索 | 相同字段的直接字面匹配 | `INVALID_ARGUMENT`（workflow 定义无公开 status 过滤） |
 | 已知 file URI | 当作单资源 scope 返回该 entry，并返回 `FILE_URI_SINGLETON_SCOPE` | 仅在该资源的矩阵内搜索字段上匹配，并返回同一 warning | 相同的单资源直接字面匹配 | 使用其所属 scope 的 filter 键（item file URI 因此接受 `tag` 与 `collection_id`） |
 
 `--in` file URI 的单资源处理只返回 discovery entry，不自动 fetch 内容或改写为父目录 scope。scope、flag 或 filter 不在矩阵中的组合必须返回 `INVALID_ARGUMENT`，不得回退为成功空列表。`--regex` 是未知选项并返回 `INVALID_ARGUMENT`；它不会被当作 literal query 或由服务端解释。
@@ -178,15 +207,17 @@ DETAILED RESULTS (--long)
 ```toon
 meta:
   library_revision: "lib:42"
-  domain_total: 5
-  filtered_total: 5
-  shown_total: 5
+  domain_total: 7
+  filtered_total: 7
+  shown_total: 7
 continuation: null
-entries[5	]{uri	title	type}:
+entries[7	]{uri	title	type}:
   "patchouli://items/"	"/items"	"directory"
   "patchouli://texts/"	"/texts"	"directory"
   "patchouli://translations/"	"/translations"	"directory"
   "patchouli://csl-styles/"	"/csl-styles"	"directory"
+  "patchouli://runs/"	"/runs"	"directory"
+  "patchouli://workflows/"	"/workflows"	"directory"
   "patchouli://library.toon"	"/library.toon"	"file"
 ```
 
@@ -214,6 +245,9 @@ CANONICAL REPRESENTATIONS
   translation document URI  Page list with per-page translation status
   translation page URI  Compiled whole-page translated Markdown plus translation status
   style URI            CSL XML
+  run status URI       Current OCR task or agent session runtime status
+  run events URI       Incremental agent session event stream with monotonic sequences
+  workflow URI         Workflow metadata and parameter definition (read-only)
 
 BEHAVIOUR
   fetch never searches.
@@ -250,6 +284,8 @@ WRITABLE
 READ-ONLY
   patchouli://texts/**
   patchouli://translations/ 和 patchouli://translations/*/ 目录（只能浏览，不能 `put`）
+  patchouli://runs/**            （易失运行时资源，永远不可 `put`）
+  patchouli://workflows/**       （只读元数据，不能 `put`）
 
 BEHAVIOUR
   put replaces exactly one resource.
@@ -301,6 +337,8 @@ RESTRICTIONS
   ownership by its document and then resolves through the owning Item.
   A general Item may cite only through the explicit `@misc` fallback described above.
   Inspection-only .bib projections are not formal exports.
+  Run status/event URIs and workflow URIs are runtime/config projections and are never
+  citable; citing them returns NOT_CITABLE.
 ```
 
 If `--style` is omitted, `cite` first uses the CSL style configured by the user as
@@ -316,7 +354,42 @@ unresolvable, or non-citable references are reported in warnings/errors. The who
 request fails only when the request is invalid, the citation style cannot be loaded,
 or no reference can be rendered.
 
-## 7 MCP 映射与共享契约
+## 7 `send`（会话与工作流指令）
+
+```text
+USAGE
+  patchouli-cli send <VERB> [OPTIONS]
+
+VERBS
+  start     Start a workflow as a new agent session
+  message   Append a user message to a running agent session
+  cancel    Stop a running agent session
+  resume    Continue a stopped or interrupted agent session
+
+MCP INPUT
+  patchouli.send { "instruction": "start" | "message" | "cancel" | "resume", ... }
+
+BEHAVIOUR
+  send never reads or writes library resources directly; it only drives workflows
+  and agent sessions. Observed results are read back through patchouli://runs/.
+  send is a typed-instruction verb with readOnlyHint=false and is subject to the
+  user tool switch exactly like put; when the switch is off, send returns
+  PERMISSION_DENIED and the MCP surface is read-only again.
+  send never returns images, local paths, or secrets.
+```
+
+`send` 的类型化指令与语义：
+
+- `start`：输入为 workflow URI（`patchouli://workflows/{workflow-id}`）与该 workflow 的启动参数；宿主校验 workflow 存在与参数合法后创建 agent 会话并立即开始运行，响应返回新会话的 `patchouli://runs/agent/{session-id}` URI。会话的实时状态与事件经该 URI 读取。workflow 不存在返回 `WORKFLOW_NOT_FOUND`，参数不合法返回 `INVALID_ARGUMENT`。
+- `message`：向运行中的会话补充用户要求。指令携带调用方生成的 `message_id` 用于**去重**：同一 `message_id` 的重试请求不得重复追加消息，宿主返回原受理结果并带 `DUPLICATE_MESSAGE_ID` warning，而不是再次入队。消息先进入宿主会话服务的收件箱，并在**下一次工具调用/效应执行前的 Event 边界**按收件顺序追加进会话历史、实际参与下一步决策；它**不打断在途调用**——未执行的调用交回 loop 重新决策，已完成的调用及其结果保留在历史中。默认不等工作流结束、不默认中断当前调用。会话不存在返回 `SESSION_NOT_FOUND`。
+- `cancel`：明确的控制事件，要求停止会话运行；即时处理，不等待下一次模型推理。对不处于可取消状态的会话返回 `SESSION_STATE_INVALID`。
+- `resume`：续跑已停止或中断的会话；已取消/已完成的会话不能 resume，返回 `SESSION_STATE_INVALID`。
+
+**已接收 / 已处理**：`send` 的响应必须区分两种确认。**已接收（accepted）**表示宿主已接受并持久化该指令（例如 `message` 已入收件箱、`start` 会话已创建、`cancel`/`resume` 请求已受理），命令在此刻成功返回；**已处理（processed）**表示该指令在会话的下一个 Event 边界被实际执行并生效（消息已追加进历史并参与下一步决策、会话已实际停止或续跑）。响应显式给出 `accepted: true` 与 `processed` 状态（`pending` 或 `done`）；调用方可通过 `patchouli://runs/agent/{session-id}/events` 的单调序号增量读取来观察指令何时从 `pending` 转为已生效，无需阻塞等待。
+
+`send` 的每个指令都是显式写操作，`put` 与 `send` 可被用户工具开关关闭；关闭后 MCP 回到只读（D1）。
+
+## 8 MCP 映射与共享契约
 
 ```text
 CLI                                             MCP
@@ -324,9 +397,10 @@ patchouli-cli find                              patchouli.find
 patchouli-cli fetch                             patchouli.fetch
 patchouli-cli put <URI> --from <PATH>|--stdin   patchouli.put { uri, content }
 patchouli-cli cite                              patchouli.cite
+patchouli-cli send <VERB> [OPTIONS]             patchouli.send { instruction, ... }
 ```
 
-CLI 是本地 MCP HTTP 端点的客户端，四个 CLI 动词分别映射为四个 MCP tool request；因此服务端的默认值、URI 格式、校验规则、资源投影、revision、响应语义与错误码只有一份实现。CLI 契约测试验证参数解析与 MCP request 的映射，而不是维护两套领域实现的一致性。`find --long` 与 `patchouli.find(detail=long)` 是同一详细投影；MCP `format=json` 与 CLI `--json` 是同一 JSON 回退格式。CLI 的 `put` 输入适配器如上表：它读取本地内容后发送内联 content，MCP 从不接受或暴露本地路径。宿主统一执行 bind、CORS、token、工具开关与所有写入策略；本地 CLI 也不得绕过这些服务端规则。
+CLI 是本地 MCP HTTP 端点的客户端，五个 CLI 动词分别映射为五个 MCP tool request；因此服务端的默认值、URI 格式、校验规则、资源投影、revision、响应语义与错误码只有一份实现。CLI 契约测试验证参数解析与 MCP request 的映射，而不是维护两套领域实现的一致性。`find --long` 与 `patchouli.find(detail=long)` 是同一详细投影；MCP `format=json` 与 CLI `--json` 是同一 JSON 回退格式。CLI 的 `put` 输入适配器如上表：它读取本地内容后发送内联 content，MCP 从不接受或暴露本地路径。宿主统一执行 bind、CORS、token、工具开关与所有写入策略；本地 CLI 也不得绕过这些服务端规则。
 
 共享响应外壳：CLI 的 JSON、MCP `format=json` 与默认 TOON 使用**同一**逻辑 schema；TOON 仅是该对象的确定性编码，不能省略、提升或重命名字段。干净成功的 JSON 例如：
 
@@ -338,7 +412,7 @@ CLI 是本地 MCP HTTP 端点的客户端，四个 CLI 动词分别映射为四�
 }
 ```
 
-### 7.1 统一响应 schema（规范性）
+### 8.1 统一响应 schema（规范性）
 
 以下 schema 是 CLI `--json`、MCP `format=json` 与默认 TOON 的唯一逻辑模型。每个工具响应严格由 `meta`、`continuation`、可选 `message` 与 `entries` 组成；object 不得出现未声明字段。`String` 是 Unicode string，`Uri` 是 canonical `patchouli://` string，`NonNegativeInt` 是非负 JSON integer，`PositiveInt` 是大于零的 JSON integer；它们在 TOON 中分别按 string 与 integer 规则编码。`message.error` 与 `message.warnings` 都是紧凑的终端诊断文本：错误固定为 `NAME [code N]: detail`，其中 `NAME` 与非零 `N` 必须来自同一错误码表；仅内部错误可在方括号追加 `; ref <correlation-id>`。warning 固定为 `NAME: detail`。诊断 detail 必须由宿主白名单模板生成并脱敏，不得直接输出 exception、stack、路径、file URL、secret 或原始 content。
 
@@ -358,7 +432,7 @@ Response<TMeta, TEntry> = {
 
 **旧 envelope 清理**：实现必须删除 `McpEnvelope<T>.Revision` 及其序列化顶层 `revision` 字段，并将 CLI、MCP transport、契约测试和所有调用方迁移为读取 `meta.library_revision`。依照 ADR `0027`/`0028`，不得以旧字段替代或重新引入 `fetch --revision`、`resource_revision` 或其他资源级历史版本选择字段。
 
-只有 `find` 可以在顶层 `continuation` 中返回 cursor；`fetch` 的继续读取信息只属于其单个 entry，`put`/`cite` 的顶层 continuation 必须为 null。
+只有 `find` 可以在顶层 `continuation` 中返回 cursor；`fetch` 的继续读取信息只属于其单个 entry，`put`/`cite`/`send` 的顶层 continuation 必须为 null。
 
 | Tool | `meta` 与 `entries` schema | 成功与逐项失败规则 |
 |---|---|---|
@@ -366,6 +440,7 @@ Response<TMeta, TEntry> = {
 | `fetch` | `meta` 为 `{ library_revision: LibraryRevision }`；`entries` 为 `FetchResult[]` | 每个输入 URI 产生一个同序 `FetchResult`，不得因其他 URI 失败而丢失。见下方 discriminated variant。 |
 | `put` | `meta` 为 `{ library_revision: LibraryRevision }`；成功时 `entries` 为单元素 `PutResult[]`，失败、取消或超限写入时为 `[]` | `PutResult = { uri: Uri, resource_type: "item_bib" \| "csl_style", committed: true, content_bytes: NonNegativeInt }`。失败详情由 `message.error` 表达。`content_bytes` 是已提交 UTF-8 content 的实际字节数。 |
 | `cite` | `meta` 为 `{ library_revision: LibraryRevision, effective_style_uri: Uri, effective_locale: String, render_format: "text" \| "html", bibliography: String\|null }`；`entries` 为 `CitationResult[]` | 每个输入 REF 产生一个同序 result；可渲染 result 与不可解析/不可引用 result 可以共存。`bibliography` 仅在请求时为 String，否则为 null；其去重不影响 entries 长度与顺序。 |
+| `send` | `meta` 为 `{ library_revision: LibraryRevision, instruction: "start" \| "message" \| "cancel" \| "resume", accepted: true, processed: "pending" \| "done" }`；成功时 `entries` 为单元素 `SendResult[]`，失败时为 `[]` | `SendResult = { instruction: String, session_uri: Uri \| null, message_id: String \| null, accepted: true, processed: "pending" \| "done", duplicate: boolean }`。`session_uri` 仅 `start` 为非 null（新建会话的 `patchouli://runs/agent/{session-id}` URI），其余指令携带目标会话 URI；`message_id` 仅 `message` 为非 null。`duplicate: true` 表示该 `message_id` 已被受理过，本次未重复追加并带 `DUPLICATE_MESSAGE_ID` warning。失败详情由 `message.error` 表达。 |
 
 上述 long entry 由固定宽表改为资源专属 variant 是协议 schema 变更：实现该条款时必须提升 MCP protocol revision，并在同一变更中更新 MCP tool schema、CLI help、DTO、TOON/JSON fixture 与所有调用方；不得保留输出旧 null 填充字段的兼容分支。
 
@@ -401,13 +476,13 @@ CitationResult = {
 }
 ```
 
-`ResourceType` 是 `item_bib`、`text_document`、`text_page`、`evidence`、`csl_style` 或 `library_toon`。`patchouli://library.toon` fetch 返回生产 TOON 投影全文（受 `limit_bytes` 分片）。`CompleteFetch.returned_bytes` 必须等于 content 的 UTF-8 字节数且不超过 `limit_bytes`；`TruncatedFetch` 有相同字节约束，且 `continuation` 与 `next_range` 至少一个为非 null。任一 `TruncatedFetch` 使顶层 `message.error` 为 `RESPONSE_TRUNCATED [code 7]: …`，但仍保留完整 `entries`；`FailedFetch.error` 不得包含 `[code 7]`。`CitationResult` 成功时 `item_uri`、`citation` 非 null 且 `error` 为 null，失败时前两者为 null 且 `error` 为终端错误行。若所有 citation result 均失败，`message.error` 为相应错误；否则 `message.error` 为 null（若也没有 warning，省略 `message`）。错误码、schema 或类型新增/变更均为协议 revision 变更。历史文本只由 URI 的 `rev` 选择；独立 `fetch --revision` 不属于协议（ADR `0028`）。
+`ResourceType` 是 `item_bib`、`text_document`、`text_page`、`evidence`、`csl_style`、`library_toon`、`run_status`、`run_events` 或 `workflow`。`patchouli://library.toon` fetch 返回生产 TOON 投影全文（受 `limit_bytes` 分片）。`CompleteFetch.returned_bytes` 必须等于 content 的 UTF-8 字节数且不超过 `limit_bytes`；`TruncatedFetch` 有相同字节约束，且 `continuation` 与 `next_range` 至少一个为非 null。任一 `TruncatedFetch` 使顶层 `message.error` 为 `RESPONSE_TRUNCATED [code 7]: …`，但仍保留完整 `entries`；`FailedFetch.error` 不得包含 `[code 7]`。`CitationResult` 成功时 `item_uri`、`citation` 非 null 且 `error` 为 null，失败时前两者为 null 且 `error` 为终端错误行。若所有 citation result 均失败，`message.error` 为相应错误；否则 `message.error` 为 null（若也没有 warning，省略 `message`）。错误码、schema 或类型新增/变更均为协议 revision 变更。历史文本只由 URI 的 `rev` 选择；独立 `fetch --revision` 不属于协议（ADR `0028`）。
 
 `meta.library_revision` 是当前 Library 的宿主权威 revision，格式固定为 `lib:<十进制正整数>`；它持久化于该 Library，且每次成功、会改变协议可见资源或关系的 Library 写入后严格单调递增，即使桌面/headless 宿主交接也不得回退或复用。它不是默认 `find` entry 的资源 revision，也不是 `put` 的写前置条件。客户端保存的 fetch 内容只是该 revision 时的本地快照；v3 不推送或撤回其已交付内容。cursor 继续按实时语义读取，且其创建 revision 与当前 revision 不同时继续在 `message.warnings` 返回 `RESULT_SET_MAY_HAVE_CHANGED`。MCP 会话中宿主发现上一次已观察 revision 已落后于当前 revision 时，也必须在 `message.warnings` 追加 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`；无会话或断线客户端可通过 `meta.library_revision` 自行检测陈旧性并按需重新 fetch。
 
 `patchouli://` 始终解析到处理请求的宿主当前 Library。当前 UI 尚不支持切换 Library，但宿主的生命周期内仍必须固定一个 `library_id`。cursor、versioned evidence URI（按当前 Library 校验 revision/box 归属）或未来显式 Library 上下文若与该 `library_id` 不匹配，解析器必须丢弃已经准备的内容，以 `NOT_FOUND` 返回，不得混入旧 Library 的 entries、partial entries 或 citation 结果。
 
-`find` 的 warning 使用稳定名称：`RESULT_SET_MAY_HAVE_CHANGED`（实时分页可能漂移）、`WHITESPACE_QUERY_TREATED_AS_BROWSE`、`CURSOR_CONTEXT_RESTORED`、`ROOT_DISCOVERY_PAGINATED`、`FILE_URI_SINGLETON_SCOPE`、`WHERE_VALUE_CONTAINS_EQUALS` 与 `DUPLICATE_WHERE_KEY_LAST_WINS`。所有工具还可在 `message.warnings` 返回 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`。每一项按 `NAME: detail` 输出，使 agent 可立即知道宿主如何解释或调整了请求；warning 是成功响应的一部分，不改变 exit/error code；没有 warning/error 时不返回 `message`。
+`find` 的 warning 使用稳定名称：`RESULT_SET_MAY_HAVE_CHANGED`（实时分页可能漂移）、`WHITESPACE_QUERY_TREATED_AS_BROWSE`、`CURSOR_CONTEXT_RESTORED`、`ROOT_DISCOVERY_PAGINATED`、`FILE_URI_SINGLETON_SCOPE`、`WHERE_VALUE_CONTAINS_EQUALS` 与 `DUPLICATE_WHERE_KEY_LAST_WINS`。所有工具还可在 `message.warnings` 返回 `LIBRARY_CHANGED_SINCE_LAST_RESPONSE`。`send` 可在 `message.warnings` 返回 `DUPLICATE_MESSAGE_ID`（同一 `message_id` 重试，本次未重复追加）。每一项按 `NAME: detail` 输出，使 agent 可立即知道宿主如何解释或调整了请求；warning 是成功响应的一部分，不改变 exit/error code；没有 warning/error 时不返回 `message`。
 
 Exit / error codes：
 
@@ -415,9 +490,9 @@ Exit / error codes：
 |---|---|---|
 | 0 | OK | 成功（含空 find） |
 | 1 | INTERNAL | 未预期的宿主、数据库或内部 helper 异常；只返回稳定错误码及可选 correlation id，绝不泄露异常详情、堆栈、本地路径或 secret |
-| 2 | INVALID_ARGUMENT | 非法或冲突参数 |
+| 2 | INVALID_ARGUMENT | 非法或冲突参数（含 `send` 启动参数不合法、未知 instruction verb） |
 | 3 | NOT_FOUND | URI 不存在 |
-| 4 | PERMISSION_DENIED | 资源权限或策略禁止当前操作 |
+| 4 | PERMISSION_DENIED | 资源权限或策略禁止当前操作（含用户工具开关关闭 `put`/`send` 后的写入/指令调用） |
 | 5 | RESERVED | v3 `put` 不使用 base revision，也不返回 revision conflict |
 | 6 | INVALID_CONTENT | BibLaTeX 或 CSL 校验失败 |
 | 7 | RESPONSE_TRUNCATED | 响应超过安全大小上限，已返回显式 partial 内容 |
@@ -427,12 +502,18 @@ Exit / error codes：
 | 11 | CANCELLED | 调用方取消且宿主在原子提交前停止了操作；不产生写入 |
 | 12 | ITEM_IN_TRASH | 题录在回收站，拒绝 fetch/put |
 | 13 | ITEM_MERGED | 题录已合并，拒绝 fetch/put；诊断说明重定向目标 |
+| 14 | WORKFLOW_NOT_FOUND | `send start` 引用的 workflow URI 不存在或不是可用 workflow |
+| 15 | SESSION_NOT_FOUND | `send message`/`cancel`/`resume` 引用的 agent 会话不存在 |
+| 16 | SESSION_STATE_INVALID | 会话当前状态不允许该 `send` 指令（例如对已完成会话 `resume`、对非运行会话 `message`） |
+| 17 | DUPLICATE_MESSAGE | 同一 `message_id` 已被受理且本次重试未追加新消息；同时以 `DUPLICATE_MESSAGE_ID` warning 报告，不重复追加历史 |
 
-推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/csl-styles` 与 `/library.toon` → 先 fetch `patchouli://library.toon` 获取库身份、可选标签与集合目录 → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.bib`/`.csl` 执行 `put`。全文搜索返回的 `?rev=&box=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。
+推荐探索顺序：裸 `find` 发现 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs`、`/workflows` 与 `/library.toon` → 先 fetch `patchouli://library.toon` 获取库身份、可选标签与集合目录 → 进入一个返回的 URI，以小 `limit`、query、`--where` 和 `continuation` 缩小范围 → 对 Item 以 `primary_document_ocr_index_status=indexed` 筛选可全文检索的主文档，对 text 以 `ocr_index_status=indexed` 筛选可全文检索文本 → 仅 `fetch` 已返回的 URI → 按需以 `--long`/`detail=long` 检查状态、关系与引用能力 → 本地处理 → 仅对最终合法 `.bib`/`.csl` 执行 `put`。全文搜索返回的 `?rev=&box=` page URI 可直接 `fetch` evidence 或作为 `cite.refs` 输入；其他资源引用前使用 `where citable=true`。要驱动 agent 时先 `fetch` `patchouli://workflows/{workflow-id}` 获取参数定义，再 `send start`，随后经 `patchouli://runs/agent/{session-id}/status` 与 `/events` 观察进度。
 
-## 8 Agent 可用性与关系解析
+**数据边界**：`runs/`、`workflows/` 与 `send` 的所有响应都遵守 text-only 边界——不返回图像、本地路径、file URL、密钥或原始 secret；诊断 detail 由宿主白名单模板生成并脱敏。`put` 与 `send` 可被用户工具开关关闭，关闭后 MCP 回到只读（D1）；此时 `put`/`send` 返回 `PERMISSION_DENIED`，`find`/`fetch`/`cite` 不受影响。
 
-- `citable=true` 必须与 `cite.refs` 实际接受的 URI 类型一致。Item、Document、Page 和 Evidence 可以是 citable；CSL style 仅可作为 `cite.style` 使用，绝不是 citable，因此 StyleLongEntry 不包含 `citable`。`writable` 与 `citable` 是两个独立维度。可引用资格由单一确定性规则计算；协议不返回 `citation_target`，宿主在 `cite` 内部解析到所属 Item。
+## 9 Agent 可用性与关系解析
+
+- `citable=true` 必须与 `cite.refs` 实际接受的 URI 类型一致。Item、Document、Page 和 Evidence 可以是 citable；CSL style 仅可作为 `cite.style` 使用，绝不是 citable，因此 StyleLongEntry 不包含 `citable`。`runs/` 的 run status/event URI 与 `workflows/` 的 workflow URI 是运行时/配置投影，永远不是 citable。`writable` 与 `citable` 是两个独立维度。可引用资格由单一确定性规则计算；协议不返回 `citation_target`，宿主在 `cite` 内部解析到所属 Item。
 - Document、Page 和 Evidence 的详细 `find`/`fetch` 结果应返回 `item_uri` 或等价的 `parent_uri`。这是关系元数据，不构成自动 link following。
 - `cite` 对 text document/page 的解析只使用持久化的 `document_instances.item_id` 关系，不通过标题、文件名或全文搜索猜测 Item。Page URI 必须先验证 page 属于 URI 中声明的 text document。
 - 如果多个 REF 解析到同一个 Item，bibliography 默认去重，但响应应保留每个 REF 的解析结果。
@@ -441,12 +522,13 @@ Exit / error codes：
 - `fetch <URI>...` 和 `cite <REF>...` 均采用逐项结果语义。单个资源的 `NOT_FOUND`、`NOT_CITABLE` 或 `RESPONSE_TRUNCATED` 不得丢弃同一请求中其他成功结果。
 - `limit_bytes` 的默认值可以由服务配置，但必须有服务端硬上限；调用者请求超过硬上限时可以钳制并返回 warning，不得因此取消已可安全返回的 partial 内容。
 - `general` 的 `@misc` cite fallback 与无默认 style 时的 deterministic style fallback 已同步记录到 ADR `0023`/`0024`；后续实现变更必须同时维护本契约、ADR 与运行时契约，避免三者分叉。
+- `runs/` 是易失运行时资源，`send` 是会话/工作流指令动词；二者都不推进 `meta.library_revision`，也不发出资源变更通知。会话事件以单调序号增量读取，token 用量、进度与消息均承载于事件序号而非 Library revision（D11）。
 
-## 9 超时与取消
+## 10 超时与取消
 
-宿主必须实施较宽松的服务端 deadline：`find`、`fetch`、`cite` 默认最多 60 秒，`put`（含完整内容校验）默认最多 120 秒；部署可配置更严格的上限，但不得让客户端无限等待。deadline 到期返回 `DEADLINE_EXCEEDED`，不把因超时而中断的资源伪装为 `RESPONSE_TRUNCATED` partial 成功。
+宿主必须实施较宽松的服务端 deadline：`find`、`fetch`、`cite` 默认最多 60 秒，`put`（含完整内容校验）默认最多 120 秒，`send` 默认最多 30 秒（仅覆盖指令受理与确认，不覆盖会话后续运行）；部署可配置更严格的上限，但不得让客户端无限等待。deadline 到期返回 `DEADLINE_EXCEEDED`，不把因超时而中断的资源伪装为 `RESPONSE_TRUNCATED` partial 成功。
 
-MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌。`find`、`fetch`、`cite` 取消后停止工作；`put` 在进入原子提交点之前被取消时返回 `CANCELLED` 且 Library 不变。提交点之后宿主必须完成该原子提交或回滚，绝不留下部分资源；已断连的调用方不得推断结果，必须重新 `fetch` 确认当前内容与 `meta.library_revision`。取消不停止后台 headless 宿主。
+MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌。`find`、`fetch`、`cite` 取消后停止工作；`put` 在进入原子提交点之前被取消时返回 `CANCELLED` 且 Library 不变。提交点之后宿主必须完成该原子提交或回滚，绝不留下部分资源；已断连的调用方不得推断结果，必须重新 `fetch` 确认当前内容与 `meta.library_revision`。`send` 取消返回 `CANCELLED` 且不产生指令副作用；`send cancel` 本身要求的会话停止是即时处理的控制事件，不等待下一次模型推理。取消不停止后台 headless 宿主。
 
 ## 回归义务（保留原验收编号）
 
@@ -456,18 +538,18 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC1 | 存在可运行的 A/B 评测基准与任务集，结果可重复；外部 UUID-chain 证据已完成 |
 | V3-AC2 | ADR `0024` 形成 B 择优结论，含迁移策略 |
 | V3-AC3 | B 迁移完成：生产默认 MCP 表面单一；shell/sidecar 已从 main 彻底移除（不再启动、不再打包、不保留实现），仅历史分支 `feature/mcp-ab-benchmark` 存有评测证据 |
-| V3-AC4 | 若 B 胜出：CLI 是本地 MCP HTTP 客户端，四个 CLI 命令到四个 MCP tool request 的参数映射、共享 JSON 与错误码有契约测试；未预期宿主/数据库/helper 异常统一映射为 `INTERNAL`，不泄露内部详情；不存在第二套 CLI 领域实现 |
+| V3-AC4 | 若 B 胜出：CLI 是本地 MCP HTTP 客户端，五个 CLI 命令到五个 MCP tool request 的参数映射、共享 JSON 与错误码有契约测试；未预期宿主/数据库/helper 异常统一映射为 `INTERNAL`，不泄露内部详情；不存在第二套 CLI 领域实现 |
 | V3-AC5 | 安全锚点测试仍通过；`put` 若启用则仅限规定 URI、完整内容校验与原子提交，不接受 partial/truncated 内容 |
 | V3-AC6 | `general` 可在满足字段要求时通过显式 `@misc` fallback cite，否则返回 `NOT_CITABLE`；只读资源 put 返回 `PERMISSION_DENIED`，但 document/page/evidence cite 可解析到所属 Item |
 | V3-AC7 | 超过 `limit_bytes` 的 fetch 返回安全边界内的 partial 内容、`complete=false`/`truncated=true`、continuation 或 next range，以及 `RESPONSE_TRUNCATED`；不得静默呈现为完整内容 |
 | V3-AC8 | Document、Page、Evidence 的资源响应暴露所属 Item 关系；`citable` 与 cite 实际接受的 URI 类型一致；document/page cite 验证关系后成功解析 |
 | V3-AC9 | 多 URI fetch 与多 REF cite 采用逐项结果语义；单项失败不丢弃同一请求中的成功结果，并对实际使用的 CSL style 返回 effective style |
-| V3-AC10 | 裸 `find` 仅返回 `/items`、`/texts`、`/translations`、`/csl-styles` 四个 VFS 根 directory 与 `/library.toon` 一个根 file 条目；不存在 `/collections` 等集合/标签根、旧 `AGENTS.md`、`library.yml`、evidence 根和 shell 入口均不可发现或访问 |
+| V3-AC10 | 裸 `find` 仅返回 `/items`、`/texts`、`/translations`、`/csl-styles`、`/runs`、`/workflows` 六个 VFS 根 directory 与 `/library.toon` 一个根 file 条目；不存在 `/collections` 等集合/标签根、旧 `AGENTS.md`、`library.yml`、evidence 根和 shell 入口均不可发现或访问 |
 | V3-AC11 | 经 UI、CLI 或 MCP 成功写入的宿主写服务均发出资源变更通知；连接到该宿主的桌面书库列表、打开的题录编辑器和 CSL 样式视图无需重启即可显示最新数据 |
 | V3-AC12 | 默认 `find` 的 TOON/JSON 条目严格只有 `uri`、`title`、`type`（`patchouli://translations/` 与其 document 目录例外，见 ADR `0034`：它们必须携带翻译进度/状态）；所有工具的 TOON/JSON 响应均严格使用 `meta`、`continuation`、可选 `message`、`entries` 外壳，干净成功不返回 `message`。`meta` 三项计数反映各页读取时的当前 Library 状态、`shown_total` 与 entries 行数一致、continuation 可继续读取。实时 cursor 的跨页 entries 或计数可能漂移，必须在 `message.warnings` 有 `RESULT_SET_MAY_HAVE_CHANGED`，不承诺 `filtered_total` 跨页稳定 |
 | V3-AC13 | `--long` / `detail=long` 才返回状态、能力与必要关系元数据（翻译目录条目例外，见 ADR `0034`）；默认和详细的 CLI/MCP/JSON 输出、schema、help 与示例均不存在 `citation_target`、`preview` 或裸 `status`。Long 投影按 Item、Text、Style 资源种类精确省略不适用字段，绝不重复 URI 已表达的 DocumentInstance、页码或 `rev`/`box`；Style 不包含 `citable` |
 | V3-AC14 | `find` 对声明支持的 scope/query/`--literal`/filter 执行搜索或过滤，严格遵循 scope × flag 合法矩阵；不支持的组合返回 `INVALID_ARGUMENT`，不以成功空数组代替 |
-| V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行四个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
+| V3-AC15 | `patchouli-cli` 先连接同 Library 的本地 MCP HTTP 宿主；桌面未运行时自动启动后台 headless 宿主后执行五个资源命令。UI、CLI 与 agent MCP 都经同一宿主服务；CLI 不直连 SQLite。每个 Library 同时只有一个宿主，桌面启动时接管并终止该 Library 的 headless 宿主；headless 的 `0.0.0.0` 监听同样要求 token |
 | V3-AC16 | MCP `format=json` 与 CLI `--json` 为批量机器处理返回等价 JSON；无需解析 TOON，且三种编码均使用相同的 `meta`、`continuation`、可选 `message`、`entries` schema。格式切换不改变默认/详细投影、字段、分页、warning 或 error 语义 |
 | V3-AC17 | `patchouli://texts/{document-instance-id}/page-{page-index}.md` 和 `pages:` range 均以一基、稳定的物理 PDF 页码寻址；带 `?rev=&box=` 的 fetch/cite 必须校验 `tree_revision_id`/`box_id` 与所声明 document/page 的归属，不归属时返回 `NOT_FOUND` |
 | V3-AC18 | cursor 不持有服务端快照、结果集句柄、TTL 或 agent 命名空间，并绑定原 scope/query/filter/order；消费或发出 continuation 的响应在 `message.warnings` 包含 `RESULT_SET_MAY_HAVE_CHANGED` |
@@ -478,6 +560,6 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC23 | find 的边界输入按契约归一化并带稳定 warning：whitespace QUERY 等同 browse；root `--limit`/`--cursor` 可分页；file URI 是单资源 scope；cursor 冲突时恢复其绑定上下文；where 在第一个 `=` 分割且重复 key 最后一项覆盖。无效 cursor 或矩阵外组合仍返回 `INVALID_ARGUMENT` |
 | V3-AC24 | `meta.library_revision` 是持久化、严格单调的 `lib:<十进制正整数>` Library revision；每次成功的协议可见 Library 写入及桌面/headless 交接均不重置它。已 fetch 内容仅为客户端快照；cursor 或 MCP 会话观察到 Library 变化时继续执行并在 `message.warnings` 给出相应 warning，不提供服务端推送式内容撤回 |
 | V3-AC25 | `patchouli://` 只解析到宿主固定的当前 `library_id`；含有不匹配 Library 绑定的 cursor、versioned evidence URI 或显式上下文必须丢弃已准备 entries 并以 `NOT_FOUND` 失败，不得返回跨库内容。当前 UI 不能切库不构成省略该校验的理由 |
-| V3-AC26 | 宿主对 `find`/`fetch`/`cite` 默认执行 60 秒、`put` 默认执行 120 秒的 deadline；超时为 `DEADLINE_EXCEEDED`，取消为 `CANCELLED`。取消或断连能停止校验/查询，且 `put` 要么在提交前不写、要么完整原子完成，绝无部分写入 |
-| V3-AC27 | 四个工具均有封闭、逐字段类型化的统一响应 schema fixture；默认与 long find、complete/truncated/failed fetch、put 成功、cite 部分成功/全部失败均验证 `meta`、`continuation`、可选 `message`、`entries` 的 required/null/省略规则、无额外字段、同序逐项结果、UTF-8 byte 计数及 message/error 对应关系；help 和 MCP 初次握手 fixture 还必须验证“无 `message` 即干净成功”的 Unix 语义。迁移 fixture 还必须验证输出中不存在顶层 `revision` 或 `resource_revision`，且 CLI help/MCP schema 不含 `fetch --revision`；Library revision 只在 `meta.library_revision` |
-| V3-AC28 | Long `find` fixture 分别验证 Item、Text 与 Style 的精确 variant：仅 `item_status`、`document_status`、`source_status` 是公共 status，且分别等于 Item、DocumentInstance、FileAsset 的原始持久化值；OCR 索引为共享 English FSM 能力，UI 使用同一 FSM 的中文标签与说明。`primary_document_ocr_index_status` 与 `ocr_index_status` 由数据库侧本页批量投影过滤，且不存在逐项 metadata/status 查询 |
+| V3-AC26 | `runs/` 是 VFS 首个易失运行时资源：不进任何快照、不可 `put`、不属 canonical 资源，不推进 `meta.library_revision`、不发资源变更通知；OCR 运行与 agent 会话运行各自投影 status/events，不强行统一为一个通用 run 模型；`workflows/` 是只读元数据树，不可 `put` 或经 MCP 修改 |
+| V3-AC27 | `patchouli://runs/agent/{session-id}/events` 的事件按宿主分配的单调递增序号排列并支持 `?after={sequence}` 增量读取，响应给出 `last_sequence` 与 `next_after`；`send` 响应区分已接收/已处理，`message` 携带 `message_id` 去重，重复 `message_id` 不重复追加并带 `DUPLICATE_MESSAGE_ID` warning；`message` 在下一次工具调用/效应执行前的 Event 边界按序追加进会话、不打断在途调用 |
+| V3-AC28 | `runs/`、`workflows/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1） |

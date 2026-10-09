@@ -148,7 +148,9 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                     binding.DeviceId,
                     binding.LocalState.LineageSnapshotId,
                     SyncRootId: binding.SyncRootId,
-                    EnabledSettingKeys: binding.EnabledSettingKeys),
+                    EnabledSettingKeys: binding.EnabledSettingKeys,
+                    SyncAgentSessions: binding.SyncAgentSessions,
+                    SyncWorkflowDefinitions: binding.SyncWorkflowDefinitions),
                 cancellationToken);
             if (published.IsFailure)
             {
@@ -260,6 +262,14 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
             {
                 string source = ResolvePathInsideRoot(workRoot, shard.FileName);
                 string target = ResolvePathInsideRoot(candidate, shard.FileName);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(source, target, false);
+            }
+
+            foreach (SnapshotFilePayload payload in published.Value.FilePayloads)
+            {
+                string source = ResolvePathInsideRoot(workRoot, payload.FileName);
+                string target = ResolvePathInsideRoot(candidate, payload.FileName);
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                 File.Copy(source, target, false);
             }
@@ -485,6 +495,16 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
                     details: rootMappings.Details);
             }
 
+            Result payloadImport = await MergeStagedPayloadsIntoLibraryAsync(
+                plan.BranchImportPlan.SourceBranch,
+                binding.RuntimeDatabasePath,
+                cancellationToken);
+            if (payloadImport.IsFailure)
+            {
+                await RecordFailureAsync(binding, payloadImport.ErrorMessage!, cancellationToken);
+                return Result<SnapshotApplyResult>.Failure(payloadImport.ErrorCode!, payloadImport.ErrorMessage!);
+            }
+
             await SaveStateOrThrowAsync(binding, SnapshotSyncOperationState.Applying, null, cancellationToken);
             Result<BranchImportResult> applied = await _branchInspection.ApplyImportPlanAsync(
                 plan.BranchImportPlan,
@@ -658,6 +678,31 @@ public sealed class SnapshotSyncCoordinator : ISnapshotSyncCoordinator
     private IActivityScope? BeginSyncActivity(string detail)
     {
         return _activityTracker?.BeginScope("同步资料库", HostActivityKind.Sync, detail);
+    }
+
+    /// <summary>
+    /// Lands the imported session/workflow file payloads (when the incoming snapshot carries them) next
+    /// to the target runtime database. Session statuses were already neutralized during staging import,
+    /// so this merge never transfers run ownership; locked or built-in workflow definitions are skipped
+    /// by the merge itself. Missing payloads are normal — snapshots published with both switches off
+    /// have none.
+    /// </summary>
+    private static async Task<Result> MergeStagedPayloadsIntoLibraryAsync(
+        SnapshotBranchInspectionInfo branch,
+        string runtimeDatabasePath,
+        CancellationToken cancellationToken)
+    {
+        string payloadsRoot = SnapshotFilePayloads.StagingPayloadsRoot(branch.StagingDatabasePath, branch.SnapshotId);
+        if (!Directory.Exists(payloadsRoot))
+        {
+            return Result.Success();
+        }
+
+        Result<IReadOnlyList<string>> merged =
+            await SnapshotFilePayloads.MergeStagedPayloadsAsync(payloadsRoot, runtimeDatabasePath, cancellationToken);
+        return merged.IsFailure
+            ? Result.Failure(merged.ErrorCode!, merged.ErrorMessage!)
+            : Result.Success();
     }
 
     private CancellationTokenSource LinkCancellation(CancellationToken cancellationToken)

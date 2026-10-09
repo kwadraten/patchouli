@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="AgentTypes.fs" />
+    <Compile Include="ValueCodec.fs" />
+    <Compile Include="Sdk.fs" />
+    <Compile Include="ToolProtocol.fs" />
+    <Compile Include="AssistantReplies.fs" />
+    <Compile Include="AgentCore.fs" />
+    <Compile Include="AgentDriver.fs" />
+    <Compile Include="ContextCodec.fs" />
+  </ItemGroup>
+</Project>

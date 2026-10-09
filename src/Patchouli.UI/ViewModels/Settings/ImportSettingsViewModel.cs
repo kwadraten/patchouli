@@ -75,7 +75,8 @@ public sealed partial class ImportSettingsViewModel : SettingsSectionViewModelBa
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
 
-        bool saved = await _main.SaveImportSettingsAsync(MaxFailedPageRatioPercent / 100.0);
+        double percent = MaxFailedPageRatioPercent;
+        bool saved = await _main.SaveImportSettingsAsync(percent / 100.0);
         if (!saved)
         {
             LastError = "无法保存导入设置。";
@@ -86,10 +87,10 @@ public sealed partial class ImportSettingsViewModel : SettingsSectionViewModelBa
             return;
         }
 
-        _persistedPercent = MaxFailedPageRatioPercent;
-        _isDirty = false;
+        _persistedPercent = percent;
+        UpdateDirtyState();
         LastError = null;
-        SaveState = SettingsSaveState.Saved;
+        SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
         ValidationState = SettingsValidationState.Valid;
         Status = "已保存";
         Raise(nameof(IsDirty));

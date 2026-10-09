@@ -101,10 +101,11 @@ public sealed class FileAssetService : IFileAssetService
                         status as Status,
                         created_at as CreatedAt,
                         updated_at as UpdatedAt
-                    from file_assets
-                    where file_asset_id = @FileAssetId;
+                    from file_assets indexed by idx_file_assets_library_full_blake3
+                    where library_id = @LibraryId and full_blake3 = @FullBlake3
+                    limit 1;
                     """,
-                    new { FileAssetId = asset.FileAssetId.ToString() },
+                    new { LibraryId = asset.LibraryId.ToString(), asset.FullBlake3 },
                     transaction);
 
                 if (existing is not null)
@@ -169,6 +170,23 @@ public sealed class FileAssetService : IFileAssetService
                     await transaction.CommitAsync(cancellationToken);
                     PublishRevision(existingRevision.Value);
                     return Result<FileAsset>.Success(updatedAsset);
+                }
+
+                // Confirming a changed source preserves its asset ID. Do not overwrite that
+                // source when the original content is later registered again under its hash ID.
+                string? occupiedLibraryId = await connection.QuerySingleOrDefaultAsync<string>(
+                    "select library_id from file_assets where file_asset_id = @FileAssetId;",
+                    new { FileAssetId = asset.FileAssetId.ToString() }, transaction);
+                if (occupiedLibraryId is not null)
+                {
+                    if (!string.Equals(occupiedLibraryId, asset.LibraryId.ToString(), StringComparison.Ordinal))
+                    {
+                        await transaction.RollbackAsync(cancellationToken);
+                        return Result<FileAsset>.Failure(AppErrorCodes.LibraryMismatch,
+                            "File content already exists in a different library.");
+                    }
+
+                    asset = asset with { FileAssetId = FileAssetId.New() };
                 }
             }
 

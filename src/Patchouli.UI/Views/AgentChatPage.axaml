@@ -1,0 +1,426 @@
+<UserControl x:Class="Patchouli.UI.Views.AgentChatPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:chat="using:Patchouli.UI.ViewModels.AgentChat"
+             xmlns:controls="using:Patchouli.UI.Controls"
+             xmlns:lucide="using:Patchouli.Lucide.Avalonia"
+             xmlns:md="using:LiveMarkdown.Avalonia"
+             x:DataType="chat:AgentChatTabViewModel" Classes.motion="{Binding !ReduceMotion}"
+             Background="{DynamicResource SurfaceBrush}">
+  <UserControl.Styles>
+    <StyleInclude Source="avares://LiveMarkdown.Avalonia/Styles.axaml" />
+    <StyleInclude Source="avares://LiveMarkdown.Avalonia.Mermaid/Styles.axaml" />
+    <Style Selector="md|MarkdownTextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+      <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBrush}" />
+      <Setter Property="SelectionForegroundBrush" Value="{DynamicResource OnSurfaceBrush}" />
+    </Style>
+    <Style Selector="md|MarkdownRenderer md|Link, md|MarkdownRenderer md|Link:clicked">
+      <Setter Property="Foreground" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="md|MermaidPresenter">
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceBrush}" />
+      <Setter Property="SecondaryForeground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+      <Setter Property="NodeFill" Value="{DynamicResource SurfaceContainerBrush}" />
+      <Setter Property="NodeStroke" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="LineStroke" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="AccentFill" Value="{DynamicResource SelectionBrush}" />
+      <Setter Property="AccentForeground" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="ArrowFill" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="TextBlock.Muted">
+      <Setter Property="Foreground" Value="{DynamicResource OnSurfaceVariantBrush}" />
+      <Setter Property="FontSize" Value="12" />
+    </Style>
+    <Style Selector="Button.ChatIcon, ToggleButton.ChatIcon">
+      <Setter Property="Width" Value="34" />
+      <Setter Property="Height" Value="34" />
+      <Setter Property="Padding" Value="8" />
+      <Setter Property="CornerRadius" Value="8" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="ToggleButton.ChatIcon:checked">
+      <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+    </Style>
+    <Style
+      Selector="ToggleButton.ChatIcon:checked /template/ ContentPresenter#PART_ContentPresenter, ToggleButton.ChatIcon:checked:pointerover /template/ ContentPresenter#PART_ContentPresenter, ToggleButton.ChatIcon:checked:pressed /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
+    </Style>
+    <Style Selector="ListBox.ChatSessions">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+    <Style Selector="ListBox.ChatSessions ListBoxItem">
+      <Setter Property="Padding" Value="10" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="CornerRadius" Value="9" />
+    </Style>
+    <Style Selector="ListBox.ChatSessions ListBoxItem:selected /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SelectionBrush}" />
+      <Setter Property="CornerRadius" Value="9" />
+    </Style>
+    <Style Selector="Border.Turn">
+      <Setter Property="Padding" Value="0,8" />
+      <Setter Property="Margin" Value="0,0,0,18" />
+    </Style>
+    <Style Selector="Border.Turn.user">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
+      <Setter Property="CornerRadius" Value="18" />
+      <Setter Property="Padding" Value="18,14" />
+      <Setter Property="HorizontalAlignment" Value="Right" />
+      <Setter Property="MaxWidth" Value="640" />
+    </Style>
+    <Style Selector="Expander.Activity">
+      <Setter Property="Margin" Value="0,0,0,8" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="BorderBrush" Value="{DynamicResource OutlineVariantBrush}" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowBrush}" />
+      <Setter Property="Transitions">
+        <Transitions>
+          <BrushTransition Property="Background" Duration="0:0:0.12" />
+        </Transitions>
+      </Setter>
+    </Style>
+    <Style Selector="Expander.Activity:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
+    </Style>
+    <Style Selector="Expander.Activity.failed">
+      <Setter Property="Background" Value="{DynamicResource ErrorContainerBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource ErrorBrush}" />
+    </Style>
+    <Style Selector="Border.Turn.failed">
+      <Setter Property="Background" Value="{DynamicResource ErrorContainerBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource ErrorBrush}" />
+    </Style>
+    <Style Selector="UserControl:not(.motion) Expander.Activity">
+      <Setter Property="Transitions" Value="{x:Null}" />
+    </Style>
+    <Style Selector="TextBlock.StepSummary.failed, TextBlock.StepState.failed">
+      <Setter Property="Foreground" Value="{DynamicResource ErrorBrush}" />
+    </Style>
+    <Style Selector="Border.StepDot">
+      <Setter Property="Background" Value="{DynamicResource OnSurfaceVariantBrush}" />
+    </Style>
+    <Style Selector="Border.StepDot.running">
+      <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Border.StepDot.failed">
+      <Setter Property="Background" Value="{DynamicResource ErrorBrush}" />
+    </Style>
+    <Style Selector="UserControl.motion Border.StepDot.running">
+      <Style.Animations>
+        <Animation Duration="0:0:1.5" IterationCount="Infinite">
+          <KeyFrame Cue="0%">
+            <Setter Property="Opacity" Value="0.35" />
+          </KeyFrame>
+          <KeyFrame Cue="50%">
+            <Setter Property="Opacity" Value="1" />
+          </KeyFrame>
+          <KeyFrame Cue="100%">
+            <Setter Property="Opacity" Value="0.35" />
+          </KeyFrame>
+        </Animation>
+      </Style.Animations>
+    </Style>
+    <Style Selector="UserControl.motion Border.Turn, UserControl.motion Expander.Activity">
+      <Style.Animations>
+        <Animation Duration="0:0:0.18" FillMode="Forward" Easing="CubicEaseOut">
+          <KeyFrame Cue="0%">
+            <Setter Property="Opacity" Value="0" />
+          </KeyFrame>
+          <KeyFrame Cue="100%">
+            <Setter Property="Opacity" Value="1" />
+          </KeyFrame>
+        </Animation>
+      </Style.Animations>
+    </Style>
+    <Style Selector="UserControl.motion Expander.Activity:expanded StackPanel.StepDetails">
+      <Style.Animations>
+        <Animation Duration="0:0:0.16" FillMode="Forward">
+          <KeyFrame Cue="0%">
+            <Setter Property="Opacity" Value="0.45" />
+          </KeyFrame>
+          <KeyFrame Cue="100%">
+            <Setter Property="Opacity" Value="1" />
+          </KeyFrame>
+        </Animation>
+      </Style.Animations>
+    </Style>
+    <Style Selector="Button.Suggestion">
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="Padding" Value="16,14" />
+      <Setter Property="CornerRadius" Value="12" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerLowBrush}" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="TextBox.Composer">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="4" />
+      <Setter Property="FontSize" Value="14" />
+    </Style>
+    <Style Selector="TextBox.Composer /template/ Border#PART_BorderElement">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+    <Style Selector="Border.ComposerFrame:focus-within">
+      <Setter Property="BorderBrush" Value="{DynamicResource PrimaryBrush}" />
+    </Style>
+    <Style Selector="Button.ComposerAction">
+      <Setter Property="Width" Value="36" />
+      <Setter Property="Height" Value="36" />
+      <Setter Property="CornerRadius" Value="18" />
+      <Setter Property="Padding" Value="10" />
+      <Setter Property="Background" Value="{DynamicResource SurfaceContainerBrush}" />
+      <Setter Property="BorderThickness" Value="0" />
+    </Style>
+  </UserControl.Styles>
+  <UserControl.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://Patchouli.UI/Styles/ChatMarkdownTheme.axaml" />
+      </ResourceDictionary.MergedDictionaries>
+      <DataTemplate x:Key="SessionRowTemplate" x:DataType="chat:AgentChatSessionViewModel">
+        <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto" RowSpacing="5" ColumnSpacing="8"
+              ToolTip.Tip="{Binding ToolTipText}">
+          <TextBlock Text="{Binding Title}" FontSize="13" TextTrimming="CharacterEllipsis" />
+          <TextBlock Grid.Column="1" Text="{Binding StatusText}" Classes="Muted" FontSize="10" />
+          <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding Subtitle}" Classes="Muted"
+                     FontSize="11" TextTrimming="CharacterEllipsis" />
+        </Grid>
+      </DataTemplate>
+      <DataTemplate x:Key="MessageRowTemplate" x:DataType="chat:AgentChatMessageViewModel">
+        <StackPanel>
+          <Border Classes="Turn" Classes.user="{Binding IsUser}" Classes.failed="{Binding IsFailure}"
+                  IsVisible="{Binding IsConversation}">
+            <StackPanel Spacing="10">
+              <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding IsAssistant}">
+                <TextBlock Text="{Binding Title}" FontSize="13" FontWeight="SemiBold"
+                           Foreground="{DynamicResource PrimaryBrush}" />
+                <TextBlock Grid.Column="1" Text="{Binding TimeText}" Classes="Muted" FontSize="10" />
+              </Grid>
+              <SelectableTextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="14" IsVisible="{Binding IsUser}" />
+              <controls:ChatMarkdownRenderer Markdown="{Binding Text}" LinkClick="OnMessageLinkClick"
+                                             IsVisible="{Binding IsAssistant}" />
+              <Button Classes="ChatIcon" Click="OnCopyMessageClick" IsVisible="{Binding IsAssistant}"
+                      ToolTip.Tip="复制回复" AutomationProperties.Name="复制回复" Width="28" Height="28">
+                <lucide:Lucide Icon="Copy" Width="14" Height="14" />
+              </Button>
+            </StackPanel>
+          </Border>
+          <Expander Classes="Activity" Classes.failed="{Binding IsFailure}" IsVisible="{Binding IsActivity}"
+                    IsExpanded="{Binding IsExpanded, Mode=TwoWay}">
+            <Expander.Header>
+              <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" Margin="0,3">
+                <Border Classes="StepDot" Classes.running="{Binding IsRunning}" Classes.failed="{Binding IsFailure}"
+                        Width="7" Height="7" CornerRadius="4" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Spacing="3">
+                  <StackPanel Orientation="Horizontal" Spacing="8">
+                    <TextBlock Text="{Binding StepLabel}" Classes="Muted" FontSize="10" />
+                    <TextBlock Text="{Binding Title}" FontWeight="Medium" FontSize="12" />
+                  </StackPanel>
+                  <TextBlock Text="{Binding Summary}" Classes="Muted StepSummary" Classes.failed="{Binding IsFailure}"
+                             MaxWidth="480" TextTrimming="CharacterEllipsis" FontSize="11" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4" VerticalAlignment="Center">
+                  <TextBlock Text="{Binding StateLabel}" Classes="Muted StepState" Classes.failed="{Binding IsFailure}"
+                             FontSize="10" />
+                  <TextBlock Text="{Binding DurationText}" Classes="Muted" FontSize="10" />
+                </StackPanel>
+              </Grid>
+            </Expander.Header>
+            <StackPanel Classes="StepDetails" Spacing="10" Margin="14,4,14,14">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Text="{Binding ErrorCode}" IsVisible="{Binding HasErrorCode}"
+                           Foreground="{DynamicResource ErrorBrush}" FontFamily="Consolas" />
+                <Button Grid.Column="1" Classes="ChatIcon" Width="26" Height="26" Click="OnCopyMessageClick"
+                        ToolTip.Tip="复制完整步骤详情" AutomationProperties.Name="复制完整步骤详情">
+                  <lucide:Lucide Icon="Copy" Width="13" Height="13" />
+                </Button>
+              </Grid>
+              <StackPanel IsVisible="{Binding HasInput}" Spacing="5">
+                <TextBlock Text="输入 · 参数 / 提示" Classes="Muted" FontSize="10" />
+                <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="12,10">
+                  <ScrollViewer MaxHeight="260">
+                    <SelectableTextBlock Text="{Binding Input}" TextWrapping="Wrap" FontSize="12"
+                                         FontFamily="Consolas, Menlo, monospace" />
+                  </ScrollViewer>
+                </Border>
+              </StackPanel>
+              <StackPanel IsVisible="{Binding HasOutput}" Spacing="5">
+                <TextBlock Text="输出 · 完整返回内容" Classes="Muted" FontSize="10" />
+                <Border Background="{DynamicResource SurfaceBrush}" CornerRadius="8" Padding="12,10">
+                  <ScrollViewer MaxHeight="360">
+                    <SelectableTextBlock Text="{Binding Output}" TextWrapping="Wrap" FontSize="12"
+                                         FontFamily="Consolas, Menlo, monospace" />
+                  </ScrollViewer>
+                </Border>
+              </StackPanel>
+              <SelectableTextBlock Text="{Binding Text}" IsVisible="{Binding !HasOutput}" TextWrapping="Wrap"
+                                   FontSize="12" />
+              <TextBlock Text="{Binding TimeText}" Classes="Muted" FontSize="10" />
+              <TextBlock Text="{Binding RecoveryHint}" IsVisible="{Binding IsFailure}" TextWrapping="Wrap"
+                         Classes="Muted" FontSize="11" />
+            </StackPanel>
+          </Expander>
+        </StackPanel>
+      </DataTemplate>
+    </ResourceDictionary>
+  </UserControl.Resources>
+  <Grid ColumnDefinitions="Auto,*">
+    <Border x:Name="SessionSidebar" Width="244" IsVisible="{Binding IsSidebarOpen}"
+            Background="{DynamicResource SurfaceContainerLowBrush}"
+            BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,1,0">
+      <Grid RowDefinitions="Auto,*,Auto" Margin="14,18,14,14" RowSpacing="18">
+        <StackPanel Spacing="16">
+          <TextBlock Text="会话" FontSize="15" FontWeight="SemiBold" Margin="8,0" />
+          <Button x:Name="NewSessionButton" Command="{Binding NewSessionCommand}" HorizontalAlignment="Stretch"
+                  HorizontalContentAlignment="Left" Height="40" CornerRadius="10" Padding="12,0">
+            <StackPanel Orientation="Horizontal" Spacing="10">
+              <lucide:Lucide Icon="Plus" Width="16" Height="16" />
+              <TextBlock Text="新建会话" VerticalAlignment="Center" />
+            </StackPanel>
+          </Button>
+        </StackPanel>
+        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="12">
+            <TextBlock Text="进行中" Classes="Muted" FontSize="11" Margin="8,0" />
+            <ListBox x:Name="ActiveSessionList" Classes="ChatSessions" ItemsSource="{Binding ActiveSessions}"
+                     SelectedItem="{Binding SelectedSession, Mode=OneWay}" SelectionChanged="OnSessionSelectionChanged"
+                     IsEnabled="{Binding !IsSending}" ItemTemplate="{StaticResource SessionRowTemplate}" />
+            <TextBlock Text="暂无进行中的会话" Classes="Muted" FontSize="11" Margin="8,0"
+                       IsVisible="{Binding NoActiveSessionRows}" />
+            <TextBlock Text="历史会话" Classes="Muted" FontSize="11" Margin="8,12,0,0" />
+            <ListBox x:Name="HistorySessionList" Classes="ChatSessions" ItemsSource="{Binding HistorySessions}"
+                     SelectedItem="{Binding SelectedSession, Mode=OneWay}" SelectionChanged="OnSessionSelectionChanged"
+                     IsEnabled="{Binding !IsSending}" ItemTemplate="{StaticResource SessionRowTemplate}" />
+            <TextBlock Text="暂无历史会话" Classes="Muted" FontSize="11" Margin="8,0"
+                       IsVisible="{Binding NoHistorySessionRows}" />
+          </StackPanel>
+        </ScrollViewer>
+        <Grid Grid.Row="2" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+          <TextBlock Text="{Binding StatusSummary}" Classes="Muted" FontSize="11" TextWrapping="Wrap"
+                     VerticalAlignment="Center" Margin="8,0,0,0" />
+          <Button Grid.Column="1" Classes="ChatIcon" Command="{Binding RefreshCommand}"
+                  ToolTip.Tip="刷新会话" AutomationProperties.Name="刷新会话">
+            <lucide:Lucide Icon="RefreshCw" Width="16" Height="16" />
+          </Button>
+        </Grid>
+      </Grid>
+    </Border>
+    <Grid Grid.Column="1" RowDefinitions="Auto,*,Auto">
+      <Border BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="0,0,0,1" Padding="20,12">
+        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+          <ToggleButton Classes="ChatIcon" IsChecked="{Binding IsSidebarOpen}"
+                        ToolTip.Tip="显示 / 隐藏会话栏" AutomationProperties.Name="显示 / 隐藏会话栏">
+            <lucide:Lucide Icon="Menu" Width="16" Height="16" />
+          </ToggleButton>
+          <StackPanel Grid.Column="1" Spacing="3" VerticalAlignment="Center">
+            <TextBlock Text="{Binding SelectedSessionTitle}" IsVisible="{Binding HasSelectedSession}"
+                       FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <TextBlock Text="新会话" IsVisible="{Binding IsNewSession}" FontSize="14" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding SessionStatusText}" IsVisible="{Binding HasSelectedSession}" Classes="Muted"
+                       FontSize="11" />
+          </StackPanel>
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+            <Button Classes="ChatIcon" IsVisible="{Binding HasSelectedSession}"
+                    ToolTip.Tip="会话操作" AutomationProperties.Name="会话操作">
+              <Button.Flyout>
+                <MenuFlyout>
+                  <MenuItem Header="重新打开" Command="{Binding OpenSessionCommand}" />
+                  <MenuItem Header="清除会话…" Command="{Binding PurgeSessionCommand}" />
+                  <Separator />
+                  <MenuItem Header="减少动效" ToggleType="CheckBox" IsChecked="{Binding ReduceMotion, Mode=TwoWay}" />
+                </MenuFlyout>
+              </Button.Flyout>
+              <TextBlock Text="···" FontSize="18" FontWeight="Bold" />
+            </Button>
+          </StackPanel>
+        </Grid>
+      </Border>
+      <Grid Grid.Row="1">
+        <ScrollViewer x:Name="MessageScroll" IsVisible="{Binding HasSelectedSession}"
+                      ScrollChanged="OnMessageScrollChanged" HorizontalScrollBarVisibility="Disabled">
+          <ItemsControl ItemsSource="{Binding Messages}" ItemTemplate="{StaticResource MessageRowTemplate}"
+                        MaxWidth="800" HorizontalAlignment="Stretch" Margin="28,22" />
+        </ScrollViewer>
+        <ScrollViewer IsVisible="{Binding IsNewSession}" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel MaxWidth="680" Margin="32,40" Spacing="24" VerticalAlignment="Center">
+            <StackPanel Spacing="12" Margin="0,16,0,8">
+              <Border Background="{DynamicResource SelectionBrush}" CornerRadius="14" Width="48" Height="48"
+                      HorizontalAlignment="Left">
+                <lucide:Lucide Icon="BookOpen" Width="24" Height="24" Foreground="{DynamicResource PrimaryBrush}" />
+              </Border>
+              <TextBlock Text="从一个问题开始" FontSize="26" FontWeight="SemiBold" />
+              <TextBlock Text="与 Patchouli 一起阅读、理解和整理知识。" Classes="Muted" FontSize="14" TextWrapping="Wrap" />
+            </StackPanel>
+            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto" ColumnSpacing="12" RowSpacing="12">
+              <Button x:Name="CatalogSuggestion" Classes="Suggestion" Click="OnSuggestionClick"
+                      Tag="请检索网络，并对照对应的OCR文本（如果存在的话），为文献库中信息尚不完整、呈现为通用类型的文献更新题录信息。除了必要的作者、题目、出版地、文献来源之外，更新过程中还要注意获取图书分类以及文献在主流图书馆和文献数据库网站上的唯一标识符，前者需要写入标签，后者需要写入唯一标识符区域。">
+                <StackPanel Spacing="7">
+                  <TextBlock Text="整理题录" FontWeight="SemiBold" FontSize="13" />
+                  <TextBlock Text="补全文献信息、分类标签与唯一标识符" Classes="Muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Button>
+              <Button x:Name="TopicSuggestion" Grid.Column="1" Classes="Suggestion" Click="OnSuggestionClick"
+                      Tag="请在文献库中展开调查。调查结果应以文献为依据，你需要使用当前默认CSL样式渲染对应文献的引文，并附加上对应出处的URI超链接以表示文献出处。需要调查的主题是：">
+                <StackPanel Spacing="7">
+                  <TextBlock Text="调查主题" FontWeight="SemiBold" FontSize="13" />
+                  <TextBlock Text="依据库中文献调查，附上引文与出处链接" Classes="Muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Button>
+              <Button x:Name="OutlineSuggestion" Grid.Row="1" Classes="Suggestion" Click="OnSuggestionClick"
+                      Tag="你需要梳理文献。梳理文献需要揭示文献的主旨、研究方法、全文架构、核心概念等方面。为了清晰展示结构性要素，你应该在必要的时候使用mermaid绘图。需要梳理的文献是：">
+                <StackPanel Spacing="7">
+                  <TextBlock Text="梳理文献" FontWeight="SemiBold" FontSize="13" />
+                  <TextBlock Text="梳理主旨、方法、架构与概念，绘制结构图" Classes="Muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Button>
+              <Button x:Name="QuizSuggestion" Grid.Row="1" Grid.Column="1" Classes="Suggestion"
+                      Click="OnSuggestionClick"
+                      Tag="为了帮助用户更加深刻地理解特定文献，你必须从头到尾阅读一遍文献，提炼文献的章节构造，并找到每个章节中被文献声称为确凿无疑的知识性内容，然后根据你的理解按照章节顺序依次以选择题的形式向用户提问，直至所有章节都被提问完成。在提问过程中，若用户提出了不同见解，你需要在忠实文献内容的前提下，与用户争辩。一旦所有提问都被完成，你需要将所有提问过的内容最终总结为报告以示你和用户最终达成一致的理解。需要反向提问式教学的文献是：">
+                <StackPanel Spacing="7">
+                  <TextBlock Text="反向提问" FontWeight="SemiBold" FontSize="13" />
+                  <TextBlock Text="按章节逐题讨论，形成共同理解的报告" Classes="Muted" TextWrapping="Wrap" />
+                </StackPanel>
+              </Button>
+            </Grid>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
+      <StackPanel Grid.Row="2" MaxWidth="856" HorizontalAlignment="Stretch" Margin="28,12,28,16" Spacing="9">
+        <TextBlock Text="{Binding MessageInputNotice}" Classes="Muted" TextWrapping="Wrap"
+                   Foreground="{DynamicResource PrimaryBrush}" />
+        <Border Classes="ComposerFrame" CornerRadius="24" BorderThickness="1" Padding="16,12,12,10"
+                BorderBrush="{DynamicResource OutlineVariantBrush}" Background="{DynamicResource SurfaceBrush}">
+          <Grid RowDefinitions="Auto,Auto" RowSpacing="10">
+            <TextBox x:Name="MessageBox" Classes="Composer"
+                     Text="{Binding MessageInput, UpdateSourceTrigger=PropertyChanged}"
+                     AcceptsReturn="True" MinHeight="56" MaxHeight="160" TextWrapping="Wrap"
+                     PlaceholderText="向 Patchouli 提问…" IsEnabled="{Binding CanCompose}"
+                     AutomationProperties.Name="消息输入框" />
+            <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+              <Button x:Name="ComposerActionButton" Grid.Column="1" Classes="Primary"
+                      Command="{Binding ComposerActionCommand}" Width="36" Height="36" CornerRadius="18" Padding="10"
+                      ToolTip.Tip="{Binding ComposerActionLabel}"
+                      AutomationProperties.Name="{Binding ComposerActionLabel}">
+                <Panel>
+                  <PathIcon IsVisible="{Binding ComposerStops}" Data="M5,5 H19 V19 H5 Z" Width="12" Height="12" />
+                  <PathIcon IsVisible="{Binding ComposerResumes}" Data="M7,4 L20,12 L7,20 Z" Width="14" Height="14" />
+                  <PathIcon IsVisible="{Binding ComposerSends}"
+                            Data="M11,20 L13,20 L13,7 L18,12 L20,10 L12,2 L4,10 L6,12 L11,7 Z" Width="16" Height="16" />
+                </Panel>
+              </Button>
+            </Grid>
+          </Grid>
+        </Border>
+        <TextBlock Text="AI 回复可能有误，请核对重要信息。" Classes="Muted" FontSize="11" HorizontalAlignment="Center" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</UserControl>

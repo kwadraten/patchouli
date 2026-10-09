@@ -275,7 +275,7 @@ public sealed partial class SnapshotViewModel : ViewModelBase
 
     private async Task CheckCurrentAsync()
     {
-        await InspectAsync(SnapshotIncomingRequest.CurrentSyncRoot, "检查同步目录的更新", "inspect_sync_current");
+        await InspectAsync(SnapshotIncomingRequest.CurrentSyncRoot, "检查同步根目录中的快照", "inspect_sync_current");
     }
 
     private async Task OpenPackageAsync()

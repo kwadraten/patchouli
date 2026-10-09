@@ -66,8 +66,9 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 | V3-T7 | P0；已有优化与基准，继续收口完整规模预算、增量刷新及实现边界 |
 | V3-T1 | 结构化生产协议已落地；宿主发现、自启与独占接管待实现，持续保留协议回归 |
 | V3-T2 | 现有工作台可用；校注编辑设计与 Markdown 预览组件选型待补全 |
-| V3-T3 | MinerU 与 NDL koten 已落地；其他 OCR provider 待设计 |
+| V3-T3 | 本地引擎与 MinerU 已落地；多模态 LLM OCR（LLMTornado）进行中，其余 provider 待设计 |
 | V3-T4 | Linux PATH 与 `.deb` / `.rpm` / AppImage 正式发行待完成 |
+| V3-T11 | 内置 agent 会话平台（进行中）：F# 通用 agent 核心、宿主会话服务、聊天标签页、`.fsx` 工作流与内置「全文翻译」、MCP `runs/` + `workflows/` + `send`、设置页「LLM 与翻译」分组与工作流管理 |
 
 ### 2.1 V3-T7：性能与响应性治理
 
@@ -231,7 +232,7 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 ## 3. V3-T1：宿主生命周期与协议回归
 
-**状态**：结构化 MCP 迁移已落地；CLI 当前连接配置的 HTTP 端点。A/B 选择及历史评测见 ADR `0024`，不再重复评测已淘汰的 Bashkit 路线。四工具的全部参数、响应 schema 和原 V3-AC1–AC28 回归义务见 [mcp-protocol.md](mcp-protocol.md)。
+**状态**：结构化 MCP 迁移已落地；CLI 当前连接配置的 HTTP 端点。A/B 选择及历史评测见 ADR `0024`，不再重复评测已淘汰的 Bashkit 路线。五动词（`find`/`fetch`/`put`/`cite`/`send`，其中 `send` 待实现）的全部参数、响应 schema 和 V3-AC1–AC28 回归义务（含新增 V3-AC26–AC28）见 [mcp-protocol.md](mcp-protocol.md)。
 
 剩余交付：
 
@@ -272,9 +273,10 @@ v3 明确不做完整 1.0 范围膨胀：向量化/语义搜索、程序托管�
 
 ## 5. V3-T3：集成更多 OCR
 
-**状态**：方向已定，细则待补。
+**状态**：多模态 LLM OCR 已交付（见 V3-T11 同期落地）；onnxOCR、ultimateOCR 等待探索。
 
 - 使用 **LLMTornado** 集成多模态大语言模型 OCR/理解路径，输出仍必须进入既有 `OcrDocumentTreeCandidate` → 统一 import/commit，禁止 provider 直写 `document_boxes`
+- 多模态 LLM OCR（已交付）：`MultimodalLlmOcrAdapter.RunPageAsync` 经 LLMTornado 以 vision 调用直连模型，页/区域图渲染后归一化为 `OcrEnginePageResult` 并由既有 OcrRunEngine 统一转 `OcrDocumentTreeCandidate` → import/commit，禁止直写 `document_boxes`；失败码透传进 `OcrRetryPolicy` 既有分类词表；环境检查/预设校验经 `LlmProviderClientFactory.InspectAsync` 真实校验 provider+key+model。不 agent 化：OCR 队列 UI、调度、活动跟踪与队列名称原样保留。设置页「LLM 与翻译」分组承载 provider/密钥/模型配置（见 V3-T11）
 - 已交付本地 OCR 引擎：**ndlkotenocr-lite**（ADR [0025](adr/0025-ndlkotenocr-lite-onnx-port.md)）、**RapidOCR**（ADR [0031](adr/0031-native-rapidocr-onnx-port.md)）、**ndlocr-lite**（ADR [0032](adr/0032-ndlocr-lite-onnx-port.md)），见顶部 V3-T9 基线
 - 仍待探索接入：**onnxOCR**、**ultimateOCR**
 - MinerU 仍为已交付的生产参考路径；新 provider 的打包、模型分发、许可、preset UX、失败分类与密钥边界在后续修订中规定
@@ -323,7 +325,32 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 | V3-T4-AC5 | 生成 AppImage，可在未安装目标依赖的干净用户目录启动应用；`.desktop`、图标、AppRun、CLI launcher/伴随 CLI 和架构均通过 smoke test |
 | V3-T4-AC6 | `.deb`、`.rpm`、AppImage 与桌面/MCP/CLI 使用同一版本与协议 revision；产物不包含 shell sidecar、secret、开发数据库、缓存图片、绝对构建路径或调试文件 |
 
-## 12. 明确不做（v3 默认）
+## 7. V3-T11：内置 agent 会话平台与 `.fsx` 工作流
+
+**状态**：已实现（代码与契约测试落地；真机端到端验收待用户确认）。范围与决策汇总见 [最终计划](agent-platform-plan.md)，架构决策见 [ADR 0036](adr/0036-agent-sessions-fsx-workflows-and-mcp-collaboration.md)，MCP 契约细节以 [mcp-protocol.md](mcp-protocol.md) 为准。
+
+本任务建立内置 agent 会话平台：F# 通用 agent 核心（`src/Patchouli.Agent/`，纯函数 `step : Context -> Event -> Context * Effect list`，Effect/Event 判别联合只在 F# 侧定义）、宿主会话服务（生命周期、收件箱、Event 边界、取消、恢复、物理清除）、聊天标签页，以及随库保存的 `.fsx` 工作流与版本化脚本 API。内置「全文翻译」工作流默认锁定并加入菜单（书库右键 + 菜单栏，入口显示为「让内置agent执行「全文翻译」」）；MCP 新增 `runs/`、`workflows/` 资源根与 `send` 动词。多模态 LLM OCR 属 V3-T3，但 LLM 基座（`Patchouli.Llm`，LLMTornado 全部 provider）与设置页「LLM 与翻译」分组（provider/密钥/模型、OCR 默认 provider/model、翻译默认 provider/model、目标语言、翻译窗口半径与回填开关、工作流管理）由本任务交付。
+
+**关键边界**：会话/工作流与 OCR 队列独立（互不共享队列、调度器与状态机）；运行进度走会话事件序号，不推进 `library_revision`；会话历史只追加（前缀缓存稳定）；工作流修改只影响后续启动（会话保存脚本快照）；`.fsx` 进程内执行、拥有宿主权限、非沙箱；会话可物理清除且不影响题录、原文、译文、OCR 成果；会话/工作流同步为两个独立开关，导入他设备会话不自动执行；OCR 队列保留原名，翻译进度在聊天页与 `runs/` 观察。
+
+**验收**：下表为核心条目摘要；完整验收以计划文件（`.agents/agent-platform-plan.md`）中的 14 条验收标准为准，并以 [ADR 0036](adr/0036-agent-sessions-fsx-workflows-and-mcp-collaboration.md) 与 [mcp-protocol.md](mcp-protocol.md) 的契约表述为最终依据。
+
+| 编号 | 标准 |
+|---|---|
+| V3-T11-AC1 | OCR 与 agent 会话独立运行、互不阻塞 |
+| V3-T11-AC2 | 关闭聊天标签页后会话继续执行，可重开 |
+| V3-T11-AC3 | `send` 消息在下一效应边界生效并实际参与下一步决策；会话历史只追加 |
+| V3-T11-AC4 | 修改工作流不改变正在执行的会话（脚本快照） |
+| V3-T11-AC5 | 重启后能续跑（按记录结果恢复，不重调已完成的调用）；物理清除 session 后文献库正常打开与使用 |
+| V3-T11-AC6 | 内置「全文翻译」工作流默认锁定不可改/删；新任务完整覆盖指定范围，不按旧译文状态跳过 |
+| V3-T11-AC7 | 译文经 `put` 结构校验与原子写入；失败页记录并继续，结束有摘要 |
+| V3-T11-AC8 | 菜单工作流点击后立即打开聊天标签页；状态栏有完成/失败通知 |
+| V3-T11-AC9 | `runs/` 事件按单调序号增量读取；`send` 区分已接收/已处理、消息 ID 去重 |
+| V3-T11-AC10 | 关闭 `put`/`send` 工具后 MCP 回到只读；任何路径不泄露密钥/图像/路径 |
+| V3-T11-AC11 | 会话/工作流同步开关独立；导入他设备会话不自动执行 |
+| V3-T11-AC12 | LLM OCR 输出只经 `OcrDocumentTreeCandidate` 统一 import/commit |
+
+## 8. 明确不做（v3 默认）
 
 - 不把向量化、混合搜索、语义搜索作为 v3 完成标准
 - 不做题录/CSL 样式版本控制、diff/compare 或跨 Item 历史拼接
@@ -332,17 +359,17 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 - 不做账号注册、配额购买、云端计费管理
 - 不做自动对象级同步合并或静默 last-writer-wins
 - 不做库级加密/主密码方案
-- 不让 MCP/CLI 获得 OCR 触发、索引重建、任意删除/重命名资源、或读取提供程序密钥的能力
+- MCP 能力边界由用户工具开关控制（可关 `put`/`send` 回只读）；数据边界（text-only、不泄露密钥/图像/路径）为开发者不变式
 - macOS 不上架 Mac App Store / 不启用 App Sandbox 作为前提（既有 ADR）
 
-## 13. 版本理念
+## 9. 版本理念
 
 - **v1**：alpha 可验证基线——保护证据，暴露歧义，拒绝不安全自动化  
 - **v2（0.2.x）**：最终用户可用面——UI、CSL、生产 OCR、可配置 MCP、冲突/阻塞  
 - **v3（0.3.x）**：迈向 1.0——用评测选择长期 agent 表面，打磨 OCR 编辑校注，扩展可替换 OCR 组合，只留下经得起稳定承诺的能力  
 - **1.0**：在 v3 验证通过的能力组合上冻结对外契约与升级策略
 
-## 14. 长期文档索引
+## 10. 长期文档索引
 
 | 内容 | 权威位置 |
 |---|---|
@@ -353,6 +380,7 @@ Linux 是 Patchouli 的正式桌面运行与发布目标，不再把 Linux 仅�
 | NDL 本地 OCR 与文件管理 | [ADR 0025](adr/0025-ndlkotenocr-lite-onnx-port.md) / [0031](adr/0031-native-rapidocr-onnx-port.md) / [0032](adr/0032-ndlocr-lite-onnx-port.md) |
 | 统一版本模型、versioned URI | ADR [0027](adr/0027-unified-working-copy-and-immutable-revision-model.md) / [0028](adr/0028-versioned-uri-evidence.md) |
 | 题录删除、合并、GC 与快照冲突 | [ADR 0030](adr/0030-item-lifecycle-merge-and-purge.md) |
+| 内置 agent 会话、`.fsx` 工作流与 MCP 协作 | [ADR 0036](adr/0036-agent-sessions-fsx-workflows-and-mcp-collaboration.md) |
 | 性能 fixture、运行方式与基准限制 | `tests/Patchouli.Performance` 与 `scripts/run-perf.ps1` |
 
 已完成能力的新行为约束写入相应领域文档/契约；改变架构决策时更新 ADR。PRD 只保留顶部能力摘要与尚未关闭的产品范围，避免再次堆积已交付的需求和验收表。

@@ -23,8 +23,24 @@ public interface IOcrRunCoordinator
         IReadOnlyList<PageId> pageIds, CancellationToken cancellationToken = default,
         IProgress<OcrTaskStageProgress>? progress = null);
 
+    /// <summary>Produces a working region result; a region must never be auto-adopted as a whole physical page.</summary>
     Task<Result<OcrRun>> RunPresetOnRegionAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
         PageId pageId, NormalizedBBox regionBBox, CancellationToken cancellationToken = default);
+
+    /// <summary>Produces a temporary working result without adopting it, regardless of preset auto-apply.</summary>
+    Task<Result<OcrRun>> RunWorkingOnPageAsync(DocumentInstanceId documentInstanceId, OcrPresetId presetId,
+        PageId pageId, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<OcrRun>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Working-only page OCR is not supported by this coordinator."));
+    }
+
+    /// <summary>Deletes an OCR run's uncommitted outputs without deleting its audit record or an edit session.</summary>
+    Task<Result> DiscardWorkingRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result.Failure(AppErrorCodes.UnsupportedOperation,
+            "Working OCR output cleanup is not supported by this coordinator."));
+    }
 
     Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(DocumentInstanceId documentInstanceId,
         OcrPresetId presetId, PageId pageId, NormalizedBBox regionBBox,

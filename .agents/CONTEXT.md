@@ -2,6 +2,13 @@
 
 Patchouli is a personal literature manager that treats user-owned source files as evidence-bearing documents. The domain language centers on stable bibliographic identity, relocatable files, immutable page-local Document Box Trees, searchable units, and text-only evidence references.
 
+The built-in agent keeps its original transcript append-only. Model requests preserve a stable
+cached prefix until 80% of the configured context capacity, then compact the whole active prefix
+and continue from a persisted summary. The session-local `history` tool retrieves original
+entries on demand; see [ADR 0040](adr/0040-cache-preserving-whole-prefix-compaction.md).
+
+Provider cards use masked password inputs to load saved API keys from `ICredentialStore`. A saved baseline distinguishes loading from replacement edits, so reopening does not rewrite credentials and in-flight saves preserve newer input. Secret values stay out of the `Llm` configuration, session history and diagnostics. Provider authentication and subscription-model selectors use guarded selection properties; null selections during control creation, detachment or list refresh cannot overwrite stored configuration. Async headless UI tests must explicitly use `Dispatch<T>(Func<Task<T>>, ...)` (or unwrap the returned nested task) so assertions after awaited operations actually execute.
+
 ## Standing Product Boundaries
 
 These boundaries are not backlog items. They are durable constraints that future PRDs should inherit unless an ADR explicitly replaces them.
@@ -32,7 +39,9 @@ SearchUnits are persisted derived text units generated one per non-suppressed le
 
 **MCP surface**:
 The virtual Library filesystem is resolved on demand through bounded runtime-host domain RPCs. One desktop or headless .NET host is the only authority for a Library database, cursors, revisions, projections and writes. The desktop host includes the UI and local MCP HTTP endpoint; `patchouli-cli` is a thin local client of that endpoint and auto-starts the same binary headlessly when no host exists. There is never a direct-SQL CLI path or second domain implementation. Directory paging, traversal and batch limits, command/output limits, and bounded rebuildable compiled-page caches constrain reads.
-MCP is **text-only** and the selected production surface is the structured `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` contract from ADR `0024`. MCP never edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. MCP 无法读取提供程序密钥. **Limited writes** of whole item bibliography projections and CSL styles are deliberate v3 product decisions under ADR `0023`: `put` is an atomic complete-resource replacement with no base-revision precondition, and is implemented behind the configured tool/write policy. The Bashkit virtual shell implementation has been removed from `main`; it exists only on the `feature/mcp-ab-benchmark` branch as historical benchmark evidence and is not the production MCP path. Unrelated metadata mutation remains out of scope.
+MCP is **text-only** and is a first-class human-machine collaboration interface, not a read-only inspection surface (ADR `0036`, amending `0010`). The production surface is the structured `patchouli.find`, `patchouli.fetch`, `patchouli.put`, `patchouli.cite`, and `patchouli.send` contract from ADR `0024` (as extended by ADR `0034` and ADR `0036`). **Capability boundaries are user-controlled**: the tool/write policy lets the user switch `put` and `send` off, returning MCP to read-only; **data boundaries are developer invariants** that no setting relaxes—MCP never edits bbox, triggers OCR, rebuilds indexes, exposes local paths, returns images, reveals file URLs, or leaks provider secrets/configuration. **Writes** of whole item bibliography projections and CSL styles (ADR `0023`) are atomic complete-resource replacements with no base-revision precondition, implemented behind the same configured tool/write policy. The Bashkit virtual shell implementation has been removed from `main`; it exists only on the `feature/mcp-ab-benchmark` branch as historical benchmark evidence and is not the production MCP path. Unrelated metadata mutation remains out of scope.
+
+MCP capability settings use a VFS domain × verb matrix (ADR [0038](adr/0038-chat-fsi-repl-and-vfs-permission-matrix.md)); every shared command checks its requested domain, including restored cursor scopes. Built-in chat and workflow sessions always have a session-local FSI REPL, started lazily on first execution; the chat page has no enable/disable control. FSI is a trusted .NET execution surface with full host privileges and is independent of the MCP matrix. Its interpreter bindings are process-local; its completed results remain in durable history.
 
 
 **Snapshot branches**:
@@ -40,6 +49,11 @@ Snapshot divergence creates a Snapshot Branch. Branches are inspected and import
 
 **Provider credentials**:
 ProviderCredential values are user-owned secrets for OCR/HTR providers. They may be present in trusted-user-device sync only through the mutable sensitive credential path, never in immutable historical content shards, never in MCP, and never in logs.
+
+**Desktop settings**:
+The settings sidebar has seven groups: 外观与阅读, 书库与本机文件, 导入与识别, AI集成, 元数据来源, 搜索, and 同步与快照. Library paths and managed local files share one page; import policy and OCR engines share another, including the multimodal OCR provider/model selection. AI集成 has separate 模型与翻译, 工作流, and MCP 服务与权限 tabs. Providers and credentials remain shared by translation and OCR. Stable section ids route menu shortcuts independently of icons. A flat section registry owns loading, dirty state, save, and discard so navigation grouping never hides a draft from auto-save. Workflow definitions and scripts are explicitly saved from a modal editor with F# highlighting, line numbers, undo, and unsaved-change protection; built-in and locked definitions remain read-only.
+
+Incomplete provider connections persist with an explicit `IsAdded` flag; API keys remain in the credential store. Invalid library exclusion patterns, OCR engine choices, search rules, and incomplete sync bindings are saved as typed device-local drafts beside the user settings file (`.drafts.json`), with visible completion errors. They do not replace executable configuration until valid. Auto-save isolates failures per section and drains newer edits without falsely clearing their dirty state. Permission cells are disabled for unsupported resource verbs. Workflow menu launches open the chat tab and select the returned session id, including already finished sessions.
 
 ## Language
 
@@ -102,11 +116,11 @@ An optional `logical_page` root used only when one scanned physical Page contain
 The deterministic, ephemeral Markdown projection of a DocumentTreeRevision. The central Markdig pipeline produces validation, plain text, and native-preview nodes; AST and UI SourceMap are never persisted or synced.
 
 **Page Translation**:
-The box-derived full-text translation of one physical Page. It is stored per content box (`translation_boxes`) under a per-page header (`page_translations`) and compiled on demand into a whole-page Markdown that shares the source page's box ids and SourceMap, so a partially translated page is still one structurally valid document and UI source-map linkage is unchanged. It is derived data over the current committed DocumentTreeRevision: a tree change expires only the boxes whose source payload changed or disappeared, and reading a stale page realigns it first. Patchouli ships no translation engine; external agents read the source page through MCP and `put` a structurally identical translated page to `patchouli://translations/{document-id}/page-{index}.md`. A translation never becomes the source of record for page text (ADR `0034`).
+The box-derived full-text translation of one physical Page. It is stored per content box (`translation_boxes`) under a per-page header (`page_translations`) and compiled on demand into a whole-page Markdown that shares the source page's box ids and SourceMap, so a partially translated page is still one structurally valid document and UI source-map linkage is unchanged. It is derived data over the current committed DocumentTreeRevision: a tree change expires only the boxes whose source payload changed or disappeared, and reading a stale page realigns it first. Translation is written through the same `put` contract by a built-in or external agent: the agent reads the source page and `put`s a structurally identical translated page to `patchouli://translations/{document-id}/page-{index}.md`, and the host derives the box-level `translation_boxes` rows from it. Patchouli now ships a built-in agent session platform (ADR `0036`), so the former premise that Patchouli ships no translation engine is void; the storage and structural-validation contract of ADR `0034` remains unchanged. A translation never becomes the source of record for page text (ADR `0034`).
 _Avoid_: Bilingual blob, translated revision, machine-translation provider, translation of a logical page
 
 **Book Reading Mode**:
-A full-tab reading surface inside the PDF workspace tab, entered from the toolbar's 阅读模式 button and left via 退出. A `ReadingView` control renders the DocumentInstance's compiled Markdown pages as `ReadingScene`s loaded on demand through `IBookReadingStream` (list indices + per-page compile): the workspace keeps a window around the current page (initial ±2/+8, batches of 8 when the reader scrolls near either edge), never the whole book. The session caches delivered pages so a view recreated by a tab switch replays them (`ReplayBookReading`); the cache dies on exit so fixes made in the workbench show up on re-entry. Page boundaries are not in-flow headings: the page rail is part of the reading scroller's content and pins one 第 N 页 badge per page at the measured top of that page's first block (`GetMeasuredBlocks`), so a badge stays block-aligned at every scroll offset; clicking a badge exits reading mode and navigates the workbench to that page. Its font family and size are device-local `UiPreferences` (`ReadingFontFamily`/`ReadingFontSize`), adjustable from the reading toolbar and the 外观与显示 settings section. It is text-only reading: no box-level traceability, no editing.
+A full-tab reading surface inside the PDF workspace tab, entered from the toolbar's 阅读模式 button and left via 退出. A `ReadingView` control renders the DocumentInstance's compiled Markdown pages as `ReadingScene`s loaded on demand through `IBookReadingStream` (list indices + per-page compile): the workspace keeps a window around the current page (initial ±2/+8, batches of 8 when the reader scrolls near either edge), never the whole book. The session caches delivered pages so a view recreated by a tab switch replays them (`ReplayBookReading`); the cache dies on exit so fixes made in the workbench show up on re-entry. Page boundaries are not in-flow headings: the page rail is part of the reading scroller's content and pins one 第 N 页 badge per page at the measured top of that page's first block (`GetMeasuredBlocks`), so a badge stays block-aligned at every scroll offset; clicking a badge exits reading mode and navigates the workbench to that page. Its font family and size are device-local `UiPreferences` (`ReadingFontFamily`/`ReadingFontSize`), adjustable from the reading toolbar and the 外观与阅读 settings section. It is text-only reading: no box-level traceability, no editing.
 _Avoid_: replacing the library-shell IsReadingMode concept (a different, page-level mode); unloading far-away pages (the window only grows — offsets and badge geometry assume loaded pages stay put)
 
 **OCR Preset**:
@@ -118,6 +132,27 @@ An immutable version of an OCR Preset used for OCR provenance. Rebinding paths, 
 
 **OCR Run**:
 An attempt to produce OCR/HTR output for a DocumentInstance, page set, or region using a specific OCR Preset Version.
+
+**Workflow**:
+
+Workflow scripts now export a cold, typed `AgentWorkflow` value that controls the existing
+agent through `AgentCore.chatStep`: typed agent stages, tool scopes, budgets, routing and
+bounded immutable refinement. The former imperative script API was removed by ADR `0039`.
+See [the workflow API](workflow-api.md) for authoring and verification boundaries.
+A `.fsx` script plus its metadata (stable ID, name, description, script entry, parameter definitions, applicable selection scope, lock state, menu placement) that is saved with the Library. A Workflow runs in-process with host permissions and is designed for user-trusted local scripts, not as a sandbox. A session stores a snapshot of its Workflow, so editing a Workflow affects only later sessions; the built-in full-text translation Workflow is locked by default. Workflow definitions are user configuration managed separately from Session data.
+_Avoid_: Task, script file, job definition
+
+**Session**:
+An agent conversation run driven by a Workflow. Session data is auxiliary Library data kept in one directory per session (message/event history, launch parameters, script snapshot, current step and completed results, pending messages and calls, run status) and can be physically purged without touching bibliographic records, source files, translations, or OCR output. A Session's lifecycle is owned by the host session service; a missing session directory does not prevent the Library from opening.
+_Avoid_: Job, task, thread
+
+**Run**:
+The run projection of an OCR task or an agent Session, observed through `patchouli://runs/`. OCR runs and agent Sessions report their own status and incremental events and do not share a queue, scheduler, or state machine; `runs/` does not unify their states. A Run is a volatile runtime resource: it is not part of snapshots and cannot be `put`.
+_Avoid_: Job, task queue, unified run state
+
+**Chat Tab**:
+The chat surface for Sessions: session list, session view (message stream, tool/progress events), and message input, with stop/resume controls. Closing a chat tab only removes the frontend; it never stops the Session, which is an independent operation. Opening a chat tab alone does not start any Session.
+_Avoid_: Task queue view, window, dialog
 
 **Working Revision**:
 A previewable page-local revision produced by OCR import or manual editing. It becomes visible to search, evidence, and MCP only after in-place commit. A failed or cancelled working revision is deleted.
@@ -148,7 +183,7 @@ A user-owned token, key, or credential used by OCR/HTR providers. It is never ex
 _Avoid_: Provider config, secret in shard
 
 **MCP surface**:
-The text-only external surface for library exploration, evidence retrieval, citation rendering, and—when enabled—limited whole-resource writes of item bibliography and CSL styles (ADR `0023`). Production uses `patchouli.find`, `patchouli.fetch`, `patchouli.put`, and `patchouli.cite` under ADR `0024`, served by the one desktop or headless runtime host for the Library. CLI is a local MCP client of that host; remote/local agent clients use the same service. All agents can fetch the fixed `patchouli://library.toon` projection (`library_id`, `display_name`, and—when the device-local `ExposeLibraryTags`/`ExposeLibraryCollections` policy allows—sorted tags and collections with item counts; collections include empty ones). Item filtering supports exact `collection_id` and exact case-sensitive `tag` clauses intersecting with AND; hiding a category returns `PERMISSION_DENIED` for that filter and removes it from relationship output. There is no `/collections` VFS directory and no collection URI, and Collections are MCP write-protected. A fourth root, `patchouli://translations/`, exposes the derived page translations: a document directory lists translation progress, a document directory lists per-page status (`untranslated`/`partial`/`translated`/`stale`), and `patchouli://translations/{document-id}/page-{index}.md` is a writable whole-page translation that must be structurally identical to the source page Markdown. MCP never exposes local paths, provider secrets, images, file URLs, or OCR/index actions. `.NET` remains the sole domain authority for Library data.
+A first-class, text-only human-machine collaboration interface for library exploration, evidence retrieval, citation rendering, and controlled interaction with agent runs and workflows (ADR `0036`, amending `0010` and `0023`). Production uses `patchouli.find`, `patchouli.fetch`, `patchouli.put`, `patchouli.cite`, and `patchouli.send` under ADR `0024` (as extended by ADR `0034` and ADR `0036`), served by the one desktop or headless runtime host for the Library. CLI is a local MCP client of that host; remote/local agent clients use the same service. All agents can fetch the fixed `patchouli://library.toon` projection (`library_id`, `display_name`, and—when the device-local `ExposeLibraryTags`/`ExposeLibraryCollections` policy allows—sorted tags and collections with item counts; collections include empty ones). Item filtering supports exact `collection_id` and exact case-sensitive `tag` clauses intersecting with AND; hiding a category returns `PERMISSION_DENIED` for that filter and removes it from relationship output. There is no `/collections` VFS directory and no collection URI, and Collections are MCP write-protected. A fourth root, `patchouli://translations/`, exposes the derived page translations: a document directory lists translation progress, a document directory lists per-page status (`untranslated`/`partial`/`translated`/`stale`), and `patchouli://translations/{document-id}/page-{index}.md` is a writable whole-page translation that must be structurally identical to the source page Markdown. Two further roots, `patchouli://runs/` and `patchouli://workflows/`, expose run observation and workflow discovery/launch (see **Run** and **Workflow**). Capability boundaries are user-controlled: `put` and `send` are switchable tool/write-policy entries that return MCP to read-only when disabled (ADR `0036`). Data boundaries are developer invariants regardless of that policy: MCP never exposes local paths, provider secrets, images, file URLs, or OCR/index actions, and it cannot read provider keys. `.NET` remains the sole domain authority for Library data.
 
 
 ## Library Lifecycle And Search UI
@@ -164,6 +199,12 @@ The text-only external surface for library exploration, evidence retrieval, cita
 Switching modes keeps input and filter rows. Enter and the search button use the same command; both modes recognize `patchouli://` navigation. Empty full-text input prompts for terms; bibliographic search accepts filters alone, otherwise prompts for terms or filters. Opening the advanced-filter form does not itself run a search. Copy/export evidence and Markdown, explicit UI index rebuild, and stale/partial/unavailable indicators remain available.
 
 ## Desktop View And Dialog Vocabulary
+
+The mixed agent SDK is implemented (workflow snapshot API `/5`): native FC and session-local FSI
+functions share validation and durable operation receipts; chat and workflows share AgentDriver.
+Cold immutable pipelines checkpoint node outputs and branch/loop routes. Translation binds page
+targets in `commitTranslation` and derives completion from receipts. Interrupted FSI blocks and
+unknown writes are not blindly replayed. See [workflow-api](workflow-api.md) for APIs and recovery limits.
 
 - **Library / 书库**: the ProDataGrid Item list, tag and collection sidebars and selected-Item inspector. The collection section lists one-level playlists sorted by name, filters the grid to a selected collection, and accepts Item drag/drop, rename, and dissolve actions. Source fields are type-aware; column visibility, width, order and sorting use persisted UI preferences. Search grids follow the library column settings.
 - **Trash / 回收站**: a library section with restore/permanent-purge actions; tag navigation and content-edit/OCR entry points are hidden.

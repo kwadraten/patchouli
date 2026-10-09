@@ -233,13 +233,14 @@ public static class BiblatexFieldMapper
             return creator.Literal.Trim();
         }
 
-        return string.Join('\u001f', new[]
+        string[] parts =
         {
             creator.Family?.Trim() ?? string.Empty,
             creator.Given?.Trim() ?? string.Empty,
             creator.Particles?.Trim() ?? string.Empty,
             creator.Suffix?.Trim() ?? string.Empty
-        });
+        };
+        return parts.All(static part => part.Length == 0) ? string.Empty : string.Join('\u001f', parts);
     }
 
     public static string CreatorMatchKey(ItemCreator creator)

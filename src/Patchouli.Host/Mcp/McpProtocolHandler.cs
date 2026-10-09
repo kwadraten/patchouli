@@ -1,5 +1,8 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using Microsoft.FSharp.Core;
+using Patchouli.Agent;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Diagnostics;
@@ -29,16 +32,25 @@ public sealed class McpProtocolHandler
         Action<Exception, string>? unexpectedException = null,
         Func<object, string>? toonEncoder = null,
         IHostActivityTracker? activityTracker = null,
-        CancellationToken hostLifetime = default)
+        CancellationToken hostLifetime = default,
+        IMcpAgentRunsApi? agentRuns = null, IMcpWorkflowRunsApi? workflowRuns = null,
+        IMcpOcrRunsApi? ocrRuns = null)
     {
+        McpServerSettings effectiveSettings =
+            settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow);
         _readApi = api;
+        // The user tool switches gate put/send exactly like every other write capability (D1): a
+        // disabled switch surfaces as PERMISSION_DENIED from the command service, while find/fetch/
+        // cite stay untouched. The transport additionally hides a fully disabled tool from tools/list.
         _commands = new McpCommandService(api, writes, biblatex, items, evidenceReader,
-            (settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow))
-            .ExposeLibraryTags,
-            (settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow))
-            .ExposeLibraryCollections);
+            effectiveSettings.ExposeLibraryTags,
+            effectiveSettings.ExposeLibraryCollections,
+            agentRuns, workflowRuns, ocrRuns,
+            !IsSwitchOff(effectiveSettings, "patchouli.put"),
+            !IsSwitchOff(effectiveSettings, "patchouli.send"),
+            _ => Task.FromResult(effectiveSettings));
         _ = db;
-        _settings = settings ?? McpServerSettingsService.DefaultSettings(DateTimeOffset.UtcNow) with
+        _settings = effectiveSettings with
         {
             AuthRequired = false
         };
@@ -46,6 +58,12 @@ public sealed class McpProtocolHandler
         _toonEncoder = toonEncoder ?? McpCommandService.DefaultToonEncoder;
         _activityTracker = activityTracker;
         _hostLifetime = hostLifetime;
+    }
+
+    private static bool IsSwitchOff(McpServerSettings settings, string toolName)
+    {
+        return settings.ToolOverrides.Any(value =>
+            string.Equals(value.ToolName, toolName, StringComparison.Ordinal) && !value.Enabled);
     }
 
     public McpProtocolHandler(IMcpReadApi api, SqliteConnectionFactory db,
@@ -178,6 +196,51 @@ public sealed class McpProtocolHandler
                JsonSerializer.Serialize(McpOutputSanitizer.Sanitize(message)) + "}}";
     }
 
+    /// <summary>Validates agent arguments against the same schemas published by tools/list.</summary>
+    public static string? ValidateToolArguments(string name, JsonElement arguments)
+    {
+        ToolDefinition? tool = Tools().FirstOrDefault(definition => definition.Name == name);
+        if (tool is null)
+        {
+            return $"Unknown tool '{name}'.";
+        }
+
+        Dictionary<string, Agent.ToolValueType> fields = tool.Properties.ToDictionary(
+            pair => pair.Key, pair => ArgumentType(pair.Value), StringComparer.Ordinal);
+        Agent.ToolArgumentSchema schema = new(fields, new HashSet<string>(tool.Required, StringComparer.Ordinal));
+        FSharpResult<Unit, ToolProtocolError> decoded =
+            Agent.ToolProtocolModule.validateArguments(schema, arguments.GetRawText());
+        return decoded.IsError ? Agent.ToolProtocolModule.describe(decoded.ErrorValue) : null;
+    }
+
+    private static Agent.ToolValueType ArgumentType(ToolSchemaProperty schema)
+    {
+        return schema.Type switch
+        {
+            "string" => Agent.ToolValueType.Text,
+            "integer" => Agent.ToolValueType.Integer,
+            "boolean" => Agent.ToolValueType.Boolean,
+            "array" when schema.Items is { } item => Agent.ToolValueType.NewArray(ArgumentType(item)),
+            _ => throw new InvalidOperationException($"Unsupported published tool type '{schema.Type}'.")
+        };
+    }
+
+    public static IReadOnlyList<string> AgentToolDefinitions()
+    {
+        return Tools().Where(tool => tool.Name != "patchouli.send").Select(tool =>
+        {
+            JsonObject wire = JsonSerializer.SerializeToNode(tool.ToWire())!.AsObject();
+            return new JsonObject
+            {
+                ["type"] = "function", ["function"] = new JsonObject
+                {
+                    ["name"] = tool.Name["patchouli.".Length..], ["description"] = tool.Description,
+                    ["parameters"] = wire["inputSchema"]!.DeepClone()
+                }
+            }.ToJsonString();
+        }).ToArray();
+    }
+
     private static ToolDefinition[] Tools()
     {
         return
@@ -245,7 +308,28 @@ public sealed class McpProtocolHandler
                         "Return only the bibliography without inline citations."),
                     ["html"] = ToolSchemaProperty.Boolean("Include the HTML rendering."),
                     ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
-                })
+                }),
+            new ToolDefinition(
+                "patchouli.send",
+                "Drive agent sessions and workflows with a typed instruction; observed results are read back through patchouli://runs/.",
+                ["instruction"],
+                new Dictionary<string, ToolSchemaProperty>(StringComparer.Ordinal)
+                {
+                    ["instruction"] = ToolSchemaProperty.String(
+                        "Instruction verb: \"start\", \"message\", \"cancel\" or \"resume\"."),
+                    ["workflow"] = ToolSchemaProperty.String(
+                        "start: workflow URI (patchouli://workflows/{workflow-id})."),
+                    ["parameters"] = ToolSchemaProperty.Array(
+                        "start: launch parameters as NAME=VALUE entries.",
+                        ToolSchemaProperty.String("NAME=VALUE launch parameter.")),
+                    ["session"] = ToolSchemaProperty.String(
+                        "message/cancel/resume: target session URI (patchouli://runs/agent/{session-id})."),
+                    ["message_id"] = ToolSchemaProperty.String(
+                        "message: caller-generated id used to deduplicate retries."),
+                    ["text"] = ToolSchemaProperty.String("message: the user message text."),
+                    ["format"] = ToolSchemaProperty.String("Response encoding: \"toon\" (default) or \"json\".")
+                },
+                false)
         ];
     }
 
@@ -288,6 +372,7 @@ public sealed class McpProtocolHandler
                 "patchouli.fetch" => await FetchAsync(a, ct),
                 "patchouli.cite" => await CiteAsync(a, ct),
                 "patchouli.put" => await PutAsync(a, ct),
+                "patchouli.send" => await SendAsync(a, ct),
                 _ => throw new McpArgumentException("Unknown tool.")
             };
         }
@@ -383,12 +468,82 @@ public sealed class McpProtocolHandler
         return await ToToolResponseAsync("cite", result, format, ct);
     }
 
+    private async Task<object> SendAsync(JsonElement arguments, CancellationToken ct)
+    {
+        RejectUnknownArguments(arguments, SendArgumentKeys);
+        string instruction = RequiredString(arguments, "instruction");
+        string? workflow = OptionalString(arguments, "workflow");
+        string? session = OptionalString(arguments, "session");
+        string? messageId = OptionalString(arguments, "message_id");
+        string? text = OptionalString(arguments, "text");
+        IReadOnlyList<McpSendParameter>? parameters = ParseSendParameters(arguments);
+        string format = ResponseFormat(arguments);
+
+        McpCommandResult<McpSendMeta, McpSendResult> result = await _commands.SendAsync(
+            new McpSendRequest(instruction, workflow, parameters, session, messageId, text), ct);
+        if (result.Envelope is null && result.Error is not null)
+        {
+            // Failures carry no command envelope of their own; rebuild one with the actual verb so
+            // the send meta stays schema-shaped instead of falling back to a foreign meta variant.
+            string revision = await CurrentLibraryRevisionAsync(ct);
+            object envelope = McpEnvelope<McpSendMeta, object>.Create(
+                new McpSendMeta(revision, NormalizeInstruction(instruction), false, "pending"),
+                [], message: new McpMessage(result.Error.ToTerminalLine(), []));
+            return ToolData(RenderText(envelope, format), true);
+        }
+
+        return await ToToolResponseAsync("send", result, format, ct);
+    }
+
+    private static string NormalizeInstruction(string instruction)
+    {
+        return instruction is "start" or "message" or "cancel" or "resume" ? instruction : "start";
+    }
+
+    private static IReadOnlyList<McpSendParameter>? ParseSendParameters(JsonElement arguments)
+    {
+        if (arguments.ValueKind != JsonValueKind.Object ||
+            !arguments.TryGetProperty("parameters", out JsonElement value) ||
+            value.ValueKind == JsonValueKind.Null)
+        {
+            return null;
+        }
+
+        if (value.ValueKind != JsonValueKind.Array)
+        {
+            throw new McpArgumentException("parameters must be an array of NAME=VALUE strings.");
+        }
+
+        List<McpSendParameter> parsed = [];
+        foreach (JsonElement item in value.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                throw new McpArgumentException("parameters must contain NAME=VALUE strings.");
+            }
+
+            string clause = item.GetString()!;
+            int separator = clause.IndexOf('=');
+            if (separator <= 0)
+            {
+                throw new McpArgumentException("parameters must use the NAME=VALUE form.");
+            }
+
+            parsed.Add(new McpSendParameter(clause[..separator], clause[(separator + 1)..]));
+        }
+
+        return parsed;
+    }
+
     private static readonly string[] FindArgumentKeys =
         ["query", "in", "where", "literal", "limit", "cursor", "detail", "format"];
 
     private static readonly string[] FetchArgumentKeys = ["uris", "range", "limit_bytes", "format"];
     private static readonly string[] PutArgumentKeys = ["uri", "content", "format"];
     private static readonly string[] CiteArgumentKeys = ["refs", "style", "locale", "bibliography", "html", "format"];
+
+    private static readonly string[] SendArgumentKeys =
+        ["instruction", "workflow", "parameters", "session", "message_id", "text", "format"];
 
     private static void RejectUnknownArguments(JsonElement arguments, IReadOnlyCollection<string> allowed)
     {
@@ -954,6 +1109,9 @@ public static class McpErrorEnvelope
                 new McpFetchMeta(libraryRevision), [], message: new McpMessage(error.ToTerminalLine(), [])),
             "cite" => McpEnvelope<McpCiteMeta, object>.Create(
                 new McpCiteMeta(libraryRevision, null, null, "text", null), [],
+                message: new McpMessage(error.ToTerminalLine(), [])),
+            "send" => McpEnvelope<McpSendMeta, object>.Create(
+                new McpSendMeta(libraryRevision, "start", false, "pending"), [],
                 message: new McpMessage(error.ToTerminalLine(), [])),
             _ => McpEnvelope<McpPutMeta, object>.Create(
                 new McpPutMeta(libraryRevision), [], message: new McpMessage(error.ToTerminalLine(), []))

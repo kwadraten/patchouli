@@ -66,6 +66,9 @@ public sealed class OcrQueueTaskExecutor : IOcrQueueTaskExecutor
                 {
                     OcrQueueTaskKind.Document => await _engine.RunPresetOnDocumentAsync(task.DocumentInstanceId,
                         task.PresetId, cancellationToken, stageProgress),
+                    OcrQueueTaskKind.MockPages when !task.CommitOnCompletion && task.PageIds.Count == 1 =>
+                        await _engine.RunWorkingOnPageAsync(task.DocumentInstanceId, task.PresetId,
+                            task.PageIds.Single(), cancellationToken),
                     OcrQueueTaskKind.MockPages => await _engine.RunPresetOnPagesAsync(task.DocumentInstanceId,
                         task.PresetId, task.PageIds, cancellationToken, stageProgress),
                     OcrQueueTaskKind.ImagePage => await _engine.RunPresetOnImagePageAsync(task.DocumentInstanceId,

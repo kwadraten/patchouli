@@ -1,11 +1,13 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
+using System.Xml;
 using System.Xml.Linq;
 using Avalonia;
 using Avalonia.Controls.Primitives;
 using Avalonia.Media;
 using Avalonia.Platform;
+using Patchouli.UI.Diagnostics;
 
 namespace Patchouli.Lucide.Avalonia;
 
@@ -80,6 +82,26 @@ public sealed class Lucide : TemplatedControl
     }
 
     private static SvgIcon LoadIcon(string icon)
+    {
+        try
+        {
+            return ReadIcon(icon);
+        }
+        catch (Exception exception) when (exception is IOException or XmlException or FormatException or
+                                              InvalidOperationException)
+        {
+            UnexpectedExceptions.Sink.Report(exception, "lucide-icon", icon);
+            // Cache a visible placeholder so an unavailable icon cannot terminate the render loop.
+            return new SvgIcon(2, PenLineCap.Round, PenLineJoin.Round,
+            [
+                new EllipseShape(12, 12, 9, 9),
+                new LineShape(new Point(12, 7), new Point(12, 13)),
+                new LineShape(new Point(12, 17), new Point(12, 17.1))
+            ]);
+        }
+    }
+
+    private static SvgIcon ReadIcon(string icon)
     {
         string fileName = ToKebabCase(icon) + ".svg";
         Uri uri = new($"avares://Patchouli.UI/Assets/Lucide/{fileName}");

@@ -4,11 +4,14 @@ using System.Text.Json;
 using Dapper;
 using Microsoft.Data.Sqlite;
 using Patchouli.Core.Bibliography;
+using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
 using Patchouli.Core.Library;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
 using Patchouli.Infrastructure.Database;
+using Patchouli.Infrastructure.Import;
 
 namespace Patchouli.Infrastructure.Bibliography;
 
@@ -38,6 +41,15 @@ public sealed class ItemService : IItemService
         CancellationToken cancellationToken = default)
     {
         return await CreateItemCoreAsync(request, cancellationToken);
+    }
+
+    public Task<Result<ItemMetadata>> CreateItemWithPrimaryDocumentAsync(
+        CreateItemRequest request,
+        FileAssetId fileAssetId,
+        string? documentTitle = null,
+        CancellationToken cancellationToken = default)
+    {
+        return CreateItemCoreAsync(request, cancellationToken, new PrimaryDocumentImport(fileAssetId, documentTitle));
     }
 
     public async Task<Result<ItemMetadata>> CreateItemAsync(
@@ -1430,7 +1442,8 @@ public sealed class ItemService : IItemService
 
     private async Task<Result<ItemMetadata>> CreateItemCoreAsync(
         CreateItemRequest request,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        PrimaryDocumentImport? primaryDocument = null)
     {
         if (string.IsNullOrWhiteSpace(request.Title))
         {
@@ -1461,6 +1474,48 @@ public sealed class ItemService : IItemService
             await connection.OpenAsync(cancellationToken);
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
+            ImportedFileRow? importedFile = null;
+            if (primaryDocument is not null)
+            {
+                importedFile = await connection.QuerySingleOrDefaultAsync<ImportedFileRow>(new CommandDefinition(
+                    """
+                    select library_id as LibraryId, full_blake3 as FullBlake3, status as Status
+                    from file_assets where file_asset_id = @FileAssetId;
+                    """,
+                    new { FileAssetId = primaryDocument.FileAssetId.ToString() }, transaction,
+                    cancellationToken: cancellationToken));
+                if (importedFile is null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<ItemMetadata>.Failure(AppErrorCodes.NotFound, "File asset was not found.");
+                }
+
+                if (!string.Equals(importedFile.LibraryId, item.LibraryId.ToString(), StringComparison.Ordinal))
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<ItemMetadata>.Failure(AppErrorCodes.LibraryMismatch,
+                        "File asset belongs to a different library than the item.");
+                }
+
+                if (string.IsNullOrWhiteSpace(importedFile.FullBlake3))
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<ItemMetadata>.Failure(AppErrorCodes.ValidationFailed,
+                        "Automatic import requires verified file content.");
+                }
+
+                FileImportOwner? owner = await FileImportDeduplication.FindOwnerAsync(connection, transaction,
+                    item.LibraryId, primaryDocument.FileAssetId, importedFile.FullBlake3, cancellationToken);
+                if (owner is not null)
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return Result<ItemMetadata>.Failure(AppErrorCodes.Conflict,
+                        owner.IsDeleted
+                            ? $"File content already belongs to item {owner.ItemId} in the trash. Restore that item to reuse it."
+                            : $"File content already belongs to item {owner.ItemId}. Import metadata into that item.");
+                }
+            }
+
             await connection.ExecuteAsync(
                 """
                 insert into items (
@@ -1481,6 +1536,34 @@ public sealed class ItemService : IItemService
 
             await ReplaceCreatorsAsync(connection, transaction, itemId, creatorInputs, now);
             await ReplaceDatesAsync(connection, transaction, itemId, dateInputs, now);
+            DocumentInstanceId? importedDocumentId = null;
+            if (primaryDocument is not null)
+            {
+                importedDocumentId = DocumentInstanceId.New();
+                await connection.ExecuteAsync(new CommandDefinition(
+                    """
+                    insert into document_instances (
+                        document_instance_id, item_id, file_asset_id, title, instance_type,
+                        is_primary, status, created_at, updated_at
+                    ) values (
+                        @DocumentInstanceId, @ItemId, @FileAssetId, @Title, @InstanceType,
+                        1, @Status, @Now, @Now
+                    );
+                    """,
+                    new
+                    {
+                        DocumentInstanceId = importedDocumentId.Value.ToString(),
+                        ItemId = itemId.ToString(),
+                        FileAssetId = primaryDocument.FileAssetId.ToString(),
+                        Title = NullIfWhiteSpace(primaryDocument.Title),
+                        InstanceType = DocumentInstanceType.PrimaryScan,
+                        Status = importedFile!.Status == FileAssetStatus.Missing
+                            ? DocumentInstanceStatus.MissingSource
+                            : DocumentInstanceStatus.Active,
+                        Now = FormatUtc(now)
+                    }, transaction, cancellationToken: cancellationToken));
+            }
+
             HashSet<string> identifierKeys = new(StringComparer.Ordinal);
             foreach (ItemIdentifierInput identifier in request.Identifiers ?? Array.Empty<ItemIdentifierInput>())
             {
@@ -1509,7 +1592,12 @@ public sealed class ItemService : IItemService
 
             Result<LibraryChangeSet?> revision = await IncrementRevisionAsync(
                 connection, transaction,
-                LibraryChangeSet.Empty with { ItemIds = [itemId], CollectionIds = collectionIds },
+                LibraryChangeSet.Empty with
+                {
+                    ItemIds = [itemId],
+                    CollectionIds = collectionIds,
+                    DocumentInstanceIds = importedDocumentId is { } documentId ? [documentId] : []
+                },
                 cancellationToken);
             if (revision.IsFailure)
             {
@@ -1530,6 +1618,15 @@ public sealed class ItemService : IItemService
         {
             return DatabaseFailure<ItemMetadata>(exception);
         }
+    }
+
+    private sealed record PrimaryDocumentImport(FileAssetId FileAssetId, string? Title);
+
+    private sealed class ImportedFileRow
+    {
+        public string LibraryId { get; init; } = string.Empty;
+        public string? FullBlake3 { get; init; }
+        public string Status { get; init; } = string.Empty;
     }
 
     private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(

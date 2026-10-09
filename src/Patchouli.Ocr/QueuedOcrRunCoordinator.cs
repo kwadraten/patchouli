@@ -118,6 +118,28 @@ public sealed class QueuedOcrRunCoordinator : IOcrRunCoordinator
             cancellationToken);
     }
 
+    public async Task<Result<OcrRun>> RunWorkingOnPageAsync(
+        DocumentInstanceId documentInstanceId, OcrPresetId presetId, PageId pageId,
+        CancellationToken cancellationToken = default)
+    {
+        Result<OcrPresetVersion> version = await _engine.ResolvePresetVersionAsync(presetId, cancellationToken);
+        if (version.IsFailure)
+        {
+            return Result<OcrRun>.Failure(version.ErrorCode!, version.ErrorMessage!);
+        }
+
+        return await EnqueueAndAwaitAsync(queue => queue.EnqueueAsync(
+                new OcrQueueTaskRequest(documentInstanceId, presetId, [pageId], OcrQueueTaskKind.MockPages,
+                    version.Value.EngineId, AdapterKindFor(version.Value), ProviderIdFor(version.Value),
+                    OcrQueuePriority.InteractiveCurrentPage, CommitOnCompletion: false), cancellationToken),
+            cancellationToken);
+    }
+
+    public Task<Result> DiscardWorkingRunAsync(OcrRunId runId, CancellationToken cancellationToken = default)
+    {
+        return _engine.DiscardWorkingRunAsync(runId, cancellationToken);
+    }
+
     public Task<Result<OcrRegionCandidate>> RecognizeRegionCandidateAsync(
         DocumentInstanceId documentInstanceId,
         OcrPresetId presetId,

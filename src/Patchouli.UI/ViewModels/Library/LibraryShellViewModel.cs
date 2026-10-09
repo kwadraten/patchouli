@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
@@ -434,9 +434,38 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public AsyncCommand EditSelectedItemCommand => _main.EditSelectedItemCommand;
 
+    [ExcludeFromDerivedGeneration] public AsyncCommand CreateItemMenuCommand => _main.CreateItemMenuCommand;
+
+    [ExcludeFromDerivedGeneration] public AsyncCommand OpenCslStyleManagerCommand => _main.OpenCslStyleManagerCommand;
+
+    [ExcludeFromDerivedGeneration]
+    public UiCommandDescriptor ImportBiblatexBatchDescriptor => _main.ImportBiblatexBatchDescriptor;
+
+    [ExcludeFromDerivedGeneration]
+    public UiCommandDescriptor ExportBiblatexDescriptor => _main.ExportBiblatexDescriptor;
+
+    [ExcludeFromDerivedGeneration] public UiCommandDescriptor CopyBiblatexDescriptor => _main.CopyBiblatexDescriptor;
+
     [ExcludeFromDerivedGeneration] public AsyncCommand ShowReadingCommand => _main.ShowReadingCommand;
 
     [ExcludeFromDerivedGeneration] public AsyncCommand RunSelectedItemOcrCommand => _main.RunSelectedItemOcrCommand;
+
+    /// <summary>
+    ///     The workflow entries of the Library context menu: the very collection the menu bar shows, so
+    ///     both surfaces list the same <c>WorkflowStore</c> definitions in the same order (plan §3.8).
+    /// </summary>
+    [ExcludeFromDerivedGeneration]
+    public ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries => _main.WorkflowMenuEntries;
+
+    /// <summary>True when at least one workflow opted into the menus.</summary>
+    [ExcludeFromDerivedGeneration]
+    public bool HasWorkflowMenuEntries => _main.HasWorkflowMenuEntries;
+
+    /// <summary>Rebuilds the context-menu entries against the current selection (called as it opens).</summary>
+    public Task RefreshWorkflowMenuAsync()
+    {
+        return _main.RefreshWorkflowMenuAsync();
+    }
 
     [ExcludeFromDerivedGeneration]
     public UiCommandDescriptor CopyCslBibliographyDescriptor => _main.CopyCslBibliographyDescriptor;

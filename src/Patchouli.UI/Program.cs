@@ -11,6 +11,11 @@ internal static class Program
     [STAThread]
     public static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == Host.Agent.AgentFsiReplWorker.Switch)
+        {
+            return Host.Agent.AgentFsiReplWorker.RunAsync(args[1]).GetAwaiter().GetResult();
+        }
+
         if (args.Contains("--headless", StringComparer.Ordinal))
         {
             try

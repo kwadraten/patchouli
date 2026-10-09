@@ -29,6 +29,26 @@ namespace Patchouli.Tests;
 public sealed class FirstRunViewModelTests
 {
     [Fact]
+    public async Task ScanAndImport_counts_duplicate_content_as_skipped_and_accepts_repeat_scan()
+    {
+        await using ScanImportContext context = await ScanImportContext.CreateAsync();
+        TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "first.pdf");
+        TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "renamed-copy.pdf");
+        FirstRunImportResult first = await context.Workflow.ScanAndImportAsync(SelectedRoot(context.ScanRoot), null);
+        first.IsSuccess.Should().BeTrue(first.ErrorMessage);
+        first.ImportedCount.Should().Be(1);
+        first.SkippedDuplicateCount.Should().Be(1);
+        FirstRunImportResult repeat = await context.Workflow.ScanAndImportAsync(SelectedRoot(context.ScanRoot), null);
+        repeat.IsSuccess.Should().BeTrue(repeat.ErrorMessage);
+        repeat.ImportedCount.Should().Be(0);
+        repeat.FailedCount.Should().Be(0);
+        repeat.SkippedDuplicateCount.Should().Be(2);
+        await using SqliteConnection connection = context.Database.ConnectionFactory.CreateReadConnection();
+        await connection.OpenAsync();
+        (await connection.ExecuteScalarAsync<int>("select count(*) from items;")).Should().Be(1);
+    }
+
+    [Fact]
     public void FirstRunImportResult_reports_cancelled_scan_as_cancelled_outcome()
     {
         FirstRunWorkflowState state = new(
@@ -204,6 +224,7 @@ public sealed class FirstRunViewModelTests
         await using ScanImportContext context = await ScanImportContext.CreateAsync(rootAccess);
         TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "a-local.pdf");
         string cloudPath = TestFixtures.CopyRealThreePagePdfTo(context.ScanRoot, "b-cloud.pdf");
+        await File.AppendAllTextAsync(cloudPath, "\n% Distinct cloud PDF content.\n");
         List<string> progressMessages = [];
 
         FirstRunImportResult result = await context.Workflow.ScanAndImportAsync(

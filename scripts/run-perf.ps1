@@ -18,7 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $OutputDirectory) {
-    $OutputDirectory = Join-Path $root 'artifacts\perf'
+    $OutputDirectory = Join-Path $root '.tmp\perf'
 }
 if ($Iterations -le 0) {
     $Iterations = if ($Profile -eq 'full') { 10 } else { 5 }

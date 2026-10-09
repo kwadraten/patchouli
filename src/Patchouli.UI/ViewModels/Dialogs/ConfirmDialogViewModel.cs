@@ -4,9 +4,10 @@ namespace Patchouli.UI.ViewModels.Dialogs;
 
 public enum ConfirmDialogResult
 {
+    // Closing a dialog without a result must never authorize an operation.
+    Cancel,
     Confirm,
-    Discard,
-    Cancel
+    Discard
 }
 
 public sealed class ConfirmDialogViewModel

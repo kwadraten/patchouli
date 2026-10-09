@@ -96,6 +96,8 @@ public sealed class WorkspaceManagerSingletonDisposeRegressionTests : IDisposabl
             // 5. 触发刷新（入队任务或调用 RefreshAsync 的路径）
             HostServices services = await main.ServicesAsync();
             IOcrQueueScheduler scheduler = (await services.GetOcrQueueAsync()).Value;
+            // Keep the test task queued while asserting the reopened view model updates.
+            await scheduler.StopAsync();
             Result<OcrQueueTask> enqueued = await scheduler.EnqueueMockPagesAsync(
                 DocumentInstanceId.New(), OcrPresetId.New(), [PageId.New()], OcrQueuePriority.UserStartedDocument);
             enqueued.IsSuccess.Should().BeTrue();

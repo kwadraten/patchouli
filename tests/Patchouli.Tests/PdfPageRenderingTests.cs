@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Microsoft.Data.Sqlite;
@@ -492,7 +492,8 @@ public sealed class PdfPageRenderingTests
                 "043_create_fts_row_map.sql",
                 "044_project_document_box_file_asset_refs.sql",
                 "045_project_item_tags.sql",
-                "046_track_local_maintenance.sql");
+                "046_track_local_maintenance.sql",
+                "047_index_file_import_content_hash.sql");
     }
 
     private sealed class Context : IAsyncDisposable

@@ -1,10 +1,14 @@
 using System.Collections.Generic;
 using System.Threading;
 using Avalonia.Headless;
+using Avalonia.Controls;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using FluentAssertions;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
+using Patchouli.UI.Views;
 
 namespace Patchouli.Tests;
 
@@ -14,6 +18,42 @@ namespace Patchouli.Tests;
 public sealed class ReadingFontSettingsTests : IDisposable
 {
     private readonly TemporaryAppSettingsFile _settings = new();
+
+    [Fact]
+    public async Task Font_picker_echoes_system_default_and_a_saved_font_missing_from_the_catalog()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            await using MainWindowViewModel vm = new(settingsPath: _settings.Path);
+            AppearanceSettingsViewModel section = vm.Settings.AppearanceSettings;
+            Window window = new() { Content = new SettingsPage { DataContext = vm.Settings } };
+            window.Show();
+            try
+            {
+                await vm.Settings.WaitForActiveSectionLoadAsync();
+                Dispatcher.UIThread.RunJobs();
+                ComboBox picker = window.GetVisualDescendants().OfType<ComboBox>()
+                    .Single(combo => ReferenceEquals(combo.ItemsSource, section.ReadingFontFamilies));
+                picker.SelectedItem.Should().Be("系统默认");
+                section.IsDirty.Should().BeFalse();
+                section.SelectedReadingFontOption = "Missing Test Font";
+                await section.SaveAsync();
+                await section.LoadAsync();
+                Dispatcher.UIThread.RunJobs();
+                picker.SelectedItem.Should().Be("Missing Test Font");
+                section.IsDirty.Should().BeFalse();
+                picker.SelectedItem = "系统默认";
+                section.SelectedReadingFontFamily.Should().BeEmpty();
+                await section.SaveAsync();
+                PatchouliAppSettings.Load(_settings.Path).Ui.ReadingFontFamily.Should().BeEmpty();
+            }
+            finally
+            {
+                window.Close();
+            }
+        }, CancellationToken.None);
+    }
 
     [Fact]
     public async Task Reading_font_changes_are_dirty_until_saved_and_persist()

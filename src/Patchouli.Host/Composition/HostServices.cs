@@ -49,8 +49,12 @@ using Patchouli.Mcp;
 using Patchouli.Ocr;
 using Patchouli.Ocr.MinerU;
 using Patchouli.Core.Search;
+using Patchouli.Host.Agent;
 using Patchouli.Host.Caching;
+using Patchouli.Host.Workflows;
 using Patchouli.UI;
+using Patchouli.Workflows;
+using Patchouli.Llm;
 
 namespace Patchouli.Host.Composition;
 
@@ -64,6 +68,7 @@ public sealed class HostServices
     private readonly OcrRunEngine _ocrEngine;
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private LlmAppSettings _llmSettings;
     private HttpClient? _cslCatalogHttpClient;
     private HttpClient? _metadataLookupHttpClient;
     private HttpClient? _ndlKotenModelHttpClient;
@@ -81,6 +86,7 @@ public sealed class HostServices
         ActivityTracker = activityTracker;
         RuntimeDatabasePath = runtimeDatabasePath;
         Settings = settings;
+        _llmSettings = settings.Llm;
         AppStorageLocations appPaths = new PlatformAppPaths().Resolve();
         OcrStorage = OcrStorageLocations.FromResolved(appPaths);
         ConnectionFactory = new SqliteConnectionFactory(runtimeDatabasePath);
@@ -155,6 +161,7 @@ public sealed class HostServices
             Clock);
         OcrPresets = new OcrPresetService(ConnectionFactory, Library, Clock);
         ModelPathValidator = new OcrModelPathValidator();
+        Credentials = new CredentialStore(settingsPath);
         OcrAdapterRegistry adapterRegistry = new();
         if (settings.Runtime.UseMockOcrOnly)
         {
@@ -163,7 +170,8 @@ public sealed class HostServices
         }
 
         adapterRegistry.RegisterAdapter(new MinerUOcrAdapter());
-        adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter());
+        adapterRegistry.RegisterAdapter(new MultimodalLlmOcrAdapter(
+            new MultimodalLlmOcrRuntime(() => LlmSettings, Credentials)));
         adapterRegistry.RegisterAdapter(new NdlKotenOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new NdlLiteOcrAdapter(ModelPathValidator));
         adapterRegistry.RegisterAdapter(new RapidOcrOcrAdapter(ModelPathValidator, OcrStorage.RapidOcrModelsDirectory));
@@ -196,7 +204,6 @@ public sealed class HostServices
             new VersionedEvidenceReader(ConnectionFactory, Library, DocumentTrees, DocumentMarkdown);
         MinerUImporter = new MinerUResultImporter(ConnectionFactory, Clock, ocrTreeImporter);
         IOcrEngine pageOcrEngine = settings.Runtime.UseMockOcrOnly ? new MockOcrEngine() : new UnavailableOcrEngine();
-        Credentials = new CredentialStore(settingsPath);
         _ocrEngine = new OcrRunEngine(ConnectionFactory, Clock, Credentials.GetActiveSecretForProviderAsync,
             pageOcrEngine, searchUnitBuilder, ocrTreeImporter,
             adapterRegistry, PageRenders, PageCoordinates, MinerUImporter,
@@ -225,6 +232,44 @@ public sealed class HostServices
             CompiledMarkdownCache, PageTranslations);
         McpWrites = new McpWriteApi(Items, BiblatexHelper, CslStore, PageTranslations);
         CliPath = new CliPathService();
+        // The built-in agent acts through exactly the same MCP command surface as every other MCP
+        // client: identical validation, permissions, atomic write set and error vocabulary. Its OCR
+        // runs go through the OCR queue's own public contract and its run-event wait is satisfied by
+        // the queue's completion notification (ADR 0036, no polling).
+        McpCommands = new McpCommandService(Mcp, McpWrites, BiblatexImport, Items, VersionedEvidenceReader,
+            permissionSettings: async cancellationToken =>
+            {
+                Result<McpServerSettings> permissions =
+                    await McpSettings.GetSettingsAsync(cancellationToken).ConfigureAwait(false);
+                return permissions.IsSuccess
+                    ? permissions.Value
+                    : throw new InvalidOperationException(permissions.ErrorMessage);
+            });
+        // The .fsx workflow session reuses exactly that interpreter: a workflow runs through the same
+        // session service and the same effect surface as the built-in agent (ADR 0036).
+        OcrQueueHostPrimitives agentHostPrimitives = new(
+            ocrQueueScheduler,
+            Pages,
+            OcrPresets,
+            () => Settings.OcrEngines.DocumentOcrEngine,
+            LifetimeToken);
+        AgentSessionStore agentStore = AgentSessionStore.ForLibrary(runtimeDatabasePath);
+        AgentWorkspaceStore agentWorkspaces = new(agentStore);
+        AgentFsiRepl agentFsi = new(agentWorkspaces);
+        AgentEffectInterpreter agentInterpreter = new(
+            new LlmProviderAgentClientProvider(() => LlmSettings, Credentials),
+            new McpCommandServiceAgentGateway(McpCommands),
+            agentHostPrimitives, agentFsi, new AgentContextCompactor(agentStore));
+        AgentSessions = new AgentSessionService(
+            agentStore,
+            agentInterpreter,
+            activityTracker, fsi: agentFsi, workspaces: agentWorkspaces);
+        HostWorkflows = new WorkflowSessionRunner(
+            WorkflowStore.ForLibrary(runtimeDatabasePath),
+            AgentSessions,
+            agentInterpreter,
+            () => LlmSettings,
+            agentHostPrimitives);
         SnapshotPublisher = new SnapshotPublisher(Clock);
         SnapshotImporter = new SnapshotImporter(BlockingOperations);
         BranchInspection = new SnapshotBranchInspectionService(SnapshotImporter, ConnectionFactory, Library);
@@ -262,6 +307,16 @@ public sealed class HostServices
     public IHostActivityTracker? ActivityTracker { get; }
     public CancellationToken LifetimeToken => _lifetimeCancellation.Token;
     public PatchouliAppSettings Settings { get; }
+
+    /// <summary>Live LLM settings shared by chat, workflows and OCR without rebuilding the Library host.</summary>
+    public LlmAppSettings LlmSettings => Volatile.Read(ref _llmSettings);
+
+    public void UpdateLlmSettings(LlmAppSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        Volatile.Write(ref _llmSettings, settings);
+    }
+
     public SqliteConnectionFactory ConnectionFactory { get; }
     public IClock Clock { get; }
     public IBlockingOperationService BlockingOperations { get; }
@@ -327,6 +382,9 @@ public sealed class HostServices
     public IMcpReadApi Mcp { get; }
     public IMcpWriteApi McpWrites { get; }
     public IMcpServerSettingsService McpSettings { get; }
+    public McpCommandService McpCommands { get; }
+    public AgentSessionService AgentSessions { get; }
+    public WorkflowSessionRunner HostWorkflows { get; }
     public ICliPathService CliPath { get; }
     public ISnapshotPublisher SnapshotPublisher { get; }
     public ISnapshotImporter SnapshotImporter { get; }
@@ -555,6 +613,11 @@ public sealed class HostServices
 
         startupProgress?.Report(StartupStage.ApplyingSyncedSettings);
         await services.ApplySyncedMetadataLookupAsync(settings);
+
+        // S5 (ADR 0036 Resume segment): sessions still recorded as running resume in the background
+        // through the workflow runner's replay path. The scan is fire-and-forget, so startup is never
+        // blocked, and a broken session directory never prevents the Library from opening.
+        services.StartInterruptedSessionResume(startupLogger);
         try
         {
             await startupLogger.LogAsync("migration", "Pending migrations completed.");
@@ -574,5 +637,21 @@ public sealed class HostServices
         LibraryRevisionMonitor.Stop();
         await ((QueuedOcrRunCoordinator)Ocr).Queue.StopAsync();
         ConnectionFactory.ClearPools();
+    }
+
+    /// <summary>
+    ///     Starts the background scan that auto-resumes sessions still recorded as in flight (S5,
+    ///     ADR 0036 Resume segment). The scan runs on the thread pool and is observed by the
+    ///     unexpected-exception reporter, so it neither blocks startup nor faults unobserved.
+    /// </summary>
+    private void StartInterruptedSessionResume(IAppLogger logger)
+    {
+        Task resume = Task.Run(() =>
+            AgentSessionAutoResume.ResumeInterruptedAsync(AgentSessions, HostWorkflows, logger, LifetimeToken));
+        _ = resume.ContinueWith(
+            task => _reportUnexpectedException(
+                task.Exception?.GetBaseException() ?? new InvalidOperationException("Session auto-resume failed."),
+                "host.composition", "session-auto-resume"),
+            CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
     }
 }

@@ -29,19 +29,15 @@ public sealed partial class TagListItemViewModel : ViewModelBase
     public int Count { get; }
     public bool IsNoTagEntry { get; }
 
-    [ObservableProperty]
-    public partial bool IsPinned { get; set; }
+    [ObservableProperty] public partial bool IsPinned { get; set; }
 
-    [ObservableProperty]
-    public partial bool IsSelected { get; set; }
+    [ObservableProperty] public partial bool IsSelected { get; set; }
 
     public string DisplayText => IsNoTagEntry ? "无标签" : Name;
 
-    [ExcludeFromDerivedGeneration]
-    public string CountText => Count > 0 ? Count.ToString() : "";
+    [ExcludeFromDerivedGeneration] public string CountText => Count > 0 ? Count.ToString() : "";
 
-    [ExcludeFromDerivedGeneration]
-    public bool HasCount => Count > 0;
+    [ExcludeFromDerivedGeneration] public bool HasCount => Count > 0;
 
     /// <summary>"无标签" is a fixed filter entry, not a real tag, so pinning is not offered.</summary>
     public bool CanPin => !IsNoTagEntry;

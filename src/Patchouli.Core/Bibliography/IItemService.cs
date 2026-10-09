@@ -9,6 +9,17 @@ public interface IItemService
         CreateItemRequest request,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Creates an imported item and its primary document atomically, rejecting owned file content.</summary>
+    Task<Result<ItemMetadata>> CreateItemWithPrimaryDocumentAsync(
+        CreateItemRequest request,
+        FileAssetId fileAssetId,
+        string? documentTitle = null,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<ItemMetadata>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Atomic item and document import is unavailable."));
+    }
+
     Task<Result<ItemMetadata>> CreateItemAsync(
         string itemType,
         string title,

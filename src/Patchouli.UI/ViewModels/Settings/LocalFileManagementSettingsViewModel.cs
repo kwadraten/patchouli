@@ -96,6 +96,13 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
                 storage.RapidOcrWorkDirectory,
                 false,
                 true));
+            Locations.Add(new ManagedLocationViewModel(
+                this,
+                "Agent 会话工作临时文件",
+                services.AgentSessions.WorkspacesRoot,
+                false,
+                true,
+                isAgentWorkspace: true));
 
             foreach (ManagedLocationViewModel location in Locations)
             {
@@ -215,7 +222,10 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
         ConfirmDialogResult? choice = await _main.Dialogs.ShowDialogAsync<ConfirmDialogResult>(
             new ConfirmDialogViewModel(
                 $"清理 {location.Name}",
-                $"将删除 {location.Path} 下的全部内容（约 {location.SizeDisplay}）。\n此操作不可恢复，缺失的模型可重新下载。",
+                $"将删除 {location.Path} 下的全部内容（约 {location.SizeDisplay}）。\n" +
+                (location.IsAgentWorkspace
+                    ? "会话记录会保留；正在执行的 FSI 将停止，REPL 变量会重置。"
+                    : "此操作不可恢复，缺失的模型可重新下载。"),
                 "清理",
                 confirmDanger: true));
         if (choice != ConfirmDialogResult.Confirm)
@@ -225,7 +235,22 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
         try
         {
-            await Task.Run(() => ClearDirectoryContents(location.Path));
+            if (location.IsAgentWorkspace)
+            {
+                HostServices services = await _main.ServicesAsync();
+                if (!string.Equals(location.Path, services.AgentSessions.WorkspacesRoot,
+                        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException("文献库已切换，请刷新本地文件管理后再清理。");
+                }
+
+                await services.AgentSessions.ClearWorkingDirectoriesAsync();
+            }
+            else
+            {
+                await Task.Run(() => ClearDirectoryContents(location.Path));
+            }
+
             await location.RefreshAsync();
             SetStatus($"已清理 {location.Name}。");
         }
@@ -237,7 +262,17 @@ public sealed partial class LocalFileManagementSettingsViewModel : SettingsSecti
 
     internal async Task OpenLocationAsync(ManagedLocationViewModel location)
     {
-        if (!Directory.Exists(location.Path))
+        if (location.IsAgentWorkspace)
+        {
+            HostServices services = await _main.ServicesAsync();
+            if (location.Path != services.AgentSessions.WorkspacesRoot)
+            {
+                throw new InvalidOperationException("文献库已切换，请刷新本地文件管理后再打开目录。");
+            }
+
+            services.AgentSessions.EnsureWorkspacesRoot();
+        }
+        else if (!Directory.Exists(location.Path))
         {
             Directory.CreateDirectory(location.Path);
         }
@@ -308,7 +343,8 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
         string path,
         bool canDownload,
         bool canClear,
-        ModelDownloadKind downloadKind = ModelDownloadKind.None)
+        ModelDownloadKind downloadKind = ModelDownloadKind.None,
+        bool isAgentWorkspace = false)
     {
         _parent = parent;
         Name = name;
@@ -316,6 +352,7 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
         CanDownload = canDownload;
         CanClear = canClear;
         DownloadKind = downloadKind;
+        IsAgentWorkspace = isAgentWorkspace;
         DownloadCommand = new AsyncCommand(async () => await parent.DownloadModelsAsync(this));
         ClearCommand = new AsyncCommand(async () => await parent.ClearLocationAsync(this));
         OpenCommand = new AsyncCommand(async () => await parent.OpenLocationAsync(this));
@@ -326,6 +363,7 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
     public bool CanDownload { get; }
     public bool CanClear { get; }
     public ModelDownloadKind DownloadKind { get; }
+    public bool IsAgentWorkspace { get; }
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(SizeDisplay))]
@@ -346,7 +384,7 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
     {
         await Task.Run(() =>
         {
-            if (!Directory.Exists(Path))
+            if (!Directory.Exists(Path) || (File.GetAttributes(Path) & FileAttributes.ReparsePoint) != 0)
             {
                 SizeBytes = 0;
                 ItemCount = 0;
@@ -363,7 +401,13 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
 
     private static void Enumerate(string path, ref long totalSize, ref int count)
     {
-        foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+        EnumerationOptions options = new()
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint
+        };
+        foreach (string file in Directory.EnumerateFiles(path, "*", options))
         {
             try
             {
@@ -374,13 +418,17 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
                     count++;
                 }
             }
-            catch
+            catch (IOException)
             {
-                // best-effort enumeration
+                continue;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                continue;
             }
         }
 
-        foreach (string directory in Directory.EnumerateDirectories(path, "*", SearchOption.AllDirectories))
+        foreach (string directory in Directory.EnumerateDirectories(path, "*", options))
         {
             try
             {
@@ -390,9 +438,13 @@ public sealed partial class ManagedLocationViewModel : ViewModelBase
                     count++;
                 }
             }
-            catch
+            catch (IOException)
             {
-                // best-effort enumeration
+                continue;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                continue;
             }
         }
     }

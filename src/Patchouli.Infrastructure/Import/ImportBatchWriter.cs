@@ -33,6 +33,8 @@ public sealed record PdfImportBatch(
     IReadOnlyList<Page> Pages,
     IReadOnlyList<PdfImportPagePlaceholder> PagePlaceholders);
 
+public sealed record PdfImportCommitResult(FileAssetId FileAssetId, FileImportOwner? ExistingOwner);
+
 public sealed class ImportBatchWriter
 {
     private const int PageWriteBatchSize = 500;
@@ -45,8 +47,72 @@ public sealed class ImportBatchWriter
         _revisions = revisions;
     }
 
-    public async Task<Result> CommitAsync(PdfImportBatch batch, CancellationToken cancellationToken = default)
+    public async Task<Result<FileImportOwner?>> TryReuseAsync(
+        FileAsset fileAsset, string normalizedPath, DateTimeOffset now,
+        CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(fileAsset.FullBlake3))
+        {
+            return Result<FileImportOwner?>.Failure(AppErrorCodes.ValidationFailed,
+                "Automatic import requires verified file content.");
+        }
+
+        try
+        {
+            await using (SqliteConnection read = _connectionFactory.CreateReadConnection())
+            {
+                await read.OpenAsync(cancellationToken);
+                if (await FileImportDeduplication.FindOwnerAsync(read, null, fileAsset.LibraryId,
+                        fileAsset.FileAssetId, fileAsset.FullBlake3, cancellationToken) is null)
+                {
+                    return Result<FileImportOwner?>.Success(null);
+                }
+            }
+
+            using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
+            await using SqliteConnection connection = _connectionFactory.CreateConnection();
+            await connection.OpenAsync(cancellationToken);
+            await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
+            FileImportOwner? owner = await FileImportDeduplication.FindOwnerAsync(connection, transaction,
+                fileAsset.LibraryId, fileAsset.FileAssetId, fileAsset.FullBlake3, cancellationToken);
+            if (owner is not null)
+            {
+                Result<LibraryChangeSet?> revision = await UpdateExistingFileAsync(
+                    connection, transaction, owner, fileAsset, normalizedPath, now, cancellationToken);
+                if (revision.IsFailure)
+                {
+                    return Result<FileImportOwner?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                PublishRevision(revision.Value);
+                return Result<FileImportOwner?>.Success(owner);
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return Result<FileImportOwner?>.Success(owner);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
+                                              "infrastructure.import-batch"))
+        {
+            return Result<FileImportOwner?>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
+        }
+    }
+
+    public async Task<Result<PdfImportCommitResult>> CommitAsync(PdfImportBatch batch,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(batch.FileAsset.FullBlake3))
+        {
+            return Result<PdfImportCommitResult>.Failure(AppErrorCodes.ValidationFailed,
+                "Automatic import requires verified file content.");
+        }
+
         try
         {
             using IDisposable writeLease = await _connectionFactory.EnterWriteAsync(cancellationToken);
@@ -55,8 +121,28 @@ public sealed class ImportBatchWriter
             await using DbTransaction transaction = await connection.BeginTransactionAsync(cancellationToken);
 
             FileAsset fileAsset = batch.FileAsset;
+            // Recheck in the same single-writer transaction that creates the item, closing
+            // the race between concurrent importers' optimistic probes.
+            FileImportOwner? owner = await FileImportDeduplication.FindOwnerAsync(connection, transaction,
+                fileAsset.LibraryId, fileAsset.FileAssetId, fileAsset.FullBlake3, cancellationToken);
+            if (owner is not null)
+            {
+                Result<LibraryChangeSet?> duplicateRevision = await UpdateExistingFileAsync(
+                    connection, transaction, owner, fileAsset, batch.NormalizedFilePath, batch.Now, cancellationToken);
+                if (duplicateRevision.IsFailure)
+                {
+                    return Result<PdfImportCommitResult>.Failure(duplicateRevision.ErrorCode!,
+                        duplicateRevision.ErrorMessage!);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                PublishRevision(duplicateRevision.Value);
+                return Result<PdfImportCommitResult>.Success(new PdfImportCommitResult(
+                    FileAssetId.Parse(owner.FileAssetId), owner));
+            }
+
             FileAssetProbeRow? existing = await connection.QuerySingleOrDefaultAsync<FileAssetProbeRow>(
-                "select library_id as LibraryId from file_assets where file_asset_id = @FileAssetId;",
+                "select library_id as LibraryId, full_blake3 as FullBlake3 from file_assets where file_asset_id = @FileAssetId;",
                 new { FileAssetId = fileAsset.FileAssetId.ToString() },
                 transaction);
 
@@ -65,11 +151,22 @@ public sealed class ImportBatchWriter
                 if (LibraryId.Parse(existing.LibraryId) != fileAsset.LibraryId)
                 {
                     await transaction.RollbackAsync(cancellationToken);
-                    return Result.Failure(
+                    return Result<PdfImportCommitResult>.Failure(
                         AppErrorCodes.LibraryMismatch,
                         "File content already exists in a different library.");
                 }
 
+                if (!string.Equals(existing.FullBlake3, fileAsset.FullBlake3, StringComparison.Ordinal))
+                {
+                    // A confirmed content change can retain the old content-derived ID.
+                    // Preserve that source and allocate a distinct asset for the original content.
+                    fileAsset = fileAsset with { FileAssetId = FileAssetId.New() };
+                    existing = null;
+                }
+            }
+
+            if (existing is not null)
+            {
                 await connection.ExecuteAsync(
                     """
                     update file_assets
@@ -158,7 +255,7 @@ public sealed class ImportBatchWriter
                 {
                     DocumentInstanceId = batch.DocumentInstance.DocumentInstanceId.ToString(),
                     ItemId = batch.DocumentInstance.ItemId.ToString(),
-                    FileAssetId = batch.DocumentInstance.FileAssetId?.ToString(),
+                    FileAssetId = fileAsset.FileAssetId.ToString(),
                     batch.DocumentInstance.Title,
                     batch.DocumentInstance.InstanceType,
                     IsPrimary = batch.DocumentInstance.IsPrimary ? 1 : 0,
@@ -183,12 +280,12 @@ public sealed class ImportBatchWriter
             if (revision.IsFailure)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                return Result.Failure(revision.ErrorCode!, revision.ErrorMessage!);
+                return Result<PdfImportCommitResult>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
             }
 
             await transaction.CommitAsync(cancellationToken);
             PublishRevision(revision.Value);
-            return Result.Success();
+            return Result<PdfImportCommitResult>.Success(new PdfImportCommitResult(fileAsset.FileAssetId, null));
         }
         catch (OperationCanceledException)
         {
@@ -197,8 +294,45 @@ public sealed class ImportBatchWriter
         catch (Exception exception) when (UnexpectedExceptionReporter.ReportCatch(exception,
                                               "infrastructure.import-batch"))
         {
-            return Result.Failure(AppErrorCodes.DatabaseError, $"Database operation failed: {exception.Message}");
+            return Result<PdfImportCommitResult>.Failure(AppErrorCodes.DatabaseError,
+                $"Database operation failed: {exception.Message}");
         }
+    }
+
+    private async Task<Result<LibraryChangeSet?>> UpdateExistingFileAsync(
+        SqliteConnection connection, DbTransaction transaction, FileImportOwner owner,
+        FileAsset fileAsset, string normalizedPath, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        await connection.ExecuteAsync(new CommandDefinition(
+            """
+            update file_assets
+            set size_bytes = @SizeBytes, mtime_utc = @MtimeUtc, quick_hash = @QuickHash,
+                status = @Status, updated_at = @Now
+            where file_asset_id = @FileAssetId;
+            """,
+            new
+            {
+                owner.FileAssetId, fileAsset.SizeBytes,
+                MtimeUtc = fileAsset.MtimeUtc?.ToUniversalTime().ToString("O"),
+                fileAsset.QuickHash, Status = FileAssetStatus.Available, Now = FormatUtc(now)
+            }, transaction, cancellationToken: cancellationToken));
+        FileAssetId fileAssetId = FileAssetId.Parse(owner.FileAssetId);
+        await FileAssetService.UpsertKnownLocationAsync(connection, transaction,
+            fileAssetId, normalizedPath, FileAssetStatus.Available, now);
+        if (_revisions is null)
+        {
+            return Result<LibraryChangeSet?>.Success(null);
+        }
+
+        Result<LibraryChangeSet> revision = await _revisions.IncrementInTransactionAsync(
+            connection, transaction, LibraryChangeSet.Empty with
+            {
+                ItemIds = [ItemId.Parse(owner.ItemId)],
+                DocumentInstanceIds = [DocumentInstanceId.Parse(owner.DocumentInstanceId)]
+            }, cancellationToken);
+        return revision.IsSuccess
+            ? Result<LibraryChangeSet?>.Success(revision.Value)
+            : Result<LibraryChangeSet?>.Failure(revision.ErrorCode!, revision.ErrorMessage!);
     }
 
     private async Task<Result<LibraryChangeSet?>> IncrementRevisionAsync(
@@ -403,5 +537,6 @@ public sealed class ImportBatchWriter
     private sealed class FileAssetProbeRow
     {
         public string LibraryId { get; init; } = string.Empty;
+        public string? FullBlake3 { get; init; }
     }
 }

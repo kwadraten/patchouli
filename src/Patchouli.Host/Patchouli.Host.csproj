@@ -3,10 +3,13 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\Patchouli.Agent\Patchouli.Agent.fsproj" />
     <ProjectReference Include="..\Patchouli.Core\Patchouli.Core.csproj" />
     <ProjectReference Include="..\Patchouli.Infrastructure\Patchouli.Infrastructure.csproj" />
+    <ProjectReference Include="..\Patchouli.Llm\Patchouli.Llm.csproj" />
     <ProjectReference Include="..\Patchouli.Mcp\Patchouli.Mcp.csproj" />
     <ProjectReference Include="..\Patchouli.Ocr\Patchouli.Ocr.csproj" />
+    <ProjectReference Include="..\Patchouli.Workflows\Patchouli.Workflows.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">

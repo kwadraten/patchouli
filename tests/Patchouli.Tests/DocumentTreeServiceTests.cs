@@ -15,6 +15,45 @@ namespace Patchouli.Tests;
 public sealed class DocumentTreeServiceTests
 {
     [Fact]
+    public async Task Invalid_page_ocr_replacement_rolls_back_the_draft()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        await context.Editor.DrawAndInsertLeafAsync(edit.SessionId, new InsertLeafCommand(null, null,
+            DocumentBoxType.Text, null, null, new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("draft")));
+        IReadOnlyList<DocumentBox> original = (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value;
+
+        Result result = await context.Editor.ApplyPageOcrAsync(edit, original,
+            [original.Single() with { ParentBoxId = DocumentBoxId.New() }]);
+
+        result.IsFailure.Should().BeTrue();
+        (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Should().Equal(original);
+        (await context.Trees.GetPageEditAsync(edit.SessionId)).Value.Should().Be(edit);
+    }
+
+    [Fact]
+    public async Task Saving_a_page_draft_rejects_a_changed_current_revision()
+    {
+        await using Context context = await Context.CreateAsync();
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(context.DocumentId, context.PageId)).Value;
+        DocumentTreeRevision replacement = (await context.Trees.BeginWorkingRevisionAsync(context.DocumentId,
+            context.PageId, [
+                new DocumentBoxSeed(null, null, 0, DocumentBoxType.Text, null, null,
+                    new NormalizedBBox(0, 0, 1, 1), new TextBoxPayload("new current"))
+            ],
+            DocumentTreeRevisionSource.Import)).Value;
+        await context.Trees.CommitWorkingRevisionAsync(replacement.TreeRevisionId);
+
+        Result<DocumentTreeRevision> result = await context.Trees.CommitPageEditAsync(edit.SessionId);
+
+        result.IsFailure.Should().BeTrue();
+        result.ErrorCode.Should().Be(AppErrorCodes.Conflict);
+        (await context.Trees.GetPageEditAsync(edit.SessionId)).Value.Should().Be(edit);
+        (await context.Trees.GetCurrentRevisionAsync(context.DocumentId, context.PageId)).Value.TreeRevisionId
+            .Should().Be(replacement.TreeRevisionId);
+    }
+
+    [Fact]
     public async Task Deleting_logical_page_removes_children_and_preserves_sibling_order_and_committed_revision()
     {
         await using Context context = await Context.CreateAsync();

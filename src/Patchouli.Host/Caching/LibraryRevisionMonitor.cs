@@ -29,6 +29,7 @@ public sealed class LibraryRevisionMonitor : IDisposable
     private readonly Action<Exception, string, string?> _reportUnexpectedException;
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private readonly object _gate = new();
+    private readonly object _pollLifecycleGate = new();
     private CancellationTokenSource? _pollCts;
     private Task? _pollLoop;
     private bool _disposed;
@@ -72,31 +73,53 @@ public sealed class LibraryRevisionMonitor : IDisposable
     /// <summary>Starts the cross-process polling loop. No-op when already running.</summary>
     public void Start()
     {
-        lock (_gate)
+        lock (_pollLifecycleGate)
         {
-            if (_disposed || _pollLoop is not null)
+            lock (_gate)
             {
-                return;
-            }
+                if (_disposed || _pollLoop is not null)
+                {
+                    return;
+                }
 
-            _pollCts = new CancellationTokenSource();
-            _pollLoop = Task.Run(() => PollLoopAsync(_pollCts.Token));
+                _pollCts = new CancellationTokenSource();
+                CancellationToken token = _pollCts.Token;
+                _pollLoop = Task.Run(() => PollLoopAsync(token));
+            }
         }
     }
 
     /// <summary>Stops the polling loop. The in-process subscription stays active until Dispose.</summary>
     public void Stop()
     {
-        CancellationTokenSource? cts;
-        lock (_gate)
+        lock (_pollLifecycleGate)
         {
-            cts = _pollCts;
-            _pollCts = null;
-            _pollLoop = null;
-        }
+            CancellationTokenSource? cts;
+            Task? loop;
+            lock (_gate)
+            {
+                cts = _pollCts;
+                loop = _pollLoop;
+            }
 
-        cts?.Cancel();
-        cts?.Dispose();
+            cts?.Cancel();
+            try
+            {
+                // Polling runs on the thread pool. Drain its in-flight refresh before reporting
+                // it stopped, so shutdown cannot clear SQLite pools while polling still reads.
+                loop?.GetAwaiter().GetResult();
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _pollCts = null;
+                    _pollLoop = null;
+                }
+
+                cts?.Dispose();
+            }
+        }
     }
 
     public void Dispose()

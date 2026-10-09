@@ -989,7 +989,6 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             await EnsureAvailableItemTypesAsync();
             HostServices services = await _main.ServicesAsync();
             Result<long> currentRevision = await services.LibraryRevisions.GetCurrentRevisionAsync();
-            LoadedRevision = currentRevision.IsSuccess ? currentRevision.Value : 0;
             ItemId parsed = ItemId.Parse(itemId);
             Result<ItemMetadata> item = await services.Items.GetItemAsync(parsed);
             if (item.IsFailure)
@@ -1079,6 +1078,9 @@ public sealed partial class ItemEditorViewModel : ViewModelBase
             await RefreshCslPreviewAsync();
             await RefreshCollectionsAsync(services);
             ResetUnsavedState();
+            // Publish the watermark only after every field and related collection reflects it.
+            // A concurrent revision refresh must not skip an editor that is still loading.
+            LoadedRevision = currentRevision.IsSuccess ? currentRevision.Value : 0;
             RaiseAll();
         }
         finally

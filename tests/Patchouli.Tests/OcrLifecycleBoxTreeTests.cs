@@ -21,6 +21,39 @@ namespace Patchouli.Tests;
 public sealed class OcrLifecycleBoxTreeTests
 {
     [Fact]
+    public async Task Working_page_ocr_overrides_auto_apply_for_the_local_engine()
+    {
+        await using Context context = await Context.CreateAsync();
+        OcrPreset preset = (await context.Presets.CreatePresetAsync(
+            "Auto apply", null, OcrEngineIds.Mock, OcrModelIds.MockBasic, null, "{}", true)).Value;
+        PageEditSession edit = (await context.Trees.BeginPageEditAsync(
+            context.Document.DocumentInstanceId, context.Pages[0].PageId)).Value;
+        OcrQueueScheduler queue = new(LibraryId.New(), new FixedClock(DateTimeOffset.UtcNow),
+            new OcrQueueTaskExecutor(context.Coordinator));
+        try
+        {
+            LogicalPageOcrService service = new(new QueuedOcrRunCoordinator(queue, context.Coordinator), context.Trees);
+            Result<PhysicalPageOcrResult> result = await service.RunPageEditAsync(preset.PresetId, edit.SessionId);
+
+            result.IsSuccess.Should().BeTrue(result.ErrorMessage);
+            result.Value.WorkingTreeRevisionId.Should().Be(edit.DraftRevisionId);
+            (await context.Trees.ListBoxesAsync(edit.DraftRevisionId)).Value.Should().NotBeEmpty();
+            (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, edit.PageId)).IsFailure.Should()
+                .BeTrue();
+            (await context.CountAsync("select count(*) from document_tree_revisions where status='working';"))
+                .Should().Be(1);
+            (await context.CountAsync("select count(*) from ocr_candidate_adoptions;")).Should().Be(0);
+            (await context.Trees.CommitPageEditAsync(edit.SessionId)).IsSuccess.Should().BeTrue();
+            (await context.Trees.GetCurrentRevisionAsync(edit.DocumentInstanceId, edit.PageId)).Value.TreeRevisionId
+                .Should().Be(edit.DraftRevisionId);
+        }
+        finally
+        {
+            await queue.StopAsync();
+        }
+    }
+
+    [Fact]
     public async Task Document_ocr_creates_working_revisions_and_explicit_commit_makes_them_current()
     {
         await using Context context = await Context.CreateAsync();

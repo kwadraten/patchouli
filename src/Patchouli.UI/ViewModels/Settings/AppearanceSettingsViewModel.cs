@@ -78,13 +78,31 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
                 _readingFontFamilies = BuildReadingFontFamilies();
             }
 
-            return _readingFontFamilies;
+            return string.IsNullOrEmpty(SelectedReadingFontFamily) ||
+                   _readingFontFamilies.Contains(SelectedReadingFontFamily)
+                ? _readingFontFamilies
+                : Array.AsReadOnly(_readingFontFamilies.Append(SelectedReadingFontFamily).ToArray());
+        }
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public string SelectedReadingFontOption
+    {
+        get => string.IsNullOrEmpty(SelectedReadingFontFamily) ? SystemDefaultFontLabel : SelectedReadingFontFamily;
+        set
+        {
+            if (value is not null)
+            {
+                SelectedReadingFontFamily = value == SystemDefaultFontLabel ? "" : value;
+            }
         }
     }
 
     /// <summary>The persisted font family name for reading mode. An empty string means the system
     /// default font; any other value is a concrete family name.</summary>
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ReadingFontFamilies))]
+    [NotifyPropertyChangedFor(nameof(SelectedReadingFontOption))]
     public partial string SelectedReadingFontFamily { get; set; } = "";
 
     partial void OnSelectedReadingFontFamilyChanged(string value)
@@ -172,10 +190,15 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
 
-        bool paletteChanged = SelectedPalette.PaletteId != _persistedPaletteId;
+        string paletteId = SelectedPalette.PaletteId;
+        string fontFamily = SelectedReadingFontFamily;
+        double fontSize = ReadingFontSize;
+        string compareMode = LabelToCompareMode(SelectedReadingCompareMode);
+
+        bool paletteChanged = paletteId != _persistedPaletteId;
         if (paletteChanged)
         {
-            bool paletteSaved = await _main.SaveAppearancePaletteAsync(SelectedPalette.PaletteId);
+            bool paletteSaved = await _main.SaveAppearancePaletteAsync(paletteId);
             if (!paletteSaved)
             {
                 LastError = "无法保存外观设置。";
@@ -186,14 +209,14 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
                 return;
             }
 
-            _persistedPaletteId = SelectedPalette.PaletteId;
+            _persistedPaletteId = paletteId;
         }
 
-        bool fontChanged = !string.Equals(SelectedReadingFontFamily, _persistedFontFamily, StringComparison.Ordinal)
-                           || ReadingFontSize != _persistedFontSize;
+        bool fontChanged = !string.Equals(fontFamily, _persistedFontFamily, StringComparison.Ordinal)
+                           || fontSize != _persistedFontSize;
         if (fontChanged)
         {
-            bool fontSaved = await _main.SaveReadingFontImmediatelyAsync(SelectedReadingFontFamily, ReadingFontSize);
+            bool fontSaved = await _main.SaveReadingFontImmediatelyAsync(fontFamily, fontSize);
             if (!fontSaved)
             {
                 LastError = "无法保存外观设置。";
@@ -204,11 +227,10 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
                 return;
             }
 
-            _persistedFontFamily = SelectedReadingFontFamily;
-            _persistedFontSize = ReadingFontSize;
+            _persistedFontFamily = fontFamily;
+            _persistedFontSize = fontSize;
         }
 
-        string compareMode = LabelToCompareMode(SelectedReadingCompareMode);
         if (compareMode != _persistedCompareMode)
         {
             bool compareModeSaved = await _main.SaveReadingCompareModeImmediatelyAsync(compareMode);
@@ -225,11 +247,11 @@ public sealed partial class AppearanceSettingsViewModel : SettingsSectionViewMod
             _persistedCompareMode = compareMode;
         }
 
-        _isDirty = false;
+        UpdateDirtyState();
         LastError = null;
-        SaveState = SettingsSaveState.Saved;
+        SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
         ValidationState = SettingsValidationState.Valid;
-        Status = "已保存";
+        Status = IsDirty ? "已保存，仍有新的更改" : "已保存";
         Raise(nameof(IsDirty));
         Raise(nameof(CanSave));
     }

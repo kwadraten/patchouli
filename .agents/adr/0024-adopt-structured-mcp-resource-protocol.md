@@ -1,6 +1,6 @@
 # Adopt the Structured MCP Resource Protocol
 
-Status: accepted (2026-07-31); amended 2026-08-01 and 2026-09-15; supersedes ADR `0022` for production MCP
+Status: accepted (2026-07-31); amended 2026-08-01, 2026-09-15 and 2026-10-05; supersedes ADR `0022` for production MCP; **amended in part by ADR `0036`** (the resource tree gains two roots, `runs/` and `workflows/`, and the protocol gains the `send` verb; `runs/` is the first volatile runtime root and is excluded from snapshots and `put`)
 
 ## Current contract and superseding decisions
 

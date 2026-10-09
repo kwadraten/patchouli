@@ -8,13 +8,7 @@ public partial class DuplicateItemsDialog : Window
     public DuplicateItemsDialog()
     {
         InitializeComponent();
-
-        DataContextChanged += (_, _) =>
-        {
-            if (DataContext is DuplicateItemsDialogViewModel vm)
-            {
-                vm.RequestClose = _ => Close();
-            }
-        };
+        DialogCloseBinding.Bind<DuplicateItemsDialogViewModel, DuplicateItemsDialogResult>(
+            this, static (vm, close) => vm.RequestClose = close);
     }
 }

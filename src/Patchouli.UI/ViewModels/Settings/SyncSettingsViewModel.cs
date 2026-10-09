@@ -14,6 +14,7 @@ using Patchouli.Core.Results;
 using Patchouli.Core.Settings;
 using Patchouli.Host.Composition;
 using Patchouli.Infrastructure.Snapshots;
+using Patchouli.UI.Services;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 
@@ -22,6 +23,8 @@ namespace Patchouli.UI.ViewModels.Settings;
 public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
 {
     private readonly MainWindowViewModel _main;
+    private readonly SettingsDraftStore _draftStore;
+    [ExcludeFromDerivedGeneration] private string DraftKey => "sync:" + Path.GetFullPath(_main.RuntimeDatabasePath);
     private SyncAppSettings _persisted;
     private SyncAppSettings _draft;
     private LibraryId? _libraryId;
@@ -37,6 +40,7 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
     {
         _isConstructing = true;
         _main = main;
+        _draftStore = new SettingsDraftStore(main.SettingsFilePath);
         _persisted = main.AppOptions.Sync;
         _draft = _persisted;
         OpenSyncCenterCommand = new AsyncCommand(main.OpenSyncCenterAsync);
@@ -113,6 +117,40 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         }
     }
 
+    [ObservableProperty] public partial bool SyncAgentSessions { get; set; }
+
+    partial void OnSyncAgentSessionsChanged(bool value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        _draft = _draft with { SyncAgentSessions = value };
+        MarkDirty();
+    }
+
+    [ObservableProperty] public partial bool SyncWorkflowDefinitions { get; set; }
+
+    partial void OnSyncWorkflowDefinitionsChanged(bool value)
+    {
+        if (_isConstructing || _isSyncing)
+        {
+            return;
+        }
+
+        _draft = _draft with { SyncWorkflowDefinitions = value };
+        MarkDirty();
+    }
+
+    [ExcludeFromDerivedGeneration]
+    public string AgentSessionsScopeText =>
+        SyncAgentSessions ? "会话目录随内容快照同步" : "会话历史仅保留在本机";
+
+    [ExcludeFromDerivedGeneration]
+    public string WorkflowDefinitionsScopeText =>
+        SyncWorkflowDefinitions ? "工作流定义随内容快照同步" : "工作流定义仅保留在本机";
+
     public AsyncCommand OpenSyncCenterCommand { get; }
     public AsyncCommand PublishSnapshotCommand { get; }
     public AsyncCommand CheckIncomingSnapshotCommand { get; }
@@ -129,14 +167,44 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
 
     [ExcludeFromDerivedGeneration] public override bool IsDirty => _isDirty;
 
-    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty && !string.IsNullOrWhiteSpace(SyncRoot);
+    [ExcludeFromDerivedGeneration] public override bool CanSave => _isDirty;
 
     public override async Task SaveAsync()
     {
+        long editRevision = _editGeneration;
+        SyncAppSettings draft = _draft;
+        string draftKey = DraftKey;
         int generation = _main.LibraryGeneration;
+        string? incompleteReason = string.IsNullOrWhiteSpace(draft.SyncRoot) ? "请补全本机同步目录。" : null;
+        if (incompleteReason is null)
+        {
+            try
+            {
+                _ = Path.GetFullPath(draft.SyncRoot);
+            }
+            catch (Exception exception) when (exception is ArgumentException or NotSupportedException
+                                                  or PathTooLongException)
+            {
+                incompleteReason = $"请修正本机同步目录：{exception.Message}";
+            }
+        }
+
+        if (incompleteReason is not null)
+        {
+            await SaveIncompleteDraftAsync(draft, draftKey, editRevision, incompleteReason);
+            return;
+        }
+
         Result<LibraryId> library = await EnsureLibraryIdAsync();
         if (library.IsFailure)
         {
+            if (library.ErrorCode == AppErrorCodes.NotFound && generation == _main.LibraryGeneration)
+            {
+                await SaveIncompleteDraftAsync(draft, draftKey, editRevision,
+                    "请打开或创建书库后完成同步配置。");
+                return;
+            }
+
             LastError = library.ErrorMessage;
             SaveState = SettingsSaveState.Failed;
             Status = $"保存失败：{library.ErrorMessage}";
@@ -153,26 +221,17 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_draft.SyncRoot))
-        {
-            LastError = "请先选择本机同步目录。";
-            SaveState = SettingsSaveState.Failed;
-            Status = $"保存失败：{LastError}";
-            RaiseState();
-            return;
-        }
-
         SaveState = SettingsSaveState.Saving;
         Status = "正在保存...";
         bool rootChanged = string.IsNullOrWhiteSpace(_persisted.SyncRoot) ||
                            !string.Equals(
                                Path.GetFullPath(_persisted.SyncRoot),
-                               Path.GetFullPath(_draft.SyncRoot),
+                               Path.GetFullPath(draft.SyncRoot),
                                StringComparison.OrdinalIgnoreCase);
         string logicalRootId = rootChanged || string.IsNullOrWhiteSpace(_persisted.SyncRootId)
-            ? await ResolveSyncRootIdAsync(_draft.SyncRoot)
+            ? await ResolveSyncRootIdAsync(draft.SyncRoot)
             : _persisted.SyncRootId;
-        IReadOnlyList<string> enabledKeys = _draft.EnabledSettingKeys;
+        IReadOnlyList<string> enabledKeys = draft.EnabledSettingKeys;
         SnapshotSyncLocalState snapshotState = rootChanged
             ? SnapshotSyncLocalState.NotConfigured
             : _persisted.SnapshotState ?? SnapshotSyncLocalState.NotConfigured;
@@ -180,10 +239,10 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
             library.Value.ToString(),
             LogicalRootKinds.SyncRoot,
             logicalRootId,
-            _draft.DeviceId,
-            Path.GetFullPath(_draft.SyncRoot),
+            draft.DeviceId,
+            Path.GetFullPath(draft.SyncRoot),
             "settings_ui",
-            Directory.Exists(_draft.SyncRoot),
+            Directory.Exists(draft.SyncRoot),
             FileSearchRootAuthorizationKinds.None,
             null,
             null,
@@ -191,7 +250,7 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
             DateTimeOffset.UtcNow.ToString("O"),
             snapshotState,
             enabledKeys);
-        SyncAppSettings savedDraft = _draft.WithDeviceBinding(binding) with
+        SyncAppSettings savedDraft = draft.WithDeviceBinding(binding) with
         {
             SyncRoot = binding.LocalPath,
             SyncRootId = binding.LogicalRootId,
@@ -207,11 +266,17 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
 
         if (result.IsSuccess)
         {
+            await _draftStore.WriteAsync<SyncAppSettings>(draftKey, null);
             _persisted = ToLibraryDraft(savedDraft, binding);
-            SyncFromDraft(_persisted);
-            _isDirty = false;
+            if (editRevision == _editGeneration && generation == _main.LibraryGeneration)
+            {
+                SyncFromDraft(_persisted);
+                _isDirty = false;
+            }
+
             LastError = null;
-            SaveState = SettingsSaveState.Saved;
+            ValidationState = SettingsValidationState.Valid;
+            SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
             Status = "已保存";
         }
         else
@@ -221,6 +286,18 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
             Status = $"保存失败：{result.ErrorMessage}";
         }
 
+        RaiseState();
+    }
+
+    private async Task SaveIncompleteDraftAsync(SyncAppSettings draft, string key, long revision, string reason)
+    {
+        await _draftStore.WriteAsync(key, draft);
+        _persisted = draft;
+        _isDirty = revision != _editGeneration;
+        LastError = reason;
+        ValidationState = SettingsValidationState.Invalid;
+        SaveState = IsDirty ? SettingsSaveState.Dirty : SettingsSaveState.Saved;
+        Status = $"已保存草稿，{reason}";
         RaiseState();
     }
 
@@ -247,6 +324,22 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         long loadGeneration = ++_loadGeneration;
         long editGeneration = _editGeneration;
         int generation = _main.LibraryGeneration;
+        SyncAppSettings? savedForm = await _draftStore.ReadAsync<SyncAppSettings>(DraftKey, cancellationToken);
+        if (savedForm is not null && loadGeneration == _loadGeneration && editGeneration == _editGeneration &&
+            generation == _main.LibraryGeneration && !IsDirty)
+        {
+            _persisted = savedForm;
+            SyncFromDraft(savedForm);
+            ValidationState = SettingsValidationState.Invalid;
+            LastError = string.IsNullOrWhiteSpace(savedForm.SyncRoot)
+                ? "请补全本机同步目录。"
+                : "请打开或创建书库后确认同步目录并完成配置。";
+            SaveState = SettingsSaveState.Saved;
+            Status = $"已恢复草稿，{LastError}";
+            RaiseState();
+            return;
+        }
+
         Result<LibraryId> library = await EnsureLibraryIdAsync(cancellationToken);
         if (loadGeneration != _loadGeneration ||
             editGeneration != _editGeneration ||
@@ -369,6 +462,8 @@ public sealed partial class SyncSettingsViewModel : SettingsSectionViewModelBase
         DeviceName = draft.DeviceName;
         SyncRoot = draft.SyncRoot;
         SyncMetadataLookup = draft.IsSettingEnabled(LibrarySettingKeys.MetadataLookup);
+        SyncAgentSessions = draft.SyncAgentSessions;
+        SyncWorkflowDefinitions = draft.SyncWorkflowDefinitions;
         _isSyncing = false;
         Raise(nameof(DeviceId));
         RefreshScopeRows();

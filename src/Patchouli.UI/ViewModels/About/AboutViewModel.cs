@@ -67,6 +67,7 @@ public class AboutViewModel : ViewModelBase
         ThirdPartyLibraries = new ObservableCollection<ThirdPartyLibrary>
         {
             new("Avalonia", "MIT", "https://github.com/AvaloniaUI/Avalonia", openUrlCommand),
+            new("AvaloniaEdit", "MIT", "https://github.com/AvaloniaUI/AvaloniaEdit", openUrlCommand),
             new("CommunityToolkit.Mvvm", "MIT", "https://github.com/CommunityToolkit/dotnet", openUrlCommand),
             new("System.Reactive (Rx.NET)", "MIT", "https://github.com/dotnet/reactive", openUrlCommand),
             new("Lucide", "ISC", "https://github.com/lucide-icons/lucide", openUrlCommand),
@@ -97,7 +98,7 @@ public class AboutViewModel : ViewModelBase
             new("ProDataGrid", "MIT", "https://github.com/wieslawsoltes/ProDataGrid", openUrlCommand),
             new("CatWalk Enhanced", "GPL-3.0+",
                 "https://github.com/BLADR-ONE/CatWalk-Enhanced-Plasmoid/tree/0e20cec96c7e5e390623a80aed6302c2f1b8c7ee",
-                openUrlCommand, "BLADR-ONE, Yuri Saurov")
+                openUrlCommand)
         };
     }
 }

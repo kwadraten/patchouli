@@ -1,11 +1,19 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$ArtifactsPath = '.tmp/build/inspection',
+    [switch]$UseExistingBuild,
+    [string]$CachesPath = '.tmp/build/inspection-caches'
+)
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $expectedVersion = '2026.1.4'
-$artifactDirectory = Join-Path $root 'artifacts'
+$artifactDirectory = Join-Path $root '.tmp'
 $reportPath = Join-Path $artifactDirectory 'inspectcode.sarif'
+$resolvedArtifactsPath = [IO.Path]::GetFullPath($ArtifactsPath, $root)
+if (-not $resolvedArtifactsPath.StartsWith($artifactDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Inspection build outputs must be inside the repository .tmp directory.'
+}
 $sdkVersion = (& dotnet --version).Trim()
 $msbuildPath = Join-Path $env:ProgramFiles "dotnet\sdk\$sdkVersion\MSBuild.dll"
 
@@ -19,11 +27,23 @@ if ($actualVersion -ne $expectedVersion) {
 }
 
 New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
+$resolvedCachesPath = [IO.Path]::GetFullPath($CachesPath, $root)
+if (-not $resolvedCachesPath.StartsWith($artifactDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Inspection caches must be inside the repository .tmp directory.'
+}
+$additionalArguments = @("--caches-home=$resolvedCachesPath")
+if ($UseExistingBuild) {
+    # InspectCode cannot resolve F# project metadata reliably in SDK artifacts output. After a
+    # normal build, use its resolved assemblies without triggering another solution build.
+    $additionalArguments += '--no-build'
+} else {
+    $additionalArguments += "--properties=ArtifactsPath=$resolvedArtifactsPath;UseArtifactsOutput=true"
+}
 & jb inspectcode (Join-Path $root 'Patchouli.sln') `
     --toolset-path=$msbuildPath `
     --output=$reportPath `
     --format=Sarif `
-    --no-updates
+    --no-updates @additionalArguments
 
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

@@ -222,17 +222,35 @@ public sealed class LibraryImportOrchestrator
 
     /// <summary>Wraps <see cref="FirstRunWorkflow.ScanAndImportAsync"/> so callers do not
     /// need to reach into the workflow/discovery service pair directly.</summary>
-    public Task<FirstRunImportResult> ScanDirectoryAndImportAsync(
+    public async Task<FirstRunImportResult> ScanDirectoryAndImportAsync(
         SelectedFileSearchRoot selectedRoot,
         string? libraryId,
         CancellationToken cancellationToken = default,
         Action<int?, int?, string, string?>? progress = null)
     {
-        return _services.FirstRunWorkflow.ScanAndImportAsync(
+        FirstRunImportResult result = await _services.FirstRunWorkflow.ScanAndImportAsync(
             selectedRoot,
             libraryId,
             cancellationToken,
             progress);
+        if (result.IsSuccess && result.State.CurrentStep == FirstRunStep.MinerUConfig)
+        {
+            Result<FileSearchRoot> root =
+                await _services.FileResolution.AddSearchRootAsync(selectedRoot, cancellationToken);
+            if (root.IsFailure && root.ErrorCode != AppErrorCodes.InvalidState)
+            {
+                return result with
+                {
+                    State = result.State with
+                    {
+                        CurrentStep = FirstRunStep.Scan,
+                        LastError = root.ErrorMessage ?? "无法登记文件搜索根。"
+                    }
+                };
+            }
+        }
+
+        return result;
     }
 
     /// <summary>Wraps <see cref="FirstRunWorkflow.ImportPdfAsync"/> for a single PDF chosen by the caller.</summary>

@@ -1,4 +1,5 @@
 using System.Collections.Specialized;
+using System.Globalization;
 using System.Reactive;
 using System.Reactive.Concurrency;
 using System.Reactive.Linq;
@@ -306,6 +307,23 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
 
     [ObservableProperty] public partial Bitmap? Image { get; private set; }
     public LibraryItemViewModel Item { get; }
+
+    /// <summary>The reading toolbar's workflow entries: the window's shared, ordered menu source.</summary>
+    [ExcludeFromDerivedGeneration]
+    public System.Collections.ObjectModel.ObservableCollection<WorkflowMenuEntryViewModel> WorkflowMenuEntries =>
+        _main.ReadingWorkflowMenuEntries;
+
+    /// <summary>True when at least one workflow opted into the menus.</summary>
+    [ExcludeFromDerivedGeneration]
+    public bool HasReadingWorkflowMenuEntries => _main.HasReadingWorkflowMenuEntries;
+
+    /// <summary>Rebuilds the reading entries against the open document and the current page.</summary>
+    public Task RefreshWorkflowMenuAsync()
+    {
+        string pageRange = PageCount > 0 ? (PageIndex + 1).ToString(CultureInfo.InvariantCulture) : string.Empty;
+        return _main.RefreshReadingWorkflowMenuAsync(Item.DocumentInstanceId ?? string.Empty, pageRange);
+    }
+
     public bool HasImage => Image is not null;
     public bool HasNoImage => Image is null;
     [ObservableProperty] public partial bool IsBusy { get; private set; }
@@ -1148,43 +1166,9 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         LocalOcrSourceText = string.Empty;
     }
 
-    private async Task RunLogicalPageOcrAsync()
+    private Task RunLogicalPageOcrAsync()
     {
-        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
-        {
-            Status = "请先加载页面。";
-            return;
-        }
-
-        DocumentBox[] logicalPages = _loadedBoxes.Where(box => box.BoxType == DocumentBoxType.LogicalPage).ToArray();
-        if (logicalPages.Length == 0)
-        {
-            Status = "当前物理页没有逻辑页；请使用整页 OCR。";
-            return;
-        }
-
-        OcrPresetId? presetId = await ResolveOcrPresetIdAsync(OcrScope.Page);
-        if (presetId is null)
-        {
-            return;
-        }
-
-        await RunOcrModalAsync("逻辑页 OCR", "正在按逻辑页识别本页...", async () =>
-        {
-            HostServices services = await _main.ServicesAsync();
-            Result<LogicalPageOcrResult> result = await services.LogicalPageOcr.RunAsync(
-                DocumentInstanceId.Parse(Item.DocumentInstanceId), presetId.Value,
-                _currentPageId.Value, OrderSiblings(logicalPages)
-                    .Select(box => new LogicalPageOcrTarget(box.BoxId, box.BBox)).ToArray());
-            if (result.IsFailure)
-            {
-                Status = $"逻辑页 OCR 失败：{result.ErrorMessage}";
-                return Result.Failure(result.ErrorCode!, result.ErrorMessage!);
-            }
-
-            Status = "逻辑页 OCR 已完成并生成工作版本；区域已映射回物理页。";
-            return Result.Success();
-        });
+        return RunPageEditOcrAsync(true);
     }
 
     private async Task RunDocumentOcrAsync()
@@ -1251,11 +1235,22 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
         await _main.OcrQueue.RefreshAsync();
     }
 
-    private async Task RunCurrentPageOcrAsync()
+    private Task RunCurrentPageOcrAsync()
     {
-        if (_currentPageId is null || string.IsNullOrWhiteSpace(Item.DocumentInstanceId))
+        return RunPageEditOcrAsync(false);
+    }
+
+    private async Task RunPageEditOcrAsync(bool requireLogicalPages)
+    {
+        if (!IsEditMode || EditSessionId is not { } sessionId || _draftRevisionId is null || _currentPageId is null)
         {
-            Status = "请先加载页面。";
+            Status = "请先进入当前页面的编辑模式。";
+            return;
+        }
+
+        if (requireLogicalPages && _loadedBoxes.All(box => box.BoxType != DocumentBoxType.LogicalPage))
+        {
+            Status = "当前页面草稿没有逻辑页；请使用整页 OCR。";
             return;
         }
 
@@ -1265,31 +1260,33 @@ public sealed partial class PdfWorkspaceViewModel : ViewModelBase
             return;
         }
 
-        await RunOcrModalAsync("本页 OCR", "正在识别当前物理页...", async () =>
-        {
-            HostServices services = await _main.ServicesAsync();
-            DocumentInstanceId documentId = DocumentInstanceId.Parse(Item.DocumentInstanceId);
-            Result<LogicalDocumentOcrPagePlan> plan = await CreatePageOcrPlanAsync(
-                services, documentId, _currentPageId.Value);
-            if (plan.IsFailure)
+        await _main.ModalOperations.RunAsync(
+            new ModalOperationOptions("本页 OCR", "正在识别当前页面草稿...", true),
+            async context => await Dispatcher.UIThread.InvokeAsync(async () =>
             {
-                Status = $"读取页面 OCR 计划失败：{plan.ErrorMessage}";
-                return Result.Failure(plan.ErrorCode!, plan.ErrorMessage!);
-            }
+                HostServices services = await _main.ServicesAsync();
+                Result<PhysicalPageOcrResult> result = await services.LogicalPageOcr.RunPageEditAsync(
+                    presetId.Value, sessionId, context.CancellationToken);
+                if (result.IsFailure)
+                {
+                    Status = $"本页 OCR 失败：{result.ErrorMessage}";
+                    return Result.Failure(result.ErrorCode!, result.ErrorMessage!);
+                }
 
-            Result<PhysicalPageOcrResult> result = await services.LogicalPageOcr.RunPageAsync(
-                documentId, presetId.Value, plan.Value);
-            if (result.IsFailure)
-            {
-                Status = $"本页 OCR 失败：{result.ErrorMessage}";
-                return Result.Failure(result.ErrorCode!, result.ErrorMessage!);
-            }
+                if (EditSessionId == sessionId && _draftRevisionId == result.Value.WorkingTreeRevisionId)
+                {
+                    ClearPendingBox();
+                    ClearSplit();
+                    ClearMerge();
+                    ClearLocalOcrCandidate();
+                    await RefreshBoxesAsync();
+                    Status = result.Value.UsedLogicalPages
+                        ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个逻辑页更新页面草稿；保存后生效。"
+                        : "本页整页 OCR 已更新页面草稿；保存后生效。";
+                }
 
-            Status = result.Value.UsedLogicalPages
-                ? $"本页 OCR 已按 {result.Value.RunIds.Count} 个逻辑页完成并生成工作版本。"
-                : "本页整页 OCR 已完成并生成工作版本。";
-            return Result.Success();
-        });
+                return Result.Success();
+            }));
     }
 
     private static async Task<Result<LogicalDocumentOcrPagePlan>> CreatePageOcrPlanAsync(

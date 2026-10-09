@@ -296,8 +296,8 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     ["authority", "jurisdiction", "number", "issued", "submitted", "status", "references"],
                     [],
                     [ItemCreatorRoles.Author, ItemCreatorRoles.Holder],
-                    dateRoles: [ItemDateRoles.Issued, ItemDateRoles.Submitted],
-                    identifierSchemes: [BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber],
+                    [ItemDateRoles.Issued, ItemDateRoles.Submitted],
+                    [BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber],
                     fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
                     {
                         ["call-number"] = "专利号",
@@ -441,7 +441,8 @@ public sealed class CslItemTypeProfileService : ICslItemTypeProfileService
                     ["title", "author"],
                     ["issued", "genre", "publisher", "archive"],
                     [],
-                    identifierSchemes: [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber],
+                    identifierSchemes:
+                    [BuiltInIdentifierSchemes.DOI, BuiltInIdentifierSchemes.URL, BuiltInIdentifierSchemes.CallNumber],
                     fieldLabels: new Dictionary<string, string>(StringComparer.Ordinal)
                     {
                         ["publisher"] = "授予机构",

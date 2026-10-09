@@ -1,3 +1,5 @@
+using Dapper;
+using Microsoft.Data.Sqlite;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
@@ -366,10 +368,19 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
                             cancellationToken);
                     if (importedPdf.Success)
                     {
-                        imported++;
+                        if (importedPdf.IsDuplicate)
+                        {
+                            skipped++;
+                        }
+                        else
+                        {
+                            imported++;
+                        }
+
                         knownPaths.Add(normalizedPath);
-                        progress?.Invoke(processedRoots, roots.Value.Count, $"已导入：{candidate.FileName}",
-                            $"导入完成 → {normalizedPath}");
+                        progress?.Invoke(processedRoots, roots.Value.Count,
+                            importedPdf.IsDuplicate ? $"文件已存在，已跳过：{candidate.FileName}" : $"已导入：{candidate.FileName}",
+                            $"处理完成 → {normalizedPath}");
                         if (importedPdf.FailedPageCount > 0)
                         {
                             string firstPageFailure = importedPdf.PageFailures?.FirstOrDefault()?.ErrorMessage
@@ -474,13 +485,15 @@ public sealed class FileSearchRootWatcherService : IAsyncDisposable
 
     private async Task<HashSet<string>> LoadKnownFilePathsAsync(CancellationToken cancellationToken)
     {
-        Result<IReadOnlyList<string>> paths = await _services.Files.ListOriginalPathsAsync(cancellationToken);
-        if (paths.IsFailure)
-        {
-            throw new InvalidOperationException(paths.ErrorMessage);
-        }
-
-        return paths.Value.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        await using SqliteConnection connection = _services.ConnectionFactory.CreateReadConnection();
+        await connection.OpenAsync(cancellationToken);
+        IEnumerable<string> paths = await connection.QueryAsync<string>(new CommandDefinition(
+            """
+            select original_path from file_assets
+            union all
+            select path from known_file_locations where status = 'available';
+            """, cancellationToken: cancellationToken));
+        return paths.Select(Path.GetFullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private void ScheduleFileSearchRootRescan(string changeDescription, long watcherGeneration)

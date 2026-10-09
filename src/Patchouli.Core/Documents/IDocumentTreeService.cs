@@ -60,6 +60,13 @@ public interface IDocumentTreeService
         PageId pageId,
         CancellationToken cancellationToken = default);
 
+    Task<Result<PageEditSession>> GetPageEditAsync(PageEditSessionId sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result<PageEditSession>.Failure(AppErrorCodes.UnsupportedOperation,
+            "Page edit lookup is not supported by this service."));
+    }
+
     Task<Result<DocumentTreeRevision>> GetCurrentRevisionAsync(
         DocumentInstanceId documentInstanceId,
         PageId pageId,
@@ -110,6 +117,10 @@ public interface IDocumentTreeService
 
 public interface IDocumentTreeEditor
 {
+    /// <summary>Replaces the captured draft atomically; rejects OCR output if the draft changed meanwhile.</summary>
+    Task<Result> ApplyPageOcrAsync(PageEditSession session, IReadOnlyList<DocumentBox> expectedBoxes,
+        IReadOnlyList<DocumentBox> replacementBoxes, CancellationToken cancellationToken = default);
+
     Task<Result<DocumentBox>> InsertLogicalPageAsync(
         PageEditSessionId sessionId,
         DocumentBoxId? insertAfterBoxId,

@@ -339,63 +339,83 @@ public sealed class UiViewModelTests : IDisposable
     [Fact]
     public async Task Toolbar_patchouli_uri_opens_item_and_zero_based_text_page()
     {
-        string path = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.sqlite");
-        string pdf = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.pdf");
-        try
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
         {
-            File.Copy(TestFixtures.RealThreePagePdf, pdf);
-            MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
-            await vm.OpenDatabaseCommand.ExecuteAsync();
-            await vm.Library.CreateCommand.ExecuteAsync();
-            HostServices services = await vm.ServicesAsync();
-            PdfImportResult imported =
-                await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "URI navigation", null, 3));
-            imported.Success.Should().BeTrue(imported.ErrorMessage);
-            await vm.Shell.RefreshItemsAsync();
-
-            vm.SearchEvidence.Query =
-                $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-1.md";
-            await vm.RunToolbarSearchCommand.ExecuteAsync();
-
-            vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
-            ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
-
-            vm.SearchEvidence.Query =
-                $"[URI navigation](patchouli://items/{imported.CreatedItemId}.bib)";
-            await vm.RunToolbarSearchCommand.ExecuteAsync();
-
-            vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
-            vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
-            await services.PageRenders.ReleaseDocumentSessionAsync(
-                DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!));
-        }
-        finally
-        {
-            if (File.Exists(pdf))
+            string path = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.sqlite");
+            string pdf = Path.Combine(Path.GetTempPath(), $"ui-uri-{Guid.NewGuid():N}.pdf");
+            try
             {
-                File.Delete(pdf);
-            }
+                File.Copy(TestFixtures.RealThreePagePdf, pdf);
+                MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
+                await vm.OpenDatabaseCommand.ExecuteAsync();
+                await vm.Library.CreateCommand.ExecuteAsync();
+                HostServices services = await vm.ServicesAsync();
+                PdfImportResult imported =
+                    await services.PdfImport.ImportPdfAsync(new PdfImportRequest(pdf, "URI navigation", null, 3));
+                imported.Success.Should().BeTrue(imported.ErrorMessage);
+                await vm.Shell.RefreshItemsAsync();
 
-            if (File.Exists(path))
-            {
-                SqliteConnection.ClearAllPools();
-                File.Delete(path);
+                vm.SearchEvidence.Query =
+                    $"PATCHOULI://TEXTS/{imported.CreatedDocumentInstanceId}/page-1.md";
+                await vm.RunToolbarSearchCommand.ExecuteAsync();
+
+                vm.ActiveTab!.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
+                ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
+
+                vm.SearchEvidence.Query =
+                    $"[URI navigation](patchouli://items/{imported.CreatedItemId}.bib)";
+                await vm.RunToolbarSearchCommand.ExecuteAsync();
+
+                vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
+                vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
+                MarkdownLinkNavigator vfsLinks = new(vm.NavigateToVfsUriAsync,
+                    _ => throw new InvalidOperationException("VFS links must not open a browser."));
+                await vfsLinks.NavigateAsync(new Uri(McpResourceUris.PageUri(
+                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), 2)));
+                vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.PdfWorkspace);
+                ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("2");
+                await vfsLinks.NavigateAsync(new Uri(McpResourceUris.TranslationPageUri(
+                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!), 3)));
+                ((PdfWorkspaceViewModel)vm.ActiveTab.Content).PageNumberText.Should().Be("3");
+                ((PdfWorkspaceViewModel)vm.ActiveTab.Content).ActiveSidebarTab.ToString().Should().Be("Translation");
+                await vfsLinks.NavigateAsync(new Uri(McpResourceUris.ItemUri(ItemId.Parse(imported.CreatedItemId!))));
+                vm.ActiveTab.Kind.Should().Be(WorkspaceTabKind.ItemEditor);
+                vm.ActiveTab.TabId.Should().Be($"ItemEditor_{imported.CreatedItemId}");
+                await services.PageRenders.ReleaseDocumentSessionAsync(
+                    DocumentInstanceId.Parse(imported.CreatedDocumentInstanceId!));
             }
-        }
+            finally
+            {
+                if (File.Exists(pdf))
+                {
+                    File.Delete(pdf);
+                }
+
+                if (File.Exists(path))
+                {
+                    SqliteConnection.ClearAllPools();
+                    File.Delete(path);
+                }
+            }
+        }, CancellationToken.None);
     }
 
     [Fact]
-    public void Settings_page_uses_nine_groups_and_keeps_csl_about_outside()
+    public void Settings_page_uses_seven_groups_and_keeps_csl_about_outside()
     {
         MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
         vm.Settings.Categories.Select(category => category.Title).Should().Equal(
-            "外观与显示", "库与本机路径", "本地文件", "导入", "OCR 引擎", "元数据来源", "搜索重写",
-            "MCP 服务与安全", "同步与快照");
-        vm.Settings.Categories.Select(category => category.Content)
+            "外观与阅读", "书库与本机文件", "导入与识别", "AI集成", "元数据来源", "搜索", "同步与快照");
+        vm.Settings.SectionEntries.Select(entry => entry.Content)
             .Should()
             .AllBeAssignableTo<ISettingsSection>();
-        vm.Settings.Categories.Where(category => category.Title != "本地文件")
-            .Select(category => category.Content is ISettingsSection { SupportsEditing: true })
+
+        // 「本地文件」and「工作流」own their commands instead of the shared settings draft pipeline:
+        // workflow edits are committed and compile-checked one at a time.
+        vm.Settings.SectionEntries
+            .Where(entry => entry.Id is not ("local_files" or "workflows"))
+            .Select(entry => entry.Content is ISettingsSection { SupportsEditing: true })
             .Should()
             .OnlyContain(value => value);
     }
@@ -629,7 +649,7 @@ public sealed class UiViewModelTests : IDisposable
             await vm.OpenDatabaseCommand.ExecuteAsync();
 
             vm.StatusIsError.Should().BeTrue();
-            vm.Status.Should().Contain("不受 Patchouli 0.3.6 支持");
+            vm.Status.Should().Contain("不受 Patchouli 0.3.7 支持");
             vm.Status.Should().Contain("schema epoch（1）");
             vm.Status.Should().Contain("请新建资料库并重新导入源文档");
         }
@@ -2156,7 +2176,7 @@ public sealed class UiViewModelTests : IDisposable
 
             NavCategoryViewModel category = vm.Settings.Categories
                 .Single(c => ReferenceEquals(c.Content, vm.Settings.SearchRewriteSettings));
-            category.Title.Should().Be("搜索重写");
+            category.Title.Should().Be("搜索");
             category.IconName.Should().Be("Filter");
 
             await vm.OpenSearchRewriteSettingsCommand.ExecuteAsync();
@@ -2590,7 +2610,8 @@ public sealed class UiViewModelTests : IDisposable
         try
         {
             TestFixtures.CopyRealThreePagePdfTo(scanRoot, "alpha.pdf");
-            TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
+            string betaPath = TestFixtures.CopyRealThreePagePdfTo(scanRoot, "beta.pdf");
+            await File.AppendAllTextAsync(betaPath, "\n% Distinct beta PDF content.\n");
             MainWindowViewModel vm = WithRuntimeDatabasePath(CreateMainWindow(new FakeClipboard()), path);
             await vm.ShowInlineFirstRunAsync();
             await vm.FirstRun.OpenDatabaseCommand.ExecuteAsync();
@@ -3374,6 +3395,9 @@ public sealed class UiViewModelTests : IDisposable
             McpSettingsViewModel mcp = vm.Settings.McpSettings;
             await mcp.LoadAsync();
             mcp.Port = 4567;
+            mcp.PermissionRows.Should().HaveCount(8);
+            mcp.PermissionRows.Should().OnlyContain(row => row.Cells.Count == 5);
+            mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[1].Enabled = false;
             mcp.IsDirty.Should().BeTrue();
             mcp.SaveState.Should().Be(SettingsSaveState.Dirty);
 
@@ -3384,6 +3408,9 @@ public sealed class UiViewModelTests : IDisposable
             mcp.IsDirty.Should().BeFalse();
             mcp.RequiresReload.Should().BeFalse();
             mcp.LastError.Should().BeNull();
+            await mcp.LoadAsync();
+            mcp.PermissionRows.Single(row => row.Domain == "texts").Cells[1].Enabled.Should().BeFalse();
+            mcp.PermissionRows.Single(row => row.Domain == "items").Cells[1].Enabled.Should().BeTrue();
         }
         finally
         {

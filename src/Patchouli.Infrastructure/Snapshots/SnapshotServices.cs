@@ -134,10 +134,34 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 }
             }
 
+            List<SnapshotFilePayload> filePayloads = new();
+            if (request.SyncAgentSessions)
+            {
+                SnapshotFilePayload? payload = await SnapshotFilePayloads.CreateArchiveAsync(
+                    runtimePath, syncRoot, snapshotId, SnapshotFilePayloadKinds.AgentSessions, cancellationToken);
+                if (payload is not null)
+                {
+                    filePayloads.Add(payload);
+                }
+            }
+
+            if (request.SyncWorkflowDefinitions)
+            {
+                SnapshotFilePayload? payload = await SnapshotFilePayloads.CreateArchiveAsync(
+                    runtimePath, syncRoot, snapshotId, SnapshotFilePayloadKinds.Workflows, cancellationToken);
+                if (payload is not null)
+                {
+                    filePayloads.Add(payload);
+                }
+            }
+
             SnapshotManifest manifest = new(1, libraryId, request.DeviceId, snapshotId, request.ParentSnapshotId,
                 AppSchemaVersion.Current, generation, _clock.UtcNow.ToUniversalTime(), shards,
                 Array.Empty<SnapshotShard>(),
-                await Blake3FileAsync(sourceSnapshotPath), request.Notes);
+                await Blake3FileAsync(sourceSnapshotPath), request.Notes)
+            {
+                FilePayloads = filePayloads
+            };
             string manifestPath = Path.Combine(syncRoot, "manifests", $"{snapshotId}.json");
             await WriteJsonAtomicAsync(manifestPath, manifest, cancellationToken);
             SnapshotCurrentPointer pointer = new(snapshotId, Path.Combine("manifests", $"{snapshotId}.json"), libraryId,
@@ -148,7 +172,8 @@ public sealed class SnapshotPublisher : ISnapshotPublisher
                 currentPath, shards, generation,
                 shards.Count > 1
                     ? "Runtime database exceeded the snapshot shard target; data was split into multiple immutable shards. FTS rows are cleared in data shards; persisted search_units remain canonical."
-                    : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical."));
+                    : "FTS rows are cleared in the snapshot shard; persisted search_units remain canonical.",
+                filePayloads));
         }
         catch (Exception ex) when (UnexpectedExceptionReporter.ReportCatch(ex, "infrastructure.snapshot-services"))
         {
@@ -959,6 +984,33 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 }
             }
 
+            foreach (SnapshotFilePayload payload in manifest.FilePayloads)
+            {
+                if (!TryResolveShardPath(syncRoot, payload.FileName, out string payloadPath))
+                {
+                    errors.Add($"File payload path escapes snapshot root: {payload.FileName}");
+                    continue;
+                }
+
+                if (!File.Exists(payloadPath))
+                {
+                    errors.Add($"File payload missing: {payload.FileName}");
+                }
+                else
+                {
+                    if (new FileInfo(payloadPath).Length != payload.SizeBytes)
+                    {
+                        errors.Add($"File payload size mismatch: {payload.FileName}");
+                    }
+
+                    if (!string.Equals(await SnapshotPublisher.Blake3FileAsync(payloadPath), payload.Blake3,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        errors.Add($"File payload hash mismatch: {payload.FileName}");
+                    }
+                }
+            }
+
             return Result<SnapshotValidationResult>.Success(new SnapshotValidationResult(errors.Count == 0, manifest,
                 errors));
         }
@@ -1130,6 +1182,24 @@ public sealed class SnapshotImporter : ISnapshotImporter
                 return Result<SnapshotImportResult>.Failure(AppErrorCodes.ValidationFailed,
                     $"Imported Document Box Tree is invalid: {treeValidation.ErrorMessage}",
                     treeValidation.Conflicts);
+            }
+
+            if (manifest.FilePayloads.Count > 0)
+            {
+                string stagingPayloadsRoot =
+                    SnapshotFilePayloads.StagingPayloadsRoot(stagingPath, manifest.SnapshotId);
+                Result<IReadOnlyList<string>> extraction = await SnapshotFilePayloads.ExtractIntoStagingAsync(
+                    manifest, syncRoot, stagingPayloadsRoot,
+                    (root, fileName) =>
+                        TryResolveShardPath(root, fileName, out string resolved) ? resolved : null,
+                    cancellationToken);
+                if (extraction.IsFailure)
+                {
+                    stagingFactory.DeleteDatabaseFiles();
+                    return Result<SnapshotImportResult>.Failure(extraction.ErrorCode!, extraction.ErrorMessage!);
+                }
+
+                warnings.AddRange(extraction.Value);
             }
 
             if (manifest.SensitiveMutableShards.Count > 0)

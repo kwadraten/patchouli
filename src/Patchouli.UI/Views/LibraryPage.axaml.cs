@@ -34,6 +34,16 @@ public sealed partial class LibraryPage : UserControl
             Avalonia.Interactivity.RoutingStrategies.Tunnel);
     }
 
+    private async void OnLibraryContextMenuOpened(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        // The workflow entries are captured against the selection at the moment the menu opens, and are
+        // read from the same source as the menu bar (plan §3.8).
+        if (DataContext is LibraryShellViewModel shell)
+        {
+            await UnexpectedExceptionBoundary.RunAsync(shell.RefreshWorkflowMenuAsync, "library-workflow-menu");
+        }
+    }
+
     private async void OnDataGridDoubleTapped(object? sender, TappedEventArgs e)
     {
         // A double-click on a column header clears the sort; only row double-clicks open the PDF.

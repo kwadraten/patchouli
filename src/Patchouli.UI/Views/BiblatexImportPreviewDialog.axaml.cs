@@ -8,12 +8,7 @@ public partial class BiblatexImportPreviewDialog : Window
     public BiblatexImportPreviewDialog()
     {
         InitializeComponent();
-        DataContextChanged += (_, _) =>
-        {
-            if (DataContext is BiblatexImportPreviewDialogViewModel vm)
-            {
-                vm.RequestClose = result => Close(result);
-            }
-        };
+        DialogCloseBinding.Bind<BiblatexImportPreviewDialogViewModel, object?>(
+            this, static (vm, close) => vm.RequestClose = close);
     }
 }

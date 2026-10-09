@@ -29,7 +29,9 @@ public enum WorkspaceTabKind
     SyncCenter,
     SearchResults,
     OcrQueue,
+    AgentChat,
     ItemEditor,
     CslStyleManager,
-    About
+    About,
+    Changelog
 }

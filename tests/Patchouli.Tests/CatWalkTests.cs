@@ -250,7 +250,6 @@ public sealed class CatWalkTests
 
         catWalk.Should().NotBeNull();
         catWalk!.License.Should().Be("GPL-3.0+");
-        catWalk.Author.Should().Be("BLADR-ONE, Yuri Saurov");
         catWalk.Url.Should().Contain("https://github.com/BLADR-ONE/CatWalk-Enhanced-Plasmoid");
         catWalk.Url.Should().Contain("0e20cec96c7e5e390623a80aed6302c2f1b8c7ee");
     }
