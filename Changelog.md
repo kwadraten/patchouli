@@ -1,5 +1,14 @@
 # 更新日志
 
+## 0.3.8
+
+发布：2026-10-09 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.8) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.7...0.3.8)
+
+- OCR 菜单新增引擎快速切换，可分别为文档级、页面级和区域级选择引擎，选择后立即保存。
+- 搜索方式与 OCR 引擎统一使用单选菜单样式，明确显示当前选择；OCR 级别菜单仅用于展开子菜单。
+- 修复工作区标签页共享页面导致的显示与状态问题，各标签页保留独立页面。
+- 默认隐藏书库中的可选列，并修复首次设置后书库侧栏状态未及时更新的问题。
+
 ## 0.3.7
 
 发布：2026-10-09 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.7) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.6...0.3.7)

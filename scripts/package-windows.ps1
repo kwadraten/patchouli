@@ -1,7 +1,7 @@
 param(
     [string]$Runtime = "win-x64",
     [string]$Configuration = "Release",
-    [string]$Version = "0.3.7",
+    [string]$Version = "0.3.8",
     [switch]$Smoke
 )
 

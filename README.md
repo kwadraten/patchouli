@@ -10,7 +10,7 @@
 
 ## 下载与更新日志
 
-当前版本：**0.3.7**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
+当前版本：**0.3.8**。可从 [GitHub Releases](https://github.com/kwadraten/patchouli/releases) 下载 Windows x64 安装包和 macOS Apple Silicon 磁盘映像。
 
 版本更新内容见 [更新日志](Changelog.md)，也可在应用菜单栏的“设置 → 更新日志”中查看。
 
