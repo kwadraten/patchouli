@@ -253,6 +253,17 @@ public sealed partial class MainWindow : Window
         _viewModel.RunToolbarSearchCommand.Execute(null);
     }
 
+    private void OnOcrMenuOpened(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, e.Source))
+        {
+            return;
+        }
+
+        UnexpectedExceptionBoundary.RunAsync(_viewModel.RefreshOcrEngineMenuAsync, "ocr-engine-menu-refresh")
+            .Observe("ui-event", "ocr-engine-menu-refresh");
+    }
+
     private async void OnWorkflowMenuPointerEntered(object? sender, Avalonia.Input.PointerEventArgs e)
     {
         // Menus are opened far more often than workflows change: rebuilding the entries here keeps the

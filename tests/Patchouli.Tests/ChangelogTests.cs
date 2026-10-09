@@ -44,7 +44,8 @@ public sealed class ChangelogTests
             try
             {
                 window.Show();
-                Menu menu = window.GetLogicalDescendants().OfType<Menu>().Single();
+                Menu menu = window.GetLogicalDescendants().OfType<Menu>().Single(candidate =>
+                    candidate.Items.OfType<MenuItem>().Any(item => Equals(item.Header, "设置")));
                 MenuItem settingsMenu = menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "设置"));
                 MenuItem changelogMenu = settingsMenu.Items.OfType<MenuItem>()
                     .Single(item => Equals(item.Header, "更新日志"));

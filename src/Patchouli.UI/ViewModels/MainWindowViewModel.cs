@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Windows.Input;
 using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Patchouli.Core.Bibliography;
 using Patchouli.Core.Bibliography.Biblatex;
 using Patchouli.Core.Credentials;
@@ -372,7 +373,20 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
     [ObservableProperty] public partial string ToolbarSearchQuery { get; set; } = "";
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsToolbarBibliographicSearch))]
+    [NotifyPropertyChangedFor(nameof(IsToolbarFullTextSearch))]
     public partial SearchModeOption ToolbarSearchMode { get; set; } = SearchEvidenceViewModel.AvailableModeOptions[1];
+
+    [ExcludeFromDerivedGeneration]
+    public bool IsToolbarBibliographicSearch => ToolbarSearchMode.Mode == SearchMode.Bibliographic;
+
+    [ExcludeFromDerivedGeneration] public bool IsToolbarFullTextSearch => ToolbarSearchMode.Mode == SearchMode.FullText;
+
+    [RelayCommand]
+    private void SelectToolbarSearchMode(SearchModeOption mode)
+    {
+        ToolbarSearchMode = mode;
+    }
 
     partial void OnToolbarSearchQueryChanged(string value)
     {
@@ -2467,6 +2481,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
             return false;
         }
 
+        RefreshOcrEngineMenuChecks();
+        _settingsViewModel?.OcrProviderSettings.LoadPersistedToken(Shell.MinerUToken);
         Report("OCR 引擎选择已保存。");
         return true;
     }

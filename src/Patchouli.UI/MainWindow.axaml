@@ -184,7 +184,57 @@
                       IsVisible="{Binding Sidebar.IsActiveSelected}" />
             <MenuItem Header="管理 CSL 样式" Command="{Binding OpenCslStyleManagerCommand}" />
           </MenuItem>
-          <MenuItem Header="OCR">
+          <MenuItem Header="OCR" SubmenuOpened="OnOcrMenuOpened">
+            <MenuItem Header="切换OCR引擎">
+              <MenuItem Header="文档级" Classes="ocrEngineScope" ItemsSource="{Binding DocumentOcrEngineMenuEntries}"
+                        x:CompileBindings="False">
+                <MenuItem.ItemTemplate>
+                  <DataTemplate x:DataType="local:OcrEngineMenuEntryViewModel">
+                    <TextBlock Text="{Binding Header}" />
+                  </DataTemplate>
+                </MenuItem.ItemTemplate>
+                <MenuItem.Styles>
+                  <Style Selector="MenuItem.ocrEngineScope > MenuItem">
+                    <Setter Property="ToggleType" Value="Radio" />
+                    <Setter Property="GroupName" Value="OcrEngineScope1" />
+                    <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
+                    <Setter Property="Command" Value="{Binding SelectCommand}" />
+                  </Style>
+                </MenuItem.Styles>
+              </MenuItem>
+              <MenuItem Header="页面级" Classes="ocrEngineScope" ItemsSource="{Binding PageOcrEngineMenuEntries}"
+                        x:CompileBindings="False">
+                <MenuItem.ItemTemplate>
+                  <DataTemplate x:DataType="local:OcrEngineMenuEntryViewModel">
+                    <TextBlock Text="{Binding Header}" />
+                  </DataTemplate>
+                </MenuItem.ItemTemplate>
+                <MenuItem.Styles>
+                  <Style Selector="MenuItem.ocrEngineScope > MenuItem">
+                    <Setter Property="ToggleType" Value="Radio" />
+                    <Setter Property="GroupName" Value="OcrEngineScope2" />
+                    <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
+                    <Setter Property="Command" Value="{Binding SelectCommand}" />
+                  </Style>
+                </MenuItem.Styles>
+              </MenuItem>
+              <MenuItem Header="区域级" Classes="ocrEngineScope" ItemsSource="{Binding RegionOcrEngineMenuEntries}"
+                        x:CompileBindings="False">
+                <MenuItem.ItemTemplate>
+                  <DataTemplate x:DataType="local:OcrEngineMenuEntryViewModel">
+                    <TextBlock Text="{Binding Header}" />
+                  </DataTemplate>
+                </MenuItem.ItemTemplate>
+                <MenuItem.Styles>
+                  <Style Selector="MenuItem.ocrEngineScope > MenuItem">
+                    <Setter Property="ToggleType" Value="Radio" />
+                    <Setter Property="GroupName" Value="OcrEngineScope3" />
+                    <Setter Property="IsChecked" Value="{Binding IsSelected, Mode=OneWay}" />
+                    <Setter Property="Command" Value="{Binding SelectCommand}" />
+                  </Style>
+                </MenuItem.Styles>
+              </MenuItem>
+            </MenuItem>
             <MenuItem Header="OCR 队列看板" Command="{Binding OpenOcrQueueCommand}" />
             <MenuItem Header="运行 OCR" Command="{Binding RunSelectedItemOcrCommand}"
                       IsVisible="{Binding Shell.CanModifyLibraryItems}" />
@@ -229,40 +279,26 @@
           </MenuItem>
         </Menu>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="0" VerticalAlignment="Center">
-          <StackPanel.Styles>
-            <Style Selector="ComboBox#SearchModeCombo">
-              <Setter Property="BorderThickness" Value="0" />
-              <Setter Property="Background" Value="Transparent" />
-              <Setter Property="CornerRadius" Value="0" />
-              <Setter Property="Padding" Value="6,0" />
-            </Style>
-            <Style Selector="ComboBox#SearchModeCombo /template/ Border#Background">
-              <Setter Property="BorderThickness" Value="0" />
-            </Style>
-            <!-- Dropdown selection uses the app palette instead of the Fluent accent blue. -->
-            <Style Selector="ComboBox#SearchModeCombo ComboBoxItem:selected /template/ ContentPresenter">
-              <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
-              <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
-            </Style>
-            <Style Selector="ComboBox#SearchModeCombo ComboBoxItem:selected:pointerover /template/ ContentPresenter">
-              <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
-              <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
-            </Style>
-            <Style Selector="ComboBox#SearchModeCombo ComboBoxItem:selected:pressed /template/ ContentPresenter">
-              <Setter Property="Background" Value="{DynamicResource PrimaryBrush}" />
-              <Setter Property="Foreground" Value="{DynamicResource OnPrimaryBrush}" />
-            </Style>
-          </StackPanel.Styles>
-          <ComboBox x:Name="SearchModeCombo" Width="100" Height="24" FontSize="12" VerticalContentAlignment="Center"
-                    ItemsSource="{Binding ToolbarSearchModeOptions}"
-                    SelectedItem="{Binding ToolbarSearchMode}"
-                    ToolTip.Tip="{Binding ToolbarSearchMode.Hint}">
-            <ComboBox.ItemTemplate>
-              <DataTemplate x:DataType="local:SearchModeOption">
-                <TextBlock Text="{Binding Label}" FontSize="12" VerticalAlignment="Center" />
-              </DataTemplate>
-            </ComboBox.ItemTemplate>
-          </ComboBox>
+          <Menu Height="24" Background="Transparent" FontSize="12">
+            <MenuItem ToolTip.Tip="{Binding ToolbarSearchMode.Hint}">
+              <MenuItem.Header>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="{Binding ToolbarSearchMode.Label}" VerticalAlignment="Center" />
+                  <lucide:Lucide Icon="ChevronDown" Width="14" Height="14" VerticalAlignment="Center" />
+                </StackPanel>
+              </MenuItem.Header>
+              <MenuItem Header="{Binding ToolbarSearchModeOptions[0].Label}" ToggleType="Radio"
+                        GroupName="ToolbarSearchMode"
+                        IsChecked="{Binding IsToolbarBibliographicSearch, Mode=OneWay}"
+                        Command="{Binding SelectToolbarSearchModeCommand}"
+                        CommandParameter="{Binding ToolbarSearchModeOptions[0]}" />
+              <MenuItem Header="{Binding ToolbarSearchModeOptions[1].Label}" ToggleType="Radio"
+                        GroupName="ToolbarSearchMode"
+                        IsChecked="{Binding IsToolbarFullTextSearch, Mode=OneWay}"
+                        Command="{Binding SelectToolbarSearchModeCommand}"
+                        CommandParameter="{Binding ToolbarSearchModeOptions[1]}" />
+            </MenuItem>
+          </Menu>
           <Border BorderThickness="0,0,1,0" BorderBrush="{DynamicResource OutlineVariantBrush}"
                   Height="24" VerticalAlignment="Center" />
           <TextBox Width="220" Height="24" FontSize="12" CornerRadius="0" BorderThickness="0"
