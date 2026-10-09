@@ -577,19 +577,19 @@ public sealed partial class LibraryShellViewModel : ViewModelBase
 
     public bool ShowStatusColumn
     {
-        get => GetColumnVisibility("Status", true);
+        get => GetColumnVisibility("Status", false);
         set => SetColumnVisibility("Status", value);
     }
 
     public bool ShowPagesColumn
     {
-        get => GetColumnVisibility("Pages", true);
+        get => GetColumnVisibility("Pages", false);
         set => SetColumnVisibility("Pages", value);
     }
 
     public bool ShowFileColumn
     {
-        get => GetColumnVisibility("File", true);
+        get => GetColumnVisibility("File", false);
         set => SetColumnVisibility("File", value);
     }
 

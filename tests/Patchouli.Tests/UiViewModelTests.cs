@@ -1231,6 +1231,26 @@ public sealed class UiViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Library_grid_hides_optional_columns_by_default_and_honors_explicit_preferences()
+    {
+        using MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
+        vm.Shell.ShowTitleColumn.Should().BeTrue();
+        vm.Shell.ShowStatusColumn.Should().BeFalse();
+        vm.Shell.ShowPagesColumn.Should().BeFalse();
+        vm.Shell.ShowFileColumn.Should().BeFalse();
+
+        vm.Shell.ShowStatusColumn = true;
+        vm.Shell.ShowPagesColumn = true;
+        vm.Shell.ShowFileColumn = true;
+
+        vm.Shell.ShowStatusColumn.Should().BeTrue();
+        vm.Shell.ShowPagesColumn.Should().BeTrue();
+        vm.Shell.ShowFileColumn.Should().BeTrue();
+        vm.AppOptions.Ui.LibraryGridVisibleColumns.Should().Contain("Status", true)
+            .And.Contain("Pages", true).And.Contain("File", true);
+    }
+
+    [Fact]
     public void Library_sidebar_visibility_updates_when_first_run_finishes_without_switching_tabs()
     {
         using MainWindowViewModel vm = CreateMainWindow(new FakeClipboard());
