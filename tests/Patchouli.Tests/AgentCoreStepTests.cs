@@ -19,7 +19,7 @@ public sealed class AgentCoreStepTests
     [Theory]
     [InlineData(0)]
     [InlineData(2)]
-    public void Tool_repairs_obey_context_limit_survive_restore_and_reset_on_new_message(int limit)
+    public void Tool_corrections_do_not_spend_request_retries_and_survive_restore(int limit)
     {
         Context ctx = AgentCoreModule.withRetryLimit(limit, NewContext());
         for (int attempt = 0; attempt <= limit; attempt++)
@@ -28,13 +28,13 @@ public sealed class AgentCoreStepTests
                 Event.NewToolFailure(EffectId.NewEffectId(100 + attempt), "put", "validation: missing heading"));
             result.Item1.History.OfType<HistoryEntry.ToolResult>().Should()
                 .Contain(entry => entry.name == "put" && entry.payload == "validation: missing heading");
-            Effects(result).Should().HaveCount(attempt < limit ? 1 : 0);
+            Effects(result).Should().HaveCount(1);
             ctx = AgentSessionCodec.ContextFromJson(AgentSessionCodec.ToJson(result.Item1));
             ctx.Retry.Limit.Should().Be(limit);
-            ctx.Retry.Attempts.Should().Be(Math.Min(attempt + 1, limit));
+            ctx.Retry.Attempts.Should().Be(0);
         }
 
-        ctx.Status.Should().Be(RunStatus.Stopped);
+        ctx.Status.Should().Be(RunStatus.AwaitingEffect);
         Tuple<Context, FSharpList<Effect>> continued = AgentCoreModule.chatStep(ctx, NoInbox(),
             Event.NewUserMessage("continue", "try with the corrected structure"));
         Effects(continued).Should().ContainSingle().Which.Should().BeOfType<Effect.LlmChat>();
@@ -47,7 +47,7 @@ public sealed class AgentCoreStepTests
     {
         JsonObject legacy = JsonNode.Parse(AgentSessionCodec.ToJson(NewContext()))!.AsObject();
         legacy.Remove("retry");
-        AgentSessionCodec.ContextFromJson(legacy.ToJsonString()).Retry.Limit.Should().Be(2);
+        AgentSessionCodec.ContextFromJson(legacy.ToJsonString()).Retry.Limit.Should().Be(3);
     }
 
     private static Context NewContext()

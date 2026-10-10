@@ -64,6 +64,7 @@ public sealed class WorkflowEffectHostAdapter : IWorkflowEffectHost, IWorkflowSd
             AgentChatHistoryBuilder.ToHistoryList(scope.Context.History))
         {
             SessionDirectory = _sessionDirectory?.Invoke(sessionId),
+            RequestRetryAttempt = scope.Context.Retry.Attempts,
             RecordSdk = _recordSdk is { } recordSdk ? receipt => recordSdk(sessionId, receipt) : null,
             SdkPolicy = new AgentSdkPolicy(allowed,
                 scope.PrimitiveLimit is { } limit ? limit.Value : null, scope.Exports, scope.Activation)

@@ -60,6 +60,11 @@ public sealed record LlmAppSettings(
     string ChatProviderId,
     string ChatModel)
 {
+    public const int DefaultAgentMaxRetries = 3;
+    public const int MaxAgentMaxRetries = 20;
+
+    public int AgentMaxRetries { get; init; } = DefaultAgentMaxRetries;
+
     public const int DefaultToolResultMaxCharacters = 32768;
     public const int MinToolResultMaxCharacters = 4096;
     public const int MaxToolResultMaxCharacters = 1048576;
@@ -180,6 +185,7 @@ public sealed record LlmAppSettings(
             OcrModel = ocrModel,
             ChatProviderId = chatProviderId,
             ChatModel = chatModel,
+            AgentMaxRetries = Math.Clamp(AgentMaxRetries, 0, MaxAgentMaxRetries),
             ToolResultMaxCharacters = Math.Clamp(ToolResultMaxCharacters,
                 MinToolResultMaxCharacters, MaxToolResultMaxCharacters)
         };

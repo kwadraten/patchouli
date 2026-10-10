@@ -18,6 +18,9 @@ public sealed class LlmAppSettingsTests
         settings.ChatSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
         settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 256000);
         settings.ToolResultMaxCharacters.Should().Be(32768);
+        settings.AgentMaxRetries.Should().Be(3);
+        (settings with { AgentMaxRetries = -1 }).Normalize().AgentMaxRetries.Should().Be(0);
+        (settings with { AgentMaxRetries = 99 }).Normalize().AgentMaxRetries.Should().Be(20);
     }
 
     [Fact]

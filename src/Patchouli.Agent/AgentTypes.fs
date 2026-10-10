@@ -133,7 +133,7 @@ type Context =
         ProcessedMessageIds: IReadOnlySet<string>
         /// Waits currently armed for a host event.
         ArmedWaits: IReadOnlySet<int64>
-        /// Maximum additional model-guided repairs and repairs consumed in this user turn.
+        /// Maximum additional request retries and consecutive request retries consumed.
         Retry: AgentRetryState
         NativeCalls: NativeToolCall list
     }

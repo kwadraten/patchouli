@@ -82,6 +82,12 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     row.ApiKeyInput.Should().Be("replacement-secret", "typing must update the credential draft");
                     NumericUpDown payloadLimit = page.GetVisualDescendants().OfType<NumericUpDown>()
                         .Single(input => input.Name == "ToolResultMaxCharactersInput");
+                    NumericUpDown retries = page.GetVisualDescendants().OfType<NumericUpDown>()
+                        .Single(input => input.Name == "AgentMaxRetriesInput");
+                    retries.Value.Should().Be(3);
+                    retries.Value = 0;
+                    Dispatcher.UIThread.RunJobs();
+                    section.AgentMaxRetries.Should().Be(0);
                     payloadLimit.Value.Should().Be(32768);
                     payloadLimit.Value = 16384;
                     Dispatcher.UIThread.RunJobs();
@@ -93,6 +99,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     }
 
                     store.SavedSecrets["deepseek"].Should().Be("replacement-secret");
+                    PatchouliAppSettings.Load(_settings.Path).Llm.AgentMaxRetries.Should().Be(0);
+                    (await main.ServicesAsync()).LlmSettings.AgentMaxRetries.Should().Be(0);
                     PatchouliAppSettings.Load(_settings.Path).Llm.ToolResultMaxCharacters.Should().Be(16384);
                     (await main.ServicesAsync()).LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
                     row.HasCredential.Should().BeTrue();

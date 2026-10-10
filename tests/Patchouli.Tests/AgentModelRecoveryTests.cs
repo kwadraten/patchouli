@@ -14,7 +14,7 @@ public sealed class AgentModelRecoveryTests
     [Theory]
     [InlineData(LlmFailureCodes.InvalidModelOutput)]
     [InlineData(LlmFailureCodes.TemporaryProviderError)]
-    public async Task Model_diagnostics_reach_the_next_real_chat_request_and_repair_finishes_the_turn(string code)
+    public async Task Request_retry_preserves_model_input_and_success_finishes_the_turn(string code)
     {
         RecoveryTransport transport = new(code);
         LlmProviderCatalogEntry entry = LlmProviderCatalog.Find("deepseek")!;
@@ -47,13 +47,11 @@ public sealed class AgentModelRecoveryTests
         state.Item1.Status.IsIdle.Should().BeTrue();
         state.Item2.AsEnumerable().Should().BeEmpty();
         transport.Requests.Should().HaveCount(3);
-        transport.Requests[1].Messages.Should().Contain(message => message.Role == LlmChatRole.User &&
-                                                                   message.Parts.OfType<LlmMessagePart.LlmTextPart>()
-                                                                       .Any(part =>
-                                                                           part.Text.Contains(
-                                                                               "JSON diagnostic at $.arguments.code")));
-        transport.Requests[2].Messages.Should().Contain(message => message.Parts.OfType<LlmMessagePart.LlmTextPart>()
-            .Any(part => part.Text.Contains("Retry 2/2")));
+        transport.Requests[1].Messages.Should()
+            .BeEquivalentTo(transport.Requests[0].Messages, options => options.WithStrictOrdering());
+        transport.Requests[2].Messages.Should()
+            .BeEquivalentTo(transport.Requests[0].Messages, options => options.WithStrictOrdering());
+        state.Item1.Retry.Attempts.Should().Be(0);
         state.Item1.History.OfType<HistoryEntry.ModelResult>().Should().BeEmpty();
     }
 

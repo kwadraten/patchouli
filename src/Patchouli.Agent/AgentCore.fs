@@ -37,10 +37,10 @@ module AgentCore =
           Calls = Dictionary<int64, CallRecord>() :> IReadOnlyDictionary<int64, CallRecord>
           ProcessedMessageIds = HashSet<string>() :> IReadOnlySet<string>
           ArmedWaits = HashSet<int64>() :> IReadOnlySet<int64>
-          Retry = { Limit = 2; Attempts = 0 }
+          Retry = { Limit = 3; Attempts = 0 }
           NativeCalls = [] }
 
-    /// Inject a bounded repair policy into the same serializable conversation context.
+    /// Inject a bounded model request retry policy into the same serializable conversation context.
     let withRetryLimit limit ctx =
         if limit < 0 then invalidArg "limit" "Retry limit cannot be negative."
         { ctx with Retry = { ctx.Retry with Limit = limit } }
@@ -142,9 +142,9 @@ module AgentCore =
     let observeEffectResult (ctx: Context) (effect: Effect) (evt: Event) : Context =
         match effect, evt with
         | LlmChat id, AssistantReply(resultId, reply) when id = resultId ->
-            completeCall id "LlmChat" (HistoryEntry.AssistantReply reply) ctx
+            completeCall id "LlmChat" (HistoryEntry.AssistantReply reply) { ctx with Retry = { ctx.Retry with Attempts = 0 } }
         | LlmChat id, ModelResult(resultId, text) when id = resultId ->
-            completeCall id "LlmChat" (HistoryEntry.ModelResult text) ctx
+            completeCall id "LlmChat" (HistoryEntry.ModelResult text) { ctx with Retry = { ctx.Retry with Attempts = 0 } }
         | LlmChat id, ModelFailure(resultId, code, detail, _) when id = resultId ->
             completeCall id "LlmChat" (HistoryEntry.ToolResult("model-error", code + ": " + detail)) ctx
         | McpToolCall(id, name, _), ToolResult(resultId, resultName, text)
@@ -173,22 +173,21 @@ module AgentCore =
         | Stopped -> requestModel { ctx with Status = Running }
         | _ -> (ctx, []) // running runs are unaffected; resume is idempotent
 
-    let private repair reason ctx =
+    let private retryRequest reason ctx =
         if ctx.Status = Cancelled || ctx.Status = Stopped then ctx, []
         elif ctx.Retry.Attempts < ctx.Retry.Limit then
-            let attempt = ctx.Retry.Attempts + 1
-            ctx
-            |> appendHistory (HistoryEntry.ToolResult("agent-retry",
-                $"Retry {attempt}/{ctx.Retry.Limit}: {reason} Inspect the actual tool result, correct the request and try again. " +
-                "Use a native function call with correctly typed arguments. Keep explanation in the assistant text."))
-            |> fun next -> requestModel { next with Retry = { next.Retry with Attempts = attempt } }
+            requestModel { ctx with Retry = { ctx.Retry with Attempts = ctx.Retry.Attempts + 1 } }
         else
             let exhausted = ctx |> appendHistory (HistoryEntry.ToolResult("agent-retry",
-                $"AGENT_RETRY_EXHAUSTED: {ctx.Retry.Limit} retries consumed. {reason}"))
+                $"AGENT_RETRY_EXHAUSTED: {ctx.Retry.Limit} model request retries consumed. {reason}"))
             { exhausted with Status = Stopped }, []
 
-    /// A typed workflow output boundary uses the same bounded model-guided repair as tools.
-    let rejectOutput reason ctx = repair ("AGENT_OUTPUT_INVALID: " + reason) ctx
+    /// Output correction belongs to the normal agent loop, bounded by the stage budget.
+    let rejectOutput reason ctx =
+        let next = appendHistory (HistoryEntry.ToolResult("output-validation", "AGENT_OUTPUT_INVALID: " + reason)) ctx
+        if next.Status = Cancelled || next.Status = Stopped then next, [] else requestModel next
+
+    let private resetRequestRetry ctx = { ctx with Retry = { ctx.Retry with Attempts = 0 } }
 
     /// The single decision point. Pure and total: returns the next <c>Context</c> and the
     /// effects to perform. See the module docs for the enforced invariants.
@@ -206,7 +205,7 @@ module AgentCore =
             applyResume ctx'
 
         | AssistantReply(effectId, reply) ->
-            let next = ctx |> foldMessages inbox |> completeCall effectId "LlmChat" (HistoryEntry.AssistantReply reply)
+            let next = ctx |> foldMessages inbox |> completeCall effectId "LlmChat" (HistoryEntry.AssistantReply reply) |> resetRequestRetry
             if next.Status = Cancelled then next, [] else requestModel next
 
         | ModelResult (effectId, text) ->
@@ -214,13 +213,14 @@ module AgentCore =
                 ctx
                 |> foldMessages inbox
                 |> completeCall effectId "LlmChat" (HistoryEntry.ModelResult text)
+                |> resetRequestRetry
             if ctx'.Status = Cancelled then (ctx', []) else requestModel ctx'
 
         | ModelFailure(effectId, code, detail, retryable) ->
             let next = ctx |> foldMessages inbox |> completeCall effectId "LlmChat"
                             (HistoryEntry.ToolResult("model-error", code + ": " + detail))
             if next.Status = Cancelled || next.Status = Stopped then next, []
-            elif retryable then repair ("Model request failed: " + code + ": " + detail) next
+            elif retryable then retryRequest ("Model request failed: " + code + ": " + detail) next
             else { next with Status = Stopped }, []
 
         | ToolResult (effectId, name, payload) ->
@@ -234,7 +234,7 @@ module AgentCore =
             ctx
             |> foldMessages inbox
             |> completeCall effectId "McpToolCall" (HistoryEntry.ToolResult(name, payload))
-            |> repair $"Tool '{name}' failed."
+            |> fun next -> if next.Status = Cancelled || next.Status = Stopped then next, [] else requestModel next
 
         | PutResult (effectId, uri, committed) ->
             // Records the atomic commit point of a `put`. Once issued a `put` is never revoked;
@@ -286,9 +286,7 @@ module AgentCore =
             if next.Status = Cancelled || next.Status = Stopped then next, []
             elif not remaining.IsEmpty then issueNative next
             else
-                let failed = next.History |> List.rev |> List.takeWhile (function HistoryEntry.AssistantReply _ -> false | _ -> true)
-                             |> List.exists (function HistoryEntry.NativeToolResult(_, _, _, true) -> true | _ -> false)
-                if failed then repair "Native tool execution failed; review the paired results." next else requestModel next
+                requestModel next
         | [] -> step folded [] (if isError then ToolFailure(id, name, payload) else ToolResult(id, name, payload))
 
     /// Close abandoned calls before starting another user turn; uncertain side effects are never retried automatically.
@@ -303,7 +301,7 @@ module AgentCore =
     let chatStep (ctx: Context) (inbox: (string * string) list) (evt: Event) : Context * Effect list =
         match evt with
         | AssistantReply(id, reply) ->
-            let next = ctx |> foldMessages inbox |> completeCall id "LlmChat" (HistoryEntry.AssistantReply reply)
+            let next = ctx |> foldMessages inbox |> completeCall id "LlmChat" (HistoryEntry.AssistantReply reply) |> resetRequestRetry
             if next.Status = Cancelled || next.Status = Stopped then next, []
             elif reply.Finish = AssistantFinish.Truncated then
                 let results = reply.ToolCalls |> List.map (fun call -> HistoryEntry.NativeToolResult(call.Id, call.Name,
@@ -316,7 +314,7 @@ module AgentCore =
             elif not reply.ToolCalls.IsEmpty then issueNative { next with NativeCalls = reply.ToolCalls }
             else { next with Status = Idle; Retry = { next.Retry with Attempts = 0 } }, []
         | ModelResult(id, text) ->
-            let next = ctx |> foldMessages inbox |> completeCall id "LlmChat" (HistoryEntry.ModelResult text)
+            let next = ctx |> foldMessages inbox |> completeCall id "LlmChat" (HistoryEntry.ModelResult text) |> resetRequestRetry
             if next.Status = Cancelled || next.Status = Stopped then next, []
             elif not inbox.IsEmpty then requestModel next
             else { next with Status = Idle }, []

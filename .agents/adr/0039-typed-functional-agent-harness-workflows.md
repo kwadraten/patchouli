@@ -14,6 +14,13 @@ are automatically checkpointed; completed callbacks are skipped on restart. Inte
 FSI code is never replayed automatically. Bound translation tools hide target parameters, and page
 outcomes are derived from real commit receipts. No distributed exactly-once claim is made.
 
+2026-10-11 amendment: harness protocol 7 separates model request retries from ordinary tool
+and typed-output correction. Retry attempt/policy are part of replay identity; transient request
+retries do not consume another stage model slot. ModelTurns and Workflow.bounds bound normal
+decision turns; actual provider request counts and costs include all attempts, with extra attempts
+bounded separately by AgentMaxRetries for each sequence. Protocol 6 already introduced frozen declarations,
+parameters and model selection. Older automated runs remain readable and require a new run.
+
 ## Decision
 
 ### Implementation boundary, 2026-10-09

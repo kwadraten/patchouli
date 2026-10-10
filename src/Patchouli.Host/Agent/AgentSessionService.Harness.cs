@@ -24,10 +24,22 @@ public sealed partial class AgentSessionService
 
             await AppendRetryFeedbackAsync(session, session.Context, context, cancellationToken).ConfigureAwait(false);
             session.Context = context;
+            if (effect is Effect.LlmChat && context.Retry.Attempts > 0)
+            {
+                session.Detail = $"模型请求重试 {context.Retry.Attempts}/{context.Retry.Limit}，等待后重试";
+                await AppendLogAsync(session, AgentLogKinds.Event,
+                        AgentSessionCodec.ToJson(Event.NewScriptProgress(session.Detail)), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             await AppendLogAsync(session, AgentLogKinds.EffectIssued, EffectPayload(effect, context), cancellationToken)
                 .ConfigureAwait(false);
             session.RefreshStatusFromCore();
-            session.Detail = "agent harness: " + effect.GetType().Name;
+            if (effect is not Effect.LlmChat || context.Retry.Attempts == 0)
+            {
+                session.Detail = "agent harness: " + effect.GetType().Name;
+            }
+
             await PersistAsync(session, cancellationToken).ConfigureAwait(false);
             Report(session);
         }

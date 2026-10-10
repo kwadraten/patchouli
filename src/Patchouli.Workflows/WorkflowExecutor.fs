@@ -186,7 +186,7 @@ module internal HarnessRuntime =
                 | [effect] ->
                     let denied =
                         match effect with
-                        | LlmChat _ when models >= policy.Budget.ModelTurns -> Some(ExhaustedBudget "AGENT_MODEL_BUDGET_EXHAUSTED")
+                        | LlmChat _ when state.Context.Retry.Attempts = 0 && models >= policy.Budget.ModelTurns -> Some(ExhaustedBudget "AGENT_MODEL_BUDGET_EXHAUSTED")
                         | McpToolCall(id, name, _) when not (policy.Tools.Contains name) -> Some(ForbiddenTool(id, name))
                         | McpToolCall(_, name, _) when name <> "fsi" && not (exports |> Array.exists (fun tool -> tool.Name = name)) && tools >= policy.Budget.ToolCalls -> Some(ExhaustedBudget "AGENT_TOOL_BUDGET_EXHAUSTED")
                         | _ -> None
@@ -198,11 +198,23 @@ module internal HarnessRuntime =
                         return AgentTurn.Continue(models, tools, used, evidence, effects, { state with Context = next })
                     | Some(ExhaustedBudget reason) -> return AgentTurn.Complete(Error(state, WorkflowRunStatus.Failed, $"{reason}: {policy.Name}"))
                     | None ->
+                        let state =
+                            match effect with
+                            | LlmChat _ when state.Context.Retry.Attempts = 0 ->
+                                let limit =
+                                    match state.Replay with
+                                    | recorded :: _ ->
+                                        use json = JsonDocument.Parse recorded.Request
+                                        json.RootElement.GetProperty("RetryLimit").GetInt32()
+                                    | [] -> match host with :? IWorkflowRetryPolicyHost as policyHost -> policyHost.MaxRequestRetries | _ -> state.Context.Retry.Limit
+                                { state with Context = AgentCore.withRetryLimit limit state.Context }
+                            | _ -> state
                         let arguments = match effect with McpToolCall(_, _, args) -> args | _ -> ""
                         let tool = match effect with McpToolCall(_, name, _) -> name | _ -> ""
                         let contracts = exports |> Array.map (fun (tool: ExportedTool) -> tool.Identity) |> String.concat "/"
                         let key = JsonSerializer.Serialize {| Path = path; Stage = (if sharedMode then rules else stage);
                                                              Shared = sharedKey; Prompt = (if sharedMode then prompt else ""); Models = models;
+                                                             RetryAttempt = state.Context.Retry.Attempts; RetryLimit = state.Context.Retry.Limit;
                                                              Tools = tools; Tool = tool; Arguments = arguments; Sdk = contracts; SdkDeclarations = WorkflowSnapshots.hashScript sdkInstructions |}
                         let scope = WorkflowEffectScope(state.Context, Some(Set.toArray policy.Tools), Some(policy.Budget.ToolCalls - tools), exports, state.Plan + "/" + path + "/" + contracts)
                         let! executed = dispatch request host sink token scope key effect state
@@ -212,9 +224,7 @@ module internal HarnessRuntime =
                             // The exact decision point used by chat owns model/tool iteration and parsing.
                             let next, effects = AgentCore.chatStep recorded.Context [] result
                             let unknown = operations |> Array.exists (fun op -> op.ErrorCode = "SDK_OPERATION_UNKNOWN")
-                            // Keep attempts until the typed output has passed validation; chat's natural reply resets them.
-                            let next = if next.Status = RunStatus.Idle then { next with Retry = recorded.Context.Retry } else next
-                            let modelCount = models + (match effect with LlmChat _ -> 1 | _ -> 0)
+                            let modelCount = models + (match effect with LlmChat _ when recorded.Context.Retry.Attempts = 0 -> 1 | _ -> 0)
                             let toolCount = tools + (match effect with
                                                      | McpToolCall(_, name, _) when name = "fsi" || exports |> Array.exists (fun tool -> tool.Name = name) -> operations.Length
                                                      | McpToolCall _ -> max 1 operations.Length | _ -> 0)
@@ -314,12 +324,7 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
 
     member _.RunAsync(request: WorkflowRunRequest, cancellationToken: CancellationToken) : Task<WorkflowRunOutcome> =
         task {
-            let retryLimit =
-                match request.Parameters.TryGetValue "toolRetryLimit" with
-                | true, value -> match Int32.TryParse value with
-                                 | true, limit when limit >= 0 -> limit
-                                 | _ -> invalidArg "toolRetryLimit" "Expected a non-negative integer."
-                | _ -> request.Context.Retry.Limit
+            let retryLimit = request.Context.Retry.Limit
             let state = { Context = AgentCore.withRetryLimit retryLimit AgentCore.initial; Replay = List.ofArray request.RecordedSteps
                           Completed = []; Fresh = []; Issued = []; Position = 0; Checkpoints = Map.empty;
                           Plan = request.Snapshot.ScriptHash + "/" + typeof<AgentWorkflow>.Assembly.ManifestModule.ModuleVersionId.ToString() + "/" + typeof<Context>.Assembly.ManifestModule.ModuleVersionId.ToString() }
@@ -339,8 +344,12 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
                   Diagnostics = diagnostics; Detail = detail }
             let fileName = request.Snapshot.WorkflowId + ".fsx"
             if request.Snapshot.ApiVersion <> ScriptApiVersion.Current then
-                return outcome state WorkflowRunStatus.Failed [||]
-                    "WORKFLOW_API_REMOVED: this snapshot uses the deleted workflow API. Rewrite the workflow and start a new session."
+                let detail =
+                    if request.Snapshot.ApiVersion = "patchouli.workflow.harness/6" then
+                        "WORKFLOW_RETRY_PROTOCOL_CHANGED: this snapshot uses the previous retry/replay protocol. History is preserved; start a new session from the existing workflow. The script does not need to be rewritten."
+                    else
+                        "WORKFLOW_API_REMOVED: this snapshot uses the deleted workflow API. Rewrite the workflow and start a new session."
+                return outcome state WorkflowRunStatus.Failed [||] detail
             else
                 try
                     cancellationToken.ThrowIfCancellationRequested()

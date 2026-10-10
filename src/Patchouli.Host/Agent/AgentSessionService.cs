@@ -49,14 +49,20 @@ public sealed partial class AgentSessionService : IAsyncDisposable
     private int _disposed;
     private readonly AgentFsiRepl? _fsi;
     private readonly AgentWorkspaceStore _workspaces;
+    private readonly Func<int>? _maxRequestRetries;
+
+    public int MaxRequestRetries =>
+        Math.Clamp(_maxRequestRetries?.Invoke() ?? Llm.LlmAppSettings.DefaultAgentMaxRetries, 0,
+            Llm.LlmAppSettings.MaxAgentMaxRetries);
 
     /// <summary>Creates the service over a session store and an effect interpreter.</summary>
     public AgentSessionService(AgentSessionStore store, IAgentEffectInterpreter interpreter,
         IHostActivityTracker? activityTracker = null, TimeProvider? timeProvider = null, AgentFsiRepl? fsi = null,
-        AgentWorkspaceStore? workspaces = null)
+        AgentWorkspaceStore? workspaces = null, Func<int>? maxRequestRetries = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(interpreter);
+        _maxRequestRetries = maxRequestRetries;
         _store = store;
         _interpreter = interpreter;
         _activity = activityTracker;
@@ -229,16 +235,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(launch);
-        Context initial = AgentCoreModule.initial;
-        if (launch.Parameters.TryGetValue("toolRetryLimit", out string? configured))
-        {
-            if (!int.TryParse(configured, out int limit) || limit < 0)
-            {
-                throw new ArgumentException("toolRetryLimit must be a non-negative integer.", nameof(launch));
-            }
-
-            initial = AgentCoreModule.withRetryLimit(limit, initial);
-        }
+        Context initial = AgentCoreModule.withRetryLimit(MaxRequestRetries, AgentCoreModule.initial);
 
         _workspaces.Ensure(launch.SessionId);
         await _store.CreateSessionAsync(launch, cancellationToken).ConfigureAwait(false);
@@ -920,6 +917,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         {
             SessionDirectory = _store.ResolveSessionDirectory(session.SessionId),
             RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt),
+            RequestRetryAttempt = session.Context.Retry.Attempts,
             ModelSelection = modelSelection
         };
     }
@@ -1097,6 +1095,21 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (effect is Effect.LlmChat && session.Context.Retry.Attempts == 0)
+            {
+                session.Context = AgentCoreModule.withRetryLimit(MaxRequestRetries, session.Context);
+                await PersistAsync(session, cancellationToken).ConfigureAwait(false);
+            }
+
+            if (effect is Effect.LlmChat && session.Context.Retry.Attempts > 0)
+            {
+                session.Detail = $"模型请求重试 {session.Context.Retry.Attempts}/{session.Context.Retry.Limit}，等待后重试";
+                await AppendLogAsync(session, AgentLogKinds.Event,
+                        AgentSessionCodec.ToJson(Event.NewScriptProgress(session.Detail)), cancellationToken)
+                    .ConfigureAwait(false);
+                Report(session);
+            }
+
             await AppendLogAsync(session, AgentLogKinds.EffectIssued, EffectPayload(effect, session.Context),
                 cancellationToken).ConfigureAwait(false);
         }

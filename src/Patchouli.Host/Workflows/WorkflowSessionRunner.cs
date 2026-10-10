@@ -287,8 +287,10 @@ public sealed class WorkflowSessionRunner
 
     private sealed class SessionEffectHost(
         AgentSessionService sessions,
-        IWorkflowEffectHost effects) : IWorkflowEffectHost, IWorkflowSdkHost
+        IWorkflowEffectHost effects) : IWorkflowEffectHost, IWorkflowSdkHost, IWorkflowRetryPolicyHost
     {
+        public int MaxRequestRetries => sessions.MaxRequestRetries;
+
         public string DescribeSdk(Patchouli.Agent.Sdk.ExportedTool[] exports)
         {
             return effects is IWorkflowSdkHost sdk ? sdk.DescribeSdk(exports) : "";

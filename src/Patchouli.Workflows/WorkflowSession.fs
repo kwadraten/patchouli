@@ -78,6 +78,10 @@ type WorkflowEffectScope(context: Context, allowedTools: string[] option, primit
 ///     <c>AgentEffectInterpreter</c> / <c>AgentSessionService</c> shape, so the executor never
 ///     depends on the session service itself and stays unit-testable with a stub.
 /// </summary>
+/// Supplies the current policy before a new request sequence; replay restores its recorded value.
+type IWorkflowRetryPolicyHost =
+    abstract MaxRequestRetries: int
+
 type IWorkflowEffectHost =
     /// <summary>
     ///     Executes one effect of one session under the run state the executor has reached by then

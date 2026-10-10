@@ -49,12 +49,15 @@ module ContextCodec =
                         "calls", JsonArray calls; "processedMessageIds", json (context.ProcessedMessageIds |> Seq.sort |> Seq.toArray)
                         "armedWaits", json (context.ArmedWaits |> Seq.sort |> Seq.toArray)
                         "nativeCalls", JsonNode.Parse(parsed.RootElement.GetProperty("toolCalls").GetRawText())
-                        "retry", obj ["limit", json context.Retry.Limit; "attempts", json context.Retry.Attempts]]
+                        "retryPolicyVersion", json 2; "retry", obj ["limit", json context.Retry.Limit; "attempts", json context.Retry.Attempts]]
         root.ToJsonString()
 
     let fromJson (jsonText: string) =
         use document = JsonDocument.Parse jsonText
         let root = document.RootElement
+        match root.TryGetProperty "retryPolicyVersion" with
+        | true, version when version.GetInt32() > 2 -> raise (JsonException("Unsupported agent retry policy version."))
+        | _ -> ()
         let calls = Dictionary<int64, CallRecord>()
         for c in root.GetProperty("calls").EnumerateArray() do
             let id = c.GetProperty("id").GetInt64()
@@ -65,7 +68,7 @@ module ContextCodec =
                      | "CancelPending" -> CancelPending | "Cancelled" -> Cancelled | "Stopped" -> Stopped | "Finished" -> Finished
                      | other -> raise (JsonException("Unknown status: " + other))
         let retry = match root.TryGetProperty "retry" with
-                    | true, value -> { Limit = max 0 (value.GetProperty("limit").GetInt32()); Attempts = max 0 (value.GetProperty("attempts").GetInt32()) }
+                    | true, value when (match root.TryGetProperty "retryPolicyVersion" with true, version -> version.GetInt32() = 2 | _ -> false) -> { Limit = max 0 (value.GetProperty("limit").GetInt32()); Attempts = max 0 (value.GetProperty("attempts").GetInt32()) }
                     | _ -> AgentCore.initial.Retry
         let native = match root.TryGetProperty "nativeCalls" with
                      | true, value -> AssistantReplies.fromJson($"{{\"text\":\"\",\"model\":\"\",\"finish\":\"Tools\",\"toolCalls\":{value.GetRawText()}}}").ToolCalls

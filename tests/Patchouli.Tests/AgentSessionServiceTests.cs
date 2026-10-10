@@ -22,7 +22,7 @@ public sealed class AgentSessionServiceTests
     [Fact]
     public async Task Fsi_failure_is_returned_to_model_before_a_corrected_call_and_real_output()
     {
-        await using Harness harness = new();
+        await using Harness harness = new(maxRequestRetries: () => 0);
         Queue<string> replies = new([
             """{"tool":"fsi","arguments":{"code":"let broken : int = \"text\""}}""",
             """{"tool":"fsi","arguments":{"code":"printfn \"repaired-output-42\""}}""",
@@ -47,39 +47,79 @@ public sealed class AgentSessionServiceTests
         IReadOnlyList<AgentSessionLogEntry> log =
             await harness.Store.ReadLogAsync(created.SessionId, CancellationToken.None);
         log.Should().Contain(entry => entry.Payload.Contains("ToolFailure"));
-        log.Should().Contain(entry => entry.Payload.Contains("Retry 1/2"));
+        log.Should().NotContain(entry => entry.Payload.Contains("AGENT_RETRY_EXHAUSTED"));
     }
 
     [Fact]
-    public async Task Exhausted_tool_retries_yield_and_a_new_message_continues_the_same_conversation()
+    public async Task Repeated_tool_corrections_finish_with_request_retries_disabled()
     {
-        await using Harness harness = new();
+        await using Harness harness = new(maxRequestRetries: () => 0);
+        int turn = 0;
         StubLlmClient client = harness.Llm;
         client.Handler = (_, _) => Task.FromResult(Result<LlmChatCompletion>.Success(client.Completion() with
         {
-            Text = """{"tool":"fetch","arguments":{}}"""
+            Text = ++turn <= 10 ? """{"tool":"fetch","arguments":{"uri":"doc"}}""" : "done"
         }));
         harness.Mcp.ToolHandler = (_, _, _) =>
             Task.FromResult(new AgentToolOutcome(false, "actual fetch error", "FETCH_FAILED"));
         AgentSessionLaunchParameters launch = AgentSessionLaunchParameters.Create(AgentSessionService.ChatWorkflowUri,
-            new Dictionary<string, string> { ["prompt"] = "start", ["toolRetryLimit"] = "1" });
+            new Dictionary<string, string> { ["prompt"] = "start" });
         await harness.Service.CreateAsync(launch);
         await harness.Service.WakeChatAsync(launch.SessionId);
-        harness.Mcp.ToolCalls.Should().HaveCount(2);
+        harness.Llm.Requests.Should().HaveCount(11);
+        harness.Mcp.ToolCalls.Should().HaveCount(10);
+        harness.Service.TryGetSnapshot(launch.SessionId)!.Status.Should().Be(AgentSessionStatus.Idle);
+    }
+
+    [Fact]
+    public async Task New_requests_use_current_settings_but_retries_keep_their_recorded_limit()
+    {
+        int limit = 1;
+        await using Harness harness = new(maxRequestRetries: () => limit);
+        harness.Llm.Handler = (_, _) =>
+        {
+            limit = 0;
+            return Task.FromResult(Result<LlmChatCompletion>.Failure(LlmFailureCodes.TemporaryProviderError, "busy"));
+        };
+        AgentSessionLaunchParameters launch = AgentSessionLaunchParameters.Create(AgentSessionService.ChatWorkflowUri,
+            new Dictionary<string, string> { ["prompt"] = "start" });
+        await harness.Service.CreateAsync(launch);
+        await harness.Service.WakeChatAsync(launch.SessionId);
         harness.Llm.Requests.Should().HaveCount(2);
-        harness.Service.TryGetSnapshot(launch.SessionId)!.Status.Should().Be(AgentSessionStatus.Stopped);
-        harness.Service.TryGetSnapshot(launch.SessionId)!.Detail.Should().Contain("AGENT_RETRY_EXHAUSTED");
-        client.Handler = (_, _) =>
-            Task.FromResult(Result<LlmChatCompletion>.Success(client.Completion() with { Text = "continued" }));
-        await harness.Service.SendAsync(launch.SessionId, AgentInboxMessage.Create("continue", "try again"));
+        (await harness.Store.ReadLogAsync(launch.SessionId, CancellationToken.None)).Should()
+            .Contain(entry => entry.Payload.Contains("1/1"));
+        await harness.Service.SendAsync(launch.SessionId, AgentInboxMessage.Create("again", "again"));
         await harness.Service.WakeChatAsync(launch.SessionId);
         harness.Llm.Requests.Should().HaveCount(3);
-        harness.Llm.Requests.Last().History.Messages.Select(message =>
-                string.Concat(message.Parts.OfType<LlmMessagePart.LlmTextPart>().Select(part => part.Text)) +
-                string.Concat(message.Parts.OfType<LlmMessagePart.LlmToolResultPart>().Select(part => part.Content)))
-            .Should()
-            .Contain(text => text.Contains("actual fetch error"));
-        harness.Service.TryGetSnapshot(launch.SessionId)!.Status.Should().Be(AgentSessionStatus.Idle);
+    }
+
+    [Fact]
+    public async Task Pending_retry_after_reopen_keeps_the_old_limit_and_consumed_count()
+    {
+        await using Harness harness = new(maxRequestRetries: () => 2);
+        AgentSessionLaunchParameters launch = AgentSessionLaunchParameters.Create(AgentSessionService.ChatWorkflowUri,
+            new Dictionary<string, string> { ["prompt"] = "start" });
+        await harness.Service.CreateAsync(launch);
+        Tuple<Context, FSharpList<Effect>> state = AgentCoreModule.chatStep(
+            AgentCoreModule.withRetryLimit(2, AgentCoreModule.initial),
+            ListModule.Empty<Tuple<string, string>>(), Event.NewUserMessage("launch:" + launch.SessionId, "start"));
+        state = AgentCoreModule.chatStep(state.Item1, ListModule.Empty<Tuple<string, string>>(),
+            Event.NewModelFailure(((Effect.LlmChat)state.Item2.Single()).effectId,
+                LlmFailureCodes.TemporaryProviderError, "busy", true));
+        await harness.Service.CheckpointHarnessAsync(launch.SessionId, state.Item1, state.Item2.Single(),
+            CancellationToken.None);
+        harness.Service.TryGetSnapshot(launch.SessionId)!.Detail.Should().Contain("1/2");
+        await harness.Service.DisposeAsync();
+        harness.Llm.Handler = (_, _) =>
+            Task.FromResult(Result<LlmChatCompletion>.Failure(LlmFailureCodes.TemporaryProviderError, "busy"));
+        await using AgentSessionService reopened = new(harness.Store, harness.Interpreter, maxRequestRetries: () => 0);
+        await reopened.TryOpenAsync(launch.SessionId);
+        await reopened.WakeChatAsync(launch.SessionId);
+        harness.Llm.Requests.Should().HaveCount(2);
+        Context persisted = (await harness.Store.TryReadContextAsync(launch.SessionId, CancellationToken.None))!;
+        persisted.Retry.Limit.Should().Be(2);
+        persisted.Retry.Attempts.Should().Be(2);
+        persisted.Status.Should().Be(RunStatus.Stopped);
     }
 
     [Fact]
@@ -494,7 +534,7 @@ public sealed class AgentSessionServiceTests
     /// <summary>Wires the service over stubbed LLM, MCP and host primitives in a throwaway directory.</summary>
     private sealed class Harness : IAsyncDisposable
     {
-        public Harness(string? existingRoot = null, bool createRoot = true)
+        public Harness(string? existingRoot = null, bool createRoot = true, Func<int>? maxRequestRetries = null)
         {
             Root = existingRoot ?? Path.Combine(Path.GetTempPath(), "patchouli-agent-" + Guid.NewGuid().ToString("N"));
             if (createRoot)
@@ -509,7 +549,8 @@ public sealed class AgentSessionServiceTests
             Tracker = new RecordingActivityTracker();
             AgentFsiRepl fsi = new();
             Interpreter = new AgentEffectInterpreter(new StubLlmClientProvider(Llm), Mcp, Host, fsi);
-            Service = new AgentSessionService(Store, Interpreter, Tracker, fsi: fsi);
+            Service = new AgentSessionService(Store, Interpreter, Tracker, fsi: fsi,
+                maxRequestRetries: maxRequestRetries);
         }
 
         public string Root { get; }

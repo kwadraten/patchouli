@@ -17,6 +17,7 @@ public sealed class LlmSettingsPersistenceTests
             OcrModel = "gpt-4o",
             ChatProviderId = "anthropic",
             ChatModel = "claude-sonnet",
+            AgentMaxRetries = 0,
             ToolResultMaxCharacters = 8192
         };
         llm = llm.WithProvider(new LlmProviderAppSettings("azure-openai", "Azure OpenAI", "", "gpt-4o",
@@ -29,6 +30,7 @@ public sealed class LlmSettingsPersistenceTests
         loaded.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
         loaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
         loaded.Llm.ToolResultMaxCharacters.Should().Be(8192);
+        loaded.Llm.AgentMaxRetries.Should().Be(0);
         LlmProviderAppSettings azure = loaded.Llm.FindProvider("azure-openai")!;
         azure.Subscription.Should().Be("resource-a");
         azure.Deployment.Should().Be("deployment-a");

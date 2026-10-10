@@ -36,6 +36,8 @@ public sealed record AgentEffectContext(
     public Func<AgentSdkReceipt, Task>? RecordSdk { get; init; }
     public int ToolResultMaxCharacters { get; init; } = LlmAppSettings.DefaultToolResultMaxCharacters;
     public IReadOnlyList<HistoryEntry>? ModelHistory { get; init; }
+    public int RequestRetryAttempt { get; init; }
+
     public int HistoryPageCharacters { get; init; } = 16000;
 }
 
@@ -194,6 +196,13 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
     private async Task<AgentEffectOutcome> ChatAsync(AgentEffectContext context, Effect.LlmChat chat,
         CancellationToken cancellationToken)
     {
+        if (context.RequestRetryAttempt > 0)
+        {
+            double seconds = Math.Min(60, 2 * Math.Pow(2, Math.Min(context.RequestRetryAttempt - 1, 5)));
+            seconds = Math.Min(60, seconds * (0.8 + Random.Shared.NextDouble() * 0.4));
+            await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken).ConfigureAwait(false);
+        }
+
         Result<ILlmChatClient> client = await _llm.TryGetAsync(context.ModelSelection, cancellationToken)
             .ConfigureAwait(false);
         if (client.IsFailure)
@@ -202,7 +211,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
             // run can report it through history instead of throwing into the host.
             string unavailable = $"LLM_UNAVAILABLE {client.ErrorCode}: {client.ErrorMessage}";
             return AgentEffectOutcome.Completed(Event.NewModelFailure(chat.effectId, client.ErrorCode!, unavailable,
-                    LlmFailureClassifier.IsRetryable(client.ErrorCode)), unavailable) with
+                    AgentRequestRetry.IsRetryable(client.ErrorCode)), unavailable) with
                 {
                     FailureCode = client.ErrorCode
                 };
@@ -219,8 +228,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         {
             string failure = $"LLM_ERROR {completion.ErrorCode}: {completion.ErrorMessage}";
             return AgentEffectOutcome.Completed(Event.NewModelFailure(chat.effectId, completion.ErrorCode!, failure,
-                    completion.ErrorCode != LlmFailureCodes.Cancelled &&
-                    LlmFailureClassifier.IsRetryable(completion.ErrorCode)), failure) with
+                    AgentRequestRetry.IsRetryable(completion.ErrorCode)), failure) with
                 {
                     FailureCode = completion.ErrorCode
                 };
@@ -503,6 +511,11 @@ public static class AgentChatHistoryBuilder
         List<LlmChatMessage> messages = [];
         foreach (HistoryEntry original in context.ModelHistory ?? context.History)
         {
+            if (original is HistoryEntry.ToolResult { name: "model-error" or "agent-retry" })
+            {
+                continue;
+            }
+
             HistoryEntry entry = context.ModelHistory is null
                 ? AgentToolPayloadFolder.Project(original, context.ToolResultMaxCharacters)
                 : original;

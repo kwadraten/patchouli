@@ -271,7 +271,8 @@ public sealed class HostServices
         AgentSessions = new AgentSessionService(
             agentStore,
             agentInterpreter,
-            activityTracker, fsi: agentFsi, workspaces: agentWorkspaces);
+            activityTracker, fsi: agentFsi, workspaces: agentWorkspaces,
+            maxRequestRetries: () => LlmSettings.AgentMaxRetries);
         HostWorkflows = new WorkflowSessionRunner(
             WorkflowStore.ForLibrary(runtimeDatabasePath),
             AgentSessions,

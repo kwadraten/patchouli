@@ -616,9 +616,13 @@
 
               <Border Classes="Card">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="内置 Agent 工具结果" Classes="CardTitle" />
-                  <TextBlock Text="最大工具结果长度（字符）" FontSize="12"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <TextBlock Text="内置 Agent" Classes="CardTitle" />
+                  <TextBlock Text="模型请求自动重试次数" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <NumericUpDown Name="AgentMaxRetriesInput" Value="{Binding AgentMaxRetries}" Minimum="0" Maximum="20"
+                                 Increment="1" Width="180" HorizontalAlignment="Left" />
+                  <TextBlock Text="首次请求之外的额外尝试次数，仅适用于临时请求失败；工具纠错不占用次数。0 表示关闭自动重试。" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
+                  <TextBlock Text="最大工具结果长度（字符）" FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}" />
                   <NumericUpDown Name="ToolResultMaxCharactersInput" Value="{Binding ToolResultMaxCharacters}"
                                  Minimum="4096" Maximum="1048576" Increment="1024" Width="180"
                                  HorizontalAlignment="Left" />

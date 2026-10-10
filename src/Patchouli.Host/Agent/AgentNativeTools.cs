@@ -50,7 +50,7 @@ public static class AgentNativeTools
                         "not F# record syntax or a {tool,arguments} envelope. Lists are JSON arrays, bool is true/false, " +
                         "int64 is an integer. For option fields, omit None; encode Some x as x, never null or {Some:...}. " +
                         "Do not invent fields. F# source belongs only inside fsi.code. After a parsing/type failure, " +
-                        "use the returned diagnostic to correct the next native call within the context's retry limit.");
+                        "use the returned diagnostic to correct the next native call.");
         text.AppendLine("Actual FSI SDK (already installed; open Patchouli.Agent.Sdk):");
         text.AppendLine("type LibraryDomain = Items | Texts | Translations | CslStyles | Runs | Workflows");
         text.AppendLine("type BrowseScope = Root | Domain of LibraryDomain | DocumentTexts of string");

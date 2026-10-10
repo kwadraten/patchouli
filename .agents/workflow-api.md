@@ -47,8 +47,9 @@ session creation. Desktop launch reports the error in the status bar and opens t
 field errors highlighted, while preserving unsaved drafts. Correcting and saving configuration
 does not automatically launch. MCP uses the same Host validation.
 
-Version 6 freezes declaration identity, resolved parameter values and the actual model selection
-alongside script and launch selection. Resume does not consult current defaults. Versions 5 and
+Version 6 introduced frozen declaration identity, resolved parameter values and the actual model selection;
+version 7 retains these fields
+alongside script and launch selection. Resume does not consult current defaults. Versions 6 and
 older retain readable history but cannot resume through a compatibility executor.
 
 ```mermaid
@@ -76,24 +77,35 @@ original arguments and elapsed time. The chat view pairs request/result records 
 preserves expanded rows across refreshes and automatically expands failures. Legacy failed
 snapshots without a terminal log row still expose their diagnostic detail.
 
-Recoverable model decoding and
-provider failures enter the loop as `ModelFailure`, with code, detail and retry classification;
-they are recorded as diagnostic user input rather than assistant answers. Chat and workflows
-share the same bounded repair decision. Exhaustion preserves the diagnostic and yields control;
-workflow replay restores the recorded failure without contacting the provider again.
+Temporary provider, network, rate-limit and damaged provider-response decoding failures enter the
+loop as structured `ModelFailure` events. They consume only the model request retry budget;
+user cancellation and interruption are never automatically retried. Errors remain in the durable
+history and activity journal but model request errors and retry notices are omitted from provider
+input, so retries use the same model-visible request. OCR retains its independent classification.
+
+`Context.Retry` records the maximum extra request attempts and consecutive attempts consumed.
+The settings value `Llm.AgentMaxRetries` defaults to 3, accepts 0–20, and 0 disables automatic
+request retries. Each new request sequence captures current settings before execution; its limit
+stays frozen across retries and recovery. Success resets the count immediately, including replies
+containing native tool calls. Host backoff is cancellable, starts at 2 seconds and doubles with
+20% jitter up to 60 seconds. Provider Retry-After is not exposed by the transport and is not guessed.
+Tool failures, argument/FSI diagnostics, allowlist refusals and typed output validation feed the
+normal model loop without spending request retries. Workflow model/tool budgets still bound those
+corrections. Request retries do not spend additional model-turn slots, including after the final
+slot fails. `AgentBudget.ModelTurns` and `Workflow.bounds` bound normal decision turns, not all
+provider requests: each sequence separately allows `AgentMaxRetries` extra requests. Activity,
+request telemetry and cost accounting still retain every attempted provider request. Replay keys retain retry attempt and policy, restoring both before any live continuation.
+The legacy `toolRetryLimit` launch parameter no longer overrides request retries.
+
+Core snapshots emit `retryPolicyVersion: 2`. Legacy snapshots preserve history, call ledger and
+pending native calls, reset the old shared repair count, and adopt the new default; unknown newer
+policy versions fail closed. Workflow harness protocol 7 rejects automated resume of protocol 6
+and older: history remains readable; start a new automated workflow run. Conversation continuation
+can still use the existing history and completed results, without replaying completed tools.
+
 Native tool instructions include F# argument record types generated from the declared schemas,
 optional-field JSON encoding and native call examples. Tool and assistant-call wire messages
 always include `content`, including empty assistant text.
-
-`Context.Retry` contains the repair limit and consumed attempts. `AgentCore.withRetryLimit`
-injects a limit directly; the recorded launch parameter `toolRetryLimit` sets it for chat or
-workflow sessions (default: two additional repairs). Invalid protocol, argument decoding and
-tool execution failures append their precise reasons to the same model-visible history.
-Stage allowlist refusals also enter this repair path without executing the forbidden tool;
-budget exhaustion still yields immediately because the stage has no remaining execution budget.
-The shared `AgentDriver` requests correction while attempts remain and yields
-when exhausted. A new user message resets the repair count and continues that conversation.
-Workflow replay records failed tool completions distinctly and never executes them again.
 
 Assistant output is a typed `AssistantReply`: text, actual model, finish kind, native tool calls
 and provider metadata. It follows [pi's typed content and tool-call loop](https://github.com/badlogic/pi-mono/blob/main/packages/agent/src/agent-loop.ts).
@@ -105,8 +117,9 @@ Following [DeepSeek Harness's turn lifecycle](https://github.com/deepseek-ai/dee
 a natural final reply with no native calls ends the turn, records `turn/end`, closes host activity
 and persists `Idle`; the conversation can accept a new message. Truncated calls are never
 executed. Interrupted calls are paired with explicit unknown/aborted outcomes before a fresh
-user turn, rather than blindly replayed. Workflow snapshot protocol version 6 retains typed node checkpoints and SDK observations,
-and adds frozen declaration identity, parameter values and model selection; older snapshots
+user turn, rather than blindly replayed. Workflow snapshot protocol version 7 retains typed node checkpoints, SDK observations and the
+frozen declaration identity, parameter values and model selection introduced by version 6.
+Version 7 changes request-retry and replay semantics; older snapshots
 require a new automated run. Original conversation history remains readable.
 
 Provider projections reuse LlmTornado's native function interfaces. OpenAI-compatible models
@@ -151,7 +164,7 @@ let run : AgentWorkflow =
     |> Workflow.define
 ```
 
-`Agent.typed name instructions format parse` produces a validated typed output. `parse` receives the immutable stage input and final agent text, returning `Result<'Output,string>`. Parse failure returns its diagnostic to the same agent under `Context.Retry` and the stage budget; exhaustion yields control. For review decisions, return a domain union such as `Accepted of Draft | Revise of Draft` as a successful typed output, then use `Workflow.choose` or immutable state with `Workflow.repeatUntil`.
+`Agent.typed name instructions format parse` produces a validated typed output. `parse` receives the immutable stage input and final agent text, returning `Result<'Output,string>`. Parse failure returns its diagnostic to the same agent under the stage budget without consuming request retries; stage budget exhaustion yields control. For review decisions, return a domain union such as `Accepted of Draft | Revise of Draft` as a successful typed output, then use `Workflow.choose` or immutable state with `Workflow.repeatUntil`.
 
 `Agent.withSharedInstructions formatRules` retains the formatted rules once as a structured
 instruction in the active conversation history. Stage policy instructions are also retained once;
@@ -255,6 +268,9 @@ Damaged recovery logs fail closed rather than silently skipping records and re-e
 
 Tools use the existing agent protocol. A stage's allowlist only narrows host permissions. FSI is available automatically in chat and workflow sessions; including `AgentTool.Fsi` allows that stage to use the session-local worker. `WorkflowInput` provides immutable lists and an F# map of recorded launch parameters.
 
-The settings page checks the F# root type without evaluating the script. Replay checks the exact request and structural path. Old scripts and snapshots have no compatibility execution path; rewrite scripts and start new sessions.
+The settings page checks the F# root type without evaluating the script. Replay checks the exact
+request and structural path. Older snapshots have no automated compatibility execution path; start
+a new session. Legacy imperative scripts must be rewritten; harness 6 scripts can start a new
+session unchanged.
 
 Type and bound checks establish control-flow properties assuming pure callbacks terminate. They do not prove model output correct or restrict arbitrary trusted .NET script code.

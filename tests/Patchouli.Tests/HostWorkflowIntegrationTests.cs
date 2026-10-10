@@ -154,7 +154,7 @@ public sealed class HostWorkflowIntegrationTests
             .Accepted.Should().BeTrue();
         await harness.Sessions.WakeChatAsync("failed-provider");
         harness.Mcp.Calls.Select(call => call.Name).Should().Equal("fetch", "put");
-        harness.Llm.Requests[1].History.Messages.Should().HaveCount(3);
+        harness.Llm.Requests[1].History.Messages.Should().HaveCount(2);
         harness.Llm.Requests.Select(request => request.History.Instructions).Distinct().Should().ContainSingle();
         harness.Sessions.TryGetSnapshot("failed-provider")!.Status.Should().Be(AgentSessionStatus.Idle);
     }
@@ -173,12 +173,8 @@ public sealed class HostWorkflowIntegrationTests
             new Dictionary<string, string>(), WorkflowSelections.empty, "model-repair"));
         result.Outcome.Status.Should().Be(WorkflowRunStatus.Finished, result.Outcome.Detail);
         result.Outcome.Steps.Count(step => step.Kind == "LlmChat.ModelFailure").Should().Be(2);
-        harness.Llm.Requests[1].History.Messages.Should().Contain(message => message.Role == LlmChatRole.User &&
-                                                                             message.Parts
-                                                                                 .OfType<LlmMessagePart.LlmTextPart>()
-                                                                                 .Any(part =>
-                                                                                     part.Text.Contains(
-                                                                                         "JSON decoding failed")));
+        harness.Llm.Requests[1].History.Messages.Should().BeEquivalentTo(harness.Llm.Requests[0].History.Messages,
+            options => options.WithStrictOrdering());
         harness.Llm.Requests.Should().HaveCount(5);
         WorkflowSessionResult replay = await harness.Runner.ResumeAsync("model-repair");
         replay.Outcome.Status.Should().Be(WorkflowRunStatus.Finished);

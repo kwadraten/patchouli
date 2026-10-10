@@ -139,6 +139,19 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         return $"{name}（未就绪）";
     }
 
+    [ObservableProperty] public partial int AgentMaxRetries { get; set; } = LlmAppSettings.DefaultAgentMaxRetries;
+
+    partial void OnAgentMaxRetriesChanged(int value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        _current = _current with { AgentMaxRetries = Math.Clamp(value, 0, LlmAppSettings.MaxAgentMaxRetries) };
+        MarkDirty("有未保存的更改");
+    }
+
     [ObservableProperty]
     public partial int ToolResultMaxCharacters { get; set; } = LlmAppSettings.DefaultToolResultMaxCharacters;
 
@@ -663,6 +676,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             ChatModel = chatModel;
             OcrProviderId = ocrProviderId;
             OcrModel = ocrModel;
+            AgentMaxRetries = _persisted.AgentMaxRetries;
             ToolResultMaxCharacters = _persisted.ToolResultMaxCharacters;
             RebuildChatModelOptions();
             RebuildOcrModelOptions();

@@ -15,7 +15,7 @@ public sealed class WorkflowScriptExecutorTests
         HarnessStubHost host = new(
                 """{"tool":"put","arguments":{"uri":"doc","content":"bad"}}""",
                 """{"tool":"put","arguments":{"uri":"doc","content":"fixed"}}""", "done")
-            { FailTools = 1 };
+            { FailTools = 1, MaxRequestRetries = 0 };
         WorkflowRunRequest request = Request(parameters: new Dictionary<string, string> { ["toolRetryLimit"] = "1" });
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
@@ -23,7 +23,7 @@ public sealed class WorkflowScriptExecutorTests
         host.Scopes[2].Context.History.OfType<HistoryEntry.NativeToolResult>().Should()
             .Contain(entry => entry.payload.Contains("INVALID_CONTENT"));
         result.Steps.Should().Contain(step => step.Kind == "McpToolCall.ToolFailure");
-        HarnessStubHost replayHost = new();
+        HarnessStubHost replayHost = new() { MaxRequestRetries = 0 };
         WorkflowRunOutcome replay =
             await new WorkflowExecutor(replayHost).RunAsync(Resume(request, result), CancellationToken.None);
         replay.Status.Should().Be(WorkflowRunStatus.Finished, replay.Detail);
@@ -32,14 +32,51 @@ public sealed class WorkflowScriptExecutorTests
     }
 
     [Fact]
-    public async Task Failed_tool_with_zero_context_retries_yields_without_a_final_model_turn()
+    public async Task Failed_tool_with_zero_request_retries_continues_to_final_model_turn()
     {
-        HarnessStubHost host = new("""{"tool":"put","arguments":{"uri":"doc","content":"bad"}}""") { FailTools = 1 };
-        WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(
-            Request(parameters: new Dictionary<string, string> { ["toolRetryLimit"] = "0" }), CancellationToken.None);
-        result.Status.Should().Be(WorkflowRunStatus.Stopped, result.Detail);
-        result.Detail.Should().Contain("AGENT_RETRY_EXHAUSTED");
-        host.Effects.Should().HaveCount(2);
+        HarnessStubHost host = new("""{"tool":"put","arguments":{"uri":"doc","content":"bad"}}""", "done")
+            { FailTools = 1, MaxRequestRetries = 0 };
+        WorkflowRunRequest request = Request();
+        request = new WorkflowRunRequest(request.SessionId, request.Snapshot,
+            AgentCoreModule.withRetryLimit(0, request.Context), request.RecordedSteps, request.Selection,
+            request.Parameters);
+        WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
+        result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
+        result.Context.Retry.Attempts.Should().Be(0);
+        host.Effects.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task Last_model_budget_slot_can_retry_and_replay_freezes_the_policy()
+    {
+        HarnessStubHost host = new("done") { FailModels = 2 };
+        WorkflowRunRequest request = Request(AgentScript.Replace("AgentBudget.create 4 3", "AgentBudget.create 1 3"));
+        WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
+        result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
+        host.Effects.Should().HaveCount(3);
+        host.Scopes.Select(scope => scope.Context.Retry.Attempts).Should().Equal(0, 1, 2);
+        HarnessStubHost replayHost = new() { MaxRequestRetries = 0 };
+        WorkflowRunOutcome replay =
+            await new WorkflowExecutor(replayHost).RunAsync(Resume(request, result), CancellationToken.None);
+        replay.Status.Should().Be(WorkflowRunStatus.Finished, replay.Detail);
+        replayHost.Effects.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Typed_output_corrections_continue_with_request_retries_disabled()
+    {
+        const string script = """
+                              open Patchouli.Workflows.Scripting
+                              let worker = Agent.typed "worker" "Reply with integer." (fun (_: WorkflowInput) -> "task")
+                                              (fun _ text -> match System.Int32.TryParse text with true, n -> Ok n | _ -> Error "expected integer")
+                                           |> Agent.withBudget (AgentBudget.create 12 0)
+                              let run = workflow { step worker; step (Workflow.map ignore) } |> Workflow.define
+                              """;
+        HarnessStubHost host = new(Enumerable.Repeat("bad", 10).Append("42").ToArray()) { MaxRequestRetries = 0 };
+        WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(Request(script), CancellationToken.None);
+        result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
+        host.Effects.Should().HaveCount(11);
+        host.Scopes.Should().OnlyContain(scope => scope.Context.Retry.Attempts == 0 && scope.Context.Retry.Limit == 0);
     }
 
     internal const string AgentScript = """
@@ -196,6 +233,7 @@ public sealed class WorkflowScriptExecutorTests
                               open Patchouli.Workflows.Scripting
                               let decide = Agent.typed "decide" "Choose a number." (fun (_: WorkflowInput) -> "decide")
                                               (fun _ text -> match System.Int32.TryParse text with true, n -> Ok n | _ -> Error "expected integer")
+                                              |> Agent.withBudget (AgentBudget.create 4 0)
                               let yes = Agent.text "yes" "Explain the choice." (fun (n: int) -> sprintf "chosen:%d" n) |> Agent.run
                               let no = Agent.text "no" "Explain the alternative." (fun (n: int) -> sprintf "other:%d" n) |> Agent.run
                               let run =
@@ -211,13 +249,13 @@ public sealed class WorkflowScriptExecutorTests
         string prompt = host.Scopes[1].Context.History.OfType<HistoryEntry.UserMessage>().Last().text;
         prompt.Should().Contain("chosen:7").And.Contain("AGENT STAGE: yes");
         result.Steps.Should().HaveCount(2);
-        HarnessStubHost invalid = new("not a number", "not a number", "not a number");
+        HarnessStubHost invalid = new("not a number", "not a number", "not a number", "not a number");
         WorkflowRunOutcome failed =
             await new WorkflowExecutor(invalid).RunAsync(Request(script), CancellationToken.None);
-        failed.Detail.Should().Contain("AGENT_OUTPUT_INVALID");
-        failed.Status.Should().Be(WorkflowRunStatus.Stopped);
-        failed.Steps.Should().HaveCount(3);
-        invalid.Effects.Should().HaveCount(3);
+        failed.Detail.Should().Contain("AGENT_MODEL_BUDGET_EXHAUSTED");
+        failed.Status.Should().Be(WorkflowRunStatus.Failed);
+        failed.Steps.Should().HaveCount(4);
+        invalid.Effects.Should().HaveCount(4);
         invalid.Scopes[1].Context.History.OfType<HistoryEntry.ToolResult>().Should()
             .Contain(entry => entry.payload.Contains("expected integer"));
     }
@@ -369,28 +407,32 @@ public sealed class WorkflowScriptExecutorTests
         result.Steps.Last().Result.Should().Be("tool-completed");
     }
 
-    [Fact]
-    public async Task Removed_snapshot_contract_is_refused_without_evaluating_its_script()
+    [Theory]
+    [InlineData("patchouli.workflow.scriptapi/1", "WORKFLOW_API_REMOVED")]
+    [InlineData("patchouli.workflow.harness/6", "WORKFLOW_RETRY_PROTOCOL_CHANGED")]
+    public async Task Removed_snapshot_contract_is_refused_without_evaluating_its_script(string version, string code)
     {
         WorkflowRunRequest request = Request("failwith \"must not execute\"");
         WorkflowScriptSnapshot old = WorkflowSnapshots.capture(WorkflowDefinitions.create("old", "old", "", "run"),
-            request.Snapshot.ScriptText, "patchouli.workflow.scriptapi/1", DateTimeOffset.UtcNow);
+            request.Snapshot.ScriptText, version, DateTimeOffset.UtcNow);
         WorkflowRunRequest resumed = WorkflowRunRequests.resume(request.SessionId, old, request.Context, [],
             request.Selection, request.Parameters);
         HarnessStubHost host = new();
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(resumed, CancellationToken.None);
-        result.Detail.Should().Contain("WORKFLOW_API_REMOVED");
+        result.Detail.Should().Contain(code);
         host.Effects.Should().BeEmpty();
     }
 }
 
-internal sealed class HarnessStubHost(params string[] answers) : IWorkflowEffectHost
+internal sealed class HarnessStubHost(params string[] answers) : IWorkflowEffectHost, IWorkflowRetryPolicyHost
 {
     private readonly Queue<string> _answers = new(answers);
     public List<Effect> Effects { get; } = [];
     public List<WorkflowEffectScope> Scopes { get; } = [];
     public List<string> Tools { get; } = [];
     public int FailTools { get; set; }
+    public int FailModels { get; set; }
+    public int MaxRequestRetries { get; set; } = 3;
     public Action<Effect>? BeforeEffect { get; init; }
     public Action<Effect>? AfterEffect { get; init; }
 
@@ -421,7 +463,9 @@ internal sealed class HarnessStubHost(params string[] answers) : IWorkflowEffect
         switch (effect)
         {
             case Effect.LlmChat model:
-                result = NativeReplyFixtures.Reply(model.effectId, _answers.Dequeue());
+                result = FailModels-- > 0
+                    ? Event.NewModelFailure(model.effectId, "temporary_provider_error", "temporary failure", true)
+                    : NativeReplyFixtures.Reply(model.effectId, _answers.Dequeue());
                 break;
             case Effect.McpToolCall tool:
                 if (scope.Exports.FirstOrDefault(export => export.Name == tool.name) is { } exported)
