@@ -28,7 +28,7 @@ public sealed class ChangelogTests
     {
         ChangelogViewModel changelog = new();
         changelog.Markdown.Should().Be(File.ReadAllText(TestPaths.FromRepositoryRoot("Changelog.md")));
-        changelog.Markdown.Should().Contain("## 0.3.8");
+        changelog.Markdown.Should().Contain("## 0.3.9");
     }
 
     [Fact]

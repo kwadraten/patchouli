@@ -1,5 +1,15 @@
 # 更新日志
 
+## 0.3.9
+
+发布：2026-10-11 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.9) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.8...0.3.9)
+
+- Agent 工具调用、FSI 和工作流输出纠错不再消耗请求重试额度；临时模型请求失败使用可取消的指数退避，成功响应立即重置计数。
+- 模型设置新增自动重试次数，默认 3 次，可调整为 0–20 次；0 表示关闭自动重试。
+- 工作流编辑器根据 F# 参数声明生成独立配置表单，启动前统一校验，并保存参数与模型选择；无效配置会定位到对应字段并保留草稿。
+- 改进 Agent 上下文预算、工具结果折叠和历史分页检索，保留原始记录与稳定的模型输入，增强恢复和重放的一致性。
+- 工作流重试与重放协议升级：旧会话历史保留，自动运行需从现有脚本新建会话，无需重写脚本。
+
 ## 0.3.8
 
 发布：2026-10-09 · [GitHub Release](https://github.com/kwadraten/patchouli/releases/tag/0.3.8) · [提交记录](https://github.com/kwadraten/patchouli/compare/0.3.7...0.3.8)
