@@ -38,6 +38,14 @@ public sealed class LlmChatClient : ILlmChatClient
 
     public int ContextWindowTokens => _provider.ContextWindowTokens;
 
+    public bool SupportsMaxTokens => _provider.AuthenticationMode != LlmAuthenticationModes.Subscription;
+
+    public string ConfigurationKey => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        _provider.ProviderId, _provider.Model, _provider.BaseUrl, _provider.Subscription,
+        _provider.Deployment, _provider.ApiVersion, _provider.AuthenticationMode
+    });
+
     /// <inheritdoc />
     public Task<Result<LlmChatCompletion>> CompleteAsync(string conversationKey, LlmChatRequest request,
         CancellationToken cancellationToken = default)

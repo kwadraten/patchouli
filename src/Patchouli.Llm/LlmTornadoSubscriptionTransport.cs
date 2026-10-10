@@ -134,6 +134,8 @@ public sealed class LlmTornadoSubscriptionTransport(
                 429 => LlmFailureCodes.RateLimited,
                 404 => LlmFailureCodes.ModelNotFound,
                 >= 500 => LlmFailureCodes.TemporaryProviderError,
+                _ when LlmFailureMapper.IsContextLengthExceeded(exception.Message) =>
+                    LlmFailureCodes.ContextLengthExceeded,
                 _ when exception.Message.Contains("authentication", StringComparison.OrdinalIgnoreCase) =>
                     LlmFailureCodes.AuthFailed,
                 _ when exception.Message.Contains("model", StringComparison.OrdinalIgnoreCase) => LlmFailureCodes

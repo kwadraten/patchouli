@@ -27,6 +27,9 @@ public sealed record AgentEffectContext(
     public string? SessionDirectory { get; init; }
     public AgentSdkPolicy? SdkPolicy { get; init; }
     public Func<AgentSdkReceipt, Task>? RecordSdk { get; init; }
+    public int ToolResultMaxCharacters { get; init; } = LlmAppSettings.DefaultToolResultMaxCharacters;
+    public IReadOnlyList<HistoryEntry>? ModelHistory { get; init; }
+    public int HistoryPageCharacters { get; init; } = 16000;
 }
 
 /// <summary>How one executed effect concluded.</summary>
@@ -131,10 +134,11 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
     private readonly AgentFsiRepl? _fsi;
     private readonly AgentContextCompactor? _compactor;
     private readonly AgentSdkRuntime _sdk;
+    private readonly Func<int>? _historyPageCharacters;
 
     /// <summary>Creates the interpreter over the three host surfaces an effect can reach.</summary>
     public AgentEffectInterpreter(IAgentLlmClientProvider llm, IAgentMcpGateway mcp, IAgentHostPrimitives host,
-        AgentFsiRepl? fsi = null, AgentContextCompactor? compactor = null)
+        AgentFsiRepl? fsi = null, AgentContextCompactor? compactor = null, Func<int>? historyPageCharacters = null)
     {
         ArgumentNullException.ThrowIfNull(llm);
         ArgumentNullException.ThrowIfNull(mcp);
@@ -145,6 +149,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         _host = host;
         _fsi = fsi;
         _compactor = compactor;
+        _historyPageCharacters = historyPageCharacters;
     }
 
     /// <inheritdoc />
@@ -214,6 +219,20 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
     private async Task<AgentEffectOutcome> ToolAsync(AgentEffectContext context, Effect.McpToolCall tool,
         CancellationToken cancellationToken)
     {
+        context = context with
+        {
+            HistoryPageCharacters =
+            Math.Clamp(_historyPageCharacters?.Invoke() ?? context.HistoryPageCharacters, 128, 16000)
+        };
+        if (_compactor is not null)
+        {
+            context = context with
+            {
+                HistoryPageCharacters = await _compactor.HistoryPageBudgetAsync(context, context.HistoryPageCharacters,
+                    cancellationToken).ConfigureAwait(false)
+            };
+        }
+
         AgentToolOutcome outcome;
         using AgentSdkRuntime.Scope scope = _sdk.Activate(context, "effect/" + tool.effectId.Item, cancellationToken);
         try
@@ -460,22 +479,31 @@ public static class AgentChatHistoryBuilder
         string instructions = context.Instructions;
         LlmChatHistory history = LlmChatHistory.Create(instructions, context.ToolDefinitions);
         List<LlmChatMessage> messages = [];
-        foreach (HistoryEntry entry in context.History)
+        foreach (HistoryEntry original in context.ModelHistory ?? context.History)
         {
+            HistoryEntry entry = context.ModelHistory is null
+                ? AgentToolPayloadFolder.Project(original, context.ToolResultMaxCharacters)
+                : original;
             // Text tool requests have no provider-native tool_call_id. Their results are
             // ordinary user messages so OpenAI-compatible providers accept the next turn.
             messages.Add(entry is HistoryEntry.ToolResult tool
                 ? LlmChatMessage.User("Tool result " + Content(tool.name + ": " + tool.payload))
-                : ToMessage(entry));
+                : ToModelMessage(entry));
         }
 
         return messages.Count == 0 ? history : history.Append(messages);
     }
 
     /// <summary>Maps one core history entry to its chat message.</summary>
-    public static LlmChatMessage ToMessage(HistoryEntry entry)
+    public static LlmChatMessage ToMessage(HistoryEntry entry,
+        int toolResultMaxCharacters = LlmAppSettings.DefaultToolResultMaxCharacters)
     {
         ArgumentNullException.ThrowIfNull(entry);
+        return ToModelMessage(AgentToolPayloadFolder.Project(entry, toolResultMaxCharacters));
+    }
+
+    private static LlmChatMessage ToModelMessage(HistoryEntry entry)
+    {
         return entry switch
         {
             HistoryEntry.Instruction instruction => LlmChatMessage.System(Content(instruction.text)),

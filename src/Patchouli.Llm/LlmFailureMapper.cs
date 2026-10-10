@@ -10,8 +10,14 @@ namespace Patchouli.Llm;
 public static class LlmFailureMapper
 {
     /// <summary>Maps an HTTP status onto the failure vocabulary.</summary>
-    public static string FromStatusCode(HttpStatusCode statusCode)
+    public static string FromStatusCode(HttpStatusCode statusCode, string? response = null)
     {
+        if (statusCode is HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge or
+                HttpStatusCode.UnprocessableEntity && IsContextLengthExceeded(response))
+        {
+            return LlmFailureCodes.ContextLengthExceeded;
+        }
+
         return statusCode switch
         {
             HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden => LlmFailureCodes.AuthFailed,
@@ -24,6 +30,24 @@ public static class LlmFailureMapper
         };
     }
 
+    /// <summary>Recognizes provider context errors delivered as HTTP 400 or in-band error messages.</summary>
+    public static bool IsContextLengthExceeded(string? detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail))
+        {
+            return false;
+        }
+
+        string normalized = detail.Replace('_', ' ').Replace('-', ' ').ToLowerInvariant();
+        return normalized.Contains("context length exceeded", StringComparison.Ordinal) ||
+               normalized.Contains("context window exceeded", StringComparison.Ordinal) ||
+               normalized.Contains("maximum context length", StringComparison.Ordinal) ||
+               normalized.Contains("maximum context window", StringComparison.Ordinal) ||
+               normalized.Contains("max context length", StringComparison.Ordinal) ||
+               normalized.Contains("exceeds the context window", StringComparison.Ordinal) ||
+               normalized.Contains("too large for model context", StringComparison.Ordinal);
+    }
+
     /// <summary>Maps a transport exception onto the failure vocabulary.</summary>
     public static string FromException(Exception exception)
     {
@@ -34,7 +58,8 @@ public static class LlmFailureMapper
             TimeoutException => LlmFailureCodes.NetworkTimeout,
             TaskCanceledException => LlmFailureCodes.NetworkTimeout,
             HttpRequestException httpException => FromStatusCode(httpException.StatusCode ??
-                                                                 HttpStatusCode.ServiceUnavailable),
+                                                                 HttpStatusCode.ServiceUnavailable,
+                httpException.Message),
             IOException => LlmFailureCodes.NetworkTimeout,
             _ => LlmFailureCodes.UnknownProviderError
         };

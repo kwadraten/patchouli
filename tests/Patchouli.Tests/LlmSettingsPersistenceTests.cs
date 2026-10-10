@@ -19,7 +19,8 @@ public sealed class LlmSettingsPersistenceTests
             TranslationModel = "claude-sonnet",
             TargetLanguage = "ja",
             TranslationWindowRadius = 3,
-            BackfillPreviousWindowTranslation = false
+            BackfillPreviousWindowTranslation = false,
+            ToolResultMaxCharacters = 8192
         };
         llm = llm.WithProvider(new LlmProviderAppSettings("azure-openai", "Azure OpenAI", "", "gpt-4o",
             "resource-a", "deployment-a", "2024-10-21") { ContextWindowTokens = 200000 });
@@ -33,6 +34,7 @@ public sealed class LlmSettingsPersistenceTests
         loaded.Llm.EffectiveTargetLanguage.Should().Be("ja");
         loaded.Llm.EffectiveTranslationWindowRadius.Should().Be(3);
         loaded.Llm.BackfillPreviousWindowTranslation.Should().BeFalse();
+        loaded.Llm.ToolResultMaxCharacters.Should().Be(8192);
         LlmProviderAppSettings azure = loaded.Llm.FindProvider("azure-openai")!;
         azure.Subscription.Should().Be("resource-a");
         azure.Deployment.Should().Be("deployment-a");

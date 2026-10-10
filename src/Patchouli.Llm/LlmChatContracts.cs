@@ -6,7 +6,8 @@ public sealed record LlmToolCall(string Id, string Name, string Arguments)
     public string Metadata { get; init; } = "";
 }
 
-/// <summary>Token accounting for one call. Providers report a subset; absent fields stay null.</summary>
+/// <summary>Token accounting for one call. PromptTokens includes all cached and uncached input;
+/// cache fields are subsets, not additional context tokens. Absent fields stay null.</summary>
 public sealed record LlmUsage(
     int PromptTokens,
     int CompletionTokens,
@@ -78,6 +79,8 @@ public sealed record LlmVisionInput(string DataUriOrUrl, string MimeType, string
 public interface ILlmChatClient
 {
     int ContextWindowTokens => LlmProviderAppSettings.DefaultContextWindowTokens;
+    string ConfigurationKey => GetType().FullName ?? nameof(ILlmChatClient);
+    bool SupportsMaxTokens => true;
 
     /// <summary>
     /// Sends one text completion. The history must be append-only relative to the previous call with the same

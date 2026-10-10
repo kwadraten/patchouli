@@ -259,7 +259,15 @@ public sealed class HostServices
         AgentEffectInterpreter agentInterpreter = new(
             new LlmProviderAgentClientProvider(() => LlmSettings, Credentials),
             new McpCommandServiceAgentGateway(McpCommands),
-            agentHostPrimitives, agentFsi, new AgentContextCompactor(agentStore));
+            agentHostPrimitives, agentFsi,
+            new AgentContextCompactor(agentStore, () => LlmSettings.ToolResultMaxCharacters),
+            () =>
+            {
+                LlmAppSettings settings = LlmSettings;
+                int capacity = settings.FindProvider(settings.TranslationSelection.ProviderId)?.ContextWindowTokens ??
+                               LlmProviderAppSettings.DefaultContextWindowTokens;
+                return Math.Clamp(capacity / 16, 128, 16000);
+            });
         AgentSessions = new AgentSessionService(
             agentStore,
             agentInterpreter,

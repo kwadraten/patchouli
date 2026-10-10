@@ -156,6 +156,24 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
 
     [ObservableProperty] public partial bool BackfillPreviousWindowTranslation { get; set; }
 
+    [ObservableProperty]
+    public partial int ToolResultMaxCharacters { get; set; } = LlmAppSettings.DefaultToolResultMaxCharacters;
+
+    partial void OnToolResultMaxCharactersChanged(int value)
+    {
+        if (IsWaitingForDraftSync())
+        {
+            return;
+        }
+
+        _current = _current with
+        {
+            ToolResultMaxCharacters = Math.Clamp(value, LlmAppSettings.MinToolResultMaxCharacters,
+                LlmAppSettings.MaxToolResultMaxCharacters)
+        };
+        MarkDirty("有未保存的更改");
+    }
+
     [ObservableProperty] public partial string TargetLanguage { get; set; } = "";
 
     [ObservableProperty]
@@ -667,6 +685,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             TargetLanguage = _persisted.EffectiveTargetLanguage;
             TranslationWindowRadius = _persisted.EffectiveTranslationWindowRadius;
             BackfillPreviousWindowTranslation = _persisted.BackfillPreviousWindowTranslation;
+            ToolResultMaxCharacters = _persisted.ToolResultMaxCharacters;
             RebuildTranslationModelOptions();
             RebuildOcrModelOptions();
             _isDirty = false;

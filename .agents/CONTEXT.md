@@ -6,6 +6,12 @@ The built-in agent keeps its original transcript append-only. Model requests pre
 cached prefix until 80% of the configured context capacity, then compact the whole active prefix
 and continue from a persisted summary. The session-local `history` tool retrieves original
 entries on demand; see [ADR 0040](adr/0040-cache-preserving-whole-prefix-compaction.md).
+Oversized tool results, including aggregate FSI SDK receipts, are folded only in model requests.
+The Model and Translation settings expose the maximum result length in characters; the warning
+states that limit and directs the agent to request smaller batches. Original history stays intact.
+The ordered context journal freezes model-visible results before requests, so replay and setting
+changes preserve previously sent prefixes. History searches original nested payloads and can page
+one FSI operation by ID. Request preflight reserves output and rejects estimated context overflow.
 
 Provider cards use masked password inputs to load saved API keys from `ICredentialStore`. A saved baseline distinguishes loading from replacement edits, so reopening does not rewrite credentials and in-flight saves preserve newer input. Secret values stay out of the `Llm` configuration, session history and diagnostics. Provider authentication and subscription-model selectors use guarded selection properties; null selections during control creation, detachment or list refresh cannot overwrite stored configuration. Async headless UI tests must explicitly use `Dispatch<T>(Func<Task<T>>, ...)` (or unwrap the returned nested task) so assertions after awaited operations actually execute.
 

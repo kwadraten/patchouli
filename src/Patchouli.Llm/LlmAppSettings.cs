@@ -25,7 +25,7 @@ public sealed record LlmProviderAppSettings(
     string ApiVersion = "",
     string AuthenticationMode = LlmAuthenticationModes.ApiKey)
 {
-    public const int DefaultContextWindowTokens = 128000;
+    public const int DefaultContextWindowTokens = 256000;
 
     /// <summary>Retains an explicitly added connection even before its fields and credentials are complete.</summary>
     public bool IsAdded { get; init; }
@@ -63,6 +63,13 @@ public sealed record LlmAppSettings(
     int TranslationWindowRadius,
     bool BackfillPreviousWindowTranslation)
 {
+    public const int DefaultToolResultMaxCharacters = 32768;
+    public const int MinToolResultMaxCharacters = 4096;
+    public const int MaxToolResultMaxCharacters = 1048576;
+
+    /// <summary>Maximum unfolded tool-result length sent to the built-in agent, in UTF-16 characters.</summary>
+    public int ToolResultMaxCharacters { get; init; } = DefaultToolResultMaxCharacters;
+
     /// <summary>Largest accepted sliding-window radius (D5 keeps the default at 1).</summary>
     public const int MaxTranslationWindowRadius = 5;
 
@@ -197,7 +204,9 @@ public sealed record LlmAppSettings(
             TranslationProviderId = translationProviderId,
             TranslationModel = translationModel,
             TargetLanguage = EffectiveTargetLanguage,
-            TranslationWindowRadius = EffectiveTranslationWindowRadius
+            TranslationWindowRadius = EffectiveTranslationWindowRadius,
+            ToolResultMaxCharacters = Math.Clamp(ToolResultMaxCharacters,
+                MinToolResultMaxCharacters, MaxToolResultMaxCharacters)
         };
     }
 

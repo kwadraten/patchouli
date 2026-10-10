@@ -19,6 +19,8 @@ public sealed class LlmAppSettingsTests
         settings.EffectiveTargetLanguage.Should().Be(LlmAppSettings.FallbackTargetLanguage);
         settings.EffectiveTranslationWindowRadius.Should().Be(1);
         settings.BackfillPreviousWindowTranslation.Should().BeTrue();
+        settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 256000);
+        settings.ToolResultMaxCharacters.Should().Be(32768);
     }
 
     [Fact]

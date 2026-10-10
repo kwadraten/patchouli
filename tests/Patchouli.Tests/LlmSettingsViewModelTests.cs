@@ -80,6 +80,12 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     window.KeyTextInput("replacement-secret");
                     Dispatcher.UIThread.RunJobs();
                     row.ApiKeyInput.Should().Be("replacement-secret", "typing must update the credential draft");
+                    NumericUpDown payloadLimit = page.GetVisualDescendants().OfType<NumericUpDown>()
+                        .Single(input => input.Name == "ToolResultMaxCharactersInput");
+                    payloadLimit.Value.Should().Be(32768);
+                    payloadLimit.Value = 16384;
+                    Dispatcher.UIThread.RunJobs();
+                    section.ToolResultMaxCharacters.Should().Be(16384);
                     using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
                     while (section.IsDirty || section.IsSaving)
                     {
@@ -87,6 +93,8 @@ public sealed class LlmSettingsViewModelTests : IDisposable
                     }
 
                     store.SavedSecrets["deepseek"].Should().Be("replacement-secret");
+                    PatchouliAppSettings.Load(_settings.Path).Llm.ToolResultMaxCharacters.Should().Be(16384);
+                    (await main.ServicesAsync()).LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
                     row.HasCredential.Should().BeTrue();
                     key.Text.Should().Be("replacement-secret");
                     key.PlaceholderText.Should().NotContain("•");
@@ -124,6 +132,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             await using MainWindowViewModel reopened = new(settingsPath: _settings.Path);
             reopened.Settings.LlmSettings.UseCredentialStore(store);
             await reopened.Settings.SelectSectionAsync("llm");
+            reopened.Settings.LlmSettings.ToolResultMaxCharacters.Should().Be(16384);
             LlmProviderSettingsRowViewModel savedRow = reopened.Settings.LlmSettings.VisibleProviders
                 .Single(provider => provider.ProviderId == "deepseek");
             savedRow.Model.Should().Be("deepseek-reasoner");
@@ -228,6 +237,7 @@ public sealed class LlmSettingsViewModelTests : IDisposable
             section.AvailableProviderOptions.Single(option => option.ProviderId == "anthropic");
         section.AddProviderCommand.Execute(null);
         LlmProviderSettingsRowViewModel draft = section.VisibleProviders.Single();
+        draft.ContextWindowTokens.Should().Be(256000);
         draft.Model = "claude-sonnet";
         draft.ApiKeyInput = "cancelled-secret";
         section.IsDirty.Should().BeTrue();

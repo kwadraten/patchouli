@@ -92,6 +92,12 @@ public sealed class LlmTornadoChatTransport : ILlmChatTransport
 
         if (call.Exception is not null)
         {
+            if (LlmFailureMapper.FromStatusCode(call.Code, call.Response) == LlmFailureCodes.ContextLengthExceeded)
+            {
+                return LlmTransportResult.Failure(LlmFailureCodes.ContextLengthExceeded,
+                    call.Response ?? call.Exception.Message);
+            }
+
             return LlmTransportResult.Failure(LlmFailureMapper.FromException(call.Exception),
                 call.Exception.Message);
         }
@@ -99,7 +105,7 @@ public sealed class LlmTornadoChatTransport : ILlmChatTransport
         string message = string.IsNullOrWhiteSpace(call.Response)
             ? $"The provider returned HTTP {(int)call.Code} with no body."
             : $"The provider returned HTTP {(int)call.Code}.";
-        return LlmTransportResult.Failure(LlmFailureMapper.FromStatusCode(call.Code), message);
+        return LlmTransportResult.Failure(LlmFailureMapper.FromStatusCode(call.Code, call.Response), message);
     }
 
     /// <summary>Projects the durable typed transcript onto the SDK's provider-specific native request.</summary>
@@ -241,11 +247,21 @@ public sealed class LlmTornadoChatTransport : ILlmChatTransport
         };
     }
 
-    private static LlmUsage ToUsage(ChatUsage? usage)
+    internal static LlmUsage ToUsage(ChatUsage? usage)
     {
-        return usage is null
-            ? LlmUsage.Empty
-            : new LlmUsage(usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
-                usage.CacheReadTokens, usage.CacheCreationTokens);
+        if (usage is null)
+        {
+            return LlmUsage.Empty;
+        }
+
+        // LLMTornado 3.8.69 reports Anthropic PromptTokens as uncached input. OpenAI,
+        // DeepSeek and Google prompt counters already include cached input.
+        int prompt = usage.Provider == LLmProviders.Anthropic
+            ? checked(usage.PromptTokens + (usage.CacheReadTokens ?? 0) + (usage.CacheCreationTokens ?? 0))
+            : usage.PromptTokens;
+        int total = usage.Provider == LLmProviders.Anthropic
+            ? checked(prompt + usage.CompletionTokens)
+            : usage.TotalTokens;
+        return new LlmUsage(prompt, usage.CompletionTokens, total, usage.CacheReadTokens, usage.CacheCreationTokens);
     }
 }

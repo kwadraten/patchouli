@@ -616,6 +616,21 @@
 
               <Border Classes="Card">
                 <StackPanel Spacing="10">
+                  <TextBlock Text="内置 Agent 工具结果" Classes="CardTitle" />
+                  <TextBlock Text="最大工具结果长度（字符）" FontSize="12"
+                             Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+                  <NumericUpDown Name="ToolResultMaxCharactersInput" Value="{Binding ToolResultMaxCharacters}"
+                                 Minimum="4096" Maximum="1048576" Increment="1024" Width="180"
+                                 HorizontalAlignment="Left" />
+                  <TextBlock
+                    Text="默认 32768 字符。超出上限的结果会折叠为警告和简短预览，完整内容保留在原始历史中，可分页读取。FSI 内部调用的完整结果回执也计入长度。修改会自动保存，对尚未发送的新结果生效；已发送的结果保持原样。"
+                    FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                    TextWrapping="Wrap" />
+                </StackPanel>
+              </Border>
+
+              <Border Classes="Card">
+                <StackPanel Spacing="10">
                   <TextBlock Text="翻译默认设置" Classes="CardTitle" />
                   <TextBlock Text="翻译任务默认使用的 provider 与模型；目标语言留空时回落到 en。"
                              FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"

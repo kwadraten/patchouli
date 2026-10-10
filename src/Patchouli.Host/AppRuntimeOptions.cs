@@ -1193,6 +1193,9 @@ public sealed record PatchouliAppSettings(
                 ReadString(element, "TargetLanguage", fallback.TargetLanguage),
                 ReadInt(element, "TranslationWindowRadius", fallback.TranslationWindowRadius),
                 ReadBool(element, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation))
+            {
+                ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters)
+            }
             .Normalize();
     }
 
@@ -1208,7 +1211,8 @@ public sealed record PatchouliAppSettings(
             normalized.TranslationModel,
             normalized.TargetLanguage,
             normalized.TranslationWindowRadius,
-            normalized.BackfillPreviousWindowTranslation
+            normalized.BackfillPreviousWindowTranslation,
+            normalized.ToolResultMaxCharacters
         }) as JsonObject ?? new JsonObject();
     }
 
