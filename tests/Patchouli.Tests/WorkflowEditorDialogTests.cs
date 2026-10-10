@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using AvaloniaEdit.Highlighting;
 using FluentAssertions;
 using Patchouli.UI;
@@ -12,12 +13,62 @@ using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Dialogs;
 using Patchouli.UI.ViewModels.Settings;
 using Patchouli.UI.Views;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Tests;
 
 [Collection("Avalonia")]
 public sealed class WorkflowEditorDialogTests
 {
+    [Fact]
+    public async Task Model_picker_displays_only_model_names_and_preserves_typed_selection()
+    {
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            WorkflowSettingsViewModel section = new(main, main.RuntimeDatabasePath);
+            await section.CreateNewAsync();
+            WorkflowParameterFieldViewModel field = section.Editor.ParameterFields.Single(row => row.IsModel);
+            WorkflowModelOption first = new("ChatGPT / Codex 订阅", "codex-subscription", "gpt-5.6-luna");
+            WorkflowModelOption second = new(first.ProviderLabel, first.ProviderId, "gpt-6-luna");
+            field.ModelOptions.Clear();
+            field.ModelOptions.Add(first);
+            field.ModelOptions.Add(second);
+            field.ModelProviders.Add(new WorkflowModelProviderOption(first.ProviderLabel, first.ProviderId));
+            field.Value = first.Value;
+            using WorkflowEditorDialogViewModel model = new(section);
+            WorkflowEditorDialog dialog = new() { DataContext = model };
+            dialog.Show();
+            try
+            {
+                Dispatcher.UIThread.RunJobs();
+                ComboBox picker = dialog.GetVisualDescendants().OfType<ComboBox>()
+                    .Single(control => control.IsEditable && ReferenceEquals(control.DataContext, field));
+                picker.Text.Should().Be(first.Model);
+                field.ModelName.Should().Be(first.Model);
+
+                picker.SelectedItem = second;
+                Dispatcher.UIThread.RunJobs();
+                picker.Text.Should().Be(second.Model);
+                ModelSelection selected = ModelSelectionCodec.Decode(field.Value);
+                selected.ProviderId.Should().Be(second.ProviderId);
+                selected.Model.Should().Be(second.Model);
+
+                picker.Text = "custom-api-model";
+                Dispatcher.UIThread.RunJobs();
+                field.ModelName.Should().Be("custom-api-model");
+                ModelSelectionCodec.Decode(field.Value).Model.Should().Be("custom-api-model");
+            }
+            finally
+            {
+                dialog.DataContext = null;
+                dialog.Close();
+            }
+        }, CancellationToken.None);
+    }
+
     [Fact]
     public async Task Editor_renders_line_numbers_and_fsharp_highlighting_and_preserves_undo_and_drafts()
     {
@@ -88,41 +139,51 @@ public sealed class WorkflowEditorDialogTests
     [Fact]
     public async Task List_edit_action_opens_the_selected_workflow_in_a_read_only_modal()
     {
-        using TemporaryAppSettingsFile settings = new();
-        RecordingDialogs dialogs = new();
-        await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
-        WorkflowSettingsViewModel section = new(main, main.RuntimeDatabasePath);
-        await section.LoadAsync();
-        await section.Workflows[0].OpenEditorCommand.ExecuteAsync();
-        dialogs.Shown.Should().BeOfType<WorkflowEditorDialogViewModel>();
-        WorkflowEditorDialogViewModel model = (WorkflowEditorDialogViewModel)dialogs.Shown!;
-        model.Editor.Should().BeSameAs(section.Editor);
-        model.Editor.IsReadOnly.Should().BeTrue();
-        model.Editor.ScriptText.Should().Contain("let run : AgentWorkflow");
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            RecordingDialogs dialogs = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path, dialogs: dialogs);
+            WorkflowSettingsViewModel section = new(main, main.RuntimeDatabasePath);
+            await section.LoadAsync();
+            await section.Workflows[0].OpenEditorCommand.ExecuteAsync();
+            dialogs.Shown.Should().BeOfType<WorkflowEditorDialogViewModel>();
+            WorkflowEditorDialogViewModel model = (WorkflowEditorDialogViewModel)dialogs.Shown!;
+            model.Editor.Should().BeSameAs(section.Editor);
+            model.Editor.IsReadOnly.Should().BeTrue();
+            model.Editor.ScriptText.Should().Contain("let run : AgentWorkflow");
+        }, CancellationToken.None);
     }
 
     [Fact]
     public async Task Save_and_close_keeps_the_dialog_open_when_the_script_does_not_compile()
     {
-        using TemporaryAppSettingsFile settings = new();
-        await using MainWindowViewModel main = new(settingsPath: settings.Path);
-        WorkflowSettingsViewModel section = new(main, main.RuntimeDatabasePath);
-        await section.CreateNewAsync();
-        using WorkflowEditorDialogViewModel dialog = new(section);
-        bool closed = false;
-        dialog.RequestClose = _ => closed = true;
-        string goodScript = section.Editor.ScriptText;
-        section.Editor.ScriptText = "let broken = missingIdentifier";
-        await dialog.SaveAndCloseCommand.ExecuteAsync();
-        closed.Should().BeFalse();
-        section.Editor.ResultIsError.Should().BeTrue();
-        section.Editor.IsDirty.Should().BeTrue();
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            using TemporaryAppSettingsFile settings = new();
+            await using MainWindowViewModel main = new(settingsPath: settings.Path);
+            WorkflowSettingsViewModel section = new(main, main.RuntimeDatabasePath);
+            await section.CreateNewAsync();
+            using WorkflowEditorDialogViewModel dialog = new(section);
+            bool closed = false;
+            dialog.RequestClose = _ => closed = true;
+            string goodScript = section.Editor.ScriptText;
+            section.Editor.ScriptText = "let broken = missingIdentifier";
+            await dialog.SaveAndCloseCommand.ExecuteAsync();
+            closed.Should().BeFalse();
+            section.Editor.ResultIsError.Should().BeTrue();
+            section.Editor.IsDirty.Should().BeTrue();
 
-        section.Editor.ScriptText = goodScript;
-        section.Editor.Name = "已保存的工作流";
-        await dialog.SaveAndCloseCommand.ExecuteAsync();
-        closed.Should().BeTrue();
-        section.Editor.IsDirty.Should().BeFalse();
+            section.Editor.ScriptText = goodScript.Replace("新工作流", "已保存的工作流", StringComparison.Ordinal);
+            (await section.Editor.CheckScriptAsync()).Should().BeTrue(section.Editor.ResultText);
+            section.Editor.ParameterFields.Single(field => field.Key == "model").Value =
+                ModelSelectionCodec.Encode(new ModelSelection("openai", "test-model"));
+            await dialog.SaveAndCloseCommand.ExecuteAsync();
+            closed.Should().BeTrue();
+            section.Editor.IsDirty.Should().BeFalse();
+        }, CancellationToken.None);
     }
 
     private sealed class RecordingDialogs : IDialogService

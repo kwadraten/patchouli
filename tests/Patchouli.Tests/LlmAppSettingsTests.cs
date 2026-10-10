@@ -7,7 +7,7 @@ namespace Patchouli.Tests;
 public sealed class LlmAppSettingsTests
 {
     [Fact]
-    public void Default_has_one_row_per_catalog_provider_and_translation_defaults()
+    public void Default_has_one_row_per_catalog_provider_and_chat_defaults()
     {
         LlmAppSettings settings = LlmAppSettings.Default();
 
@@ -15,10 +15,7 @@ public sealed class LlmAppSettingsTests
         settings.Providers.Select(provider => provider.ProviderId).Should()
             .Equal(LlmProviderCatalog.ProviderIds);
         settings.OcrSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-        settings.TranslationSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-        settings.EffectiveTargetLanguage.Should().Be(LlmAppSettings.FallbackTargetLanguage);
-        settings.EffectiveTranslationWindowRadius.Should().Be(1);
-        settings.BackfillPreviousWindowTranslation.Should().BeTrue();
+        settings.ChatSelection.ProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
         settings.Providers.Should().OnlyContain(provider => provider.ContextWindowTokens == 256000);
         settings.ToolResultMaxCharacters.Should().Be(32768);
     }
@@ -31,33 +28,24 @@ public sealed class LlmAppSettingsTests
         json.Should().NotContain("apiKey").And.NotContain("ApiKey").And.NotContain("secret");
     }
 
-    [Theory]
-    [InlineData(-3, 0)]
-    [InlineData(0, 0)]
-    [InlineData(1, 1)]
-    [InlineData(5, 5)]
-    [InlineData(99, 5)]
-    public void Window_radius_is_clamped_to_the_accepted_range(int configured, int expected)
+    [Fact]
+    public void Shared_settings_do_not_serialize_workflow_business_defaults()
     {
-        LlmAppSettings settings = LlmAppSettings.Default() with { TranslationWindowRadius = configured };
-
-        settings.EffectiveTranslationWindowRadius.Should().Be(expected);
-        LlmAppSettings.ClampWindowRadius(configured).Should().Be(expected);
+        string json = System.Text.Json.JsonSerializer.Serialize(LlmAppSettings.Default());
+        json.Should().NotContain("Translation").And.NotContain("TargetLanguage")
+            .And.NotContain("WindowRadius").And.NotContain("LegacyWorkflowValues");
     }
 
     [Fact]
     public void Normalize_fills_missing_provider_rows_and_repairs_unknown_selections()
     {
-        LlmAppSettings sparse = new([], "not-a-provider", "", "nope", "", "  ", 42, false);
+        LlmAppSettings sparse = new([], "not-a-provider", "", "nope", "");
 
         LlmAppSettings normalized = sparse.Normalize();
 
         normalized.Providers.Should().HaveCount(LlmProviderCatalog.All.Count);
         normalized.OcrProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-        normalized.TranslationProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-        normalized.TargetLanguage.Should().Be(LlmAppSettings.FallbackTargetLanguage);
-        normalized.TranslationWindowRadius.Should().Be(LlmAppSettings.MaxTranslationWindowRadius);
-        normalized.BackfillPreviousWindowTranslation.Should().BeFalse();
+        normalized.ChatProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
     }
 
     [Fact]

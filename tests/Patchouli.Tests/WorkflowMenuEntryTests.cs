@@ -14,8 +14,8 @@ namespace Patchouli.Tests;
 /// <summary>
 ///     The workflow menus and the session status-bar notifications (ADR 0036, plan §3.8): every menu
 ///     surface is generated from one ordered definition source, a click starts the session against the
-///     captured selection and immediately shows the chat tab, a missing selection is reported instead
-///     of launching, and a session that finishes or fails notifies the status bar.
+///     captured selection and immediately shows the chat tab, launch validation errors route to the
+///     workflow editor, and a session that finishes or fails notifies the status bar.
 /// </summary>
 [Collection("Avalonia")]
 public sealed class WorkflowMenuEntryTests
@@ -61,11 +61,16 @@ public sealed class WorkflowMenuEntryTests
     public async Task Clicking_a_menu_item_starts_the_session_with_the_selection_and_opens_the_chat_tab()
     {
         const string documentId = "0f3a6d1c2b4e5f60718293a4b5c6d7e8";
+        string secondDocumentId = "1f3a6d1c2b4e5f60718293a4b5c6d7e8";
         WorkflowDefinition definition = Definition("full-text-translation", "全文翻译", true, 20);
         FakeWorkflowMenuService menu = new([definition], "session-42");
         StubHost host = new();
         WorkflowMenuEntryViewModel entry = new(definition, menu,
-            host, new WorkflowLaunchSelection(documentId, "3-5"));
+            host, new WorkflowLaunchSelection(documentId, "3-5")
+            {
+                DocumentIds = [documentId, secondDocumentId],
+                TextSelection = "selected passage"
+            });
 
         await entry.LaunchCommand.ExecuteAsync();
 
@@ -73,6 +78,8 @@ public sealed class WorkflowMenuEntryTests
         menu.Started[0].WorkflowId.Should().Be("full-text-translation");
         menu.Started[0].Selection.DocumentId.Should().Be(documentId);
         menu.Started[0].Selection.PageRange.Should().Be("3-5");
+        menu.Started[0].Selection.DocumentIds.Should().Equal(documentId, secondDocumentId);
+        menu.Started[0].Selection.TextSelection.Should().Be("selected passage");
         host.OpenChatTabCount.Should().Be(1, "the launch must bring the chat tab forward");
         host.OpenedSessionId.Should().Be("session-42");
         host.Reported.Should().ContainSingle().Which.Should().Contain("session-42");
@@ -80,7 +87,7 @@ public sealed class WorkflowMenuEntryTests
     }
 
     [Fact]
-    public async Task Clicking_a_menu_item_without_a_selection_reports_it_and_launches_nothing()
+    public async Task Clicking_a_menu_item_without_a_document_still_attempts_the_workflow()
     {
         WorkflowDefinition definition = Definition("full-text-translation", "全文翻译", true, 20);
         FakeWorkflowMenuService menu = new([definition], "session-42");
@@ -90,10 +97,52 @@ public sealed class WorkflowMenuEntryTests
 
         await entry.LaunchCommand.ExecuteAsync();
 
-        menu.Started.Should().BeEmpty();
-        host.Reported.Should().ContainSingle().Which.Should().Contain("请先选择一个题录");
+        menu.Started.Should().ContainSingle();
+        menu.Started[0].Selection.DocumentId.Should().BeEmpty();
+        host.Reported.Should().ContainSingle().Which.Should().Contain("session-42");
         host.Errors.Should().BeEmpty();
-        host.OpenChatTabCount.Should().Be(1, "the chat tab still opens so the user can pick a session");
+        host.OpenChatTabCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void Menu_request_keeps_selection_as_context_instead_of_hardcoding_parameter_keys()
+    {
+        const string firstDocument = "doc-a";
+        const string secondDocument = "doc-b";
+        WorkflowLaunchSelection selection = new(firstDocument, "3-5")
+        {
+            DocumentIds = [firstDocument, secondDocument],
+            TextSelection = "selected passage"
+        };
+
+        WorkflowSessionRequest request = WorkflowMenuService.CreateLaunchRequest("custom.workflow", selection);
+
+        request.Parameters.Should().BeEmpty();
+        request.Selection.Documents.Should().Equal(firstDocument, secondDocument);
+        request.Selection.PageRange.Should().Be("3-5");
+        request.Selection.TextSelection.Should().Be("selected passage");
+    }
+
+    [Fact]
+    public async Task Launch_validation_errors_are_reported_and_open_the_workflow_editor()
+    {
+        WorkflowDefinition definition = Definition("custom.workflow", "测试工作流", true, 20);
+        WorkflowValidationIssue issue = new("targetLanguage", "required", "请选择目标语言。");
+        FakeWorkflowMenuService menu = new([definition], "unused")
+        {
+            StartException = new WorkflowConfigurationValidationException([issue])
+        };
+        StubHost host = new();
+        WorkflowMenuEntryViewModel entry =
+            new(definition, menu, host, WorkflowLaunchSelection.None);
+
+        await entry.LaunchCommand.ExecuteAsync();
+
+        host.Errors.Should().ContainSingle().Which.Should().Contain("请选择目标语言");
+        host.ValidationWorkflowId.Should().Be("custom.workflow");
+        host.ValidationSelection.Should().Be(WorkflowLaunchSelection.None);
+        host.ValidationIssues.Should().ContainSingle().Which.Should().Be(issue);
+        host.OpenChatTabCount.Should().Be(0, "the editor owns the repair flow");
     }
 
     [Fact]
@@ -232,6 +281,7 @@ public sealed class WorkflowMenuEntryTests
         }
 
         public List<(string WorkflowId, WorkflowLaunchSelection Selection)> Started { get; } = [];
+        public Exception? StartException { get; init; }
 
         public Task<IReadOnlyList<WorkflowDefinition>> ListMenuDefinitionsAsync(
             CancellationToken cancellationToken = default)
@@ -243,6 +293,11 @@ public sealed class WorkflowMenuEntryTests
             CancellationToken cancellationToken = default)
         {
             Started.Add((workflowId, selection));
+            if (StartException is not null)
+            {
+                throw StartException;
+            }
+
             return Task.FromResult(_sessionId);
         }
     }
@@ -256,6 +311,12 @@ public sealed class WorkflowMenuEntryTests
         public int OpenChatTabCount { get; private set; }
 
         public string? OpenedSessionId { get; private set; }
+
+        public string? ValidationWorkflowId { get; private set; }
+
+        public WorkflowLaunchSelection? ValidationSelection { get; private set; }
+
+        public IReadOnlyList<WorkflowValidationIssue> ValidationIssues { get; private set; } = [];
 
         public IHostActivityTracker? ActivityTracker => null;
 
@@ -273,6 +334,15 @@ public sealed class WorkflowMenuEntryTests
         {
             OpenChatTabCount++;
             OpenedSessionId = sessionId;
+            return Task.CompletedTask;
+        }
+
+        public Task HandleWorkflowValidationAsync(string workflowId, WorkflowLaunchSelection selection,
+            IReadOnlyList<WorkflowValidationIssue> issues)
+        {
+            ValidationWorkflowId = workflowId;
+            ValidationSelection = selection;
+            ValidationIssues = issues;
             return Task.CompletedTask;
         }
     }

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Microsoft.FSharp.Core;
 using Patchouli.Agent;
@@ -37,14 +36,7 @@ public sealed record WorkflowSessionResult(AgentSessionSnapshot Session, Workflo
 ///     context and the append-only step log survive a restart (ADR 0036, plan §3.4).
 /// </summary>
 /// <remarks>
-///     <para>
-///         <b>Launch parameters.</b> <see cref="MergeParameters" /> is the single place the launch form
-///         and the LLM settings meet: the launch wins, and a translation workflow that omitted a key
-///         falls back to <see cref="LlmAppSettings.EffectiveTargetLanguage" />,
-///         <see cref="LlmAppSettings.EffectiveTranslationWindowRadius" /> or
-///         <see cref="LlmAppSettings.BackfillPreviousWindowTranslation" /> (D5/D6). A resume reuses the
-///         recorded launch parameters unchanged, so a run never re-reads settings it already applied.
-///     </para>
+///     <para>Launch parameters resolve from explicit values, context, saved values and SDK defaults.</para>
 ///     <para>
 ///         <b>Persistence.</b> The session directory owns <c>launch.json</c>, <c>snapshot.json</c> and
 ///         <c>context.json</c> (session service) plus <c>workflow/snapshot.json</c>,
@@ -61,23 +53,14 @@ public sealed class WorkflowSessionRunner
     /// <summary>Launch-parameter key of the selected page range.</summary>
     public const string PageRangeParameter = "pageRange";
 
-    /// <summary>Launch-parameter key of the target language (D6).</summary>
-    public const string TargetLanguageParameter = "targetLanguage";
-
-    /// <summary>Launch-parameter key of the translation sliding-window radius (D5).</summary>
-    public const string WindowRadiusParameter = "windowRadius";
-
-    /// <summary>Launch-parameter key that enables previous-window translation backfill.</summary>
-    public const string BackfillPreviousWindowParameter = "backfillPreviousWindowTranslation";
-
     private const string SelectionParameter = "__workflow.selection";
 
     private readonly WorkflowStore _store;
     private readonly AgentSessionService _sessions;
     private readonly AgentSessionStore _sessionStore;
     private readonly IAgentEffectInterpreter _interpreter;
-    private readonly Func<LlmAppSettings> _settings;
     private readonly IAgentHostPrimitives? _hostPrimitives;
+    private readonly WorkflowConfigurationService _configuration;
 
     /// <summary>Creates the runner over a workflow store, the host session service and the interpreter.</summary>
     /// <param name="hostPrimitives">
@@ -95,21 +78,23 @@ public sealed class WorkflowSessionRunner
         _store = store;
         _sessions = sessions;
         _interpreter = interpreter;
-        _settings = settings;
         _hostPrimitives = hostPrimitives;
+        _configuration = new WorkflowConfigurationService(store, settings);
         _sessionStore = new AgentSessionStore(sessions.SessionsRoot);
     }
 
     /// <summary>The workflow store this runner loads definitions and scripts from.</summary>
     public WorkflowStore Store => _store;
 
+    /// <summary>Shared configuration discovery and persistence used by the editor and launch adapters.</summary>
+    public WorkflowConfigurationService Configuration => _configuration;
+
     /// <summary>The sessions root the run artifacts are written under.</summary>
     public string SessionsRoot => _sessions.SessionsRoot;
 
     /// <summary>
-    ///     The launch parameters of one run: every launch parameter first, in recorded order, then the
-    ///     settings-derived defaults the launch omitted. A key the launch supplied always wins, and a
-    ///     blank supplied value counts as omitted.
+    ///     Copies launch parameters in their supplied order. Workflow defaults and context values are
+    ///     resolved from the static declaration by <see cref="WorkflowConfigurationService"/>.
     /// </summary>
     public static IReadOnlyDictionary<string, string> MergeParameters(LlmAppSettings settings,
         IReadOnlyDictionary<string, string>? launchParameters)
@@ -120,17 +105,10 @@ public sealed class WorkflowSessionRunner
         {
             foreach (KeyValuePair<string, string> parameter in launchParameters)
             {
-                if (!string.IsNullOrWhiteSpace(parameter.Value))
-                {
-                    merged[parameter.Key] = parameter.Value;
-                }
+                merged[parameter.Key] = parameter.Value;
             }
         }
 
-        MergeDefault(merged, TargetLanguageParameter, settings.EffectiveTargetLanguage);
-        MergeDefault(merged, WindowRadiusParameter,
-            settings.EffectiveTranslationWindowRadius.ToString(CultureInfo.InvariantCulture));
-        MergeDefault(merged, BackfillPreviousWindowParameter, Text(settings.BackfillPreviousWindowTranslation));
         return merged;
     }
 
@@ -157,10 +135,6 @@ public sealed class WorkflowSessionRunner
             .ConfigureAwait(false);
         string script = scriptText is null ? string.Empty : scriptText.Value;
         ArgumentNullException.ThrowIfNull(request.Selection);
-        Dictionary<string, string> parameters = MergeParameters(_settings(), request.Parameters)
-            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
-        // Persist the complete selection, including multiple documents and languages, for exact replay.
-        parameters[SelectionParameter] = JsonSerializer.Serialize(request.Selection);
         string sessionId = string.IsNullOrWhiteSpace(request.SessionId)
             ? Guid.NewGuid().ToString("N")
             : request.SessionId.Trim();
@@ -172,8 +146,52 @@ public sealed class WorkflowSessionRunner
                 $"The session '{sessionId}' already exists under '{SessionsRoot}'; resume it instead of launching it.");
         }
 
-        WorkflowRunRequest run = WorkflowRunRequests.create(sessionId, definition, script, request.Selection,
-            parameters, DateTimeOffset.UtcNow);
+        WorkflowConfigurationSnapshot configurationSnapshot = await _configuration.ReadAsync(request.WorkflowId,
+            script, definition.ScriptEntryPoint, cancellationToken).ConfigureAwait(false);
+        WorkflowConfigurationResolution configuration = _configuration.ResolveLaunch(configurationSnapshot,
+            request.Parameters, ContextValues(request.Selection));
+        (WorkflowSelection effectiveSelection, WorkflowValidationIssue[] selectionIssues) =
+            ResolveEffectiveSelection(configuration, request.Selection);
+        WorkflowValidationIssue[] scopeIssues = ValidateSelectionScope(configuration.Analysis.Info.SelectionScope,
+            effectiveSelection);
+        IReadOnlyList<WorkflowValidationIssue> launchIssues = configuration.Issues.Count == 0 &&
+                                                              selectionIssues.Length == 0 && scopeIssues.Length == 0
+            ? []
+            : [.. configuration.Issues, .. selectionIssues, .. scopeIssues];
+        if (launchIssues.Count > 0)
+        {
+            throw new WorkflowConfigurationValidationException(launchIssues);
+        }
+
+        if (configuration.ModelSelection is { } model)
+        {
+            string? modelError = await _interpreter.ValidateModelSelectionAsync(model, cancellationToken)
+                .ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(modelError))
+            {
+                throw new WorkflowConfigurationValidationException(
+                [
+                    new WorkflowValidationIssue(configuration.Analysis.SessionModelKey, "model_unavailable", modelError)
+                ]);
+            }
+        }
+
+        Dictionary<string, string> parameters = configuration.Values
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+        parameters[SelectionParameter] = JsonSerializer.Serialize(effectiveSelection);
+        if (configuration.ModelSelection is { } frozenModel)
+        {
+            parameters[AgentEffectContext.ModelSelectionParameter] = ModelSelectionCodec.Encode(frozenModel);
+        }
+
+        WorkflowDefinition runDefinition = WorkflowConfigurationService.ProjectDefinition(definition,
+            configuration.Analysis);
+        string modelJson = configuration.ModelSelection is null
+            ? string.Empty
+            : ModelSelectionCodec.Encode(configuration.ModelSelection);
+        WorkflowRunRequest run = WorkflowRunRequests.createWithConfiguration(sessionId, runDefinition, script,
+            effectiveSelection, configuration.Values, configuration.DeclarationFingerprint, configuration.Values,
+            modelJson, DateTimeOffset.UtcNow);
         AgentSessionLaunchParameters launch =
             AgentSessionLaunchParameters.Create(WorkflowUri(run.Snapshot.WorkflowId), parameters, sessionId, null,
                 BaseInstructions(run.Snapshot));
@@ -200,6 +218,12 @@ public sealed class WorkflowSessionRunner
         }
 
         WorkflowScriptSnapshot snapshot = recordedSnapshot.Value;
+        if (!string.Equals(snapshot.ApiVersion, ScriptApiVersion.Current, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"Workflow session '{sessionId}' uses script contract '{snapshot.ApiVersion}' and cannot resume under '{ScriptApiVersion.Current}'. Its recorded history remains available.");
+        }
+
         AgentSessionLaunchParameters? recordedLaunch =
             await _sessionStore.TryReadLaunchAsync(sessionId, cancellationToken).ConfigureAwait(false);
         AgentSessionLaunchParameters launch = recordedLaunch ?? AgentSessionLaunchParameters.Create(
@@ -224,7 +248,7 @@ public sealed class WorkflowSessionRunner
                               ?? AgentCoreModule.initial;
             WorkflowStepRecord[] steps = await sink.ReadStepsAsync(sessionId, token).ConfigureAwait(false);
             WorkflowRunRequest run = WorkflowRunRequests.resume(sessionId, snapshot, context, steps,
-                SelectionOf(launch.Parameters), launch.Parameters);
+                SelectionOf(launch.Parameters), snapshot.ParameterValues);
             return await RunControlledAsync(run, launch, token).ConfigureAwait(false);
         }, cancellationToken).ConfigureAwait(false);
     }
@@ -317,7 +341,7 @@ public sealed class WorkflowSessionRunner
             outcome.Context.EventSeq, outcome.Context.History.Length, 0, 0, outcome.Detail, DateTimeOffset.UtcNow);
     }
 
-    /// <summary>The selection a recorded launch carries (documents, page range, target language).</summary>
+    /// <summary>The selection a recorded launch carries (documents, page range and text selection).</summary>
     private static WorkflowSelection SelectionOf(IReadOnlyDictionary<string, string> parameters)
     {
         if (parameters.TryGetValue(SelectionParameter, out string? recordedSelection))
@@ -330,8 +354,7 @@ public sealed class WorkflowSessionRunner
         return new WorkflowSelection(
             string.IsNullOrWhiteSpace(documentId) ? [] : [documentId],
             Parameter(parameters, PageRangeParameter),
-            Parameter(parameters, TargetLanguageParameter),
-            []);
+            Parameter(parameters, "textSelection"));
     }
 
     private static string Parameter(IReadOnlyDictionary<string, string> parameters, string key)
@@ -353,16 +376,134 @@ public sealed class WorkflowSessionRunner
         return "patchouli://workflows/" + workflowId;
     }
 
-    private static void MergeDefault(Dictionary<string, string> merged, string key, string value)
+    private static IReadOnlyDictionary<string, string> ContextValues(WorkflowSelection selection)
     {
-        if (!merged.ContainsKey(key))
+        Dictionary<string, string> values = new(StringComparer.Ordinal)
         {
-            merged[key] = value;
-        }
+            ["documents"] = JsonSerializer.Serialize(selection.Documents),
+            ["documentId"] = selection.Documents.FirstOrDefault() ?? string.Empty,
+            ["pageRange"] = selection.PageRange,
+            ["textSelection"] = selection.TextSelection
+        };
+        return values;
     }
 
-    private static string Text(bool value)
+    private static (WorkflowSelection Selection, WorkflowValidationIssue[] Issues) ResolveEffectiveSelection(
+        WorkflowConfigurationResolution configuration, WorkflowSelection fallback)
     {
-        return value ? "true" : "false";
+        string[] documents = fallback.Documents;
+        string pageRange = fallback.PageRange;
+        string textSelection = fallback.TextSelection;
+        List<WorkflowValidationIssue> issues = [];
+        Dictionary<string, string> resolvedBindings = new(StringComparer.Ordinal);
+        foreach (ParameterDescriptor field in configuration.Analysis.Fields)
+        {
+            string binding = field.ContextBinding;
+            if (binding is not ("documents" or "documentId" or "pageRange" or "textSelection") ||
+                !configuration.Values.TryGetValue(field.Key, out string? value))
+            {
+                continue;
+            }
+
+            if (configuration.Issues.Any(issue => string.Equals(issue.Key, field.Key, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            string selectionDimension = binding is "documents" or "documentId" ? "documents" : binding;
+            if (resolvedBindings.TryGetValue(selectionDimension, out string? existingValue))
+            {
+                if (!string.Equals(existingValue, value, StringComparison.Ordinal))
+                {
+                    issues.Add(new WorkflowValidationIssue(field.Key, "context_binding_conflict",
+                        "多个参数声明为同一上下文绑定，但解析出的值不一致。", field.SourceLine, field.SourceColumn));
+                }
+
+                continue;
+            }
+
+            resolvedBindings[selectionDimension] = value;
+
+            if (binding == "documentId")
+            {
+                documents = string.IsNullOrWhiteSpace(value) ? [] : [value];
+                if (field.Required && documents.Length == 0)
+                {
+                    issues.Add(new WorkflowValidationIssue(field.Key, "WORKFLOW_PARAMETER_REQUIRED",
+                        field.Label + " is required.", field.SourceLine, field.SourceColumn));
+                }
+            }
+            else if (binding == "documents")
+            {
+                try
+                {
+                    string[]? parsed = JsonSerializer.Deserialize<string[]>(value);
+                    if (parsed is null || parsed.Any(string.IsNullOrWhiteSpace))
+                    {
+                        throw new JsonException("Documents must be a JSON array of non-empty document ids.");
+                    }
+
+                    documents = parsed;
+                    if (field.Required && documents.Length == 0)
+                    {
+                        issues.Add(new WorkflowValidationIssue(field.Key, "WORKFLOW_PARAMETER_REQUIRED",
+                            field.Label + " is required.", field.SourceLine, field.SourceColumn));
+                    }
+                }
+                catch (JsonException exception)
+                {
+                    issues.Add(new WorkflowValidationIssue(field.Key, "invalid_documents", exception.Message,
+                        field.SourceLine, field.SourceColumn));
+                }
+            }
+            else if (binding == "pageRange")
+            {
+                pageRange = value;
+            }
+            else
+            {
+                textSelection = value;
+            }
+        }
+
+        return (new WorkflowSelection(documents, pageRange, textSelection), issues.ToArray());
+    }
+
+    private static WorkflowValidationIssue[] ValidateSelectionScope(WorkflowSelectionScope scope,
+        WorkflowSelection selection)
+    {
+        int allowed = (int)scope;
+        bool allowsDocuments = (allowed & (int)WorkflowSelectionScope.Documents) != 0;
+        bool allowsPages = (allowed & (int)WorkflowSelectionScope.Pages) != 0;
+        bool allowsTextSelection = (allowed & (int)WorkflowSelectionScope.Selection) != 0;
+        bool hasDocuments = selection.Documents.Length > 0;
+        bool hasPages = !string.IsNullOrWhiteSpace(selection.PageRange);
+        bool hasTextSelection = !string.IsNullOrWhiteSpace(selection.TextSelection);
+        List<WorkflowValidationIssue> issues = [];
+        if (hasDocuments && !allowsDocuments)
+        {
+            issues.Add(new WorkflowValidationIssue(null, "selection_scope_mismatch",
+                "该工作流不接受文档选择。", ScopeTarget: "scope"));
+        }
+
+        if (hasPages && !allowsPages)
+        {
+            issues.Add(new WorkflowValidationIssue(null, "selection_scope_mismatch",
+                "该工作流不接受页面范围。", ScopeTarget: "scope"));
+        }
+
+        if (hasTextSelection && !allowsTextSelection)
+        {
+            issues.Add(new WorkflowValidationIssue(null, "selection_scope_mismatch",
+                "该工作流不接受文本选区。", ScopeTarget: "scope"));
+        }
+
+        if (allowed != (int)WorkflowSelectionScope.Nothing && !hasDocuments && !hasPages && !hasTextSelection)
+        {
+            issues.Add(new WorkflowValidationIssue(null, "selection_required",
+                "请先选择此工作流所需的文档、页面范围或文本选区。", ScopeTarget: "scope"));
+        }
+
+        return issues.ToArray();
     }
 }

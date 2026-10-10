@@ -5,29 +5,25 @@ open System
 [<RequireQualifiedAccess>]
 module ScriptApiVersion =
     [<Literal>]
-    let Current = "patchouli.workflow.harness/5"
+    let Current = "patchouli.workflow.harness/6"
 
 /// Persisted launch selection. Scripts receive its immutable list-based projection.
 type WorkflowSelection =
     { Documents: string[]
       PageRange: string
-      TargetLanguage: string
-      Languages: string[] }
+      TextSelection: string }
 
 [<RequireQualifiedAccess>]
 module WorkflowSelections =
     let empty =
         { Documents = [||]
           PageRange = String.Empty
-          TargetLanguage = String.Empty
-          Languages = [||] }
+          TextSelection = String.Empty }
 
 /// Immutable input to an agent harness; this value has no execution capabilities.
 type WorkflowInput =
     { Documents: string list
       PageRange: string
-      TargetLanguage: string
-      Languages: string list
       Parameters: Map<string, string> }
 
 [<RequireQualifiedAccess>]

@@ -10,6 +10,7 @@
     <Compile Include="WorkflowCodec.fs" />
     <Compile Include="WorkflowStore.fs" />
     <Compile Include="WorkflowInput.fs" />
+    <Compile Include="WorkflowParameters.fs" />
     <Compile Include="WorkflowCheckpoint.fs" />
     <Compile Include="Harness.fs" />
     <Compile Include="ScriptCompiler.fs" />

@@ -301,12 +301,31 @@ module WorkflowRunRequests =
         if Object.ReferenceEquals(definition, null) then
             nullArg "definition"
 
+        let frozenParameters = nonNull parameters emptyParameters
         { SessionId = sessionId
-          Snapshot = WorkflowSnapshots.capture definition scriptText ScriptApiVersion.Current launchedAt
+          Snapshot = WorkflowSnapshots.captureConfigured definition scriptText ScriptApiVersion.Current launchedAt
+                         "" frozenParameters ""
           Context = AgentCore.initial
           RecordedSteps = [||]
           Selection = selection
-          Parameters = nonNull parameters emptyParameters }
+          Parameters = frozenParameters }
+
+    /// Creates a new run with the declaration identity and resolved values frozen into its script snapshot.
+    let createWithConfiguration (sessionId: string) (definition: WorkflowDefinition) (scriptText: string)
+                                (selection: WorkflowSelection) (parameters: IReadOnlyDictionary<string, string>)
+                                (declarationFingerprint: string) (parameterValues: IReadOnlyDictionary<string, string>)
+                                (modelSelection: string) (launchedAt: DateTimeOffset) : WorkflowRunRequest =
+        if Object.ReferenceEquals(definition, null) then
+            nullArg "definition"
+
+        let frozenParameters = nonNull parameterValues emptyParameters
+        { SessionId = sessionId
+          Snapshot = WorkflowSnapshots.captureConfigured definition scriptText ScriptApiVersion.Current launchedAt
+                         declarationFingerprint frozenParameters modelSelection
+          Context = AgentCore.initial
+          RecordedSteps = [||]
+          Selection = selection
+          Parameters = nonNull parameters frozenParameters }
 
     /// <summary>
     ///     Resumes one session from its stored snapshot, its recovered core context and its recorded

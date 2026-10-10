@@ -1139,7 +1139,7 @@ public sealed record PatchouliAppSettings(
     /// <summary>
     /// Reads the "Llm" section. Unknown provider ids are kept as-is so a settings file written by a newer
     /// build is not silently rewritten on save; <see cref="LlmAppSettings.Normalize"/> then guarantees one row
-    /// per catalog entry and clamps the window radius.
+    /// per catalog entry and normalizes chat and OCR selections.
     /// </summary>
     private static LlmAppSettings ReadLlm(JsonElement? section, LlmAppSettings fallback)
     {
@@ -1184,17 +1184,57 @@ public sealed record PatchouliAppSettings(
             }
         }
 
+        Dictionary<string, string> legacyValues = new(StringComparer.Ordinal);
+        if (element.TryGetProperty("PendingWorkflowMigration", out JsonElement pending) &&
+            pending.ValueKind == JsonValueKind.Object)
+        {
+            foreach (JsonProperty property in pending.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.String)
+                {
+                    legacyValues[property.Name] = property.Value.GetString() ?? "";
+                }
+            }
+        }
+
+        if (element.TryGetProperty("TranslationProviderId", out _) ||
+            element.TryGetProperty("TranslationModel", out _))
+        {
+            legacyValues["model"] = JsonSerializer.Serialize(new
+            {
+                providerId = ReadString(element, "TranslationProviderId", fallback.ChatProviderId),
+                model = ReadString(element, "TranslationModel", fallback.ChatModel)
+            });
+        }
+
+        if (element.TryGetProperty("TargetLanguage", out _))
+        {
+            legacyValues["targetLanguage"] = ReadString(element, "TargetLanguage", "en");
+        }
+
+        if (element.TryGetProperty("TranslationWindowRadius", out _))
+        {
+            legacyValues["windowRadius"] = ReadInt(element, "TranslationWindowRadius", 1)
+                .ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        if (element.TryGetProperty("BackfillPreviousWindowTranslation", out _))
+        {
+            legacyValues["backfillPreviousWindowTranslation"] =
+                ReadBool(element, "BackfillPreviousWindowTranslation", true) ? "true" : "false";
+        }
+
         return new LlmAppSettings(
                 providers,
                 ReadString(element, "OcrProviderId", fallback.OcrProviderId),
                 ReadString(element, "OcrModel", fallback.OcrModel),
-                ReadString(element, "TranslationProviderId", fallback.TranslationProviderId),
-                ReadString(element, "TranslationModel", fallback.TranslationModel),
-                ReadString(element, "TargetLanguage", fallback.TargetLanguage),
-                ReadInt(element, "TranslationWindowRadius", fallback.TranslationWindowRadius),
-                ReadBool(element, "BackfillPreviousWindowTranslation", fallback.BackfillPreviousWindowTranslation))
+                ReadString(element, "ChatProviderId",
+                    ReadString(element, "TranslationProviderId", fallback.ChatProviderId)),
+                ReadString(element, "ChatModel",
+                    ReadString(element, "TranslationModel", fallback.ChatModel)))
             {
-                ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters)
+                ToolResultMaxCharacters = ReadInt(element, "ToolResultMaxCharacters", fallback.ToolResultMaxCharacters),
+                LegacyWorkflowValues = legacyValues.Count == 0 ? fallback.LegacyWorkflowValues : legacyValues
             }
             .Normalize();
     }
@@ -1202,18 +1242,22 @@ public sealed record PatchouliAppSettings(
     private static JsonObject SerializeLlm(LlmAppSettings llm)
     {
         LlmAppSettings normalized = llm.Normalize();
-        return JsonSerializer.SerializeToNode(new
+        JsonObject result = JsonSerializer.SerializeToNode(new
         {
             normalized.Providers,
             normalized.OcrProviderId,
             normalized.OcrModel,
-            normalized.TranslationProviderId,
-            normalized.TranslationModel,
-            normalized.TargetLanguage,
-            normalized.TranslationWindowRadius,
-            normalized.BackfillPreviousWindowTranslation,
+            normalized.ChatProviderId,
+            normalized.ChatModel,
             normalized.ToolResultMaxCharacters
         }) as JsonObject ?? new JsonObject();
+        // Retain pending values until workflow storage has consumed them, even if settings save first.
+        if (normalized.LegacyWorkflowValues.Count > 0)
+        {
+            result["PendingWorkflowMigration"] = JsonSerializer.SerializeToNode(normalized.LegacyWorkflowValues);
+        }
+
+        return result;
     }
 
     private static SnapshotSyncLocalState ReadSnapshotSyncState(JsonElement? section, SnapshotSyncLocalState fallback)

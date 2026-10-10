@@ -153,7 +153,7 @@ Workflow scripts now export a cold, typed `AgentWorkflow` value that controls th
 agent through `AgentCore.chatStep`: typed agent stages, tool scopes, budgets, routing and
 bounded immutable refinement. The former imperative script API was removed by ADR `0039`.
 See [the workflow API](workflow-api.md) for authoring and verification boundaries.
-A `.fsx` script plus its metadata (stable ID, name, description, script entry, parameter definitions, applicable selection scope, lock state, menu placement) that is saved with the Library. A Workflow runs in-process with host permissions and is designed for user-trusted local scripts, not as a sandbox. A session stores a snapshot of its Workflow, so editing a Workflow affects only later sessions; the built-in full-text translation Workflow is locked by default. Workflow definitions are user configuration managed separately from Session data.
+A `.fsx` script that declares display metadata and independent typed parameters through the SDK, with stable platform identity and lock state saved with the Library. Static analysis provides the parameter and selection projection; user values are configured in the workflow editor (ADR 0042). A Workflow runs in-process with host permissions and is designed for user-trusted local scripts, not as a sandbox. A session stores a snapshot of its Workflow, so editing a Workflow affects only later sessions; the built-in full-text translation Workflow is locked by default. Workflow definitions are user configuration managed separately from Session data.
 _Avoid_: Task, script file, job definition
 
 **Session**:
@@ -196,9 +196,10 @@ _Avoid_: Last-writer-wins conflict
 A user-owned token, key, or credential used by OCR/HTR providers. It is never exposed through MCP.
 _Avoid_: Provider config, secret in shard
 
-API LLM providers use one active key per provider through ICredentialStore. OCR and translation
-share provider configuration with separate default provider/model selections. Translation defaults
-include target language, a window radius of one physical page and optional previous-translation context.
+API LLM providers use one active key per provider through ICredentialStore. OCR, chat and workflows share provider connections and credential storage. OCR and ordinary chat
+have separate model selections. Workflow parameters and their defaults are independently declared
+through the SDK in fsx and configured only in the workflow editor (ADR 0042). Translation declares
+its own language, window radius and previous-translation context parameters.
 Subscription authentication follows ADR 0037.
 
 MultimodalLlmOcrAdapter sends page/region images directly to the selected vision model and normalizes
@@ -226,7 +227,7 @@ Switching modes keeps input and filter rows. Enter and the search button use the
 
 ## Desktop View And Dialog Vocabulary
 
-The mixed agent SDK is implemented (workflow snapshot API `/5`): native FC and session-local FSI
+The mixed agent SDK is implemented (workflow snapshot API `/6`): native FC and session-local FSI
 functions share validation and durable operation receipts; chat and workflows share AgentDriver.
 Cold immutable pipelines checkpoint node outputs and branch/loop routes. Translation binds page
 targets in `commitTranslation` and derives completion from receipts. Interrupted FSI blocks and

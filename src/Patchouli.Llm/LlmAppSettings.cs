@@ -57,11 +57,8 @@ public sealed record LlmAppSettings(
     IReadOnlyList<LlmProviderAppSettings> Providers,
     string OcrProviderId,
     string OcrModel,
-    string TranslationProviderId,
-    string TranslationModel,
-    string TargetLanguage,
-    int TranslationWindowRadius,
-    bool BackfillPreviousWindowTranslation)
+    string ChatProviderId,
+    string ChatModel)
 {
     public const int DefaultToolResultMaxCharacters = 32768;
     public const int MinToolResultMaxCharacters = 4096;
@@ -70,13 +67,10 @@ public sealed record LlmAppSettings(
     /// <summary>Maximum unfolded tool-result length sent to the built-in agent, in UTF-16 characters.</summary>
     public int ToolResultMaxCharacters { get; init; } = DefaultToolResultMaxCharacters;
 
-    /// <summary>Largest accepted sliding-window radius (D5 keeps the default at 1).</summary>
-    public const int MaxTranslationWindowRadius = 5;
-
-    /// <summary>Fallback target language (D6) when settings carry no usable value.</summary>
-    public const string FallbackTargetLanguage = "en";
-
-    private static readonly string[] TargetLanguageFallbacks = ["en", "ja", "zh-Hans"];
+    /// <summary>One-time legacy settings payload consumed by workflow configuration migration.</summary>
+    [JsonIgnore]
+    public IReadOnlyDictionary<string, string> LegacyWorkflowValues { get; init; } =
+        System.Collections.Immutable.ImmutableDictionary<string, string>.Empty;
 
     /// <summary>Default model for the default provider, used before the user picks anything.</summary>
     private const string DefaultOpenAiModel = "gpt-4o-mini";
@@ -86,8 +80,7 @@ public sealed record LlmAppSettings(
 
     /// <summary>
     /// Defaults: one row per catalog provider, the default provider's row pre-filled with the default model so
-    /// a fresh install can already call it, and the D5/D6 translation defaults (window radius 1, language
-    /// fallback, previous-window backfill on).
+    /// a fresh install can already call it, and the default chat model selection.
     /// </summary>
     public static LlmAppSettings Default()
     {
@@ -102,32 +95,16 @@ public sealed record LlmAppSettings(
             DefaultProviderId,
             DefaultOpenAiModel,
             DefaultProviderId,
-            DefaultOpenAiModel,
-            FallbackTargetLanguage,
-            1,
-            true);
+            DefaultOpenAiModel);
     }
-
-    /// <summary>Language codes offered by the settings form when nothing else is configured.</summary>
-    public static IReadOnlyList<string> SuggestedTargetLanguages => TargetLanguageFallbacks;
 
     /// <summary>Default provider/model pair used when the OCR scope has no usable configuration.</summary>
     [JsonIgnore]
     public (string ProviderId, string Model) OcrSelection => ResolveSelection(OcrProviderId, OcrModel);
 
-    /// <summary>Default provider/model pair used when the translation scope has no usable configuration.</summary>
+    /// <summary>Provider/model pair used by ordinary chat sessions.</summary>
     [JsonIgnore]
-    public (string ProviderId, string Model) TranslationSelection =>
-        ResolveSelection(TranslationProviderId, TranslationModel);
-
-    /// <summary>Target language, normalized to the fallback when blank.</summary>
-    [JsonIgnore]
-    public string EffectiveTargetLanguage =>
-        string.IsNullOrWhiteSpace(TargetLanguage) ? FallbackTargetLanguage : TargetLanguage.Trim();
-
-    /// <summary>Sliding-window radius clamped to [0, <see cref="MaxTranslationWindowRadius"/>] (D5).</summary>
-    [JsonIgnore]
-    public int EffectiveTranslationWindowRadius => ClampWindowRadius(TranslationWindowRadius);
+    public (string ProviderId, string Model) ChatSelection => ResolveSelection(ChatProviderId, ChatModel);
 
     /// <summary>Settings row for a provider id, or null when the catalog entry has no row yet.</summary>
     public LlmProviderAppSettings? FindProvider(string? providerId)
@@ -194,26 +171,18 @@ public sealed record LlmAppSettings(
         }
 
         (string ocrProviderId, string ocrModel) = ResolveSelection(OcrProviderId, OcrModel);
-        (string translationProviderId, string translationModel) =
-            ResolveSelection(TranslationProviderId, TranslationModel);
+        (string chatProviderId, string chatModel) =
+            ResolveSelection(ChatProviderId, ChatModel);
         return this with
         {
             Providers = normalized,
             OcrProviderId = ocrProviderId,
             OcrModel = ocrModel,
-            TranslationProviderId = translationProviderId,
-            TranslationModel = translationModel,
-            TargetLanguage = EffectiveTargetLanguage,
-            TranslationWindowRadius = EffectiveTranslationWindowRadius,
+            ChatProviderId = chatProviderId,
+            ChatModel = chatModel,
             ToolResultMaxCharacters = Math.Clamp(ToolResultMaxCharacters,
                 MinToolResultMaxCharacters, MaxToolResultMaxCharacters)
         };
-    }
-
-    /// <summary>Clamps a window radius into the accepted range.</summary>
-    public static int ClampWindowRadius(int radius)
-    {
-        return Math.Clamp(radius, 0, MaxTranslationWindowRadius);
     }
 
     /// <summary>

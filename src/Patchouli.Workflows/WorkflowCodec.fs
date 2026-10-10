@@ -77,6 +77,12 @@ module WorkflowCodec =
         | "Language" -> WorkflowParameterType.Language
         | "Integer" -> WorkflowParameterType.Integer
         | "Boolean" -> WorkflowParameterType.Boolean
+        | "MultilineText" -> WorkflowParameterType.MultilineText
+        | "Decimal" -> WorkflowParameterType.Decimal
+        | "Choice" -> WorkflowParameterType.Choice
+        | "Model" -> WorkflowParameterType.Model
+        | "Documents" -> WorkflowParameterType.Documents
+        | "TextSelection" -> WorkflowParameterType.TextSelection
         | _ -> raise (JsonException($"Unknown workflow parameter type '{text}'."))
 
     let private writeParameter (writer: Utf8JsonWriter) (parameter: WorkflowParameter) =
@@ -94,6 +100,24 @@ module WorkflowCodec =
           Required = boolean element "required"
           Description = textOr element "description" String.Empty
           DefaultValue = textOr element "defaultValue" String.Empty }
+
+    let private writeStringMap (writer: Utf8JsonWriter) (name: string)
+                               (values: Collections.Generic.IReadOnlyDictionary<string, string>) =
+        writer.WriteStartObject(name)
+        if not (Object.ReferenceEquals(values, null)) then
+            for KeyValue(key, value) in values do
+                writer.WriteString(key, value)
+        writer.WriteEndObject()
+
+    let private readStringMap (element: JsonElement) (name: string) : Collections.Generic.IReadOnlyDictionary<string, string> =
+        let values = Collections.Generic.Dictionary<string, string>(StringComparer.Ordinal)
+        match element.TryGetProperty name with
+        | true, map when map.ValueKind = JsonValueKind.Object ->
+            for property in map.EnumerateObject() do
+                if property.Value.ValueKind = JsonValueKind.String then
+                    values[property.Name] <- WorkflowText.orEmpty (property.Value.GetString())
+        | _ -> ()
+        values :> Collections.Generic.IReadOnlyDictionary<string, string>
 
     /// <summary>Serializes one workflow definition as an indented, hand-readable document.</summary>
     let definitionToJson (definition: WorkflowDefinition) : string =
@@ -161,6 +185,9 @@ module WorkflowCodec =
             writer.WriteString("apiVersion", snapshot.ApiVersion)
             writer.WriteString("capturedAt", snapshot.CapturedAt)
             writer.WriteString("scriptText", snapshot.ScriptText)
+            writer.WriteString("declarationFingerprint", snapshot.DeclarationFingerprint)
+            writeStringMap writer "parameterValues" snapshot.ParameterValues
+            writer.WriteString("modelSelection", snapshot.ModelSelection)
             writer.WriteEndObject())
 
     /// <summary>Reads one script snapshot written by <see cref="snapshotToJson" />.</summary>
@@ -173,7 +200,10 @@ module WorkflowCodec =
           ScriptText = textOr root "scriptText" String.Empty
           ScriptHash = textOr root "scriptHash" String.Empty
           ApiVersion = textOr root "apiVersion" String.Empty
-          CapturedAt = textOr root "capturedAt" String.Empty }
+          CapturedAt = textOr root "capturedAt" String.Empty
+          DeclarationFingerprint = textOr root "declarationFingerprint" String.Empty
+          ParameterValues = readStringMap root "parameterValues"
+          ModelSelection = textOr root "modelSelection" String.Empty }
 
     /// <summary>Serializes one recorded run step as a single compact log line payload.</summary>
     let stepToJson (step: WorkflowStepRecord) : string =

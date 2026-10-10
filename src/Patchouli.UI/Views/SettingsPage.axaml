@@ -631,35 +631,22 @@
 
               <Border Classes="Card">
                 <StackPanel Spacing="10">
-                  <TextBlock Text="翻译默认设置" Classes="CardTitle" />
-                  <TextBlock Text="翻译任务默认使用的 provider 与模型；目标语言留空时回落到 en。"
+                  <TextBlock Text="聊天模型" Classes="CardTitle" />
+                  <TextBlock Text="普通聊天使用此模型。工作流模型在对应工作流编辑器中配置。"
                              FontSize="12" Foreground="{DynamicResource OnSurfaceVariantBrush}"
                              TextWrapping="Wrap" />
-                  <Grid ColumnDefinitions="Auto,*,Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="8"
-                        RowSpacing="8">
-                    <TextBlock Grid.Row="0" Grid.Column="0" Text="默认 Provider" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="0" Grid.Column="1"
-                              ItemsSource="{Binding TranslationProviderOptions}"
+                  <Grid ColumnDefinitions="Auto,*,Auto,*" ColumnSpacing="8">
+                    <TextBlock Grid.Column="0" Text="Provider" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="1" ItemsSource="{Binding ChatProviderOptions}"
                               DisplayMemberBinding="{Binding DisplayName}"
-                              SelectedItem="{Binding SelectedTranslationProvider}"
-                              PlaceholderText="{Binding TranslationProviderPlaceholder}"
+                              SelectedItem="{Binding SelectedChatProvider}"
+                              PlaceholderText="{Binding ChatProviderPlaceholder}"
                               HorizontalAlignment="Stretch" />
-                    <TextBlock Grid.Row="0" Grid.Column="2" Text="默认模型" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="0" Grid.Column="3" IsEditable="True"
-                              ItemsSource="{Binding TranslationModelOptions}"
-                              Text="{Binding TranslationModel}" HorizontalAlignment="Stretch" />
-
-                    <TextBlock Grid.Row="1" Grid.Column="0" Text="目标语言" VerticalAlignment="Center" />
-                    <ComboBox Grid.Row="1" Grid.Column="1" IsEditable="True"
-                              ItemsSource="{Binding TargetLanguageOptions}"
-                              Text="{Binding TargetLanguage}" HorizontalAlignment="Stretch" />
-                    <TextBlock Grid.Row="1" Grid.Column="2" Text="窗口半径" VerticalAlignment="Center" />
-                    <NumericUpDown Grid.Row="1" Grid.Column="3" Minimum="0" Maximum="5" Increment="1"
-                                   Value="{Binding TranslationWindowRadius}" HorizontalAlignment="Stretch" />
+                    <TextBlock Grid.Column="2" Text="模型" VerticalAlignment="Center" />
+                    <ComboBox Grid.Column="3" IsEditable="True"
+                              ItemsSource="{Binding ChatModelOptions}"
+                              Text="{Binding ChatModel}" HorizontalAlignment="Stretch" />
                   </Grid>
-                  <TextBlock Text="{Binding TranslationWindowRadiusDescription}" FontSize="11"
-                             Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-                  <CheckBox Content="回填上一窗口的翻译结果" IsChecked="{Binding BackfillPreviousWindowTranslation}" />
                 </StackPanel>
               </Border>
 

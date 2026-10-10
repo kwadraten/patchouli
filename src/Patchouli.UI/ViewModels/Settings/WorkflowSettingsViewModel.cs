@@ -4,14 +4,20 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.FSharp.Core;
 using Patchouli.Host.Composition;
+using Patchouli.Host.Workflows;
+using Patchouli.UI.Services;
 using Patchouli.UI.ViewModels;
 using Patchouli.Workflows;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.UI.ViewModels.Settings;
 
@@ -36,6 +42,10 @@ namespace Patchouli.UI.ViewModels.Settings;
 /// </remarks>
 public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModelBase
 {
+    private static readonly Regex WorkflowInfoNameLiteral = new(
+        @"(?m)^[ \t]*let[ \t]+info(?:[ \t]*:[ \t]*WorkflowInfo)?[ \t]*=[ \t]*(?:\r?\n[ \t]*)?(?:Patchouli\.Workflows\.Scripting\.)?WorkflowInfo\.create[ \t\r\n]+(?<name>""(?:\\.|[^""\\])*"")",
+        RegexOptions.CultureInvariant);
+
     /// <summary>The trust-model warning shown in every editor area (ADR 0036, plan §3.2).</summary>
     public const string TrustWarning =
         ".fsx 脚本以宿主权限在进程内执行，不是沙箱；只保存你信任的本地脚本。";
@@ -43,6 +53,7 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
     private readonly MainWindowViewModel _main;
     private readonly string _libraryPath;
     private WorkflowStore? _store;
+    private WorkflowConfigurationService? _configurationService;
     private bool _isRefreshing;
     private Task _pendingEditorLoad = Task.CompletedTask;
 
@@ -64,6 +75,9 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
         _main = main;
         _libraryPath = libraryPath;
         _store = store;
+        _configurationService = store is null
+            ? null
+            : new WorkflowConfigurationService(store, () => _main.AppOptions.Llm);
         Editor = new WorkflowEditorViewModel(this, store);
         CopyCommand = new AsyncCommand(async () =>
         {
@@ -176,7 +190,7 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
         IReadOnlyList<WorkflowDefinition> definitions;
         try
         {
-            definitions = await store.ListDefinitionsAsync(CancellationToken.None);
+            definitions = await Configuration.DiscoverDefinitionsAsync(CancellationToken.None);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -248,7 +262,8 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
         }
     }
 
-    public async Task OpenEditorAsync(WorkflowDefinitionItemViewModel? item)
+    public async Task OpenEditorAsync(WorkflowDefinitionItemViewModel? item,
+        IReadOnlyList<WorkflowValidationIssue>? issues = null, WorkflowLaunchSelection? selection = null)
     {
         if (item is null)
         {
@@ -257,7 +272,13 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
 
         Select(item);
         await WaitForEditorLoadAsync();
+        Editor.SetLaunchContext(selection);
         using Dialogs.WorkflowEditorDialogViewModel dialog = new(this);
+        if (issues is { Count: > 0 })
+        {
+            dialog.ApplyValidationIssues(issues);
+        }
+
         await _main.Dialogs.ShowDialogAsync<bool>(dialog);
     }
 
@@ -279,10 +300,32 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
 
         FSharpOption<string>? script = await store.ReadScriptAsync(source.Id, CancellationToken.None);
         string scriptText = script is null ? "" : script.Value;
+        WorkflowConfigurationSnapshot sourceDeclaration =
+            await Configuration.ReadAsync(source.Id, scriptText, null, CancellationToken.None);
+        string sourceName = sourceDeclaration.Analysis.Succeeded
+            ? sourceDeclaration.Analysis.Info.Name
+            : source.Name;
+        string copyName = sourceName + " 副本";
+        bool scriptRenamed = TryRewriteWorkflowInfoName(scriptText, copyName, out string copyScriptText);
+        if (scriptRenamed)
+        {
+            WorkflowConfigurationSnapshot candidateDeclaration =
+                await Configuration.ReadAsync(source.Id, copyScriptText, null, CancellationToken.None);
+            scriptRenamed = HasOnlyWorkflowNameChanged(
+                sourceDeclaration.Analysis, candidateDeclaration.Analysis, copyName);
+        }
+
+        if (!scriptRenamed)
+        {
+            // Keep the script declaration authoritative when it uses a form that cannot be patched safely.
+            copyName = sourceName;
+            copyScriptText = scriptText;
+        }
+
         string id = await NextAvailableIdAsync(store, "user.workflow-copy");
         WorkflowDefinition copy = new(
             id,
-            source.Name + " 副本",
+            copyName,
             source.Description,
             source.ScriptEntryPoint,
             source.Parameters,
@@ -300,7 +343,7 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
             return false;
         }
 
-        WorkflowMutationResult scriptSaved = await store.SaveScriptAsync(id, scriptText, CancellationToken.None);
+        WorkflowMutationResult scriptSaved = await store.SaveScriptAsync(id, copyScriptText, CancellationToken.None);
         if (WorkflowMutations.KindOf(scriptSaved) != WorkflowMutationKind.Applied)
         {
             LastError = WorkflowMutations.Describe(scriptSaved);
@@ -309,16 +352,90 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
             return false;
         }
 
+        WorkflowConfigurationSnapshot copiedDeclaration =
+            await Configuration.ReadAsync(id, copyScriptText, null, CancellationToken.None);
+        if (copiedDeclaration.Analysis.Succeeded)
+        {
+            await Configuration.SaveDeclarationProjectionAsync(id, copiedDeclaration.Analysis, CancellationToken.None);
+        }
+
+        await Configuration.CopyAsync(source.Id, id, CancellationToken.None);
+
         await RefreshAsync();
         SelectedWorkflow = Workflows.FirstOrDefault(item => item.Id == id);
         await WaitForEditorLoadAsync();
         ValidationState = SettingsValidationState.Valid;
-        Status = $"已复制出「{copy.Name}」，脚本可编辑。";
+        Status = scriptRenamed
+            ? $"已复制出「{copy.Name}」，脚本可编辑。"
+            : $"已复制「{copy.Name}」；脚本元数据形式不支持安全改名，因此保留声明名称。";
+        return true;
+    }
+
+    private static bool TryRewriteWorkflowInfoName(string scriptText, string name, out string rewrittenScript)
+    {
+        Match match = WorkflowInfoNameLiteral.Match(scriptText);
+        if (!match.Success)
+        {
+            rewrittenScript = scriptText;
+            return false;
+        }
+
+        Group literal = match.Groups["name"];
+        string encodedName = JsonSerializer.Serialize(name);
+        rewrittenScript = scriptText[..literal.Index] + encodedName +
+                          scriptText[(literal.Index + literal.Length)..];
+        return true;
+    }
+
+    private static bool HasOnlyWorkflowNameChanged(WorkflowDeclarationAnalysis source,
+        WorkflowDeclarationAnalysis candidate, string expectedName)
+    {
+        if (!source.Succeeded || !candidate.Succeeded ||
+            !string.Equals(candidate.Info.Name, expectedName, StringComparison.Ordinal) ||
+            !string.Equals(source.Info.Description, candidate.Info.Description, StringComparison.Ordinal) ||
+            !string.Equals(source.Info.EntryPoint, candidate.Info.EntryPoint, StringComparison.Ordinal) ||
+            source.Info.SelectionScope != candidate.Info.SelectionScope ||
+            !string.Equals(source.Info.MenuPath, candidate.Info.MenuPath, StringComparison.Ordinal) ||
+            source.Info.MenuOrder != candidate.Info.MenuOrder ||
+            source.Info.ShowInMenu != candidate.Info.ShowInMenu ||
+            !string.Equals(source.SessionModelKey, candidate.SessionModelKey, StringComparison.Ordinal) ||
+            source.Fields.Length != candidate.Fields.Length)
+        {
+            return false;
+        }
+
+        for (int index = 0; index < source.Fields.Length; index++)
+        {
+            ParameterDescriptor left = source.Fields[index];
+            ParameterDescriptor right = candidate.Fields[index];
+            if (!string.Equals(left.Key, right.Key, StringComparison.Ordinal) ||
+                !string.Equals(left.Label, right.Label, StringComparison.Ordinal) ||
+                left.Type != right.Type || left.Required != right.Required ||
+                !string.Equals(left.Description, right.Description, StringComparison.Ordinal) ||
+                left.HasDefault != right.HasDefault ||
+                !string.Equals(left.DefaultValue, right.DefaultValue, StringComparison.Ordinal) ||
+                left.Minimum != right.Minimum || left.Maximum != right.Maximum ||
+                !(left.Choices ?? []).SequenceEqual(right.Choices ?? [], StringComparer.Ordinal) ||
+                !string.Equals(left.ContextBinding, right.ContextBinding, StringComparison.Ordinal) ||
+                left.SourceLine != right.SourceLine || left.SourceColumn != right.SourceColumn)
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 
     private const string NewWorkflowScript = """
                                              open Patchouli.Workflows.Scripting
+                                             open Patchouli.Workflows
+
+                                             let info : WorkflowInfo =
+                                                 WorkflowInfo.create "新工作流" "自定义 agent 工作流。"
+                                                 |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
+                                                 |> WorkflowInfo.menu "Tools/Workflows" 100
+
+                                             let model = Parameter.model "model" "执行模型"
 
                                              let reply =
                                                  Agent.text "reply" "只作简单回复。"
@@ -326,7 +443,10 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
                                                  |> Agent.withTools []
                                                  |> Agent.withBudget (AgentBudget.create 1 0)
 
-                                             let run : AgentWorkflow = workflow { step reply } |> Workflow.define
+                                             let run : AgentWorkflow =
+                                                 workflow { step reply }
+                                                 |> Workflow.define
+                                                 |> Workflow.withModel model
                                              """;
 
     /// <summary>Creates a runnable, reply-only user workflow with the default menu placement.</summary>
@@ -424,9 +544,22 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
         }
 
         _store = WorkflowStore.ForLibrary(path);
+        _configurationService = new WorkflowConfigurationService(_store, () => _main.AppOptions.Llm);
         Editor.UseStore(_store);
         return _store;
     }
+
+    [ExcludeFromDerivedGeneration]
+    internal WorkflowConfigurationService Configuration
+    {
+        get
+        {
+            WorkflowStore store = _store ?? throw new InvalidOperationException("工作流目录尚未就绪。");
+            return _configurationService ??= new WorkflowConfigurationService(store, () => _main.AppOptions.Llm);
+        }
+    }
+
+    [ExcludeFromDerivedGeneration] internal MainWindowViewModel Main => _main;
 
     private void OnEditorPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
@@ -633,11 +766,19 @@ internal static class WorkflowScope
 public sealed partial class WorkflowEditorViewModel : ViewModelBase
 {
     private readonly WorkflowSettingsViewModel _section;
+    private readonly object _parameterFieldsSync = new();
     private WorkflowStore? _store;
     private WorkflowDefinition? _definition;
     private bool _suppressDraftTracking;
     private ScriptCheckResult? _scriptCheck;
+    private WorkflowConfigurationSnapshot? _configuration;
+    private WorkflowDeclarationAnalysis? _analysis;
+    private WorkflowLaunchSelection? _launchSelection;
+    private string _configurationScriptText = "";
+    private readonly Dictionary<string, WorkflowEditorDraft> _drafts = new(StringComparer.Ordinal);
     private int _loadGeneration;
+    private long _editRevision;
+    private bool _isLoadingConfiguration;
 
     internal WorkflowEditorViewModel(WorkflowSettingsViewModel section, WorkflowStore? store)
     {
@@ -676,6 +817,88 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
 
     [ObservableProperty] public partial string ScriptText { get; set; } = "";
 
+    /// <summary>Fields discovered in independent SDK Parameter bindings in the script.</summary>
+    [ExcludeFromDerivedGeneration]
+    public ObservableCollection<WorkflowParameterFieldViewModel> ParameterFields { get; } = [];
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasWorkflowInfo))]
+    public partial string WorkflowInfoText { get; set; } = "";
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasLaunchContext))]
+    public partial string LaunchContextText { get; set; } = "";
+
+    [ExcludeFromDerivedGeneration] public bool HasLaunchContext => !string.IsNullOrWhiteSpace(LaunchContextText);
+
+    [ExcludeFromDerivedGeneration] public bool HasWorkflowInfo => !string.IsNullOrWhiteSpace(WorkflowInfoText);
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasScopeIssue))]
+    public partial string? ScopeIssue { get; set; }
+
+    [ExcludeFromDerivedGeneration] public bool HasScopeIssue => !string.IsNullOrWhiteSpace(ScopeIssue);
+
+    internal void SetLaunchContext(WorkflowLaunchSelection? selection)
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            _launchSelection = selection;
+        }
+
+        ApplyLaunchContextToFields();
+    }
+
+    private void ApplyLaunchContextToFields()
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            WorkflowLaunchSelection? selection = _launchSelection;
+            if (selection is null)
+            {
+                LaunchContextText = "";
+                return;
+            }
+
+            List<string> values = [];
+            if (!string.IsNullOrWhiteSpace(selection.DocumentId))
+            {
+                values.Add($"文档：{selection.DocumentId}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(selection.PageRange))
+            {
+                values.Add($"页码范围：{selection.PageRange}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(selection.TextSelection))
+            {
+                values.Add($"选中文本：{selection.TextSelection}");
+            }
+
+            if (selection.DocumentIds.Count > 1)
+            {
+                values.Add($"已选文档：{selection.DocumentIds.Count} 个");
+            }
+
+            LaunchContextText = values.Count == 0 ? "当前没有文档或页码上下文。" : string.Join(" · ", values);
+            foreach (WorkflowParameterFieldViewModel field in ParameterFields)
+            {
+                string? value = field.ContextBinding switch
+                {
+                    WorkflowSessionRunner.DocumentIdParameter => selection.DocumentId,
+                    "documents" => JsonSerializer.Serialize(selection.DocumentIds),
+                    WorkflowSessionRunner.PageRangeParameter => selection.PageRange,
+                    "textSelection" => selection.TextSelection,
+                    _ => null
+                };
+                field.SetEffectiveContext(value);
+            }
+        }
+    }
+
     public AsyncCommand SaveScriptCommand { get; }
     public AsyncCommand CheckScriptCommand { get; }
 
@@ -708,6 +931,10 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
     [NotifyPropertyChangedFor(nameof(CanEditFields))]
     public partial bool IsSaving { get; set; }
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(CanSave))]
+    public partial bool IsConfigurationDirty { get; set; }
+
     /// <summary>True while the draft differs from the stored definition or script.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(CanSave))]
@@ -715,7 +942,7 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
 
     [ExcludeFromDerivedGeneration] public bool IsReadOnly => !CanEdit;
 
-    [ExcludeFromDerivedGeneration] public bool CanEditFields => CanEdit && !IsSaving;
+    [ExcludeFromDerivedGeneration] public bool CanEditFields => _definition is not null && !IsSaving;
 
     [ExcludeFromDerivedGeneration]
     public string LockExplanation => _definition switch
@@ -754,7 +981,9 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
     [ExcludeFromDerivedGeneration]
     public bool LastCheckSucceeded => _scriptCheck is { Succeeded: true };
 
-    [ExcludeFromDerivedGeneration] public bool CanSave => CanEdit && IsDirty && !IsSaving;
+    [ExcludeFromDerivedGeneration]
+    public bool CanSave =>
+        !IsSaving && ((CanEdit && IsDirty) || IsConfigurationDirty);
 
     /// <summary>Points a host-resolved editor at the store the section discovered.</summary>
     internal void UseStore(WorkflowStore store)
@@ -766,23 +995,33 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
     /// <summary>Binds the editor to one definition and reads its script text.</summary>
     public async Task LoadAsync(WorkflowDefinitionItemViewModel? item)
     {
+        VerifyUiThread();
+        if (_definition is { } previous && (IsDirty || IsConfigurationDirty))
+        {
+            _drafts[previous.Id] = CaptureDraft();
+        }
+
         // Every load gets its own generation. Clearing the editor happens synchronously, so a load
         // that has been superseded in the meantime must abort instead of wiping the newer draft.
-        _loadGeneration++;
-        int generation = _loadGeneration;
+        int generation;
+        lock (_parameterFieldsSync)
+        {
+            generation = ++_loadGeneration;
+        }
+
+        WorkflowDefinition? definition = item?.Source;
 
         // Binding the editor is not a user edit: every assignment below is suppressed so the section
         // never reports a draft that came from loading.
-        _suppressDraftTracking = true;
+        SetDraftTrackingSuppressed(true);
         try
         {
-            _definition = item?.Source;
+            _definition = definition;
             if (item is not null)
             {
                 _store = item.Store;
             }
 
-            WorkflowDefinition? definition = _definition;
             WorkflowStore? store = _store;
             CanEdit = definition is { Locked: false, BuiltIn: false };
             Name = definition?.Name ?? "";
@@ -797,6 +1036,16 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
             ScopeSelection = scope.HasFlag(WorkflowSelectionScope.Selection);
             ParametersText = FormatParameters(definition?.Parameters);
             ScriptText = "";
+            WorkflowInfoText = "";
+            ScopeIssue = null;
+            _configuration = null;
+            _analysis = null;
+            lock (_parameterFieldsSync)
+            {
+                ParameterFields.Clear();
+            }
+
+            IsConfigurationDirty = false;
             ClearDiagnostics();
             ResultText = "";
             ResultIsError = false;
@@ -808,14 +1057,14 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
             {
                 // The suppress flag must not stay set across the await: a user edit that lands while
                 // the script is being read has to mark the section dirty and supersede this load.
-                _suppressDraftTracking = false;
+                SetDraftTrackingSuppressed(false);
                 FSharpOption<string>? script = await store.ReadScriptAsync(definition.Id, CancellationToken.None);
-                if (generation != _loadGeneration)
+                if (!IsCurrentLoad(generation))
                 {
                     return;
                 }
 
-                _suppressDraftTracking = true;
+                SetDraftTrackingSuppressed(true);
                 if (script is null)
                 {
                     ResultText = "该工作流还没有脚本文本。";
@@ -824,27 +1073,402 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
                 else
                 {
                     ScriptText = script.Value;
+                    await LoadConfigurationAsync(definition.Id, script.Value, generation);
                 }
             }
         }
         finally
         {
-            _suppressDraftTracking = false;
+            SetDraftTrackingSuppressed(false);
         }
 
-        if (generation != _loadGeneration)
+        if (!IsCurrentLoad(generation))
         {
             return;
         }
 
-        IsDirty = false;
+        if (definition is not null && _drafts.Remove(definition.Id, out WorkflowEditorDraft? draft) &&
+            draft is not null)
+        {
+            SetDraftTrackingSuppressed(true);
+            try
+            {
+                ScriptText = draft.ScriptText;
+                IsDirty = draft.IsScriptDirty;
+                if (!string.Equals(draft.ScriptText, _configurationScriptText, StringComparison.Ordinal))
+                {
+                    await LoadConfigurationAsync(definition.Id, draft.ScriptText, generation);
+                }
+
+                RestoreParameterValues(draft.Values);
+                IsConfigurationDirty = draft.IsConfigurationDirty;
+            }
+            finally
+            {
+                SetDraftTrackingSuppressed(false);
+            }
+        }
+        else
+        {
+            IsDirty = false;
+            IsConfigurationDirty = false;
+        }
+
         NotifyCommands();
     }
 
     /// <summary>Restores the editor from the definition it is bound to, dropping every draft.</summary>
     public void ResetToSelected()
     {
+        if (_definition is { } current)
+        {
+            _drafts.Remove(current.Id);
+        }
+
+        IsDirty = false;
+        IsConfigurationDirty = false;
         _ = LoadAsync(_section.SelectedWorkflow);
+    }
+
+    public async Task DiscardDraftAsync()
+    {
+        if (_definition is { } current)
+        {
+            _drafts.Remove(current.Id);
+        }
+
+        IsDirty = false;
+        IsConfigurationDirty = false;
+        await LoadAsync(_section.SelectedWorkflow);
+    }
+
+    private async Task LoadConfigurationAsync(string workflowId, string scriptText, int generation)
+    {
+        long revision;
+        lock (_parameterFieldsSync)
+        {
+            revision = _editRevision;
+        }
+
+        WorkflowConfigurationSnapshot snapshot = await _section.Configuration.ReadAsync(
+            workflowId, scriptText, null, CancellationToken.None);
+        await Dispatcher.UIThread.InvokeAsync(() => ApplyConfigurationSnapshot(snapshot, null, generation, revision));
+    }
+
+    private bool ApplyConfigurationSnapshot(WorkflowConfigurationSnapshot snapshot,
+        IReadOnlyDictionary<string, string>? overrides, int? expectedGeneration = null,
+        long? expectedRevision = null, WorkflowDefinition? expectedDefinition = null)
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            if ((expectedGeneration.HasValue && expectedGeneration.Value != _loadGeneration) ||
+                (expectedRevision.HasValue && expectedRevision.Value != _editRevision) ||
+                (expectedDefinition is not null && !ReferenceEquals(expectedDefinition, _definition)))
+            {
+                return false;
+            }
+
+            _configuration = snapshot;
+            _analysis = snapshot.Analysis;
+            WorkflowDeclarationAnalysis analysis = snapshot.Analysis;
+            WorkflowDeclarationInfo info = analysis.Info;
+            WorkflowInfoText = $"{info.Name}\n{info.Description}\n入口：{info.EntryPoint} · 菜单：{info.MenuPath} " +
+                               $"({info.MenuOrder}) · 范围：{info.SelectionScope}";
+
+            _isLoadingConfiguration = true;
+            try
+            {
+                ParameterFields.Clear();
+                foreach (ParameterDescriptor descriptor in analysis.Fields)
+                {
+                    snapshot.Values.TryGetValue(descriptor.Key, out string? value);
+                    if (overrides?.TryGetValue(descriptor.Key, out string? draftValue) == true)
+                    {
+                        value = draftValue;
+                    }
+
+                    WorkflowParameterFieldViewModel field = new(
+                        descriptor, value,
+                        descriptor.Type == WorkflowParameterValueType.Model ? BuildModelOptions() : null,
+                        OnParameterFieldChanged);
+                    field.IsEnabled = CanEditFields && !field.IsContextBound;
+                    ParameterFields.Add(field);
+                }
+
+                foreach (WorkflowValidationIssue issue in snapshot.Issues)
+                {
+                    if (!string.IsNullOrWhiteSpace(issue.Key))
+                    {
+                        WorkflowParameterFieldViewModel? field =
+                            ParameterFields.FirstOrDefault(candidate => candidate.Key == issue.Key);
+                        if (field is not null)
+                        {
+                            field.SetValidationError(issue.Message);
+                        }
+                    }
+                    else if (!string.IsNullOrWhiteSpace(issue.ScopeTarget))
+                    {
+                        ScopeIssue = issue.Message;
+                    }
+                    else
+                    {
+                        ResultText = issue.Message;
+                        ResultIsError = true;
+                    }
+                }
+            }
+            finally
+            {
+                _isLoadingConfiguration = false;
+            }
+
+            if (expectedGeneration.HasValue)
+            {
+                _configurationScriptText = ScriptText;
+            }
+
+            ApplyLaunchContextToFields();
+        }
+
+        Raise(nameof(HasWorkflowInfo));
+        return true;
+    }
+
+    private bool IsCurrentLoad(int generation)
+    {
+        lock (_parameterFieldsSync)
+        {
+            return generation == _loadGeneration;
+        }
+    }
+
+    private bool IsCurrentRevision(long revision)
+    {
+        lock (_parameterFieldsSync)
+        {
+            return revision == _editRevision;
+        }
+    }
+
+    private void SetDraftTrackingSuppressed(bool value)
+    {
+        lock (_parameterFieldsSync)
+        {
+            _suppressDraftTracking = value;
+        }
+    }
+
+    private static void VerifyUiThread()
+    {
+        if (!Dispatcher.UIThread.CheckAccess())
+        {
+            throw new InvalidOperationException("工作流参数表单只能在 Avalonia UI 线程上访问。");
+        }
+    }
+
+    private Dictionary<string, string> CaptureParameterValues()
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            return ParameterFields.ToDictionary(
+                field => field.Key, field => field.Value, StringComparer.Ordinal);
+        }
+    }
+
+    private async Task RefreshConfigurationForDraftAsync()
+    {
+        VerifyUiThread();
+        WorkflowDefinition? definition = _definition;
+        if (definition is null || string.IsNullOrWhiteSpace(ScriptText))
+        {
+            return;
+        }
+
+        int generation;
+        long revision;
+        string scriptText = ScriptText;
+        Dictionary<string, string> overrides;
+        lock (_parameterFieldsSync)
+        {
+            generation = _loadGeneration;
+            revision = _editRevision;
+            overrides = ParameterFields.ToDictionary(
+                field => field.Key, field => field.Value, StringComparer.Ordinal);
+        }
+
+        try
+        {
+            WorkflowConfigurationSnapshot snapshot = await ReadConfigurationAsync(definition.Id, scriptText);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                lock (_parameterFieldsSync)
+                {
+                    if (!ApplyConfigurationSnapshot(snapshot, overrides, generation, revision, definition))
+                    {
+                        return;
+                    }
+
+                    IsConfigurationDirty = !ParameterFields.All(candidate =>
+                        snapshot.Values.TryGetValue(candidate.Key, out string? saved)
+                            ? string.Equals(candidate.Value, saved, StringComparison.Ordinal)
+                            : candidate.Descriptor.HasDefault
+                                ? string.Equals(candidate.Value, candidate.Descriptor.DefaultValue,
+                                    StringComparison.Ordinal)
+                                : string.IsNullOrEmpty(candidate.Value));
+                }
+            });
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                lock (_parameterFieldsSync)
+                {
+                    if (!IsCurrentLoad(generation) || !IsCurrentRevision(revision) ||
+                        !ReferenceEquals(definition, _definition))
+                    {
+                        return;
+                    }
+
+                    ResultText = $"参数声明分析失败：{exception.Message}";
+                    ResultIsError = true;
+                }
+            });
+        }
+    }
+
+    private IEnumerable<WorkflowModelOption> BuildModelOptions()
+    {
+        LlmSettingsViewModel settings = _section.Main.Settings.LlmSettings;
+        foreach (LlmProviderSettingsRowViewModel provider in settings.Providers)
+        {
+            HashSet<string> models = new(StringComparer.Ordinal);
+            if (!string.IsNullOrWhiteSpace(provider.Model))
+            {
+                models.Add(provider.Model.Trim());
+            }
+
+            foreach (string model in provider.SubscriptionModels)
+            {
+                if (!string.IsNullOrWhiteSpace(model))
+                {
+                    models.Add(model.Trim());
+                }
+            }
+
+            foreach (string model in models)
+            {
+                yield return new WorkflowModelOption(provider.DisplayName, provider.ProviderId, model);
+            }
+
+            if (models.Count == 0)
+            {
+                yield return new WorkflowModelOption(provider.DisplayName, provider.ProviderId, "");
+            }
+        }
+    }
+
+    private void OnParameterFieldChanged(WorkflowParameterFieldViewModel field)
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            if (_isLoadingConfiguration || _suppressDraftTracking)
+            {
+                return;
+            }
+
+            _editRevision++;
+            IsConfigurationDirty = !ParameterFields.All(candidate =>
+                _configuration?.Values.TryGetValue(candidate.Key, out string? saved) == true
+                    ? string.Equals(candidate.Value, saved, StringComparison.Ordinal)
+                    : candidate.Descriptor.HasDefault
+                        ? string.Equals(candidate.Value, candidate.Descriptor.DefaultValue, StringComparison.Ordinal)
+                        : string.IsNullOrEmpty(candidate.Value));
+        }
+
+        NotifyCommands();
+    }
+
+    private WorkflowEditorDraft CaptureDraft()
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            return new WorkflowEditorDraft(ScriptText, IsDirty,
+                ParameterFields.ToDictionary(field => field.Key, field => field.Value, StringComparer.Ordinal),
+                IsConfigurationDirty);
+        }
+    }
+
+    private void RestoreParameterValues(IReadOnlyDictionary<string, string> values)
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            _isLoadingConfiguration = true;
+            try
+            {
+                foreach (WorkflowParameterFieldViewModel field in ParameterFields)
+                {
+                    if (values.TryGetValue(field.Key, out string? value))
+                    {
+                        field.Value = value;
+                    }
+                }
+            }
+            finally
+            {
+                _isLoadingConfiguration = false;
+            }
+        }
+    }
+
+    internal void SetValidationIssues(IReadOnlyList<WorkflowValidationIssue> issues)
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            ScopeIssue = null;
+            WorkflowValidationIssue? unlocatedIssue = null;
+            foreach (WorkflowParameterFieldViewModel field in ParameterFields)
+            {
+                field.ErrorMessage = null;
+            }
+
+            foreach (WorkflowValidationIssue issue in issues)
+            {
+                if (!string.IsNullOrWhiteSpace(issue.Key))
+                {
+                    WorkflowParameterFieldViewModel? field =
+                        ParameterFields.FirstOrDefault(candidate => candidate.Key == issue.Key);
+                    if (field is not null)
+                    {
+                        field.SetValidationError(issue.Message);
+                    }
+                    else
+                    {
+                        unlocatedIssue ??= issue;
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(issue.ScopeTarget))
+                {
+                    ScopeIssue = issue.Message;
+                }
+                else
+                {
+                    unlocatedIssue ??= issue;
+                }
+            }
+
+            if (unlocatedIssue is not null)
+            {
+                ResultText = unlocatedIssue.Message;
+                ResultIsError = true;
+            }
+        }
     }
 
     /// <summary>
@@ -853,6 +1477,7 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
     /// </summary>
     public async Task<bool> SaveAsync()
     {
+        VerifyUiThread();
         // A selection change loads the script in the background; never let that read land on top of
         // the draft the user is saving.
         await _section.WaitForEditorLoadAsync();
@@ -866,77 +1491,109 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
             return false;
         }
 
-        if (!CanEdit)
+        if (!CanEdit && !IsConfigurationDirty)
         {
             ResultText = LockExplanation;
             ResultIsError = true;
             return false;
         }
 
-        List<string> problems = [];
-        if (!TryParseParameters(ParametersText, out WorkflowParameter[] parameters, out string? parameterProblem)
-            && !string.IsNullOrWhiteSpace(parameterProblem))
-        {
-            problems.Add(parameterProblem);
-        }
-
-        WorkflowDefinition draft = new(
-            definition.Id,
-            Name.Trim(),
-            Description.Trim(),
-            ScriptEntryPoint.Trim(),
-            parameters,
-            CurrentScope(),
-            false,
-            new WorkflowMenuPlacement(MenuPath.Trim(), MenuOrder, ShowInMenu),
-            false);
-        WorkflowValidation validation = WorkflowDefinitions.validate(draft);
-        if (!validation.IsValid)
-        {
-            problems.AddRange(validation.Problems ?? []);
-        }
-
         IsSaving = true;
         NotifyCommands();
         try
         {
-            // The compile check is the gate: a script that does not compile is never written.
-            ScriptCheckResult check = await CheckScriptWithAsync(store, ScriptText, definition.Id);
-            ShowDiagnostics(check);
-            if (!check.Succeeded)
+            bool saveScript = CanEdit && IsDirty;
+            WorkflowConfigurationSnapshot snapshot = _configuration is not null &&
+                                                     string.Equals(_configurationScriptText, ScriptText,
+                                                         StringComparison.Ordinal)
+                ? _configuration
+                : await ReadConfigurationAsync(definition.Id, ScriptText);
+
+            if (saveScript)
             {
-                problems.Add("脚本未通过编译检查，未保存任何更改。请修正下方诊断后重试。");
+                // The compile and declaration checks are the gate: invalid fsx is never written.
+                ScriptCheckResult check = snapshot.Analysis.Succeeded
+                    ? await CheckScriptWithAsync(store, ScriptText, definition.Id,
+                        snapshot.Analysis.Info.EntryPoint)
+                    : new ScriptCheckResult(false, snapshot.Analysis.Diagnostics);
+                ShowDiagnostics(check);
+                if (!check.Succeeded || !snapshot.Analysis.Succeeded)
+                {
+                    bool hasFSharpCompilerError = snapshot.Analysis.Diagnostics.Concat(check.Diagnostics)
+                        .Any(diagnostic => diagnostic.Severity == ScriptDiagnosticSeverity.Error &&
+                                           diagnostic.ErrorNumber.StartsWith("FS", StringComparison.Ordinal));
+                    if (snapshot.Issues.Count > 0)
+                    {
+                        SetValidationIssues(snapshot.Issues);
+                        string details = string.Join("\n", snapshot.Issues.Select(issue => issue.Message));
+                        ResultText = hasFSharpCompilerError
+                            ? $"脚本编译检查失败：{details}"
+                            : $"脚本声明检查失败：{details}";
+                    }
+                    else
+                    {
+                        ResultText = "脚本或参数声明未通过检查，未保存更改。请修正诊断后重试。";
+                    }
+
+                    ResultIsError = true;
+                    return false;
+                }
+
+                WorkflowDefinition draft =
+                    WorkflowConfigurationService.ProjectDefinition(definition, snapshot.Analysis);
+                WorkflowValidation validation = WorkflowDefinitions.validate(draft);
+                if (!validation.IsValid)
+                {
+                    ResultText = string.Join(" ", validation.Problems ?? []);
+                    ResultIsError = true;
+                    return false;
+                }
+
+                WorkflowMutationResult scriptSaved =
+                    await store.SaveScriptAsync(definition.Id, ScriptText, CancellationToken.None);
+                if (WorkflowMutations.KindOf(scriptSaved) != WorkflowMutationKind.Applied)
+                {
+                    ResultText = WorkflowMutations.Describe(scriptSaved);
+                    ResultIsError = true;
+                    return false;
+                }
+
+                await _section.Configuration.SaveDeclarationProjectionAsync(
+                    definition.Id, snapshot.Analysis, CancellationToken.None);
+                _definition = draft;
+                _configuration = snapshot;
+                _analysis = snapshot.Analysis;
+                _configurationScriptText = ScriptText;
             }
 
-            if (problems.Count > 0)
+            if (IsConfigurationDirty)
             {
-                ResultText = string.Join(" ", problems);
-                ResultIsError = true;
-                return false;
+                IReadOnlyDictionary<string, string> values = CaptureParameterValues();
+                WorkflowConfigurationSaveResult savedConfiguration =
+                    await _section.Configuration.SaveAsync(
+                        definition.Id, snapshot.DeclarationFingerprint, values, CancellationToken.None);
+                if (!savedConfiguration.Saved)
+                {
+                    ResultText = string.Join(" ", savedConfiguration.Issues.Select(issue => issue.Message));
+                    ResultIsError = true;
+                    SetValidationIssues(savedConfiguration.Issues);
+                    return false;
+                }
+
+                _configuration = await ReadConfigurationAsync(definition.Id, ScriptText);
+                _configurationScriptText = ScriptText;
+                IsConfigurationDirty = false;
+                _drafts.Remove(definition.Id);
             }
 
-            WorkflowMutationResult saved = await store.SaveAsync(draft, CancellationToken.None);
-            if (WorkflowMutations.KindOf(saved) != WorkflowMutationKind.Applied)
-            {
-                ResultText = WorkflowMutations.Describe(saved);
-                ResultIsError = true;
-                return false;
-            }
-
-            WorkflowMutationResult scriptSaved =
-                await store.SaveScriptAsync(definition.Id, ScriptText, CancellationToken.None);
-            if (WorkflowMutations.KindOf(scriptSaved) != WorkflowMutationKind.Applied)
-            {
-                ResultText = WorkflowMutations.Describe(scriptSaved);
-                ResultIsError = true;
-                return false;
-            }
-
-            _definition = draft;
             IsDirty = false;
-            ResultText = "已保存工作流定义与脚本。";
+            ResultText = saveScript ? "已保存工作流脚本与配置。" : "已保存工作流配置。";
             ResultIsError = false;
-            await _section.ReloadSelectionAsync(definition.Id);
+            if (saveScript)
+            {
+                await _section.ReloadSelectionAsync(definition.Id);
+            }
+
             return true;
         }
         finally
@@ -946,9 +1603,16 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
         }
     }
 
+    private async Task<WorkflowConfigurationSnapshot> ReadConfigurationAsync(string workflowId, string scriptText)
+    {
+        return await _section.Configuration.ReadAsync(
+            workflowId, scriptText, null, CancellationToken.None);
+    }
+
     /// <summary>Compiles the current script text without writing anything.</summary>
     public async Task<bool> CheckScriptAsync()
     {
+        VerifyUiThread();
         await _section.WaitForEditorLoadAsync();
 
         WorkflowStore? store = _store;
@@ -960,11 +1624,60 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
             return false;
         }
 
-        ScriptCheckResult check = await CheckScriptWithAsync(store, ScriptText, definition.Id);
-        ShowDiagnostics(check);
-        ResultText = check.Succeeded ? "编译检查通过，可以保存。" : "编译检查发现错误，保存已被阻止。";
-        ResultIsError = !check.Succeeded;
-        return check.Succeeded;
+        int generation;
+        long revision;
+        string scriptText = ScriptText;
+        Dictionary<string, string> overrides;
+        lock (_parameterFieldsSync)
+        {
+            generation = _loadGeneration;
+            revision = _editRevision;
+            overrides = ParameterFields.ToDictionary(
+                field => field.Key, field => field.Value, StringComparer.Ordinal);
+        }
+
+        WorkflowConfigurationSnapshot configuration = await ReadConfigurationAsync(definition.Id, scriptText);
+        if (!configuration.Analysis.Succeeded || configuration.Issues.Count > 0)
+        {
+            bool applied = await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                lock (_parameterFieldsSync)
+                {
+                    if (!ApplyConfigurationSnapshot(configuration, overrides, generation, revision, definition))
+                    {
+                        return false;
+                    }
+
+                    ResultText = string.Join("\n", configuration.Issues.Select(issue => issue.Message));
+                    ResultIsError = true;
+                    return true;
+                }
+            });
+            if (!applied)
+            {
+                return false;
+            }
+
+            return false;
+        }
+
+        ScriptCheckResult check = await CheckScriptWithAsync(
+            store, scriptText, definition.Id, configuration.Analysis.Info.EntryPoint);
+        return await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            lock (_parameterFieldsSync)
+            {
+                if (!IsCurrentLoad(generation) || !IsCurrentRevision(revision))
+                {
+                    return false;
+                }
+
+                ShowDiagnostics(check);
+                ResultText = check.Succeeded ? "编译检查通过，可以保存。" : "编译检查发现错误，保存已被阻止。";
+                ResultIsError = !check.Succeeded;
+                return check.Succeeded;
+            }
+        });
     }
 
     /// <summary>
@@ -972,13 +1685,13 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
     ///     uses, so a passing check means the script type-checks in a run.
     /// </summary>
     internal async Task<ScriptCheckResult> CheckScriptWithAsync(WorkflowStore store, string scriptText,
-        string workflowId)
+        string workflowId, string entryPoint)
     {
         ArgumentNullException.ThrowIfNull(store);
         try
         {
             return await _section.Compiler.CheckWorkflowAsync(scriptText, store.ResolveScriptPath(workflowId),
-                ScriptEntryPoint.Trim());
+                entryPoint);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -1141,6 +1854,19 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
         ResultText = "";
         ResultIsError = false;
         MarkDirty();
+        _ = RefreshConfigurationForDraftAsync();
+    }
+
+    partial void OnIsSavingChanged(bool value)
+    {
+        VerifyUiThread();
+        lock (_parameterFieldsSync)
+        {
+            foreach (WorkflowParameterFieldViewModel field in ParameterFields)
+            {
+                field.IsEnabled = !value && !field.IsContextBound;
+            }
+        }
     }
 
     partial void OnNameChanged(string value)
@@ -1195,17 +1921,28 @@ public sealed partial class WorkflowEditorViewModel : ViewModelBase
 
     private void MarkDirty()
     {
-        if (_suppressDraftTracking)
+        lock (_parameterFieldsSync)
         {
-            return;
+            if (_suppressDraftTracking)
+            {
+                return;
+            }
+
+            // An unsaved edit supersedes every in-flight load: the load must not land on this draft.
+            _editRevision++;
+            _loadGeneration++;
         }
 
-        // An unsaved edit supersedes every in-flight load: the load must not land on this draft.
-        _loadGeneration++;
         IsDirty = true;
         NotifyCommands();
     }
 }
+
+internal sealed record WorkflowEditorDraft(
+    string ScriptText,
+    bool IsScriptDirty,
+    IReadOnlyDictionary<string, string> Values,
+    bool IsConfigurationDirty);
 
 /// <summary>One compile diagnostic of a workflow script, rendered with line and column.</summary>
 public sealed class WorkflowScriptDiagnosticViewModel

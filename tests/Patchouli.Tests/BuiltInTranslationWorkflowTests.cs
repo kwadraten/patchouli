@@ -33,8 +33,11 @@ public sealed class BuiltInTranslationWorkflowTests
             "Page 3 committed.", "Page 3 committed; no failures.");
         WorkflowRunRequest request = WorkflowRunRequests.create("translation-test",
             BuiltInWorkflows.fullTextTranslation,
-            script, new WorkflowSelection(["doc-1"], "3", "zh-CN", ["en", "zh-CN"]),
-            new Dictionary<string, string> { ["windowRadius"] = "2", ["backfillPreviousWindowTranslation"] = "false" },
+            script, new WorkflowSelection(["doc-1"], "3", ""),
+            new Dictionary<string, string>
+            {
+                ["targetLanguage"] = "zh-CN", ["windowRadius"] = "2", ["backfillPreviousWindowTranslation"] = "false"
+            },
             DateTimeOffset.UtcNow);
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
@@ -75,7 +78,7 @@ public sealed class BuiltInTranslationWorkflowTests
             """{"tool":"commitTranslation","arguments":{"content":"two"}}""",
             "Page 2 committed.", "Pages 1 and 2 committed.");
         WorkflowRunRequest request = WorkflowScriptExecutorTests.Request(script,
-            new WorkflowSelection(["doc-1"], "1-2", "zh-CN", []));
+            new WorkflowSelection(["doc-1"], "1-2", ""));
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         result.Context.History.OfType<HistoryEntry.UserMessage>()
@@ -121,7 +124,7 @@ public sealed class BuiltInTranslationWorkflowTests
             """{"tool":"commitTranslation","arguments":{"content":"one"}}""",
             "Page 1 committed.", "Page 1 committed.");
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(
-            WorkflowScriptExecutorTests.Request(script, new WorkflowSelection(["doc-1"], "1", "zh-CN", [])),
+            WorkflowScriptExecutorTests.Request(script, new WorkflowSelection(["doc-1"], "1", "")),
             CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         result.Context.History.OfType<HistoryEntry.ToolResult>().Should()

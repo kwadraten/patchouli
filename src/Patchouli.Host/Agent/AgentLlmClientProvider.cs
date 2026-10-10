@@ -1,6 +1,9 @@
+using System.Security.Cryptography;
+using System.Text;
 using Patchouli.Core.Credentials;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Agent;
 
@@ -13,20 +16,25 @@ public interface IAgentLlmClientProvider
 {
     /// <summary>Returns the chat client, or a failure carrying an <see cref="LlmFailureCodes" /> code.</summary>
     Task<Result<ILlmChatClient>> TryGetAsync(CancellationToken cancellationToken);
+
+    /// <summary>Returns the explicitly selected chat client, or the configured chat client when null.</summary>
+    Task<Result<ILlmChatClient>> TryGetAsync(ModelSelection? selection, CancellationToken cancellationToken)
+    {
+        return TryGetAsync(cancellationToken);
+    }
 }
 
 /// <summary>
 ///     Resolves the chat client from the Library's LLM settings and credential store, using the
-///     translation provider/model selection (the built-in agent is the translation workflow's
-///     engine) and caching the result until <see cref="Invalidate" /> is called.
+///     session's explicit provider/model selection, or the configured chat selection when no
+///     selection is supplied, and caching the result until <see cref="Invalidate" /> is called.
 /// </summary>
 public sealed class LlmProviderAgentClientProvider : IAgentLlmClientProvider
 {
     private readonly Func<LlmAppSettings> _settings;
     private readonly ICredentialStore _credentials;
     private readonly Lock _gate = new();
-    private ILlmChatClient? _client;
-    private LlmAppSettings? _cachedSettings;
+    private readonly Dictionary<ClientKey, ILlmChatClient> _clients = [];
 
     /// <summary>Creates the provider over a settings accessor and the Library credential store.</summary>
     public LlmProviderAgentClientProvider(Func<LlmAppSettings> settings, ICredentialStore credentials)
@@ -40,16 +48,17 @@ public sealed class LlmProviderAgentClientProvider : IAgentLlmClientProvider
     /// <inheritdoc />
     public async Task<Result<ILlmChatClient>> TryGetAsync(CancellationToken cancellationToken)
     {
-        LlmAppSettings settings = _settings();
-        lock (_gate)
-        {
-            if (_client is not null && ReferenceEquals(_cachedSettings, settings))
-            {
-                return Result<ILlmChatClient>.Success(_client);
-            }
-        }
+        return await TryGetAsync(null, cancellationToken).ConfigureAwait(false);
+    }
 
-        (string providerId, string model) = settings.TranslationSelection;
+    /// <inheritdoc />
+    public async Task<Result<ILlmChatClient>> TryGetAsync(ModelSelection? selection,
+        CancellationToken cancellationToken)
+    {
+        LlmAppSettings settings = _settings();
+        (string providerId, string model) = selection is null
+            ? settings.ChatSelection
+            : (selection.ProviderId, selection.Model);
         Result<LlmProviderRuntimeSettings> resolved = await LlmProviderClientFactory
             .ResolveAsync(settings, providerId, model, _credentials, cancellationToken).ConfigureAwait(false);
         if (resolved.IsFailure)
@@ -58,13 +67,19 @@ public sealed class LlmProviderAgentClientProvider : IAgentLlmClientProvider
                 resolved.ErrorMessage ?? "The LLM provider could not be resolved.");
         }
 
-        ILlmChatClient client = new LlmChatClient(resolved.Value,
-            LlmClientFactory.CreateTransport(resolved.Value));
+        LlmProviderRuntimeSettings runtime = resolved.Value;
+        ClientKey key = new(settings, providerId, model, Fingerprint(runtime.ApiKey), runtime.BaseUrl,
+            runtime.Subscription, runtime.Deployment, runtime.ApiVersion, runtime.AuthenticationMode);
         lock (_gate)
         {
-            _client = client;
-            _cachedSettings = settings;
-            return Result<ILlmChatClient>.Success(_client);
+            if (_clients.TryGetValue(key, out ILlmChatClient? existing))
+            {
+                return Result<ILlmChatClient>.Success(existing);
+            }
+
+            ILlmChatClient client = new LlmChatClient(runtime, LlmClientFactory.CreateTransport(runtime));
+            _clients[key] = client;
+            return Result<ILlmChatClient>.Success(client);
         }
     }
 
@@ -73,8 +88,24 @@ public sealed class LlmProviderAgentClientProvider : IAgentLlmClientProvider
     {
         lock (_gate)
         {
-            _client = null;
-            _cachedSettings = null;
+            _clients.Clear();
         }
     }
+
+    private static string Fingerprint(string secret)
+    {
+        byte[] bytes = SHA256.HashData(Encoding.UTF8.GetBytes(secret));
+        return Convert.ToHexString(bytes);
+    }
+
+    private sealed record ClientKey(
+        LlmAppSettings Settings,
+        string ProviderId,
+        string Model,
+        string CredentialFingerprint,
+        string BaseUrl,
+        string Subscription,
+        string Deployment,
+        string ApiVersion,
+        string AuthenticationMode);
 }

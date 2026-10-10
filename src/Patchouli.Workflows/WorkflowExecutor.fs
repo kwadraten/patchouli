@@ -364,7 +364,6 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
                                 Workflow.bounds plan.Shape |> ignore
                                 let selection = request.Selection
                                 let input = { Documents = List.ofArray selection.Documents; PageRange = selection.PageRange
-                                              TargetLanguage = selection.TargetLanguage; Languages = List.ofArray selection.Languages
                                               Parameters = request.Parameters |> Seq.map (fun pair -> pair.Key, pair.Value) |> Map.ofSeq }
                                 let! saved = match runSink with
                                              | :? IWorkflowCheckpointSink as durable -> durable.ReadCheckpointsAsync(request.SessionId, cancellationToken)

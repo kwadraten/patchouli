@@ -1,5 +1,8 @@
+using Avalonia.Headless;
 using FluentAssertions;
 using Microsoft.FSharp.Core;
+using Patchouli.Host.Workflows;
+using Patchouli.UI;
 using Patchouli.UI.ViewModels;
 using Patchouli.UI.ViewModels.Settings;
 using Patchouli.Workflows;
@@ -18,31 +21,80 @@ namespace Patchouli.Tests;
 ///     F# compile check (F# Interactive), so the check is the same one the executor performs.
 /// </remarks>
 [Collection("Avalonia")]
-public sealed class WorkflowSettingsViewModelTests : IDisposable
+public sealed class WorkflowSettingsViewModelTests
 {
-    private const string GoodScript = WorkflowScriptExecutorTests.AgentScript;
+    private const string GoodScript = """
+                                      open Patchouli.Workflows.Scripting
+                                      open Patchouli.Workflows
 
-    private const string BrokenScript = """
-                                        open Patchouli.Workflows.Scripting
-                                        let broken = missingIdentifier + 1
-                                        let run = Workflow.identity<WorkflowInput> |> Workflow.define
-                                        """;
+                                      let info : WorkflowInfo =
+                                          WorkflowInfo.create "示例工作流" "按序翻译选中页"
+                                          |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
+                                          |> WorkflowInfo.menu "Tools/Workflows/User" 42
 
-    private readonly string _root;
-    private readonly WorkflowStore _store;
-    private readonly MainWindowViewModel _main = new();
-    private readonly WorkflowSettingsViewModel _section;
+                                      let windowRadius =
+                                          Parameter.integer "windowRadius" "窗口半径" 3
+                                          |> Parameter.intRange 0 5
 
-    public WorkflowSettingsViewModelTests()
+                                      let model = Parameter.model "model" "执行模型"
+
+                                      let reply =
+                                          Agent.text "reply" "只作简单回复。"
+                                              (fun (_: WorkflowInput) -> "你好！")
+                                          |> Agent.withTools []
+                                          |> Agent.withBudget (AgentBudget.create 1 0)
+
+                                      let run : AgentWorkflow =
+                                          workflow { step reply }
+                                          |> Workflow.define
+                                          |> Workflow.withModel model
+                                      """;
+
+    private static readonly string BrokenScript = GoodScript.Replace(
+        "let reply =", "let broken = missingIdentifier + 1\n\nlet reply =", StringComparison.Ordinal);
+
+    private string _root = "";
+    private WorkflowStore _store = null!;
+    private MainWindowViewModel _main = null!;
+    private WorkflowSettingsViewModel _section = null!;
+
+    private async Task RunOnDispatcherAsync(Func<Task> test)
     {
-        _root = Path.Combine(Path.GetTempPath(), "patchouli-workflow-settings-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(_root);
-        _store = WorkflowStore.ForLibrary(Path.Combine(_root, "library.db"));
-        _section = new WorkflowSettingsViewModel(_main, Path.Combine(_root, "library.db"), _store);
+        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch(async () =>
+        {
+            _root = Path.Combine(Path.GetTempPath(), "patchouli-workflow-settings-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(_root);
+            _store = WorkflowStore.ForLibrary(Path.Combine(_root, "library.db"));
+            _main = new MainWindowViewModel();
+            _section = new WorkflowSettingsViewModel(_main, Path.Combine(_root, "library.db"), _store);
+            try
+            {
+                await test();
+            }
+            finally
+            {
+                await _main.DisposeAsync();
+                _main = null!;
+                try
+                {
+                    Directory.Delete(_root, true);
+                }
+                catch (IOException)
+                {
+                    // A leftover temp directory must not fail the test run.
+                }
+            }
+        }, CancellationToken.None);
     }
 
     [Fact]
-    public async Task The_list_holds_the_built_ins_first_and_they_are_locked()
+    public Task The_list_holds_the_built_ins_first_and_they_are_locked()
+    {
+        return RunOnDispatcherAsync(The_list_holds_the_built_ins_first_and_they_are_locked_body);
+    }
+
+    private async Task The_list_holds_the_built_ins_first_and_they_are_locked_body()
     {
         await _section.LoadAsync();
 
@@ -60,7 +112,12 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task The_editor_loads_a_built_in_as_read_only_with_its_embedded_script()
+    public Task The_editor_loads_a_built_in_as_read_only_with_its_embedded_script()
+    {
+        return RunOnDispatcherAsync(The_editor_loads_a_built_in_as_read_only_with_its_embedded_script_body);
+    }
+
+    private async Task The_editor_loads_a_built_in_as_read_only_with_its_embedded_script_body()
     {
         await _section.LoadAsync();
 
@@ -71,18 +128,38 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
         _section.Editor.IsReadOnly.Should().BeTrue();
         _section.Editor.LockExplanation.Should().Contain("内置工作流");
         _section.Editor.ScriptText.Should().Contain("let run : AgentWorkflow");
-        _section.Editor.ParametersText.Should().Contain("documentId");
+        _section.Editor.ParameterFields.Should().NotBeEmpty();
+        _section.Editor.ParameterFields.Should().Contain(field => field.IsEnabled,
+            "the built-in script stays locked while its saved parameter values remain configurable");
         _section.Editor.TrustWarning.Should().Be(WorkflowSettingsViewModel.TrustWarning);
         _section.Editor.TrustWarning.Should().Contain("宿主权限");
 
-        // Saving a built-in is refused before anything is compiled or written.
-        _section.Editor.Name = "renamed built-in";
+        string scriptBefore = _section.Editor.ScriptText;
+        WorkflowParameterFieldViewModel targetLanguage =
+            _section.Editor.ParameterFields.Single(field => field.Key == "targetLanguage");
+        targetLanguage.Value = "fr";
+        _section.Editor.ParameterFields.Single(field => field.Key == "model").Value =
+            ModelSelectionCodec.Encode(new ModelSelection("openai", "test-model"));
+        _section.Editor.CanSave.Should().BeTrue("configuration changes are allowed for a locked built-in");
+        (await _section.Editor.SaveAsync()).Should().BeTrue(_section.Editor.ResultText);
+        _section.Editor.ScriptText.Should().Be(scriptBefore);
+        File.Exists(_store.ResolveScriptPath(builtIn.Id)).Should().BeFalse(
+            "saving configuration must not write or replace the built-in script source");
+        WorkflowConfigurationSnapshot savedConfiguration = await _section.Configuration.ReadAsync(builtIn.Id);
+        savedConfiguration.Values["targetLanguage"].Should().Be("fr");
+
+        // A built-in cannot be saved when only script-level changes would be required.
         (await _section.Editor.SaveAsync()).Should().BeFalse();
         _section.Editor.ResultIsError.Should().BeTrue();
     }
 
     [Fact]
-    public async Task A_locked_definition_is_refused_by_the_store_and_by_the_section()
+    public Task A_locked_definition_is_refused_by_the_store_and_by_the_section()
+    {
+        return RunOnDispatcherAsync(A_locked_definition_is_refused_by_the_store_and_by_the_section_body);
+    }
+
+    private async Task A_locked_definition_is_refused_by_the_store_and_by_the_section_body()
     {
         await _section.LoadAsync();
         WorkflowDefinition builtIn = _section.Workflows[0].Source;
@@ -103,9 +180,17 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Copying_a_built_in_produces_an_unlocked_copy_with_the_same_script()
+    public Task Copying_a_built_in_produces_an_unlocked_copy_with_its_declared_name_updated()
+    {
+        return RunOnDispatcherAsync(Copying_a_built_in_produces_an_unlocked_copy_with_its_declared_name_updated_body);
+    }
+
+    private async Task Copying_a_built_in_produces_an_unlocked_copy_with_its_declared_name_updated_body()
     {
         await _section.LoadAsync();
+
+        WorkflowConfigurationSnapshot sourceConfiguration =
+            await _section.Configuration.ReadAsync(WorkflowIds.FullTextTranslation);
 
         (await _section.CopyAsync()).Should().BeTrue($"status: {_section.Status}");
 
@@ -116,13 +201,15 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
         copy.Source.ScriptEntryPoint.Should().Be(
             BuiltInWorkflows.fullTextTranslation.ScriptEntryPoint);
         copy.Source.Parameters.Select(parameter => parameter.Name).Should()
-            .Equal(BuiltInWorkflows.fullTextTranslation.Parameters.Select(parameter => parameter.Name));
+            .Equal(sourceConfiguration.Analysis.Fields.Select(field => field.Key));
         copy.Source.SelectionScope.Should().Be(BuiltInWorkflows.fullTextTranslation.SelectionScope);
 
-        // The copy is stored on disk with the built-in script body.
+        // The copy's name remains authoritative in its source declaration.
         File.Exists(_store.ResolveDefinitionPath(copy.Id)).Should().BeTrue();
-        string copiedScript = File.ReadAllText(_store.ResolveScriptPath(copy.Id));
-        copiedScript.Should().Be(BuiltInWorkflowScripts.tryGetText(WorkflowIds.FullTextTranslation)!.Value);
+        WorkflowConfigurationSnapshot copiedConfiguration = await _section.Configuration.ReadAsync(copy.Id);
+        copiedConfiguration.Analysis.Info.Name.Should().Be("全文翻译 副本");
+        copy.Name.Should().Be("全文翻译 副本");
+        copiedConfiguration.Values.Should().Equal(sourceConfiguration.Values);
 
         // The copy is the selected, editable definition.
         _section.SelectedWorkflow.Should().BeSameAs(copy);
@@ -131,14 +218,18 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task A_broken_script_is_blocked_by_the_compile_check_and_nothing_is_written()
+    public Task A_broken_script_is_blocked_by_the_compile_check_and_nothing_is_written()
+    {
+        return RunOnDispatcherAsync(A_broken_script_is_blocked_by_the_compile_check_and_nothing_is_written_body);
+    }
+
+    private async Task A_broken_script_is_blocked_by_the_compile_check_and_nothing_is_written_body()
     {
         await _section.LoadAsync();
         await _section.CopyAsync();
         WorkflowDefinitionItemViewModel copy = _section.Workflows[1];
         byte[] scriptBefore = File.ReadAllBytes(_store.ResolveScriptPath(copy.Id));
 
-        _section.Editor.Name = "被改名的副本";
         _section.Editor.ScriptText = BrokenScript;
         (await _section.Editor.SaveAsync()).Should().BeFalse();
 
@@ -148,25 +239,33 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
         _section.Editor.Diagnostics.Should().Contain(diagnostic => diagnostic.IsError);
         WorkflowScriptDiagnosticViewModel error =
             _section.Editor.Diagnostics.First(diagnostic => diagnostic.IsError);
-        error.Line.Should().Be(2);
+        error.Line.Should().BeGreaterThan(0);
         error.Column.Should().BeGreaterThan(0);
         error.ErrorNumber.Should().Be("FS0039");
         error.Message.Should().Contain("missingIdentifier");
-        error.DisplayText.Should().Contain("第 2 行");
+        error.DisplayText.Should().Contain($"第 {error.Line} 行");
 
         // The compile error blocked both writes: definition and script are unchanged.
         FSharpOption<WorkflowDefinition>? reloaded = await _store.TryLoadAsync(copy.Id, CancellationToken.None);
-        reloaded!.Value.Name.Should().NotBe("被改名的副本");
         File.ReadAllBytes(_store.ResolveScriptPath(copy.Id)).Should().Equal(scriptBefore);
     }
 
     [Fact]
-    public async Task Changing_the_entry_name_checks_and_saves_the_current_root_contract()
+    public Task Changing_the_entry_name_checks_and_saves_the_current_root_contract()
+    {
+        return RunOnDispatcherAsync(Changing_the_entry_name_checks_and_saves_the_current_root_contract_body);
+    }
+
+    private async Task Changing_the_entry_name_checks_and_saves_the_current_root_contract_body()
     {
         await _section.LoadAsync();
         await _section.CopyAsync();
-        _section.Editor.ScriptEntryPoint = "execute";
-        _section.Editor.ScriptText = GoodScript.Replace("let run :", "let execute :");
+        SetModelValue();
+        _section.Editor.ScriptText = GoodScript
+            .Replace("|> WorkflowInfo.selectionScope",
+                "|> WorkflowInfo.entryPoint \"execute\"\n                                           |> WorkflowInfo.selectionScope",
+                StringComparison.Ordinal)
+            .Replace("let run :", "let execute :", StringComparison.Ordinal);
         (await _section.Editor.SaveAsync()).Should().BeTrue(_section.Editor.ResultText);
         WorkflowDefinition saved = (await _store.TryLoadAsync(_section.SelectedWorkflow!.Id, CancellationToken.None))!
             .Value;
@@ -174,21 +273,18 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task A_good_script_passes_the_compile_check_and_is_saved_with_the_definition()
+    public Task A_good_script_passes_the_compile_check_and_is_saved_with_the_definition()
+    {
+        return RunOnDispatcherAsync(A_good_script_passes_the_compile_check_and_is_saved_with_the_definition_body);
+    }
+
+    private async Task A_good_script_passes_the_compile_check_and_is_saved_with_the_definition_body()
     {
         await _section.LoadAsync();
         await _section.CopyAsync();
         WorkflowDefinitionItemViewModel copy = _section.Workflows[1];
 
-        _section.Editor.Name = "示例工作流";
-        _section.Editor.Description = "按序翻译选中页";
-        _section.Editor.MenuPath = "Tools/Workflows/User";
-        _section.Editor.MenuOrder = 42;
-        _section.Editor.ShowInMenu = false;
-        _section.Editor.ScopeDocuments = true;
-        _section.Editor.ScopePages = true;
-        _section.Editor.ScopeSelection = false;
-        _section.Editor.ParametersText = "documentId: DocumentId | required | 目标文档 | 默认=";
+        SetModelValue();
         _section.Editor.ScriptText = GoodScript;
 
         (await _section.Editor.SaveAsync()).Should().BeTrue($"{_section.Editor.ResultText} {_section.Status}");
@@ -204,12 +300,12 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
         saved.Description.Should().Be("按序翻译选中页");
         saved.Menu.MenuPath.Should().Be("Tools/Workflows/User");
         saved.Menu.Order.Should().Be(42);
-        saved.Menu.ShowInMenu.Should().BeFalse();
+        saved.Menu.ShowInMenu.Should().BeTrue();
         saved.SelectionScope.Should().Be(WorkflowSelectionScope.DocumentsAndPages);
-        saved.Parameters.Should().ContainSingle()
-            .Which.Name.Should().Be("documentId");
-        saved.Parameters[0].Required.Should().BeTrue();
-        saved.Parameters[0].Type.Should().Be(WorkflowParameterType.DocumentId);
+        saved.Parameters.Should().Contain(parameter => parameter.Name == "windowRadius");
+        saved.Parameters.Should().Contain(parameter => parameter.Name == "model" && parameter.Required);
+        saved.Parameters.Single(parameter => parameter.Name == "windowRadius").Type
+            .Should().Be(WorkflowParameterType.Integer);
         saved.Locked.Should().BeFalse();
         saved.BuiltIn.Should().BeFalse();
 
@@ -228,7 +324,12 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task New_workflow_compiles_and_runs_a_single_reply_without_tools()
+    public Task New_workflow_compiles_and_runs_a_single_reply_without_tools()
+    {
+        return RunOnDispatcherAsync(New_workflow_compiles_and_runs_a_single_reply_without_tools_body);
+    }
+
+    private async Task New_workflow_compiles_and_runs_a_single_reply_without_tools_body()
     {
         await _section.LoadAsync();
         (await _section.CreateNewAsync()).Should().BeTrue(_section.Status);
@@ -255,28 +356,39 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
     }
 
     [Fact]
-    public async Task Copy_duplicates_the_selected_user_workflow_and_requires_a_selection()
+    public Task Copy_duplicates_the_selected_user_workflow_and_requires_a_selection()
+    {
+        return RunOnDispatcherAsync(Copy_duplicates_the_selected_user_workflow_and_requires_a_selection_body);
+    }
+
+    private async Task Copy_duplicates_the_selected_user_workflow_and_requires_a_selection_body()
     {
         _section.CopyCommand.CanExecute(null).Should().BeFalse();
         (await _section.CopyAsync()).Should().BeFalse();
         await _section.LoadAsync();
         await _section.CreateNewAsync();
-        _section.Editor.Name = "我的回复";
-        _section.Editor.Description = "自定义说明";
         _section.Editor.ScriptText = GoodScript;
+        SetModelValue();
         (await _section.Editor.SaveAsync()).Should().BeTrue(_section.Editor.ResultText);
         WorkflowDefinition source = _section.SelectedWorkflow!.Source;
 
         (await _section.CopyAsync()).Should().BeTrue(_section.Status);
         _section.SelectedWorkflow!.Id.Should().NotBe(source.Id);
-        _section.SelectedWorkflow.Name.Should().Be("我的回复 副本");
+        _section.SelectedWorkflow.Name.Should().Be("示例工作流 副本");
         _section.SelectedWorkflow.Description.Should().Be(source.Description);
         _section.SelectedWorkflow.IsLocked.Should().BeFalse();
-        _section.Editor.ScriptText.Should().Be(GoodScript);
+        WorkflowConfigurationSnapshot copiedConfiguration =
+            await _section.Configuration.ReadAsync(_section.SelectedWorkflow.Id);
+        copiedConfiguration.Analysis.Info.Name.Should().Be("示例工作流 副本");
     }
 
     [Fact]
-    public async Task Deleting_works_only_for_an_unlocked_stored_workflow()
+    public Task Deleting_works_only_for_an_unlocked_stored_workflow()
+    {
+        return RunOnDispatcherAsync(Deleting_works_only_for_an_unlocked_stored_workflow_body);
+    }
+
+    private async Task Deleting_works_only_for_an_unlocked_stored_workflow_body()
     {
         await _section.LoadAsync();
         await _section.CreateNewAsync();
@@ -299,16 +411,9 @@ public sealed class WorkflowSettingsViewModelTests : IDisposable
         _section.Workflows[0].Id.Should().Be(WorkflowIds.FullTextTranslation);
     }
 
-    public void Dispose()
+    private void SetModelValue()
     {
-        _main.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        try
-        {
-            Directory.Delete(_root, true);
-        }
-        catch (IOException)
-        {
-            // A leftover temp directory must not fail the test run.
-        }
+        _section.Editor.ParameterFields.Single(field => field.Key == "model").Value =
+            ModelSelectionCodec.Encode(new ModelSelection("openai", "test-model"));
     }
 }

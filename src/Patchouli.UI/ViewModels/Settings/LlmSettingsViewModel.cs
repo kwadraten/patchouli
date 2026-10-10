@@ -16,7 +16,7 @@ using Patchouli.UI.ViewModels;
 namespace Patchouli.UI.ViewModels.Settings;
 
 /// <summary>
-/// 「LLM 与翻译」section. The catalog supplies available provider types; the form displays providers with
+/// 「模型连接与聊天」section. The catalog supplies available provider types; the form displays providers with
 /// stored credentials and the provider currently being added. API keys never enter
 /// the settings file: each provider key is written through the existing
 /// <see cref="ICredentialStore"/> (D2); saved API keys are loaded into masked inputs and tracked separately from edits.
@@ -88,10 +88,9 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     public ToolkitRelayCommand AddProviderCommand { get; }
     public ToolkitRelayCommand CancelAddProviderCommand { get; }
 
-    [ExcludeFromDerivedGeneration]
-    public ObservableCollection<LlmSelectionOption> TranslationProviderOptions { get; } = [];
+    [ExcludeFromDerivedGeneration] public ObservableCollection<LlmSelectionOption> ChatProviderOptions { get; } = [];
 
-    [ExcludeFromDerivedGeneration] public ObservableCollection<string> TranslationModelOptions { get; } = [];
+    [ExcludeFromDerivedGeneration] public ObservableCollection<string> ChatModelOptions { get; } = [];
 
     [ExcludeFromDerivedGeneration] public ObservableCollection<LlmSelectionOption> OcrProviderOptions { get; } = [];
 
@@ -100,14 +99,14 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     // A selector can clear its item while loading or refreshing the available providers.
     // That UI state must not overwrite the configured default or schedule a save.
     [ExcludeFromDerivedGeneration]
-    public LlmSelectionOption? SelectedTranslationProvider
+    public LlmSelectionOption? SelectedChatProvider
     {
-        get => TranslationProviderOptions.FirstOrDefault(option => option.ProviderId == TranslationProviderId);
+        get => ChatProviderOptions.FirstOrDefault(option => option.ProviderId == ChatProviderId);
         set
         {
             if (value is not null && !IsWaitingForDraftSync())
             {
-                TranslationProviderId = value.ProviderId;
+                ChatProviderId = value.ProviderId;
             }
         }
     }
@@ -125,12 +124,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         }
     }
 
-    [ExcludeFromDerivedGeneration]
-    public ObservableCollection<string> TargetLanguageOptions { get; } =
-        new(LlmAppSettings.SuggestedTargetLanguages);
-
-    [ExcludeFromDerivedGeneration]
-    public string TranslationProviderPlaceholder => DescribeUnavailableProvider(TranslationProviderId);
+    [ExcludeFromDerivedGeneration] public string ChatProviderPlaceholder => DescribeUnavailableProvider(ChatProviderId);
 
     [ExcludeFromDerivedGeneration] public string OcrProviderPlaceholder => DescribeUnavailableProvider(OcrProviderId);
 
@@ -144,17 +138,6 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         string name = Providers.FirstOrDefault(row => row.ProviderId == providerId)?.DisplayName ?? providerId;
         return $"{name}（未就绪）";
     }
-
-    /// <summary>Sliding-window radius in pages, accepted range [0, <see cref="LlmAppSettings.MaxTranslationWindowRadius"/>].</summary>
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(TranslationWindowRadiusDescription))]
-    public partial int TranslationWindowRadius { get; set; }
-
-    [ExcludeFromDerivedGeneration]
-    public string TranslationWindowRadiusDescription =>
-        $"以当前页为中心的滑动窗口半径，0 只翻译当前页，最大 {LlmAppSettings.MaxTranslationWindowRadius}。";
-
-    [ObservableProperty] public partial bool BackfillPreviousWindowTranslation { get; set; }
 
     [ObservableProperty]
     public partial int ToolResultMaxCharacters { get; set; } = LlmAppSettings.DefaultToolResultMaxCharacters;
@@ -174,29 +157,27 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         MarkDirty("有未保存的更改");
     }
 
-    [ObservableProperty] public partial string TargetLanguage { get; set; } = "";
-
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(TranslationProviderPlaceholder))]
-    public partial string TranslationProviderId { get; set; } = "";
+    [NotifyPropertyChangedFor(nameof(ChatProviderPlaceholder))]
+    public partial string ChatProviderId { get; set; } = "";
 
-    partial void OnTranslationProviderIdChanged(string value)
+    partial void OnChatProviderIdChanged(string value)
     {
         string providerId = value ?? "";
         if (!IsWaitingForDraftSync())
         {
-            _current = _current with { TranslationProviderId = providerId };
+            _current = _current with { ChatProviderId = providerId };
         }
 
-        RebuildTranslationModelOptions();
-        Raise(nameof(SelectedTranslationProvider));
+        RebuildChatModelOptions();
+        Raise(nameof(SelectedChatProvider));
         if (!IsWaitingForDraftSync())
         {
             MarkDirty("有未保存的更改");
         }
     }
 
-    [ObservableProperty] public partial string TranslationModel { get; set; } = "";
+    [ObservableProperty] public partial string ChatModel { get; set; } = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(OcrProviderPlaceholder))]
@@ -275,7 +256,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
                 _main.AppOptions with { Llm = draft }, LlmProviderCatalog.SectionName);
         if (!saved.IsSuccess)
         {
-            LastError = saved.ErrorMessage ?? "无法保存 LLM 与翻译设置。";
+            LastError = saved.ErrorMessage ?? "无法保存 模型连接与聊天设置。";
             SaveState = SettingsSaveState.Failed;
             Status = "保存失败";
             Raise(nameof(IsDirty));
@@ -521,12 +502,12 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             }
 
             row.SubscriptionStatusText = $"{account.Email} · {account.Plan} · {models.Count} 个可用模型";
-            if (TranslationProviderId == row.ProviderId && !models.Any(model => model.Id == TranslationModel))
+            if (ChatProviderId == row.ProviderId && !models.Any(model => model.Id == ChatModel))
             {
-                TranslationModel = row.Model;
+                ChatModel = row.Model;
             }
 
-            RebuildTranslationModelOptions();
+            RebuildChatModelOptions();
 
             await RefreshProviderCredentialsAsync(cancellationToken);
             OnProviderRowChanged(row);
@@ -676,17 +657,14 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             }
 
             RefreshProviderLists();
-            (string translationProviderId, string translationModel) = _persisted.TranslationSelection;
+            (string chatProviderId, string chatModel) = _persisted.ChatSelection;
             (string ocrProviderId, string ocrModel) = _persisted.OcrSelection;
-            TranslationProviderId = translationProviderId;
-            TranslationModel = translationModel;
+            ChatProviderId = chatProviderId;
+            ChatModel = chatModel;
             OcrProviderId = ocrProviderId;
             OcrModel = ocrModel;
-            TargetLanguage = _persisted.EffectiveTargetLanguage;
-            TranslationWindowRadius = _persisted.EffectiveTranslationWindowRadius;
-            BackfillPreviousWindowTranslation = _persisted.BackfillPreviousWindowTranslation;
             ToolResultMaxCharacters = _persisted.ToolResultMaxCharacters;
-            RebuildTranslationModelOptions();
+            RebuildChatModelOptions();
             RebuildOcrModelOptions();
             _isDirty = false;
             Raise(nameof(IsDirty));
@@ -701,17 +679,17 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
     private void BuildSelectionOptions()
     {
         bool wasSyncing = _syncingDraft;
-        string translationId = TranslationProviderId;
-        string translationModel = TranslationModel;
+        string chatId = ChatProviderId;
+        string chatModel = ChatModel;
         string ocrId = OcrProviderId;
         string ocrModel = OcrModel;
         _syncingDraft = true;
         try
         {
-            FillOptions(TranslationProviderOptions);
+            FillOptions(ChatProviderOptions);
             FillOptions(OcrProviderOptions, true);
-            TranslationProviderId = translationId;
-            TranslationModel = translationModel;
+            ChatProviderId = chatId;
+            ChatModel = chatModel;
             OcrProviderId = ocrId;
             OcrModel = ocrModel;
         }
@@ -720,7 +698,7 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             _syncingDraft = wasSyncing;
         }
 
-        Raise(nameof(SelectedTranslationProvider));
+        Raise(nameof(SelectedChatProvider));
         Raise(nameof(SelectedOcrProvider));
     }
 
@@ -733,9 +711,9 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
                            new LlmSelectionOption(row.ProviderId, row.DisplayName)));
     }
 
-    private void RebuildTranslationModelOptions()
+    private void RebuildChatModelOptions()
     {
-        FillModelOptions(TranslationModelOptions, TranslationProviderId, TranslationModel);
+        FillModelOptions(ChatModelOptions, ChatProviderId, ChatModel);
     }
 
     private void RebuildOcrModelOptions()
@@ -788,11 +766,11 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
             problems.Add($"{row.DisplayName}：{row.DiagnosticText}");
         }
 
-        if (!string.IsNullOrWhiteSpace(TranslationProviderId) &&
-            readiness.TryGetValue(TranslationProviderId, out LlmProviderReadiness? translation)
-            && !translation.IsConfigured)
+        if (!string.IsNullOrWhiteSpace(ChatProviderId) &&
+            readiness.TryGetValue(ChatProviderId, out LlmProviderReadiness? chat)
+            && !chat.IsConfigured)
         {
-            problems.Add($"翻译默认 provider「{translation.DisplayName}」尚未配置完成：{translation.Diagnostic}");
+            problems.Add($"聊天默认 provider「{chat.DisplayName}」尚未配置完成：{chat.Diagnostic}");
         }
 
         if (!string.IsNullOrWhiteSpace(OcrProviderId) &&
@@ -847,54 +825,14 @@ public sealed partial class LlmSettingsViewModel : SettingsSectionViewModelBase
         Raise(nameof(CanSave));
     }
 
-    partial void OnTranslationWindowRadiusChanged(int value)
+    partial void OnChatModelChanged(string value)
     {
         if (IsWaitingForDraftSync())
         {
             return;
         }
 
-        int clamped = LlmAppSettings.ClampWindowRadius(value);
-        if (value != clamped)
-        {
-            TranslationWindowRadius = clamped;
-            return;
-        }
-
-        _current = _current with { TranslationWindowRadius = clamped };
-        MarkDirty("有未保存的更改");
-    }
-
-    partial void OnBackfillPreviousWindowTranslationChanged(bool value)
-    {
-        if (IsWaitingForDraftSync())
-        {
-            return;
-        }
-
-        _current = _current with { BackfillPreviousWindowTranslation = value };
-        MarkDirty("有未保存的更改");
-    }
-
-    partial void OnTargetLanguageChanged(string value)
-    {
-        if (IsWaitingForDraftSync())
-        {
-            return;
-        }
-
-        _current = _current with { TargetLanguage = value ?? "" };
-        MarkDirty("有未保存的更改");
-    }
-
-    partial void OnTranslationModelChanged(string value)
-    {
-        if (IsWaitingForDraftSync())
-        {
-            return;
-        }
-
-        _current = _current with { TranslationModel = value ?? "" };
+        _current = _current with { ChatModel = value ?? "" };
         MarkDirty("有未保存的更改");
     }
 
@@ -1236,7 +1174,7 @@ public sealed partial class LlmProviderSettingsRowViewModel : ViewModelBase
     }
 }
 
-/// <summary>Provider choice for the translation/OCR default selectors.</summary>
+/// <summary>Provider choice for the chat/OCR default selectors.</summary>
 public sealed class LlmSelectionOption
 {
     public LlmSelectionOption(string providerId, string displayName)

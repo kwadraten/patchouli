@@ -18,50 +18,93 @@
     <Grid Grid.Row="1" ColumnDefinitions="300,16,*">
       <ScrollViewer>
         <StackPanel Spacing="12">
-          <TextBlock Text="工作流设置" FontSize="15" FontWeight="SemiBold" />
+          <TextBlock Text="工作流信息" FontSize="15" FontWeight="SemiBold" />
+          <Border Padding="9" CornerRadius="5"
+                  Background="{DynamicResource SurfaceContainerHighestBrush}"
+                  IsVisible="{Binding Editor.HasWorkflowInfo}">
+            <TextBlock Text="{Binding Editor.WorkflowInfoText}" FontSize="12" TextWrapping="Wrap" />
+          </Border>
+          <Border Padding="9" CornerRadius="5"
+                  Background="{DynamicResource SurfaceContainerHighestBrush}"
+                  IsVisible="{Binding Editor.HasLaunchContext}">
+            <StackPanel Spacing="4">
+              <TextBlock Text="本次生效上下文" FontSize="12" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding Editor.LaunchContextText}" FontSize="12" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
           <TextBlock Text="{Binding Editor.LockExplanation}" FontSize="12" TextWrapping="Wrap"
                      IsVisible="{Binding Editor.IsReadOnly}"
                      Foreground="{DynamicResource OnSurfaceVariantBrush}" />
-          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="8"
-                RowSpacing="8" IsEnabled="{Binding Editor.CanEditFields}">
-            <TextBlock Grid.Row="0" Grid.Column="0" Text="名称" VerticalAlignment="Center" />
-            <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Editor.Name}" />
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="说明" VerticalAlignment="Center" />
-            <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Editor.Description}" />
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="脚本入口点" VerticalAlignment="Center" />
-            <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Editor.ScriptEntryPoint}"
-                     PlaceholderText="run" />
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="参数定义" VerticalAlignment="Top" />
-            <StackPanel Grid.Row="3" Grid.Column="1" Spacing="4">
-              <TextBox Text="{Binding Editor.ParametersText}" AcceptsReturn="True" MinHeight="90"
-                       TextWrapping="NoWrap"
-                       PlaceholderText="每行一个参数：name: Text | required | 说明 | 默认=值" />
-              <TextBlock Text="{Binding Editor.ParameterTypesHint}" FontSize="11"
-                         Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
-            </StackPanel>
-          </Grid>
-
-          <WrapPanel Orientation="Horizontal"
-                     IsEnabled="{Binding Editor.CanEditFields}">
-            <CheckBox Margin="0,0,10,6" Content="适用于文档" IsChecked="{Binding Editor.ScopeDocuments}" />
-            <CheckBox Margin="0,0,10,6" Content="适用于页范围" IsChecked="{Binding Editor.ScopePages}" />
-            <CheckBox Margin="0,0,10,6" Content="适用于文本选择" IsChecked="{Binding Editor.ScopeSelection}" />
-            <CheckBox Margin="0,0,10,6" Content="加入菜单" IsChecked="{Binding Editor.ShowInMenu}" />
-          </WrapPanel>
-
-          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" IsEnabled="{Binding Editor.CanEditFields}">
-            <TextBlock Text="菜单排序" VerticalAlignment="Center" />
-            <NumericUpDown Grid.Column="1" Minimum="0" Maximum="10000" Increment="1"
-                           Value="{Binding Editor.MenuOrder}" Width="140" HorizontalAlignment="Left" />
-          </Grid>
-
-          <Grid ColumnDefinitions="Auto,*" ColumnSpacing="8" IsEnabled="{Binding Editor.CanEditFields}">
-            <TextBlock Text="菜单路径" VerticalAlignment="Center" />
-            <TextBox Grid.Column="1" Text="{Binding Editor.MenuPath}"
-                     PlaceholderText="Tools/Workflows" />
-          </Grid>
-
-
+          <Border Tag="scope" Classes.validation-error="{Binding Editor.HasScopeIssue}"
+                  Padding="9" CornerRadius="5" BorderThickness="1"
+                  BorderBrush="{DynamicResource OutlineVariantBrush}"
+                  Focusable="True"
+                  IsVisible="{Binding Editor.HasScopeIssue}">
+            <TextBlock Text="{Binding Editor.ScopeIssue}" TextWrapping="Wrap" Foreground="#B3261E" />
+          </Border>
+          <TextBlock Text="运行参数" FontSize="15" FontWeight="SemiBold" />
+          <TextBlock Text="参数由 fsx 中独立的 Parameter 声明生成。" FontSize="11"
+                     Foreground="{DynamicResource OnSurfaceVariantBrush}" />
+          <ItemsControl ItemsSource="{Binding Editor.ParameterFields}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate DataType="settings:WorkflowParameterFieldViewModel">
+                <Border Tag="{Binding Key}" Classes.validation-error="{Binding HasError}"
+                        Padding="9" Margin="0,0,0,8" CornerRadius="5" BorderThickness="1"
+                        BorderBrush="{DynamicResource OutlineVariantBrush}">
+                  <StackPanel Spacing="5">
+                    <TextBlock Text="{Binding Label}" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding Description}" FontSize="11" TextWrapping="Wrap"
+                               IsVisible="{Binding HasDescription}" />
+                    <TextBox Tag="{Binding Key}" Text="{Binding Value, Mode=TwoWay}"
+                             IsVisible="{Binding IsTextValue}" IsReadOnly="{Binding IsContextBound}"
+                             IsEnabled="{Binding IsEnabled}" AcceptsReturn="{Binding IsMultiline}"
+                             MinHeight="38" Classes.validation-error="{Binding HasError}"
+                             TextWrapping="Wrap" />
+                    <CheckBox Tag="{Binding Key}" IsChecked="{Binding BooleanValue, Mode=TwoWay}"
+                              IsVisible="{Binding IsBoolean}" IsEnabled="{Binding IsEnabled}"
+                              Classes.validation-error="{Binding HasError}" />
+                    <ComboBox Tag="{Binding Key}" ItemsSource="{Binding Descriptor.Choices}"
+                              SelectedItem="{Binding SelectedChoice, Mode=TwoWay}"
+                              IsVisible="{Binding IsChoice}" IsEnabled="{Binding IsEnabled}"
+                              Classes.validation-error="{Binding HasError}" />
+                    <ComboBox Tag="{Binding Key}" ItemsSource="{Binding ModelProviders}"
+                              SelectedItem="{Binding SelectedProvider, Mode=TwoWay}"
+                              IsVisible="{Binding IsModel}" IsEnabled="{Binding IsEnabled}"
+                              Classes.validation-error="{Binding HasError}">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding Label}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <ComboBox Tag="{Binding Key}" ItemsSource="{Binding AvailableModels}"
+                              SelectedItem="{Binding SelectedModelOption, Mode=TwoWay}"
+                              TextSearch.TextBinding="{ReflectionBinding Model}"
+                              IsVisible="{Binding IsModel}" IsEnabled="{Binding IsEnabled}"
+                              IsEditable="True" Text="{Binding ModelName, Mode=TwoWay}"
+                              Classes.validation-error="{Binding HasError}">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                          <TextBlock Text="{Binding Model}" />
+                        </DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                    <TextBlock Text="{Binding ContextSourceText}" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding IsContextBound}" />
+                    <TextBlock Text="{Binding EffectiveContextText}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding HasEffectiveContext}" />
+                    <TextBlock Text="{Binding ConstraintText}" FontSize="11"
+                               Foreground="{DynamicResource OnSurfaceVariantBrush}"
+                               IsVisible="{Binding HasConstraints}" />
+                    <TextBlock Text="{Binding ErrorMessage}" FontSize="11" TextWrapping="Wrap"
+                               Foreground="#B3261E" IsVisible="{Binding HasError}" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
         </StackPanel>
       </ScrollViewer>
       <Grid Grid.Column="2" RowDefinitions="Auto,*,Auto" RowSpacing="8">
@@ -72,7 +115,8 @@
         </StackPanel>
         <Border Grid.Row="1" BorderBrush="{DynamicResource OutlineVariantBrush}" BorderThickness="1" CornerRadius="6"
                 Background="{DynamicResource SurfaceContainerLowestBrush}" Padding="4">
-          <controls:WorkflowCodeEditor x:Name="ScriptEditor" Code="{Binding Editor.ScriptText, Mode=TwoWay}"
+          <controls:WorkflowCodeEditor x:Name="ScriptEditor" Tag="script"
+                                       Code="{Binding Editor.ScriptText, Mode=TwoWay}"
                                        IsReadOnly="{Binding Editor.IsReadOnly}" IsEnabled="{Binding !Editor.IsSaving}"
                                        FontFamily="Cascadia Mono,Consolas,monospace" FontSize="13"
                                        Foreground="{DynamicResource OnSurfaceBrush}"
@@ -115,9 +159,23 @@
       </StackPanel>
     </Border>
     <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
-      <Button Content="检查脚本" Command="{Binding Editor.CheckScriptCommand}" />
-      <Button Content="保存工作流" Command="{Binding Editor.SaveScriptCommand}" Classes="Primary" />
+      <Button Content="检查脚本" Command="{Binding Editor.CheckScriptCommand}" IsVisible="{Binding Editor.CanEdit}" />
+      <Button Content="保存更改" Command="{Binding Editor.SaveScriptCommand}" Classes="Primary" />
       <Button Content="关闭" Command="{Binding CloseCommand}" IsEnabled="{Binding !Editor.IsSaving}" />
     </StackPanel>
   </Grid>
+  <Window.Styles>
+    <Style Selector="Border.validation-error">
+      <Setter Property="BorderBrush" Value="#B3261E" />
+    </Style>
+    <Style Selector="TextBox.validation-error">
+      <Setter Property="BorderBrush" Value="#B3261E" />
+    </Style>
+    <Style Selector="ComboBox.validation-error">
+      <Setter Property="BorderBrush" Value="#B3261E" />
+    </Style>
+    <Style Selector="CheckBox.validation-error">
+      <Setter Property="BorderBrush" Value="#B3261E" />
+    </Style>
+  </Window.Styles>
 </Window>

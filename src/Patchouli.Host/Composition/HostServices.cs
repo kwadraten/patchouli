@@ -264,7 +264,7 @@ public sealed class HostServices
             () =>
             {
                 LlmAppSettings settings = LlmSettings;
-                int capacity = settings.FindProvider(settings.TranslationSelection.ProviderId)?.ContextWindowTokens ??
+                int capacity = settings.FindProvider(settings.ChatSelection.ProviderId)?.ContextWindowTokens ??
                                LlmProviderAppSettings.DefaultContextWindowTokens;
                 return Math.Clamp(capacity / 16, 128, 16000);
             });
@@ -547,6 +547,7 @@ public sealed class HostServices
         {
             startupProgress?.Report(StartupStage.ApplyingMigrations);
             await services.MigrationRunner.RunAsync(CancellationToken.None, migrationProgress);
+            await services.HostWorkflows.Configuration.MigrateLegacyAsync(CancellationToken.None);
 
             Result ftsCache = await services.SearchIndex.EnsureCacheAsync();
             if (ftsCache.IsFailure)

@@ -5,6 +5,7 @@ using Microsoft.FSharp.Core;
 using Patchouli.Agent;
 using Patchouli.Core.Results;
 using Patchouli.Llm;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Agent;
 
@@ -23,6 +24,12 @@ public sealed record AgentEffectContext(
     IReadOnlyList<string> ToolDefinitions,
     IReadOnlyList<HistoryEntry> History)
 {
+    /// <summary>Explicit model frozen into this workflow session; null selects the current chat model.</summary>
+    public ModelSelection? ModelSelection { get; init; }
+
+    /// <summary>Launch-parameter key used to persist the workflow model selection.</summary>
+    public const string ModelSelectionParameter = "__workflow.modelSelection";
+
     public bool UsesTextToolProtocol { get; init; }
     public string? SessionDirectory { get; init; }
     public AgentSdkPolicy? SdkPolicy { get; init; }
@@ -90,6 +97,12 @@ public interface IAgentEffectInterpreter
     /// <summary>Executes one effect and reports what to feed back.</summary>
     Task<AgentEffectOutcome> ExecuteAsync(AgentEffectContext context, Effect effect,
         CancellationToken cancellationToken);
+
+    /// <summary>Validates the selected model before a workflow session is persisted.</summary>
+    Task<string?> ValidateModelSelectionAsync(ModelSelection? selection, CancellationToken cancellationToken)
+    {
+        return Task.FromResult<string?>(null);
+    }
 }
 
 /// <summary>
@@ -170,10 +183,19 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         };
     }
 
+    /// <summary>Resolves the launch model before a session is created, without making a model request.</summary>
+    public async Task<string?> ValidateModelSelectionAsync(ModelSelection? selection,
+        CancellationToken cancellationToken = default)
+    {
+        Result<ILlmChatClient> result = await _llm.TryGetAsync(selection, cancellationToken).ConfigureAwait(false);
+        return result.IsSuccess ? null : result.ErrorMessage ?? "The selected model could not be resolved.";
+    }
+
     private async Task<AgentEffectOutcome> ChatAsync(AgentEffectContext context, Effect.LlmChat chat,
         CancellationToken cancellationToken)
     {
-        Result<ILlmChatClient> client = await _llm.TryGetAsync(cancellationToken).ConfigureAwait(false);
+        Result<ILlmChatClient> client = await _llm.TryGetAsync(context.ModelSelection, cancellationToken)
+            .ConfigureAwait(false);
         if (client.IsFailure)
         {
             // The loop stays total: an unresolvable provider is surfaced as a model result so the

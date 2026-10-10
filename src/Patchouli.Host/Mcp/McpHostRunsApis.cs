@@ -148,9 +148,18 @@ public sealed class McpHostWorkflowRunsApi(WorkflowSessionRunner runner) : IMcpW
     {
         IReadOnlyList<WorkflowDefinition> definitions =
             await runner.Store.ListDefinitionsAsync(cancellationToken).ConfigureAwait(false);
-        return Result<IReadOnlyList<McpWorkflowSummary>>.Success(definitions
-            .Select(definition => new McpWorkflowSummary(definition.Id, definition.Name, definition.Description))
-            .ToArray());
+        List<McpWorkflowSummary> summaries = new(definitions.Count);
+        foreach (WorkflowDefinition definition in definitions)
+        {
+            WorkflowConfigurationSnapshot config = await runner.Configuration.ReadAsync(definition.Id,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            WorkflowDeclarationInfo info = config.Analysis.Info;
+            summaries.Add(new McpWorkflowSummary(definition.Id,
+                config.Analysis.Succeeded ? info.Name : definition.Name,
+                config.Analysis.Succeeded ? info.Description : definition.Description));
+        }
+
+        return Result<IReadOnlyList<McpWorkflowSummary>>.Success(summaries);
     }
 
     public async Task<Result<McpWorkflowDetail>> TryGetWorkflowAsync(string workflowId,
@@ -158,10 +167,18 @@ public sealed class McpHostWorkflowRunsApi(WorkflowSessionRunner runner) : IMcpW
     {
         FSharpOption<WorkflowDefinition>? loaded = await runner.Store.TryLoadAsync(workflowId, cancellationToken)
             .ConfigureAwait(false);
-        return loaded is null
-            ? Result<McpWorkflowDetail>.Failure(AppErrorCodes.NotFound,
-                $"The workflow '{workflowId}' does not exist.")
-            : Result<McpWorkflowDetail>.Success(Project(loaded.Value));
+        if (loaded is null)
+        {
+            return Result<McpWorkflowDetail>.Failure(AppErrorCodes.NotFound,
+                $"The workflow '{workflowId}' does not exist.");
+        }
+
+        WorkflowConfigurationSnapshot configuration = await runner.Configuration.ReadAsync(workflowId,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        return configuration.Analysis.Succeeded
+            ? Result<McpWorkflowDetail>.Success(Project(loaded.Value, configuration.Analysis))
+            : Result<McpWorkflowDetail>.Failure(AppErrorCodes.InvalidArgument,
+                ValidationSummary(configuration.Issues), details: ValidationDetails(configuration.Issues));
     }
 
     public async Task<Result<McpWorkflowStartResult>> StartAsync(string workflowId,
@@ -190,28 +207,55 @@ public sealed class McpHostWorkflowRunsApi(WorkflowSessionRunner runner) : IMcpW
         {
             return Result<McpWorkflowStartResult>.Failure(AppErrorCodes.InvalidArgument, exception.Message);
         }
+        catch (WorkflowConfigurationValidationException exception)
+        {
+            return Result<McpWorkflowStartResult>.Failure(AppErrorCodes.InvalidArgument,
+                ValidationSummary(exception.Issues), details: ValidationDetails(exception.Issues));
+        }
     }
 
-    private static McpWorkflowDetail Project(WorkflowDefinition definition)
+    private static McpWorkflowDetail Project(WorkflowDefinition definition,
+        WorkflowDeclarationAnalysis analysis)
     {
+        WorkflowDeclarationInfo info = analysis.Info;
         return new McpWorkflowDetail(
             definition.Id,
-            definition.Name,
-            definition.Description,
-            definition.ScriptEntryPoint,
-            definition.SelectionScope.ToString(),
+            info.Name,
+            info.Description,
+            info.EntryPoint,
+            info.SelectionScope.ToString(),
             definition.Locked,
             definition.BuiltIn,
             new McpWorkflowMenuPlacement(
-                definition.Menu.MenuPath, definition.Menu.Order, definition.Menu.ShowInMenu),
-            definition.Parameters
-                .Select(parameter => new McpWorkflowParameter(
-                    parameter.Name,
-                    parameter.Type.ToString(),
-                    parameter.Required,
-                    parameter.Description,
-                    parameter.DefaultValue))
+                info.MenuPath, info.MenuOrder, info.ShowInMenu),
+            analysis.Fields
+                .Select(field => new McpWorkflowParameter(
+                    field.Key,
+                    field.Type.ToString(),
+                    field.Required,
+                    field.Description,
+                    field.DefaultValue,
+                    field.Label,
+                    field.HasDefault,
+                    field.Choices,
+                    field.Minimum.HasValue ? field.Minimum.Value : null,
+                    field.Maximum.HasValue ? field.Maximum.Value : null,
+                    string.IsNullOrWhiteSpace(field.ContextBinding) ? null : field.ContextBinding))
                 .ToArray());
+    }
+
+    private static string ValidationSummary(IReadOnlyList<WorkflowValidationIssue> issues)
+    {
+        return issues.Count == 0
+            ? "The workflow declaration or launch configuration is invalid."
+            : string.Join(Environment.NewLine, issues.Select(issue => issue.Message));
+    }
+
+    private static McpWorkflowValidationFailureDetails ValidationDetails(
+        IReadOnlyList<WorkflowValidationIssue> issues)
+    {
+        return new McpWorkflowValidationFailureDetails(issues.Select(issue => new McpWorkflowValidationIssue(
+            issue.Key, issue.Code, issue.Message, issue.Line, issue.Column, issue.ScopeTarget)).ToArray());
     }
 }
 

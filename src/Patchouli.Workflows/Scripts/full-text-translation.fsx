@@ -1,5 +1,6 @@
 open System
 open System.Text.Json
+open Patchouli.Workflows
 open Patchouli.Workflows.Scripting
 open Patchouli.Agent.Sdk
 
@@ -11,16 +12,28 @@ type TranslationState =
       Remaining: PageTarget list
       Results: (PageTarget * PageOutcome) list }
 
+let info : WorkflowInfo =
+    WorkflowInfo.create "全文翻译" "按文档和页码翻译并提交译文。"
+    |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
+    |> WorkflowInfo.menu "Tools/Workflows" 10
+
+let model = Parameter.model "model" "执行模型"
+let documents = Parameter.documents "documents" "目标文档" |> Parameter.bindContext "documents"
+let pageRange = Parameter.pageRange "pageRange" "页码范围" "" |> Parameter.bindContext "pageRange"
+let targetLanguage = Parameter.language "targetLanguage" "目标语言" "en"
+let windowRadius = Parameter.integer "windowRadius" "上下文窗口半径" 1 |> Parameter.intRange 0 5
+let backfillPreviousWindowTranslation = Parameter.boolean "backfillPreviousWindowTranslation" "回填前一窗口译文" true
+
 let selectedDocuments (input: WorkflowInput) =
-    match input.Documents with
-    | [] -> [ WorkflowInput.parameter "documentId" "" input ] |> List.filter (String.IsNullOrWhiteSpace >> not)
+    match Parameter.get documents input with
+    | [] -> input.Documents
     | selected -> selected
 
 let translationRules (input: WorkflowInput) =
-    let pages = WorkflowInput.parameter "pageRange" input.PageRange input
-    let language = WorkflowInput.parameter "targetLanguage" input.TargetLanguage input
-    let radius = WorkflowInput.parameter "windowRadius" "1" input
-    let backfill = WorkflowInput.parameter "backfillPreviousWindowTranslation" "true" input
+    let pages = Parameter.get pageRange input
+    let language = Parameter.get targetLanguage input
+    let radius = Parameter.get windowRadius input
+    let backfill = Parameter.get backfillPreviousWindowTranslation input
     """FULL-TEXT TRANSLATION RULES
 Act through the existing agent tools. Discover real page resources before producing the page plan.
 Translate requested pages in document/page order, including pages with existing translations.
@@ -35,11 +48,11 @@ Report whether this page was committed or blocked, then yield to the workflow fo
 The summary turn must report committed and failed page identifiers from the recorded tool outcomes.
 Never claim completion before actually attempting the requested tools or explaining a concrete blocker.
 """ +
-    sprintf "Documents: %A; pages %s (empty means all); target language %s.\nWindow radius: %s; backfill previous window translation: %s."
+    sprintf "Documents: %A; pages %s (empty means all); target language %s.\nWindow radius: %d; backfill previous window translation: %b."
         (selectedDocuments input) pages language radius backfill
 
 let pageInRange (input: WorkflowInput) page =
-    let range = WorkflowInput.parameter "pageRange" input.PageRange input
+    let range = Parameter.get pageRange input
     String.IsNullOrWhiteSpace range ||
     (range.Split(',') |> Array.exists (fun part ->
         match part.Trim().Split('-') |> Array.map (fun value -> Int32.TryParse(value.Trim())) with
@@ -146,3 +159,4 @@ let run : AgentWorkflow =
         step summarize
     }
     |> Workflow.define
+    |> Workflow.withModel model

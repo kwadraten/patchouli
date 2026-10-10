@@ -1,6 +1,8 @@
 using Microsoft.FSharp.Collections;
+using System.Text.Json;
 using Patchouli.Agent;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Agent;
 
@@ -871,7 +873,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
     private static string LogStatusPayload(AgentSessionStatus status, string detail)
     {
-        return "{\"status\":\"" + status + "\",\"detail\":" + System.Text.Json.JsonSerializer.Serialize(detail) + "}";
+        return "{\"status\":\"" + status + "\",\"detail\":" + JsonSerializer.Serialize(detail) + "}";
     }
 
     private static Context WithStatus(Context context, RunStatus status)
@@ -901,18 +903,24 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
     public async Task RecordSdkAsync(string sessionId, AgentSdkReceipt receipt)
     {
-        await _store.AppendLogAsync(sessionId, "sdk/operation", System.Text.Json.JsonSerializer.Serialize(receipt),
+        await _store.AppendLogAsync(sessionId, "sdk/operation", JsonSerializer.Serialize(receipt),
             CancellationToken.None).ConfigureAwait(false);
     }
 
     private AgentEffectContext ContextFor(AgentSession session)
     {
+        ModelSelection? modelSelection = session.Launch.Parameters.TryGetValue(
+                                             AgentEffectContext.ModelSelectionParameter, out string? encodedModel) &&
+                                         !string.IsNullOrWhiteSpace(encodedModel)
+            ? ModelSelectionCodec.Decode(encodedModel)
+            : null;
         return new AgentEffectContext(session.SessionId,
             InstructionsFor(session) + "\n" + AgentNativeTools.Instructions, AgentNativeTools.Definitions,
             [..ListModule.ToSeq(session.Context.History)])
         {
             SessionDirectory = _store.ResolveSessionDirectory(session.SessionId),
-            RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt)
+            RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt),
+            ModelSelection = modelSelection
         };
     }
 
@@ -1119,7 +1127,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
                 : outcome.FailureCode is not null || outcome.TerminalStatus == AgentSessionStatus.Failed
                     ? "failed"
                     : "completed";
-            string payload = System.Text.Json.JsonSerializer.Serialize(new
+            string payload = JsonSerializer.Serialize(new
             {
                 effectId = EffectIdOf(effect), disposition = outcome.Disposition.ToString(), state,
                 commitPointEntered = outcome.CommitPointEntered, summary = outcome.Summary,
@@ -1139,13 +1147,13 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         string input = effect switch
         {
             Effect.McpToolCall tool => tool.arguments,
-            Effect.Put put => System.Text.Json.JsonSerializer.Serialize(new { put.uri, put.content }),
-            Effect.OcrEnqueue ocr => System.Text.Json.JsonSerializer.Serialize(new { ocr.documentId, ocr.pageRange }),
+            Effect.Put put => JsonSerializer.Serialize(new { put.uri, put.content }),
+            Effect.OcrEnqueue ocr => JsonSerializer.Serialize(new { ocr.documentId, ocr.pageRange }),
             Effect.WaitRunEvent wait => wait.runUri,
             Effect.LlmChat => context.History.OfType<HistoryEntry.UserMessage>().LastOrDefault()?.text ?? "",
             _ => ""
         };
-        return System.Text.Json.JsonSerializer.Serialize(new
+        return JsonSerializer.Serialize(new
         {
             effectId = EffectIdOf(effect), kind = EffectKind(effect), state = "running", input,
             name = effect is Effect.McpToolCall namedTool ? namedTool.name : EffectKind(effect)

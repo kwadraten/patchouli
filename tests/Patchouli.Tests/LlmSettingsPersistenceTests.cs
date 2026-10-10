@@ -15,11 +15,8 @@ public sealed class LlmSettingsPersistenceTests
         {
             OcrProviderId = "azure-openai",
             OcrModel = "gpt-4o",
-            TranslationProviderId = "anthropic",
-            TranslationModel = "claude-sonnet",
-            TargetLanguage = "ja",
-            TranslationWindowRadius = 3,
-            BackfillPreviousWindowTranslation = false,
+            ChatProviderId = "anthropic",
+            ChatModel = "claude-sonnet",
             ToolResultMaxCharacters = 8192
         };
         llm = llm.WithProvider(new LlmProviderAppSettings("azure-openai", "Azure OpenAI", "", "gpt-4o",
@@ -30,10 +27,7 @@ public sealed class LlmSettingsPersistenceTests
         PatchouliAppSettings loaded = PatchouliAppSettings.Load(file.Path);
 
         loaded.Llm.OcrSelection.Should().Be(("azure-openai", "gpt-4o"));
-        loaded.Llm.TranslationSelection.Should().Be(("anthropic", "claude-sonnet"));
-        loaded.Llm.EffectiveTargetLanguage.Should().Be("ja");
-        loaded.Llm.EffectiveTranslationWindowRadius.Should().Be(3);
-        loaded.Llm.BackfillPreviousWindowTranslation.Should().BeFalse();
+        loaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
         loaded.Llm.ToolResultMaxCharacters.Should().Be(8192);
         LlmProviderAppSettings azure = loaded.Llm.FindProvider("azure-openai")!;
         azure.Subscription.Should().Be("resource-a");
@@ -51,14 +45,15 @@ public sealed class LlmSettingsPersistenceTests
 
         (PatchouliAppSettings.Default() with
         {
-            Llm = LlmAppSettings.Default() with { TargetLanguage = "zh-Hans" }
+            Llm = LlmAppSettings.Default() with { ChatModel = "configured-model" }
         }).Save(file.Path).IsSuccess.Should().BeTrue();
 
         using JsonDocument document = JsonDocument.Parse(File.ReadAllText(file.Path));
 
         document.RootElement.TryGetProperty("Llm", out JsonElement llm).Should().BeTrue();
-        llm.GetProperty("TargetLanguage").GetString().Should().Be("zh-Hans");
-        llm.GetProperty("TranslationWindowRadius").GetInt32().Should().Be(1);
+        llm.GetProperty("ChatModel").GetString().Should().Be("configured-model");
+        llm.TryGetProperty("TargetLanguage", out _).Should().BeFalse();
+        llm.TryGetProperty("TranslationProviderId", out _).Should().BeFalse();
         llm.GetProperty("Providers").GetArrayLength().Should().Be(LlmProviderCatalog.All.Count, "one row per provider");
     }
 
@@ -70,7 +65,7 @@ public sealed class LlmSettingsPersistenceTests
         PatchouliAppSettings initial = PatchouliAppSettings.Load(settingsPath);
         PatchouliAppSettings updated = initial with
         {
-            Llm = initial.Llm with { TranslationWindowRadius = 4 }
+            Llm = initial.Llm with { ChatModel = "updated-model" }
         };
 
         SettingsSaveResult saved = await updated.SaveFieldLevelAsync(settingsPath,
@@ -78,7 +73,7 @@ public sealed class LlmSettingsPersistenceTests
 
         saved.IsSuccess.Should().BeTrue();
         PatchouliAppSettings reloaded = PatchouliAppSettings.Load(settingsPath);
-        reloaded.Llm.EffectiveTranslationWindowRadius.Should().Be(4);
+        reloaded.Llm.ChatModel.Should().Be("updated-model");
         reloaded.OcrEngines.Should().Be(initial.OcrEngines);
     }
 
@@ -126,8 +121,6 @@ public sealed class LlmSettingsPersistenceTests
             PatchouliAppSettings loaded = PatchouliAppSettings.Load(path);
 
             loaded.Llm.Providers.Should().HaveCount(LlmProviderCatalog.All.Count, "one row per provider");
-            loaded.Llm.EffectiveTranslationWindowRadius.Should().Be(1);
-            loaded.Llm.EffectiveTargetLanguage.Should().Be(LlmAppSettings.FallbackTargetLanguage);
         }
         finally
         {
@@ -136,7 +129,7 @@ public sealed class LlmSettingsPersistenceTests
     }
 
     [Fact]
-    public void Malformed_llm_values_are_normalized_on_load()
+    public void Legacy_workflow_values_are_preserved_for_migration_without_becoming_runtime_defaults()
     {
         string root = Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), $"patchouli-llm-settings-{Guid.NewGuid():N}")).FullName;
@@ -161,10 +154,17 @@ public sealed class LlmSettingsPersistenceTests
             PatchouliAppSettings loaded = PatchouliAppSettings.Load(path);
 
             loaded.Llm.OcrProviderId.Should().Be(LlmAppSettings.DefaultProviderId);
-            loaded.Llm.TranslationSelection.Should().Be(("anthropic", "claude-sonnet"));
+            loaded.Llm.ChatSelection.Should().Be(("anthropic", "claude-sonnet"));
             loaded.Llm.FindProvider("openai")!.Model.Should().Be("gpt-4o");
-            loaded.Llm.EffectiveTargetLanguage.Should().Be(LlmAppSettings.FallbackTargetLanguage);
-            loaded.Llm.EffectiveTranslationWindowRadius.Should().Be(LlmAppSettings.MaxTranslationWindowRadius);
+            loaded.Llm.LegacyWorkflowValues["windowRadius"].Should().Be("900");
+            loaded.Llm.LegacyWorkflowValues["targetLanguage"].Should().Be("   ");
+            loaded.Llm.LegacyWorkflowValues["backfillPreviousWindowTranslation"].Should().Be("true");
+            loaded.Llm.LegacyWorkflowValues["model"].Should().Contain("claude-sonnet");
+            loaded.Save(path).IsSuccess.Should().BeTrue();
+            PatchouliAppSettings.Load(path).Llm.LegacyWorkflowValues["windowRadius"].Should().Be("900");
+            using JsonDocument rewritten = JsonDocument.Parse(File.ReadAllText(path));
+            rewritten.RootElement.GetProperty("Llm").TryGetProperty("TranslationWindowRadius", out _)
+                .Should().BeFalse();
             loaded.Llm.Providers.Should().HaveCount(LlmProviderCatalog.All.Count, "one row per provider");
         }
         finally

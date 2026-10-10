@@ -201,7 +201,10 @@ public sealed record McpSendResult(
     [property: JsonPropertyName("processed")]
     string Processed,
     [property: JsonPropertyName("duplicate")]
-    bool Duplicate);
+    bool Duplicate,
+    [property: JsonPropertyName("validation_errors")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<McpWorkflowValidationIssue>? ValidationErrors = null);
 
 public sealed record McpPutResult(
     [property: JsonPropertyName("uri")] string Uri,

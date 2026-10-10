@@ -1,5 +1,6 @@
 namespace Patchouli.Workflows.Scripting
 
+open System
 open Patchouli.Agent.Sdk
 
 /// Closed tool vocabulary. A stage's allowlist can only narrow host permissions.
@@ -154,12 +155,22 @@ type WorkflowBounds =
 
 /// A root plan has a fixed launch-input contract. Output erasure happens only here, after type checking.
 [<Sealed>]
-type AgentWorkflow internal (shape: ControlShape, build: WorkflowInput -> HarnessProgram<unit>) =
+type AgentWorkflow internal (shape: ControlShape, build: WorkflowInput -> HarnessProgram<unit>, sessionModelKey: string option) =
     member _.Shape = shape
+    /// Stable key of the parameter that selects this session's model, when declared.
+    member _.SessionModelKey = defaultArg sessionModelKey ""
     member internal _.Build input = build input
 
 [<RequireQualifiedAccess>]
 module Workflow =
+    /// Binds one declared model parameter to the complete session. It does not add stage-level switching.
+    let withModel (parameter: Parameter<ModelSelection>) (flow: AgentWorkflow) : AgentWorkflow =
+        if Object.ReferenceEquals(parameter, null) then nullArg "parameter"
+        if Object.ReferenceEquals(flow, null) then nullArg "flow"
+        if parameter.Descriptor.Type <> WorkflowParameterValueType.Model then
+            invalidArg "parameter" "Workflow.withModel requires a model-selection parameter."
+        AgentWorkflow(flow.Shape, flow.Build, Some parameter.Descriptor.Key)
+
     /// Private smart-constructor types require an explicit codec that revalidates decoded values.
     let withCodecs input output (flow: Workflow<'i, 'o>) =
         Workflow(flow.Shape, flow.BuildBody, inputCodec = input, outputCodec = output)
@@ -202,7 +213,8 @@ module Workflow =
                 | Error reason -> Abort $"WORKFLOW_EVENT_INVALID: {reason}"))
 
     let define (flow: Workflow<WorkflowInput, 'o>) =
-        AgentWorkflow(flow.Shape, fun input -> flow.Build "root" input |> Program.bind (fun _ -> Return()))
+        let build input = flow.Build "root" input |> Program.bind (fun _ -> Return())
+        AgentWorkflow(flow.Shape, build, None)
 
     /// Structural upper bounds, independent of model output. Assumes pure author-supplied functions terminate.
     let rec bounds = function

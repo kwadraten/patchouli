@@ -629,16 +629,6 @@ public sealed class McpCommandService
         }
 
         string workflowId = parsed.Value.WorkflowId!;
-        Result<McpWorkflowDetail> workflow = await _workflowRuns.TryGetWorkflowAsync(workflowId, cancellationToken);
-        if (workflow.IsFailure)
-        {
-            McpErrorCode code = string.Equals(workflow.ErrorCode, AppErrorCodes.NotFound, StringComparison.Ordinal)
-                ? McpErrorCode.WorkflowNotFound
-                : McpErrorMappings.ToReadError(workflow.ErrorCode);
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(code,
-                workflow.ErrorMessage ?? $"The workflow '{workflowId}' is not available.");
-        }
-
         Dictionary<string, string> parameters = new(StringComparer.Ordinal);
         foreach (McpSendParameter parameter in request.Parameters ?? [])
         {
@@ -651,27 +641,7 @@ public sealed class McpCommandService
             parameters[parameter.Name] = parameter.Value;
         }
 
-        foreach (McpWorkflowParameter definition in workflow.Value.Parameters)
-        {
-            bool supplied = parameters.TryGetValue(definition.Name, out string? value) &&
-                            !string.IsNullOrWhiteSpace(value);
-            if (definition.Required && !supplied)
-            {
-                return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                    $"The workflow '{workflowId}' requires the launch parameter '{definition.Name}'.");
-            }
-        }
-
-        foreach (string name in parameters.Keys)
-        {
-            if (workflow.Value.Parameters.All(definition => !string.Equals(definition.Name, name,
-                    StringComparison.Ordinal)))
-            {
-                return McpCommandResult<McpSendMeta, McpSendResult>.Fail(McpErrorCode.InvalidArgument,
-                    $"The workflow '{workflowId}' declares no launch parameter '{name}'.");
-            }
-        }
-
+        // Required/default/context validation belongs to the Host, which also knows saved configuration.
         Result<McpWorkflowStartResult> started =
             await _workflowRuns.StartAsync(workflowId, parameters, cancellationToken);
         if (started.IsFailure)
@@ -682,8 +652,17 @@ public sealed class McpCommandService
                 AppErrorCodes.InvalidArgument or AppErrorCodes.ValidationFailed => McpErrorCode.InvalidArgument,
                 _ => McpErrorCode.Internal
             };
-            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(code,
-                started.ErrorMessage ?? "The workflow launch was rejected.");
+            string detail = started.ErrorMessage ?? "The workflow launch was rejected.";
+            if (started.Details is McpWorkflowValidationFailureDetails diagnostics)
+            {
+                McpSendResult rejected = new("start", null, null, false, "rejected", false, diagnostics.Issues);
+                McpEnvelope<McpSendMeta, McpSendResult> failed = McpEnvelope<McpSendMeta, McpSendResult>.Create(
+                    new McpSendMeta(revision, "start", false, "rejected"), [rejected],
+                    message: new McpMessage(McpToolError.From(code, detail).ToTerminalLine(), []));
+                return McpCommandResult<McpSendMeta, McpSendResult>.Partial(failed, code, detail);
+            }
+
+            return McpCommandResult<McpSendMeta, McpSendResult>.Fail(code, detail);
         }
 
         // The session was created and its run started, so the start instruction itself is processed;

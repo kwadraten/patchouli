@@ -39,7 +39,7 @@ public sealed class WorkflowDefinitionStoreTests
     }
 
     [Fact]
-    public void Built_in_full_text_translation_is_locked_and_has_no_script_body_yet()
+    public async Task Built_in_full_text_translation_is_locked_and_declares_its_parameters_in_the_embedded_script()
     {
         WorkflowDefinition builtIn = BuiltInWorkflows.fullTextTranslation;
 
@@ -48,9 +48,14 @@ public sealed class WorkflowDefinitionStoreTests
         builtIn.BuiltIn.Should().BeTrue();
         builtIn.Menu.ShowInMenu.Should().BeTrue();
         builtIn.Menu.Order.Should().BeLessThan(100);
-        builtIn.Parameters.Select(parameter => parameter.Name)
-            .Should().Equal("documentId", "pageRange", "targetLanguage");
-        builtIn.Parameters.Single(parameter => parameter.Required).Name.Should().Be("documentId");
+        builtIn.Parameters.Should().BeEmpty("parameter declarations belong to fsx, not the built-in registry");
+        string source = BuiltInWorkflowScripts.tryGetText(builtIn.Id)!.Value;
+        WorkflowDeclarationAnalysis declaration =
+            await new ScriptCompiler().AnalyzeWorkflowAsync(source, "translation.fsx", "run");
+        declaration.Succeeded.Should().BeTrue(ScriptDiagnostics.describeAll(declaration.Diagnostics));
+        declaration.Fields.Select(field => field.Key).Should().Contain("model").And.Contain("targetLanguage")
+            .And.Contain("windowRadius").And.Contain("backfillPreviousWindowTranslation");
+        declaration.Info.SelectionScope.Should().Be(WorkflowSelectionScope.DocumentsAndPages);
         builtIn.SelectionScope.Should().Be(WorkflowSelectionScope.DocumentsAndPages);
 
         BuiltInWorkflows.all.Should().ContainSingle();

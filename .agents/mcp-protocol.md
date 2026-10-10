@@ -563,3 +563,14 @@ MCP cancellation、HTTP 断连和 CLI 中断必须传播到宿主的取消令牌
 | V3-AC26 | `runs/` 是 VFS 首个易失运行时资源：不进任何快照、不可 `put`、不属 canonical 资源，不推进 `meta.library_revision`、不发资源变更通知；OCR 运行与 agent 会话运行各自投影 status/events，不强行统一为一个通用 run 模型；`workflows/` 是只读元数据树，不可 `put` 或经 MCP 修改 |
 | V3-AC27 | `patchouli://runs/agent/{session-id}/events` 的事件按宿主分配的单调递增序号排列并支持 `?after={sequence}` 增量读取，响应给出 `last_sequence` 与 `next_after`；`send` 响应区分已接收/已处理，`message` 携带 `message_id` 去重，重复 `message_id` 不重复追加并带 `DUPLICATE_MESSAGE_ID` warning；`message` 在下一次工具调用/效应执行前的 Event 边界按序追加进会话、不打断在途调用 |
 | V3-AC28 | `runs/`、`workflows/` 与 `send` 均不返回图像、本地路径或密钥；用户工具开关关闭 `put`/`send` 后 MCP 回到只读，`put`/`send` 返回 `PERMISSION_DENIED` 而 `find`/`fetch`/`cite` 不受影响（D1） |
+
+## Workflow configuration contract
+
+Workflow metadata and parameter details are statically projected from independent SDK
+`Parameter<'T>` bindings in fsx. Host validation is shared with desktop launch, including model
+availability, applicable selection, required fields and declared constraints. Explicit start
+parameters override only the current run; they do not edit saved workflow configuration.
+Field failures identify stable parameter keys and error codes. Desktop editor repair is a UI
+behavior and is not required to consume MCP diagnostics. Workflow snapshot API version 6
+freezes resolved values and the actual model choice; older histories remain readable but cannot
+resume with the new executor. See [workflow-api](workflow-api.md) and ADR 0042.

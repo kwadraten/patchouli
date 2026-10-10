@@ -366,6 +366,8 @@ public sealed class McpRunsAndSendTests
         McpCommandResult<McpSendMeta, McpSendResult> missingRequired = await commands.SendAsync(
             new McpSendRequest("start", "patchouli://workflows/wf-1"));
         missingRequired.Error!.Code.Should().Be((int)McpErrorCode.InvalidArgument);
+        missingRequired.Envelope!.Entries.Single().ValidationErrors.Should().ContainSingle()
+            .Which.Key.Should().Be("documentId");
 
         McpCommandResult<McpSendMeta, McpSendResult> unknown = await commands.SendAsync(
             new McpSendRequest("start", "patchouli://workflows/wf-1",
@@ -748,6 +750,31 @@ public sealed class McpRunsAndSendTests
             {
                 return Task.FromResult(Result<McpWorkflowStartResult>.Failure(AppErrorCodes.NotFound,
                     $"The workflow '{workflowId}' does not exist."));
+            }
+
+            List<McpWorkflowValidationIssue> issues = [];
+            foreach (McpWorkflowParameter field in Workflows[workflowId].Parameters)
+            {
+                if (field.Required && (!parameters.TryGetValue(field.Name, out string? value) ||
+                                       string.IsNullOrWhiteSpace(value)))
+                {
+                    issues.Add(new McpWorkflowValidationIssue(field.Name, "required",
+                        "Required parameter is missing."));
+                }
+            }
+
+            foreach (string key in parameters.Keys)
+            {
+                if (Workflows[workflowId].Parameters.All(field => field.Name != key))
+                {
+                    issues.Add(new McpWorkflowValidationIssue(key, "unknown_parameter", "Unknown parameter."));
+                }
+            }
+
+            if (issues.Count > 0)
+            {
+                return Task.FromResult(Result<McpWorkflowStartResult>.Failure(AppErrorCodes.InvalidArgument,
+                    "Workflow configuration is invalid.", details: new McpWorkflowValidationFailureDetails(issues)));
             }
 
             Launches.Add((workflowId, parameters));

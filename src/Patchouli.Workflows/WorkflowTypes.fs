@@ -35,6 +35,12 @@ type WorkflowParameterType =
     | Language = 3
     | Integer = 4
     | Boolean = 5
+    | MultilineText = 6
+    | Decimal = 7
+    | Choice = 8
+    | Model = 9
+    | Documents = 10
+    | TextSelection = 11
 
 /// <summary>
 ///     The Library selection a workflow may be launched against (ADR 0036). The value is a bit mask
@@ -220,22 +226,7 @@ module BuiltInWorkflows =
             "Controls the built-in agent to translate selected documents with its existing find/fetch/put tools, " +
             "bounded inference and tool budgets, preserving structure and reporting failed pages."
           ScriptEntryPoint = "run"
-          Parameters =
-            [| { Name = "documentId"
-                 Type = WorkflowParameterType.DocumentId
-                 Required = true
-                 Description = "Document to translate."
-                 DefaultValue = "" }
-               { Name = "pageRange"
-                 Type = WorkflowParameterType.PageRange
-                 Required = false
-                 Description = "Pages to translate; empty means the whole document."
-                 DefaultValue = "" }
-               { Name = "targetLanguage"
-                 Type = WorkflowParameterType.Language
-                 Required = false
-                 Description = "Target language; empty means the configured default."
-                 DefaultValue = "" } |]
+          Parameters = [||]
           SelectionScope = WorkflowSelectionScope.DocumentsAndPages
           Locked = true
           Menu =
@@ -329,7 +320,10 @@ type WorkflowScriptSnapshot =
       ScriptText: string
       ScriptHash: string
       ApiVersion: string
-      CapturedAt: string }
+      CapturedAt: string
+      DeclarationFingerprint: string
+      ParameterValues: IReadOnlyDictionary<string, string>
+      ModelSelection: string }
 
 /// <summary>
 ///     One recorded step of a workflow run: the script API call (or terminal request) the executor
@@ -384,4 +378,28 @@ module WorkflowSnapshots =
           ScriptText = WorkflowText.orEmpty scriptText
           ScriptHash = hashScript scriptText
           ApiVersion = apiVersion
-          CapturedAt = capturedAt.ToUniversalTime().ToString("O", Globalization.CultureInfo.InvariantCulture) }
+          CapturedAt = capturedAt.ToUniversalTime().ToString("O", Globalization.CultureInfo.InvariantCulture)
+          DeclarationFingerprint = String.Empty
+          ParameterValues = Dictionary<string, string>(StringComparer.Ordinal) :> IReadOnlyDictionary<string, string>
+          ModelSelection = String.Empty }
+
+    /// <summary>Captures one /6 script together with its declaration and frozen launch configuration.</summary>
+    let captureConfigured (definition: WorkflowDefinition) (scriptText: string) (apiVersion: string)
+        (capturedAt: DateTimeOffset) (declarationFingerprint: string)
+        (parameterValues: IReadOnlyDictionary<string, string>) (modelSelection: string) : WorkflowScriptSnapshot =
+        if Object.ReferenceEquals(definition, null) then
+            nullArg "definition"
+
+        if Object.ReferenceEquals(parameterValues, null) then
+            nullArg "parameterValues"
+
+        { WorkflowId = definition.Id
+          WorkflowName = definition.Name
+          ScriptEntryPoint = definition.ScriptEntryPoint
+          ScriptText = WorkflowText.orEmpty scriptText
+          ScriptHash = hashScript scriptText
+          ApiVersion = apiVersion
+          CapturedAt = capturedAt.ToUniversalTime().ToString("O", Globalization.CultureInfo.InvariantCulture)
+          DeclarationFingerprint = WorkflowText.orEmpty declarationFingerprint
+          ParameterValues = parameterValues
+          ModelSelection = WorkflowText.orEmpty modelSelection }

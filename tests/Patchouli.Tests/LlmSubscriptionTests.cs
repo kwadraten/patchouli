@@ -163,7 +163,7 @@ public sealed class LlmSubscriptionTests
                     Model = "test-model"
                 }) with
             {
-                TranslationProviderId = SubscriptionProvider, TranslationModel = "test-model"
+                ChatProviderId = SubscriptionProvider, ChatModel = "test-model"
             };
     }
 

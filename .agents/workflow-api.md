@@ -2,6 +2,55 @@
 
 The workflow controls the Patchouli agent. Its entry point is a cold `AgentWorkflow` value. See [ADR 0039](adr/0039-typed-functional-agent-harness-workflows.md).
 
+## Workflow declarations and editor configuration
+
+A workflow declares independent module-level `let Parameter<'T>` bindings with SDK constructors.
+The script also exports `info` through `WorkflowInfo`, and binds its model parameter to the root
+with `Workflow.withModel`. Stable parameter keys, display labels, control types, defaults,
+constraints and context bindings come from these declarations, not external JSON metadata.
+See [ADR 0042](adr/0042-statically-declared-workflow-parameters.md).
+
+```fsharp
+open Patchouli.Workflows
+open Patchouli.Workflows.Scripting
+
+let info =
+    WorkflowInfo.create "Research" "Research the selected documents."
+    |> WorkflowInfo.selectionScope WorkflowSelectionScope.DocumentsAndPages
+    |> WorkflowInfo.menu "Tools/Workflows" 100
+
+let model = Parameter.model "model" "执行模型"
+let question = Parameter.text "question" "问题" "Describe the selection"
+let radius = Parameter.integer "radius" "上下文半径" 1 |> Parameter.intRange 0 5
+
+let researcher =
+    Agent.text "research" "Find evidence and cite tool results."
+        (fun (input: WorkflowInput) -> Parameter.get question input)
+    |> Agent.withTools [ AgentTool.Find; AgentTool.Fetch; AgentTool.Cite ]
+
+let run : AgentWorkflow =
+    Agent.run researcher |> Workflow.define |> Workflow.withModel model
+```
+
+The editor statically extracts declarations without evaluating the script. Literals, static SDK
+records/unions and collections, supported SDK calls/pipelines, and immutable aliases are supported;
+user function calls and runtime-dependent declaration expressions produce source diagnostics.
+SDK symbol identity is checked, so unrelated functions with the same name are not declarations.
+All declared parameters appear in source order. `Parameter.get` returns an ordinary typed value;
+its subsequent use is not restricted by declaration syntax. Model values are a provider/model
+pair; credential material remains in the platform credential store.
+
+The generated form is displayed only inside the workflow editor. Built-in script locking does
+not prevent editing user configuration. Launch uses saved configuration plus declared context
+bindings and defaults; explicit MCP parameters override only that run. Invalid fields prevent
+session creation. Desktop launch reports the error in the status bar and opens the editor with
+field errors highlighted, while preserving unsaved drafts. Correcting and saving configuration
+does not automatically launch. MCP uses the same Host validation.
+
+Version 6 freezes declaration identity, resolved parameter values and the actual model selection
+alongside script and launch selection. Resume does not consult current defaults. Versions 5 and
+older retain readable history but cannot resume through a compatibility executor.
+
 ```mermaid
 flowchart LR
   W["FSX immutable pipeline"] --> D["AgentDriver / AgentCore"]
@@ -56,8 +105,8 @@ Following [DeepSeek Harness's turn lifecycle](https://github.com/deepseek-ai/dee
 a natural final reply with no native calls ends the turn, records `turn/end`, closes host activity
 and persists `Idle`; the conversation can accept a new message. Truncated calls are never
 executed. Interrupted calls are paired with explicit unknown/aborted outcomes before a fresh
-user turn, rather than blindly replayed. Workflow snapshot protocol version 5 adds typed node
-checkpoints and SDK observations to the native reply and exact-call journal; older snapshots
+user turn, rather than blindly replayed. Workflow snapshot protocol version 6 retains typed node checkpoints and SDK observations,
+and adds frozen declaration identity, parameter values and model selection; older snapshots
 require a new automated run. Original conversation history remains readable.
 
 Provider projections reuse LlmTornado's native function interfaces. OpenAI-compatible models
