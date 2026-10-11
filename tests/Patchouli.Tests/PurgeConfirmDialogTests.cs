@@ -16,8 +16,8 @@ public sealed class PurgeConfirmDialogTests
     [InlineData(null)]
     public async Task Closing_dialog_completes_confirmation_with_the_expected_result(bool? expected)
     {
-        using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
-        await session.Dispatch(async () =>
+        await using HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
+        await session.Dispatch<bool>(async () =>
         {
             Window owner = new();
             using PurgeConfirmDialogViewModel vm = new(["Item to purge"], []);
@@ -50,6 +50,8 @@ public sealed class PurgeConfirmDialogTests
                 dialog.Close();
                 owner.Close();
             }
+
+            return true;
         }, CancellationToken.None);
     }
 }

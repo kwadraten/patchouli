@@ -7,7 +7,15 @@ URL:            https://github.com/kwadraten/patchouli
 Source0:        %{name}-%{version}.tar.gz
 
 BuildArch:      x86_64
+# Runtime deps mirror the DEB (Avalonia X11 + .NET 10 self-contained).
+# libicu/openssl/krb5 names vary by distro; use unversioned where possible.
 Requires:       fontconfig
+Requires:       libX11
+Requires:       libICE
+Requires:       libSM
+Requires:       libicu
+Requires:       openssl-libs
+Requires:       krb5-libs
 
 %description
 Patchouli is an experimental desktop literature manager for managing,
@@ -24,6 +32,12 @@ tar -xzf %{SOURCE0} -C "$RPM_BUILD_ROOT" --no-same-owner
 mkdir -p "$RPM_BUILD_ROOT/usr/share/licenses/%{name}-%{version}"
 cp "$RPM_BUILD_ROOT/LICENSE" "$RPM_BUILD_ROOT/usr/share/licenses/%{name}-%{version}/"
 rm "$RPM_BUILD_ROOT/LICENSE"
+# Exclude .NET LTTng trace provider: optional diagnostic component requiring
+# liblttng-ust.so.0 which is not available on Fedora 44 (provides only so.1).
+# The normal tested runtime (libcoreclr.so) does not need it; it is only
+# loaded when LTTng-based diagnostics are explicitly enabled.
+rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
+      "$RPM_BUILD_ROOT"/usr/lib/patchouli-cli/libcoreclrtraceptprovider.so
 
 %files
 /usr/lib/patchouli/

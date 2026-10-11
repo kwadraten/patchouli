@@ -147,7 +147,14 @@ internal static class RuntimeHostResolver
     {
         List<string> roots = [];
         AddRoot(baseDirectory);
-        AddRoot(Directory.GetParent(baseDirectory.TrimEnd(Path.DirectorySeparatorChar))?.FullName);
+        DirectoryInfo? parent = Directory.GetParent(baseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+        AddRoot(parent?.FullName);
+        // Linux packaging layout: CLI in /usr/lib/patchouli-cli/, UI in sibling /usr/lib/patchouli/.
+        // The parent search above finds /usr/lib but not the sibling; add it explicitly.
+        if (parent is not null)
+        {
+            AddRoot(Path.Combine(parent.FullName, "patchouli"));
+        }
 
         if (!string.IsNullOrWhiteSpace(processPath))
         {

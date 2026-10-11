@@ -27,7 +27,9 @@ public sealed record RuntimeHostDiscoveryRecord(
     string Endpoint,
     string ProtocolVersion,
     string ControlPipe,
-    string ControlToken);
+    string ControlToken,
+    long? ProcessStartTimeProcTicks = null,
+    string? BootId = null);
 
 /// <summary>
 /// Coordinates the one-runtime-host-per-database invariant before any SQLite connection is opened.
@@ -150,7 +152,8 @@ public static class RuntimeHostCoordinator
             if (record is null || record.Version != DiscoveryVersion ||
                 !string.Equals(record.ProtocolVersion, ProtocolVersion, StringComparison.Ordinal) ||
                 record.PathKey != pathKey ||
-                !PathEquals(record.DatabasePath, canonicalPath) || !IsCurrentProcess(record))
+                !PathEquals(record.DatabasePath, canonicalPath) ||
+                !await IsHostAliveAsync(record, cancellationToken))
             {
                 return null;
             }
@@ -179,11 +182,251 @@ public static class RuntimeHostCoordinator
     {
         try
         {
+            // Preferred: compare raw /proc starttime (clock ticks) exactly.
+            // This is the kernel's authoritative process identity, immune to
+            // DateTime conversion precision issues and quantization boundaries.
+            if (record.ProcessStartTimeProcTicks.HasValue &&
+                TryReadProcStartTimeTicks(record.ProcessId, out long procTicks))
+            {
+                return procTicks == record.ProcessStartTimeProcTicks.Value;
+            }
+
+            // Fallback for records written before ProcessStartTimeProcTicks existed,
+            // or on non-Linux platforms: normalize DateTime to /proc precision.
             using Process process = Process.GetProcessById(record.ProcessId);
-            return process.StartTime.ToUniversalTime() == record.ProcessStartedUtc;
+            const long TicksPerProcClockTick = TimeSpan.TicksPerMillisecond * 10;
+
+            static long NormalizeToProcPrecision(DateTime dt)
+            {
+                return dt.Ticks / TicksPerProcClockTick * TicksPerProcClockTick;
+            }
+
+            return NormalizeToProcPrecision(process.StartTime.ToUniversalTime()) ==
+                   NormalizeToProcPrecision(record.ProcessStartedUtc);
         }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
                                               System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Verifies the host is alive, handling cross-namespace scenarios (e.g., Flatpak).
+    /// First tries PID-based verification (fast, same-namespace). If the PID does not
+    /// exist in this namespace (e.g., different `flatpak run` sandbox instance),
+    /// falls back to HTTP health check with InstanceId verification via the shared
+    /// network namespace (--share=network).
+    /// Library identity (PathKey, DatabasePath) is verified by the caller before this.
+    /// </summary>
+    internal static async Task<bool> IsHostAliveAsync(
+        RuntimeHostDiscoveryRecord record,
+        CancellationToken cancellationToken = default)
+    {
+        // Boot identity: reject stale records from before a reboot.
+        // /proc starttime ticks are boot-relative; without this, a rebooted
+        // system could have matching PID+ticks for a different process.
+        if (record.BootId is not null)
+        {
+            string? currentBootId = TryReadBootId();
+            if (currentBootId is null ||
+                !string.Equals(currentBootId, record.BootId, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+
+        // Fast path: PID verification works within the same namespace
+        if (IsCurrentProcess(record))
+        {
+            return true;
+        }
+
+        // Cross-namespace fallback: PID doesn't exist here, but the host may be
+        // alive in another sandbox instance with shared network namespace.
+        // Verify via /health endpoint with InstanceId + LibraryId binding.
+        return await IsHostAliveViaHealthCheckAsync(record, cancellationToken);
+    }
+
+    /// <summary>
+    /// Reads the system boot ID from /proc/sys/kernel/random/boot_id.
+    /// This UUID is generated at each boot; differs across reboots.
+    /// </summary>
+    internal static string? TryReadBootId()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return null;
+        }
+
+        try
+        {
+            string bootId = File.ReadAllText("/proc/sys/kernel/random/boot_id").Trim();
+            return string.IsNullOrWhiteSpace(bootId) ? null : bootId;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Checks host liveness via HTTP /health endpoint with InstanceId + LibraryId binding.
+    /// Used when PID verification fails due to namespace isolation (e.g., Flatpak).
+    /// Security: only loopback targets; redirects and proxy disabled; rejects
+    /// mismatched instanceId or libraryId; 5s timeout.
+    /// </summary>
+    internal static async Task<bool> IsHostAliveViaHealthCheckAsync(
+        RuntimeHostDiscoveryRecord record,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Derive health URL from endpoint: http://host:port/mcp -> http://host:port/health
+            if (!Uri.TryCreate(record.Endpoint, UriKind.Absolute, out Uri? endpointUri))
+            {
+                return false;
+            }
+
+            // Only allow http/https schemes.
+            if (!endpointUri.Scheme.Equals("http", StringComparison.OrdinalIgnoreCase) &&
+                !endpointUri.Scheme.Equals("https", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            // SECURITY: only allow loopback targets. Reject any non-loopback endpoint
+            // to prevent SSRF via a crafted discovery record.
+            string host = endpointUri.Host;
+            bool isLoopback = host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                              host.Equals("127.0.0.1", StringComparison.Ordinal) ||
+                              host.Equals("::1", StringComparison.Ordinal) ||
+                              host.Equals("[::1]", StringComparison.Ordinal);
+            if (!isLoopback)
+            {
+                return false;
+            }
+
+            string healthUrl = new UriBuilder(endpointUri) { Path = "/health" }.Uri.ToString();
+
+            // SECURITY: disable redirects (prevent InstanceId leak via redirect)
+            // and proxy (prevent interception). Direct loopback connection only.
+            using SocketsHttpHandler handler = new()
+            {
+                AllowAutoRedirect = false,
+                UseProxy = false,
+                ConnectTimeout = TimeSpan.FromSeconds(5)
+            };
+            using HttpClient client = new(handler) { Timeout = TimeSpan.FromSeconds(5) };
+            using HttpResponseMessage response = await client.GetAsync(healthUrl, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return false;
+            }
+
+            string json = await response.Content.ReadAsStringAsync(cancellationToken);
+            using JsonDocument doc = JsonDocument.Parse(json);
+
+            // InstanceId binding: must match the record's instance.
+            // Both expected and response must be non-empty; reject null==null.
+            if (string.IsNullOrEmpty(record.InstanceId))
+            {
+                return false;
+            }
+
+            if (!doc.RootElement.TryGetProperty("instanceId", out JsonElement idElement))
+            {
+                return false;
+            }
+
+            string? responseInstanceId = idElement.GetString();
+            if (string.IsNullOrEmpty(responseInstanceId))
+            {
+                return false;
+            }
+
+            if (!string.Equals(responseInstanceId, record.InstanceId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            // LibraryId binding: the responding host must serve the expected library.
+            // Rejects a different host that happens to listen on the same port.
+            // REQUIRED: no compatibility fallback. Hosts old enough to lack libraryId
+            // also lack instanceId, so they cannot pass the instanceId check above.
+            // Both expected and response must be non-empty; reject null==null.
+            if (string.IsNullOrEmpty(record.LibraryId))
+            {
+                return false;
+            }
+
+            if (!doc.RootElement.TryGetProperty("libraryId", out JsonElement libElement))
+            {
+                return false;
+            }
+
+            string? responseLibraryId = libElement.GetString();
+            if (string.IsNullOrEmpty(responseLibraryId))
+            {
+                return false;
+            }
+
+            if (!string.Equals(responseLibraryId, record.LibraryId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return true;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException)
+        {
+            return false;
+        }
+        catch (TaskCanceledException)
+        {
+            // Preserve caller cancellation: if the caller's token was canceled,
+            // rethrow instead of swallowing as "host not alive". Timeout (from
+            // HttpClient.Timeout) also throws TaskCanceledException but with
+            // a different token; only rethrow for caller cancellation.
+            cancellationToken.ThrowIfCancellationRequested();
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Reads the raw starttime field (field 22, in clock ticks) from /proc/[pid]/stat.
+    /// This is the kernel's exact process start identifier, stable across processes
+    /// within a boot. Returns false if unavailable (non-Linux, PID not found).
+    /// </summary>
+    internal static bool TryReadProcStartTimeTicks(int pid, out long ticks)
+    {
+        ticks = 0;
+        if (!OperatingSystem.IsLinux())
+        {
+            return false;
+        }
+
+        try
+        {
+            string stat = File.ReadAllText($"/proc/{pid}/stat");
+            // comm (field 2) may contain spaces/parens; find the last ')' then split
+            int commEnd = stat.LastIndexOf(')');
+            if (commEnd < 0)
+            {
+                return false;
+            }
+
+            string[] fields = stat.Substring(commEnd + 2).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            // fields[0] = state (field 3); starttime (field 22) = fields[19]
+            if (fields.Length > 19 && long.TryParse(fields[19], out long result))
+            {
+                ticks = result;
+                return true;
+            }
+
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException)
         {
             return false;
         }
@@ -301,6 +544,12 @@ public sealed class RuntimeHostLease : IAsyncDisposable
         ControlPipe = controlPipe;
         InstanceId = Guid.NewGuid().ToString("N");
         ProcessStartedUtc = Process.GetCurrentProcess().StartTime.ToUniversalTime();
+        // Capture raw /proc starttime for stable cross-process identity verification
+        ProcessStartTimeProcTicks =
+            RuntimeHostCoordinator.TryReadProcStartTimeTicks(Environment.ProcessId, out long ticks) ? ticks : null;
+        // Capture boot ID: /proc starttime ticks are boot-relative, so a stale
+        // record from before a reboot could otherwise match PID+ticks.
+        BootId = RuntimeHostCoordinator.TryReadBootId();
     }
 
     public string DatabasePath { get; }
@@ -309,6 +558,8 @@ public sealed class RuntimeHostLease : IAsyncDisposable
     public string ControlPipe { get; }
     public string InstanceId { get; }
     public DateTime ProcessStartedUtc { get; }
+    public long? ProcessStartTimeProcTicks { get; }
+    public string? BootId { get; }
 
     public async Task<RuntimeHostDiscoveryRecord> PublishAsync(
         string libraryId,
@@ -330,7 +581,9 @@ public sealed class RuntimeHostLease : IAsyncDisposable
             endpoint,
             RuntimeHostCoordinator.ProtocolVersion,
             ControlPipe,
-            _controlToken);
+            _controlToken,
+            ProcessStartTimeProcTicks,
+            BootId);
 
         string temporaryPath = _recordPath + "." + InstanceId + ".tmp";
         await using (FileStream stream = new(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,

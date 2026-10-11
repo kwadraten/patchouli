@@ -651,9 +651,13 @@ public sealed class CslStyleStore : ICslStyleStore
         }
 
         string normalized = styleId.Trim();
+        // Style IDs are portable logical identifiers, not filesystem paths:
+        // reject both separators explicitly on every platform. On Linux '\'
+        // is otherwise a legal filename character, which would let a
+        // Windows-style "nested\style" id slip through the platform check.
         if (normalized.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
-            || normalized.Contains(Path.DirectorySeparatorChar)
-            || normalized.Contains(Path.AltDirectorySeparatorChar)
+            || normalized.Contains('/')
+            || normalized.Contains('\\')
             || Path.IsPathRooted(normalized)
             || normalized is "." or ".."
             || normalized.Contains("..", StringComparison.Ordinal))

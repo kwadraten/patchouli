@@ -4,13 +4,21 @@ using Avalonia.Headless;
 using Avalonia.Threading;
 using Dapper;
 using Microsoft.Data.Sqlite;
+using Patchouli.Core.Credentials;
 using Patchouli.Core.Documents;
+using Patchouli.Core.Files;
 using Patchouli.Core.Ids;
+using Patchouli.Core.Import;
 using Patchouli.Core.Layout;
 using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Core.Time;
+using Patchouli.Infrastructure.Credentials;
 using Patchouli.Infrastructure.Documents;
+using Patchouli.Infrastructure.Files;
+using Patchouli.Infrastructure.LibraryIdentity;
+using Patchouli.Infrastructure.Ocr;
+using Patchouli.Infrastructure.Workflows;
 using Patchouli.Ocr;
 using Patchouli.UI;
 using Patchouli.UI.ViewModels;
@@ -87,6 +95,8 @@ public static class UiPerfProbe
                 cancellationToken);
             SqliteConnection.ClearAllPools();
             WriteSettings(settingsPath, databasePath, root);
+            await CompleteUiFixtureSetupAsync(seedDatabase, settingsPath, root, cancellationToken);
+            SqliteConnection.ClearAllPools();
 
             HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(App));
             Trace(!options.Quiet, $"[ui-perf] session ready");
@@ -167,6 +177,13 @@ public static class UiPerfProbe
         window.Show();
         await window.ShowFirstRunIfNeededAsync(false);
         long stop = Stopwatch.GetTimestamp();
+        if (viewModel.IsFirstRunVisible)
+        {
+            throw new InvalidOperationException(
+                "UI perf fixture setup incomplete: FirstRun is visible, " +
+                "the seeded library is not shown. Check search root, OCR preset, and credential seeding.");
+        }
+
         // The shell pages its list, so the requested fixture scale only becomes visible after
         // draining the remaining keyset pages. The first-screen timing above stays untouched.
         while (viewModel.Shell.HasMoreItems)
@@ -295,7 +312,103 @@ public static class UiPerfProbe
             RememberLastDatabase = true,
             UseMockOcrOnly = true
         };
-        (PatchouliAppSettings.Default() with { Runtime = runtime }).Save(settingsPath);
+        SyncAppSettings sync = PatchouliAppSettings.Default().Sync with
+        {
+            DeviceId = Guid.NewGuid().ToString("D"),
+            DeviceName = "ui-perf",
+            SyncRoot = runtime.DefaultSyncRoot
+        };
+        MinerUAppSettings minerU = PatchouliAppSettings.Default().MinerU with
+        {
+            // Inert loopback: never contacted because the fixture uses mock OCR only,
+            // but must not point at a real service.
+            BaseUrl = "http://127.0.0.1:1"
+        };
+        OcrEnginesAppSettings ocrEngines = new(
+            OcrEngineIds.Mock, OcrEngineIds.Mock, OcrEngineIds.Mock);
+        PatchouliAppSettings settings = PatchouliAppSettings.Default() with
+        {
+            Runtime = runtime,
+            Sync = sync,
+            MinerU = minerU,
+            OcrEngines = ocrEngines
+        };
+        SettingsSaveResult saved = settings.Save(settingsPath);
+        if (!saved.IsSuccess)
+        {
+            throw new InvalidOperationException(
+                $"UI perf fixture failed to write settings: {saved.ErrorMessage}");
+        }
+    }
+
+    /// <summary>
+    /// Completes the onboarding setup contract for the UI perf fixture so
+    /// <see cref="MainWindowViewModel"/> shows the seeded library instead of
+    /// redirecting to FirstRun. Uses only isolated fixture state: a fresh
+    /// database, inert loopback URLs, mock OCR engines, and a marker token
+    /// with no real credential meaning. Never reads real user credentials.
+    /// </summary>
+    private sealed class FixedClock(DateTimeOffset utcNow) : IClock
+    {
+        public DateTimeOffset UtcNow { get; } = utcNow;
+    }
+
+    private static async Task CompleteUiFixtureSetupAsync(
+        CountingConnectionFactory database,
+        string settingsPath,
+        string root,
+        CancellationToken cancellationToken)
+    {
+        FixedClock clock = new(new DateTimeOffset(2026, 8, 2, 0, 0, 0, TimeSpan.Zero));
+        LibraryIdentityService library = new(database, clock);
+
+        string searchRoot = Path.Combine(root, "search");
+        Directory.CreateDirectory(searchRoot);
+
+        FileResolutionService files = new(
+            database,
+            library,
+            clock,
+            rootBindings: new AppSettingsDeviceRootBindingStore(settingsPath));
+        Result<FileSearchRoot> rootResult = await files.AddSearchRootAsync(
+            new SelectedFileSearchRoot(
+                searchRoot, "ui-perf", FileSearchRootAuthorizationKinds.None,
+                null, null, clock.UtcNow),
+            cancellationToken);
+        if (rootResult.IsFailure)
+        {
+            throw new InvalidOperationException(
+                $"UI perf fixture failed to add search root: {rootResult.ErrorMessage}");
+        }
+
+        OcrPresetService presets = new(database, library, clock);
+        Result<OcrPreset> presetResult = await presets.CreatePresetAsync(
+            "UI perf mock", null, OcrEngineIds.Mock, OcrModelIds.MockBasic,
+            null, "{}", false, cancellationToken);
+        if (presetResult.IsFailure)
+        {
+            throw new InvalidOperationException(
+                $"UI perf fixture failed to create OCR preset: {presetResult.ErrorMessage}");
+        }
+
+        CredentialStore credentials = new(settingsPath);
+        Result<ProviderCredentialMetadata> credentialResult = await credentials.SaveAsync(
+            ProviderIds.MinerU, "UI performance fixture", "ui-perf-inert-token",
+            cancellationToken);
+        if (credentialResult.IsFailure)
+        {
+            throw new InvalidOperationException(
+                $"UI perf fixture failed to save credential: {credentialResult.ErrorMessage}");
+        }
+
+        ExistingDatabaseSetup setup =
+            await ExistingDatabaseSetupInspector.InspectAsync(database.DatabasePath, cancellationToken);
+        if (!setup.IsComplete)
+        {
+            throw new InvalidOperationException(
+                "UI perf fixture setup is not complete after seeding; " +
+                $"CurrentStep={setup.CurrentStep}, IsComplete={setup.IsComplete}");
+        }
     }
 
     private static async Task StopServicesAsync(MainWindowViewModel viewModel)

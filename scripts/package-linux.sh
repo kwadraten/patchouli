@@ -130,7 +130,7 @@ Section: office
 Priority: optional
 Architecture: amd64
 Maintainer: $maintainer
-Depends: fontconfig
+Depends: fontconfig, libx11-6, libice6, libsm6, libicu76 | libicu74 | libicu72, libssl3t64 | libssl3, libgssapi-krb5-2
 Description: Personal literature manager for large PDF libraries
  Patchouli is an experimental desktop literature manager for managing,
  digitizing, continuously correcting, and effectively recalling large PDF
@@ -228,16 +228,66 @@ build_flatpak() {
   rm -rf "$root/.tmp/flatpak-manual" "$repo_dir"
   mkdir -p "$repo_dir"
   flatpak build-init "$build_dir" "$app_id" \
-    org.freedesktop.Sdk org.freedesktop.Platform 24.08
+    org.freedesktop.Sdk org.freedesktop.Platform 26.08
   cp -a --no-preserve=ownership "$stage/usr/." "$build_dir/files/"
   # /usr/bin/patchouli{,-cli} symlinks already come from the staged tree.
-  # build-finish writes metadata; its export phase may hit container chown
-  # limits but metadata is written before that, and build-export is what matters.
-  flatpak build-finish "$build_dir" \
-    --share=ipc --socket=x11 --socket=wayland --socket=pulseaudio \
+  # Flatpak sandbox: /app/bin is on PATH, /usr/bin/patchouli does not exist.
+  # Rewrite the desktop Exec for the sandbox (deb/rpm keep /usr/bin/patchouli).
+  sed -i "s|^Exec=/usr/bin/patchouli$|Exec=patchouli|" \
+    "$build_dir/files/share/applications/$app_id.desktop"
+  # build-finish must succeed: capture its real exit code separately from
+  # any display filtering. Do NOT pipe through grep with pipefail: if flatpak
+  # succeeds quietly, grep finds no lines and exits 1, falsely failing the build.
+  # Also do NOT toggle the script's global pipefail; keep safety checks intact.
+  # --no-exports: container blocks chown during build-finish's export processing.
+  # We manually create the export dir below (desktop file + icons) without chown,
+  # then build-export picks it up. This gives a real desktop entry, not just
+  # files inside the sandbox.
+  _finish_log="$build_dir/build-finish.log"
+  flatpak build-finish --no-exports "$build_dir" \
+    --share=ipc --share=network --socket=x11 --socket=pulseaudio \
     --device=dri --filesystem=home \
     --talk-name=org.freedesktop.Notifications \
-    --command=patchouli 2>&1 | grep -v "fchown" || true
+    --command=patchouli > "$_finish_log" 2>&1
+  _finish_code=$?
+  # Display log without fchown noise (filtering only for display, not for exit code)
+  grep -v "fchown" "$_finish_log" || true
+  if [ "$_finish_code" -ne 0 ]; then
+    echo "ERROR: flatpak build-finish failed with exit code $_finish_code" >&2
+    echo "Full log preserved at $_finish_log" >&2
+    exit "$_finish_code"
+  fi
+  # Verify build-finish actually wrote the metadata (command + permissions).
+  if ! grep -q "^command=patchouli$" "$build_dir/metadata"; then
+    echo "ERROR: flatpak build-finish did not write command=patchouli to metadata" >&2
+    exit 1
+  fi
+  if ! grep -q "^\[Context\]" "$build_dir/metadata"; then
+    echo "ERROR: flatpak build-finish did not write [Context] permissions to metadata" >&2
+    exit 1
+  fi
+  # Manual export: copy desktop file and icons to export/ (no chown needed).
+  # This is what build-finish --no-exports skips; without it, `flatpak install`
+  # creates no desktop launcher.
+  mkdir -p "$build_dir/export/share/applications"
+  mkdir -p "$build_dir/export/share/icons/hicolor/scalable/apps"
+  mkdir -p "$build_dir/export/share/icons/hicolor/128x128/apps"
+  cp "$build_dir/files/share/applications/$app_id.desktop" \
+     "$build_dir/export/share/applications/"
+  # Copy icons if present (scalable SVG preferred, fallback to PNG)
+  if [ -f "$build_dir/files/share/icons/hicolor/scalable/apps/$app_id.svg" ]; then
+    cp "$build_dir/files/share/icons/hicolor/scalable/apps/$app_id.svg" \
+       "$build_dir/export/share/icons/hicolor/scalable/apps/"
+  fi
+  if [ -f "$build_dir/files/share/icons/hicolor/128x128/apps/$app_id.png" ]; then
+    cp "$build_dir/files/share/icons/hicolor/128x128/apps/$app_id.png" \
+       "$build_dir/export/share/icons/hicolor/128x128/apps/"
+  fi
+  # Verify export contains the desktop file
+  if [ ! -f "$build_dir/export/share/applications/$app_id.desktop" ]; then
+    echo "ERROR: manual export did not create $app_id.desktop" >&2
+    exit 1
+  fi
   flatpak build-export "$repo_dir" "$build_dir"
   flatpak build-bundle "$repo_dir" \
     "$out/${app_id}-${version}-x86_64.flatpak" "$app_id"

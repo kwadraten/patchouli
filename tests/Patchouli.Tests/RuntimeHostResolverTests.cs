@@ -28,6 +28,23 @@ public sealed class RuntimeHostResolverTests : IDisposable
     }
 
     [Fact]
+    public void Packaged_cli_finds_the_desktop_host_in_a_sibling_directory()
+    {
+        // Linux deb/rpm layout: CLI in /usr/lib/patchouli-cli/, UI in /usr/lib/patchouli/.
+        string packageRoot = Directory.CreateDirectory(Path.Combine(_root, "usr", "lib")).FullName;
+        string cliDirectory = Directory.CreateDirectory(Path.Combine(packageRoot, "patchouli-cli")).FullName;
+        string uiDirectory = Directory.CreateDirectory(Path.Combine(packageRoot, "patchouli")).FullName;
+        string executable = Path.Combine(uiDirectory,
+            OperatingSystem.IsWindows() ? "Patchouli.UI.exe" : "Patchouli.UI");
+        File.WriteAllText(executable, string.Empty);
+
+        (string resolved, string? assembly) = RuntimeHostResolver.ResolveHostExecutable(cliDirectory, null);
+
+        resolved.Should().Be(executable);
+        assembly.Should().BeNull();
+    }
+
+    [Fact]
     public void Development_cli_finds_the_sibling_ui_build_output()
     {
         string cliOutput = Directory.CreateDirectory(Path.Combine(

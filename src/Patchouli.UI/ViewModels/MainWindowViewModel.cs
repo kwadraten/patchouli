@@ -2135,6 +2135,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         Result<LibraryMetadata> library = await services.Library.GetCurrentLibraryAsync();
         if (library.IsSuccess)
         {
+            // Set health endpoint identity BEFORE publishing the record.
+            // The status-change callback (via ObserveOn) may run after publish;
+            // setting here ensures /health returns instanceId/libraryId immediately.
+            if (_mcpHost.Server is not null)
+            {
+                _mcpHost.Server.HostInstanceId = _runtimeHostLease.InstanceId;
+                _mcpHost.Server.HostLibraryId = library.Value.LibraryId.ToString();
+            }
+
             await _runtimeHostLease.PublishAsync(library.Value.LibraryId.ToString(), _mcpHost.Endpoint);
         }
     }
@@ -2214,6 +2223,14 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IAsyncDisposabl
         if (change.Status == McpServerHostStatus.Running && _mcpHost is { } host)
         {
             SetMcpEndpoint(host.Endpoint);
+            // Expose lease InstanceId via /health for cross-namespace discovery verification.
+            if (host.Server is not null && _runtimeHostLease is not null)
+            {
+                host.Server.HostInstanceId = _runtimeHostLease.InstanceId;
+                // LibraryId for health binding: use the lease's database path to derive?
+                // The ViewModel doesn't directly track LibraryId; skip if unavailable.
+            }
+
             // Manual Raise: McpRunningSettingsRevision bridges _mcpHost external status change into ViewModel PropertyChanged.
             Raise(nameof(McpRunningSettingsRevision));
             LogOperationAsync("mcp_http_start", $"MCP HTTP server listening on {host.Endpoint}")

@@ -15,7 +15,11 @@ public sealed class MinerUUploadPreparerTests
     {
         string tempDir = Path.Combine(Path.GetTempPath(), $"patchouli-mineru-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
-        string longFileName = $"[031807404]{new string('程', 140)}.pdf";
+        // 70 CJK chars x 3 bytes (UTF-8) = 210 bytes + 15 = 225 bytes total,
+        // under the 255-byte filesystem limit but still a "long" file name.
+        // 140 chars (420 bytes) exceeds the limit and fails in the fixture
+        // before reaching product code.
+        string longFileName = $"[031807404]{new string('程', 70)}.pdf";
         string pdfPath = Path.Combine(tempDir, longFileName);
         await File.WriteAllBytesAsync(pdfPath, [1, 2, 3, 4]);
         CapturingMinerUClient client = new();

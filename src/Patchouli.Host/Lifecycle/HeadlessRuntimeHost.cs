@@ -78,6 +78,16 @@ public static class HeadlessRuntimeHost
                 return 1;
             }
 
+            // Expose the lease InstanceId via /health for cross-namespace discovery.
+            // A CLI in a different PID namespace (e.g., another `flatpak run` instance)
+            // cannot verify the host via PID, but the network namespace is shared
+            // (--share=network), so it can verify via the health endpoint.
+            if (host.Server is not null)
+            {
+                host.Server.HostInstanceId = lease.InstanceId;
+                host.Server.HostLibraryId = library.Value.LibraryId.ToString();
+            }
+
             await lease.PublishAsync(library.Value.LibraryId.ToString(), host.Endpoint, cancellationToken);
             Console.Error.WriteLine($"[headless-host] listening at {host.Endpoint}");
 

@@ -2771,6 +2771,7 @@ public sealed class UiViewModelTests : IDisposable
             vm.Shell.Items.Should().ContainSingle();
             HostServices services = await vm.ServicesAsync();
             File.ReadAllText(settingsPath).Should().Contain("token");
+            (await vm.GetPersistedMinerUTokenAsync()).Should().Be("token");
 
             byte[] zipBytes = await File.ReadAllBytesAsync(zipPath);
             string? tokenUsed = null;
@@ -2787,7 +2788,8 @@ public sealed class UiViewModelTests : IDisposable
             await queue.WaitForIdleAsync();
             await vm.Shell.RefreshItemsAsync();
 
-            File.ReadAllText(PatchouliAppSettings.ResolvePath()).Should().Contain("token");
+            File.ReadAllText(settingsPath).Should().Contain("token");
+            (await vm.GetPersistedMinerUTokenAsync()).Should().Be("token");
             modelVersionUsed.Should().BeNull("the app settings own the MinerU API model version fallback");
             tokenUsed.Should().Be("token");
             OcrQueueTask ocrTask = (await queue.ListTasksAsync(new OcrQueueTaskFilter())).Value.Single();
@@ -2815,6 +2817,11 @@ public sealed class UiViewModelTests : IDisposable
             {
                 SqliteConnection.ClearAllPools();
                 File.Delete(path);
+            }
+
+            if (File.Exists(settingsPath))
+            {
+                File.Delete(settingsPath);
             }
         }
     }
