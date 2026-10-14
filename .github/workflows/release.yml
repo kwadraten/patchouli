@@ -65,11 +65,64 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
 
+  package-linux:
+    name: Package Linux (deb, rpm, AppImage, Flatpak)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          test -n "$version"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Install Linux packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils imagemagick rpm zstd flatpak curl
+      - name: Install Flatpak runtime and SDK
+        run: |
+          sudo flatpak remote-add --system --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install --system --noninteractive -y --arch=x86_64 flathub \
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
+      - name: Build Linux packages
+        shell: bash
+        run: bash scripts/package-linux.sh deb rpm appimage flatpak
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          RUNTIME: linux-x64
+      - name: Verify Linux packages
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for extension in deb rpm AppImage flatpak; do
+            packages=(.tmp/installer/*."$extension")
+            test "${#packages[@]}" -eq 1
+            test -s "${packages[0]}"
+          done
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: patchouli-linux
+          path: |
+            .tmp/installer/*.deb
+            .tmp/installer/*.rpm
+            .tmp/installer/*.AppImage
+            .tmp/installer/*.flatpak
+          include-hidden-files: true
+          if-no-files-found: error
+
   release:
     name: Create GitHub release
     needs:
       - package-windows
       - package-macos
+      - package-linux
     runs-on: ubuntu-latest
     steps:
       - name: Download packaged artifacts
@@ -82,8 +135,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          mapfile -d '' assets < <(find .tmp/release-assets -type f \( -name '*.exe' -o -name '*.dmg' \) -print0)
-          test "${#assets[@]}" -eq 2
+          mapfile -d '' assets < <(find .tmp/release-assets -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.flatpak' \) -print0)
+          test "${#assets[@]}" -eq 6
 
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
