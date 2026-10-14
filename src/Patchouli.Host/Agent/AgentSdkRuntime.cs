@@ -19,6 +19,8 @@ public sealed record AgentSdkReceipt(
     double ElapsedMs)
 {
     public bool IsPrimitive { get; init; } = true;
+    public string ContextId { get; init; } = "main";
+    public string ActivationId { get; init; } = "main";
 }
 
 /// <summary>Immutable activation; a stage only narrows the ordinary host capabilities.</summary>
@@ -144,7 +146,11 @@ public sealed class AgentSdkRuntime(IAgentMcpGateway gateway)
             string detail)
         {
             AgentSdkReceipt receipt = new(_parent + "/" + Interlocked.Increment(ref _ordinal), parent, name, arguments,
-                _context.SdkPolicy?.Activation ?? "chat", "Failed", detail, code, 0);
+                _context.SdkPolicy?.Activation ?? "chat", "Failed", detail, code, 0)
+            {
+                ContextId = _context.ContextId,
+                ActivationId = _context.ActivationId
+            };
             Observe(receipt);
             if (_context.RecordSdk is { } record)
             {
@@ -271,7 +277,11 @@ public sealed class AgentSdkRuntime(IAgentMcpGateway gateway)
                     }
                 }
 
-                AgentSdkReceipt started = new(operation, parent, name, canonical, contract, "Started", "", null, 0);
+                AgentSdkReceipt started = new(operation, parent, name, canonical, contract, "Started", "", null, 0)
+                {
+                    ContextId = _context.ContextId,
+                    ActivationId = _context.ActivationId
+                };
                 if (path is not null)
                 {
                     await SaveAsync(path, started).ConfigureAwait(false);

@@ -571,6 +571,8 @@ Workflow metadata and parameter details are statically projected from independen
 availability, applicable selection, required fields and declared constraints. Explicit start
 parameters override only the current run; they do not edit saved workflow configuration.
 Field failures identify stable parameter keys and error codes. Desktop editor repair is a UI
-behavior and is not required to consume MCP diagnostics. Workflow snapshot API version 6
-freezes resolved values and the actual model choice; older histories remain readable but cannot
-resume with the new executor. See [workflow-api](workflow-api.md) and ADR 0042.
+behavior and is not required to consume MCP diagnostics. Workflow snapshot API version 8
+retains frozen values/model selection and records explicit context and loop-activation identity;
+older histories remain readable but cannot resume automated execution with the new executor.
+Session events include context and activation identity for effects without introducing separate
+MCP Run resources for workers. See [workflow-api](workflow-api.md), ADR 0042 and ADR 0043.

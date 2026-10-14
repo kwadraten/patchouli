@@ -24,33 +24,49 @@ public static class AgentNativeTools
 
     public static string Instructions { get; } = BuildInstructions();
 
-    private static string BuildInstructions()
+    /// <summary>Builds contracts only for the native functions present in one activated scope.</summary>
+    public static string InstructionsFor(IReadOnlyList<string> definitions)
     {
+        ArgumentNullException.ThrowIfNull(definitions);
         StringBuilder text = new(ProtocolInstructions);
-        text.AppendLine().AppendLine("Tool parameter contracts in F# (generated from the declared native schemas):");
+        text.AppendLine().AppendLine("Tool parameter contracts in F# (generated from the active native schemas):");
         List<string> cases = [];
-        foreach (string definition in Definitions)
+        foreach (string definition in definitions)
         {
-            JsonObject function = JsonNode.Parse(definition)!["function"]!.AsObject();
-            string name = function["name"]!.GetValue<string>();
+            JsonObject function = JsonNode.Parse(definition)?["function"]?.AsObject() ??
+                                  throw new InvalidDataException("An active agent tool has no function schema.");
+            string name = function["name"]?.GetValue<string>() ??
+                          throw new InvalidDataException("An active agent tool has no name.");
             string caseName = char.ToUpperInvariant(name[0]) + name[1..];
             string type = caseName + "Args";
-            JsonObject parameters = function["parameters"]!.AsObject();
-            HashSet<string> required = parameters["required"]!.AsArray()
-                .Select(field => field!.GetValue<string>()).ToHashSet(StringComparer.Ordinal);
-            string fields = string.Join("; ", parameters["properties"]!.AsObject().Select(field =>
+            JsonObject parameters = function["parameters"]?.AsObject() ?? new JsonObject();
+            HashSet<string> required = parameters["required"]?.AsArray().Select(field => field!.GetValue<string>())
+                .ToHashSet(StringComparer.Ordinal) ?? [];
+            JsonObject properties = parameters["properties"]?.AsObject() ?? new JsonObject();
+            string fields = string.Join("; ", properties.Select(field =>
                 "``" + field.Key + "``: " + FSharpType(field.Value!) +
                 (required.Contains(field.Key) ? "" : " option")));
             text.AppendLine("type " + type + " = { " + fields + " }");
             cases.Add(caseName + " of " + type);
         }
 
-        text.AppendLine("type ToolCall = " + string.Join(" | ", cases));
-        text.AppendLine("These F# types describe native function arguments. Send JSON objects matching the records, " +
-                        "not F# record syntax or a {tool,arguments} envelope. Lists are JSON arrays, bool is true/false, " +
-                        "int64 is an integer. For option fields, omit None; encode Some x as x, never null or {Some:...}. " +
-                        "Do not invent fields. F# source belongs only inside fsi.code. After a parsing/type failure, " +
-                        "use the returned diagnostic to correct the next native call.");
+        if (cases.Count > 0)
+        {
+            text.AppendLine("type ToolCall = " + string.Join(" | ", cases));
+        }
+
+        text.AppendLine(
+            "These types describe only the active native function arguments. Send JSON objects matching the " +
+            "records, not F# record syntax or a {tool,arguments} envelope. Lists are JSON arrays, bool is " +
+            "true/false, int64 is an integer. For option fields, omit None; encode Some x as x, never " +
+            "null or {Some:...}. Do not invent fields. F# source belongs only inside fsi.code. After a " +
+            "parsing/type failure, use the returned diagnostic to correct the next native call.");
+        return text.ToString();
+    }
+
+    private static string BuildInstructions()
+    {
+        StringBuilder text = new(InstructionsFor(Definitions));
         text.AppendLine("Actual FSI SDK (already installed; open Patchouli.Agent.Sdk):");
         text.AppendLine("type LibraryDomain = Items | Texts | Translations | CslStyles | Runs | Workflows");
         text.AppendLine("type BrowseScope = Root | Domain of LibraryDomain | DocumentTexts of string");

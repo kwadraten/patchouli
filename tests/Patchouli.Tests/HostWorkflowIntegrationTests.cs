@@ -85,7 +85,7 @@ public sealed class HostWorkflowIntegrationTests
                               open Patchouli.Workflows.Scripting
                               let worker = Agent.text "selection" "Describe the selection."
                                               (fun (x: WorkflowInput) -> sprintf "%A %s" x.Documents x.PageRange)
-                              let run = Agent.run worker |> Workflow.define
+                              let run = Agent.run AgentContext.main worker |> Workflow.define
                               """;
         await using Harness harness = new();
         await harness.SaveWorkflowAsync(script, WorkflowSelectionScope.All);
@@ -155,7 +155,11 @@ public sealed class HostWorkflowIntegrationTests
         await harness.Sessions.WakeChatAsync("failed-provider");
         harness.Mcp.Calls.Select(call => call.Name).Should().Equal("fetch", "put");
         harness.Llm.Requests[1].History.Messages.Should().HaveCount(2);
-        harness.Llm.Requests.Select(request => request.History.Instructions).Distinct().Should().ContainSingle();
+        harness.Llm.Requests[0].History.Instructions.Should().Contain("AGENT STAGE: worker");
+        harness.Llm.Requests[1].History.Instructions.Should().NotContain("AGENT STAGE: worker");
+        harness.Llm.Requests.Select(request => request.History.Instructions).Distinct().Should()
+            .HaveCountGreaterThan(1,
+                "a later chat activation must receive its own contract, not the workflow stage rules");
         harness.Sessions.TryGetSnapshot("failed-provider")!.Status.Should().Be(AgentSessionStatus.Idle);
     }
 

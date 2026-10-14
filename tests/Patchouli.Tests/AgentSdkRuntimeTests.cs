@@ -123,33 +123,84 @@ public sealed class AgentSdkRuntimeTests
     }
 
     [Fact]
+    public async Task Local_effect_ids_are_namespaced_by_activation_for_durable_sdk_operations()
+    {
+        string directory = TemporaryDirectory();
+        try
+        {
+            Gateway gateway = new();
+            AgentEffectInterpreter interpreter = new(new NoModels(), gateway, new PlaceholderAgentHostPrimitives());
+            AgentEffectContext firstContext = new("activation-namespace", "", [], [])
+            {
+                ContextId = "shared-context",
+                ActivationId = "activation-a",
+                SessionDirectory = directory
+            };
+            AgentEffectContext secondContext = firstContext with { ActivationId = "activation-b" };
+
+            AgentEffectOutcome first = await interpreter.ExecuteAsync(firstContext,
+                Effect.NewMcpToolCall(EffectId.NewEffectId(1), "put", Put), CancellationToken.None);
+            AgentEffectOutcome second = await interpreter.ExecuteAsync(secondContext,
+                Effect.NewMcpToolCall(EffectId.NewEffectId(1), "put", Put), CancellationToken.None);
+
+            first.FailureCode.Should().BeNull();
+            second.FailureCode.Should().BeNull();
+            first.Receipts.Should().ContainSingle();
+            second.Receipts.Should().ContainSingle();
+            first.Receipts[0].OperationId.Should().NotBe(second.Receipts[0].OperationId);
+            first.Receipts[0].ActivationId.Should().Be("activation-a");
+            second.Receipts[0].ActivationId.Should().Be("activation-b");
+            gateway.Calls.Should().HaveCount(2,
+                "the same local EffectId in a later activation is a distinct operation, not a replay of the earlier receipt");
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
     public async Task Completed_write_is_reused_and_unknown_write_blocks_other_attempts_to_the_same_target()
     {
         string directory = TemporaryDirectory();
         try
         {
             Gateway gateway = new();
-            AgentEffectContext context = new("durable", "", [], []) { SessionDirectory = directory };
+            AgentEffectContext context = new("durable", "", [], [])
+            {
+                ContextId = "context-a",
+                ActivationId = "activation-a",
+                SessionDirectory = directory
+            };
             AgentSdkRuntime runtime = new(gateway);
-            using (AgentSdkRuntime.Scope first = runtime.Activate(context, "effect/1", CancellationToken.None))
+            using (AgentSdkRuntime.Scope first =
+                   runtime.Activate(context, "activation-a/effect/1", CancellationToken.None))
             {
                 (await first.InvokeAsync("put", Put)).Succeeded.Should().BeTrue();
             }
 
-            using (AgentSdkRuntime.Scope replay = runtime.Activate(context, "effect/1", CancellationToken.None))
+            using (AgentSdkRuntime.Scope replay =
+                   runtime.Activate(context, "activation-a/effect/1", CancellationToken.None))
             {
                 (await replay.InvokeAsync("put", Put)).Succeeded.Should().BeTrue();
             }
 
             gateway.Calls.Should().ContainSingle();
             gateway.Interrupt = true;
-            using (AgentSdkRuntime.Scope interrupted = runtime.Activate(context, "effect/2", CancellationToken.None))
+            using (AgentSdkRuntime.Scope interrupted =
+                   runtime.Activate(context, "activation-a/effect/2", CancellationToken.None))
             {
                 await Assert.ThrowsAsync<OperationCanceledException>(() => interrupted.InvokeAsync("put", Put));
             }
 
             gateway.Interrupt = false;
-            using (AgentSdkRuntime.Scope next = runtime.Activate(context, "effect/3", CancellationToken.None))
+            AgentEffectContext otherContext = context with
+            {
+                ContextId = "context-b",
+                ActivationId = "activation-b"
+            };
+            using (AgentSdkRuntime.Scope next =
+                   runtime.Activate(otherContext, "activation-b/effect/2", CancellationToken.None))
             {
                 (await next.InvokeAsync("put", Put)).ErrorCode.Should().Be("SDK_OPERATION_UNKNOWN");
             }
@@ -158,7 +209,8 @@ public sealed class AgentSdkRuntimeTests
             WorkflowEffectHostAdapter adapter = new(new AgentEffectInterpreter(new NoModels(), gateway,
                 new PlaceholderAgentHostPrimitives()), _ => "", sessionDirectory: _ => directory);
             WorkflowEffectOutcome observed = await adapter.ExecuteEffectAsync(context.SessionId,
-                new WorkflowEffectScope(AgentCoreModule.initial),
+                new WorkflowEffectScope(AgentCoreModule.initial, null, null, Array.Empty<ExportedTool>(), "worker",
+                    otherContext.ContextId, otherContext.ActivationId, "", false, ""),
                 Effect.NewMcpToolCall(EffectId.NewEffectId(2), "put", Put), CancellationToken.None);
             observed.Should().BeOfType<WorkflowEffectOutcome.ObservedEvent>().Which.operations.Single().ErrorCode
                 .Should().Be("SDK_OPERATION_UNKNOWN",

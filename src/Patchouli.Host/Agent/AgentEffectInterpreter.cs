@@ -24,6 +24,15 @@ public sealed record AgentEffectContext(
     IReadOnlyList<string> ToolDefinitions,
     IReadOnlyList<HistoryEntry> History)
 {
+    /// <summary>Stable history and FSI workspace partition within the owning audit session.</summary>
+    public string ContextId { get; init; } = SessionId;
+
+    /// <summary>Stable agent invocation identity, frozen across request retries and recovery.</summary>
+    public string ActivationId { get; init; } = "main";
+
+    /// <summary>Provider conversation identity for prefix caching, independent of the audit session id.</summary>
+    public string ConversationKey => SessionId + "/context/" + ContextId + "/activation/" + ActivationId;
+
     /// <summary>Explicit model frozen into this workflow session; null selects the current chat model.</summary>
     public ModelSelection? ModelSelection { get; init; }
 
@@ -150,10 +159,12 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
     private readonly AgentContextCompactor? _compactor;
     private readonly AgentSdkRuntime _sdk;
     private readonly Func<int>? _historyPageCharacters;
+    private readonly AgentSessionStore? _sessionStore;
 
     /// <summary>Creates the interpreter over the three host surfaces an effect can reach.</summary>
     public AgentEffectInterpreter(IAgentLlmClientProvider llm, IAgentMcpGateway mcp, IAgentHostPrimitives host,
-        AgentFsiRepl? fsi = null, AgentContextCompactor? compactor = null, Func<int>? historyPageCharacters = null)
+        AgentFsiRepl? fsi = null, AgentContextCompactor? compactor = null, Func<int>? historyPageCharacters = null,
+        AgentSessionStore? sessionStore = null)
     {
         ArgumentNullException.ThrowIfNull(llm);
         ArgumentNullException.ThrowIfNull(mcp);
@@ -165,6 +176,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         _fsi = fsi;
         _compactor = compactor;
         _historyPageCharacters = historyPageCharacters;
+        _sessionStore = sessionStore;
     }
 
     /// <inheritdoc />
@@ -217,9 +229,27 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
                 };
         }
 
+        int? maxTokens = client.Value.SupportsMaxTokens ? AgentContextBudget.OutputTokens(client.Value) : null;
+        if (_sessionStore is not null)
+        {
+            AgentActivationEnvelope envelope = AgentActivationEnvelope.Create(context,
+                client.Value.ConfigurationKey, maxTokens);
+            string? divergence = await _sessionStore.EnsureActivationEnvelopeAsync(context.SessionId, envelope,
+                cancellationToken).ConfigureAwait(false);
+            if (divergence is not null)
+            {
+                return AgentEffectOutcome.Completed(Event.NewModelFailure(chat.effectId,
+                        "AGENT_ACTIVATION_DIVERGED", divergence, false), divergence) with
+                    {
+                        FailureCode = "AGENT_ACTIVATION_DIVERGED"
+                    };
+            }
+        }
+
         // An in-flight chat is cancelled promptly; consumed tokens are not returned (ADR 0036).
         Result<LlmChatCompletion> completion = _compactor is null
-            ? await client.Value.CompleteAsync(context.SessionId,
+            ? await client.Value.CompleteAsync(context.ConversationKey + "/prefix/" +
+                                               AgentContextBudget.EnvelopeKey(context, client.Value),
                     new LlmChatRequest(AgentChatHistoryBuilder.Build(context), context.ToolDefinitions),
                     cancellationToken)
                 .ConfigureAwait(false)
@@ -264,7 +294,8 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         }
 
         AgentToolOutcome outcome;
-        using AgentSdkRuntime.Scope scope = _sdk.Activate(context, "effect/" + tool.effectId.Item, cancellationToken);
+        using AgentSdkRuntime.Scope scope =
+            _sdk.Activate(context, EffectParent(context, tool.effectId.Item), cancellationToken);
         try
         {
             string? decodeError = null;
@@ -357,9 +388,10 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         AgentSdkRuntime.Scope scope, CancellationToken cancellationToken)
     {
         string identity = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(tool.arguments + "/" + (context.SdkPolicy?.Activation ?? "chat"))));
+            System.Text.Encoding.UTF8.GetBytes(tool.arguments + "/" + (context.SdkPolicy?.Activation ?? "chat") +
+                                               "/" + context.ContextId + "/" + context.ActivationId)));
         string? path = context.SessionDirectory is { } directory
-            ? Path.Combine(directory, "fsi-executions", tool.effectId.Item + ".json")
+            ? FsiExecutionPath(directory, context, tool.effectId.Item)
             : null;
         if (path is not null && File.Exists(path))
         {
@@ -379,7 +411,7 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
             }
 
             IReadOnlyList<AgentSdkReceipt> receipts = await AgentSdkRuntime.ReadReceiptsAsync(context.SessionDirectory!,
-                "effect/" + tool.effectId.Item, cancellationToken).ConfigureAwait(false);
+                EffectParent(context, tool.effectId.Item), cancellationToken).ConfigureAwait(false);
             scope.Restore(receipts);
             if (context.RecordSdk is { } recordSdk)
             {
@@ -404,7 +436,8 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
             await SaveFsiAsync(path, new FsiExecution(identity, "Started", null)).ConfigureAwait(false);
         }
 
-        AgentToolOutcome outcome = await _fsi!.ExecuteAsync(context.SessionId, tool.arguments, scope.InvokeAsync,
+        AgentToolOutcome outcome = await _fsi!.ExecuteAsync(context.SessionId, context.ContextId, tool.arguments,
+                scope.InvokeAsync,
                 cancellationToken, AgentSdkBindings.Source(context.SdkPolicy?.Exports ?? []))
             .ConfigureAwait(false);
         outcome = outcome with { Receipts = scope.Receipts };
@@ -423,6 +456,29 @@ public sealed class AgentEffectInterpreter : IAgentEffectInterpreter
         await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(execution), CancellationToken.None)
             .ConfigureAwait(false);
         File.Move(temporary, path, true);
+    }
+
+    private static string EffectParent(AgentEffectContext context, long effectId)
+    {
+        return context.ActivationId == "main" ? "effect/" + effectId : context.ActivationId + "/effect/" + effectId;
+    }
+
+    private static string FsiExecutionPath(string directory, AgentEffectContext context, long effectId)
+    {
+        string fileName = effectId + ".json";
+        if ((context.ActivationId == "main" && context.ContextId is "main") ||
+            (context.ActivationId == "main" && context.ContextId == context.SessionId))
+        {
+            return Path.Combine(directory, "fsi-executions", fileName);
+        }
+
+        return Path.Combine(directory, "fsi-executions", ContextKey(context), fileName);
+    }
+
+    private static string ContextKey(AgentEffectContext context)
+    {
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(context.ContextId + "\n" + context.ActivationId))).ToLowerInvariant();
     }
 
     private static AgentToolOutcome FromSdk(Patchouli.Agent.Sdk.SdkResult result)

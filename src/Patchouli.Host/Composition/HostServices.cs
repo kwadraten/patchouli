@@ -267,7 +267,8 @@ public sealed class HostServices
                 int capacity = settings.FindProvider(settings.ChatSelection.ProviderId)?.ContextWindowTokens ??
                                LlmProviderAppSettings.DefaultContextWindowTokens;
                 return Math.Clamp(capacity / 16, 128, 16000);
-            });
+            },
+            agentStore);
         AgentSessions = new AgentSessionService(
             agentStore,
             agentInterpreter,

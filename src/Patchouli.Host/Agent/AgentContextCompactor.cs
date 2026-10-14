@@ -16,7 +16,11 @@ public sealed record AgentContextCheckpoint(
     int PromptTokens = 0,
     string MeasuredHash = "",
     string RequestEnvelopeKey = "",
-    int ContextWindowTokens = 0);
+    int ContextWindowTokens = 0)
+{
+    public string ContextId { get; init; } = "";
+    public string ActivationId { get; init; } = "";
+}
 
 /// <summary>Compacts the complete active prefix at 80% capacity; the core's original history stays intact.</summary>
 public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? toolResultMaxCharacters = null)
@@ -39,7 +43,14 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
             ToolResultMaxCharacters = Math.Clamp(toolResultMaxCharacters?.Invoke() ?? context.ToolResultMaxCharacters,
                 LlmAppSettings.MinToolResultMaxCharacters, LlmAppSettings.MaxToolResultMaxCharacters)
         };
-        AgentContextCheckpoint checkpoint = await store.ReadCompactionAsync(context.SessionId, cancellationToken)
+        string? seedError = await SeedActivationCheckpointsAsync(context, cancellationToken).ConfigureAwait(false);
+        if (seedError is not null)
+        {
+            return Result<LlmChatCompletion>.Failure(LlmFailureCodes.HistoryInvariantViolated, seedError);
+        }
+
+        AgentContextCheckpoint checkpoint = await store.ReadCompactionAsync(context.SessionId, cancellationToken,
+                context.ContextId, context.ActivationId)
             .ConfigureAwait(false) ?? new AgentContextCheckpoint();
         if (checkpoint.Generation < 0 || checkpoint.CoveredEntries < 0 || checkpoint.MeasuredEntries < 0 ||
             (checkpoint.CoveredEntries > 0 && string.IsNullOrWhiteSpace(checkpoint.Summary)) ||
@@ -87,9 +98,10 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
                 return BudgetFailure(tokens, client);
             }
 
+            string prefix = context.ConversationKey + "/prefix/" + AgentContextBudget.EnvelopeKey(context, client);
             string key = checkpoint.Generation == 0
-                ? context.SessionId
-                : context.SessionId + "/context/" + checkpoint.Generation;
+                ? prefix
+                : prefix + "/generation/" + checkpoint.Generation;
             Result<LlmChatCompletion> completion = await client.CompleteAsync(key,
                 new LlmChatRequest(AgentChatHistoryBuilder.Build(active), context.ToolDefinitions, Options(client)),
                 cancellationToken).ConfigureAwait(false);
@@ -100,8 +112,10 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
                     MeasuredEntries = context.History.Count, PromptTokens = completion.Value.Usage.PromptTokens,
                     MeasuredHash = Hash(context.History),
                     RequestEnvelopeKey = AgentContextBudget.EnvelopeKey(context, client),
-                    ContextWindowTokens = client.ContextWindowTokens
-                }, cancellationToken).ConfigureAwait(false);
+                    ContextWindowTokens = client.ContextWindowTokens,
+                    ContextId = context.ContextId,
+                    ActivationId = context.ActivationId
+                }, cancellationToken, context.ContextId, context.ActivationId).ConfigureAwait(false);
             }
 
             if (completion.ErrorCode != LlmFailureCodes.ContextLengthExceeded || compacted || attempt != 0)
@@ -121,7 +135,8 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
     internal async Task<int> HistoryPageBudgetAsync(AgentEffectContext context, int pageCharacters,
         CancellationToken cancellationToken)
     {
-        AgentContextCheckpoint? checkpoint = await store.ReadCompactionAsync(context.SessionId, cancellationToken)
+        AgentContextCheckpoint? checkpoint = await store.ReadCompactionAsync(context.SessionId, cancellationToken,
+                context.ContextId, context.ActivationId)
             .ConfigureAwait(false);
         if (checkpoint is null || checkpoint.PromptTokens <= 0 || checkpoint.ContextWindowTokens <= 0 ||
             checkpoint.MeasuredEntries > context.History.Count ||
@@ -146,7 +161,8 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
         AgentContextCheckpoint checkpoint, ILlmChatClient client,
         CancellationToken cancellationToken)
     {
-        AgentToolPayloadCheckpoint saved = await store.ReadToolPayloadsAsync(context.SessionId, cancellationToken)
+        AgentToolPayloadCheckpoint saved = await store.ReadToolPayloadsAsync(context.SessionId, cancellationToken,
+                context.ContextId, context.ActivationId)
             .ConfigureAwait(false) ?? new AgentToolPayloadCheckpoint(0, "", new Dictionary<int, string>());
         if (saved.Version != 1 || saved.Entries < 0 || saved.Entries > context.History.Count ||
             saved.Payloads is null ||
@@ -212,8 +228,11 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
             // Publish before any provider call, including failed or cancelled attempts. Replay must
             // reuse the exact warning and preview rather than recompute them from today's settings.
             await store.WriteToolPayloadsAsync(context.SessionId,
-                new AgentToolPayloadCheckpoint(context.History.Count, Hash(context.History), payloads),
-                cancellationToken).ConfigureAwait(false);
+                new AgentToolPayloadCheckpoint(context.History.Count, Hash(context.History), payloads)
+                {
+                    ContextId = context.ContextId,
+                    ActivationId = context.ActivationId
+                }, cancellationToken, context.ContextId, context.ActivationId).ConfigureAwait(false);
         }
 
         return Result<AgentEffectContext>.Success(context with { ModelHistory = modelHistory });
@@ -270,7 +289,8 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
 
         LlmChatHistory history = AgentChatHistoryBuilder.Build(active);
         Result<LlmChatCompletion> summary = await client.CompleteAsync(
-            context.SessionId + "/compact/" + checkpoint.Generation + "/" + Hash(context.History),
+            context.ConversationKey + "/prefix/" + AgentContextBudget.EnvelopeKey(context, client) +
+            "/compact/" + checkpoint.Generation + "/" + Hash(context.History),
             new LlmChatRequest(history.Append([.. history.Messages, LlmChatMessage.User(instruction)]),
                 context.ToolDefinitions, Options(client)), cancellationToken).ConfigureAwait(false);
         if (summary.IsFailure)
@@ -280,7 +300,7 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
 
         string finish = (summary.Value.FinishReason ?? "").Replace("_", "").Replace("-", "").ToLowerInvariant();
         AgentContextCheckpoint next = new(checkpoint.Generation + 1, context.History.Count, Hash(context.History),
-            summary.Value.Text);
+            summary.Value.Text) { ContextId = context.ContextId, ActivationId = context.ActivationId };
         long nextPressure = AgentContextBudget.Estimate(Project(context, next));
         if (string.IsNullOrWhiteSpace(summary.Value.Text) || summary.Value.ToolCalls.Count != 0 ||
             finish is "length" or "maxtokens" || nextPressure >= pressure ||
@@ -290,8 +310,72 @@ public sealed class AgentContextCompactor(AgentSessionStore store, Func<int>? to
                 "Context summarization returned an empty, truncated, tool-calling or non-shrinking reply; original history was retained.");
         }
 
-        await store.WriteCompactionAsync(context.SessionId, next, cancellationToken).ConfigureAwait(false);
+        await store.WriteCompactionAsync(context.SessionId, next, cancellationToken, context.ContextId,
+            context.ActivationId).ConfigureAwait(false);
         return Result<AgentContextCheckpoint>.Success(next);
+    }
+
+    private async Task<string?> SeedActivationCheckpointsAsync(AgentEffectContext context,
+        CancellationToken cancellationToken)
+    {
+        AgentContextCheckpoint? currentCompaction = await store.ReadCompactionAsync(context.SessionId,
+            cancellationToken, context.ContextId, context.ActivationId).ConfigureAwait(false);
+        AgentToolPayloadCheckpoint? currentPayloads = await store.ReadToolPayloadsAsync(context.SessionId,
+            cancellationToken, context.ContextId, context.ActivationId).ConfigureAwait(false);
+        if (currentCompaction is not null && currentPayloads is not null)
+        {
+            return null;
+        }
+
+        (AgentToolPayloadCheckpoint? ToolPayloads, AgentContextCheckpoint? Compaction) inherited =
+            await store.ReadLatestContextCheckpointsAsync(context.SessionId, context.ContextId, context.ActivationId,
+                cancellationToken).ConfigureAwait(false);
+        if (currentCompaction is null && inherited.Compaction is { } savedCompaction)
+        {
+            if (savedCompaction.Generation < 0 || savedCompaction.CoveredEntries < 0 ||
+                savedCompaction.CoveredEntries > context.History.Count ||
+                (savedCompaction.CoveredEntries > 0 &&
+                 (string.IsNullOrWhiteSpace(savedCompaction.Summary) ||
+                  savedCompaction.PrefixHash != Hash(context.History.Take(savedCompaction.CoveredEntries)))))
+            {
+                return "The inherited context summary does not match this context's original history.";
+            }
+
+            AgentContextCheckpoint frozen = savedCompaction with
+            {
+                MeasuredEntries = 0,
+                PromptTokens = 0,
+                MeasuredHash = "",
+                RequestEnvelopeKey = "",
+                ContextWindowTokens = 0,
+                ContextId = context.ContextId,
+                ActivationId = context.ActivationId
+            };
+            await store.WriteCompactionAsync(context.SessionId, frozen, cancellationToken, context.ContextId,
+                context.ActivationId).ConfigureAwait(false);
+        }
+
+        if (currentPayloads is null && inherited.ToolPayloads is { Entries: > 0 } savedPayloads)
+        {
+            if (savedPayloads.Entries > context.History.Count ||
+                savedPayloads.PrefixHash != Hash(context.History.Take(savedPayloads.Entries)) ||
+                savedPayloads.Payloads is null ||
+                savedPayloads.Payloads.Any(pair => pair.Key < 0 || pair.Key >= savedPayloads.Entries ||
+                                                   pair.Value is null ||
+                                                   context.History[pair.Key] is not (HistoryEntry.NativeToolResult or
+                                                       HistoryEntry.ToolResult)))
+            {
+                return "The inherited tool payloads do not match this context's original history.";
+            }
+
+            await store.WriteToolPayloadsAsync(context.SessionId, savedPayloads with
+            {
+                ContextId = context.ContextId,
+                ActivationId = context.ActivationId
+            }, cancellationToken, context.ContextId, context.ActivationId).ConfigureAwait(false);
+        }
+
+        return null;
     }
 
     private static LlmChatRequestOptions Options(ILlmChatClient client)

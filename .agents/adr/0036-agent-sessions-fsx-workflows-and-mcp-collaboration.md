@@ -4,6 +4,10 @@ Date: 2026-10-05
 
 ## Status
 
+[ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md) scopes stable execution
+contracts and provider prefixes to loop activations within a Session, and introduces
+explicit main, bound and anonymous conversation contexts.
+
 The workflow script API and procedural translation sections are superseded by
 [ADR 0039](0039-typed-functional-agent-harness-workflows.md). The old API is removed;
 workflows now declare typed control plans over the existing agent. Session persistence,

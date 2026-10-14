@@ -42,7 +42,7 @@ public sealed class BuiltInTranslationWorkflowTests
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(request, CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         host.Tools.Should().Equal("find", "fetch", "fetch", "put");
-        string rules = host.Scopes[0].Context.History.OfType<HistoryEntry.Instruction>().First().text;
+        string rules = host.Scopes[0].Instructions;
         rules.Should().Contain("doc-1").And.Contain("zh-CN").And.Contain("Window radius: 2")
             .And.Contain("backfill previous window translation: false");
         result.Context.History.OfType<HistoryEntry.UserMessage>().Select(message => message.text)
@@ -65,7 +65,7 @@ public sealed class BuiltInTranslationWorkflowTests
     }
 
     [Fact]
-    public async Task Every_page_is_driven_by_a_short_prompt_and_shared_rules_are_retained_once_on_replay()
+    public async Task Every_page_uses_a_short_prompt_and_activation_rules_do_not_leak_into_history()
     {
         string script = BuiltInWorkflowScripts.tryGetText(WorkflowIds.FullTextTranslation)!.Value;
         HarnessStubHost host = new(
@@ -85,12 +85,12 @@ public sealed class BuiltInTranslationWorkflowTests
             .Where(message => message.text.StartsWith("Translate document"))
             .Select(message => message.text).Should()
             .Equal("Translate document doc-1, page 1.", "Translate document doc-1, page 2.");
-        result.Context.History.OfType<HistoryEntry.Instruction>()
-            .Count(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES"))
-            .Should().Be(1);
-        result.Context.History.OfType<HistoryEntry.Instruction>()
-            .Count(entry => entry.text.Contains("AGENT STAGE: translate-page"))
-            .Should().Be(1);
+        result.Context.History.OfType<HistoryEntry.Instruction>().Should()
+            .NotContain(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES") ||
+                                 entry.text.Contains("AGENT STAGE: translate-page"));
+        host.Scopes.Should().OnlyContain(scope => scope.Instructions.Contains("FULL-TEXT TRANSLATION RULES"));
+        host.Scopes.GroupBy(scope => scope.ActivationId).Should()
+            .OnlyContain(group => group.Select(scope => scope.Instructions).Distinct().Count() == 1);
         HarnessStubHost replayHost = new();
         WorkflowRunOutcome replay = await new WorkflowExecutor(replayHost).RunAsync(
             WorkflowScriptExecutorTests.Resume(request, result), CancellationToken.None);
@@ -129,8 +129,7 @@ public sealed class BuiltInTranslationWorkflowTests
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         result.Context.History.OfType<HistoryEntry.ToolResult>().Should()
             .Contain(entry => entry.payload.Contains("Invalid page-plan JSON"));
-        result.Context.History.OfType<HistoryEntry.Instruction>()
-            .Count(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES"))
-            .Should().Be(1);
+        result.Context.History.OfType<HistoryEntry.Instruction>().Should()
+            .NotContain(entry => entry.text.Contains("FULL-TEXT TRANSLATION RULES"));
     }
 }

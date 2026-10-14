@@ -6,6 +6,8 @@ namespace Patchouli.UI.ViewModels.AgentChat;
 public sealed partial class AgentChatMessageViewModel
 {
     public long EffectId { get; }
+    public string ActivationId { get; }
+    public string ContextId { get; }
     public string OperationId { get; }
     public string ParentId { get; }
 

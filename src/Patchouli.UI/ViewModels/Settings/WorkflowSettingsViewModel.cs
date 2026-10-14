@@ -444,7 +444,7 @@ public sealed partial class WorkflowSettingsViewModel : SettingsSectionViewModel
                                                  |> Agent.withBudget (AgentBudget.create 1 0)
 
                                              let run : AgentWorkflow =
-                                                 workflow { step reply }
+                                                 workflow { step (Agent.run AgentContext.main reply) }
                                                  |> Workflow.define
                                                  |> Workflow.withModel model
                                              """;

@@ -2,6 +2,11 @@
 
 Status: accepted, 2026-10-08. Amends ADR 0036's provider-visible append-only invariant.
 
+2026-10-13 amendment: [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md)
+supersedes the Session-wide single-loop restriction below. Prefix stability and
+compaction generations are scoped to a loop activation; contexts retain continuous
+history across activations with different execution contracts.
+
 ## Decision
 
 Keep the existing single agent loop and append-only original history. Do not introduce

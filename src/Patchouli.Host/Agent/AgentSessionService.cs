@@ -2,6 +2,7 @@ using Microsoft.FSharp.Collections;
 using System.Text.Json;
 using Patchouli.Agent;
 using Patchouli.Core.Diagnostics;
+using Patchouli.Workflows;
 using Patchouli.Workflows.Scripting;
 
 namespace Patchouli.Host.Agent;
@@ -244,7 +245,8 @@ public sealed partial class AgentSessionService : IAsyncDisposable
             // The head is part of the deterministic prefix: a caller that supplies one (a .fsx
             // workflow session supplies its script contract) keeps it byte-stable for the whole run.
             Instructions = InstructionPrefixOf(launch),
-            Context = initial
+            Context = initial,
+            MainActivationId = Guid.NewGuid().ToString("N")
         };
         session.Status = AgentSessionStatus.Running;
         session.Detail = "created";
@@ -292,6 +294,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
         AgentSession session = new(launch, _lifetime.Token)
         {
             Context = context,
+            MainActivationId = state?.MainActivationId ?? "main",
             Started = !string.Equals(launch.WorkflowUri, ChatWorkflowUri, StringComparison.Ordinal) ||
                       context.ProcessedMessageIds.Contains("launch:" + sessionId)
         };
@@ -731,6 +734,9 @@ public sealed partial class AgentSessionService : IAsyncDisposable
     {
         if (evt is Event.UserMessage)
         {
+            // A user message starts a new main-chat activation. The id is saved before any model
+            // effect can run and therefore remains stable for request retries and recovery.
+            session.MainActivationId = Guid.NewGuid().ToString("N");
             await AppendLogAsync(session, "turn/start", "{}", cancellationToken).ConfigureAwait(false);
         }
 
@@ -904,6 +910,23 @@ public sealed partial class AgentSessionService : IAsyncDisposable
             CancellationToken.None).ConfigureAwait(false);
     }
 
+    public async Task ReleaseContextAsync(string sessionId, string contextId, CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (string.Equals(contextId, "main", StringComparison.Ordinal) ||
+            string.Equals(contextId, sessionId, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (_fsi is not null)
+        {
+            await _fsi.ForgetContextAsync(sessionId, contextId).ConfigureAwait(false);
+        }
+    }
+
     private AgentEffectContext ContextFor(AgentSession session)
     {
         ModelSelection? modelSelection = session.Launch.Parameters.TryGetValue(
@@ -915,6 +938,10 @@ public sealed partial class AgentSessionService : IAsyncDisposable
             InstructionsFor(session) + "\n" + AgentNativeTools.Instructions, AgentNativeTools.Definitions,
             [..ListModule.ToSeq(session.Context.History)])
         {
+            // Runtime scopes call the platform context "main"; Host uses the owning session id
+            // so chat and workflow-main share history compaction and the same FSI worker.
+            ContextId = session.SessionId,
+            ActivationId = session.MainActivationId,
             SessionDirectory = _store.ResolveSessionDirectory(session.SessionId),
             RecordSdk = receipt => RecordSdkAsync(session.SessionId, receipt),
             RequestRetryAttempt = session.Context.Retry.Attempts,
@@ -1075,7 +1102,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
         session.UpdatedAt = _time.GetUtcNow();
         AgentSessionStateDocument document = new(Snapshot(session), [..session.Inbox], [..session.PendingEvents],
-            session.Instructions);
+            session.Instructions, session.MainActivationId);
         return _store.WriteStateAsync(session.SessionId, document, cancellationToken);
     }
 
@@ -1120,7 +1147,7 @@ public sealed partial class AgentSessionService : IAsyncDisposable
     }
 
     private async Task AppendEffectResultAsync(AgentSession session, Effect effect, AgentEffectOutcome outcome,
-        CancellationToken cancellationToken, double elapsedMs = 0)
+        CancellationToken cancellationToken, double elapsedMs = 0, WorkflowEffectScope? scope = null)
     {
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -1147,6 +1174,11 @@ public sealed partial class AgentSessionService : IAsyncDisposable
                 errorCode = outcome.FailureCode, elapsedMs, output,
                 model = outcome.ResultEvent is Event.AssistantReply modelReply ? modelReply.reply.Model : null
             });
+            if (scope is not null)
+            {
+                payload = AddScopeMetadata(payload, scope);
+            }
+
             await AppendLogAsync(session, AgentLogKinds.EffectResult, payload, cancellationToken).ConfigureAwait(false);
         }
         finally
@@ -1293,6 +1325,8 @@ public sealed partial class AgentSessionService : IAsyncDisposable
 
         /// <summary>The append-only instruction head sent to every effect of this session.</summary>
         public string Instructions { get; set; } = string.Empty;
+
+        public string MainActivationId { get; set; } = "main";
 
         public AgentSessionStatus Status { get; set; } = AgentSessionStatus.Running;
         public string? Detail { get; set; }

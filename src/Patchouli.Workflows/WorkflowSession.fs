@@ -63,13 +63,28 @@ type WorkflowEffectOutcome =
 /// <param name="Context">The core context after every effect dispatched so far in this run.</param>
 [<Sealed>]
 type WorkflowEffectScope(context: Context, allowedTools: string[] option, primitiveLimit: int option,
-                         exports: ExportedTool[], activation: string) =
+                         exports: ExportedTool[], activation: string, contextId: string,
+                         activationId: string, instructions: string, isMain: bool, modelSelection: string) =
+    new(context: Context, allowedTools: string[] option, primitiveLimit: int option,
+        exports: ExportedTool[], activation: string) =
+        WorkflowEffectScope(context, allowedTools, primitiveLimit, exports, activation,
+                            "main", activation, "", true, "")
     new(context: Context) = WorkflowEffectScope(context, None, None, [||], "chat")
     member _.Context = context
     member _.AllowedTools = allowedTools
     member _.PrimitiveLimit = primitiveLimit
     member _.Exports = exports
     member _.Activation = activation
+    /// Stable conversation identity, shared by nodes that intentionally share one context.
+    member _.ContextId = contextId
+    /// Stable identity for this node activation; effect ordinals are scoped beneath it.
+    member _.ActivationId = activationId
+    /// Frozen activation instructions, combined by the host with its fixed protocol instructions.
+    member _.Instructions = instructions
+    /// True only for the platform-owned primary conversation.
+    member _.IsMain = isMain
+    /// Frozen provider/model JSON selected when the workflow was launched.
+    member _.ModelSelection = modelSelection
 
 /// <summary>
 ///     The host surface one workflow run needs: execute the effects the script API issues and return
@@ -92,6 +107,12 @@ type IWorkflowEffectHost =
     abstract ExecuteEffectAsync:
         sessionId: string * scope: WorkflowEffectScope * effect: Effect * cancellationToken: CancellationToken ->
             Task<WorkflowEffectOutcome>
+
+/// Optional cleanup for non-main context resources such as a live FSI worker.
+/// Durable transcript and operation state remain in the workflow checkpoint.
+type IWorkflowContextLifecycleHost =
+    abstract ReleaseContextAsync:
+        sessionId: string * contextId: string * cancellationToken: CancellationToken -> Task
 
 /// The host supplies the exact generated SDK declarations; the driver journals them in history.
 type IWorkflowSdkHost =

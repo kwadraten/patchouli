@@ -287,7 +287,8 @@ public sealed class WorkflowSessionRunner
 
     private sealed class SessionEffectHost(
         AgentSessionService sessions,
-        IWorkflowEffectHost effects) : IWorkflowEffectHost, IWorkflowSdkHost, IWorkflowRetryPolicyHost
+        IWorkflowEffectHost effects) : IWorkflowEffectHost, IWorkflowSdkHost, IWorkflowRetryPolicyHost,
+        IWorkflowContextLifecycleHost
     {
         public int MaxRequestRetries => sessions.MaxRequestRetries;
 
@@ -296,10 +297,15 @@ public sealed class WorkflowSessionRunner
             return effects is IWorkflowSdkHost sdk ? sdk.DescribeSdk(exports) : "";
         }
 
+        public Task ReleaseContextAsync(string sessionId, string contextId, CancellationToken cancellationToken)
+        {
+            return sessions.ReleaseContextAsync(sessionId, contextId, cancellationToken);
+        }
+
         public async Task<WorkflowEffectOutcome> ExecuteEffectAsync(string sessionId, WorkflowEffectScope scope,
             Effect effect, CancellationToken cancellationToken)
         {
-            await sessions.CheckpointHarnessAsync(sessionId, scope.Context, effect, cancellationToken)
+            await sessions.CheckpointHarnessAsync(sessionId, scope, effect, cancellationToken)
                 .ConfigureAwait(false);
             WorkflowEffectOutcome outcome = await effects
                 .ExecuteEffectAsync(sessionId, scope, effect, cancellationToken)
@@ -307,17 +313,19 @@ public sealed class WorkflowSessionRunner
             if (outcome is WorkflowEffectOutcome.CompletedEvent completed)
             {
                 await sessions
-                    .RecordHarnessResultAsync(sessionId, effect, completed.resultEvent, CancellationToken.None)
+                    .RecordHarnessResultAsync(sessionId, scope, effect, completed.resultEvent, CancellationToken.None)
                     .ConfigureAwait(false);
             }
             else if (outcome is WorkflowEffectOutcome.ObservedEvent observed)
             {
-                await sessions.RecordHarnessResultAsync(sessionId, effect, observed.resultEvent, CancellationToken.None)
+                await sessions.RecordHarnessResultAsync(sessionId, scope, effect, observed.resultEvent,
+                        CancellationToken.None)
                     .ConfigureAwait(false);
             }
             else if (outcome is WorkflowEffectOutcome.FailedEvent failed)
             {
-                await sessions.RecordHarnessResultAsync(sessionId, effect, failed.resultEvent, CancellationToken.None)
+                await sessions.RecordHarnessResultAsync(sessionId, scope, effect, failed.resultEvent,
+                        CancellationToken.None)
                     .ConfigureAwait(false);
             }
 

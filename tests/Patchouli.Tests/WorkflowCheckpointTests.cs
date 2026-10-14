@@ -24,18 +24,19 @@ public sealed class WorkflowCheckpointTests
                             let worker = Agent.typed "count" "Reply done."
                                             (fun state -> sprintf "iteration %d" state.Iteration)
                                             (fun state text -> mark (sprintf "parse %d" state.Iteration); Ok { Iteration = state.Iteration + 1; Reports = text :: state.Reports })
-                                         |> Agent.run
+                                         |> Agent.run AgentContext.main
                             let doneWhen state = mark (sprintf "route %d" state.Iteration); state.Iteration = 2
                             let run = workflow { step initialize; step (Workflow.repeatUntil 2 doneWhen worker) } |> Workflow.define
                             """.Replace("MARKER", marker, StringComparison.Ordinal);
             WorkflowRunRequest request = WorkflowScriptExecutorTests.Request(script);
             FileWorkflowRunSink sink = new(root);
+            int modelCalls = 0;
             HarnessStubHost first = new("first")
             {
                 BeforeEffect = effect =>
                 {
                     // First model runs and its typed node is saved. Stop at the second iteration.
-                    if (effect is Effect.LlmChat model && model.effectId.Item == 2)
+                    if (effect is Effect.LlmChat && ++modelCalls == 2)
                     {
                         throw new OperationCanceledException();
                     }

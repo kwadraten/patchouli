@@ -53,6 +53,8 @@ public sealed record AgentChatMessage(
     DateTimeOffset? RecordedAt)
 {
     public long EffectId { get; init; }
+    public string ActivationId { get; init; } = "";
+    public string ContextId { get; init; } = "";
     public string OperationId { get; init; } = "";
     public string ParentId { get; init; } = "";
     public string State { get; init; } = "";
@@ -199,6 +201,8 @@ public sealed partial class AgentChatMessageViewModel : ViewModelBase
         Text = message.Text;
         RecordedAt = message.RecordedAt;
         EffectId = message.EffectId;
+        ActivationId = message.ActivationId;
+        ContextId = message.ContextId;
         OperationId = message.OperationId;
         ParentId = message.ParentId;
         UpdateActivity(message);
@@ -362,6 +366,7 @@ internal static class AgentChatStreamBuilder
             status == "Started" ? "正在执行" : Text(payload, "Payload"), entry.RecordedAt)
         {
             OperationId = Text(payload, "OperationId"), ParentId = Text(payload, "ParentId"),
+            ContextId = Text(payload, "ContextId"), ActivationId = Text(payload, "ActivationId"),
             State = status == "Started" ? "running" : status == "Succeeded" ? "completed" : "failed",
             Input = Text(payload, "Arguments"), Output = Text(payload, "Payload"),
             ErrorCode = Text(payload, "ErrorCode"),
@@ -453,9 +458,10 @@ internal static class AgentChatStreamBuilder
     {
         JsonObject? evt = ParseObject(entry.Payload);
         string @case = evt is null ? "" : Text(evt, "case");
-        return @case switch
+        AgentChatMessage? message = @case switch
         {
-            "UserMessage" when Text(evt!, "messageId").StartsWith("harness-stage-", StringComparison.Ordinal) =>
+            "UserMessage" when Text(evt!, "messageId").StartsWith("harness-stage-", StringComparison.Ordinal) ||
+                               Text(evt!, "messageId").StartsWith("harness:", StringComparison.Ordinal) =>
                 new AgentChatMessage(entry.Seq, AgentChatMessageKind.System, "工作流 · 自动提示",
                     Text(evt!, "text"), entry.RecordedAt) { Input = Text(evt!, "text") },
             "UserMessage" => new AgentChatMessage(entry.Seq, AgentChatMessageKind.User, "用户",
@@ -495,6 +501,12 @@ internal static class AgentChatStreamBuilder
             _ => new AgentChatMessage(entry.Seq, AgentChatMessageKind.Progress, "事件",
                 @case.Length == 0 ? entry.Payload : @case, entry.RecordedAt)
         };
+        return message is null || evt is null
+            ? message
+            : message with
+            {
+                ActivationId = Text(evt, "activationId"), ContextId = Text(evt, "contextId")
+            };
     }
 
     private static AgentChatMessage MapActivity(AgentSessionLogEntry entry, bool issued)
@@ -521,6 +533,7 @@ internal static class AgentChatStreamBuilder
         return new AgentChatMessage(entry.Seq, AgentChatMessageKind.Tool, title, text, entry.RecordedAt)
         {
             EffectId = Number(payload, "effectId"), State = state, Input = Text(payload, "input"),
+            ActivationId = Text(payload, "activationId"), ContextId = Text(payload, "contextId"),
             Output = Text(payload, "output"), ErrorCode = Text(payload, "errorCode"), ElapsedMs = elapsed
         };
     }

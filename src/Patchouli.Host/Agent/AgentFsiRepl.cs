@@ -6,10 +6,12 @@ namespace Patchouli.Host.Agent;
 public sealed class AgentFsiRepl : IAsyncDisposable
 {
     private readonly object _gate = new();
-    private readonly Dictionary<string, Session> _sessions = new(StringComparer.Ordinal);
+    private readonly Dictionary<WorkerKey, Session> _sessions = [];
     private bool _disposed;
     private bool _clearing;
     private readonly bool _ownsWorkspaces;
+
+    private readonly record struct WorkerKey(string SessionId, string ContextId);
 
     public AgentFsiRepl(AgentWorkspaceStore? workspaces = null)
     {
@@ -22,13 +24,24 @@ public sealed class AgentFsiRepl : IAsyncDisposable
 
     public Task<AgentToolOutcome> ExecuteAsync(string sessionId, string arguments, CancellationToken cancellationToken)
     {
-        return ExecuteAsync(sessionId, arguments, null, cancellationToken);
+        return ExecuteAsync(sessionId, sessionId, arguments, null, cancellationToken);
     }
 
     public async Task<AgentToolOutcome> ExecuteAsync(string sessionId, string arguments,
         Func<string, string, Task<Patchouli.Agent.Sdk.SdkResult>>? invokeSdk, CancellationToken cancellationToken,
         string sdkBindings = "")
     {
+        return await ExecuteAsync(sessionId, sessionId, arguments, invokeSdk, cancellationToken, sdkBindings)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<AgentToolOutcome> ExecuteAsync(string sessionId, string contextId, string arguments,
+        Func<string, string, Task<Patchouli.Agent.Sdk.SdkResult>>? invokeSdk, CancellationToken cancellationToken,
+        string sdkBindings = "")
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
+        WorkerKey key = new(sessionId, contextId);
         Session session;
         lock (_gate)
         {
@@ -37,10 +50,10 @@ public sealed class AgentFsiRepl : IAsyncDisposable
                 return Unavailable();
             }
 
-            if (!_sessions.TryGetValue(sessionId, out session!))
+            if (!_sessions.TryGetValue(key, out session!))
             {
                 session = new Session();
-                _sessions.Add(sessionId, session);
+                _sessions.Add(key, session);
             }
         }
 
@@ -78,7 +91,7 @@ public sealed class AgentFsiRepl : IAsyncDisposable
 
             // Compiler startup stays outside the lifecycle lock so cleanup and disposal
             // can interrupt the worker, including during the first invocation.
-            string directory = Workspaces.Ensure(sessionId);
+            string directory = Workspaces.EnsureContext(sessionId, contextId);
             AgentFsiProcess host = session.Host ??
                                    await AgentFsiProcess.StartAsync(directory, cancellationToken)
                                        .ConfigureAwait(false);
@@ -197,10 +210,46 @@ public sealed class AgentFsiRepl : IAsyncDisposable
 
     public async ValueTask ForgetAsync(string sessionId)
     {
+        Session[] sessions;
+        lock (_gate)
+        {
+            WorkerKey[] keys = _sessions.Keys.Where(key => key.SessionId == sessionId).ToArray();
+            if (keys.Length == 0)
+            {
+                return;
+            }
+
+            sessions = keys.Select(key =>
+            {
+                Session session = _sessions[key];
+                _sessions.Remove(key);
+                session.Retired = true;
+                session.Host?.Interrupt();
+                return session;
+            }).ToArray();
+        }
+
+        foreach (Session session in sessions)
+        {
+            await DisposeSessionAsync(session).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Stops one context's live worker while retaining its scratch files and durable receipts.</summary>
+    public async ValueTask ForgetContextAsync(string sessionId, string contextId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
+        if (string.Equals(contextId, "main", StringComparison.Ordinal) ||
+            string.Equals(contextId, sessionId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The platform main FSI context cannot be released by a workflow.");
+        }
+
         Session? session;
         lock (_gate)
         {
-            if (!_sessions.Remove(sessionId, out session))
+            if (!_sessions.Remove(new WorkerKey(sessionId, contextId), out session))
             {
                 return;
             }

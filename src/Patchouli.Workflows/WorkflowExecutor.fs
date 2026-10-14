@@ -1,6 +1,7 @@
 namespace Patchouli.Workflows
 
 open System
+open System.Collections.Generic
 open System.Text.Json
 open System.Threading
 open System.Threading.Tasks
@@ -10,6 +11,9 @@ open Patchouli.Agent.Sdk
 
 type internal HarnessState =
     { Context: Context
+      ContextId: string
+      Contexts: Map<string, Context>
+      Activations: Map<string, WorkflowActivationCheckpoint>
       Replay: WorkflowStepRecord list
       Completed: WorkflowStepRecord list
       Fresh: WorkflowStepRecord list
@@ -23,6 +27,92 @@ type internal AgentRefusal =
     | ExhaustedBudget of reason: string
 
 module internal HarnessRuntime =
+    let mainContextId = "main"
+
+    let private stableId prefix (value: string) =
+        let bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes value)
+        prefix + Convert.ToHexString(bytes).ToLowerInvariant()
+
+    let contextId path = stableId "context-" path
+    let activationId sessionId path = stableId "activation-" (sessionId + "/" + path)
+
+    let private retryState context retryLimit = AgentCore.withRetryLimit retryLimit context
+
+    let private resetActivationState retryLimit (context: Context) =
+        { context with EventSeq = 0L; EffectSeq = 0L; WaitSeq = 0L; Status = Idle
+                       Calls = Dictionary<int64, CallRecord>() :> IReadOnlyDictionary<int64, CallRecord>
+                       ProcessedMessageIds = HashSet<string>(StringComparer.Ordinal) :> IReadOnlySet<string>
+                       ArmedWaits = HashSet<int64>() :> IReadOnlySet<int64>
+                       Retry = { Limit = retryLimit; Attempts = 0 }
+                       NativeCalls = [] }
+
+    let persistCurrent (state: HarnessState) =
+        { state with Contexts = state.Contexts.Add(state.ContextId, state.Context) }
+
+    let selectContext (contextId: string) (retryLimit: int) (state: HarnessState) =
+        let context = state.Contexts.TryFind contextId |> Option.defaultValue (AgentCore.initial |> retryState <| retryLimit)
+        { state with ContextId = contextId; Context = resetActivationState retryLimit context }
+
+    let restoreMain (state: HarnessState) =
+        let state = persistCurrent state
+        let context = state.Contexts.TryFind mainContextId |> Option.defaultValue state.Context
+        { state with ContextId = mainContextId; Context = context }
+
+    let runtimeCheckpoint (state: HarnessState) =
+        let state = persistCurrent state
+        let contexts = Dictionary<string, string>(StringComparer.Ordinal)
+        for KeyValue(id, context) in state.Contexts do contexts[id] <- ContextCodec.toJson context
+        WorkflowRuntimeCheckpointCodec.encode
+            { MainContextId = mainContextId
+              Contexts = contexts :> IReadOnlyDictionary<string, string>
+              Activations = state.Activations |> Map.toArray |> Array.map snd }
+
+    let releaseContext (request: WorkflowRunRequest) (host: IWorkflowEffectHost) contextId = task {
+        match host with
+        | :? IWorkflowContextLifecycleHost as lifecycle when contextId <> mainContextId ->
+            do! lifecycle.ReleaseContextAsync(request.SessionId, contextId, CancellationToken.None)
+        | _ -> () }
+
+    let restoreRuntimeCheckpoint (retryLimit: int) (json: string) (state: HarnessState) =
+        let saved = WorkflowRuntimeCheckpointCodec.decode json
+        let contexts = saved.Contexts |> Seq.map (fun pair -> pair.Key, ContextCodec.fromJson pair.Value)
+                       |> Map.ofSeq |> Map.map (fun _ context -> retryState context retryLimit)
+        let main = contexts[mainContextId]
+        { state with ContextId = mainContextId; Context = main; Contexts = contexts
+                     Activations = saved.Activations |> Array.map (fun activation -> activation.Id, activation) |> Map.ofArray }
+
+    let stagePrompt policy prompt =
+        let tools = policy.Tools |> Set.toList |> String.concat ", "
+        let required = policy.RequiredTools |> Set.toList |> String.concat ", "
+        $"AGENT STAGE: {policy.Name}\n{policy.Instructions}\n" +
+        $"Stage tool allowlist: [{tools}]. Model-turn budget: {policy.Budget.ModelTurns}; tool-call budget: {policy.Budget.ToolCalls}.\n" +
+        $"Tools that must be attempted before completing this stage: [{required}].\n" +
+        "Use provider-native function calls for tools; put explanation only in assistant text. " +
+        "Await paired tool results and correct failed arguments. Ordinary text with no native calls ends the stage.\nTASK:\n" + prompt
+
+    let checkpointContract (contextId: string) (activationId: string) (isMain: bool) (prompt: string)
+                          (shared: string) (policy: AgentPolicy) (sdkInstructions: string)
+                          (exports: ExportedTool[]) (modelSelection: string) : WorkflowActivationCheckpoint =
+        let tools = policy.Tools |> Set.toArray |> Array.sort
+        let required = policy.RequiredTools |> Set.toArray |> Array.sort
+        let exportIds = exports |> Array.map (fun tool -> tool.Identity) |> Array.sort
+        let instructions =
+            [ stagePrompt policy ""; shared; sdkInstructions ]
+            |> List.filter (String.IsNullOrWhiteSpace >> not)
+            |> String.concat "\n\n"
+        let policyJson = JsonSerializer.Serialize {| Name = policy.Name; Instructions = policy.Instructions;
+                                                      Tools = tools; RequiredTools = required;
+                                                      ModelTurns = policy.Budget.ModelTurns;
+                                                      ToolCalls = policy.Budget.ToolCalls |}
+        let contract = JsonSerializer.Serialize {| ContextId = contextId; ActivationId = activationId
+                                                   IsMain = isMain; Request = prompt; Instructions = instructions
+                                                   ModelSelection = modelSelection; Policy = policyJson
+                                                   AllowedTools = tools; PrimitiveLimit = policy.Budget.ToolCalls
+                                                   Exports = exportIds |}
+        { Id = activationId; ContextId = contextId; Contract = contract; Instructions = instructions
+          ModelSelection = modelSelection; IsMain = isMain; Request = prompt; Policy = policyJson
+          AllowedTools = tools; PrimitiveLimit = policy.Budget.ToolCalls; Exports = exportIds }
+
     let kind = function
         | LlmChat _ -> "LlmChat" | McpToolCall _ -> "McpToolCall" | WaitRunEvent _ -> "WaitRunEvent"
         | other -> invalidArg "effect" $"Unexpected harness effect: {other}"
@@ -49,9 +139,9 @@ module internal HarnessRuntime =
             use document = JsonDocument.Parse text
             let root = document.RootElement
             let field (name: string) =
-                match root.GetProperty(name).GetString() with
-                | null -> invalidOp ("WORKFLOW_REPLAY_INVALID: missing model diagnostic " + name)
-                | value -> value
+                match Option.ofObj (root.GetProperty(name).GetString()) with
+                | None -> invalidOp ("WORKFLOW_REPLAY_INVALID: missing model diagnostic " + name)
+                | Some value -> value
             ModelFailure(id, field "code", field "detail",
                          root.GetProperty("retryable").GetBoolean())
         | LlmChat id when native -> AssistantReply(id, AssistantReplies.fromJson text)
@@ -132,27 +222,18 @@ module internal HarnessRuntime =
             | error -> return Error(state, WorkflowRunStatus.Failed, error.Message)
         }
 
-    let stagePrompt policy prompt =
-        let tools = policy.Tools |> Set.toList |> String.concat ", "
-        let required = policy.RequiredTools |> Set.toList |> String.concat ", "
-        $"AGENT STAGE: {policy.Name}\n{policy.Instructions}\n" +
-        $"Stage tool allowlist: [{tools}]. Model-turn budget: {policy.Budget.ModelTurns}; tool-call budget: {policy.Budget.ToolCalls}.\n" +
-        $"Tools that must be attempted before completing this stage: {required}.\n" +
-        "Use provider-native function calls for tools; put explanation only in assistant text. " +
-        "Await paired tool results and correct failed arguments. Ordinary text with no native calls ends the stage.\nTASK:\n" + prompt
-
-    let episode request (host: IWorkflowEffectHost) sink token path policy shared prompt exports validate state =
-        let stage = stagePrompt policy prompt
-        let sharedMode = not (String.IsNullOrWhiteSpace shared)
-        let rules = if sharedMode then stagePrompt policy "" else ""
-        let sharedKey = if sharedMode then Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes shared)) else ""
+    let episode (request: WorkflowRunRequest) (host: IWorkflowEffectHost) (sink: IWorkflowRunSink)
+               (token: CancellationToken) (path: string) (contextId: string)
+               (activation: WorkflowActivationCheckpoint) (policy: AgentPolicy) (shared: string)
+               (prompt: string) (exports: ExportedTool[])
+               (validate: SdkObservation[] -> string -> Result<unit, string>) (state: HarnessState) =
         let sdkInstructions =
             if Array.isEmpty exports then "" else
             match host with
             | :? IWorkflowSdkHost as sdk -> sdk.DescribeSdk exports
             | _ -> exports |> Array.map (fun tool -> tool.NativeDefinition) |> String.concat "\n"
-        let prepared = state.Context |> AgentCore.ensureInstructions shared |> AgentCore.ensureInstructions rules |> AgentCore.ensureInstructions sdkInstructions
-        let context, pending = AgentCore.chatStep prepared [] (UserMessage("workflow/" + path, if sharedMode then prompt else stage))
+        let initialContext = state.Context |> AgentCore.withRetryLimit state.Context.Retry.Limit
+        let context, pending = AgentCore.chatStep initialContext [] (UserMessage("workflow/" + path, prompt))
         let advance (models, tools, used, evidence, pending, state) =
             task {
                 match pending with
@@ -212,11 +293,13 @@ module internal HarnessRuntime =
                         let arguments = match effect with McpToolCall(_, _, args) -> args | _ -> ""
                         let tool = match effect with McpToolCall(_, name, _) -> name | _ -> ""
                         let contracts = exports |> Array.map (fun (tool: ExportedTool) -> tool.Identity) |> String.concat "/"
-                        let key = JsonSerializer.Serialize {| Path = path; Stage = (if sharedMode then rules else stage);
-                                                             Shared = sharedKey; Prompt = (if sharedMode then prompt else ""); Models = models;
+                        let key = JsonSerializer.Serialize {| Path = path; ActivationId = activation.Id;
+                                                             Contract = activation.Contract; Models = models;
                                                              RetryAttempt = state.Context.Retry.Attempts; RetryLimit = state.Context.Retry.Limit;
                                                              Tools = tools; Tool = tool; Arguments = arguments; Sdk = contracts; SdkDeclarations = WorkflowSnapshots.hashScript sdkInstructions |}
-                        let scope = WorkflowEffectScope(state.Context, Some(Set.toArray policy.Tools), Some(policy.Budget.ToolCalls - tools), exports, state.Plan + "/" + path + "/" + contracts)
+                        let scope = WorkflowEffectScope(state.Context, Some(Set.toArray policy.Tools), Some(policy.Budget.ToolCalls - tools), exports,
+                            "workflow/" + path, contextId, activation.Id, activation.Instructions,
+                            activation.IsMain, activation.ModelSelection)
                         let! executed = dispatch request host sink token scope key effect state
                         match executed with
                         | Error failure -> return AgentTurn.Complete(Error failure)
@@ -241,7 +324,9 @@ module internal HarnessRuntime =
         AgentDriver.RunAsync((0, 0, Set.empty, [], pending, { state with Context = context }),
             Func<_, _, _>(fun cursor _ -> advance cursor), token)
 
-    let checkpoint (request: WorkflowRunRequest) (sink: IWorkflowRunSink) (token: CancellationToken) record state = task {
+    let checkpoint (request: WorkflowRunRequest) (sink: IWorkflowRunSink) (token: CancellationToken)
+                   (record: WorkflowCheckpoint) (state: HarnessState) = task {
+        let record = { record with Context = runtimeCheckpoint state }
         match sink with
         | :? IWorkflowCheckpointSink as durable -> do! durable.RecordCheckpointAsync(request.SessionId, record, token)
         | _ -> ()
@@ -257,11 +342,11 @@ module internal HarnessRuntime =
                 else return Ok(defaultArg previous.Output "", state)
             | None ->
                 let record = { Path = path; Plan = state.Plan; InputSchema = inputSchema; OutputSchema = outputSchema; Input = input
-                               Output = None; Route = None; Position = state.Position; Context = ContextCodec.toJson state.Context }
+                               Output = None; Route = None; Position = state.Position; Context = "" }
                 let! next = checkpoint request sink token record state
                 return Ok("", next)
         | SaveNode(path, output) ->
-            let record = { state.Checkpoints[path] with Output = Some output; Position = state.Position; Context = ContextCodec.toJson state.Context }
+            let record = { state.Checkpoints[path] with Output = Some output; Position = state.Position; Context = "" }
             let! next = checkpoint request sink token record state
             return Ok("", next)
         | SelectRoute(path, select) ->
@@ -271,49 +356,114 @@ module internal HarnessRuntime =
             | None ->
                 let route = select()
                 let record = { Path = path; Plan = state.Plan; InputSchema = "route"; OutputSchema = "route"; Input = ""
-                               Output = None; Route = Some route; Position = state.Position; Context = ContextCodec.toJson state.Context }
+                               Output = None; Route = Some route; Position = state.Position; Context = "" }
                 let! next = checkpoint request sink token record state
                 return Ok(route, next)
         | _ -> return Error(state, WorkflowRunStatus.Failed, "WORKFLOW_CHECKPOINT_COMMAND_INVALID") }
 
-    let rec interpret request host sink (token: CancellationToken) program state =
+    let rec interpret<'a> (request: WorkflowRunRequest) (host: IWorkflowEffectHost) (sink: IWorkflowRunSink)
+                          (token: CancellationToken) (bindings: Dictionary<obj, string>)
+                          (program: HarnessProgram<'a>) (state: HarnessState)
+                          : Task<HarnessState * WorkflowRunStatus * string * (obj | null) option> =
         task {
             try
                 token.ThrowIfCancellationRequested()
                 match program with
-                | Return () ->
-                    if not state.Replay.IsEmpty then
-                        return state, WorkflowRunStatus.Failed, "WORKFLOW_REPLAY_DIVERGED: recorded steps remain."
-                    else return state, WorkflowRunStatus.Finished, "Agent workflow finished."
-                | Abort reason -> return state, WorkflowRunStatus.Failed, reason
+                | ContextScope(path, scopeToken, body, continueWith) ->
+                    if Object.ReferenceEquals(scopeToken, null) || bindings.ContainsKey scopeToken then
+                        return state, WorkflowRunStatus.Failed, "WORKFLOW_CONTEXT_SCOPE_INVALID: context scope token is null or already active.", None
+                    else
+                        let id = contextId ("bound/" + path)
+                        bindings.Add(scopeToken, id)
+                        let initial = AgentCore.initial |> AgentCore.withRetryLimit state.Context.Retry.Limit
+                        let scoped =
+                            if state.Contexts.ContainsKey id then state
+                            else { state with Contexts = state.Contexts.Add(id, initial) }
+                        let! bodyState, bodyStatus, bodyDetail, bodyValue =
+                            task {
+                                try
+                                    return! interpret request host sink token bindings body (restoreMain scoped)
+                                finally
+                                    bindings.Remove scopeToken |> ignore
+                            }
+                        do! releaseContext request host id
+                        if bodyStatus <> WorkflowRunStatus.Finished then
+                            return restoreMain bodyState, bodyStatus, bodyDetail, None
+                        else
+                            match bodyValue with
+                            | None -> return restoreMain bodyState, WorkflowRunStatus.Failed,
+                                              "WORKFLOW_CONTEXT_SCOPE_INVALID: context body returned no value.", None
+                            | Some value ->
+                                let! finalState, finalStatus, finalDetail, finalValue =
+                                    interpret request host sink token bindings (continueWith value) bodyState
+                                return restoreMain finalState, finalStatus, finalDetail, finalValue
+                | Return value ->
+                    return state, WorkflowRunStatus.Finished, "Workflow block finished.", Some(box value)
+                | Abort reason -> return state, WorkflowRunStatus.Failed, reason, None
                 | Request(command, continueWith) ->
                     let! response =
                         match command with
                         | LoadNode _ | SaveNode _ | SelectRoute _ -> node request sink token command state
-                        | RunAgent(path, policy, shared, prompt, exports, validate) -> episode request host sink token path policy shared prompt exports validate state
+                        | RunAgent(path, selection, policy, shared, prompt, exports, validate) -> task {
+                            let contextId, isMain =
+                                match selection with
+                                | AgentContextSelection.Main -> mainContextId, true
+                                | AgentContextSelection.Anonymous -> contextId ("anonymous/" + path), false
+                                | AgentContextSelection.Bound scopeToken ->
+                                    match bindings.TryGetValue scopeToken with
+                                    | true, id -> id, false
+                                    | _ -> invalidOp "WORKFLOW_CONTEXT_SCOPE_ESCAPED: a bound AgentContext was used outside its lexical scope."
+                            let activationId = activationId request.SessionId path
+                            let sdkInstructions =
+                                if Array.isEmpty exports then "" else
+                                match host with
+                                | :? IWorkflowSdkHost as sdk -> sdk.DescribeSdk exports
+                                | _ -> exports |> Array.map (fun tool -> tool.NativeDefinition) |> String.concat "\n"
+                            let activation = checkpointContract contextId activationId isMain prompt shared policy sdkInstructions exports request.Snapshot.ModelSelection
+                            match state.Activations.TryFind activationId with
+                            | Some previous when previous.Contract <> activation.Contract ->
+                                return Error(state, WorkflowRunStatus.Failed, "WORKFLOW_ACTIVATION_DIVERGED: " + path)
+                            | _ ->
+                                let state = { state with Activations = state.Activations.Add(activationId, activation) }
+                                let selected = selectContext contextId state.Context.Retry.Limit state
+                                let! result = episode request host sink token path contextId activation policy shared prompt exports validate selected
+                                if not isMain && selection = AgentContextSelection.Anonymous then
+                                    do! releaseContext request host contextId
+                                match result with
+                                | Error(local, status, detail) ->
+                                    let local = local |> persistCurrent |> restoreMain
+                                    return Error(local, status, detail)
+                                | Ok(text, local) ->
+                                    let local = local |> persistCurrent |> restoreMain
+                                    return Ok(text, local)
+                            }
                         | AwaitEvent(path, uri) ->
                             task {
                                 let effect, context = AgentCore.Effects.waitRunEvent uri state.Context
                                 let key = JsonSerializer.Serialize {| Path = path; Uri = uri |}
-                                let! executed = dispatch request host sink token (WorkflowEffectScope(context)) key effect { state with Context = context }
+                                let activationId = activationId request.SessionId path
+                                let scope = WorkflowEffectScope(context, None, None, [||], "workflow/" + path,
+                                    mainContextId, activationId, "", true, request.Snapshot.ModelSelection)
+                                let! executed = dispatch request host sink token scope key effect { state with Context = context }
                                 match executed with
                                 | Error failure -> return Error failure
                                 | Ok(result, recorded, operations) ->
                                     return Ok(payload effect result,
-                                        { recorded with Context = AgentCore.observeEffectResult recorded.Context effect result })
+                                        { recorded with Context = AgentCore.observeEffectResult recorded.Context effect result }
+                                        |> persistCurrent)
                             }
                     match response with
-                    | Error(failed, status, detail) -> return failed, status, detail
+                    | Error(failed, status, detail) -> return failed, status, detail, None
                     | Ok(text, next) ->
                         let continuation =
                             try Ok(continueWith text)
                             with error -> Error error.Message
                         match continuation with
-                        | Ok program -> return! interpret request host sink token program next
-                        | Error reason -> return next, WorkflowRunStatus.Failed, reason
+                        | Ok program -> return! interpret request host sink token bindings program next
+                        | Error reason -> return next, WorkflowRunStatus.Failed, reason, None
             with
-            | :? OperationCanceledException -> return state, WorkflowRunStatus.Cancelled, "Workflow cancelled."
-            | error -> return state, WorkflowRunStatus.Failed, error.Message
+            | :? OperationCanceledException -> return state, WorkflowRunStatus.Cancelled, "Workflow cancelled.", None
+            | error -> return state, WorkflowRunStatus.Failed, error.Message, None
         }
 
 /// Runs cold control plans over the existing agent core and host interpreter.
@@ -325,7 +475,11 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
     member _.RunAsync(request: WorkflowRunRequest, cancellationToken: CancellationToken) : Task<WorkflowRunOutcome> =
         task {
             let retryLimit = request.Context.Retry.Limit
-            let state = { Context = AgentCore.withRetryLimit retryLimit AgentCore.initial; Replay = List.ofArray request.RecordedSteps
+            let mainSeed = if request.RecordedSteps.Length = 0 then request.Context else AgentCore.initial
+            let main = AgentCore.withRetryLimit retryLimit mainSeed
+            let state = { Context = main; ContextId = HarnessRuntime.mainContextId
+                          Contexts = Map.ofList [ HarnessRuntime.mainContextId, main ]; Activations = Map.empty
+                          Replay = List.ofArray request.RecordedSteps
                           Completed = []; Fresh = []; Issued = []; Position = 0; Checkpoints = Map.empty;
                           Plan = request.Snapshot.ScriptHash + "/" + typeof<AgentWorkflow>.Assembly.ManifestModule.ModuleVersionId.ToString() + "/" + typeof<Context>.Assembly.ManifestModule.ModuleVersionId.ToString() }
             let outcome state status diagnostics detail =
@@ -334,10 +488,7 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
                     | WorkflowRunStatus.Finished -> RunStatus.Finished
                     | WorkflowRunStatus.Cancelled -> RunStatus.Cancelled
                     | _ -> RunStatus.Stopped
-                let core =
-                    if status <> WorkflowRunStatus.Finished && state.Fresh.IsEmpty
-                       && ((state.Position = 0 && state.Context.History.IsEmpty) || not state.Replay.IsEmpty) then request.Context
-                    else state.Context
+                let core = state.Contexts.TryFind HarnessRuntime.mainContextId |> Option.defaultValue request.Context
                 { SessionId = request.SessionId; Status = status; Context = { core with Status = coreStatus }
                   Steps = Array.append (state.Completed |> List.rev |> List.toArray) (List.toArray state.Replay)
                   NewSteps = state.Fresh |> List.rev |> List.toArray; IssuedEffects = state.Issued |> List.rev |> List.toArray
@@ -347,6 +498,8 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
                 let detail =
                     if request.Snapshot.ApiVersion = "patchouli.workflow.harness/6" then
                         "WORKFLOW_RETRY_PROTOCOL_CHANGED: this snapshot uses the previous retry/replay protocol. History is preserved; start a new session from the existing workflow. The script does not need to be rewritten."
+                    elif request.Snapshot.ApiVersion = "patchouli.workflow.harness/7" then
+                        "WORKFLOW_CONTEXT_PROTOCOL_CHANGED: this snapshot uses the single-context workflow protocol. History is preserved; start a new workflow session."
                     else
                         "WORKFLOW_API_REMOVED: this snapshot uses the deleted workflow API. Rewrite the workflow and start a new session."
                 return outcome state WorkflowRunStatus.Failed [||] detail
@@ -382,12 +535,19 @@ type WorkflowExecutor(effectHost: IWorkflowEffectHost, runSink: IWorkflowRunSink
                                 else
                                     let restored = if saved.Length = 0 then state else
                                                        let latest = saved[saved.Length - 1]
-                                                       { state with Context = ContextCodec.fromJson latest.Context; Position = latest.Position
-                                                                    Completed = request.RecordedSteps |> Array.filter (fun step -> step.Step <= latest.Position) |> Array.rev |> Array.toList
-                                                                    Replay = request.RecordedSteps |> Array.filter (fun step -> step.Step > latest.Position) |> Array.toList
-                                                                    Checkpoints = saved |> Array.map (fun item -> item.Path, item) |> Map.ofArray }
-                                    let! final, status, detail = HarnessRuntime.interpret request effectHost runSink cancellationToken (plan.Build input) restored
-                                    return outcome final status [||] detail
+                                                       { HarnessRuntime.restoreRuntimeCheckpoint retryLimit latest.Context state with
+                                                           Position = latest.Position
+                                                           Completed = request.RecordedSteps |> Array.filter (fun step -> step.Step <= latest.Position) |> Array.rev |> Array.toList
+                                                           Replay = request.RecordedSteps |> Array.filter (fun step -> step.Step > latest.Position) |> Array.toList
+                                                           Checkpoints = saved |> Array.map (fun item -> item.Path, item) |> Map.ofArray }
+                                    let bindings = Dictionary<obj, string>(ReferenceEqualityComparer.Instance)
+                                    let! final, status, detail, _ =
+                                        HarnessRuntime.interpret request effectHost runSink cancellationToken bindings (plan.Build input) restored
+                                    let status, detail =
+                                        if status = WorkflowRunStatus.Finished && not final.Replay.IsEmpty then
+                                            WorkflowRunStatus.Failed, "WORKFLOW_REPLAY_DIVERGED: recorded steps remain."
+                                        else status, detail
+                                    return outcome (HarnessRuntime.restoreMain final) status [||] detail
                             | _ -> return outcome state WorkflowRunStatus.Failed entry.Diagnostics
                                        "WORKFLOW_ENTRY_INVALID: the entry point must be a cold AgentWorkflow value."
                 with

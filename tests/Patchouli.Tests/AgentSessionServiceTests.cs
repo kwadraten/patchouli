@@ -6,6 +6,7 @@ using Patchouli.Core.Diagnostics;
 using Patchouli.Core.Results;
 using Patchouli.Host.Agent;
 using Patchouli.Llm;
+using Patchouli.Workflows;
 
 namespace Patchouli.Tests;
 
@@ -106,7 +107,8 @@ public sealed class AgentSessionServiceTests
         state = AgentCoreModule.chatStep(state.Item1, ListModule.Empty<Tuple<string, string>>(),
             Event.NewModelFailure(((Effect.LlmChat)state.Item2.Single()).effectId,
                 LlmFailureCodes.TemporaryProviderError, "busy", true));
-        await harness.Service.CheckpointHarnessAsync(launch.SessionId, state.Item1, state.Item2.Single(),
+        await harness.Service.CheckpointHarnessAsync(launch.SessionId, new WorkflowEffectScope(state.Item1),
+            state.Item2.Single(),
             CancellationToken.None);
         harness.Service.TryGetSnapshot(launch.SessionId)!.Detail.Should().Contain("1/2");
         await harness.Service.DisposeAsync();

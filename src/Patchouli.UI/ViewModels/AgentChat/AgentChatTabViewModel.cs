@@ -855,7 +855,8 @@ public sealed partial class AgentChatTabViewModel : ViewModelBase
                                                    (message.OperationId.Length > 0
                                                        ? row.OperationId == message.OperationId
                                                        : message.EffectId > 0 && row.OperationId.Length == 0 &&
-                                                         row.EffectId == message.EffectId)) is { } activity)
+                                                         row.EffectId == message.EffectId &&
+                                                         row.ActivationId == message.ActivationId)) is { } activity)
                 {
                     activity.UpdateActivity(message);
                     _loadedSeq = entry.Seq;

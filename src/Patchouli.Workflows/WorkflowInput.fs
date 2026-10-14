@@ -5,7 +5,7 @@ open System
 [<RequireQualifiedAccess>]
 module ScriptApiVersion =
     [<Literal>]
-    let Current = "patchouli.workflow.harness/7"
+    let Current = "patchouli.workflow.harness/8"
 
 /// Persisted launch selection. Scripts receive its immutable list-based projection.
 type WorkflowSelection =

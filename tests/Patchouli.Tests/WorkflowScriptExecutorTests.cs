@@ -70,7 +70,7 @@ public sealed class WorkflowScriptExecutorTests
                               let worker = Agent.typed "worker" "Reply with integer." (fun (_: WorkflowInput) -> "task")
                                               (fun _ text -> match System.Int32.TryParse text with true, n -> Ok n | _ -> Error "expected integer")
                                            |> Agent.withBudget (AgentBudget.create 12 0)
-                              let run = workflow { step worker; step (Workflow.map ignore) } |> Workflow.define
+                              let run = workflow { step (Agent.run AgentContext.main worker); step (Workflow.map ignore) } |> Workflow.define
                               """;
         HarnessStubHost host = new(Enumerable.Repeat("bad", 10).Append("42").ToArray()) { MaxRequestRetries = 0 };
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(Request(script), CancellationToken.None);
@@ -85,7 +85,7 @@ public sealed class WorkflowScriptExecutorTests
                                             Agent.text "worker" "Complete the task using tools." (fun (_: WorkflowInput) -> "translate doc-1")
                                             |> Agent.withTools [ AgentTool.Fetch; AgentTool.Put ]
                                             |> Agent.withBudget (AgentBudget.create 4 3)
-                                        let run : AgentWorkflow = workflow { step worker } |> Workflow.define
+                                        let run : AgentWorkflow = workflow { step (Agent.run AgentContext.main worker) } |> Workflow.define
                                         """;
 
     internal static WorkflowRunRequest Request(string script = AgentScript, WorkflowSelection? selection = null,
@@ -151,8 +151,8 @@ public sealed class WorkflowScriptExecutorTests
     {
         const string script = """
                               open Patchouli.Workflows.Scripting
-                              let a = Agent.text "a" "Work." id |> Agent.withBudget (AgentBudget.create 3 2) |> Agent.run
-                              let b = Agent.text "b" "Work." id |> Agent.withBudget (AgentBudget.create 5 4) |> Agent.run
+                              let a = Agent.text "a" "Work." id |> Agent.withBudget (AgentBudget.create 3 2) |> Agent.run AgentContext.main
+                              let b = Agent.text "b" "Work." id |> Agent.withBudget (AgentBudget.create 5 4) |> Agent.run AgentContext.main
                               let run =
                                   workflow {
                                       step (Workflow.map (fun (_: WorkflowInput) -> "seed"))
@@ -234,11 +234,11 @@ public sealed class WorkflowScriptExecutorTests
                               let decide = Agent.typed "decide" "Choose a number." (fun (_: WorkflowInput) -> "decide")
                                               (fun _ text -> match System.Int32.TryParse text with true, n -> Ok n | _ -> Error "expected integer")
                                               |> Agent.withBudget (AgentBudget.create 4 0)
-                              let yes = Agent.text "yes" "Explain the choice." (fun (n: int) -> sprintf "chosen:%d" n) |> Agent.run
-                              let no = Agent.text "no" "Explain the alternative." (fun (n: int) -> sprintf "other:%d" n) |> Agent.run
+                              let yes = Agent.text "yes" "Explain the choice." (fun (n: int) -> sprintf "chosen:%d" n) |> Agent.run AgentContext.main
+                              let no = Agent.text "no" "Explain the alternative." (fun (n: int) -> sprintf "other:%d" n) |> Agent.run AgentContext.main
                               let run =
                                   workflow {
-                                      step decide
+                                      step (Agent.run AgentContext.main decide)
                                       step (Workflow.choose (fun n -> n > 0) yes no)
                                   }
                                   |> Workflow.define
@@ -247,7 +247,8 @@ public sealed class WorkflowScriptExecutorTests
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(Request(script), CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
         string prompt = host.Scopes[1].Context.History.OfType<HistoryEntry.UserMessage>().Last().text;
-        prompt.Should().Contain("chosen:7").And.Contain("AGENT STAGE: yes");
+        prompt.Should().Contain("chosen:7");
+        host.Scopes[1].Instructions.Should().Contain("AGENT STAGE: yes");
         result.Steps.Should().HaveCount(2);
         HarnessStubHost invalid = new("not a number", "not a number", "not a number", "not a number");
         WorkflowRunOutcome failed =
@@ -270,7 +271,7 @@ public sealed class WorkflowScriptExecutorTests
                               open Patchouli.Workflows.Scripting
                               type Review = { Attempt: int; Accepted: bool }
                               let reviewer = Agent.typed "review" "Review the previous answer." (fun (x: Review) -> sprintf "attempt:%d" x.Attempt)
-                                              (fun x answer -> Ok { Attempt = x.Attempt + 1; Accepted = answer = "done" }) |> Agent.run
+                                              (fun x answer -> Ok { Attempt = x.Attempt + 1; Accepted = answer = "done" }) |> Agent.run AgentContext.main
                               let run =
                                   workflow {
                                       step (Workflow.map (fun (_: WorkflowInput) -> { Attempt = 0; Accepted = false }))
@@ -293,7 +294,7 @@ public sealed class WorkflowScriptExecutorTests
     {
         const string script = """
                               open Patchouli.Workflows.Scripting
-                              let worker = Agent.text "continue" "Use the completion." (fun (text: string) -> "event:" + text) |> Agent.run
+                              let worker = Agent.text "continue" "Use the completion." (fun (text: string) -> "event:" + text) |> Agent.run AgentContext.main
                               let run =
                                   workflow {
                                       step (Workflow.map (fun (_: WorkflowInput) -> ()))
@@ -305,7 +306,8 @@ public sealed class WorkflowScriptExecutorTests
         HarnessStubHost host = new("done");
         WorkflowRunOutcome result = await new WorkflowExecutor(host).RunAsync(Request(script), CancellationToken.None);
         result.Status.Should().Be(WorkflowRunStatus.Finished, result.Detail);
-        result.Steps.Select(s => s.EffectId).Should().Equal(1, 2);
+        result.Steps.Select(s => s.EffectId).Should().Equal(1, 1);
+        host.Scopes[0].ActivationId.Should().NotBe(host.Scopes[1].ActivationId);
         result.Context.Calls.Values.Should().OnlyContain(call => call.Completed);
         host.Effects[0].Should().BeOfType<Effect.WaitRunEvent>();
         host.Scopes[1].Context.History.OfType<HistoryEntry.UserMessage>().Last().text.Should()
@@ -375,7 +377,7 @@ public sealed class WorkflowScriptExecutorTests
                               open Patchouli.Workflows.Scripting
                               let worker = Agent.typed "worker" "Work." (fun (_: WorkflowInput) -> "task")
                                               (fun _ _ -> failwith "parser failed" : Result<string,string>)
-                              let run = Agent.run worker |> Workflow.define
+                              let run = Agent.run AgentContext.main worker |> Workflow.define
                               """;
         WorkflowRunOutcome result = await new WorkflowExecutor(new HarnessStubHost("answer"))
             .RunAsync(Request(script), CancellationToken.None);
@@ -410,6 +412,7 @@ public sealed class WorkflowScriptExecutorTests
     [Theory]
     [InlineData("patchouli.workflow.scriptapi/1", "WORKFLOW_API_REMOVED")]
     [InlineData("patchouli.workflow.harness/6", "WORKFLOW_RETRY_PROTOCOL_CHANGED")]
+    [InlineData("patchouli.workflow.harness/7", "WORKFLOW_CONTEXT_PROTOCOL_CHANGED")]
     public async Task Removed_snapshot_contract_is_refused_without_evaluating_its_script(string version, string code)
     {
         WorkflowRunRequest request = Request("failwith \"must not execute\"");

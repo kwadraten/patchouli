@@ -53,6 +53,36 @@ public sealed class AgentWorkspaceStore
         return directory;
     }
 
+    /// <summary>Ensures a context-specific scratch directory under its owning audit session.</summary>
+    public string EnsureContext(string sessionId, string contextId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(contextId);
+        string sessionDirectory = Resolve(sessionId);
+        if (string.Equals(contextId, "main", StringComparison.Ordinal) ||
+            string.Equals(sessionId, contextId, StringComparison.Ordinal))
+        {
+            return Ensure(sessionId);
+        }
+
+        string contextKey = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(contextId)))
+            .ToLowerInvariant();
+        string contexts = Path.Combine(sessionDirectory, "contexts");
+        string directory = Path.Combine(contexts, contextKey);
+        lock (_gate)
+        {
+            ValidateParents();
+            EnsureNamespace();
+            RejectLink(sessionDirectory);
+            Directory.CreateDirectory(sessionDirectory);
+            RejectLink(contexts);
+            Directory.CreateDirectory(contexts);
+            RejectLink(directory);
+            Directory.CreateDirectory(directory);
+        }
+
+        return directory;
+    }
+
     public string EnsureRoot()
     {
         lock (_gate)

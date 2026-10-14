@@ -11,14 +11,22 @@ public sealed record AgentToolPayloadCheckpoint(
     int Entries,
     string PrefixHash,
     IReadOnlyDictionary<int, string> Payloads,
-    int Version = 1);
+    int Version = 1)
+{
+    public string ContextId { get; init; } = "";
+    public string ActivationId { get; init; } = "";
+}
 
 public sealed record AgentToolPayloadDelta(
     int StartEntry,
     int Entries,
     string PrefixHash,
     IReadOnlyDictionary<int, string> Payloads,
-    int Version = 1);
+    int Version = 1)
+{
+    public string ContextId { get; init; } = "";
+    public string ActivationId { get; init; } = "";
+}
 
 /// <summary>Bounds tool content sent to the model while retaining the original transcript and SDK receipts.</summary>
 public static class AgentToolPayloadFolder

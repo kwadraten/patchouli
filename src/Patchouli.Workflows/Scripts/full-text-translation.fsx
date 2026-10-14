@@ -141,7 +141,7 @@ let translatePage =
         [ LibraryTools.commitTranslation |> Tool.bind (WritableResource.TranslationPage(target.document, target.page)) |> Tool.export ])
     |> Agent.requireToolUse [ AgentTool.Fetch ]
     |> Agent.withBudget (AgentBudget.create 8 7)
-    |> Agent.run
+    |> Agent.run AgentContext.main
 
 let summarize =
     Agent.text "translation-summary" "Summarize actual committed and failed pages from the recorded tool outcomes."
@@ -154,9 +154,9 @@ let summarize =
 
 let run : AgentWorkflow =
     workflow {
-        step discover
+        step (Agent.run AgentContext.main discover)
         step (Workflow.repeatUntil 1024 (fun state -> List.isEmpty state.Remaining) translatePage)
-        step summarize
+        step (Agent.run AgentContext.main summarize)
     }
     |> Workflow.define
     |> Workflow.withModel model

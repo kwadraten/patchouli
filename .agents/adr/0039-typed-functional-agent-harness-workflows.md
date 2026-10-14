@@ -1,5 +1,10 @@
 # ADR 0039: Typed functional workflows control the existing agent
 
+2026-10-13 amendment: [ADR 0043](0043-explicit-agent-contexts-and-loop-activations.md)
+adds explicit context selectors and binding scopes to the cold typed control plan.
+Agent definitions remain reusable; each invocation has an independent loop activation.
+Historical implicit-context examples below are superseded by the workflow API.
+
 2026-10-09 amendment: FSI is always available in chat and workflow sessions. The session grant and chat-page toggle are removed; workers remain lazy and isolated. This supersedes the earlier grant policy.
 
 Status: accepted, 2026-10-07. Supersedes the imperative workflow API and built-in translation script in ADR 0036. The user explicitly requested removing compatibility.

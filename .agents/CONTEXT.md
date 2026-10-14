@@ -160,6 +160,21 @@ _Avoid_: Task, script file, job definition
 An agent conversation run driven by a Workflow. Session data is auxiliary Library data kept in one directory per session (message/event history, launch parameters, script snapshot, current step and completed results, pending messages and calls, run status) and can be physically purged without touching bibliographic records, source files, translations, or OCR output. A Session's lifecycle is owned by the host session service; a missing session directory does not prevent the Library from opening.
 _Avoid_: Job, task, thread
 
+**Agent Context**:
+
+One continuous original transcript owned by a Session.
+The main context receives user turns; explicitly bound contexts share history within their
+workflow scope; anonymous contexts belong to one agent-node invocation. The SDK assigns
+and restores runtime identities. A normal F# `let` alias does not establish a binding scope.
+
+**Loop activation**:
+
+One invocation with frozen instructions, tools, bindings and
+execution policy. Multiple activations can use the same Context. Prefix generations belong
+to an activation; effects and receipts include activation identity. Context handoff preserves
+history and typed results, while worker evidence and unknown-write isolation remain Session-wide.
+See [ADR 0043](adr/0043-explicit-agent-contexts-and-loop-activations.md).
+
 **Run**:
 The run projection of an OCR task or an agent Session, observed through `patchouli://runs/`. OCR runs and agent Sessions report their own status and incremental events and do not share a queue, scheduler, or state machine; `runs/` does not unify their states. A Run is a volatile runtime resource: it is not part of snapshots and cannot be `put`.
 _Avoid_: Job, task queue, unified run state
@@ -227,7 +242,7 @@ Switching modes keeps input and filter rows. Enter and the search button use the
 
 ## Desktop View And Dialog Vocabulary
 
-The mixed agent SDK is implemented (workflow snapshot API `/6`): native FC and session-local FSI
+The mixed agent SDK is implemented (workflow snapshot API `/8`): native FC and session-local FSI
 functions share validation and durable operation receipts; chat and workflows share AgentDriver.
 Cold immutable pipelines checkpoint node outputs and branch/loop routes. Translation binds page
 targets in `commitTranslation` and derives completion from receipts. Interrupted FSI blocks and
