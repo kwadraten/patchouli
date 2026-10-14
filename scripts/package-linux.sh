@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds Linux packages for Patchouli.Net: deb, rpm, AppImage, Flatpak.
+# Builds Linux packages for Patchouli.NET: deb, rpm, AppImage, Flatpak.
 #
 # Usage: scripts/package-linux.sh [deb] [rpm] [appimage] [flatpak]
 #   With no arguments, all four formats are built.
@@ -213,8 +213,8 @@ EOF
     mv "$root/.tmp/squashfs-root" "$appimagetool_extracted"
   fi
   (cd "$root/.tmp" && ARCH=x86_64 "$appimagetool_extracted/AppRun" "$appdir" \
-    "$out/Patchouli.Net-${version}-linux-x64.AppImage")
-  echo "AppImage: $out/Patchouli.Net-${version}-linux-x64.AppImage"
+    "$out/Patchouli.NET-${version}-linux-x64.AppImage")
+  echo "AppImage: $out/Patchouli.NET-${version}-linux-x64.AppImage"
 }
 
 build_flatpak() {

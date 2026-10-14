@@ -6,16 +6,16 @@
   <Grid>
     <ScrollViewer>
       <StackPanel Margin="32" Spacing="20" MaxWidth="720">
-        <TextBlock Text="关于 Patchouli.Net" FontSize="24" FontWeight="SemiBold"
+        <TextBlock Text="关于 Patchouli.NET" FontSize="24" FontWeight="SemiBold"
                    Foreground="{DynamicResource OnSurfaceBrush}" />
 
         <Border Classes="Card">
           <StackPanel Spacing="10">
             <TextBlock Classes="CardTitle" Text="{Binding VersionInfo}" />
-            <TextBlock Text="Patchouli.Net 是一款开源文献管理工具。" FontSize="14"
+            <TextBlock Text="Patchouli.NET 是一款开源文献管理工具。" FontSize="14"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" />
 
-            <TextBlock Text="Patchouli.Net 基于 GNU General Public License v3.0 (GPL v3) 发布。" FontSize="14"
+            <TextBlock Text="Patchouli.NET 基于 GNU General Public License v3.0 (GPL v3) 发布。" FontSize="14"
                        Foreground="{DynamicResource OnSurfaceVariantBrush}" TextWrapping="Wrap" Margin="0,10,0,0" />
             <Expander Header="查看许可证全文" Margin="0,10,0,0" HorizontalAlignment="Stretch">
               <TextBox Text="{Binding LicenseText}" IsReadOnly="True" TextWrapping="Wrap" Height="300"

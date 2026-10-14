@@ -4,7 +4,7 @@
 
 实现状态（2026-10-05）：结构化五动词（`find`/`fetch`/`put`/`cite`/`send`）、`runs/`/`workflows/` 资源根、CLI HTTP 客户端、TOON/JSON、有限写入，以及宿主自动发现、自启 headless、每库互斥与桌面接管均已落地（`send` 与两根的决策见 ADR `0036`）。回归义务继续约束后续改动。
 
-**定位**：`patchouli-cli` — access an academic literature library powered by patchouli.net
+**定位**：`patchouli-cli` — access an academic literature library powered by Patchouli.NET
 
 ## 1 全局
 

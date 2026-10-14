@@ -6,7 +6,7 @@
   <Grid Background="{DynamicResource SurfaceBrush}">
     <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="24" MaxWidth="560">
       <StackPanel Spacing="12">
-        <TextBlock Text="Patchouli.Net"
+        <TextBlock Text="Patchouli.NET"
                    FontSize="32"
                    FontWeight="Bold"
                    HorizontalAlignment="Center"

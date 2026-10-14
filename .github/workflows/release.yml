@@ -142,6 +142,6 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
             gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
-              --title "Patchouli.Net $GITHUB_REF_NAME" \
+              --title "Patchouli.NET $GITHUB_REF_NAME" \
               --generate-notes
           fi

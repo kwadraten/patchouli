@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>io.github.kwadraten.patchouli</id>
-  <name>Patchouli</name>
+  <name>Patchouli.NET</name>
   <summary>Personal literature manager for large PDF libraries</summary>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
   <description>
     <p>
-      Patchouli is an experimental desktop literature manager for managing,
+      Patchouli.NET is an experimental desktop literature manager for managing,
       digitizing, continuously correcting, and effectively recalling large PDF
       libraries, with reproducible evidence citations and AI agent collaboration.
     </p>

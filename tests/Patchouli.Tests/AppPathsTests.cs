@@ -10,13 +10,13 @@ public sealed class AppPathsTests
     public void MacOS_uses_application_support_and_caches()
     {
         AppStorageLocations paths = new PlatformAppPaths(AppPlatform.MacOS, "/Users/test",
-            "/Users/test/Library/Application Support", "/Applications/Patchouli.Net.app/Contents/MacOS").Resolve();
+            "/Users/test/Library/Application Support", "/Applications/Patchouli.NET.app/Contents/MacOS").Resolve();
 
         paths.UserSettingsPath.Should()
             .Be(Path.GetFullPath("/Users/test/Library/Application Support/net.patchouli.app/settings.json"));
         paths.CacheDirectory.Should().Be(Path.GetFullPath("/Users/test/Library/Caches/net.patchouli.app"));
         paths.BundledDefaultsPath.Should()
-            .Be(Path.GetFullPath("/Applications/Patchouli.Net.app/Contents/Resources/appsettings.json"));
+            .Be(Path.GetFullPath("/Applications/Patchouli.NET.app/Contents/Resources/appsettings.json"));
     }
 
     [Fact]
@@ -197,7 +197,7 @@ public sealed class AppPathsTests
     [Fact]
     public void Mutable_path_guard_uses_canonical_resolver_for_alias_boundary()
     {
-        string bundle = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "Patchouli.Net.app"));
+        string bundle = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "Patchouli.NET.app"));
         string alias = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "alias", "settings.json"));
         IRealPathResolver resolver = new MappingRealPathResolver(alias,
             Path.Combine(bundle, "Contents", "Resources", "settings.json"));

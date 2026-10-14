@@ -1,6 +1,6 @@
 <div align=center>
 
-  <h1>Patchouli.Net</h1>
+  <h1>Patchouli.NET</h1>
 
   <img src="/logo/icon.png" width=200></img>
 

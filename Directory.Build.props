@@ -8,8 +8,8 @@
     <Version>0.3.9</Version>
     <AssemblyVersion>0.3.9.0</AssemblyVersion>
     <FileVersion>0.3.9.0</FileVersion>
-    <Product>Patchouli.Net</Product>
-    <Title>Patchouli.Net</Title>
-    <AssemblyTitle>Patchouli.Net</AssemblyTitle>
+    <Product>Patchouli.NET</Product>
+    <Title>Patchouli.NET</Title>
+    <AssemblyTitle>Patchouli.NET</AssemblyTitle>
   </PropertyGroup>
 </Project>

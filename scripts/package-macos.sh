@@ -11,12 +11,12 @@ configuration="${CONFIGURATION:-Release}"
 version="${VERSION:-0.3.9}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 publish_dir="$root/.tmp/publish/$runtime"
-app_dir="$root/.tmp/macos/Patchouli.Net.app"
+app_dir="$root/.tmp/macos/Patchouli.NET.app"
 contents_dir="$app_dir/Contents"
 macos_dir="$contents_dir/MacOS"
 resources_dir="$contents_dir/Resources"
 dmg_dir="$root/.tmp/installer"
-dmg_path="$dmg_dir/Patchouli.Net-$version-$runtime.dmg"
+dmg_path="$dmg_dir/Patchouli.NET-$version-$runtime.dmg"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "DMG creation requires macOS because hdiutil and bundle tools are Apple platform tools." >&2
@@ -131,7 +131,7 @@ dotnet test "$root/tests/Patchouli.Tests/Patchouli.Tests.csproj" -c "$configurat
 rm -f "$dmg_path"
 staging="$(mktemp -d "$root/.tmp/packaging/dmg.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
-cp -R "$app_dir" "$staging/Patchouli.Net.app"
+cp -R "$app_dir" "$staging/Patchouli.NET.app"
 ln -s /Applications "$staging/Applications"
-hdiutil create -volname "Patchouli.Net" -srcfolder "$staging" -ov -format UDZO "$dmg_path"
+hdiutil create -volname "Patchouli.NET" -srcfolder "$staging" -ov -format UDZO "$dmg_path"
 echo "$dmg_path"
