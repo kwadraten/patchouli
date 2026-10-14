@@ -59,6 +59,20 @@ public sealed class McpHttpServer : IAsyncDisposable
     public long TotalConnectionCount => Interlocked.Read(ref _totalConnectionCount);
     public event EventHandler? ConnectionCountsChanged;
 
+    /// <summary>
+    /// Host instance identifier for cross-namespace discovery verification.
+    /// Set by the host after the lease is created; exposed via /health.
+    /// NOTE: readable from the shared discovery record; binds the health
+    /// response to a specific host instance but is not an auth secret.
+    /// </summary>
+    public string? HostInstanceId { get; set; }
+
+    /// <summary>
+    /// Library identifier served by this host; exposed via /health for
+    /// cross-namespace discovery binding verification.
+    /// </summary>
+    public string? HostLibraryId { get; set; }
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         if (_app is not null)
@@ -157,7 +171,28 @@ public sealed class McpHttpServer : IAsyncDisposable
             });
         }
 
-        app.MapGet("/health", () => Results.Json(new { status = "ok" }));
+        app.MapGet("/health", () =>
+        {
+            // Include host instance ID and library ID for cross-namespace
+            // discovery verification. A CLI in a different PID namespace
+            // (e.g., another `flatpak run` instance) cannot verify the host
+            // via PID, but can verify via this endpoint since the network
+            // namespace is shared (--share=network).
+            // NOTE: instanceId is readable from the shared discovery record;
+            // it binds the response to a specific host instance but is not
+            // an authentication secret. MCP auth remains the security boundary.
+            if (HostInstanceId is not null)
+            {
+                if (HostLibraryId is not null)
+                {
+                    return Results.Json(new { status = "ok", instanceId = HostInstanceId, libraryId = HostLibraryId });
+                }
+
+                return Results.Json(new { status = "ok", instanceId = HostInstanceId });
+            }
+
+            return Results.Json(new { status = "ok" });
+        });
         app.MapGet("/mcp", (HttpContext context, CancellationToken ct) => HandleMcpSseAsync(context, _settings, ct));
         app.MapPost("/mcp",
             (HttpContext context, CancellationToken ct) =>

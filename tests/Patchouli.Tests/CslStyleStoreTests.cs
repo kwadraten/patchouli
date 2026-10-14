@@ -172,6 +172,24 @@ public sealed class CslStyleStoreTests
         installed.ErrorCode.Should().Be("validation_failed");
     }
 
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("..\\escape")]
+    [InlineData("nested/style")]
+    [InlineData("nested\\style")]
+    public async Task Replace_rejects_invalid_style_ids(string styleId)
+    {
+        await using TestContext context = await CreateContextAsync();
+
+        Result<CslStyle> replaced = await context.Store.ReplaceStyleAsync(
+            styleId,
+            StyleXml("bad-style", "Bad Style", "en-US"),
+            "rev-1");
+
+        replaced.IsFailure.Should().BeTrue();
+        replaced.ErrorCode.Should().Be("validation_failed");
+    }
+
     private static async Task<TestContext> CreateContextAsync()
     {
         TemporarySqliteDatabase database = TemporarySqliteDatabase.Create();

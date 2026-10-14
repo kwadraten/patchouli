@@ -55,9 +55,15 @@ public sealed class RuntimeHostCoordinatorTests : IDisposable
             database, RuntimeHostKind.Desktop, _root)!;
         RuntimeHostDiscoveryRecord published = await lease.PublishAsync(
             Guid.NewGuid().ToString("D"), "http://localhost:4536/mcp");
+        // Stale both UTC and /proc ticks: the procTicks path is preferred on Linux
+        // and would otherwise early-return true, bypassing the UTC check.
+        // A stale record must not be discoverable via either identity mechanism.
         RuntimeHostDiscoveryRecord stale = published with
         {
-            ProcessStartedUtc = published.ProcessStartedUtc.AddSeconds(-1)
+            ProcessStartedUtc = published.ProcessStartedUtc.AddSeconds(-1),
+            ProcessStartTimeProcTicks = published.ProcessStartTimeProcTicks.HasValue
+                ? published.ProcessStartTimeProcTicks.Value + 100 // different clock tick
+                : null
         };
         string recordPath = Path.Combine(_root, lease.PathKey + ".json");
         await File.WriteAllTextAsync(recordPath, JsonSerializer.Serialize(stale));

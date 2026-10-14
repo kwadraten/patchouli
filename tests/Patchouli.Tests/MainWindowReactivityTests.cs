@@ -198,12 +198,16 @@ public sealed class MainWindowReactivityTests
     }
 
     [Fact]
-    public void Rapid_query_rewrite_toggle_cancels_older_in_flight_persistence()
+    public async Task Rapid_query_rewrite_toggle_cancels_older_in_flight_persistence()
     {
         Subject<bool> requests = new();
         List<CancellationToken> tokens = [];
         List<TaskCompletionSource<bool>> tcsList = [];
         List<bool> appliedValues = [];
+        // Signals when the surviving request's continuation has run.
+        // RunContinuationsAsynchronously means TrySetResult returns before
+        // continuations execute, so the test must await real completion.
+        TaskCompletionSource<bool> appliedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         using IDisposable subscription = requests
             .Select(enabled => Observable.FromAsync(async ct =>
@@ -214,6 +218,7 @@ public sealed class MainWindowReactivityTests
                 bool res = await tcs.Task;
                 ct.ThrowIfCancellationRequested();
                 appliedValues.Add(res);
+                appliedSignal.TrySetResult(true);
             }))
             .Switch()
             .Subscribe();
@@ -229,8 +234,11 @@ public sealed class MainWindowReactivityTests
         tokens[0].IsCancellationRequested.Should().BeTrue();
         tokens[1].IsCancellationRequested.Should().BeFalse();
 
-        // Complete the second request; first was cancelled so only second value is recorded
+        // Complete the second request; first was cancelled so only second value is recorded.
+        // Await the continuation instead of asserting immediately: with
+        // RunContinuationsAsynchronously the Add runs after TrySetResult returns.
         tcsList[1].TrySetResult(false);
+        await appliedSignal.Task.WaitAsync(TimeSpan.FromSeconds(5));
         appliedValues.Should().Equal(false);
     }
 
