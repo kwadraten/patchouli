@@ -50,5 +50,8 @@ rm -f "$RPM_BUILD_ROOT"/usr/lib/patchouli/libcoreclrtraceptprovider.so \
 %license /usr/share/licenses/%{name}-%{version}/LICENSE
 
 %changelog
+* Wed Oct 14 2026 kwadraten <schild0van0man@duck.com> - 0.3.10-1
+- Update Patchouli.NET branding and release packaging
+
 * Fri Oct 09 2026 kwadraten <schild0van0man@duck.com> - 0.3.8-1
 - Linux packaging: rpm, deb, AppImage, Flatpak

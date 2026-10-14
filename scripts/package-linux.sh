@@ -5,7 +5,7 @@
 #   With no arguments, all four formats are built.
 #
 # Environment:
-#   VERSION       Application version (default: 0.3.8, must match Changelog.md)
+#   VERSION       Application version (default: 0.3.10, must match Changelog.md)
 #   RUNTIME       .NET runtime identifier (default: linux-x64)
 #   SKIP_PUBLISH  Set to 1 to reuse the existing .tmp/publish output instead of
 #                 running dotnet publish / cargo build again.
@@ -22,7 +22,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export TMPDIR="$root/.tmp"
 
-version="${VERSION:-0.3.8}"
+version="${VERSION:-0.3.10}"
 runtime="${RUNTIME:-linux-x64}"
 skip_publish="${SKIP_PUBLISH:-0}"
 publish_ui="$root/.tmp/publish/$runtime"

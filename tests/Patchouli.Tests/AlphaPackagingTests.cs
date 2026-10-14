@@ -14,7 +14,7 @@ public sealed class AlphaPackagingTests
     public void BuildInfo_exposes_version()
     {
         BuildInfo.AppName.Should().Be("Patchouli.NET");
-        BuildInfo.Version.Should().Be("0.3.9");
+        BuildInfo.Version.Should().Be("0.3.10");
         BuildInfo.SchemaVersion.Should().Be(AppSchemaVersion.Current);
     }
 
@@ -82,7 +82,7 @@ public sealed class AlphaPackagingTests
     {
         using TemporaryAppSettingsFile settings = new();
         MainWindowViewModel vm = new(new TestClipboard(), settingsPath: settings.Path);
-        vm.VersionInfo.Should().Contain("0.3.9").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
+        vm.VersionInfo.Should().Contain("0.3.10").And.Contain("Schema").And.Contain(vm.RuntimeDatabasePath);
     }
 
     [Fact]
@@ -96,7 +96,7 @@ public sealed class AlphaPackagingTests
     [Fact]
     public void BuildInfo_has_no_prerelease_suffix()
     {
-        BuildInfo.Version.Should().Be("0.3.9");
+        BuildInfo.Version.Should().Be("0.3.10");
     }
 
     [Fact]
@@ -108,12 +108,13 @@ public sealed class AlphaPackagingTests
             TestPaths.FromRepositoryRoot("src", "Patchouli.Core", "BuildInfo.cs"),
             TestPaths.FromRepositoryRoot("scripts", "package-windows.ps1"),
             TestPaths.FromRepositoryRoot("scripts", "package-macos.sh"),
+            TestPaths.FromRepositoryRoot("scripts", "package-linux.sh"),
             TestPaths.FromRepositoryRoot("packaging", "windows", "Patchouli.NET.iss")
         ];
 
         foreach (string file in files)
         {
-            File.ReadAllText(file).Should().Contain("0.3.9").And.NotContain("0.3.5");
+            File.ReadAllText(file).Should().Contain("0.3.10").And.NotContain("0.3.5");
         }
     }
 
