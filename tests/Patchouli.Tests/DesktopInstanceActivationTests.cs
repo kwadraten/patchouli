@@ -9,6 +9,27 @@ namespace Patchouli.Tests;
 [Collection("Avalonia")]
 public sealed class DesktopInstanceActivationTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Headless_session_supports_immediate_disposal(bool asynchronously)
+    {
+        // Avalonia #22222: the worker task must exist before StartNew publishes the session,
+        // and shutdown must wait for the worker before completing its input queue.
+        for (int iteration = 0; iteration < 2000; iteration++)
+        {
+            HeadlessUnitTestSession session = HeadlessUnitTestSession.StartNew(typeof(Avalonia.Application));
+            if (asynchronously)
+            {
+                await session.DisposeAsync();
+            }
+            else
+            {
+                session.Dispose();
+            }
+        }
+    }
+
     [Fact]
     public async Task Closing_tray_enabled_window_hides_it_without_closing()
     {
